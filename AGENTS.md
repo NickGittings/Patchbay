@@ -8,6 +8,7 @@ Patchbay maps repository components onto a desktop canvas with live terminals.
 - `crates/patchbay-cli/src/`: CLI commands using the core engine.
 - `apps/desktop/src/`: React/TypeScript UI; components in `components/`, shared helpers and IPC wrappers in `lib/`.
 - `apps/desktop/src-tauri/`: Tauri backend, capabilities, configuration, and icon assets.
+- `apps/desktop/smoke/`: end-to-end smoke scripts run inside the app by `npm run smoke`.
 - `devices/`: built-in `*.device.json` terminal presets.
 
 Keep shared behavior in the core crate and desktop integration in the Tauri backend.
@@ -27,6 +28,7 @@ Prerequisites: Rust via rustup and Node.js 20+. Run Cargo commands from the repo
 - `cargo clippy --workspace --all-targets -- -D warnings`: enforce Rust lint checks.
 - `cargo test --workspace`: run Rust tests.
 - `npm run check`: run TypeScript, Oxlint, and Prettier checks.
+- `npm run smoke`: launch the desktop app, drive a component pop-out window via `smoke/popout.js`, and exit 0 on pass or 1 on failure. Needs a desktop session.
 
 ## Coding Style & Naming Conventions
 
@@ -34,7 +36,7 @@ Use spaces, LF endings, and a final newline: two-space indentation generally, fo
 
 ## Testing Guidelines
 
-Rust tests use built-in `#[test]` functions in inline `mod tests` blocks. Name tests after behavior, such as `merge_adds_only_new_folders`. Add regression tests near changed core logic; isolate filesystem fixtures in temporary directories. PTY tests currently run on Unix only. No frontend test runner or coverage threshold is configured; verify UI changes manually in the desktop app.
+Rust tests use built-in `#[test]` functions in inline `mod tests` blocks. Name tests after behavior, such as `merge_adds_only_new_folders`. Add regression tests near changed core logic; isolate filesystem fixtures in temporary directories. PTY tests currently run on Unix only. No frontend unit test runner or coverage threshold is configured. `npm run smoke` covers the pop-out window flow end to end; the hook that runs it (`src-tauri/src/smoke.rs`, `src/lib/smoke.ts`) exists only in debug builds and is enabled by `PATCHBAY_SMOKE_SCRIPT`. Verify other UI changes manually in the desktop app.
 
 ## Commit & Pull Request Guidelines
 

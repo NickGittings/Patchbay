@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const MAX_DEPTH: usize = 4;
-const SKIP_DIRS: &[&str] = &[
+pub(crate) const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
     "dist",

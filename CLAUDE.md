@@ -20,13 +20,14 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 (cd apps/desktop && npm run check)                     # tsc -b + oxlint src + prettier --check
+(cd apps/desktop && npm run smoke)                     # opens the app, drives a pop-out window, exits 0/1
 
 # Single test
 cargo test -p patchbay-core context::tests::claude_gets_neighbour_dirs_and_context
 cargo test -p patchbay-core detect                     # all tests matching "detect"
 ```
 
-There is no frontend test suite; Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module.
+There is no frontend unit test suite; Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module. `npm run smoke` is the one end-to-end check: in debug builds only, `src-tauri/src/smoke.rs` evaluates `$PATCHBAY_SMOKE_SCRIPT` in every window and exits 0/1 when the script emits `PASS…`/`FAIL…` on `patchbay://smoke-report`; `src/lib/smoke.ts` exposes the store and helpers as `window.__patchbaySmoke` (dev bundles only). Never add test hooks that run in release builds.
 
 ## Lints and style
 
@@ -45,7 +46,7 @@ Three Cargo workspace members plus a React frontend:
 
 ### Data flow: the frontend owns the project
 
-The backend is stateless with respect to the project map; it only holds live PTY sessions (`AppState { pty: Arc<PtyManager> }`). The zustand store (`src/store.ts`) holds the map as React Flow `nodes`/`edges`, and `toProject()` rebuilds a full `Project` that is passed to every command that needs it (`terminal_start`, `component_context`, `save_project`, `rescan_project`). `dirty` tracks unsaved edits.
+The backend is stateless with respect to the project map; it only holds PTY sessions and their output backlogs (`AppState { pty: Arc<PtyManager> }`). The zustand store (`src/store.ts`) holds the map as React Flow `nodes`/`edges`, and `toProject()` rebuilds a full `Project` that is passed to every command that needs it (`terminal_start`, `component_context`, `save_project`, `rescan_project`). `dirty` tracks unsaved edits.
 
 ### Keeping Rust and TS in sync
 
@@ -53,6 +54,7 @@ Types are mirrored by hand — there is no codegen:
 - `crates/patchbay-core/src/model.rs` / `events.rs` / `devices.rs` (serde, `camelCase`) ↔ `apps/desktop/src/types.ts`
 - Tauri command list in `src-tauri/src/lib.rs` (`generate_handler!`) ↔ wrappers in `apps/desktop/src/lib/ipc.ts` (Tauri converts camelCase args to snake_case params)
 - The terminal event channel name `patchbay://terminal` appears in both `lib.rs` and `ipc.ts`.
+- `pty::Snapshot` ↔ `TerminalSnapshot`, `files::DirEntry` ↔ `DirEntry` in `types.ts`.
 - Session ids are `"{componentId}/{terminalId}"` (`model::session_id` ↔ `types.ts` `sessionId`).
 
 Changing a model field or command means updating both sides.
@@ -62,11 +64,16 @@ Changing a model field or command means updating both sides.
 - `model.rs` — `Project`/`Component`/`Link`/`TerminalSpec`. Persisted as `patchbay.json` at the repo root; `root` is absolute in memory but never serialized (portable file). A `Link` means `source` depends on `target`; `Project::neighbours` returns both directions as `Relation::DependsOn`/`UsedBy`. Bump `SCHEMA_VERSION` for format changes.
 - `detect.rs` — walks the repo for `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`; infers kind, task terminals (dev/test/etc.), links from inter-package deps, and a layered layout. `merge_new` (Rescan) only adds components for folders whose `path` isn't already in the project — it must never touch user edits.
 - `context.rs` — `component_context` builds the markdown briefing; `session_spec` turns a terminal into a `SessionSpec`. For `agent` terminals it writes the briefing to `$TMPDIR/patchbay/<slug>.md` and sets `PATCHBAY_CONTEXT_FILE`; if the command is `claude` (Unix only) it appends `--add-dir` for each neighbour and `--append-system-prompt "$(cat …)"`. All terminals get `PATCHBAY_COMPONENT`. The `Policy` check runs here, before spawn (currently `AllowAll`).
-- `pty.rs` — `PtyManager` spawns commands via the user's login shell (`$SHELL -ilc`, or `-il` for an empty command = interactive shell) so PATH matches their terminal when launched from the dock; Windows uses `cmd.exe /C` / `powershell.exe`. Per session: one reader thread emitting `Output` events, one waiter thread emitting `Exited` (exit code normalized: success → 0, failure → ≥1). Remembers last size per session id across restarts.
+- `pty.rs` — `PtyManager` spawns commands via the user's login shell (`$SHELL -ilc`, or `-il` for an empty command = interactive shell) so PATH matches their terminal when launched from the dock; Windows uses `cmd.exe /C` / `powershell.exe`. Per session: one reader thread emitting `Output` events, one waiter thread emitting `Exited` (exit code normalized: success → 0, failure → ≥1). Remembers last size per session id across restarts. Each session id also keeps a `Backlog` (last 512 KB of output, total byte count `end`, `generation` bumped on every spawn, running/exit code) that outlives the process; `snapshot()` returns it so a newly opened window can replay output it missed. `Output` events carry `seq` (byte offset) and all events carry `generation` so consumers can de-duplicate against a snapshot.
 - `events.rs` — `TerminalEvent` (`started`/`output`/`exited`) and the `EventSink` trait; Tauri implements the sink by emitting to the webview.
 - `devices.rs` — terminal presets. Built-ins in `/devices/*.device.json` are compiled in via `include_str!` (add new ones to the `BUILTIN` list too); user presets in `~/.patchbay/devices/` override built-ins by id.
+- `files.rs` — `list_dir` for the pop-out file tree: dirs first, hides `.git` and `detect::SKIP_DIRS`, and rejects paths (including symlinks) resolving outside the root.
 - `git.rs` — uncommitted-change counts per component folder; the frontend polls this every 5s (`App.tsx`).
 
 ### Frontend terminals
 
-`lib/terminals.ts` keeps one long-lived xterm instance per session id in a module-level registry and re-parents its DOM element on `attach`, so scrollback survives tab switches and restarts. `lib/sessions.ts` applies backend `TerminalEvent`s to both the store (running/exit code → node health) and the xterm.
+`lib/terminals.ts` keeps one long-lived xterm instance per session id in a module-level registry and re-parents its DOM element on `attach`, so scrollback survives tab switches and restarts. `lib/sessions.ts` applies backend `TerminalEvent`s to both the store (running/exit code → node health) and the xterm, skipping bytes already covered by a snapshot (`seq`/`generation`). `hydrateSession` buffers live events, replays `terminal_snapshot`, then drains the buffer. `components/TerminalPane.tsx` is the shared xterm host used by the dock and pop-out tiles.
+
+### Component windows
+
+Each component can open in a native window labelled `component-<hex-encoded id>` that loads `index.html?component=<id>`; `main.tsx` routes that to `ComponentWindow` (file tree + every terminal tiled). Every webview is a separate JS context with its own store and xterm registry. The main window stays the owner of the project: a pop-out emits `patchbay://popout-ready`, and `lib/windows.ts` answers with `patchbay://project` and `patchbay://git`, re-broadcasting (debounced) on edits; pop-outs apply it with `syncProject`, which keeps session state. Closing the main window closes all pop-outs (`lib.rs` `on_window_event`). New window labels must match `component-*` in `capabilities/default.json`.

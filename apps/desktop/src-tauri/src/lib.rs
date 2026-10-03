@@ -1,14 +1,18 @@
 //! Thin Tauri adapter over patchbay-core: commands in, terminal events out.
 
 use patchbay_core::devices::{self, DeviceManifest};
+use patchbay_core::files::{self, DirEntry};
 use patchbay_core::policy::AllowAll;
-use patchbay_core::pty::PtyManager;
+use patchbay_core::pty::{PtyManager, Snapshot};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+
+#[cfg(debug_assertions)]
+mod smoke;
 
 const TERMINAL_EVENT: &str = "patchbay://terminal";
 
@@ -133,6 +137,16 @@ fn terminal_stop(state: State<AppState>, session_id: String) {
 }
 
 #[tauri::command]
+fn terminal_snapshot(state: State<AppState>, session_id: String) -> Option<Snapshot> {
+    state.pty.snapshot(&session_id)
+}
+
+#[tauri::command]
+async fn list_dir(root: String, path: String) -> CmdResult<Vec<DirEntry>> {
+    files::list_dir(&PathBuf::from(root), &PathBuf::from(path)).map_err(err)
+}
+
+#[tauri::command]
 fn terminal_stop_all(state: State<AppState>) {
     state.pty.kill_all();
 }
@@ -141,8 +155,21 @@ fn terminal_stop_all(state: State<AppState>) {
 /// Panics if the Tauri runtime fails to start.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = smoke::install(builder);
+    builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
+                for (label, popout) in window.app_handle().webview_windows() {
+                    if label.starts_with("component-") {
+                        let _ = popout.close();
+                    }
+                }
+            }
+        })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -157,6 +184,8 @@ pub fn run() {
             terminal_resize,
             terminal_stop,
             terminal_stop_all,
+            terminal_snapshot,
+            list_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Patchbay")

@@ -1,7 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window permissions",
-  "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "description": "Main and component window permissions",
+  "windows": ["main", "component-*"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-title",
+    "opener:default",
+    { "identifier": "opener:allow-open-path", "allow": [{ "path": "**" }] },
+    { "identifier": "opener:allow-reveal-item-in-dir", "allow": [{ "path": "**" }] }
+  ]
 }

@@ -1,4 +1,5 @@
 import { useReactFlow } from '@xyflow/react'
+import { openComponentWindow } from '../lib/windows'
 import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
 import { sessionId } from '../types'
@@ -40,6 +41,7 @@ export default function Hierarchy() {
             key={n.id}
             className={`hierarchy-item ${n.id === selectedId ? 'active' : ''}`}
             onClick={() => focus(n.id)}
+            onDoubleClick={() => void openComponentWindow(n.id, n.data.name)}
           >
             <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
             <span className="hierarchy-name">{n.data.name}</span>

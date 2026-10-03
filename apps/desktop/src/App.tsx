@@ -6,8 +6,9 @@ import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { gitChanges, listDevices, onTerminalEvent } from './lib/ipc'
-import { handleTerminalEvent } from './lib/sessions'
+import { gitChanges, listDevices } from './lib/ipc'
+import { listenForTerminals } from './lib/sessions'
+import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
 
 const GIT_POLL_MS = 5000
@@ -32,8 +33,8 @@ function useGitPolling() {
 export default function App() {
   useEffect(() => {
     void listDevices().then(useStore.getState().setDevices)
-    const unlisten = onTerminalEvent(handleTerminalEvent)
-    return () => void unlisten.then((f) => f())
+    void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
+    return syncComponentWindows()
   }, [])
   useGitPolling()
 

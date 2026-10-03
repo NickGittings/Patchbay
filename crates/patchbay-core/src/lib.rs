@@ -6,6 +6,7 @@ pub mod context;
 pub mod detect;
 pub mod devices;
 pub mod events;
+pub mod files;
 pub mod git;
 pub mod model;
 pub mod policy;

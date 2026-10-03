@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import type { DeviceManifest, Project, TerminalEvent } from '../types'
+import type { DeviceManifest, DirEntry, Project, TerminalEvent, TerminalSnapshot } from '../types'
 
 export const openProject = (root: string) =>
   invoke<{ project: Project; detected: boolean }>('open_project', { root })
@@ -26,3 +26,8 @@ export const terminalStopAll = () => invoke<void>('terminal_stop_all')
 
 export const onTerminalEvent = (handler: (e: TerminalEvent) => void): Promise<UnlistenFn> =>
   listen<TerminalEvent>('patchbay://terminal', (e) => handler(e.payload))
+
+export const terminalSnapshot = (sessionId: string) =>
+  invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId })
+export const listDir = (root: string, path: string) =>
+  invoke<DirEntry[]>('list_dir', { root, path })

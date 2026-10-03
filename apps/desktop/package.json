@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "format": "prettier --write .",
-    "check": "tsc -b && oxlint src && prettier --check ."
+    "check": "tsc -b && oxlint src && prettier --check .",
+    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-dialog": "^2.8.1",
+    "@tauri-apps/plugin-opener": "^2.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.12.0",

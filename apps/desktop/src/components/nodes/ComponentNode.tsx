@@ -2,6 +2,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, type CSSProperties } from 'react'
 import { KIND_COLOR, terminalHealth } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
+import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
@@ -30,6 +31,17 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             ±{changes}
           </span>
         )}
+        <button
+          className="nodrag popout-button"
+          title="Open component in window"
+          aria-label={`Open ${data.name} in window`}
+          onClick={(e) => {
+            e.stopPropagation()
+            void openComponentWindow(id, data.name)
+          }}
+        >
+          ⧉
+        </button>
       </div>
       <div className="component-path">{data.path === '.' ? '(repo root)' : data.path}</div>
       <div className="terminal-chips">

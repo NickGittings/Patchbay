@@ -1,3 +1,4 @@
+import { openComponentWindow } from '../lib/windows'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
@@ -47,6 +48,9 @@ function ComponentInspector({ node }: { node: FlowNode }) {
         Name
         <input value={data.name} onChange={(e) => updateComponent(id, { name: e.target.value })} />
       </label>
+      <button className="inspector-popout" onClick={() => void openComponentWindow(id, data.name)}>
+        ⧉ Open in window
+      </button>
       <div className="row">
         <label className="grow">
           Kind

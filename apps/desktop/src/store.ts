@@ -38,6 +38,7 @@ interface State {
   message: string
 
   loadProject: (p: Project) => void
+  syncProject: (p: Project) => void
   toProject: () => Project
   onNodesChange: (changes: NodeChange<FlowNode>[]) => void
   onEdgesChange: (changes: EdgeChange<FlowEdge>[]) => void
@@ -104,6 +105,13 @@ export const useStore = create<State>((set, get) => ({
       selectedEdgeId: null,
       activeSession: null,
       dirty: false,
+    }),
+
+  syncProject: (p) =>
+    set({
+      project: { name: p.name, root: p.root },
+      nodes: p.components.map(componentToNode),
+      edges: p.links.map(linkToEdge),
     }),
 
   toProject: () => {

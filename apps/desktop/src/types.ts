@@ -61,9 +61,23 @@ export interface DeviceManifest {
 }
 
 export type TerminalEvent =
-  | { type: 'started'; sessionId: string }
-  | { type: 'output'; sessionId: string; data: number[] }
-  | { type: 'exited'; sessionId: string; exitCode: number }
+  | { type: 'started'; sessionId: string; generation: number }
+  | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
+  | { type: 'exited'; sessionId: string; generation: number; exitCode: number }
+
+export interface TerminalSnapshot {
+  data: number[]
+  end: number
+  generation: number
+  running: boolean
+  exitCode: number | null
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDir: boolean
+}
 
 export interface SessionState {
   running: boolean
