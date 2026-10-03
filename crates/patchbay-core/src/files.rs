@@ -16,14 +16,27 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
+/// Canonical roots, project root first. The project root must exist; external
+/// folders that are missing (a sibling repo not cloned here) are skipped, as are
+/// folders inside another root.
 fn canonical_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    if roots.is_empty() {
+    let Some((root, extra)) = roots.split_first() else {
         bail!("No project is open");
+    };
+    let root = root.canonicalize()?;
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in extra {
+        let Ok(dir) = dir.canonicalize() else {
+            continue;
+        };
+        if dir.starts_with(&root) || inside(&dir, &out) {
+            continue;
+        }
+        out.retain(|r| !r.starts_with(&dir));
+        out.push(dir);
     }
-    roots
-        .iter()
-        .map(|r| r.canonicalize().map_err(Into::into))
-        .collect()
+    out.insert(0, root);
+    Ok(out)
 }
 
 fn inside(path: &Path, roots: &[PathBuf]) -> bool {
@@ -36,10 +49,14 @@ fn inside(path: &Path, roots: &[PathBuf]) -> bool {
 /// # Errors
 /// Fails if a path does not exist or `rel` resolves outside every root.
 pub fn resolve(roots: &[PathBuf], rel: &Path) -> Result<PathBuf> {
-    let roots = canonical_roots(roots)?;
+    resolve_in(&canonical_roots(roots)?, rel)
+}
+
+/// [`resolve`] against roots already passed through `canonical_roots`.
+fn resolve_in(roots: &[PathBuf], rel: &Path) -> Result<PathBuf> {
     let path = roots[0].join(rel).canonicalize()?;
-    if !inside(&path, &roots) {
-        bail!("Path is outside the project");
+    if !inside(&path, roots) {
+        bail!("Path is outside the project (pick folders beside it with Browse… or Add repo…)");
     }
     Ok(path)
 }
@@ -51,7 +68,7 @@ pub fn resolve(roots: &[PathBuf], rel: &Path) -> Result<PathBuf> {
 /// Fails on inaccessible directories or paths resolving outside every root.
 pub fn list_dir(roots: &[PathBuf], rel: &Path) -> Result<Vec<DirEntry>> {
     let roots = canonical_roots(roots)?;
-    let dir = resolve(&roots, rel)?;
+    let dir = resolve_in(&roots, rel)?;
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
@@ -199,5 +216,35 @@ mod tests {
         assert_eq!(entries[0].path, "../billing/src");
         assert!(list_dir(&roots[..1], Path::new("../billing")).is_err());
         assert!(list_dir(&roots, Path::new("..")).is_err());
+    }
+
+    #[test]
+    fn missing_external_roots_are_skipped() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("src")).unwrap();
+        let roots = [
+            fixture.0.clone(),
+            fixture.0.join("../patchbay-no-such-repo"),
+        ];
+        assert_eq!(list_dir(&roots, Path::new(".")).unwrap().len(), 1);
+        assert!(resolve(&roots, Path::new("src")).is_ok());
+        assert!(list_dir(&[fixture.0.join("missing")], Path::new(".")).is_err());
+    }
+
+    #[test]
+    fn nested_roots_are_deduplicated() {
+        let fixture = Fixture::new();
+        let billing = fixture.0.join("billing");
+        fs::create_dir_all(billing.join("api")).unwrap();
+        fs::create_dir_all(fixture.0.join("shop")).unwrap();
+        let roots = canonical_roots(&[
+            fixture.0.join("shop"),
+            billing.join("api"),
+            billing.clone(),
+            billing.join("api"),
+        ])
+        .unwrap();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[1], billing.canonicalize().unwrap());
     }
 }

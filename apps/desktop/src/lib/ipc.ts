@@ -20,7 +20,12 @@ export const componentContext = (project: Project, componentId: string) =>
 /** Opens a folder picker; `null` if cancelled. */
 export const addFolder = (project: Project) =>
   invoke<{ project: Project; added: number } | null>('add_folder', { project })
-export const gitStatus = (project: Project) => invoke<GitStatus>('git_status', { project })
+/** Opens a folder picker for a component's folder; the path relative to the root, or `null`. */
+export const pickComponentFolder = () => invoke<string | null>('pick_component_folder')
+/** Tell the backend which component folders are on the map; it can only narrow file access. */
+export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
+export const gitStatus = (components: { id: string; path: string }[]) =>
+  invoke<GitStatus>('git_status', { components })
 
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })

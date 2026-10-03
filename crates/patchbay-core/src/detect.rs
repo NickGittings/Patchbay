@@ -5,14 +5,13 @@
 //! any nested git repo without one. Dependencies between detected packages
 //! become links.
 
-use crate::git;
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
-    relative_path,
+    normalize, relative_path,
 };
 use anyhow::{Result, bail};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_DEPTH: usize = 4;
 pub(crate) const SKIP_DIRS: &[&str] = &[
@@ -401,7 +400,13 @@ fn slug(rel: &str) -> String {
             }
         })
         .collect();
-    s.trim_matches('-').to_string()
+    let s = s.trim_matches('-');
+    // Ids feed session ids and window labels, so they must never be empty.
+    if s.is_empty() {
+        "component".into()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Columns by dependency depth: dependents on the left, foundations on the right.
@@ -647,12 +652,15 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
 ///
 /// # Errors
 /// Fails if `dir` or the project root cannot be resolved, or `dir` is the
-/// project root itself (use [`rescan`]).
+/// project root itself (use [`rescan`]) or contains it.
 pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
     let dir = dir.canonicalize()?;
     let root = Path::new(&project.root).canonicalize()?;
     if dir == root {
         bail!("That is the project folder itself; use Rescan instead");
+    }
+    if root.starts_with(&dir) {
+        bail!("That folder contains the project; pick a folder inside or beside it");
     }
     let mut found = detect(&dir)?;
     let prefix = slug(&dir_name(&dir));
@@ -675,30 +683,24 @@ pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
     Ok(found)
 }
 
-/// Add components for new folders under the project root and under every
-/// external repo already on the map. Existing components are left untouched.
-/// Returns how many components were added.
+/// Add components for new folders under the project root and under each of
+/// `folders` (usually [`Project::external_dirs`]: the external folders already
+/// on the map, not their enclosing repos, so a rescan never reaches beyond what
+/// the user added). Existing components are left untouched. Returns how many
+/// components were added.
 ///
 /// # Errors
 /// Fails if the project root cannot be read.
-pub fn rescan(project: &mut Project) -> Result<usize> {
+pub fn rescan(project: &mut Project, folders: &[PathBuf]) -> Result<usize> {
     let mut added = merge_new(project, detect(Path::new(&project.root))?);
-    let externals: BTreeSet<_> = project
-        .components
-        .iter()
-        .filter(|c| project.is_external(c))
-        .filter_map(|c| {
-            let dir = project.component_dir(c);
-            git::repo_root(&dir).or_else(|| dir.canonicalize().ok())
-        })
-        .collect();
+    let folders: BTreeSet<_> = folders.iter().map(|d| normalize(d)).collect();
     // Scanning a folder covers everything below it.
-    let tops: Vec<_> = externals
+    let tops: Vec<_> = folders
         .iter()
-        .filter(|d| !externals.iter().any(|o| o != *d && d.starts_with(o)))
+        .filter(|d| !folders.iter().any(|o| o != *d && d.starts_with(o)))
         .collect();
     for dir in tops {
-        // A repo that vanished is simply skipped.
+        // A folder that vanished (or now contains the root) is simply skipped.
         if let Ok(found) = detect_folder(project, dir) {
             added += merge_new(project, found);
         }
@@ -709,7 +711,6 @@ pub fn rescan(project: &mut Project) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::{env, fs, process};
 
     fn write(root: &Path, rel: &str, text: &str) {
@@ -832,8 +833,9 @@ mod tests {
         assert_eq!(merge_new(&mut project, found), 2);
         // Rescanning picks up a new folder in the external repo, not duplicates.
         write(&base, "billing/cmd/api/go.mod", "module example.com/api\n");
-        assert_eq!(rescan(&mut project).unwrap(), 1);
-        assert_eq!(rescan(&mut project).unwrap(), 0);
+        let externals = project.external_dirs();
+        assert_eq!(rescan(&mut project, &externals).unwrap(), 1);
+        assert_eq!(rescan(&mut project, &externals).unwrap(), 0);
         assert!(
             project
                 .components
@@ -855,5 +857,32 @@ mod tests {
         assert_eq!(found.components[0].id, "docs");
         assert_eq!(found.components[0].path, "docs");
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn rescan_stays_inside_added_folders_of_a_monorepo() {
+        let base = env::temp_dir().join(format!("patchbay-mono-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        write(&base, "apps/shop/package.json", r#"{"name":"shop"}"#);
+        write(&base, "apps/billing/go.mod", "module example.com/billing\n");
+        write(&base, "apps/other/go.mod", "module example.com/other\n");
+        let mut project = detect(&base.join("apps/shop").canonicalize().unwrap()).unwrap();
+        let found = detect_folder(&project, &base.join("apps/billing")).unwrap();
+        assert_eq!(merge_new(&mut project, found), 1);
+        let externals = project.external_dirs();
+        assert_eq!(rescan(&mut project, &externals).unwrap(), 0);
+        assert!(!project.components.iter().any(|c| c.path.contains("other")));
+        // A folder containing the project would swallow it.
+        assert!(detect_folder(&project, &base.join("apps")).is_err());
+        assert_eq!(rescan(&mut project, &[base.join("apps")]).unwrap(), 0);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn ids_are_never_empty() {
+        assert_eq!(slug("___"), "component");
+        assert_eq!(slug("日本"), "component");
+        assert_eq!(slug("apps/web"), "apps-web");
     }
 }

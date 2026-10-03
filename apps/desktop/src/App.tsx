@@ -6,7 +6,7 @@ import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { gitStatus, listDevices } from './lib/ipc'
+import { gitStatus, listDevices, syncRoots } from './lib/ipc'
 import { listenForTerminals } from './lib/sessions'
 import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
@@ -20,7 +20,7 @@ function useGitPolling() {
     if (!root) return
     const poll = () => {
       const s = useStore.getState()
-      void gitStatus(s.toProject())
+      void gitStatus(s.nodes.map((n) => ({ id: n.id, path: n.data.path })))
         .then(s.setGitStatus)
         .catch(() => {})
     }
@@ -30,6 +30,21 @@ function useGitPolling() {
   }, [root])
 }
 
+/** Keep the backend's readable folders in step with the component folders on the map. */
+function useRootSync() {
+  useEffect(() => {
+    let last = ''
+    return useStore.subscribe((s, prev) => {
+      if (!s.project || s.nodes === prev.nodes) return
+      const paths = s.nodes.map((n) => n.data.path)
+      const key = paths.join('\n')
+      if (key === last) return
+      last = key
+      void syncRoots(paths).catch(() => {})
+    })
+  }, [])
+}
+
 export default function App() {
   useEffect(() => {
     void listDevices().then(useStore.getState().setDevices)
@@ -37,6 +52,7 @@ export default function App() {
     return syncComponentWindows()
   }, [])
   useGitPolling()
+  useRootSync()
 
   return (
     <ReactFlowProvider>

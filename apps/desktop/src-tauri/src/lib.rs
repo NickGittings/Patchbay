@@ -2,10 +2,11 @@
 
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::files::{self, DirEntry};
+use patchbay_core::model::{self, Component, ComponentKind, Position};
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::{PtyManager, Snapshot};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -21,27 +22,86 @@ const WINDOW_CLOSED_EVENT: &str = "patchbay://window-closed";
 #[derive(Default)]
 struct AppState {
     pty: Arc<PtyManager>,
-    /// Folders file commands may read: the open project's root first, then the
-    /// folders of components outside it (sibling repos). Set from projects the
-    /// backend loaded or detected, never from a list sent by the webview, so file
-    /// commands can't reach the rest of the disk.
-    roots: Mutex<Vec<PathBuf>>,
+    access: Mutex<Access>,
+}
+
+/// Which folders file commands may read. Only the backend widens this: the root
+/// comes from `open_project`, and folders outside it are granted only when they
+/// come from a project the backend loaded or detected, or from a folder picker
+/// the backend ran. The webview's map can narrow the readable set (a deleted
+/// component's folder stops being readable) but never extend it.
+#[derive(Default)]
+struct Access {
+    /// The open project's root.
+    root: Option<PathBuf>,
+    /// External folders the user vouched for; kept until another project opens.
+    granted: Vec<PathBuf>,
+    /// `root`, then the external component folders on the map within `granted`.
+    roots: Vec<PathBuf>,
+}
+
+impl Access {
+    fn open(&mut self, project: &Project) {
+        self.root = Some(PathBuf::from(&project.root));
+        self.granted = project.external_dirs();
+        self.sync(project.components.iter().map(|c| c.path.as_str()));
+    }
+
+    fn grant(&mut self, dir: &Path) {
+        self.granted.push(model::normalize(dir));
+    }
+
+    fn is_granted(&self, dir: &Path) -> bool {
+        self.granted.iter().any(|g| dir.starts_with(g))
+    }
+
+    /// Recompute the readable roots from the component paths now on the map.
+    fn sync<'a>(&mut self, paths: impl IntoIterator<Item = &'a str>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let mut roots = vec![root.clone()];
+        for path in paths {
+            let dir = model::normalize(&root.join(path));
+            if !dir.starts_with(&root) && self.is_granted(&dir) && !roots.contains(&dir) {
+                roots.push(dir);
+            }
+        }
+        self.roots = roots;
+    }
+
+    /// Replace the webview's idea of the root with the one the backend opened.
+    fn trust(&self, project: &mut Project) -> CmdResult<PathBuf> {
+        let root = self.root.clone().ok_or("No project is open")?;
+        project.root = root.display().to_string();
+        Ok(root)
+    }
 }
 
 impl AppState {
-    fn roots(&self) -> Vec<PathBuf> {
-        self.roots.lock().unwrap().clone()
+    fn access(&self) -> std::sync::MutexGuard<'_, Access> {
+        self.access.lock().unwrap()
     }
 
-    fn set_roots(&self, project: &Project) {
-        let mut roots = vec![PathBuf::from(&project.root)];
-        roots.extend(project.external_dirs());
-        *self.roots.lock().unwrap() = roots;
+    fn roots(&self) -> Vec<PathBuf> {
+        self.access().roots.clone()
     }
 
     fn resolve(&self, path: &str) -> CmdResult<PathBuf> {
         files::resolve(&self.roots(), Path::new(path)).map_err(err)
     }
+}
+
+/// Run the backend's folder picker, starting in `start`.
+fn pick_folder(app: &AppHandle, title: &str, start: Option<&Path>) -> CmdResult<Option<PathBuf>> {
+    let mut dialog = app.dialog().file().set_title(title);
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    dialog
+        .blocking_pick_folder()
+        .map(|p| p.into_path().map_err(err))
+        .transpose()
 }
 
 /// Must match `componentLabel` in `lib/windows.ts`.
@@ -98,7 +158,7 @@ async fn open_project(state: State<'_, AppState>, root: String) -> CmdResult<Ope
             detected: true,
         }
     };
-    state.set_roots(&opened.project);
+    state.access().open(&opened.project);
     Ok(opened)
 }
 
@@ -108,10 +168,22 @@ struct Rescanned {
     added: usize,
 }
 
+/// Rescan the open root plus the external folders on the map the user added.
 #[tauri::command]
 async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> CmdResult<Rescanned> {
-    let added = detect::rescan(&mut project).map_err(err)?;
-    state.set_roots(&project);
+    let externals: Vec<PathBuf> = {
+        let access = state.access();
+        access.trust(&mut project)?;
+        project
+            .external_dirs()
+            .into_iter()
+            .filter(|d| access.is_granted(d))
+            .collect()
+    };
+    let added = detect::rescan(&mut project, &externals).map_err(err)?;
+    state
+        .access()
+        .sync(project.components.iter().map(|c| c.path.as_str()));
     Ok(Rescanned { project, added })
 }
 
@@ -124,19 +196,43 @@ async fn add_folder(
     state: State<'_, AppState>,
     mut project: Project,
 ) -> CmdResult<Option<Rescanned>> {
-    let root = PathBuf::from(&project.root);
-    let mut dialog = app.dialog().file().set_title("Add a repo or folder");
-    if let Some(parent) = root.parent() {
-        dialog = dialog.set_directory(parent);
-    }
-    let Some(picked) = dialog.blocking_pick_folder() else {
+    let root = state.access().trust(&mut project)?;
+    let Some(dir) = pick_folder(&app, "Add a repo or folder", root.parent())? else {
         return Ok(None);
     };
-    let dir = picked.into_path().map_err(err)?;
     let found = detect::detect_folder(&project, &dir).map_err(err)?;
     let added = detect::merge_new(&mut project, found);
-    state.set_roots(&project);
+    let mut access = state.access();
+    access.grant(&dir.canonicalize().map_err(err)?);
+    access.sync(project.components.iter().map(|c| c.path.as_str()));
     Ok(Some(Rescanned { project, added }))
+}
+
+/// Pick a component's folder (inside the project or beside it) and return it
+/// relative to the root. `None` if cancelled.
+#[tauri::command]
+async fn pick_component_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<String>> {
+    let root = state.access().root.clone().ok_or("No project is open")?;
+    let Some(dir) = pick_folder(&app, "Component folder", Some(&root))? else {
+        return Ok(None);
+    };
+    let dir = dir.canonicalize().map_err(err)?;
+    if dir != root && root.starts_with(&dir) {
+        return Err("That folder contains the project; pick a folder inside or beside it".into());
+    }
+    if !dir.starts_with(&root) {
+        state.access().grant(&dir);
+    }
+    Ok(Some(model::relative_path(&root, &dir)))
+}
+
+/// Narrow the readable folders to the component paths now on the map.
+#[tauri::command]
+fn sync_roots(state: State<AppState>, paths: Vec<String>) {
+    state.access().sync(paths.iter().map(String::as_str));
 }
 
 #[tauri::command]
@@ -149,9 +245,40 @@ fn component_context(project: Project, component_id: String) -> String {
     context::component_context(&project, &component_id)
 }
 
+#[derive(Deserialize)]
+struct ComponentPath {
+    id: String,
+    path: String,
+}
+
+/// Takes only ids and folders, since it is polled every few seconds.
 #[tauri::command]
-async fn git_status(project: Project) -> git::GitStatus {
-    git::status(&project)
+async fn git_status(
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+) -> CmdResult<git::GitStatus> {
+    let Some(root) = state.access().root.clone() else {
+        return Ok(git::GitStatus::default());
+    };
+    let project = Project {
+        schema_version: model::SCHEMA_VERSION,
+        name: String::new(),
+        root: root.display().to_string(),
+        components: components
+            .into_iter()
+            .map(|c| Component {
+                id: c.id,
+                name: String::new(),
+                kind: ComponentKind::default(),
+                path: c.path,
+                notes: String::new(),
+                terminals: Vec::new(),
+                position: Position::default(),
+            })
+            .collect(),
+        links: Vec::new(),
+    };
+    Ok(git::status(&project))
 }
 
 #[tauri::command]
@@ -262,6 +389,8 @@ pub fn run() {
             open_project,
             rescan_project,
             add_folder,
+            pick_component_folder,
+            sync_roots,
             save_project,
             component_context,
             git_status,

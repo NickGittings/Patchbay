@@ -7,11 +7,17 @@ import {
 import { useStore } from '../store'
 import type { Project } from '../types'
 
-/** Join a component path (which may start with `../`) onto the root, resolving `.` and `..`. */
+/**
+ * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
+ * An absolute path (another Windows drive, where no relative path exists) is kept as is.
+ */
 export function absolutePath(root: string, path: string) {
   if (path === '.') return root
-  const parts = root.replace(/[\\/]$/, '').split(/[\\/]/)
-  for (const part of path.split(/[\\/]/)) {
+  const absolute = /^([a-zA-Z]:)?[\\/]/.test(path)
+  const segments = path.split(/[\\/]/)
+  // The first segment of an absolute path is '' (Unix) or the drive (Windows).
+  const parts = absolute ? [segments.shift()!] : root.replace(/[\\/]$/, '').split(/[\\/]/)
+  for (const part of segments) {
     if (part === '..') {
       if (parts.length > 1) parts.pop()
     } else if (part && part !== '.') parts.push(part)

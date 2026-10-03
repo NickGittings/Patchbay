@@ -75,13 +75,25 @@ pub struct GitStatus {
     pub repos: HashMap<String, String>,
 }
 
-/// Count uncommitted changes per component, running `git status` once per repo.
-/// Each changed file is attributed to the most specific component containing it.
+/// Count uncommitted changes per component, running `git status` once per repo
+/// (in parallel, so many sibling repos don't add up to one long poll). Each
+/// changed file is attributed to the most specific component containing it.
 #[must_use]
 pub fn status(project: &Project) -> GitStatus {
     let project_repo = repo_root(Path::new(&project.root));
+    let groups = group_by_repo(project);
+    let changed: Vec<Option<Vec<String>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = groups
+            .iter()
+            .map(|g| scope.spawn(|| changed_paths(&g.root)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().ok().flatten())
+            .collect()
+    });
     let mut out = GitStatus::default();
-    for group in group_by_repo(project) {
+    for (group, paths) in groups.iter().zip(changed) {
         if project_repo.as_ref() != Some(&group.root) {
             let name = group
                 .root
@@ -91,7 +103,7 @@ pub fn status(project: &Project) -> GitStatus {
                 out.repos.insert(id.clone(), name.clone());
             }
         }
-        let Some(paths) = changed_paths(&group.root) else {
+        let Some(paths) = paths else {
             continue;
         };
         for (id, _) in &group.members {

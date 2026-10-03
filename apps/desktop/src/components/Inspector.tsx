@@ -1,31 +1,15 @@
 import { openComponentWindow } from '../lib/windows'
-import { open } from '@tauri-apps/plugin-dialog'
 import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
-import { componentContext } from '../lib/ipc'
+import { componentContext, pickComponentFolder } from '../lib/ipc'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore, type FlowNode } from '../store'
 import { COMPONENT_KINDS, sessionId, type ComponentKind, type TerminalKind } from '../types'
 
 const TERMINAL_KINDS: TerminalKind[] = ['shell', 'task', 'agent']
 
-/** Folder picker that stores the path relative to the project root. */
-async function pickFolder(root: string): Promise<string | null> {
-  const picked = await open({ directory: true, multiple: false, defaultPath: root })
-  if (typeof picked !== 'string') return null
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/$/, '')
-  const [r, p] = [norm(root), norm(picked)]
-  if (p === r) return '.'
-  if (!p.startsWith(`${r}/`)) {
-    useStore.getState().setMessage('Pick a folder inside the project')
-    return null
-  }
-  return p.slice(r.length + 1)
-}
-
 function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
-  const root = useStore((s) => s.project?.root ?? '')
   const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
   const edges = useStore((s) => s.edges)
@@ -75,8 +59,12 @@ function ComponentInspector({ node }: { node: FlowNode }) {
           />
           <button
             onClick={async () => {
-              const path = await pickFolder(root)
-              if (path) updateComponent(id, { path })
+              try {
+                const path = await pickComponentFolder()
+                if (path) updateComponent(id, { path })
+              } catch (e) {
+                useStore.getState().setMessage(String(e))
+              }
             }}
           >
             Browse
