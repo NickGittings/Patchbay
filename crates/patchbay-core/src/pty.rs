@@ -22,6 +22,7 @@ pub struct SessionSpec {
 }
 
 struct Session {
+    generation: u64,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -52,11 +53,18 @@ impl Backlog {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Base64 on the wire: a JSON number array is ~4x larger.
+    #[serde(serialize_with = "serialize_base64")]
     pub data: Vec<u8>,
     pub end: u64,
     pub generation: u64,
     pub running: bool,
     pub exit_code: Option<i32>,
+}
+
+fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    use base64::Engine;
+    s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(data))
 }
 
 /// Long-lived PTY sessions keyed by session id. Output and exit are reported
@@ -66,6 +74,9 @@ pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
     backlogs: Mutex<HashMap<String, Arc<Mutex<Backlog>>>>,
     sizes: Mutex<HashMap<String, (u16, u16)>>,
+    /// Last generation handed out. Global rather than per id so generations
+    /// stay unique across [`PtyManager::reset`].
+    generation: Mutex<u64>,
 }
 
 /// Run through the user's login shell so PATH matches their terminal, even when
@@ -141,10 +152,12 @@ impl PtyManager {
         let writer = pair.master.take_writer()?;
         let killer = child.clone_killer();
 
+        let generation = {
+            let mut last = self.generation.lock().unwrap();
+            *last += 1;
+            *last
+        };
         let mut backlogs = self.backlogs.lock().unwrap();
-        let generation = backlogs
-            .get(&spec.id)
-            .map_or(1, |b| b.lock().unwrap().generation + 1);
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
             running: true,
@@ -155,6 +168,7 @@ impl PtyManager {
         sessions.insert(
             spec.id.clone(),
             Session {
+                generation,
                 master: pair.master,
                 writer,
                 killer,
@@ -177,8 +191,8 @@ impl PtyManager {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            let mut backlog = backlog.lock().unwrap();
-                            let seq = backlog.append(&buf[..n]);
+                            // Emit after unlocking; consumers de-duplicate by seq.
+                            let seq = backlog.lock().unwrap().append(&buf[..n]);
                             sink.emit(TerminalEvent::Output {
                                 session_id: id.clone(),
                                 generation,
@@ -198,15 +212,24 @@ impl PtyManager {
             // Let the reader drain; on Windows it only sees EOF once the master closes.
             let _ = done_rx.recv_timeout(Duration::from_millis(500));
             let mut sessions = manager.sessions.lock().unwrap();
-            sessions.remove(&spec.id);
+            // After a reset the id may already belong to a newer session.
+            if sessions
+                .get(&spec.id)
+                .is_some_and(|s| s.generation == generation)
+            {
+                sessions.remove(&spec.id);
+            }
+            drop(sessions);
             let exit_code = match status {
                 Ok(s) if s.success() => 0,
                 Ok(s) => i32::try_from(s.exit_code()).unwrap_or(i32::MAX).max(1),
                 Err(_) => 1,
             };
-            let mut backlog = backlog.lock().unwrap();
-            backlog.running = false;
-            backlog.exit_code = Some(exit_code);
+            {
+                let mut backlog = backlog.lock().unwrap();
+                backlog.running = false;
+                backlog.exit_code = Some(exit_code);
+            }
             sink.emit(TerminalEvent::Exited {
                 session_id: spec.id,
                 generation,
@@ -288,6 +311,23 @@ impl PtyManager {
             let _ = s.killer.kill();
         }
     }
+
+    /// Kill every session and forget all retained output, e.g. when another
+    /// project is opened. Session ids are not project-scoped, so history must
+    /// not carry over. Returns the last generation issued: every event from a
+    /// session started before the reset has a generation at or below it.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn reset(&self) -> u64 {
+        let mut sessions = self.sessions.lock().unwrap();
+        for s in sessions.values_mut() {
+            let _ = s.killer.kill();
+        }
+        sessions.clear();
+        self.backlogs.lock().unwrap().clear();
+        *self.generation.lock().unwrap()
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -368,6 +408,31 @@ mod tests {
             }
         }
         assert_eq!(snapshot.end, end);
+    }
+
+    #[test]
+    fn reset_forgets_history_and_keeps_generations_unique() {
+        let pty = Arc::new(PtyManager::new());
+        let spec = |command: &str| SessionSpec {
+            id: "root/shell".into(),
+            command: command.into(),
+            cwd: std::env::temp_dir(),
+            env: BTreeMap::new(),
+        };
+        let old = Arc::new(Collect::default());
+        pty.spawn(spec("sleep 5"), old.clone()).unwrap();
+        let floor = pty.reset();
+        assert_eq!(floor, 1);
+        assert!(pty.snapshot("root/shell").is_none());
+        assert!(!pty.is_running("root/shell"));
+
+        // The id is free immediately, and the old waiter must not evict the new session.
+        let new = Arc::new(Collect::default());
+        pty.spawn(spec("sleep 1"), new.clone()).unwrap();
+        old.wait_for_exit();
+        assert!(pty.is_running("root/shell"));
+        assert_eq!(pty.snapshot("root/shell").unwrap().generation, 2);
+        assert_eq!(new.wait_for_exit(), 0);
     }
 
     #[test]

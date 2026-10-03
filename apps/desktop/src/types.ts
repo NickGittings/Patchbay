@@ -66,7 +66,8 @@ export type TerminalEvent =
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number }
 
 export interface TerminalSnapshot {
-  data: number[]
+  /** Base64. */
+  data: string
   end: number
   generation: number
   running: boolean

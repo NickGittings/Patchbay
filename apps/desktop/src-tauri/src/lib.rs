@@ -136,9 +136,13 @@ fn terminal_stop(state: State<AppState>, session_id: String) {
     state.pty.kill(&session_id);
 }
 
+/// Async so copying and encoding a large backlog stays off the main thread.
 #[tauri::command]
-fn terminal_snapshot(state: State<AppState>, session_id: String) -> Option<Snapshot> {
-    state.pty.snapshot(&session_id)
+async fn terminal_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CmdResult<Option<Snapshot>> {
+    Ok(state.pty.snapshot(&session_id))
 }
 
 #[tauri::command]
@@ -146,9 +150,10 @@ async fn list_dir(root: String, path: String) -> CmdResult<Vec<DirEntry>> {
     files::list_dir(&PathBuf::from(root), &PathBuf::from(path)).map_err(err)
 }
 
+/// Returns the generation floor: events at or below it belong to the old project.
 #[tauri::command]
-fn terminal_stop_all(state: State<AppState>) {
-    state.pty.kill_all();
+fn terminal_reset(state: State<AppState>) -> u64 {
+    state.pty.reset()
 }
 
 /// # Panics
@@ -183,7 +188,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_stop,
-            terminal_stop_all,
+            terminal_reset,
             terminal_snapshot,
             list_dir,
         ])

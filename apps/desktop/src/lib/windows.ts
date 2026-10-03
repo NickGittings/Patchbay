@@ -46,18 +46,35 @@ export function openComponentWindow(componentId: string, name: string): Promise<
   return request
 }
 
+/** Close every pop-out, e.g. before switching projects so none shows stale sessions. */
+export async function closeComponentWindows() {
+  const windows = await getAllWebviewWindows()
+  await Promise.all(windows.filter((w) => w.label.startsWith('component-')).map((w) => w.close()))
+}
+
 /** Main window owns project edits; pop-outs receive models without losing session state. */
 export function syncComponentWindows(): () => void {
   let disposed = false
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Last payloads broadcast, so selection, drags and unchanged git polls don't re-send.
+  let sentProject = ''
+  let sentGit = ''
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
     if (disposed || !windows.some((w) => w.label.startsWith('component-'))) return
     const s = useStore.getState()
-    if (s.project) {
-      await emit<Project>(PROJECT_EVENT, s.toProject())
+    if (!s.project) return
+    const project = s.toProject()
+    const projectJson = JSON.stringify(project)
+    const gitJson = JSON.stringify(s.gitChanges)
+    if (projectJson !== sentProject) {
+      sentProject = projectJson
+      await emit<Project>(PROJECT_EVENT, project)
+    }
+    if (gitJson !== sentGit) {
+      sentGit = gitJson
       await emit(GIT_EVENT, s.gitChanges)
     }
   }

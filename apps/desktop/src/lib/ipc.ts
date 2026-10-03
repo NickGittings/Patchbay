@@ -22,7 +22,8 @@ export const terminalWrite = (sessionId: string, data: string) =>
 export const terminalResize = (sessionId: string, cols: number, rows: number) =>
   invoke<void>('terminal_resize', { sessionId, cols, rows })
 export const terminalStop = (sessionId: string) => invoke<void>('terminal_stop', { sessionId })
-export const terminalStopAll = () => invoke<void>('terminal_stop_all')
+/** Kill every session and drop retained output; returns the generation floor. */
+export const terminalReset = () => invoke<number>('terminal_reset')
 
 export const onTerminalEvent = (handler: (e: TerminalEvent) => void): Promise<UnlistenFn> =>
   listen<TerminalEvent>('patchbay://terminal', (e) => handler(e.payload))

@@ -1,4 +1,4 @@
-import { openPath } from '@tauri-apps/plugin-opener'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { useEffect, useState } from 'react'
 import { listDir } from '../lib/ipc'
 import { absolutePath } from '../lib/windows'
@@ -69,9 +69,11 @@ function TreeEntry({
         onClick={() => {
           if (entry.isDir) setExpanded(!expanded)
         }}
+        // Reveal rather than open: opening with the default handler would run executables
+        // (`.command`, `.app`, …) from an untrusted repo on a double-click.
         onDoubleClick={() => {
           if (!entry.isDir) {
-            void openPath(absolutePath(root, entry.path)).catch((e) =>
+            void revealItemInDir(absolutePath(root, entry.path)).catch((e) =>
               useStore.getState().setMessage(String(e)),
             )
           }

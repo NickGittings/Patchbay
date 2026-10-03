@@ -2,13 +2,17 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
-import { openProject, rescanProject, saveProject, terminalStopAll } from './ipc'
-import { disposeAll } from './terminals'
+import { openProject, rescanProject, saveProject, terminalReset } from './ipc'
+import { resetSessions } from './sessions'
+import { closeComponentWindows } from './windows'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
 
-/** Pick a folder, stop the current project's terminals, and load the new map. */
+/**
+ * Pick a folder, close the current project's pop-outs and terminals (session ids aren't
+ * project-scoped, so no history may carry over), and load the new map.
+ */
 export function useOpenProject() {
   const { fitView } = useReactFlow()
   return useCallback(async () => {
@@ -17,8 +21,8 @@ export function useOpenProject() {
     const s = useStore.getState()
     try {
       const { project, detected } = await openProject(root)
-      await terminalStopAll()
-      disposeAll()
+      await closeComponentWindows()
+      resetSessions(await terminalReset())
       s.loadProject(project)
       s.setMessage(
         detected

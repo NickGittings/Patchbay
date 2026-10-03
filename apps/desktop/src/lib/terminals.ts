@@ -40,17 +40,17 @@ function entry(sessionId: string): Entry {
   return e
 }
 
-export function writeOutput(sessionId: string, data: number[]) {
-  entry(sessionId).term.write(new Uint8Array(data))
+export function writeOutput(sessionId: string, data: number[] | Uint8Array) {
+  entry(sessionId).term.write(data instanceof Uint8Array ? data : new Uint8Array(data))
 }
 
 /** Drain previously queued writes before replacing them with retained backend output. */
-export function restoreOutput(sessionId: string, data: number[]): Promise<void> {
+export function restoreOutput(sessionId: string, data: Uint8Array): Promise<void> {
   const { term } = entry(sessionId)
   return new Promise((resolve) => {
     term.write('', () => {
       term.reset()
-      term.write(new Uint8Array(data), resolve)
+      term.write(data, resolve)
     })
   })
 }
@@ -71,11 +71,16 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
   if (options?.focus !== false) e.term.focus()
 }
 
+/**
+ * Fit the xterm to its container. Only the focused window resizes the shared PTY, so a
+ * session shown in the dock and in a pop-out doesn't flip between two sizes.
+ */
 export function fit(sessionId: string) {
   const e = registry.get(sessionId)
   if (!e?.opened) return
   try {
     e.fit.fit()
+    if (!document.hasFocus()) return
     void terminalResize(sessionId, e.term.cols, e.term.rows).catch(() => {})
   } catch {
     // container not laid out yet

@@ -1,13 +1,43 @@
 import { useStore } from '../store'
-import type { TerminalEvent, TerminalSnapshot } from '../types'
+import { sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
 import { onTerminalEvent, terminalSnapshot, terminalStart, terminalStop } from './ipc'
-import { restoreOutput, writeNote, writeOutput } from './terminals'
+import { disposeAll, restoreOutput, writeNote, writeOutput } from './terminals'
 
-const lastSeq = new Map<string, { generation: number; end: number }>()
+/**
+ * How far this window's xterm has got through a session's current run. `complete`
+ * means it holds the run from its first byte, so a snapshot only needs to fill the tail.
+ */
+interface Cursor {
+  generation: number
+  end: number
+  complete: boolean
+}
+
+const lastSeq = new Map<string, Cursor>()
 const pending = new Map<string, TerminalEvent[]>()
 const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
 const starting = new Map<string, Promise<void>>()
 let listening: Promise<void> | undefined
+/** Events at or below this generation belong to a project that has since been closed. */
+let floor = 0
+/** Bumped by `resetSessions` so in-flight hydrations don't write into the new project. */
+let epoch = 0
+
+/**
+ * Forget every session and dispose their xterms, e.g. after opening a project.
+ * `generationFloor` comes from `terminalReset`; later events from killed sessions are dropped.
+ */
+export function resetSessions(generationFloor: number) {
+  floor = Math.max(floor, generationFloor)
+  epoch++
+  lastSeq.clear()
+  pending.clear()
+  hydration.clear()
+  starting.clear()
+  disposeAll()
+}
+
+const decodeBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
 
 /** Each webview keeps one listener for its lifetime, including React StrictMode remounts. */
 export function listenForTerminals() {
@@ -21,7 +51,7 @@ export function listenForTerminals() {
 }
 
 export function startTerminal(componentId: string, terminalId: string): Promise<void> {
-  const sid = `${componentId}/${terminalId}`
+  const sid = sessionId(componentId, terminalId)
   const existing = starting.get(sid)
   if (existing) return existing
   const request = (async () => {
@@ -44,6 +74,7 @@ export const stopTerminal = (sessionId: string) =>
 
 /** Apply a backend terminal event to the store and the session's xterm. */
 export function handleTerminalEvent(e: TerminalEvent) {
+  if (e.generation <= floor) return
   const queue = pending.get(e.sessionId)
   if (queue) {
     queue.push(e)
@@ -54,7 +85,8 @@ export function handleTerminalEvent(e: TerminalEvent) {
   if (cursor && e.generation < cursor.generation) return
   const newGeneration = !cursor || e.generation > cursor.generation
   if (newGeneration) {
-    cursor = { generation: e.generation, end: 0 }
+    // Only a `started` event guarantees this window sees the run from its first byte.
+    cursor = { generation: e.generation, end: 0, complete: e.type === 'started' }
     lastSeq.set(e.sessionId, cursor)
   }
   switch (e.type) {
@@ -85,13 +117,14 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
   if (existing) return existing
   const queue: TerminalEvent[] = []
   pending.set(sid, queue)
+  const started = epoch
   const request = (async () => {
     try {
       await listenForTerminals()
       const snapshot = await terminalSnapshot(sid)
+      if (started !== epoch) return null
       if (snapshot) {
-        await restoreOutput(sid, snapshot.data)
-        lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end })
+        await applySnapshot(sid, snapshot)
         useStore.getState().setSession(sid, {
           running: snapshot.running,
           exitCode: snapshot.exitCode ?? undefined,
@@ -99,13 +132,36 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
       }
       return snapshot
     } finally {
-      pending.delete(sid)
-      for (const event of queue) handleTerminalEvent(event)
+      if (started === epoch) {
+        pending.delete(sid)
+        for (const event of queue) handleTerminalEvent(event)
+      }
     }
   })().catch((e) => {
-    hydration.delete(sid)
+    if (started === epoch) hydration.delete(sid)
     throw e
   })
   hydration.set(sid, request)
   return request
+}
+
+/**
+ * Bring the xterm up to date with a snapshot. If it already holds this run from the start,
+ * append only the missing tail so earlier runs and notes stay in the scrollback.
+ */
+async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
+  let bytes = decodeBase64(snapshot.data)
+  const start = snapshot.end - bytes.length
+  const cursor = lastSeq.get(sid)
+  if (cursor && cursor.generation > snapshot.generation) return
+  if (cursor?.complete && cursor.generation === snapshot.generation && cursor.end >= start) {
+    const from = cursor.end - start
+    if (from < bytes.length) writeOutput(sid, bytes.subarray(from))
+    cursor.end = Math.max(cursor.end, snapshot.end)
+    return
+  }
+  // A truncated backlog can begin mid escape sequence or character; start at a line.
+  if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
+  await restoreOutput(sid, bytes)
+  lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
 }
