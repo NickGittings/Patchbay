@@ -1,0 +1,8 @@
+{
+  "id": "lazygit",
+  "name": "lazygit",
+  "category": "Tools",
+  "description": "Terminal UI for git, opened in this component's folder.",
+  "command": "lazygit",
+  "kind": "task"
+}

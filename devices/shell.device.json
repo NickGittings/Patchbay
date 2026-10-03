@@ -1,0 +1,8 @@
+{
+  "id": "shell",
+  "name": "Shell",
+  "category": "General",
+  "description": "Interactive shell in the component's folder.",
+  "command": "",
+  "kind": "shell"
+}

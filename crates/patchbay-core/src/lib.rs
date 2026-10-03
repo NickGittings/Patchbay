@@ -1,0 +1,15 @@
+//! Patchbay core: the component map model, project detection, terminal sessions,
+//! agent context and terminal presets. Has no UI dependency so it can be driven
+//! by the desktop app, the CLI, or a future server.
+
+pub mod context;
+pub mod detect;
+pub mod devices;
+pub mod events;
+pub mod git;
+pub mod model;
+pub mod policy;
+pub mod pty;
+
+pub use events::{EventSink, TerminalEvent};
+pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalSpec};

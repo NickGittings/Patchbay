@@ -1,0 +1,8 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "category": "Agents",
+  "description": "Codex CLI in this component's folder. Context file path is in $PATCHBAY_CONTEXT_FILE.",
+  "command": "codex",
+  "kind": "agent"
+}
