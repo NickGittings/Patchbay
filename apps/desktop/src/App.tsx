@@ -4,6 +4,8 @@ import { Group, Panel, Separator } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
+import ImplementationView from './components/ImplementationView'
+import PlanView from './components/PlanView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
 import { gitStatus, listDevices, syncRoots } from './lib/ipc'
@@ -57,6 +59,7 @@ function useRootSync() {
 }
 
 export default function App() {
+  const view = useStore((s) => s.view)
   useEffect(() => {
     void listDevices().then(useStore.getState().setDevices)
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
@@ -69,27 +72,33 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
-        <Group orientation="horizontal" className="workspace">
-          <Panel defaultSize="14" minSize="10">
-            <Hierarchy />
-          </Panel>
-          <Separator className="separator" />
-          <Panel defaultSize="62">
-            <Group orientation="vertical">
-              <Panel defaultSize="58" minSize="20">
-                <Canvas />
-              </Panel>
-              <Separator className="separator horizontal" />
-              <Panel defaultSize="42" minSize="10">
-                <TerminalDock />
-              </Panel>
-            </Group>
-          </Panel>
-          <Separator className="separator" />
-          <Panel defaultSize="24" minSize="16">
-            <Inspector />
-          </Panel>
-        </Group>
+        {view === 'plan' ? (
+          <PlanView />
+        ) : view === 'implementation' ? (
+          <ImplementationView />
+        ) : (
+          <Group orientation="horizontal" className="workspace">
+            <Panel defaultSize="14" minSize="10">
+              <Hierarchy />
+            </Panel>
+            <Separator className="separator" />
+            <Panel defaultSize="62">
+              <Group orientation="vertical">
+                <Panel defaultSize="58" minSize="20">
+                  <Canvas />
+                </Panel>
+                <Separator className="separator horizontal" />
+                <Panel defaultSize="42" minSize="10">
+                  <TerminalDock />
+                </Panel>
+              </Group>
+            </Panel>
+            <Separator className="separator" />
+            <Panel defaultSize="24" minSize="16">
+              <Inspector />
+            </Panel>
+          </Group>
+        )}
       </div>
     </ReactFlowProvider>
   )

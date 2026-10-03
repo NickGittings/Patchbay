@@ -1,6 +1,7 @@
 import { useStore } from '../store'
-import { sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
-import { onTerminalEvent, terminalSnapshot, terminalStart, terminalStop } from './ipc'
+import { PLAN_SCOPE, sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
+import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
+import { planTerminals } from './plan'
 import { disposeAll, replayOutput, restoreOutput, writeNote, writeOutput } from './terminals'
 
 /**
@@ -55,22 +56,52 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
   const existing = starting.get(sid)
   if (existing) return existing
   const request = (async () => {
-    const s = useStore.getState()
+    const requestedEpoch = epoch
     try {
       await listenForTerminals()
-      await terminalStart(s.toProject(), componentId, terminalId)
+      if (requestedEpoch !== epoch) return
+      const s = useStore.getState()
+      if (componentId === PLAN_SCOPE) {
+        const terminal = planTerminals(s.devices).find((t) => t.id === terminalId)
+        if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
+        const ids = [...s.highlighted]
+        await planStart(s.toProject(), ids, terminal)
+        if (requestedEpoch === epoch) s.markPlanStarted(sid, ids)
+      } else {
+        await terminalStart(s.toProject(), componentId, terminalId)
+      }
     } catch (e) {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
-      if (!snapshot?.running) s.setMessage(String(e))
+      if (requestedEpoch === epoch && !snapshot?.running) useStore.getState().setMessage(String(e))
     }
-  })().finally(() => starting.delete(sid))
+  })().finally(() => {
+    if (starting.get(sid) === request) starting.delete(sid)
+  })
   starting.set(sid, request)
   return request
 }
 
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
+
+/** Restart only after the old process exits, so it cannot race the new spawn. */
+export async function restartTerminal(componentId: string, terminalId: string) {
+  const sid = sessionId(componentId, terminalId)
+  const requestedEpoch = epoch
+  try {
+    await terminalStop(sid)
+    const deadline = Date.now() + 10000
+    while ((await terminalSnapshot(sid))?.running) {
+      if (requestedEpoch !== epoch) return
+      if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Restart again.')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    if (requestedEpoch === epoch) await startTerminal(componentId, terminalId)
+  } catch (e) {
+    if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+  }
+}
 
 /** Apply a backend terminal event to the store and the session's xterm. */
 export function handleTerminalEvent(e: TerminalEvent) {

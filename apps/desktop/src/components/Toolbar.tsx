@@ -2,9 +2,18 @@ import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
+import type { View } from '../types'
+
+const views: { id: View; label: string }[] = [
+  { id: 'navigation', label: 'Navigation' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'implementation', label: 'Implementation' },
+]
 
 export default function Toolbar() {
   const project = useStore((s) => s.project)
+  const view = useStore((s) => s.view)
+  const setView = useStore((s) => s.setView)
   const dirty = useStore((s) => s.dirty)
   const message = useStore((s) => s.message)
   const openFolder = useOpenProject()
@@ -19,6 +28,14 @@ export default function Toolbar() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const s = useStore.getState()
+      if ((e.metaKey || e.ctrlKey) && s.project) {
+        const target = views[Number(e.key) - 1]
+        if (target && ['1', '2', '3'].includes(e.key)) {
+          e.preventDefault()
+          s.setView(target.id)
+        }
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
         void saveCurrentProject()
@@ -43,7 +60,20 @@ export default function Toolbar() {
           >
             Add repo…
           </button>
-          <button onClick={addComponent}>+ Component</button>
+          {view === 'navigation' && <button onClick={addComponent}>+ Component</button>}
+          <div className="view-switcher" role="group" aria-label="Workspace view">
+            {views.map((v, i) => (
+              <button
+                key={v.id}
+                aria-pressed={view === v.id}
+                className={view === v.id ? 'active' : ''}
+                title={`${v.label} (⌘${i + 1} / Ctrl+${i + 1})`}
+                onClick={() => setView(v.id)}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
         </>
       )}
       <span className="spacer" />

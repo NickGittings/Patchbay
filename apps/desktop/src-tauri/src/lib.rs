@@ -1,5 +1,6 @@
 //! Thin Tauri adapter over patchbay-core: commands in, terminal events out.
 
+use patchbay_core::TerminalSpec;
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
@@ -270,6 +271,29 @@ fn component_context(project: Project, component_id: String) -> String {
     context::component_context(&project, &component_id)
 }
 
+#[tauri::command]
+fn plan_context(project: Project, component_ids: Vec<String>) -> String {
+    context::plan_context(&project, &component_ids)
+}
+
+#[tauri::command]
+fn plan_start(
+    app: AppHandle,
+    state: State<AppState>,
+    project: Project,
+    component_ids: Vec<String>,
+    terminal: TerminalSpec,
+) -> CmdResult<String> {
+    let spec =
+        context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll).map_err(err)?;
+    let id = spec.id.clone();
+    state
+        .pty
+        .spawn(spec, Arc::new(TauriSink(app)))
+        .map_err(err)?;
+    Ok(id)
+}
+
 #[derive(Deserialize)]
 struct ComponentPath {
     id: String,
@@ -411,6 +435,8 @@ pub fn run() {
             save_project,
             component_context,
             git_status,
+            plan_context,
+            plan_start,
             list_devices,
             save_device,
             terminal_start,

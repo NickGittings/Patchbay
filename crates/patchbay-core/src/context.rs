@@ -1,13 +1,15 @@
 //! Turns a component's terminal into a launchable session, giving agent
 //! terminals the component's neighbours as context.
 
-use crate::model::{Project, Relation, TerminalKind, session_id};
-use crate::policy::Policy;
+use crate::model::{
+    Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec, session_id,
+};
+use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
 use anyhow::{Result, anyhow};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
 pub const COMPONENT_ENV: &str = "PATCHBAY_COMPONENT";
@@ -64,16 +66,168 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn context_file(project: &Project, component_id: &str) -> Result<PathBuf> {
-    let slug: String = format!("{}-{component_id}", project.name)
+/// Markdown briefing for planning across a highlighted set, or the whole project.
+#[must_use]
+pub fn plan_context(project: &Project, component_ids: &[String]) -> String {
+    let components = plan_components(project, component_ids);
+    let ids: HashSet<&str> = components.iter().map(|c| c.id.as_str()).collect();
+    let mut out = format!(
+        "# Patchbay planner context\n\nProject: **{}**\nRoot: `{}`\n\n## In scope\n\n",
+        project.name, project.root
+    );
+    for c in &components {
+        describe_component(&mut out, project, c);
+    }
+    let mut links = String::new();
+    for link in &project.links {
+        if ids.contains(link.source.as_str())
+            && ids.contains(link.target.as_str())
+            && let (Some(source), Some(target)) = (
+                project.component(&link.source),
+                project.component(&link.target),
+            )
+        {
+            let _ = write!(
+                links,
+                "- **{}** depends on **{}**",
+                source.name, target.name
+            );
+            if let Some(label) = &link.label {
+                let _ = write!(links, " — {label}");
+            }
+            links.push('\n');
+        }
+    }
+    if !links.is_empty() {
+        let _ = write!(out, "\n## Links between them\n\n{links}");
+    }
+
+    let mut nearby = String::new();
+    let mut seen = ids;
+    for c in components {
+        for (neighbour, _) in project.neighbours(&c.id) {
+            if seen.insert(neighbour.id.as_str()) {
+                describe_component(&mut nearby, project, neighbour);
+            }
+        }
+    }
+    if !nearby.is_empty() {
+        let _ = write!(out, "\n## Nearby components\n\n{nearby}");
+    }
+    out.push_str(
+        "\nYou are planning, not implementing: explore, ask questions and produce a plan; \
+         don't edit files unless asked.\n",
+    );
+    out
+}
+
+fn plan_components<'a>(project: &'a Project, component_ids: &[String]) -> Vec<&'a Component> {
+    project
+        .components
+        .iter()
+        .filter(|c| component_ids.is_empty() || component_ids.contains(&c.id))
+        .collect()
+}
+
+fn describe_component(out: &mut String, project: &Project, c: &Component) {
+    let _ = write!(
+        out,
+        "- **{}** ({:?}) at `{}`",
+        c.name,
+        c.kind,
+        project.component_dir(c).display()
+    );
+    if !c.notes.trim().is_empty() {
+        let _ = write!(out, " — {}", c.notes.trim().replace('\n', " "));
+    }
+    out.push('\n');
+}
+
+fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
+    let slug: String = slug
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '@' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let dir = std::env::temp_dir().join("patchbay");
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{slug}.md"));
-    std::fs::write(&file, component_context(project, component_id))?;
+    std::fs::write(&file, contents)?;
     Ok(file)
+}
+
+fn decorate_agent(command: &mut String, file: &Path, neighbour_dirs: &[PathBuf]) {
+    let is_claude = command == "claude" || command.starts_with("claude ");
+    if is_claude && cfg!(unix) {
+        for dir in neighbour_dirs {
+            let _ = write!(
+                command,
+                " --add-dir {}",
+                sh_quote(&dir.display().to_string())
+            );
+        }
+        let _ = write!(
+            command,
+            " --append-system-prompt \"$(cat {})\"",
+            sh_quote(&file.display().to_string())
+        );
+    }
+}
+
+/// Build a planner terminal session at the project root.
+///
+/// An empty scope plans over all components. Agent commands receive the context file.
+///
+/// # Errors
+/// Fails for unknown component ids, context file I/O, or a rejected policy check.
+pub fn plan_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    policy: &dyn Policy,
+) -> Result<SessionSpec> {
+    for id in component_ids {
+        if project.component(id).is_none() {
+            return Err(anyhow!("unknown component {id}"));
+        }
+    }
+    let components = plan_components(project, component_ids);
+    let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), "plan".into())]);
+    let mut command = terminal.command.trim().to_string();
+    if terminal.kind == TerminalKind::Agent {
+        let file = context_file(
+            &format!("{}-{PLAN_SCOPE}-{}", project.name, terminal.id),
+            &plan_context(project, component_ids),
+        )?;
+        env.insert(CONTEXT_ENV.into(), file.display().to_string());
+        // cwd is the root; components in other repos must be added explicitly.
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for c in &components {
+            let reach =
+                std::iter::once(*c).chain(project.neighbours(&c.id).into_iter().map(|(n, _)| n));
+            for n in reach {
+                let dir = project.component_dir(n);
+                if project.is_external(n) && !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        decorate_agent(&mut command, &file, &dirs);
+    }
+    policy
+        .check(Scope::Plan(&components), &command)
+        .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
+    Ok(SessionSpec {
+        id: session_id(PLAN_SCOPE, &terminal.id),
+        command,
+        cwd: PathBuf::from(&project.root),
+        env,
+    })
 }
 
 /// Build the session for one of a component's terminals.
@@ -102,24 +256,21 @@ pub fn session_spec(
     let mut command = terminal.command.trim().to_string();
 
     if terminal.kind == TerminalKind::Agent {
-        let file = context_file(project, component_id)?;
+        let file = context_file(
+            &format!("{}-{component_id}", project.name),
+            &component_context(project, component_id),
+        )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
-        let is_claude = command == "claude" || command.starts_with("claude ");
-        if is_claude && cfg!(unix) {
-            for (n, _) in project.neighbours(component_id) {
-                let dir = project.component_dir(n).display().to_string();
-                let _ = write!(command, " --add-dir {}", sh_quote(&dir));
-            }
-            let _ = write!(
-                command,
-                " --append-system-prompt \"$(cat {})\"",
-                sh_quote(&file.display().to_string())
-            );
-        }
+        let dirs: Vec<_> = project
+            .neighbours(component_id)
+            .iter()
+            .map(|(n, _)| project.component_dir(n))
+            .collect();
+        decorate_agent(&mut command, &file, &dirs);
     }
 
     policy
-        .check(component, &command)
+        .check(Scope::Component(component), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
@@ -192,6 +343,137 @@ mod tests {
         assert!(spec.command.starts_with("claude --add-dir '/repo/db'"));
         assert!(spec.command.contains("--append-system-prompt"));
         assert!(spec.env.contains_key(CONTEXT_ENV));
+    }
+
+    fn planner() -> TerminalSpec {
+        TerminalSpec {
+            id: "claude".into(),
+            name: "Claude".into(),
+            command: "claude".into(),
+            kind: TerminalKind::Agent,
+        }
+    }
+
+    #[test]
+    fn plan_lists_scope_links_and_deduplicated_neighbours() {
+        let mut p = project();
+        p.components.push(component("web", "web", vec![]));
+        p.components
+            .push(component("unrelated", "elsewhere", vec![]));
+        p.links[0].label = Some("queries".into());
+        p.links.push(Link {
+            id: "l2".into(),
+            source: "web".into(),
+            target: "api".into(),
+            label: Some("calls".into()),
+        });
+        p.links.push(Link {
+            id: "l3".into(),
+            source: "web".into(),
+            target: "db".into(),
+            label: None,
+        });
+        let text = plan_context(&p, &["web".into(), "api".into(), "api".into()]);
+        let (scope, nearby) = text.split_once("## Nearby components").unwrap();
+        assert!(scope.contains("**API** (Backend) at `/repo/services/api` — api notes"));
+        assert!(scope.contains("**WEB** depends on **API** — calls"));
+        assert!(!scope.contains("**DB**"));
+        assert!(!text.contains("UNRELATED"));
+        assert_eq!(nearby.matches("**DB**").count(), 1);
+        assert!(text.contains("don't edit files unless asked"));
+    }
+
+    #[test]
+    fn empty_plan_scope_lists_the_whole_project() {
+        let text = plan_context(&project(), &[]);
+        assert!(text.contains("**API**"));
+        assert!(text.contains("**DB**"));
+        assert!(text.contains("**API** depends on **DB**"));
+        assert!(!text.contains("## Nearby components"));
+    }
+
+    #[test]
+    fn plan_omits_empty_sections() {
+        let text = plan_context(&project(), &["db".into()]);
+        assert!(!text.contains("## Links between them"));
+        assert!(text.contains("## Nearby components"));
+        let mut p = project();
+        p.links.clear();
+        let text = plan_context(&p, &["api".into()]);
+        assert!(!text.contains("## Links between them"));
+        assert!(!text.contains("## Nearby components"));
+    }
+
+    #[test]
+    fn planner_session_uses_root_scope_and_context() {
+        let p = project();
+        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll).unwrap();
+        assert_eq!(spec.id, "@plan/claude");
+        assert_eq!(spec.cwd, PathBuf::from("/repo"));
+        assert_eq!(spec.env[COMPONENT_ENV], "plan");
+        assert!(spec.env.contains_key(CONTEXT_ENV));
+        if cfg!(unix) {
+            assert!(spec.command.contains("--append-system-prompt"));
+            assert!(!spec.command.contains("--add-dir"));
+        }
+        let text = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+        assert!(text.contains("## In scope"));
+        assert!(text.contains("**API**"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planner_adds_dirs_for_components_outside_the_root() {
+        let mut p = project();
+        p.components[1].path = "../shared/db".into();
+        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll).unwrap();
+        assert_eq!(spec.command.matches("--add-dir").count(), 1);
+        assert!(spec.command.contains("--add-dir '/shared/db'"));
+    }
+
+    #[test]
+    fn planner_rejects_unknown_components() {
+        let result = plan_session_spec(&project(), &["missing".into()], &planner(), &AllowAll);
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "unknown component missing"
+        );
+    }
+
+    #[test]
+    fn planner_context_file_cannot_overwrite_a_component_context() {
+        let mut p = project();
+        p.name = "context-scope-demo".into();
+        p.components[0].id = "plan-claude".into();
+        let component = session_spec(&p, "plan-claude", "agent", &AllowAll).unwrap();
+        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll).unwrap();
+        assert_ne!(component.env[CONTEXT_ENV], planner.env[CONTEXT_ENV]);
+        assert_eq!(
+            std::fs::read_to_string(&component.env[CONTEXT_ENV]).unwrap(),
+            component_context(&p, "plan-claude")
+        );
+    }
+
+    #[test]
+    fn planner_policy_receives_the_real_scope_and_can_deny_it() {
+        struct Deny;
+        impl Policy for Deny {
+            fn check(&self, scope: Scope<'_>, _command: &str) -> Result<(), String> {
+                let Scope::Plan(components) = scope else {
+                    panic!("expected planner scope")
+                };
+                assert_eq!(components.len(), 2);
+                assert_eq!(components[0].id, "api");
+                Err("planning disabled".into())
+            }
+        }
+        let mut p = project();
+        p.name = "policy-demo".into();
+        let result = plan_session_spec(&p, &[], &planner(), &Deny);
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "blocked by policy: planning disabled"
+        );
     }
 
     #[test]

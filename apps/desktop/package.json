@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "format": "prettier --write .",
     "check": "tsc -b && oxlint src && prettier --check .",
-    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev"
+    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
+    "smoke:views": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/views.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

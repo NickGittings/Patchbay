@@ -648,3 +648,114 @@ select:focus {
 .terminal-tile-header button {
   flex: none;
 }
+
+/* Workspace views */
+.view-switcher {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.view-switcher button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.view-switcher button.active {
+  color: var(--accent);
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+}
+.component-node.highlighted {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.component-node.nearby {
+  border-color: var(--border-strong);
+  border-top-color: var(--kind);
+}
+.component-node.dimmed {
+  opacity: 0.35;
+}
+.component-node .chip[aria-disabled='true'] {
+  cursor: default;
+}
+.react-flow__edge.plan-active-edge .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+.plan-dock {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--panel);
+}
+.plan-scope {
+  width: 280px;
+  max-width: 35%;
+  flex: none;
+  padding: 12px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+.plan-scope .section-title {
+  margin: 0;
+}
+.scope-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.planner-terminal {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.planner-stale {
+  padding: 6px 12px;
+  color: var(--accent);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.implementation-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.implementation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.implementation-header > button {
+  flex: none;
+}
+.component-switcher {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+.component-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 16px;
+  white-space: nowrap;
+}
+.component-pill.active {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+.implementation-terminals {
+  flex: 1;
+  min-height: 0;
+}

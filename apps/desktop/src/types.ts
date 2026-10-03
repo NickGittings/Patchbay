@@ -1,5 +1,8 @@
 // Mirrors patchbay-core's serde types.
 
+export const PLAN_SCOPE = '@plan'
+export type View = 'navigation' | 'plan' | 'implementation'
+
 export type ComponentKind =
   'frontend' | 'backend' | 'service' | 'library' | 'database' | 'app' | 'other'
 

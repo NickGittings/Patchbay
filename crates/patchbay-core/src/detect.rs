@@ -883,4 +883,13 @@ mod tests {
         assert_eq!(slug("日本"), "component");
         assert_eq!(slug("apps/web"), "apps-web");
     }
+
+    #[test]
+    fn detected_slugs_cannot_use_plan_scope() {
+        for path in ["@plan", "services/@plan", ".", "@PLAN", "plan"] {
+            let id = slug(path);
+            assert!(!id.contains('@'));
+            assert_ne!(id, crate::model::PLAN_SCOPE);
+        }
+    }
 }

@@ -2,19 +2,18 @@ import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
+import { KIND_COLOR } from '../lib/display'
 import { revealPath } from '../lib/ipc'
-import { listenForTerminals, startTerminal, stopTerminal } from '../lib/sessions'
+import { listenForTerminals } from '../lib/sessions'
 import { absolutePath, GIT_EVENT, PROJECT_EVENT, READY_EVENT } from '../lib/windows'
 import { useStore } from '../store'
-import { sessionId, type Project } from '../types'
+import { type Project } from '../types'
 import FileTree from './FileTree'
-import TerminalPane from './TerminalPane'
+import TerminalGrid from './TerminalGrid'
 
 export default function ComponentWindow({ id }: { id: string }) {
   const project = useStore((s) => s.project)
   const component = useStore((s) => s.nodes.find((n) => n.id === id))
-  const sessions = useStore((s) => s.sessions)
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const message = useStore((s) => s.message)
   const [received, setReceived] = useState(false)
@@ -101,32 +100,7 @@ export default function ComponentWindow({ id }: { id: string }) {
         </Panel>
         <Separator className="separator" />
         <Panel defaultSize="76" minSize="30">
-          <div className="terminal-grid">
-            {data.terminals.map((terminal) => {
-              const sid = sessionId(id, terminal.id)
-              const session = sessions[sid]
-              return (
-                <section key={sid} className={`terminal-tile health-${terminalHealth(session)}`}>
-                  <div className="terminal-tile-header">
-                    <span className="status-dot" />
-                    <strong>{terminal.name}</strong>
-                    <code title={describeTerminal(terminal)}>{describeTerminal(terminal)}</code>
-                    {session?.running ? (
-                      <button onClick={() => stopTerminal(sid)}>■ Stop</button>
-                    ) : (
-                      <button onClick={() => void startTerminal(id, terminal.id)}>
-                        ▶ {session ? 'Restart' : 'Start'}
-                      </button>
-                    )}
-                  </div>
-                  <TerminalPane componentId={id} terminal={terminal} focus={false} />
-                </section>
-              )
-            })}
-            {data.terminals.length === 0 && (
-              <div className="hint">No terminals configured for this component.</div>
-            )}
-          </div>
+          <TerminalGrid componentId={id} terminals={data.terminals} />
         </Panel>
       </Group>
     </div>

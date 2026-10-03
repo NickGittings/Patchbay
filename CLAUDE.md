@@ -14,6 +14,7 @@ npm run tauri dev
 # CLI (no UI) — useful for exercising core logic quickly
 cargo run -p patchbay-cli -- detect .                  # suggested component map for a dir
 cargo run -p patchbay-cli -- context patchbay-core     # agent briefing for a component
+cargo run -p patchbay-cli -- plan . crates-patchbay-core # planner briefing for a highlighted set
 
 # Checks (run all before considering work done)
 cargo fmt --all -- --check
@@ -21,6 +22,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 (cd apps/desktop && npm run check)                     # tsc -b + oxlint src + prettier --check
 (cd apps/desktop && npm run smoke)                     # opens the app, drives a pop-out window, exits 0/1
+(cd apps/desktop && npm run smoke:views)               # view switching and local planner lifecycle
 
 # Single test
 cargo test -p patchbay-core context::tests::claude_gets_neighbour_dirs_and_context
@@ -55,6 +57,7 @@ Types are mirrored by hand — there is no codegen:
 - Tauri command list in `src-tauri/src/lib.rs` (`generate_handler!`) ↔ wrappers in `apps/desktop/src/lib/ipc.ts` (Tauri converts camelCase args to snake_case params)
 - The terminal event channel name `patchbay://terminal` appears in both `lib.rs` and `ipc.ts`.
 - `pty::Snapshot` ↔ `TerminalSnapshot`, `files::DirEntry` ↔ `DirEntry` in `types.ts`.
+- `model::PLAN_SCOPE` ↔ `types.ts` `PLAN_SCOPE` (reserved `"@plan"` scope).
 - Session ids are `"{componentId}/{terminalId}"` (`model::session_id` ↔ `types.ts` `sessionId`).
 
 Changing a model field or command means updating both sides.
@@ -73,6 +76,10 @@ Changing a model field or command means updating both sides.
 ### Frontend terminals
 
 `lib/terminals.ts` keeps one long-lived xterm instance per session id in a module-level registry and re-parents its DOM element on `attach`, so scrollback survives tab switches and restarts. `lib/sessions.ts` applies backend `TerminalEvent`s to both the store (running/exit code → node health) and the xterm, skipping bytes already covered by a snapshot (`seq`/`generation`). `hydrateSession` buffers live events, replays `terminal_snapshot`, then drains the buffer. `components/TerminalPane.tsx` is the shared xterm host used by the dock and pop-out tiles.
+
+### Views
+
+The main window switches between Navigation (hierarchy, canvas, dock and inspector), Plan (highlighted canvas above a project-level planner dock), and Implementation (the selected component's tiled terminals). `view`, `highlighted`, and `planStartedWith` live only in the session UI store; they never change `dirty` or `patchbay.json`. Plan terminals come from agent devices and use the reserved `@plan/<terminalId>` session scope. `plan_start` / `plan_context` in the Tauri adapter ↔ `planStart` / `planContext` in `lib/ipc.ts`; `context::plan_session_spec` launches at the repo root with the scoped briefing (`claude` also gets `--add-dir` for in-scope or nearby components outside the root), while `policy::Scope` supplies either a component or the planner's real component set to policy checks. `TerminalGrid` is shared by Implementation and component pop-outs. All views use the same session and xterm registries, preserving scrollback and window ownership.
 
 ### Component windows
 

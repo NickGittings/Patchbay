@@ -1,8 +1,8 @@
 // Dev-only handles for smoke/popout.js, loaded from main.tsx when import.meta.env.DEV.
 import { emit } from '@tauri-apps/api/event'
 import { useStore } from '../store'
-import { openProject, terminalWrite } from './ipc'
-import { startTerminal } from './sessions'
+import { openProject, terminalReset, terminalWrite } from './ipc'
+import { resetSessions, startTerminal } from './sessions'
 import { terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 
@@ -10,6 +10,8 @@ const hooks = {
   store: useStore,
   openProject,
   startTerminal,
+  terminalReset,
+  resetSessions,
   terminalWrite,
   terminalText,
   openComponentWindow,

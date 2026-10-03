@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component as PathPart, Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 2;
+/// Reserved component scope for project-level planner sessions.
+pub const PLAN_SCOPE: &str = "@plan";
 /// Saved at the repo root so the map can be committed alongside the code.
 pub const PROJECT_FILE: &str = "patchbay.json";
 

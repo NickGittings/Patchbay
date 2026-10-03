@@ -20,6 +20,12 @@ enum Cmd {
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
+    /// Print a planner briefing for selected component ids, or the whole project.
+    Plan {
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        component_ids: Vec<String>,
+    },
     /// Print the context an agent terminal on a component receives.
     Context {
         component: String,
@@ -44,6 +50,15 @@ fn main() -> Result<()> {
         Cmd::Detect { dir } => {
             let root = dir.canonicalize()?;
             println!("{}", serde_json::to_string_pretty(&detect::detect(&root)?)?);
+        }
+        Cmd::Plan { dir, component_ids } => {
+            let project = open(&dir)?;
+            for id in &component_ids {
+                if project.component(id).is_none() {
+                    bail!("unknown component {id}");
+                }
+            }
+            print!("{}", context::plan_context(&project, &component_ids));
         }
         Cmd::Context { component, dir } => {
             let project = open(&dir)?;

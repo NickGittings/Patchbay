@@ -78,13 +78,22 @@ function applyAdded(before: Project, result: Project, none: string): number {
     s.setMessage(none)
     return 0
   }
-  const { sessions, gitChanges, repos, activeSession } = s
+  const { sessions, gitChanges, repos, activeSession, view, highlighted, planStartedWith } = s
   s.loadProject({
     ...current,
     components: [...current.components, ...components],
     links: [...current.links, ...links],
   })
-  useStore.setState({ sessions, gitChanges, repos, activeSession, dirty: true })
+  useStore.setState({
+    sessions,
+    gitChanges,
+    repos,
+    activeSession,
+    view,
+    highlighted,
+    planStartedWith,
+    dirty: true,
+  })
   s.setMessage(`Added ${components.length} component(s)`)
   return components.length
 }

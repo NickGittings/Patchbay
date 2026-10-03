@@ -6,12 +6,16 @@ import {
   ReactFlow,
   type Connection,
   type Edge,
+  type Viewport,
 } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import { KIND_COLOR } from '../lib/display'
 import { useStore, type FlowNode } from '../store'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
+
+// Shared by Navigation and Plan; re-mounting the canvas must not reset its viewport.
+const viewports = new Map<string, Viewport>()
 
 const nodeTypes = { component: ComponentNode }
 
@@ -28,46 +32,78 @@ function isValidConnection(c: Connection | Edge) {
 }
 
 export default function Canvas() {
-  const { project, nodes, edges, onNodesChange, onEdgesChange, onConnect, select, selectEdge } =
-    useStore(
-      useShallow((s) => ({
-        project: s.project,
-        nodes: s.nodes,
-        edges: s.edges,
-        onNodesChange: s.onNodesChange,
-        onEdgesChange: s.onEdgesChange,
-        onConnect: s.onConnect,
-        select: s.select,
-        selectEdge: s.selectEdge,
-      })),
-    )
+  const {
+    project,
+    view,
+    highlighted,
+    toggleHighlight,
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    onConnect,
+    select,
+    selectEdge,
+  } = useStore(
+    useShallow((s) => ({
+      project: s.project,
+      view: s.view,
+      highlighted: s.highlighted,
+      toggleHighlight: s.toggleHighlight,
+      nodes: s.nodes,
+      edges: s.edges,
+      onNodesChange: s.onNodesChange,
+      onEdgesChange: s.onEdgesChange,
+      onConnect: s.onConnect,
+      select: s.select,
+      selectEdge: s.selectEdge,
+    })),
+  )
 
   if (!project) return <Welcome />
+
+  const planning = view === 'plan'
+  const scope = new Set(highlighted)
+  const visibleEdges = planning
+    ? edges.map((e) => ({
+        ...e,
+        selected: false,
+        className: scope.has(e.source) && scope.has(e.target) ? 'plan-active-edge' : '',
+      }))
+    : edges
 
   return (
     <div className="canvas">
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes}
+        edges={visibleEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
-        onNodeClick={(_, n) => select(n.id)}
-        onEdgeClick={(_, e) => selectEdge(e.id)}
+        onNodeClick={(_, n) => (planning ? toggleHighlight(n.id) : select(n.id))}
+        onEdgeClick={(_, e) => {
+          if (!planning) selectEdge(e.id)
+        }}
         onPaneClick={() => {
+          if (planning) return
           select(null)
           selectEdge(null)
         }}
         colorMode="dark"
-        fitView
+        defaultViewport={viewports.get(project.root)}
+        onMoveEnd={(_, viewport) => viewports.set(project.root, viewport)}
+        fitView={!viewports.has(project.root)}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-        deleteKeyCode={['Backspace', 'Delete']}
+        nodesConnectable={!planning}
+        nodesDraggable={!planning}
+        elementsSelectable={!planning}
+        deleteKeyCode={planning ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ style: { strokeWidth: 2 } }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2a2d36" />
-        <Controls />
+        <Controls showInteractive={!planning} />
         <MiniMap
           pannable
           zoomable

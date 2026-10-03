@@ -19,6 +19,7 @@ import type {
   Project,
   SessionState,
   TerminalSpec,
+  View,
 } from './types'
 import { sessionId } from './types'
 
@@ -37,6 +38,13 @@ interface State {
   selectedId: string | null
   selectedEdgeId: string | null
   activeSession: string | null
+  view: View
+  highlighted: string[]
+  planStartedWith: Record<string, string>
+  setView: (view: View) => void
+  toggleHighlight: (id: string) => void
+  clearHighlights: () => void
+  markPlanStarted: (sid: string, ids: string[]) => void
   dirty: boolean
   message: string
 
@@ -98,12 +106,18 @@ export const useStore = create<State>((set, get) => ({
   activeSession: null,
   dirty: false,
   message: '',
+  view: 'navigation',
+  highlighted: [],
+  planStartedWith: {},
 
   loadProject: (p) =>
     set({
       project: { name: p.name, root: p.root },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
+      view: 'navigation',
+      highlighted: [],
+      planStartedWith: {},
       sessions: {},
       gitChanges: {},
       repos: {},
@@ -149,6 +163,9 @@ export const useStore = create<State>((set, get) => ({
     const edits = changes.some((c) => c.type === 'remove' || (c.type === 'position' && !c.dragging))
     set((s) => ({
       nodes: applyNodeChanges(changes, s.nodes),
+      highlighted: removed.length
+        ? s.highlighted.filter((id) => !removed.includes(id))
+        : s.highlighted,
       selectedId: removed.includes(s.selectedId ?? '') ? null : s.selectedId,
       dirty: s.dirty || edits,
     }))
@@ -225,6 +242,21 @@ export const useStore = create<State>((set, get) => ({
         e.id === id ? { ...e, label: label || undefined, data: { label } } : e,
       ),
       dirty: true,
+    })),
+
+  setView: (view) => set({ view }),
+  toggleHighlight: (id) =>
+    set((s) => ({
+      highlighted: s.highlighted.includes(id)
+        ? s.highlighted.filter((highlightedId) => highlightedId !== id)
+        : s.nodes.some((n) => n.id === id)
+          ? [...s.highlighted, id]
+          : s.highlighted,
+    })),
+  clearHighlights: () => set({ highlighted: [] }),
+  markPlanStarted: (sid, ids) =>
+    set((s) => ({
+      planStartedWith: { ...s.planStartedWith, [sid]: [...ids].sort().join(',') },
     })),
 
   select: (id) => {

@@ -1,11 +1,18 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, type CSSProperties } from 'react'
+import { nearbyIds } from '../../lib/plan'
 import { KIND_COLOR, terminalHealth } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
 import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
+  const planning = useStore((s) => s.view === 'plan')
+  const highlighted = useStore((s) => s.highlighted.includes(id))
+  const nearby = useStore((s) => nearbyIds(s.highlighted, s.edges).has(id))
+  const hasHighlights = useStore((s) => s.highlighted.length > 0)
+  const planClass =
+    planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
   const sessions = useStore((s) => s.sessions)
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const repo = useStore((s) => s.repos[id])
@@ -20,7 +27,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div
-      className={`component-node ${selected ? 'selected' : ''}`}
+      className={`component-node ${!planning && selected ? 'selected' : ''} ${planClass}`}
       style={{ '--kind': color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} className="link-handle" />
@@ -60,9 +67,12 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
                 activeSession === sid ? 'active' : ''
               } nodrag`}
               onClick={(e) => {
+                // Never toggle the node's highlight or switch the Navigation dock while planning.
                 e.stopPropagation()
-                openTerminal(t.id)
+                if (!planning) openTerminal(t.id)
               }}
+              aria-disabled={planning}
+              tabIndex={planning ? -1 : undefined}
               title={t.command || 'interactive shell'}
             >
               <span className="status-dot" />

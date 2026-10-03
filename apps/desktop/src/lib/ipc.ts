@@ -8,6 +8,7 @@ import type {
   Project,
   TerminalEvent,
   TerminalSnapshot,
+  TerminalSpec,
 } from '../types'
 
 export const openProject = (root: string) =>
@@ -26,6 +27,10 @@ export const pickComponentFolder = () => invoke<string | null>('pick_component_f
 export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
 export const gitStatus = (components: { id: string; path: string }[]) =>
   invoke<GitStatus>('git_status', { components })
+export const planContext = (project: Project, componentIds: string[]) =>
+  invoke<string>('plan_context', { project, componentIds })
+export const planStart = (project: Project, componentIds: string[], terminal: TerminalSpec) =>
+  invoke<string>('plan_start', { project, componentIds, terminal })
 
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })
