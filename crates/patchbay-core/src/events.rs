@@ -25,6 +25,17 @@ pub enum TerminalEvent {
     },
 }
 
+impl TerminalEvent {
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::Started { session_id, .. }
+            | Self::Output { session_id, .. }
+            | Self::Exited { session_id, .. } => session_id,
+        }
+    }
+}
+
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: TerminalEvent);
 }

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type { DeviceManifest, DirEntry, Project, TerminalEvent, TerminalSnapshot } from '../types'
 
 export const openProject = (root: string) =>
@@ -25,10 +26,15 @@ export const terminalStop = (sessionId: string) => invoke<void>('terminal_stop',
 /** Kill every session and drop retained output; returns the generation floor. */
 export const terminalReset = () => invoke<number>('terminal_reset')
 
-export const onTerminalEvent = (handler: (e: TerminalEvent) => void): Promise<UnlistenFn> =>
-  listen<TerminalEvent>('patchbay://terminal', (e) => handler(e.payload))
+/** The main window hears every session; a pop-out only its own component's (see `TauriSink`). */
+export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
+  const { label } = getCurrentWebviewWindow()
+  const event = label === 'main' ? 'patchbay://terminal' : `patchbay://terminal/${label}`
+  return listen<TerminalEvent>(event, (e) => handler(e.payload))
+}
 
 export const terminalSnapshot = (sessionId: string) =>
   invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId })
-export const listDir = (root: string, path: string) =>
-  invoke<DirEntry[]>('list_dir', { root, path })
+/** `path` is relative to the open project's root; the backend refuses anything outside it. */
+export const listDir = (path: string) => invoke<DirEntry[]>('list_dir', { path })
+export const revealPath = (path: string) => invoke<void>('reveal_path', { path })

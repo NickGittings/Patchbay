@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { describeTerminal } from '../lib/display'
 import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, fit } from '../lib/terminals'
+import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 
@@ -28,7 +29,8 @@ export default function TerminalPane({
     const refit = () => fit(sid)
     const observer = new ResizeObserver(refit)
     observer.observe(host)
-    window.addEventListener('focus', refit)
+    // Fires when this or another window gains focus, which can move PTY sizing here.
+    window.addEventListener(ACTIVE_CHANGED, refit)
     void hydrateSession(sid)
       .then((snapshot) => {
         if (disposed) return
@@ -42,7 +44,7 @@ export default function TerminalPane({
     return () => {
       disposed = true
       observer.disconnect()
-      window.removeEventListener('focus', refit)
+      window.removeEventListener(ACTIVE_CHANGED, refit)
     }
   }, [sid, componentId, terminal.id, terminal.kind, focus])
 

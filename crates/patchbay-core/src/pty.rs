@@ -5,9 +5,12 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const BACKLOG_CAPACITY: usize = 512 * 1024;
+
+/// How long [`PtyManager::reset`] waits for hung-up processes before force-killing them.
+const RESET_GRACE: Duration = Duration::from_secs(1);
 
 const DEFAULT_SIZE: (u16, u16) = (120, 30);
 
@@ -25,7 +28,35 @@ struct Session {
     generation: u64,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    process: Process,
+}
+
+/// Enough of a child process to stop it, kept until its waiter sees it exit.
+struct Process {
+    pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+}
+
+impl Process {
+    /// Ask nicely: portable-pty sends SIGHUP on Unix and terminates on Windows.
+    fn hang_up(&mut self) {
+        let _ = self.killer.kill();
+    }
+
+    /// The PTY child leads its own session, so on Unix killing its process group
+    /// also reaches dev servers and other descendants that ignore SIGHUP.
+    fn force_kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", "--", &format!("-{pid}")])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            return;
+        }
+        let _ = self.killer.kill();
+    }
 }
 
 #[derive(Default)]
@@ -72,6 +103,12 @@ fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S:
 #[derive(Default)]
 pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
+    /// Ids reserved by an in-flight [`PtyManager::spawn`], with their generation,
+    /// so process creation happens without holding `sessions`.
+    starting: Mutex<HashMap<String, u64>>,
+    /// Processes from sessions dropped by [`PtyManager::reset`] that have not
+    /// exited yet, by generation.
+    orphans: Mutex<HashMap<u64, Process>>,
     backlogs: Mutex<HashMap<String, Arc<Mutex<Backlog>>>>,
     sizes: Mutex<HashMap<String, (u16, u16)>>,
     /// Last generation handed out. Global rather than per id so generations
@@ -125,60 +162,67 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn spawn(self: &Arc<Self>, spec: SessionSpec, sink: Arc<dyn EventSink>) -> Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if sessions.contains_key(&spec.id) {
-            bail!("{} is already running", spec.id);
-        }
-        let size = self
-            .sizes
-            .lock()
-            .unwrap()
-            .get(&spec.id)
-            .copied()
-            .unwrap_or(DEFAULT_SIZE);
-        let pair = native_pty_system().openpty(pty_size(size))?;
-
-        let mut cmd = shell_command(&spec.command);
-        cmd.cwd(&spec.cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
-
-        let mut child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let killer = child.clone_killer();
-
         let generation = {
-            let mut last = self.generation.lock().unwrap();
-            *last += 1;
-            *last
+            let sessions = self.sessions.lock().unwrap();
+            let mut starting = self.starting.lock().unwrap();
+            if sessions.contains_key(&spec.id) || starting.contains_key(&spec.id) {
+                bail!("{} is already running", spec.id);
+            }
+            let generation = self.next_generation();
+            starting.insert(spec.id.clone(), generation);
+            generation
         };
-        let mut backlogs = self.backlogs.lock().unwrap();
+        let started = self.start_process(&spec);
+        let mut sessions = self.sessions.lock().unwrap();
+        // A reset while starting clears the reservation (and may let a newer spawn
+        // take the id), so only claim the id if the reservation is still ours.
+        let reserved = {
+            let mut starting = self.starting.lock().unwrap();
+            let ours = starting.get(&spec.id) == Some(&generation);
+            if ours {
+                starting.remove(&spec.id);
+            }
+            ours
+        };
+        let (master, mut child, mut reader, writer) = started?;
+        let mut process = Process {
+            pid: child.process_id(),
+            killer: child.clone_killer(),
+        };
+
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
             running: true,
             ..Backlog::default()
         }));
-        backlogs.insert(spec.id.clone(), backlog.clone());
-        drop(backlogs);
-        sessions.insert(
-            spec.id.clone(),
-            Session {
-                generation,
-                master: pair.master,
-                writer,
-                killer,
-            },
-        );
+        if reserved {
+            self.backlogs
+                .lock()
+                .unwrap()
+                .insert(spec.id.clone(), backlog.clone());
+            sessions.insert(
+                spec.id.clone(),
+                Session {
+                    generation,
+                    master,
+                    writer,
+                    process,
+                },
+            );
+        } else {
+            // Its project was closed while it started, and the reset is no longer
+            // waiting for it: kill it outright and let the waiter reap it. Its
+            // events are at or below the reset's generation floor.
+            process.force_kill();
+            self.orphans.lock().unwrap().insert(generation, process);
+            drop(master);
+            drop(writer);
+        }
+        drop(sessions);
         sink.emit(TerminalEvent::Started {
             session_id: spec.id.clone(),
             generation,
         });
-        drop(sessions);
 
         let (done_tx, done_rx) = mpsc::channel();
         {
@@ -209,6 +253,7 @@ impl PtyManager {
         let manager = Arc::clone(self);
         std::thread::spawn(move || {
             let status = child.wait();
+            manager.orphans.lock().unwrap().remove(&generation);
             // Let the reader drain; on Windows it only sees EOF once the master closes.
             let _ = done_rx.recv_timeout(Duration::from_millis(500));
             let mut sessions = manager.sessions.lock().unwrap();
@@ -237,6 +282,46 @@ impl PtyManager {
             });
         });
         Ok(())
+    }
+
+    fn next_generation(&self) -> u64 {
+        let mut last = self.generation.lock().unwrap();
+        *last += 1;
+        *last
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn start_process(
+        &self,
+        spec: &SessionSpec,
+    ) -> Result<(
+        Box<dyn MasterPty + Send>,
+        Box<dyn portable_pty::Child + Send + Sync>,
+        Box<dyn Read + Send>,
+        Box<dyn Write + Send>,
+    )> {
+        let size = self
+            .sizes
+            .lock()
+            .unwrap()
+            .get(&spec.id)
+            .copied()
+            .unwrap_or(DEFAULT_SIZE);
+        let pair = native_pty_system().openpty(pty_size(size))?;
+
+        let mut cmd = shell_command(&spec.command);
+        cmd.cwd(&spec.cwd);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
+
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
+        Ok((pair.master, child, reader, writer))
     }
 
     /// Snapshot retained bytes, including output from completed sessions.
@@ -300,33 +385,53 @@ impl PtyManager {
     /// Panics if an internal lock is poisoned.
     pub fn kill(&self, id: &str) {
         if let Some(s) = self.sessions.lock().unwrap().get_mut(id) {
-            let _ = s.killer.kill();
-        }
-    }
-
-    /// # Panics
-    /// Panics if an internal lock is poisoned.
-    pub fn kill_all(&self) {
-        for s in self.sessions.lock().unwrap().values_mut() {
-            let _ = s.killer.kill();
+            s.process.hang_up();
         }
     }
 
     /// Kill every session and forget all retained output, e.g. when another
-    /// project is opened. Session ids are not project-scoped, so history must
-    /// not carry over. Returns the last generation issued: every event from a
-    /// session started before the reset has a generation at or below it.
+    /// project is opened or the app exits. Session ids are not project-scoped,
+    /// so history must not carry over. Blocks for up to about twice
+    /// [`RESET_GRACE`]: processes still alive after the grace period are
+    /// force-killed with their process group, so they can't keep ports or files
+    /// the next project needs. Returns the last generation issued: every event
+    /// from a session started before the reset has a generation at or below it.
     ///
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn reset(&self) -> u64 {
-        let mut sessions = self.sessions.lock().unwrap();
-        for s in sessions.values_mut() {
-            let _ = s.killer.kill();
+        let floor = {
+            let mut sessions = self.sessions.lock().unwrap();
+            self.starting.lock().unwrap().clear();
+            let mut orphans = self.orphans.lock().unwrap();
+            for (_, mut s) in sessions.drain() {
+                s.process.hang_up();
+                orphans.insert(s.generation, s.process);
+            }
+            self.backlogs.lock().unwrap().clear();
+            *self.generation.lock().unwrap()
+        };
+        if !self.wait_for_orphans(RESET_GRACE) {
+            for process in self.orphans.lock().unwrap().values_mut() {
+                process.force_kill();
+            }
+            self.wait_for_orphans(RESET_GRACE);
         }
-        sessions.clear();
-        self.backlogs.lock().unwrap().clear();
-        *self.generation.lock().unwrap()
+        floor
+    }
+
+    /// Whether every orphan exited within `timeout`.
+    fn wait_for_orphans(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.orphans.lock().unwrap().is_empty() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -433,6 +538,33 @@ mod tests {
         assert!(pty.is_running("root/shell"));
         assert_eq!(pty.snapshot("root/shell").unwrap().generation, 2);
         assert_eq!(new.wait_for_exit(), 0);
+    }
+
+    #[test]
+    fn reset_force_kills_processes_that_ignore_hangup() {
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(
+            SessionSpec {
+                id: "stubborn".into(),
+                command: "trap '' HUP; echo ready; sleep 30".into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::new(),
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        for _ in 0..400 {
+            if sink.output().contains("ready") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let started = Instant::now();
+        pty.reset();
+        assert!(pty.orphans.lock().unwrap().is_empty());
+        assert!(started.elapsed() < RESET_GRACE * 2 + Duration::from_millis(500));
+        assert_ne!(sink.wait_for_exit(), 0);
     }
 
     #[test]

@@ -1,6 +1,5 @@
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { useEffect, useState } from 'react'
-import { listDir } from '../lib/ipc'
+import { listDir, revealPath } from '../lib/ipc'
 import { absolutePath } from '../lib/windows'
 import { useStore } from '../store'
 import type { DirEntry } from '../types'
@@ -20,7 +19,7 @@ function Directory({
   const [error, setError] = useState('')
   useEffect(() => {
     let disposed = false
-    void listDir(root, path)
+    void listDir(path)
       .then((items) => {
         if (!disposed) {
           setEntries(items)
@@ -33,7 +32,7 @@ function Directory({
     return () => {
       disposed = true
     }
-  }, [root, path, refresh])
+  }, [path, refresh])
   if (error) return <div className="hint file-tree-error">{error}</div>
   if (!entries) return <div className="hint">Loading…</div>
   if (!entries.length)
@@ -73,9 +72,7 @@ function TreeEntry({
         // (`.command`, `.app`, …) from an untrusted repo on a double-click.
         onDoubleClick={() => {
           if (!entry.isDir) {
-            void revealItemInDir(absolutePath(root, entry.path)).catch((e) =>
-              useStore.getState().setMessage(String(e)),
-            )
+            void revealPath(entry.path).catch((e) => useStore.getState().setMessage(String(e)))
           }
         }}
       >
@@ -89,10 +86,18 @@ function TreeEntry({
   )
 }
 
+/** Refreshing re-lists every expanded folder, so focus only triggers it this often. */
+const FOCUS_REFRESH_MS = 5000
+
 export default function FileTree({ root, path }: { root: string; path: string }) {
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
-    const reload = () => setRefresh((n) => n + 1)
+    let last = Date.now()
+    const reload = () => {
+      if (Date.now() - last < FOCUS_REFRESH_MS) return
+      last = Date.now()
+      setRefresh((n) => n + 1)
+    }
     window.addEventListener('focus', reload)
     return () => window.removeEventListener('focus', reload)
   }, [])

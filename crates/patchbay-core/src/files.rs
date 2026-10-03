@@ -1,9 +1,8 @@
 //! Read-only directory listings contained within a project folder.
 
-use crate::detect::SKIP_DIRS;
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,16 +13,28 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// List a directory, hiding generated folders and Git internals.
+/// Resolve `rel` against `root`, following symlinks, and require the result to
+/// stay inside `root`.
+///
+/// # Errors
+/// Fails if either path does not exist or `rel` resolves outside `root`.
+pub fn resolve(root: &Path, rel: &Path) -> Result<PathBuf> {
+    let root = root.canonicalize()?;
+    let path = root.join(rel).canonicalize()?;
+    if !path.starts_with(&root) {
+        bail!("Path is outside the project root");
+    }
+    Ok(path)
+}
+
+/// List a directory, hiding only Git internals: unlike detection, a file browser
+/// should show `build/`, `vendor/` and the like.
 ///
 /// # Errors
 /// Fails on inaccessible directories or paths resolving outside `root`.
 pub fn list_dir(root: &Path, rel: &Path) -> Result<Vec<DirEntry>> {
     let root = root.canonicalize()?;
-    let dir = root.join(rel).canonicalize()?;
-    if !dir.starts_with(&root) {
-        bail!("Directory is outside the project root");
-    }
+    let dir = resolve(&root, rel)?;
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
@@ -31,17 +42,19 @@ pub fn list_dir(root: &Path, rel: &Path) -> Result<Vec<DirEntry>> {
         if name == ".git" {
             continue;
         }
-        // Also exclude symlinks to folders/files outside the root.
-        let Ok(resolved) = entry.path().canonicalize() else {
-            continue;
+        let file_type = entry.file_type()?;
+        // Only symlinks can leave the root; resolve those and hide any that escape.
+        let is_dir = if file_type.is_symlink() {
+            let Ok(resolved) = entry.path().canonicalize() else {
+                continue;
+            };
+            if !resolved.starts_with(&root) {
+                continue;
+            }
+            resolved.is_dir()
+        } else {
+            file_type.is_dir()
         };
-        if !resolved.starts_with(&root) {
-            continue;
-        }
-        let is_dir = resolved.is_dir();
-        if is_dir && SKIP_DIRS.contains(&name.as_str()) {
-            continue;
-        }
         entries.push(DirEntry {
             name,
             path: entry
@@ -107,20 +120,20 @@ mod tests {
     }
 
     #[test]
-    fn hides_git_and_generated_folders_but_keeps_dotfiles() {
+    fn hides_only_git_and_keeps_dotfiles_and_build_folders() {
         let fixture = Fixture::new();
-        for name in SKIP_DIRS.iter().copied().chain([".git", ".config"]) {
+        for name in [".git", ".config", "build", "vendor"] {
             std::fs::create_dir(fixture.0.join(name)).unwrap();
         }
         std::fs::write(fixture.0.join(".env"), "").unwrap();
         let entries = list_dir(&fixture.0, Path::new(".")).unwrap();
         assert_eq!(
             entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-            [".config", ".env"]
+            [".config", "build", "vendor", ".env"]
         );
         std::fs::remove_dir(fixture.0.join(".git")).unwrap();
         std::fs::write(fixture.0.join(".git"), "gitdir: elsewhere").unwrap();
-        assert_eq!(list_dir(&fixture.0, Path::new(".")).unwrap().len(), 2);
+        assert_eq!(list_dir(&fixture.0, Path::new(".")).unwrap().len(), 4);
     }
 
     #[test]
@@ -128,6 +141,11 @@ mod tests {
         let fixture = Fixture::new();
         assert!(list_dir(&fixture.0, Path::new("..")).is_err());
         assert!(list_dir(&fixture.0, &std::env::temp_dir()).is_err());
+        assert!(resolve(&fixture.0, Path::new("..")).is_err());
+        assert_eq!(
+            resolve(&fixture.0, Path::new(".")).unwrap(),
+            fixture.0.canonicalize().unwrap()
+        );
     }
 
     #[cfg(unix)]
@@ -135,7 +153,16 @@ mod tests {
     fn rejects_symlink_escapes() {
         let fixture = Fixture::new();
         std::os::unix::fs::symlink(std::env::temp_dir(), fixture.0.join("escape")).unwrap();
+        std::fs::create_dir(fixture.0.join("inside")).unwrap();
+        std::os::unix::fs::symlink(fixture.0.join("inside"), fixture.0.join("link")).unwrap();
         assert!(list_dir(&fixture.0, Path::new("escape")).is_err());
-        assert!(list_dir(&fixture.0, Path::new(".")).unwrap().is_empty());
+        let entries = list_dir(&fixture.0, Path::new(".")).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.name.as_str(), e.is_dir))
+                .collect::<Vec<_>>(),
+            [("inside", true), ("link", true)]
+        );
     }
 }

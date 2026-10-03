@@ -1,5 +1,9 @@
 import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import {
+  getAllWebviewWindows,
+  getCurrentWebviewWindow,
+  WebviewWindow,
+} from '@tauri-apps/api/webviewWindow'
 import { useStore } from '../store'
 import type { Project } from '../types'
 
@@ -9,10 +13,64 @@ export const absolutePath = (root: string, path: string) =>
 export const PROJECT_EVENT = 'patchbay://project'
 export const READY_EVENT = 'patchbay://popout-ready'
 export const GIT_EVENT = 'patchbay://git'
+const ACTIVE_EVENT = 'patchbay://active-window'
+/** Emitted by the backend with the label of a window that has closed. */
+const CLOSED_EVENT = 'patchbay://window-closed'
+/** DOM event on `window` whenever the active window changes, so panes can refit. */
+export const ACTIVE_CHANGED = 'patchbay:active-changed'
 
 // Encoding code points avoids collisions between ids with different punctuation.
+// Must match `component_window_label` in src-tauri/src/lib.rs.
 const componentLabel = (id: string) =>
   `component-${Array.from(id, (c) => c.codePointAt(0)!.toString(16)).join('-')}`
+
+const ownLabel = getCurrentWebviewWindow().label
+/** The window that most recently had focus, as last heard by this webview. */
+let activeLabel = 'main'
+
+const setActive = (label: string) => {
+  if (label === activeLabel) return
+  activeLabel = label
+  window.dispatchEvent(new Event(ACTIVE_CHANGED))
+}
+
+/**
+ * Track which window was focused last, across webviews. Call once per webview at startup.
+ * The focused window always answers its own input; `ownsSession` decides who answers when
+ * nothing is focused.
+ */
+export function trackActiveWindow() {
+  const activate = () => {
+    if (activeLabel === ownLabel) return
+    setActive(ownLabel)
+    void emit(ACTIVE_EVENT, ownLabel).catch(() => {})
+  }
+  window.addEventListener('focus', activate)
+  if (document.hasFocus()) activate()
+  void listen<string>(ACTIVE_EVENT, (e) => setActive(e.payload)).catch(() => {})
+  void listen<string>(CLOSED_EVENT, (e) => {
+    if (e.payload === activeLabel) setActive('main')
+  }).catch(() => {})
+}
+
+/**
+ * Exactly one window owns each session: it answers the terminal's automatic queries
+ * (cursor position, device attributes…) and sizes its PTY. That's the active window when
+ * it shows the session (main shows them all, a pop-out only its component's), otherwise main.
+ */
+export function ownsSession(sid: string) {
+  const activeShows =
+    activeLabel === 'main' || labelsShowing(sid).some((label) => label === activeLabel)
+  return activeShows ? activeLabel === ownLabel : ownLabel === 'main'
+}
+
+/** Labels of the pop-outs that could show `sid`; component ids may themselves contain `/`. */
+function labelsShowing(sid: string) {
+  const labels: string[] = []
+  for (let i = sid.indexOf('/'); i >= 0; i = sid.indexOf('/', i + 1))
+    labels.push(componentLabel(sid.slice(0, i)))
+  return labels
+}
 const opening = new Map<string, Promise<void>>()
 
 export function openComponentWindow(componentId: string, name: string): Promise<void> {
@@ -63,7 +121,13 @@ export function syncComponentWindows(): () => void {
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
-    if (disposed || !windows.some((w) => w.label.startsWith('component-'))) return
+    if (disposed) return
+    if (!windows.some((w) => w.label.startsWith('component-'))) {
+      // Nobody received the changes, so the next pop-out's READY reply is its baseline.
+      sentProject = ''
+      sentGit = ''
+      return
+    }
     const s = useStore.getState()
     if (!s.project) return
     const project = s.toProject()

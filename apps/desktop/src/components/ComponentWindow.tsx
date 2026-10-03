@@ -1,9 +1,9 @@
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
+import { revealPath } from '../lib/ipc'
 import { listenForTerminals, startTerminal, stopTerminal } from '../lib/sessions'
 import { absolutePath, GIT_EVENT, PROJECT_EVENT, READY_EVENT } from '../lib/windows'
 import { useStore } from '../store'
@@ -84,7 +84,7 @@ export default function ComponentWindow({ id }: { id: string }) {
         )}
         <button
           onClick={() =>
-            void revealItemInDir(path).catch((e) => useStore.getState().setMessage(String(e)))
+            void revealPath(data.path).catch((e) => useStore.getState().setMessage(String(e)))
           }
         >
           Reveal in Finder

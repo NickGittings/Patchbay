@@ -1,7 +1,7 @@
 import { useStore } from '../store'
 import { sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
 import { onTerminalEvent, terminalSnapshot, terminalStart, terminalStop } from './ipc'
-import { disposeAll, restoreOutput, writeNote, writeOutput } from './terminals'
+import { disposeAll, replayOutput, restoreOutput, writeNote, writeOutput } from './terminals'
 
 /**
  * How far this window's xterm has got through a session's current run. `complete`
@@ -156,7 +156,7 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
   if (cursor && cursor.generation > snapshot.generation) return
   if (cursor?.complete && cursor.generation === snapshot.generation && cursor.end >= start) {
     const from = cursor.end - start
-    if (from < bytes.length) writeOutput(sid, bytes.subarray(from))
+    if (from < bytes.length) replayOutput(sid, bytes.subarray(from))
     cursor.end = Math.max(cursor.end, snapshot.end)
     return
   }

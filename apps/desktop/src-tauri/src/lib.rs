@@ -8,23 +8,58 @@ use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
 #[cfg(debug_assertions)]
 mod smoke;
 
 const TERMINAL_EVENT: &str = "patchbay://terminal";
+/// Emitted with a window's label when it closes, so the others can pick a new active window.
+const WINDOW_CLOSED_EVENT: &str = "patchbay://window-closed";
 
 #[derive(Default)]
 struct AppState {
     pty: Arc<PtyManager>,
+    /// Root of the open project. File commands resolve paths against this rather
+    /// than a root sent by the webview, so they can't reach the rest of the disk.
+    root: Mutex<Option<PathBuf>>,
+}
+
+impl AppState {
+    fn resolve(&self, path: &str) -> CmdResult<PathBuf> {
+        let root = self
+            .root
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("No project is open")?;
+        files::resolve(&root, &PathBuf::from(path)).map_err(err)
+    }
+}
+
+/// Must match `componentLabel` in `lib/windows.ts`.
+fn component_window_label(component_id: &str) -> String {
+    let hex: Vec<String> = component_id
+        .chars()
+        .map(|c| format!("{:x}", u32::from(c)))
+        .collect();
+    format!("component-{}", hex.join("-"))
 }
 
 struct TauriSink(AppHandle);
 
 impl EventSink for TauriSink {
+    /// The main window gets every session's events on `patchbay://terminal`. A pop-out
+    /// only listens on `patchbay://terminal/<its label>`, so it never receives (or
+    /// parses) output from other components.
     fn emit(&self, event: TerminalEvent) {
+        if let Some((component_id, _)) = event.session_id().rsplit_once('/') {
+            let label = component_window_label(component_id);
+            if self.0.get_webview_window(&label).is_some() {
+                let _ = self.0.emit(&format!("{TERMINAL_EVENT}/{label}"), &event);
+            }
+        }
         let _ = self.0.emit(TERMINAL_EVENT, event);
     }
 }
@@ -44,18 +79,21 @@ struct Opened {
 }
 
 #[tauri::command]
-async fn open_project(root: String) -> CmdResult<Opened> {
+async fn open_project(state: State<'_, AppState>, root: String) -> CmdResult<Opened> {
     let root = PathBuf::from(root).canonicalize().map_err(err)?;
-    if let Some(project) = Project::load(&root).map_err(err)? {
-        return Ok(Opened {
+    let opened = if let Some(project) = Project::load(&root).map_err(err)? {
+        Opened {
             project,
             detected: false,
-        });
-    }
-    Ok(Opened {
-        project: detect::detect(&root).map_err(err)?,
-        detected: true,
-    })
+        }
+    } else {
+        Opened {
+            project: detect::detect(&root).map_err(err)?,
+            detected: true,
+        }
+    };
+    *state.root.lock().unwrap() = Some(root);
+    Ok(opened)
 }
 
 #[derive(Serialize)]
@@ -145,15 +183,24 @@ async fn terminal_snapshot(
     Ok(state.pty.snapshot(&session_id))
 }
 
+/// Lists `path`, relative to the open project's root.
 #[tauri::command]
-async fn list_dir(root: String, path: String) -> CmdResult<Vec<DirEntry>> {
-    files::list_dir(&PathBuf::from(root), &PathBuf::from(path)).map_err(err)
+async fn list_dir(state: State<'_, AppState>, path: String) -> CmdResult<Vec<DirEntry>> {
+    let root = state.resolve(".")?;
+    files::list_dir(&root, &PathBuf::from(path)).map_err(err)
+}
+
+/// Reveals `path`, relative to the open project's root, in the file manager.
+#[tauri::command]
+async fn reveal_path(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    tauri_plugin_opener::reveal_item_in_dir(state.resolve(&path)?).map_err(err)
 }
 
 /// Returns the generation floor: events at or below it belong to the old project.
+/// Async because it waits for stubborn processes to die.
 #[tauri::command]
-fn terminal_reset(state: State<AppState>) -> u64 {
-    state.pty.reset()
+async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
+    Ok(state.pty.reset())
 }
 
 /// # Panics
@@ -166,14 +213,20 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .on_window_event(|window, event| {
-            if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { .. } if window.label() == "main" => {
                 for (label, popout) in window.app_handle().webview_windows() {
                     if label.starts_with("component-") {
                         let _ = popout.close();
                     }
                 }
             }
+            WindowEvent::Destroyed => {
+                let _ = window
+                    .app_handle()
+                    .emit(WINDOW_CLOSED_EVENT, window.label());
+            }
+            _ => {}
         })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
@@ -191,12 +244,13 @@ pub fn run() {
             terminal_reset,
             terminal_snapshot,
             list_dir,
+            reveal_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Patchbay")
         .run(|app, event| {
             if let RunEvent::Exit = event {
-                app.state::<AppState>().pty.kill_all();
+                app.state::<AppState>().pty.reset();
             }
         });
 }
