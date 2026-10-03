@@ -2,14 +2,14 @@
 
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::files::{self, DirEntry};
-use patchbay_core::model::{self, Component, ComponentKind, Position};
+use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::{PtyManager, Snapshot};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(debug_assertions)]
@@ -29,10 +29,11 @@ struct AppState {
 /// comes from `open_project`, and folders outside it are granted only when they
 /// come from a project the backend loaded or detected, or from a folder picker
 /// the backend ran. The webview's map can narrow the readable set (a deleted
-/// component's folder stops being readable) but never extend it.
+/// component's folder stops being readable) but never extend it. All paths
+/// here are canonical, so a symlink can't lead a granted path elsewhere.
 #[derive(Default)]
 struct Access {
-    /// The open project's root.
+    /// The open project's root (canonical).
     root: Option<PathBuf>,
     /// External folders the user vouched for; kept until another project opens.
     granted: Vec<PathBuf>,
@@ -41,18 +42,36 @@ struct Access {
 }
 
 impl Access {
+    /// `project.root` must be canonical. External folders from a loaded
+    /// `patchbay.json` are granted only if they exist and don't contain the
+    /// project (a committed `../../..` must not expose the whole disk).
     fn open(&mut self, project: &Project) {
-        self.root = Some(PathBuf::from(&project.root));
-        self.granted = project.external_dirs();
+        let root = PathBuf::from(&project.root);
+        self.granted = project
+            .external_dirs()
+            .iter()
+            .filter_map(|d| d.canonicalize().ok())
+            .filter(|d| model::check_component_dir(&root, d).is_ok())
+            .collect();
+        self.root = Some(root);
         self.sync(project.components.iter().map(|c| c.path.as_str()));
     }
 
-    fn grant(&mut self, dir: &Path) {
-        self.granted.push(model::normalize(dir));
+    /// `dir` must be canonical and not contain the project.
+    fn grant(&mut self, dir: PathBuf) {
+        self.granted.push(dir);
     }
 
     fn is_granted(&self, dir: &Path) -> bool {
         self.granted.iter().any(|g| dir.starts_with(g))
+    }
+
+    /// The canonical folder of a component path, if it may be read: inside the
+    /// root, or within a granted folder once symlinks are resolved.
+    fn readable(&self, path: &str) -> Option<PathBuf> {
+        let root = self.root.as_ref()?;
+        let dir = root.join(path).canonicalize().ok()?;
+        (dir.starts_with(root) || self.is_granted(&dir)).then_some(dir)
     }
 
     /// Recompute the readable roots from the component paths now on the map.
@@ -62,8 +81,10 @@ impl Access {
         };
         let mut roots = vec![root.clone()];
         for path in paths {
-            let dir = model::normalize(&root.join(path));
-            if !dir.starts_with(&root) && self.is_granted(&dir) && !roots.contains(&dir) {
+            if let Some(dir) = self.readable(path)
+                && !dir.starts_with(&root)
+                && !roots.contains(&dir)
+            {
                 roots.push(dir);
             }
         }
@@ -92,9 +113,14 @@ impl AppState {
     }
 }
 
-/// Run the backend's folder picker, starting in `start`.
-fn pick_folder(app: &AppHandle, title: &str, start: Option<&Path>) -> CmdResult<Option<PathBuf>> {
-    let mut dialog = app.dialog().file().set_title(title);
+/// Run the backend's folder picker, starting in `start`, as a sheet of the
+/// window that asked so that window can't be edited while it is open.
+fn pick_folder(
+    window: &WebviewWindow,
+    title: &str,
+    start: Option<&Path>,
+) -> CmdResult<Option<PathBuf>> {
+    let mut dialog = window.dialog().file().set_parent(window).set_title(title);
     if let Some(start) = start {
         dialog = dialog.set_directory(start);
     }
@@ -177,6 +203,7 @@ async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> Cmd
         project
             .external_dirs()
             .into_iter()
+            .filter_map(|d| d.canonicalize().ok())
             .filter(|d| access.is_granted(d))
             .collect()
     };
@@ -192,18 +219,18 @@ async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> Cmd
 /// webview so only folders the user chose become readable. `None` if cancelled.
 #[tauri::command]
 async fn add_folder(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
     mut project: Project,
 ) -> CmdResult<Option<Rescanned>> {
     let root = state.access().trust(&mut project)?;
-    let Some(dir) = pick_folder(&app, "Add a repo or folder", root.parent())? else {
+    let Some(dir) = pick_folder(&window, "Add a repo or folder", root.parent())? else {
         return Ok(None);
     };
     let found = detect::detect_folder(&project, &dir).map_err(err)?;
     let added = detect::merge_new(&mut project, found);
     let mut access = state.access();
-    access.grant(&dir.canonicalize().map_err(err)?);
+    access.grant(dir.canonicalize().map_err(err)?);
     access.sync(project.components.iter().map(|c| c.path.as_str()));
     Ok(Some(Rescanned { project, added }))
 }
@@ -212,19 +239,17 @@ async fn add_folder(
 /// relative to the root. `None` if cancelled.
 #[tauri::command]
 async fn pick_component_folder(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> CmdResult<Option<String>> {
     let root = state.access().root.clone().ok_or("No project is open")?;
-    let Some(dir) = pick_folder(&app, "Component folder", Some(&root))? else {
+    let Some(dir) = pick_folder(&window, "Component folder", Some(&root))? else {
         return Ok(None);
     };
     let dir = dir.canonicalize().map_err(err)?;
-    if dir != root && root.starts_with(&dir) {
-        return Err("That folder contains the project; pick a folder inside or beside it".into());
-    }
+    model::check_component_dir(&root, &dir).map_err(err)?;
     if !dir.starts_with(&root) {
-        state.access().grant(&dir);
+        state.access().grant(dir.clone());
     }
     Ok(Some(model::relative_path(&root, &dir)))
 }
@@ -251,34 +276,26 @@ struct ComponentPath {
     path: String,
 }
 
-/// Takes only ids and folders, since it is polled every few seconds.
+/// Takes only ids and folders, since it is polled every few seconds. Folders
+/// the backend hasn't granted are left out, so the webview can't run git
+/// anywhere else on disk.
 #[tauri::command]
 async fn git_status(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
 ) -> CmdResult<git::GitStatus> {
-    let Some(root) = state.access().root.clone() else {
-        return Ok(git::GitStatus::default());
-    };
-    let project = Project {
-        schema_version: model::SCHEMA_VERSION,
-        name: String::new(),
-        root: root.display().to_string(),
-        components: components
+    let (root, components) = {
+        let access = state.access();
+        let Some(root) = access.root.clone() else {
+            return Ok(git::GitStatus::default());
+        };
+        let components: Vec<(String, PathBuf)> = components
             .into_iter()
-            .map(|c| Component {
-                id: c.id,
-                name: String::new(),
-                kind: ComponentKind::default(),
-                path: c.path,
-                notes: String::new(),
-                terminals: Vec::new(),
-                position: Position::default(),
-            })
-            .collect(),
-        links: Vec::new(),
+            .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+            .collect();
+        (root, components)
     };
-    Ok(git::status(&project))
+    Ok(git::status(&root, &components))
 }
 
 #[tauri::command]

@@ -2,7 +2,7 @@
 //! of repos, or repos added from elsewhere), so components are grouped by the
 //! repo that contains them and each repo is queried once.
 
-use crate::model::{Project, relative_path};
+use crate::model::relative_path;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -27,13 +27,13 @@ pub struct RepoGroup {
     pub members: Vec<(String, String)>,
 }
 
-/// Group the project's components by containing repo. Components whose folder
-/// is missing or not in a repo are left out.
+/// Group components, given as `(id, absolute folder)`, by containing repo.
+/// Components whose folder is missing or not in a repo are left out.
 #[must_use]
-pub fn group_by_repo(project: &Project) -> Vec<RepoGroup> {
+pub fn group_by_repo(components: &[(String, PathBuf)]) -> Vec<RepoGroup> {
     let mut groups: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();
-    for c in &project.components {
-        let Ok(dir) = project.component_dir(c).canonicalize() else {
+    for (id, dir) in components {
+        let Ok(dir) = dir.canonicalize() else {
             continue;
         };
         let Some(root) = repo_root(&dir) else {
@@ -45,7 +45,7 @@ pub fn group_by_repo(project: &Project) -> Vec<RepoGroup> {
         } else {
             format!("{rel}/")
         };
-        groups.entry(root).or_default().push((c.id.clone(), prefix));
+        groups.entry(root).or_default().push((id.clone(), prefix));
     }
     groups
         .into_iter()
@@ -78,10 +78,11 @@ pub struct GitStatus {
 /// Count uncommitted changes per component, running `git status` once per repo
 /// (in parallel, so many sibling repos don't add up to one long poll). Each
 /// changed file is attributed to the most specific component containing it.
+/// `components` are `(id, absolute folder)`; `root` is the project root.
 #[must_use]
-pub fn status(project: &Project) -> GitStatus {
-    let project_repo = repo_root(Path::new(&project.root));
-    let groups = group_by_repo(project);
+pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
+    let project_repo = repo_root(root);
+    let groups = group_by_repo(components);
     let changed: Vec<Option<Vec<String>>> = std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .iter()
@@ -119,35 +120,68 @@ pub fn status(project: &Project) -> GitStatus {
 }
 
 /// Paths with uncommitted changes, relative to `repo`. Nested repos and
-/// submodules are skipped: they are counted as their own repo.
+/// submodules are skipped: they are counted as their own repo. The repo's
+/// fsmonitor hook is disabled, since nested repos on the map may be untrusted.
 fn changed_paths(repo: &Path) -> Option<Vec<String>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["status", "--porcelain", "--untracked-files=all"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    Some(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                // "XY path" or "XY old -> new"
-                let path = line.get(3..)?;
-                let path = path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"');
-                let nested = repo.join(path.trim_end_matches('/')).join(".git").exists();
-                (!nested).then(|| path.to_string())
-            })
-            .collect(),
-    )
+    Some(parse_porcelain_v2(
+        &String::from_utf8_lossy(&output.stdout),
+        |dir| repo.join(dir).join(".git").exists(),
+    ))
+}
+
+/// Changed paths from `git status --porcelain=v2 -z` output. Submodules are
+/// dropped, as are untracked folders (`dir/`, how git lists a nested repo) for
+/// which `is_repo` holds; only those few entries cost a filesystem check.
+fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut records = out.split('\0');
+    while let Some(record) = records.next() {
+        // Tracked entries: "<kind> <XY> <sub> ..." with the path as the last field.
+        let fields = match record.as_bytes().first() {
+            Some(b'1') => 9,
+            Some(b'2') => {
+                // A rename is followed by its original path; skip it.
+                records.next();
+                10
+            }
+            Some(b'u') => 11,
+            Some(b'?') => {
+                let path = &record[2..];
+                match path.strip_suffix('/') {
+                    Some(dir) if is_repo(dir) => {}
+                    _ => paths.push(path.to_string()),
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let parts: Vec<&str> = record.splitn(fields, ' ').collect();
+        if parts.len() == fields && !parts[2].starts_with('S') {
+            paths.push(parts[fields - 1].to_string());
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Component, ComponentKind, Position, SCHEMA_VERSION};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{env, fs, process};
 
@@ -203,25 +237,11 @@ mod tests {
         }
     }
 
-    fn project(root: &Path, components: &[(&str, &str)]) -> Project {
-        Project {
-            schema_version: SCHEMA_VERSION,
-            name: "shop".into(),
-            root: root.display().to_string(),
-            components: components
-                .iter()
-                .map(|(id, path)| Component {
-                    id: (*id).into(),
-                    name: (*id).into(),
-                    kind: ComponentKind::Other,
-                    path: (*path).into(),
-                    notes: String::new(),
-                    terminals: vec![],
-                    position: Position::default(),
-                })
-                .collect(),
-            links: vec![],
-        }
+    fn components(root: &Path, components: &[(&str, &str)]) -> Vec<(String, PathBuf)> {
+        components
+            .iter()
+            .map(|(id, path)| ((*id).to_string(), root.join(path)))
+            .collect()
     }
 
     #[test]
@@ -244,9 +264,9 @@ mod tests {
         f.write("web/src/a.ts", "");
         f.write("api/x.py", "");
         f.write("api/y.py", "");
-        let p = project(&f.0, &[("web", "web"), ("api", "api"), ("loose", "notes")]);
+        let c = components(&f.0, &[("web", "web"), ("api", "api"), ("loose", "notes")]);
         fs::create_dir_all(f.0.join("notes")).unwrap();
-        let s = status(&p);
+        let s = status(&f.0, &c);
         assert_eq!(s.changes.get("web"), Some(&1));
         assert_eq!(s.changes.get("api"), Some(&2));
         assert_eq!(s.changes.get("loose"), None);
@@ -260,8 +280,8 @@ mod tests {
             return;
         }
         f.write("vendor/lib/changed.rs", "");
-        let p = project(&f.0, &[("root", "."), ("lib", "vendor/lib")]);
-        let s = status(&p);
+        let c = components(&f.0, &[("root", "."), ("lib", "vendor/lib")]);
+        let s = status(&f.0, &c);
         assert_eq!(s.changes.get("root"), Some(&0));
         assert_eq!(s.changes.get("lib"), Some(&1));
         assert_eq!(s.repos.get("root"), None);
@@ -275,12 +295,31 @@ mod tests {
             return;
         }
         f.write("billing/src/pay.go", "");
-        let p = project(
-            &f.0.join("shop"),
-            &[("shop", "."), ("billing", "../billing")],
-        );
-        let groups = group_by_repo(&p);
+        let root = f.0.join("shop");
+        let c = components(&root, &[("shop", "."), ("billing", "../billing")]);
+        let groups = group_by_repo(&c);
         assert_eq!(groups.len(), 2);
-        assert_eq!(status(&p).changes.get("billing"), Some(&1));
+        assert_eq!(status(&root, &c).changes.get("billing"), Some(&1));
+    }
+
+    #[test]
+    fn parses_porcelain_v2() {
+        let out = [
+            "1 .M N... 100644 100644 100644 abc abc src/a b.rs",
+            "1 .M SC.. 160000 160000 160000 abc abc vendor/sub",
+            "2 R. N... 100644 100644 100644 abc abc R100 new.rs",
+            "old.rs",
+            "u UU N... 100644 100644 100644 100644 a b c both.rs",
+            "? notes.txt",
+            "? vendor/lib/",
+            "? build/",
+            "",
+        ]
+        .join("\0");
+        let paths = parse_porcelain_v2(&out, |dir| dir == "vendor/lib");
+        assert_eq!(
+            paths,
+            ["src/a b.rs", "new.rs", "both.rs", "notes.txt", "build/"]
+        );
     }
 }

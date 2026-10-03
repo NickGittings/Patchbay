@@ -50,14 +50,43 @@ export async function saveCurrentProject() {
   }
 }
 
-/** Swap in a map with extra components, keeping live session and git state. */
-function applyAdded(project: Project, added: number, none: string) {
+/**
+ * Add the components and links that `result` has beyond `before` (the map sent to the backend)
+ * to the map as it is now, so edits made while the backend worked (or its dialog was open)
+ * survive. Keeps live session and git state. Returns how many components were added.
+ */
+function applyAdded(before: Project, result: Project, none: string): number {
   const s = useStore.getState()
-  if (added === 0) return s.setMessage(none)
+  const current = s.toProject()
+  const oldIds = new Set(before.components.map((c) => c.id))
+  const taken = new Set(current.components.map((c) => c.id))
+  const paths = new Set(current.components.map((c) => c.path))
+  const components = result.components.filter(
+    (c) => !oldIds.has(c.id) && !taken.has(c.id) && !paths.has(c.path),
+  )
+  const ids = new Set([...taken, ...components.map((c) => c.id)])
+  const added = new Set(components.map((c) => c.id))
+  const linkIds = new Set(current.links.map((l) => l.id))
+  const links = result.links.filter(
+    (l) =>
+      (added.has(l.source) || added.has(l.target)) &&
+      ids.has(l.source) &&
+      ids.has(l.target) &&
+      !linkIds.has(l.id),
+  )
+  if (components.length === 0) {
+    s.setMessage(none)
+    return 0
+  }
   const { sessions, gitChanges, repos, activeSession } = s
-  s.loadProject(project)
+  s.loadProject({
+    ...current,
+    components: [...current.components, ...components],
+    links: [...current.links, ...links],
+  })
   useStore.setState({ sessions, gitChanges, repos, activeSession, dirty: true })
-  s.setMessage(`Added ${added} component(s)`)
+  s.setMessage(`Added ${components.length} component(s)`)
+  return components.length
 }
 
 /** Add components for folders that appeared since the map was made, here or in added repos. */
@@ -67,9 +96,9 @@ export function useRescanProject() {
     const s = useStore.getState()
     if (!s.project) return
     try {
-      const { project, added } = await rescanProject(s.toProject())
-      applyAdded(project, added, 'No new components found')
-      if (added) fitSoon(fitView)
+      const before = s.toProject()
+      const { project } = await rescanProject(before)
+      if (applyAdded(before, project, 'No new components found')) fitSoon(fitView)
     } catch (e) {
       s.setMessage(String(e))
     }
@@ -83,10 +112,11 @@ export function useAddFolder() {
     const s = useStore.getState()
     if (!s.project) return
     try {
-      const result = await addFolder(s.toProject())
+      const before = s.toProject()
+      const result = await addFolder(before)
       if (!result) return
-      applyAdded(result.project, result.added, 'Everything in that folder is already on the map')
-      if (result.added) fitSoon(fitView)
+      const none = 'Everything in that folder is already on the map'
+      if (applyAdded(before, result.project, none)) fitSoon(fitView)
     } catch (e) {
       s.setMessage(String(e))
     }

@@ -170,22 +170,42 @@ impl Project {
     }
 }
 
-/// Resolve `.` and `..` without touching the filesystem.
+/// Resolve `.` and `..` without touching the filesystem. Leading `..` of a
+/// relative path are kept, `..` above a filesystem root is dropped, and an
+/// empty result is `.`.
 #[must_use]
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
             PathPart::CurDir => {}
-            PathPart::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+            PathPart::ParentDir => match out.components().next_back() {
+                Some(PathPart::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(PathPart::RootDir | PathPart::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other),
         }
     }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
     out
+}
+
+/// Check that `dir` can hold a component of the project at `root`: it must not
+/// contain the project (`..`, `/`, a parent folder), which would make the
+/// whole enclosing tree readable. Both paths should be canonical.
+///
+/// # Errors
+/// Fails if `dir` is a strict ancestor of `root`.
+pub fn check_component_dir(root: &Path, dir: &Path) -> Result<()> {
+    if dir != root && root.starts_with(dir) {
+        anyhow::bail!("That folder contains the project; pick a folder inside or beside it");
+    }
+    Ok(())
 }
 
 /// `target` relative to `base` with `/` separators, e.g. `../billing/api`.
@@ -238,6 +258,23 @@ mod tests {
             normalize(Path::new("/code/shop/./web/../../billing")),
             PathBuf::from("/code/billing")
         );
+        assert_eq!(
+            normalize(Path::new("../../billing")),
+            PathBuf::from("../../billing")
+        );
+        assert_eq!(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
+        assert_eq!(normalize(Path::new("./.")), PathBuf::from("."));
+        assert_eq!(normalize(Path::new("/a/../../x")), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn component_dir_must_not_contain_the_project() {
+        let root = Path::new("/code/shop");
+        assert!(check_component_dir(root, Path::new("/code/shop")).is_ok());
+        assert!(check_component_dir(root, Path::new("/code/shop/web")).is_ok());
+        assert!(check_component_dir(root, Path::new("/code/billing")).is_ok());
+        assert!(check_component_dir(root, Path::new("/code")).is_err());
+        assert!(check_component_dir(root, Path::new("/")).is_err());
     }
 
     #[test]

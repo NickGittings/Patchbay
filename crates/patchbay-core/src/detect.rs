@@ -7,7 +7,7 @@
 
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
-    normalize, relative_path,
+    check_component_dir, normalize, relative_path,
 };
 use anyhow::{Result, bail};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -659,9 +659,7 @@ pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
     if dir == root {
         bail!("That is the project folder itself; use Rescan instead");
     }
-    if root.starts_with(&dir) {
-        bail!("That folder contains the project; pick a folder inside or beside it");
-    }
+    check_component_dir(&root, &dir)?;
     let mut found = detect(&dir)?;
     let prefix = slug(&dir_name(&dir));
     let rename = |id: &str| {

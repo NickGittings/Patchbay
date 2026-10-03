@@ -13,34 +13,45 @@ import { useStore } from './store'
 
 const GIT_POLL_MS = 5000
 
-/** Poll uncommitted changes per component (across every repo on the map) while a project is open. */
+/**
+ * Poll uncommitted changes per component (across every repo on the map) while a project is open.
+ * The next poll is scheduled only once the last one finishes, so slow repos can't pile up git
+ * processes, and results arriving after the project changed are dropped.
+ */
 function useGitPolling() {
   const root = useStore((s) => s.project?.root)
   useEffect(() => {
     if (!root) return
-    const poll = () => {
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
       const s = useStore.getState()
-      void gitStatus(s.nodes.map((n) => ({ id: n.id, path: n.data.path })))
-        .then(s.setGitStatus)
-        .catch(() => {})
+      try {
+        const status = await gitStatus(s.nodes.map((n) => ({ id: n.id, path: n.data.path })))
+        if (!stopped) useStore.getState().setGitStatus(status)
+      } catch {
+        // Not a repo, or git missing: leave the last status as is.
+      }
+      if (!stopped) timer = setTimeout(() => void poll(), GIT_POLL_MS)
     }
-    poll()
-    const timer = setInterval(poll, GIT_POLL_MS)
-    return () => clearInterval(timer)
+    void poll()
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
   }, [root])
 }
 
 /** Keep the backend's readable folders in step with the component folders on the map. */
 function useRootSync() {
   useEffect(() => {
-    let last = ''
+    let last: string[] = []
     return useStore.subscribe((s, prev) => {
       if (!s.project || s.nodes === prev.nodes) return
-      const paths = s.nodes.map((n) => n.data.path)
-      const key = paths.join('\n')
-      if (key === last) return
-      last = key
-      void syncRoots(paths).catch(() => {})
+      // A drag replaces nodes every frame but keeps their paths: compare without allocating.
+      if (s.nodes.length === last.length && s.nodes.every((n, i) => n.data.path === last[i])) return
+      last = s.nodes.map((n) => n.data.path)
+      void syncRoots(last).catch(() => {})
     })
   }, [])
 }
