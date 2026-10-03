@@ -7,8 +7,17 @@ import {
 import { useStore } from '../store'
 import type { Project } from '../types'
 
-export const absolutePath = (root: string, path: string) =>
-  path === '.' ? root : `${root.replace(/[\\/]$/, '')}/${path}`
+/** Join a component path (which may start with `../`) onto the root, resolving `.` and `..`. */
+export function absolutePath(root: string, path: string) {
+  if (path === '.') return root
+  const parts = root.replace(/[\\/]$/, '').split(/[\\/]/)
+  for (const part of path.split(/[\\/]/)) {
+    if (part === '..') {
+      if (parts.length > 1) parts.pop()
+    } else if (part && part !== '.') parts.push(part)
+  }
+  return parts.join('/')
+}
 
 export const PROJECT_EVENT = 'patchbay://project'
 export const READY_EVENT = 'patchbay://popout-ready'

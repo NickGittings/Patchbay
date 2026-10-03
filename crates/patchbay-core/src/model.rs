@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component as PathPart, Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 2;
 /// Saved at the repo root so the map can be committed alongside the code.
@@ -51,7 +51,8 @@ pub struct Component {
     pub name: String,
     #[serde(default)]
     pub kind: ComponentKind,
-    /// Folder relative to the project root; "." is the root itself.
+    /// Folder relative to the project root; "." is the root itself. May start
+    /// with `../` for a repo that lives beside the project folder.
     pub path: String,
     #[serde(default)]
     pub notes: String,
@@ -107,8 +108,28 @@ impl Project {
         self.components.iter().find(|c| c.id == id)
     }
 
+    /// Absolute folder of a component, with `.` and `..` resolved lexically.
     pub fn component_dir(&self, component: &Component) -> PathBuf {
-        Path::new(&self.root).join(&component.path)
+        normalize(&Path::new(&self.root).join(&component.path))
+    }
+
+    /// Whether a component's folder lies outside the project root.
+    #[must_use]
+    pub fn is_external(&self, component: &Component) -> bool {
+        !self
+            .component_dir(component)
+            .starts_with(normalize(Path::new(&self.root)))
+    }
+
+    /// Folders of components outside the project root: the project's other
+    /// readable roots besides `root` itself.
+    #[must_use]
+    pub fn external_dirs(&self) -> Vec<PathBuf> {
+        self.components
+            .iter()
+            .filter(|c| self.is_external(c))
+            .map(|c| self.component_dir(c))
+            .collect()
     }
 
     /// Components linked to `id`, with the direction of the relationship.
@@ -149,7 +170,119 @@ impl Project {
     }
 }
 
+/// Resolve `.` and `..` without touching the filesystem.
+#[must_use]
+pub fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            PathPart::CurDir => {}
+            PathPart::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// `target` relative to `base` with `/` separators, e.g. `../billing/api`.
+/// Both should be absolute. Falls back to `target` itself when they share no
+/// root (different Windows drives).
+#[must_use]
+pub fn relative_path(base: &Path, target: &Path) -> String {
+    let base: Vec<_> = normalize(base)
+        .components()
+        .map(|c| c.as_os_str().to_owned())
+        .collect();
+    let target_parts: Vec<_> = normalize(target)
+        .components()
+        .map(|c| c.as_os_str().to_owned())
+        .collect();
+    let common = base
+        .iter()
+        .zip(&target_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        return target.to_string_lossy().replace('\\', "/");
+    }
+    let parts: Vec<String> = std::iter::repeat_n("..".to_string(), base.len() - common)
+        .chain(
+            target_parts[common..]
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned()),
+        )
+        .collect();
+    if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join("/")
+    }
+}
+
 /// Session ids identify one terminal of one component.
 pub fn session_id(component_id: &str, terminal_id: &str) -> String {
     format!("{component_id}/{terminal_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_dots() {
+        assert_eq!(
+            normalize(Path::new("/code/shop/./web/../../billing")),
+            PathBuf::from("/code/billing")
+        );
+    }
+
+    #[test]
+    fn relative_paths_between_siblings_and_children() {
+        let root = Path::new("/code/shop");
+        assert_eq!(relative_path(root, Path::new("/code/shop")), ".");
+        assert_eq!(
+            relative_path(root, Path::new("/code/shop/apps/web")),
+            "apps/web"
+        );
+        assert_eq!(
+            relative_path(root, Path::new("/code/billing/api")),
+            "../billing/api"
+        );
+        assert_eq!(
+            relative_path(root, Path::new("/elsewhere")),
+            "../../elsewhere"
+        );
+    }
+
+    #[test]
+    fn external_components_resolve_outside_the_root() {
+        let component = |path: &str| Component {
+            id: "c".into(),
+            name: "C".into(),
+            kind: ComponentKind::Other,
+            path: path.into(),
+            notes: String::new(),
+            terminals: vec![],
+            position: Position::default(),
+        };
+        let project = Project {
+            schema_version: SCHEMA_VERSION,
+            name: "shop".into(),
+            root: "/code/shop".into(),
+            components: vec![],
+            links: vec![],
+        };
+        let billing = component("../billing");
+        assert_eq!(
+            project.component_dir(&billing),
+            PathBuf::from("/code/billing")
+        );
+        assert!(project.is_external(&billing));
+        assert!(!project.is_external(&component("apps/web")));
+        assert!(!project.is_external(&component(".")));
+    }
 }

@@ -50,6 +50,12 @@ export interface Project {
   links: Link[]
 }
 
+/** Uncommitted changes per component, and the repo of components not in the project root's repo. */
+export interface GitStatus {
+  changes: Record<string, number>
+  repos: Record<string, string>
+}
+
 export interface DeviceManifest {
   id: string
   name: string

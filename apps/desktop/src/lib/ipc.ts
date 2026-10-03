@@ -1,7 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import type { DeviceManifest, DirEntry, Project, TerminalEvent, TerminalSnapshot } from '../types'
+import type {
+  DeviceManifest,
+  DirEntry,
+  GitStatus,
+  Project,
+  TerminalEvent,
+  TerminalSnapshot,
+} from '../types'
 
 export const openProject = (root: string) =>
   invoke<{ project: Project; detected: boolean }>('open_project', { root })
@@ -10,8 +17,10 @@ export const rescanProject = (project: Project) =>
 export const saveProject = (project: Project) => invoke<string>('save_project', { project })
 export const componentContext = (project: Project, componentId: string) =>
   invoke<string>('component_context', { project, componentId })
-export const gitChanges = (root: string, components: [string, string][]) =>
-  invoke<Record<string, number>>('git_changes', { root, components })
+/** Opens a folder picker; `null` if cancelled. */
+export const addFolder = (project: Project) =>
+  invoke<{ project: Project; added: number } | null>('add_folder', { project })
+export const gitStatus = (project: Project) => invoke<GitStatus>('git_status', { project })
 
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })

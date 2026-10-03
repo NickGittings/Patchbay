@@ -6,22 +6,22 @@ import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { gitChanges, listDevices } from './lib/ipc'
+import { gitStatus, listDevices } from './lib/ipc'
 import { listenForTerminals } from './lib/sessions'
 import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
 
 const GIT_POLL_MS = 5000
 
-/** Poll uncommitted changes per component while a project is open. */
+/** Poll uncommitted changes per component (across every repo on the map) while a project is open. */
 function useGitPolling() {
   const root = useStore((s) => s.project?.root)
   useEffect(() => {
     if (!root) return
     const poll = () => {
-      const comps = useStore.getState().nodes.map((n): [string, string] => [n.id, n.data.path])
-      void gitChanges(root, comps)
-        .then(useStore.getState().setGitChanges)
+      const s = useStore.getState()
+      void gitStatus(s.toProject())
+        .then(s.setGitStatus)
         .catch(() => {})
     }
     poll()

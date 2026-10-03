@@ -8,6 +8,7 @@ import { sessionId } from '../../types'
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const sessions = useStore((s) => s.sessions)
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
+  const repo = useStore((s) => s.repos[id])
   const activeSession = useStore((s) => s.activeSession)
   const color = KIND_COLOR[data.kind]
 
@@ -26,6 +27,11 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       <div className="component-header">
         <span className="kind-badge">{data.kind}</span>
         <span className="component-name">{data.name}</span>
+        {repo && (
+          <span className="repo-badge" title={`In the ${repo} repo`}>
+            {repo}
+          </span>
+        )}
         {changes > 0 && (
           <span className="git-badge" title={`${changes} uncommitted change(s)`}>
             ±{changes}

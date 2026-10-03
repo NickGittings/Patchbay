@@ -14,6 +14,7 @@ import type {
   Component,
   ComponentData,
   DeviceManifest,
+  GitStatus,
   Link,
   Project,
   SessionState,
@@ -31,6 +32,8 @@ interface State {
   devices: DeviceManifest[]
   sessions: Record<string, SessionState>
   gitChanges: Record<string, number>
+  /** Repo folder name for components outside the project root's repo. */
+  repos: Record<string, string>
   selectedId: string | null
   selectedEdgeId: string | null
   activeSession: string | null
@@ -54,6 +57,7 @@ interface State {
   setActiveSession: (id: string | null) => void
   setSession: (id: string, s: SessionState) => void
   setGitChanges: (c: Record<string, number>) => void
+  setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
   setMessage: (m: string) => void
   markSaved: () => void
@@ -88,6 +92,7 @@ export const useStore = create<State>((set, get) => ({
   devices: [],
   sessions: {},
   gitChanges: {},
+  repos: {},
   selectedId: null,
   selectedEdgeId: null,
   activeSession: null,
@@ -101,6 +106,7 @@ export const useStore = create<State>((set, get) => ({
       edges: p.links.map(linkToEdge),
       sessions: {},
       gitChanges: {},
+      repos: {},
       selectedId: null,
       selectedEdgeId: null,
       activeSession: null,
@@ -237,6 +243,7 @@ export const useStore = create<State>((set, get) => ({
   setActiveSession: (activeSession) => set({ activeSession }),
   setSession: (id, st) => set((s) => ({ sessions: { ...s.sessions, [id]: st } })),
   setGitChanges: (gitChanges) => set({ gitChanges }),
+  setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
   setMessage: (message) => set({ message }),
   markSaved: () => set({ dirty: false }),

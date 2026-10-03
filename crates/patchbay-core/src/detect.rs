@@ -1,14 +1,17 @@
 //! Suggest a component map from a repository's structure.
 //!
 //! Every folder with a recognised manifest (`package.json`, `Cargo.toml`,
-//! `pyproject.toml`, `requirements.txt`, `go.mod`) becomes a component.
-//! Dependencies between detected packages become links.
+//! `pyproject.toml`, `requirements.txt`, `go.mod`) becomes a component, as does
+//! any nested git repo without one. Dependencies between detected packages
+//! become links.
 
+use crate::git;
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
+    relative_path,
 };
-use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use anyhow::{Result, bail};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 const MAX_DEPTH: usize = 4;
@@ -340,8 +343,21 @@ fn candidate_for(dir: &Path, root: &Path) -> Option<Candidate> {
     None
 }
 
+/// A git repo with no manifest we recognise still deserves a node.
+fn repo_candidate(dir: &Path) -> Candidate {
+    Candidate {
+        rel: String::new(),
+        name: dir_name(dir),
+        kind: ComponentKind::Other,
+        tasks: Vec::new(),
+        deps: HashSet::new(),
+    }
+}
+
 fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<Candidate>) {
-    if let Some(mut c) = candidate_for(dir, root) {
+    let candidate = candidate_for(dir, root)
+        .or_else(|| (dir != root && dir.join(".git").exists()).then(|| repo_candidate(dir)));
+    if let Some(mut c) = candidate {
         let rel = dir.strip_prefix(root).unwrap_or(dir);
         c.rel = if rel.as_os_str().is_empty() {
             ".".into()
@@ -623,19 +639,88 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
     added
 }
 
+/// Detect components in a folder the user picked: usually a sibling repo
+/// outside the project root, or a subfolder detection missed. Paths are
+/// rewritten relative to the project root (`../billing` for a sibling) and ids
+/// are prefixed with the folder name so they don't collide with the project's
+/// own. A folder with no manifest still yields one component.
+///
+/// # Errors
+/// Fails if `dir` or the project root cannot be resolved, or `dir` is the
+/// project root itself (use [`rescan`]).
+pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
+    let dir = dir.canonicalize()?;
+    let root = Path::new(&project.root).canonicalize()?;
+    if dir == root {
+        bail!("That is the project folder itself; use Rescan instead");
+    }
+    let mut found = detect(&dir)?;
+    let prefix = slug(&dir_name(&dir));
+    let rename = |id: &str| {
+        if id == "root" {
+            prefix.clone()
+        } else {
+            format!("{prefix}-{id}")
+        }
+    };
+    for c in &mut found.components {
+        c.id = rename(&c.id);
+        c.path = relative_path(&root, &dir.join(&c.path));
+    }
+    for l in &mut found.links {
+        l.source = rename(&l.source);
+        l.target = rename(&l.target);
+        l.id = format!("{}->{}", l.source, l.target);
+    }
+    Ok(found)
+}
+
+/// Add components for new folders under the project root and under every
+/// external repo already on the map. Existing components are left untouched.
+/// Returns how many components were added.
+///
+/// # Errors
+/// Fails if the project root cannot be read.
+pub fn rescan(project: &mut Project) -> Result<usize> {
+    let mut added = merge_new(project, detect(Path::new(&project.root))?);
+    let externals: BTreeSet<_> = project
+        .components
+        .iter()
+        .filter(|c| project.is_external(c))
+        .filter_map(|c| {
+            let dir = project.component_dir(c);
+            git::repo_root(&dir).or_else(|| dir.canonicalize().ok())
+        })
+        .collect();
+    // Scanning a folder covers everything below it.
+    let tops: Vec<_> = externals
+        .iter()
+        .filter(|d| !externals.iter().any(|o| o != *d && d.starts_with(o)))
+        .collect();
+    for dir in tops {
+        // A repo that vanished is simply skipped.
+        if let Ok(found) = detect_folder(project, dir) {
+            added += merge_new(project, found);
+        }
+    }
+    Ok(added)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::{env, fs, process};
 
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
     }
 
-    fn fixture(tag: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("patchbay-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn fixture(tag: &str) -> PathBuf {
+        let root = env::temp_dir().join(format!("patchbay-{tag}-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
         write(
             &root,
             "package.json",
@@ -683,7 +768,7 @@ mod tests {
         assert_eq!(p.links[0].source, "apps-web");
         assert_eq!(p.links[0].target, "packages-api-client");
         assert!(web.position.x < p.components[1].position.x);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -696,7 +781,7 @@ mod tests {
         assert_eq!(added, 1);
         assert_eq!(existing.components[0].name, "Renamed");
         assert_eq!(existing.components.len(), 3);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -705,5 +790,70 @@ mod tests {
             requirement_name("FastAPI[all]>=0.1 ; python_version>'3'"),
             "fastapi"
         );
+    }
+
+    #[test]
+    fn repos_without_a_manifest_become_components() {
+        let root = env::temp_dir().join(format!("patchbay-repos-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("infra/.git")).unwrap();
+        write(&root, "web/package.json", r#"{"name":"web"}"#);
+        let p = detect(&root).unwrap();
+        let paths: Vec<_> = p.components.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, vec!["infra", "web"]);
+        assert_eq!(p.components[0].kind, ComponentKind::Other);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_repos_get_relative_paths_and_prefixed_ids() {
+        let base = env::temp_dir().join(format!("patchbay-ext-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(
+            &base,
+            "shop/package.json",
+            r#"{"name":"shop","scripts":{"dev":"vite"}}"#,
+        );
+        write(&base, "billing/go.mod", "module example.com/billing\n");
+        write(
+            &base,
+            "billing/cmd/worker/go.mod",
+            "module example.com/worker\n",
+        );
+        let mut project = detect(&base.join("shop").canonicalize().unwrap()).unwrap();
+
+        let found = detect_folder(&project, &base.join("billing")).unwrap();
+        let ids: Vec<_> = found.components.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["billing", "billing-cmd-worker"]);
+        assert_eq!(found.components[0].path, "../billing");
+        assert_eq!(found.components[1].path, "../billing/cmd/worker");
+        assert!(detect_folder(&project, &base.join("shop")).is_err());
+
+        assert_eq!(merge_new(&mut project, found), 2);
+        // Rescanning picks up a new folder in the external repo, not duplicates.
+        write(&base, "billing/cmd/api/go.mod", "module example.com/api\n");
+        assert_eq!(rescan(&mut project).unwrap(), 1);
+        assert_eq!(rescan(&mut project).unwrap(), 0);
+        assert!(
+            project
+                .components
+                .iter()
+                .any(|c| c.path == "../billing/cmd/api")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn picked_subfolder_without_manifest_becomes_one_component() {
+        let base = env::temp_dir().join(format!("patchbay-sub-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(&base, "package.json", r#"{"name":"app"}"#);
+        write(&base, "docs/index.md", "");
+        let project = detect(&base.canonicalize().unwrap()).unwrap();
+        let found = detect_folder(&project, &base.join("docs")).unwrap();
+        assert_eq!(found.components.len(), 1);
+        assert_eq!(found.components[0].id, "docs");
+        assert_eq!(found.components[0].path, "docs");
+        let _ = fs::remove_dir_all(base);
     }
 }

@@ -1,6 +1,6 @@
 import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
-import { saveCurrentProject, useOpenProject, useRescanProject } from '../lib/project'
+import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
 
 export default function Toolbar() {
@@ -9,6 +9,7 @@ export default function Toolbar() {
   const message = useStore((s) => s.message)
   const openFolder = useOpenProject()
   const rescan = useRescanProject()
+  const addRepo = useAddFolder()
   const { screenToFlowPosition } = useReactFlow()
 
   const addComponent = () =>
@@ -35,6 +36,12 @@ export default function Toolbar() {
         <>
           <button onClick={() => void rescan()} title="Add components for new folders">
             Rescan
+          </button>
+          <button
+            onClick={() => void addRepo()}
+            title="Add a repo beside this project, or a folder Rescan missed"
+          >
+            Add repo…
           </button>
           <button onClick={addComponent}>+ Component</button>
         </>
