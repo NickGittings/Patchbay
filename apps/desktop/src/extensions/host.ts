@@ -49,6 +49,7 @@ let lastProjectKey = ''
 let lastSelection = ''
 let installed = false
 const error = (e: unknown) => useStore.getState().setMessage(String(e))
+class Timeout extends Error {}
 const active = () =>
   useStore.getState().extensions.extensions.filter((e) => e.enabled && !e.errors.length)
 const ownerOfCommand = (id: string) =>
@@ -59,24 +60,29 @@ function permission(runtime: Runtime, name: string) {
   if (!runtime.extension.manifest.permissions.includes(name))
     throw new Error(`Permission ${name} is required`)
 }
+/** One slow call isn't a fault; a host that keeps not answering is. */
+function strike(runtime: Runtime) {
+  if (++runtime.timeouts >= MAX_TIMEOUTS) {
+    error(`${runtime.extension.id} stopped responding`)
+    shutdown(runtime)
+  }
+}
+/** Call into the host; `strikes: false` leaves counting a timeout to the caller. */
 function request(
   runtime: Runtime,
   target: string,
   key: string,
   args: unknown[],
   timeout = TIMEOUT,
+  strikes = true,
 ): Promise<unknown> {
   if (runtime.disposed) return Promise.reject(new Error('Extension stopped'))
   return new Promise((resolve, reject) => {
     const id = ++next
     const timer = setTimeout(() => {
       runtime.pending.delete(id)
-      reject(new Error(`${runtime.extension.id}: ${target} timed out`))
-      // One slow call isn't a fault; a host that keeps not answering is.
-      if (++runtime.timeouts >= MAX_TIMEOUTS) {
-        error(`${runtime.extension.id} stopped responding`)
-        shutdown(runtime)
-      }
+      reject(new Timeout(`${runtime.extension.id}: ${target} timed out`))
+      if (strikes) strike(runtime)
     }, timeout)
     runtime.pending.set(id, { resolve, reject, timer })
     send(runtime, { method: 'call', id, target, key, args })
@@ -204,6 +210,15 @@ export async function activateExtension(extension: Extension): Promise<Runtime |
     disposed: false,
   }
   runtimes.set(extension.id, runtime)
+  // The frame loads its bootstrap once; another load means it navigated away, and the page
+  // it now shows must not inherit this extension's API access.
+  let loads = 0
+  frame.addEventListener('load', () => {
+    if (++loads > 1 && !runtime.disposed) {
+      error(`${extension.id}: extension frame navigated away`)
+      shutdown(runtime)
+    }
+  })
   const timer = setTimeout(() => {
     rejectReady(new Error(`${extension.id}: activation timed out`))
     shutdown(runtime)
@@ -476,15 +491,13 @@ async function onMessage(event: MessageEvent) {
     shutdown(runtime)
     return
   }
-  if (message.reply !== undefined && runtime.pending.has(message.reply)) {
-    const pending = runtime.pending.get(message.reply)
-    if (pending) {
-      clearTimeout(pending.timer)
-      runtime.pending.delete(message.reply)
-      runtime.timeouts = 0
-      if (message.error) pending.reject(new Error(String(message.error)))
-      else pending.resolve(message.result)
-    }
+  const pending = message.reply === undefined ? undefined : runtime.pending.get(message.reply)
+  if (pending) {
+    clearTimeout(pending.timer)
+    runtime.pending.delete(message.reply)
+    runtime.timeouts = 0
+    if (message.error) pending.reject(new Error(String(message.error)))
+    else pending.resolve(message.result)
     return
   }
   if (Date.now() - runtime.period > 1000) {
@@ -496,6 +509,8 @@ async function onMessage(event: MessageEvent) {
     shutdown(runtime)
     return
   }
+  // A reply whose request already timed out (or was never sent): that call has failed, so drop it.
+  if (message.reply !== undefined) return
   if (message.method === 'ready') {
     runtime.resolveReady()
     return
@@ -544,7 +559,10 @@ async function activateProviders(caller?: string) {
       .map((e) => activateExtension(e).catch(error)),
   )
 }
-/** Ask every ready context provider about each component, all in parallel. */
+/**
+ * Ask every ready context provider about each component, all in parallel. A provider's
+ * timeouts in one collection count as a single strike, so a slow one isn't stopped at once.
+ */
 async function collectContext(
   project: Project,
   ids: string[],
@@ -555,19 +573,28 @@ async function collectContext(
   const components = project.components.filter((c) => !ids.length || ids.includes(c.id))
   const asks = [...runtimes.values()]
     .filter((r) => r.isReady && r.providers.has('context'))
-    .flatMap((runtime) =>
-      components.map(async (component) => {
-        try {
-          const body = await request(runtime, 'provider', 'context', [component], 2000)
-          if (typeof body !== 'string' || !body) return []
-          const name = runtime.extension.manifest.displayName ?? runtime.extension.id
-          return [{ title: `${name} — ${component.name}`, body: body.slice(0, 32768) }]
-        } catch (e) {
-          error(e)
-          return []
-        }
-      }),
-    )
+    .map(async (runtime) => {
+      let timedOut = false
+      const answers = await Promise.all(
+        components.map(async (component) => {
+          try {
+            const body = await request(runtime, 'provider', 'context', [component], 2000, false)
+            if (typeof body !== 'string' || !body) return []
+            const name = runtime.extension.manifest.displayName ?? runtime.extension.id
+            return [{ title: `${name} — ${component.name}`, body: body.slice(0, 32768) }]
+          } catch (e) {
+            if (e instanceof Timeout) timedOut = true
+            else error(e)
+            return []
+          }
+        }),
+      )
+      if (timedOut) {
+        error(`${runtime.extension.id}: context provider timed out`)
+        strike(runtime)
+      }
+      return answers.flat()
+    })
   const sections = (await Promise.all(asks)).flat()
   return current === epoch ? sections : []
 }

@@ -136,7 +136,11 @@ export async function activate(patchbay) {
   );
   await Promise.all(disposables.map((d) => d.ready));
   // A short task result provides the count; installations without Docker display zero.
-  for (const component of project?.components ?? []) await refresh(component);
+  // Refresh in the background: each run may wait several seconds, longer than activation may take.
+  void (async () => {
+    for (const component of project?.components ?? [])
+      await refresh(component).catch(() => {});
+  })();
 }
 export function deactivate() {
   for (const disposable of disposables) disposable.dispose();
