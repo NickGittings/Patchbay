@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
+import { componentAttention } from '../lib/attention'
 import { KIND_COLOR } from '../lib/display'
 import { startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
@@ -32,6 +33,7 @@ export default function ImplementationView() {
               (t) => sessions[sessionId(n.id, t.id)]?.running,
             ).length
             const changes = gitChanges[n.id] ?? 0
+            const attention = componentAttention(n.id, n.data.terminals, sessions)
             return (
               <button
                 key={n.id}
@@ -44,6 +46,14 @@ export default function ImplementationView() {
                 {changes > 0 && (
                   <span className="git-badge" title={`${changes} uncommitted change(s)`}>
                     ±{changes}
+                  </span>
+                )}
+                {attention && (
+                  <span
+                    className={`attention-pill health-${attention.health}`}
+                    title={attention.detail}
+                  >
+                    {attention.label}
                   </span>
                 )}
                 {running > 0 && (

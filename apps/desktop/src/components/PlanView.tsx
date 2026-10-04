@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
+import { describeTerminal, KIND_COLOR, terminalStatus } from '../lib/display'
 import { planContext } from '../lib/ipc'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { PLAN_SCOPE, sessionId } from '../types'
 import Canvas from './Canvas'
+import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 
 export default function PlanView() {
@@ -19,7 +20,8 @@ export default function PlanView() {
   const sessions = useStore((s) => s.sessions)
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const activeId = useStore((s) => s.planActive)
+  const setActiveId = useStore((s) => s.setPlanActive)
   const [contextOpen, setContextOpen] = useState(false)
   const [context, setContext] = useState('Loading planner context…')
   const [restarting, setRestarting] = useState(false)
@@ -103,18 +105,24 @@ export default function PlanView() {
           </aside>
           <div className="terminal-dock planner-terminal">
             <div className="tabs">
-              {terminals.map((t) => (
-                <button
-                  key={t.id}
-                  className={`tab health-${terminalHealth(sessions[sessionId(PLAN_SCOPE, t.id)])} ${t.id === active.id ? 'active' : ''}`}
-                  onClick={() => setActiveId(t.id)}
-                >
-                  <span className="status-dot" />
-                  {t.name}
-                </button>
-              ))}
+              {terminals.map((t) => {
+                const tabSid = sessionId(PLAN_SCOPE, t.id)
+                const status = terminalStatus(t.kind, sessions[tabSid])
+                return (
+                  <button
+                    key={t.id}
+                    className={`tab health-${status.health} ${t.id === active.id ? 'active' : ''}`}
+                    title={[status.label, status.detail].filter(Boolean).join(' — ')}
+                    onClick={() => setActiveId(t.id)}
+                  >
+                    <span className="status-dot" />
+                    {t.name}
+                  </button>
+                )
+              })}
               <span className="spacer" />
               <span className="tab-actions">
+                <StatusLabel status={terminalStatus(active.kind, session)} />
                 <code>{describeTerminal(active)}</code>
                 {session?.running ? (
                   <>

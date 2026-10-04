@@ -1,9 +1,10 @@
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
-import { describeTerminal, terminalHealth } from '../lib/display'
+import { describeTerminal, terminalStatus } from '../lib/display'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
+import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 
 interface Tab {
@@ -53,21 +54,23 @@ export default function TerminalDock() {
   return (
     <div className="panel terminal-dock">
       <div className="tabs">
-        {tabs.map((t) => (
-          <button
-            key={t.sid}
-            className={`tab health-${terminalHealth(sessions[t.sid])} ${
-              t.sid === activeSession ? 'active' : ''
-            }`}
-            onClick={() => {
-              extensionViews.setSelected(null)
-              setActiveSession(t.sid)
-            }}
-          >
-            <span className="status-dot" />
-            {t.label}
-          </button>
-        ))}
+        {tabs.map((t) => {
+          const status = terminalStatus(t.terminal.kind, sessions[t.sid])
+          return (
+            <button
+              key={t.sid}
+              className={`tab health-${status.health} ${t.sid === activeSession ? 'active' : ''}`}
+              title={[status.label, status.detail].filter(Boolean).join(' — ')}
+              onClick={() => {
+                extensionViews.setSelected(null)
+                setActiveSession(t.sid)
+              }}
+            >
+              <span className="status-dot" />
+              {t.label}
+            </button>
+          )
+        })}
         {extensionViews.views.map((view) => (
           <button
             key={view.id}
@@ -84,6 +87,7 @@ export default function TerminalDock() {
         <span className="spacer" />
         {active && !extensionViews.selected && (
           <span className="tab-actions">
+            <StatusLabel status={terminalStatus(active.terminal.kind, session)} />
             <code>{describeTerminal(active.terminal)}</code>
             {session?.running ? (
               <button onClick={() => stopTerminal(active.sid)}>■ Stop</button>

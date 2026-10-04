@@ -13,6 +13,7 @@ pub mod git;
 pub mod model;
 pub mod policy;
 pub mod pty;
+pub mod status;
 pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};

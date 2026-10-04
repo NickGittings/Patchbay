@@ -258,6 +258,61 @@
     )
     state().onNodesChange([{ type: 'remove', id: 'alpha' }])
     assert(state().highlighted.length === 0, 'removed highlight was not pruned')
+
+    // Status: an agent reporting through its status file, and a task printing a local URL.
+    state().updateComponent('unrelated', {
+      terminals: [
+        {
+          id: 'agent',
+          name: 'Agent',
+          kind: 'agent',
+          command: `printf 'needs-input\\n{"message":"Allow smoke?"}' > "$PATCHBAY_STATUS_FILE"; cat`,
+        },
+        {
+          id: 'server',
+          name: 'Server',
+          kind: 'task',
+          command: "echo 'Local: http://localhost:9/'; cat",
+        },
+      ],
+    })
+    await smoke.startTerminal('unrelated', 'agent')
+    await smoke.startTerminal('unrelated', 'server')
+    await until(
+      'agent needing input',
+      () => state().sessions['unrelated/agent']?.status?.agent?.message === 'Allow smoke?',
+    )
+    await until(
+      'server URL',
+      () => state().sessions['unrelated/server']?.status?.url === 'http://localhost:9/',
+    )
+    const attention = await until('attention menu', () =>
+      Array.from(document.querySelectorAll('.attention-button')).find((b) =>
+        b.textContent.includes('1 need input'),
+      ),
+    )
+    click(attention)
+    click(await until('attention item', () => document.querySelector('.attention-item')))
+    await until(
+      'attention item reveals the agent',
+      () =>
+        state().view === 'implementation' &&
+        state().selectedId === 'unrelated' &&
+        state().activeSession === 'unrelated/agent' &&
+        document.querySelector('.implementation-view .status-label.health-input'),
+    )
+    smoke.stopTerminal('unrelated/server')
+    await until('stopped server', () => {
+      const server = state().sessions['unrelated/server']
+      return server && !server.running && server.status?.stopped
+    })
+    assert(
+      !document.querySelector('.attention-button')?.textContent.includes('failed') &&
+        document.querySelector('.implementation-view .status-label.health-idle')?.textContent ===
+          'Stopped',
+      'a stopped task counts as failed',
+    )
+
     smoke.resetSessions(await smoke.terminalReset())
     state().loadProject({ ...project, name: 'another-project' })
     assert(
@@ -269,7 +324,7 @@
       'project change retains planner sessions',
     )
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, project reset',
+      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, project reset',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

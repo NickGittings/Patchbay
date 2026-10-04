@@ -1,6 +1,7 @@
 import ExtensionBadges from '../extensions/Badges'
 import { useReactFlow } from '@xyflow/react'
 import { openComponentWindow } from '../lib/windows'
+import { componentAttention } from '../lib/attention'
 import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
 import { sessionId } from '../types'
@@ -37,6 +38,7 @@ export default function Hierarchy() {
           (t) => sessions[sessionId(n.id, t.id)]?.running,
         ).length
         const changes = gitChanges[n.id] ?? 0
+        const attention = componentAttention(n.id, n.data.terminals, sessions)
         return (
           <button
             key={n.id}
@@ -47,6 +49,14 @@ export default function Hierarchy() {
             <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
             <span className="hierarchy-name">{n.data.name}</span>
             <ExtensionBadges componentId={n.id} />
+            {attention && (
+              <span
+                className={`attention-pill health-${attention.health}`}
+                title={attention.detail}
+              >
+                {attention.label}
+              </span>
+            )}
             {running > 0 && (
               <span className="count running" title={`${running} running`}>
                 {running}

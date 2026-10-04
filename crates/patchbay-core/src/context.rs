@@ -216,6 +216,18 @@ fn decorate_agent(command: &mut String, file: &Path, neighbour_dirs: &[PathBuf])
             " --append-system-prompt \"$(cat {})\"",
             sh_quote(&file.display().to_string())
         );
+        // Hooks that report working / needs input / done to Patchbay. claude
+        // takes one `--settings`, so never replace one the user passes.
+        if !command
+            .split_whitespace()
+            .any(|a| a == "--settings" || a.starts_with("--settings="))
+        {
+            let _ = write!(
+                command,
+                " --settings {}",
+                sh_quote(&crate::status::claude_hooks_settings())
+            );
+        }
     }
 }
 
@@ -268,6 +280,8 @@ pub fn plan_session_spec(
         command,
         cwd: PathBuf::from(&project.root),
         env,
+        ready_when: terminal.ready_when.clone(),
+        service: terminal.kind == TerminalKind::Task,
     })
 }
 
@@ -320,6 +334,8 @@ pub fn session_spec(
         command,
         cwd: project.component_dir(component),
         env,
+        ready_when: terminal.ready_when.clone(),
+        service: terminal.kind == TerminalKind::Task,
     })
 }
 
@@ -359,6 +375,7 @@ mod tests {
             name: "Ad hoc".into(),
             command: "echo hi".into(),
             kind: TerminalKind::Task,
+            ready_when: String::new(),
         };
         let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
         assert_eq!(spec.id, "api/agent");
@@ -370,6 +387,7 @@ mod tests {
             name: "X".into(),
             command: "true".into(),
             kind: TerminalKind::Task,
+            ready_when: String::new(),
         };
         assert!(extra_session_spec(project(), "nope", missing, &AllowAll, &[]).is_err());
     }
@@ -400,6 +418,7 @@ mod tests {
                         name: "Claude".into(),
                         command: "claude".into(),
                         kind: TerminalKind::Agent,
+                        ready_when: String::new(),
                     }],
                 ),
                 component("db", "db", vec![]),
@@ -450,7 +469,23 @@ mod tests {
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         assert!(spec.command.starts_with("claude --add-dir '/repo/db'"));
         assert!(spec.command.contains("--append-system-prompt"));
+        assert!(spec.command.contains(" --settings '{\"hooks\""));
         assert!(spec.env.contains_key(CONTEXT_ENV));
+        assert!(!spec.service);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_keeps_the_users_own_settings() {
+        for command in [
+            "claude --settings ./team.json",
+            "claude --settings=./team.json",
+        ] {
+            let mut command = command.to_string();
+            decorate_agent(&mut command, Path::new("/tmp/ctx.md"), &[]);
+            assert_eq!(command.matches("--settings").count(), 1, "{command}");
+            assert!(command.contains("--append-system-prompt"));
+        }
     }
 
     fn planner() -> TerminalSpec {
@@ -459,6 +494,7 @@ mod tests {
             name: "Claude".into(),
             command: "claude".into(),
             kind: TerminalKind::Agent,
+            ready_when: String::new(),
         }
     }
 

@@ -4,7 +4,9 @@ import ExtensionMenu from '../../extensions/ExtensionMenu'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, useState, type CSSProperties } from 'react'
 import { nearbyIds } from '../../lib/plan'
-import { KIND_COLOR, terminalHealth } from '../../lib/display'
+import { useShallow } from 'zustand/react/shallow'
+import { mostUrgent } from '../../lib/attention'
+import { KIND_COLOR, terminalStatus } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
 import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
@@ -17,11 +19,16 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const planClass =
     planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
-  const sessions = useStore((s) => s.sessions)
+  // Only this node's sessions, so other terminals' status updates don't re-render it.
+  const sessions = useStore(
+    useShallow((s) => data.terminals.map((t) => s.sessions[sessionId(id, t.id)])),
+  )
+  const statuses = data.terminals.map((t, i) => terminalStatus(t.kind, sessions[i]))
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const repo = useStore((s) => s.repos[id])
   const activeSession = useStore((s) => s.activeSession)
   const color = KIND_COLOR[data.kind]
+  const attention = mostUrgent(statuses)
 
   const openTerminal = (terminalId: string) => {
     const s = useStore.getState()
@@ -72,6 +79,11 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             ±{changes}
           </span>
         )}
+        {attention && (
+          <span className={`attention-pill health-${attention.health}`} title={attention.detail}>
+            {attention.label}
+          </span>
+        )}
         <ExtensionBadges componentId={id} />
         <button
           className="nodrag popout-button"
@@ -87,12 +99,13 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       </div>
       <div className="component-path">{data.path === '.' ? '(repo root)' : data.path}</div>
       <div className="terminal-chips">
-        {data.terminals.map((t) => {
+        {data.terminals.map((t, i) => {
           const sid = sessionId(id, t.id)
+          const status = statuses[i]
           return (
             <button
               key={t.id}
-              className={`chip health-${terminalHealth(sessions[sid])} ${
+              className={`chip health-${status.health} ${
                 activeSession === sid ? 'active' : ''
               } nodrag`}
               onClick={(e) => {
@@ -102,7 +115,9 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
               }}
               aria-disabled={planning}
               tabIndex={planning ? -1 : undefined}
-              title={t.command || 'interactive shell'}
+              title={[status.label, status.detail, t.command || 'interactive shell']
+                .filter(Boolean)
+                .join('\n')}
             >
               <span className="status-dot" />
               {t.name}

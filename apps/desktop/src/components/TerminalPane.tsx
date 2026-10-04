@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { describeTerminal } from '../lib/display'
+import { describeTerminal, terminalStatus } from '../lib/display'
+import { terminalSeen } from '../lib/ipc'
 import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
@@ -18,6 +19,16 @@ export default function TerminalPane({
 }) {
   const sid = sessionId(componentId, terminal.id)
   const session = useStore((s) => s.sessions[sid])
+  // When a finished review or a failure that no window has shown yet happened.
+  const { health, attention } = terminalStatus(terminal.kind, session)
+  const unseen =
+    attention === 0
+      ? undefined
+      : health === 'review'
+        ? session?.status?.agent?.sinceMs
+        : health === 'fail'
+          ? session?.exitedMs
+          : undefined
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
 
@@ -47,6 +58,17 @@ export default function TerminalPane({
       window.removeEventListener(ACTIVE_CHANGED, refit)
     }
   }, [sid, componentId, terminal.id, terminal.kind, focus])
+
+  // Showing a session in a focused window acknowledges it in every window.
+  useEffect(() => {
+    if (unseen === undefined) return
+    const markSeen = () => {
+      if (document.hasFocus()) terminalSeen(sid).catch(() => {})
+    }
+    markSeen()
+    window.addEventListener('focus', markSeen)
+    return () => window.removeEventListener('focus', markSeen)
+  }, [sid, unseen])
 
   return (
     <div className="terminal-area">

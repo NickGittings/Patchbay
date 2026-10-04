@@ -6,7 +6,7 @@ import { executeExtensionCommand } from '../extensions/host'
 import { emit } from '@tauri-apps/api/event'
 import { useStore } from '../store'
 import { componentContext, openProject, terminalReset, terminalWrite } from './ipc'
-import { resetSessions, startTerminal } from './sessions'
+import { resetSessions, startTerminal, stopTerminal } from './sessions'
 import { terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
@@ -26,6 +26,7 @@ const hooks = {
   requestGitRefresh,
   syncCurrentRoots,
   startTerminal,
+  stopTerminal,
   terminalReset,
   resetSessions,
   terminalWrite,

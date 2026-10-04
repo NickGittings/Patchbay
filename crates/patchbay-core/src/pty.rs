@@ -1,10 +1,11 @@
 use crate::events::{EventSink, TerminalEvent};
+use crate::status::{STATUS_ENV, SessionStatus, Tracker, probe};
 use anyhow::{Result, anyhow, bail};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 const BACKLOG_CAPACITY: usize = 512 * 1024;
@@ -14,6 +15,9 @@ const RESET_GRACE: Duration = Duration::from_secs(1);
 
 const DEFAULT_SIZE: (u16, u16) = (120, 30);
 
+/// How often running sessions' status files, activity and health are checked.
+const MONITOR_TICK: Duration = Duration::from_millis(250);
+
 /// What to launch in a terminal session.
 #[derive(Debug, Clone)]
 pub struct SessionSpec {
@@ -22,6 +26,10 @@ pub struct SessionSpec {
     pub command: String,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    /// Output text that means a service is ready; empty for none.
+    pub ready_when: String,
+    /// A task terminal: watch its output for a local URL or `ready_when`.
+    pub service: bool,
 }
 
 struct Session {
@@ -68,6 +76,7 @@ struct Backlog {
     exit_code: Option<i32>,
     started_ms: u64,
     exited_ms: Option<u64>,
+    tracker: Tracker,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -107,6 +116,7 @@ pub struct Snapshot {
     pub started_ms: u64,
     /// When it exited, in Unix milliseconds.
     pub exited_ms: Option<u64>,
+    pub status: SessionStatus,
 }
 
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
@@ -127,9 +137,68 @@ pub struct PtyManager {
     orphans: Mutex<HashMap<u64, Process>>,
     backlogs: Mutex<HashMap<String, Arc<Mutex<Backlog>>>>,
     sizes: Mutex<HashMap<String, (u16, u16)>>,
+    /// Running sessions whose status the monitor thread keeps up to date, by generation.
+    watched: Mutex<HashMap<u64, Watched>>,
+    monitor_started: std::sync::OnceLock<()>,
+    status_dir: StatusDir,
     /// Last generation handed out. Global rather than per id so generations
     /// stay unique across [`PtyManager::reset`].
     generation: Mutex<u64>,
+}
+
+/// A running session as the monitor thread sees it.
+struct Watched {
+    id: String,
+    backlog: Arc<Mutex<Backlog>>,
+    sink: Arc<dyn EventSink>,
+    status_file: Option<PathBuf>,
+    /// Modification time and length of the status file when last read.
+    seen: Option<(SystemTime, u64)>,
+}
+
+/// A private folder (owner-only on Unix) for one manager's status files. It is
+/// created fresh, never reused, so on a shared temp dir another user can neither
+/// plant it in advance nor read the prompts and messages hooks write there.
+/// `None` if it couldn't be created; sessions then run without status reports.
+struct StatusDir(Option<PathBuf>);
+
+impl Default for StatusDir {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..8 {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let dir = std::env::temp_dir().join(format!(
+                "patchbay-status-{}-{n}-{nanos:x}",
+                std::process::id()
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            match builder.create(&dir) {
+                Ok(()) => return Self(Some(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => break,
+            }
+        }
+        Self(None)
+    }
+}
+
+impl Drop for StatusDir {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+fn remove_status_file(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Run through the user's login shell so PATH matches their terminal, even when
@@ -190,7 +259,7 @@ impl PtyManager {
         };
         // Taken before the process starts, so edits it makes count as after the run began.
         let started_ms = now_ms();
-        let started = self.start_process(&spec);
+        let started = self.start_process(&spec, generation);
         let mut sessions = self.sessions.lock().unwrap();
         // A reset while starting clears the reservation (and may let a newer spawn
         // take the id), so only claim the id if the reservation is still ours.
@@ -212,6 +281,7 @@ impl PtyManager {
             generation,
             running: true,
             started_ms,
+            tracker: Tracker::new(&spec.ready_when, spec.service),
             ..Backlog::default()
         }));
         if reserved {
@@ -219,6 +289,16 @@ impl PtyManager {
                 .lock()
                 .unwrap()
                 .insert(spec.id.clone(), backlog.clone());
+            self.watched.lock().unwrap().insert(
+                generation,
+                Watched {
+                    id: spec.id.clone(),
+                    backlog: backlog.clone(),
+                    sink: sink.clone(),
+                    status_file: self.status_file(generation),
+                    seen: None,
+                },
+            );
             sessions.insert(
                 spec.id.clone(),
                 Session {
@@ -238,6 +318,7 @@ impl PtyManager {
             drop(writer);
         }
         drop(sessions);
+        self.start_monitor();
         sink.emit(TerminalEvent::Started {
             session_id: spec.id.clone(),
             generation,
@@ -256,7 +337,11 @@ impl PtyManager {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             // Emit after unlocking; consumers de-duplicate by seq.
-                            let seq = backlog.lock().unwrap().append(&buf[..n]);
+                            let seq = {
+                                let mut backlog = backlog.lock().unwrap();
+                                backlog.tracker.on_output(&buf[..n], now_ms());
+                                backlog.append(&buf[..n])
+                            };
                             sink.emit(TerminalEvent::Output {
                                 session_id: id.clone(),
                                 generation,
@@ -274,6 +359,8 @@ impl PtyManager {
         std::thread::spawn(move || {
             let status = child.wait();
             manager.orphans.lock().unwrap().remove(&generation);
+            manager.watched.lock().unwrap().remove(&generation);
+            remove_status_file(manager.status_file(generation).as_deref());
             // Let the reader drain; on Windows it only sees EOF once the master closes.
             let _ = done_rx.recv_timeout(Duration::from_millis(500));
             let mut sessions = manager.sessions.lock().unwrap();
@@ -291,11 +378,20 @@ impl PtyManager {
                 Err(_) => 1,
             };
             let exited_ms = now_ms();
-            {
+            let status = {
                 let mut backlog = backlog.lock().unwrap();
                 backlog.running = false;
                 backlog.exit_code = Some(exit_code);
                 backlog.exited_ms = Some(exited_ms);
+                backlog.tracker.changed(exited_ms)
+            };
+            // The monitor stopped watching it, so report e.g. a stop it missed.
+            if let Some(status) = status {
+                sink.emit(TerminalEvent::Status {
+                    session_id: spec.id.clone(),
+                    generation,
+                    status,
+                });
             }
             sink.emit(TerminalEvent::Exited {
                 session_id: spec.id,
@@ -307,16 +403,104 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Where a session incarnation may report its state. Named after the
+    /// generation, so an earlier run of the same session can't write to it.
+    fn status_file(&self, generation: u64) -> Option<PathBuf> {
+        Some(self.status_dir.0.as_ref()?.join(generation.to_string()))
+    }
+
     fn next_generation(&self) -> u64 {
         let mut last = self.generation.lock().unwrap();
         *last += 1;
         *last
     }
 
+    /// One background thread per manager keeps watched sessions' status up to
+    /// date; it ends once the manager is dropped.
+    fn start_monitor(self: &Arc<Self>) {
+        self.monitor_started.get_or_init(|| {
+            let manager = Arc::downgrade(self);
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(MONITOR_TICK);
+                    let Some(manager) = Weak::upgrade(&manager) else {
+                        break;
+                    };
+                    manager.monitor_tick();
+                }
+            });
+        });
+    }
+
+    fn monitor_tick(&self) {
+        let now = now_ms();
+        let watched: Vec<_> = self
+            .watched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&generation, w)| {
+                let file = w.status_file.clone();
+                (
+                    generation,
+                    w.id.clone(),
+                    w.backlog.clone(),
+                    w.sink.clone(),
+                    file,
+                    w.seen,
+                )
+            })
+            .collect();
+        let mut events = Vec::new();
+        for (generation, id, backlog, sink, file, seen) in watched {
+            // Read a changed status file without holding any lock.
+            let report = file.as_deref().and_then(|file| {
+                let meta = std::fs::metadata(file).ok()?;
+                let stamp = (meta.modified().ok()?, meta.len());
+                if seen == Some(stamp) {
+                    return None;
+                }
+                let text = std::fs::read_to_string(file).ok()?;
+                if let Some(w) = self.watched.lock().unwrap().get_mut(&generation) {
+                    w.seen = Some(stamp);
+                }
+                Some(text)
+            });
+            let (port, status) = {
+                let mut backlog = backlog.lock().unwrap();
+                if let Some(text) = report {
+                    backlog.tracker.on_report(&text, now);
+                }
+                (backlog.tracker.due_probe(now), backlog.tracker.changed(now))
+            };
+            if let Some(port) = port {
+                let backlog = backlog.clone();
+                std::thread::spawn(move || {
+                    let ok = probe(port);
+                    backlog.lock().unwrap().tracker.on_probe(ok, now_ms());
+                });
+            }
+            if let Some(status) = status {
+                events.push((
+                    sink,
+                    TerminalEvent::Status {
+                        session_id: id,
+                        generation,
+                        status,
+                    },
+                ));
+            }
+        }
+        for (sink, event) in events {
+            sink.emit(event);
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     fn start_process(
         &self,
         spec: &SessionSpec,
+        generation: u64,
     ) -> Result<(
         Box<dyn MasterPty + Send>,
         Box<dyn portable_pty::Child + Send + Sync>,
@@ -336,6 +520,9 @@ impl PtyManager {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        if let Some(status) = self.status_file(generation) {
+            cmd.env(STATUS_ENV, status);
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -354,7 +541,8 @@ impl PtyManager {
     #[must_use]
     pub fn snapshot(&self, id: &str) -> Option<Snapshot> {
         let backlogs = self.backlogs.lock().unwrap();
-        let backlog = backlogs.get(id)?.lock().unwrap();
+        let mut backlog = backlogs.get(id)?.lock().unwrap();
+        let status = backlog.tracker.status(now_ms());
         Some(Snapshot {
             data: backlog.data.iter().copied().collect(),
             end: backlog.end,
@@ -363,6 +551,7 @@ impl PtyManager {
             exit_code: backlog.exit_code,
             started_ms: backlog.started_ms,
             exited_ms: backlog.exited_ms,
+            status,
         })
     }
 
@@ -379,6 +568,12 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<()> {
+        // Before writing, so the echo isn't taken for activity; never while
+        // holding `sessions`, which every terminal's input waits on.
+        let backlog = self.backlogs.lock().unwrap().get(id).cloned();
+        if let Some(backlog) = backlog {
+            backlog.lock().unwrap().tracker.on_input(data, now_ms());
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions
             .get_mut(id)
@@ -409,9 +604,40 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn kill(&self, id: &str) {
-        if let Some(s) = self.sessions.lock().unwrap().get_mut(id) {
+        let generation = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let Some(s) = sessions.get_mut(id) else {
+                return;
+            };
             s.process.hang_up();
+            s.generation
+        };
+        let backlog = self.backlogs.lock().unwrap().get(id).cloned();
+        if let Some(backlog) = backlog {
+            let mut backlog = backlog.lock().unwrap();
+            if backlog.generation == generation {
+                backlog.tracker.on_stop();
+            }
         }
+    }
+
+    /// Record that a window showed the session to the user. Returns the status
+    /// event to broadcast so every window agrees, or `None` for an unknown id.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn mark_seen(&self, id: &str) -> Option<TerminalEvent> {
+        let backlog = self.backlogs.lock().unwrap().get(id).cloned()?;
+        let mut backlog = backlog.lock().unwrap();
+        let now = now_ms();
+        backlog.tracker.on_seen(now);
+        let status = backlog.tracker.changed(now)?;
+        Some(TerminalEvent::Status {
+            session_id: id.to_string(),
+            generation: backlog.generation,
+            status,
+        })
     }
 
     /// Kill every session and forget all retained output, e.g. when another
@@ -432,6 +658,9 @@ impl PtyManager {
             for (_, mut s) in sessions.drain() {
                 s.process.hang_up();
                 orphans.insert(s.generation, s.process);
+            }
+            for generation in self.watched.lock().unwrap().drain().map(|(g, _)| g) {
+                remove_status_file(self.status_file(generation).as_deref());
             }
             self.backlogs.lock().unwrap().clear();
             *self.generation.lock().unwrap()
@@ -516,6 +745,8 @@ mod tests {
                 command: "echo $PB_TEST; exit 3".into(),
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::from([("PB_TEST".into(), "hello".into())]),
+                ready_when: String::new(),
+                service: false,
             },
             sink.clone(),
         )
@@ -543,6 +774,56 @@ mod tests {
     }
 
     #[test]
+    fn reports_status_from_the_status_file_and_output() {
+        use crate::status::AgentState;
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(
+            SessionSpec {
+                id: "c/agent".into(),
+                command:
+                    "printf 'needs-input\\n{\"message\":\"Allow?\"}' > \"$PATCHBAY_STATUS_FILE\"; \
+                          echo 'Local: http://localhost:1/'; echo all set; read line"
+                        .into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::new(),
+                ready_when: "ALL SET".into(),
+                service: true,
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        let mut last = None;
+        for _ in 0..200 {
+            last = sink.0.lock().unwrap().iter().rev().find_map(|e| match e {
+                TerminalEvent::Status { status, .. } => Some(status.clone()),
+                _ => None,
+            });
+            if last
+                .as_ref()
+                .is_some_and(|s| s.agent.is_some() && s.url.is_some())
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let status = last.expect("a status event");
+        let agent = status.agent.unwrap();
+        assert_eq!(agent.state, AgentState::NeedsInput);
+        assert_eq!(agent.message.as_deref(), Some("Allow?"));
+        assert_eq!(status.url.as_deref(), Some("http://localhost:1/"));
+        assert!(status.ready);
+        assert!(pty.snapshot("c/agent").unwrap().status.agent.is_some());
+        let file = pty
+            .status_file(pty.snapshot("c/agent").unwrap().generation)
+            .unwrap();
+        assert!(file.exists());
+        pty.write("c/agent", b"\n").unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        assert!(!file.exists());
+    }
+
+    #[test]
     fn reset_forgets_history_and_keeps_generations_unique() {
         let pty = Arc::new(PtyManager::new());
         let spec = |command: &str| SessionSpec {
@@ -550,6 +831,8 @@ mod tests {
             command: command.into(),
             cwd: std::env::temp_dir(),
             env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
         };
         let old = Arc::new(Collect::default());
         pty.spawn(spec("sleep 5"), old.clone()).unwrap();
@@ -577,6 +860,8 @@ mod tests {
                 command: "trap '' HUP; echo ready; sleep 30".into(),
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::new(),
+                ready_when: String::new(),
+                service: false,
             },
             sink.clone(),
         )
@@ -606,6 +891,8 @@ mod tests {
                     command: format!("echo {text}"),
                     cwd: std::env::temp_dir(),
                     env: BTreeMap::new(),
+                    ready_when: String::new(),
+                    service: false,
                 },
                 sink.clone(),
             )
@@ -640,6 +927,8 @@ mod tests {
                             command: "read line".into(),
                             cwd: std::env::temp_dir(),
                             env: BTreeMap::new(),
+                            ready_when: String::new(),
+                            service: false,
                         },
                         sink,
                     )

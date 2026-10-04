@@ -99,6 +99,8 @@ export const terminalWrite = (sessionId: string, data: string) =>
 export const terminalResize = (sessionId: string, cols: number, rows: number) =>
   invoke<void>('terminal_resize', { sessionId, cols, rows })
 export const terminalStop = (sessionId: string) => invoke<void>('terminal_stop', { sessionId })
+/** A window showed the session to the user; every window hears the new status. */
+export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen', { sessionId })
 /** Kill every session and drop retained output; returns the generation floor. */
 export const terminalReset = () => invoke<number>('terminal_reset')
 

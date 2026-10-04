@@ -17,6 +17,8 @@ export interface Terminal {
   name: string
   command: string
   kind: 'shell' | 'task' | 'agent'
+  /** Output text that means a service is ready. */
+  readyWhen?: string
 }
 export interface Project {
   schemaVersion: number
