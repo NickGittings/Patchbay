@@ -47,9 +47,9 @@ cargo test --workspace
 
 ## Extensions
 
-Extensions are local folders containing a `package.json`. Open **Extensions** in the toolbar,
-choose **Install from folder…**, and select the extension folder. Installed folders live in
-`~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
+Extensions are local folders containing a `package.json`. Open **Tools → Extensions…** in the
+toolbar, choose **Install from folder…**, and select the extension folder. Installed folders live
+in `~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
 `~/.patchbay/extensions.json`. **Reload** reloads manifests and restarts code hosts. Invalid
 manifests stay visible with errors while other extensions continue loading. Set
 `PATCHBAY_EXTENSIONS_DIR` to use another registry (including `examples/extensions`).
@@ -65,8 +65,8 @@ limited to 32 KiB, and checked against the same allowed roots as the file tree.
 **Cmd/Ctrl+Shift+P** opens the command palette. Commands with a `run` block create a temporary
 terminal at the selected component, using the existing session, policy, and PTY launch path.
 These terminals appear in the dock without changing the saved project. Place commands in
-`contributes.menus["component/actions"]` or `contributes.menus.toolbar`. Optional `when` clauses
-support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
+`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Tools**).
+Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
 `component.hasTerminal('id')`, `component.hasFile('file')`, and `view`. Unknown or malformed
 expressions hide the contribution.
 

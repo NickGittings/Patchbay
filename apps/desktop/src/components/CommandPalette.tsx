@@ -10,6 +10,15 @@ export default function CommandPalette() {
   const project = useStore((s) => s.project)
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
+  // Start clean however it was opened (shortcut, Tools menu).
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) {
+      setQuery('')
+      setIndex(0)
+    }
+  }
   const context = useWhenContext(undefined, open)
   const openFolder = useOpenProject()
   const rescan = useRescanProject()
@@ -19,8 +28,6 @@ export default function CommandPalette() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault()
         useStore.getState().setPaletteOpen(!useStore.getState().paletteOpen)
-        setQuery('')
-        setIndex(0)
       }
     }
     window.addEventListener('keydown', key)
