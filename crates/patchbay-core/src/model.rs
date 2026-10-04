@@ -110,9 +110,10 @@ impl Project {
         self.components.iter().find(|c| c.id == id)
     }
 
-    /// Absolute folder of a component, with `.` and `..` resolved lexically.
+    /// Absolute folder of a component, resolved like the OS would (see
+    /// [`resolve_dir`]), so terminals, file access and git agree on it.
     pub fn component_dir(&self, component: &Component) -> PathBuf {
-        normalize(&Path::new(&self.root).join(&component.path))
+        resolve_dir(&Path::new(&self.root).join(&component.path))
     }
 
     /// Whether a component's folder lies outside the project root.
@@ -120,7 +121,7 @@ impl Project {
     pub fn is_external(&self, component: &Component) -> bool {
         !self
             .component_dir(component)
-            .starts_with(normalize(Path::new(&self.root)))
+            .starts_with(resolve_dir(Path::new(&self.root)))
     }
 
     /// Folders of components outside the project root: the project's other
@@ -197,6 +198,14 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// `path` with symlinks resolved when it exists (as the OS resolves it: `..`
+/// after a symlink leaves the link's target), otherwise with `.` and `..`
+/// resolved lexically.
+#[must_use]
+pub fn resolve_dir(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| normalize(path))
+}
+
 /// Check that `dir` can hold a component of the project at `root`: it must not
 /// contain the project (`..`, `/`, a parent folder), which would make the
 /// whole enclosing tree readable. Both paths should be canonical.
@@ -229,7 +238,7 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
         .take_while(|(a, b)| a == b)
         .count();
     if common == 0 {
-        return target.to_string_lossy().replace('\\', "/");
+        return plain_path(&target.to_string_lossy());
     }
     let parts: Vec<String> = std::iter::repeat_n("..".to_string(), base.len() - common)
         .chain(
@@ -243,6 +252,18 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     } else {
         parts.join("/")
     }
+}
+
+/// A path for display and storage with `/` separators, dropping the Windows
+/// verbatim prefix that `canonicalize` adds: `\\?\D:\x` becomes `D:/x` and
+/// `\\?\UNC\host\share` becomes `//host/share`, which Windows parses again.
+fn plain_path(path: &str) -> String {
+    let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    path.replace('\\', "/")
 }
 
 /// Session ids identify one terminal of one component.
@@ -267,6 +288,13 @@ mod tests {
         assert_eq!(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
         assert_eq!(normalize(Path::new("./.")), PathBuf::from("."));
         assert_eq!(normalize(Path::new("/a/../../x")), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn plain_paths_drop_the_verbatim_prefix() {
+        assert_eq!(plain_path(r"\\?\D:\billing\api"), "D:/billing/api");
+        assert_eq!(plain_path(r"\\?\UNC\host\share\x"), "//host/share/x");
+        assert_eq!(plain_path("/elsewhere"), "/elsewhere");
     }
 
     #[test]

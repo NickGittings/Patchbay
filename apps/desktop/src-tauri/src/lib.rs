@@ -8,10 +8,11 @@ use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::{PtyManager, Snapshot};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(debug_assertions)]
 mod smoke;
@@ -26,13 +27,14 @@ struct AppState {
     access: Mutex<Access>,
 }
 
-/// Which folders file commands may read. Only the backend widens this: the root
-/// comes from `open_project`, and folders outside it are granted only when they
-/// come from a project the backend loaded or detected, or from a folder picker
-/// the backend ran. The webview's map can narrow the readable set (a deleted
-/// component's folder stops being readable) but never extend it. All paths
-/// here are canonical, so a symlink can't lead a granted path elsewhere.
-#[derive(Default)]
+/// Which folders commands may read, run git in, or start terminals in. Only the
+/// backend widens this: the root comes from `open_project`, and folders outside
+/// it are granted only when the user picks them in a dialog the backend ran, or
+/// allows them when a `patchbay.json` that lists them is opened. The webview's
+/// map can narrow the readable set (a deleted component's folder stops being
+/// readable) but never extend it. All paths here are canonical, so a symlink
+/// can't lead a granted path elsewhere.
+#[derive(Default, Clone)]
 struct Access {
     /// The open project's root (canonical).
     root: Option<PathBuf>,
@@ -43,18 +45,12 @@ struct Access {
 }
 
 impl Access {
-    /// `project.root` must be canonical. External folders from a loaded
-    /// `patchbay.json` are granted only if they exist and don't contain the
-    /// project (a committed `../../..` must not expose the whole disk).
+    /// Start over for a newly opened project; `project.root` must be canonical.
+    /// External folders are not granted: [`external_candidates`] lists the
+    /// ones the user may allow.
     fn open(&mut self, project: &Project) {
-        let root = PathBuf::from(&project.root);
-        self.granted = project
-            .external_dirs()
-            .iter()
-            .filter_map(|d| d.canonicalize().ok())
-            .filter(|d| model::check_component_dir(&root, d).is_ok())
-            .collect();
-        self.root = Some(root);
+        self.root = Some(PathBuf::from(&project.root));
+        self.granted.clear();
         self.sync(project.components.iter().map(|c| c.path.as_str()));
     }
 
@@ -98,6 +94,72 @@ impl Access {
         project.root = root.display().to_string();
         Ok(root)
     }
+
+    /// The webview's map made safe to launch from: the backend's root, and only
+    /// components whose folders may be read (plus links between them), so no
+    /// terminal, `--add-dir` or briefing reaches a folder that isn't allowed.
+    /// Fails if a component in `required` is locked.
+    fn restrict(&self, mut project: Project, required: &[String]) -> CmdResult<Project> {
+        self.trust(&mut project)?;
+        let locked: HashSet<String> = project
+            .components
+            .iter()
+            .filter(|c| self.readable(&c.path).is_none())
+            .map(|c| c.id.clone())
+            .collect();
+        if let Some(id) = required.iter().find(|id| locked.contains(*id)) {
+            return Err(format!(
+                "The folder of {id} is missing or not allowed; pick it with Browse… or Add repo…"
+            ));
+        }
+        project.components.retain(|c| !locked.contains(&c.id));
+        project
+            .links
+            .retain(|l| !locked.contains(&l.source) && !locked.contains(&l.target));
+        Ok(project)
+    }
+}
+
+/// External folders of a loaded project that the user could allow: those that
+/// exist and don't contain the project (a committed `../../..` must never
+/// expose the whole disk). Canonical and deduplicated.
+fn external_candidates(project: &Project, root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in project.external_dirs() {
+        if let Ok(dir) = dir.canonicalize()
+            && !dir.starts_with(root)
+            && model::check_component_dir(root, &dir).is_ok()
+            && !dirs.contains(&dir)
+        {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// Ask whether the external folders a `patchbay.json` lists may be read. The
+/// file may come from a cloned repo, so nothing outside it is trusted unasked.
+fn confirm_external(window: &WebviewWindow, root: &Path, dirs: &[PathBuf]) -> bool {
+    let list: Vec<String> = dirs
+        .iter()
+        .map(|d| format!("  {}", model::relative_path(root, d)))
+        .collect();
+    window
+        .dialog()
+        .message(format!(
+            "This project's map includes folders outside it:\n\n{}\n\nAllow Patchbay to show \
+             their files, run git and start terminals there? If not, those components \
+             stay locked until you pick their folders with Browse… or Add repo….",
+            list.join("\n")
+        ))
+        .title("Folders outside the project")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Keep locked".into(),
+        ))
+        .parent(window)
+        .blocking_show()
 }
 
 impl AppState {
@@ -169,50 +231,81 @@ struct Opened {
     project: Project,
     /// True when no `patchbay.json` existed and the map was auto-detected.
     detected: bool,
+    /// Components whose folder is missing or outside the project and not allowed.
+    locked: Vec<String>,
 }
 
+/// Open a project. If its `patchbay.json` lists folders outside it, the user
+/// is asked (in a dialog run here, not in the webview) whether to allow them.
 #[tauri::command]
-async fn open_project(state: State<'_, AppState>, root: String) -> CmdResult<Opened> {
+async fn open_project(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    root: String,
+) -> CmdResult<Opened> {
     let root = PathBuf::from(root).canonicalize().map_err(err)?;
-    let opened = if let Some(project) = Project::load(&root).map_err(err)? {
-        Opened {
-            project,
-            detected: false,
-        }
-    } else {
-        Opened {
-            project: detect::detect(&root).map_err(err)?,
-            detected: true,
-        }
+    let (project, detected) = match Project::load(&root).map_err(err)? {
+        Some(project) => (project, false),
+        None => (detect::detect(&root).map_err(err)?, true),
     };
-    state.access().open(&opened.project);
-    Ok(opened)
+    let candidates = external_candidates(&project, &root);
+    let allowed = !candidates.is_empty() && confirm_external(&window, &root, &candidates);
+    let mut access = state.access();
+    access.open(&project);
+    if allowed {
+        for dir in candidates {
+            access.grant(dir);
+        }
+        access.sync(project.components.iter().map(|c| c.path.as_str()));
+    }
+    let locked = project
+        .components
+        .iter()
+        .filter(|c| access.readable(&c.path).is_none())
+        .map(|c| c.id.clone())
+        .collect();
+    Ok(Opened {
+        project,
+        detected,
+        locked,
+    })
 }
 
+/// Components and links a rescan or an added folder put on the map, with their
+/// final ids, for the webview to append to its (possibly since edited) map.
 #[derive(Serialize)]
-struct Rescanned {
-    project: Project,
-    added: usize,
+struct Added {
+    components: Vec<model::Component>,
+    links: Vec<model::Link>,
 }
 
-/// Rescan the open root plus the external folders on the map the user added.
+impl Added {
+    /// What `project` gained beyond its first `components` and `links`
+    /// (`merge_new` appends).
+    fn since(project: Project, components: usize, links: usize) -> Self {
+        Self {
+            components: project.components.into_iter().skip(components).collect(),
+            links: project.links.into_iter().skip(links).collect(),
+        }
+    }
+}
+
+/// Rescan the open root plus the external folders on the map the user allowed.
+/// The webview's `sync_roots` picks up the new components' folders.
 #[tauri::command]
-async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> CmdResult<Rescanned> {
+async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> CmdResult<Added> {
     let externals: Vec<PathBuf> = {
         let access = state.access();
         access.trust(&mut project)?;
         project
             .external_dirs()
             .into_iter()
-            .filter_map(|d| d.canonicalize().ok())
             .filter(|d| access.is_granted(d))
             .collect()
     };
-    let added = detect::rescan(&mut project, &externals).map_err(err)?;
-    state
-        .access()
-        .sync(project.components.iter().map(|c| c.path.as_str()));
-    Ok(Rescanned { project, added })
+    let (components, links) = (project.components.len(), project.links.len());
+    detect::rescan(&mut project, &externals).map_err(err)?;
+    Ok(Added::since(project, components, links))
 }
 
 /// Ask for a folder (a repo beside the project, or a subfolder detection
@@ -223,17 +316,16 @@ async fn add_folder(
     window: WebviewWindow,
     state: State<'_, AppState>,
     mut project: Project,
-) -> CmdResult<Option<Rescanned>> {
+) -> CmdResult<Option<Added>> {
     let root = state.access().trust(&mut project)?;
     let Some(dir) = pick_folder(&window, "Add a repo or folder", root.parent())? else {
         return Ok(None);
     };
     let found = detect::detect_folder(&project, &dir).map_err(err)?;
-    let added = detect::merge_new(&mut project, found);
-    let mut access = state.access();
-    access.grant(dir.canonicalize().map_err(err)?);
-    access.sync(project.components.iter().map(|c| c.path.as_str()));
-    Ok(Some(Rescanned { project, added }))
+    let (components, links) = (project.components.len(), project.links.len());
+    detect::merge_new(&mut project, found);
+    state.access().grant(dir.canonicalize().map_err(err)?);
+    Ok(Some(Added::since(project, components, links)))
 }
 
 /// Pick a component's folder (inside the project or beside it) and return it
@@ -261,19 +353,33 @@ fn sync_roots(state: State<AppState>, paths: Vec<String>) {
     state.access().sync(paths.iter().map(String::as_str));
 }
 
+/// Saves to the open project's root, whatever root the webview sent.
 #[tauri::command]
-fn save_project(project: Project) -> CmdResult<String> {
+fn save_project(state: State<AppState>, mut project: Project) -> CmdResult<String> {
+    state.access().trust(&mut project)?;
     project.save().map(|p| p.display().to_string()).map_err(err)
 }
 
+/// The briefing an agent terminal of this component would get.
 #[tauri::command]
-fn component_context(project: Project, component_id: String) -> String {
-    context::component_context(&project, &component_id)
+fn component_context(
+    state: State<AppState>,
+    project: Project,
+    component_id: String,
+) -> CmdResult<String> {
+    let project = state.access().restrict(project, &[])?;
+    Ok(context::component_context(&project, &component_id))
 }
 
+/// The briefing a planner terminal over these components would get.
 #[tauri::command]
-fn plan_context(project: Project, component_ids: Vec<String>) -> String {
-    context::plan_context(&project, &component_ids)
+fn plan_context(
+    state: State<AppState>,
+    project: Project,
+    component_ids: Vec<String>,
+) -> CmdResult<String> {
+    let project = state.access().restrict(project, &[])?;
+    Ok(context::plan_context(&project, &component_ids))
 }
 
 #[tauri::command]
@@ -284,6 +390,7 @@ fn plan_start(
     component_ids: Vec<String>,
     terminal: TerminalSpec,
 ) -> CmdResult<String> {
+    let project = state.access().restrict(project, &component_ids)?;
     let spec =
         context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll).map_err(err)?;
     let id = spec.id.clone();
@@ -308,17 +415,15 @@ async fn git_status(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
 ) -> CmdResult<git::GitStatus> {
-    let (root, components) = {
-        let access = state.access();
-        let Some(root) = access.root.clone() else {
-            return Ok(git::GitStatus::default());
-        };
-        let components: Vec<(String, PathBuf)> = components
-            .into_iter()
-            .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
-            .collect();
-        (root, components)
+    // Resolve folders on a copy so the lock isn't held for the filesystem calls.
+    let access = state.access().clone();
+    let Some(root) = access.root.clone() else {
+        return Ok(git::GitStatus::default());
     };
+    let components: Vec<(String, PathBuf)> = components
+        .into_iter()
+        .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+        .collect();
     Ok(git::status(&root, &components))
 }
 
@@ -342,6 +447,9 @@ fn terminal_start(
     component_id: String,
     terminal_id: String,
 ) -> CmdResult<String> {
+    let project = state
+        .access()
+        .restrict(project, std::slice::from_ref(&component_id))?;
     let spec =
         context::session_spec(&project, &component_id, &terminal_id, &AllowAll).map_err(err)?;
     let id = spec.id.clone();

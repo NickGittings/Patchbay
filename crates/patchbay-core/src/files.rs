@@ -16,26 +16,25 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// Canonical roots, project root first. The project root must exist; external
-/// folders that are missing (a sibling repo not cloned here) are skipped, as are
-/// folders inside another root.
+/// The roots, project root first, without folders inside another root. Roots
+/// must already be canonical (the app resolves them once, when they are
+/// granted) and are not resolved again: if one is later replaced by a symlink,
+/// paths under it resolve elsewhere and fail the containment check instead of
+/// following the link. A missing root (a sibling repo not cloned here) simply
+/// matches nothing.
 fn canonical_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let Some((root, extra)) = roots.split_first() else {
         bail!("No project is open");
     };
-    let root = root.canonicalize()?;
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in extra {
-        let Ok(dir) = dir.canonicalize() else {
-            continue;
-        };
-        if dir.starts_with(&root) || inside(&dir, &out) {
+        if dir.starts_with(root) || inside(dir, &out) {
             continue;
         }
-        out.retain(|r| !r.starts_with(&dir));
-        out.push(dir);
+        out.retain(|r| !r.starts_with(dir));
+        out.push(dir.clone());
     }
-    out.insert(0, root);
+    out.insert(0, root.clone());
     Ok(out)
 }
 
@@ -44,7 +43,7 @@ fn inside(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// Resolve `rel` against the project root (`roots[0]`), following symlinks, and
-/// require the result to stay inside one of `roots`.
+/// require the result to stay inside one of `roots` (which must be canonical).
 ///
 /// # Errors
 /// Fails if a path does not exist or `rel` resolves outside every root.
@@ -121,7 +120,7 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            Self(dir.canonicalize().unwrap())
         }
     }
 
@@ -179,10 +178,20 @@ mod tests {
         assert!(list_dir(fixture.roots(), Path::new("..")).is_err());
         assert!(list_dir(fixture.roots(), &env::temp_dir()).is_err());
         assert!(resolve(fixture.roots(), Path::new("..")).is_err());
-        assert_eq!(
-            resolve(fixture.roots(), Path::new(".")).unwrap(),
-            fixture.0.canonicalize().unwrap()
-        );
+        assert_eq!(resolve(fixture.roots(), Path::new(".")).unwrap(), fixture.0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_replaced_by_a_symlink_is_not_followed() {
+        let fixture = Fixture::new();
+        let project = fixture.0.join("shop");
+        let billing = fixture.0.join("billing");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(fixture.0.join("secret/keys")).unwrap();
+        std::os::unix::fs::symlink(fixture.0.join("secret"), &billing).unwrap();
+        let roots = [project, billing];
+        assert!(list_dir(&roots, Path::new("../billing")).is_err());
     }
 
     #[cfg(unix)]
@@ -245,6 +254,6 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(roots.len(), 2);
-        assert_eq!(roots[1], billing.canonicalize().unwrap());
+        assert_eq!(roots[1], billing);
     }
 }

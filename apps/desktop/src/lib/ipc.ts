@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
+  Added,
   DeviceManifest,
   DirEntry,
   GitStatus,
@@ -11,16 +12,15 @@ import type {
   TerminalSpec,
 } from '../types'
 
+/** May ask (in a native dialog) whether folders outside the project may be read. */
 export const openProject = (root: string) =>
-  invoke<{ project: Project; detected: boolean }>('open_project', { root })
-export const rescanProject = (project: Project) =>
-  invoke<{ project: Project; added: number }>('rescan_project', { project })
+  invoke<{ project: Project; detected: boolean; locked: string[] }>('open_project', { root })
+export const rescanProject = (project: Project) => invoke<Added>('rescan_project', { project })
 export const saveProject = (project: Project) => invoke<string>('save_project', { project })
 export const componentContext = (project: Project, componentId: string) =>
   invoke<string>('component_context', { project, componentId })
 /** Opens a folder picker; `null` if cancelled. */
-export const addFolder = (project: Project) =>
-  invoke<{ project: Project; added: number } | null>('add_folder', { project })
+export const addFolder = (project: Project) => invoke<Added | null>('add_folder', { project })
 /** Opens a folder picker for a component's folder; the path relative to the root, or `null`. */
 export const pickComponentFolder = () => invoke<string | null>('pick_component_folder')
 /** Tell the backend which component folders are on the map; it can only narrow file access. */

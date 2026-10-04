@@ -2,7 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
-import type { Project } from '../types'
+import type { Added } from '../types'
 import { addFolder, openProject, rescanProject, saveProject, terminalReset } from './ipc'
 import { resetSessions } from './sessions'
 import { closeComponentWindows } from './windows'
@@ -21,14 +21,16 @@ export function useOpenProject() {
     if (typeof root !== 'string') return
     const s = useStore.getState()
     try {
-      const { project, detected } = await openProject(root)
+      const { project, detected, locked } = await openProject(root)
       await closeComponentWindows()
       resetSessions(await terminalReset())
       s.loadProject(project)
       s.setMessage(
         detected
           ? `Detected ${project.components.length} component(s). Review, then Save to create patchbay.json.`
-          : '',
+          : locked.length
+            ? `Locked (folder missing or not allowed): ${locked.join(', ')}. Pick their folders with Browse… or Add repo….`
+            : '',
       )
       if (detected) useStore.setState({ dirty: true })
       fitSoon(fitView)
@@ -51,33 +53,26 @@ export async function saveCurrentProject() {
 }
 
 /**
- * Add the components and links that `result` has beyond `before` (the map sent to the backend)
- * to the map as it is now, so edits made while the backend worked (or its dialog was open)
- * survive. Keeps live session and git state. Returns how many components were added.
+ * Append what the backend added to the map as it is now, so edits made while it worked (or its
+ * folder dialog was open) survive. A component whose id or folder the user took meanwhile is
+ * dropped, with its links. Keeps live session and git state. Returns how many were added.
  */
-function applyAdded(before: Project, result: Project, none: string): number {
+function applyAdded(added: Added, none: string): number {
   const s = useStore.getState()
   const current = s.toProject()
-  const oldIds = new Set(before.components.map((c) => c.id))
   const taken = new Set(current.components.map((c) => c.id))
   const paths = new Set(current.components.map((c) => c.path))
-  const components = result.components.filter(
-    (c) => !oldIds.has(c.id) && !taken.has(c.id) && !paths.has(c.path),
-  )
-  const ids = new Set([...taken, ...components.map((c) => c.id)])
-  const added = new Set(components.map((c) => c.id))
-  const linkIds = new Set(current.links.map((l) => l.id))
-  const links = result.links.filter(
-    (l) =>
-      (added.has(l.source) || added.has(l.target)) &&
-      ids.has(l.source) &&
-      ids.has(l.target) &&
-      !linkIds.has(l.id),
-  )
+  const components = added.components.filter((c) => !taken.has(c.id) && !paths.has(c.path))
   if (components.length === 0) {
     s.setMessage(none)
     return 0
   }
+  const fresh = new Set(added.components.map((c) => c.id))
+  const kept = new Set(components.map((c) => c.id))
+  // An end is either a component added now or one already on the map before the call.
+  const valid = (id: string) => kept.has(id) || (!fresh.has(id) && taken.has(id))
+  const linkIds = new Set(current.links.map((l) => l.id))
+  const links = added.links.filter((l) => valid(l.source) && valid(l.target) && !linkIds.has(l.id))
   const { sessions, gitChanges, repos, activeSession, view, highlighted, planStartedWith } = s
   s.loadProject({
     ...current,
@@ -105,9 +100,8 @@ export function useRescanProject() {
     const s = useStore.getState()
     if (!s.project) return
     try {
-      const before = s.toProject()
-      const { project } = await rescanProject(before)
-      if (applyAdded(before, project, 'No new components found')) fitSoon(fitView)
+      const added = await rescanProject(s.toProject())
+      if (applyAdded(added, 'No new components found')) fitSoon(fitView)
     } catch (e) {
       s.setMessage(String(e))
     }
@@ -121,11 +115,9 @@ export function useAddFolder() {
     const s = useStore.getState()
     if (!s.project) return
     try {
-      const before = s.toProject()
-      const result = await addFolder(before)
-      if (!result) return
-      const none = 'Everything in that folder is already on the map'
-      if (applyAdded(before, result.project, none)) fitSoon(fitView)
+      const added = await addFolder(s.toProject())
+      if (!added) return
+      if (applyAdded(added, 'Everything in that folder is already on the map')) fitSoon(fitView)
     } catch (e) {
       s.setMessage(String(e))
     }

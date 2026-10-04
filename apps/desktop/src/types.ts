@@ -45,6 +45,12 @@ export interface Link {
   label?: string | null
 }
 
+/** What a rescan or Add repo… put on the map: new components and their links, with final ids. */
+export interface Added {
+  components: Component[]
+  links: Link[]
+}
+
 export interface Project {
   schemaVersion: number
   name: string

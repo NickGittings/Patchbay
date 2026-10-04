@@ -12,7 +12,11 @@ use std::process::Command;
 /// file for worktrees and submodules). Returns a canonical path.
 #[must_use]
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
-    let dir = dir.canonicalize().ok()?;
+    nearest_repo(&dir.canonicalize().ok()?)
+}
+
+/// [`repo_root`] for a folder that is already canonical.
+fn nearest_repo(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(".git").exists())
         .map(Path::to_path_buf)
@@ -27,19 +31,16 @@ pub struct RepoGroup {
     pub members: Vec<(String, String)>,
 }
 
-/// Group components, given as `(id, absolute folder)`, by containing repo.
-/// Components whose folder is missing or not in a repo are left out.
+/// Group components, given as `(id, canonical folder)`, by containing repo.
+/// Components whose folder is not in a repo are left out.
 #[must_use]
 pub fn group_by_repo(components: &[(String, PathBuf)]) -> Vec<RepoGroup> {
     let mut groups: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();
     for (id, dir) in components {
-        let Ok(dir) = dir.canonicalize() else {
+        let Some(root) = nearest_repo(dir) else {
             continue;
         };
-        let Some(root) = repo_root(&dir) else {
-            continue;
-        };
-        let rel = relative_path(&root, &dir);
+        let rel = relative_path(&root, dir);
         let prefix = if rel == "." {
             String::new()
         } else {
@@ -78,7 +79,7 @@ pub struct GitStatus {
 /// Count uncommitted changes per component, running `git status` once per repo
 /// (in parallel, so many sibling repos don't add up to one long poll). Each
 /// changed file is attributed to the most specific component containing it.
-/// `components` are `(id, absolute folder)`; `root` is the project root.
+/// `components` are `(id, canonical folder)`; `root` is the project root.
 #[must_use]
 pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
     let project_repo = repo_root(root);
@@ -120,8 +121,10 @@ pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
 }
 
 /// Paths with uncommitted changes, relative to `repo`. Nested repos and
-/// submodules are skipped: they are counted as their own repo. The repo's
-/// fsmonitor hook is disabled, since nested repos on the map may be untrusted.
+/// submodules are skipped: they are counted as their own repo. fsmonitor is
+/// off so polling never starts a hook or daemon. Like `git status` in a
+/// terminal this still honours the repo's own config (filters, for one), so
+/// callers must pass only folders the user opened or allowed.
 fn changed_paths(repo: &Path) -> Option<Vec<String>> {
     let output = Command::new("git")
         .arg("-C")
@@ -182,6 +185,7 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::normalize;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{env, fs, process};
 
@@ -240,7 +244,7 @@ mod tests {
     fn components(root: &Path, components: &[(&str, &str)]) -> Vec<(String, PathBuf)> {
         components
             .iter()
-            .map(|(id, path)| ((*id).to_string(), root.join(path)))
+            .map(|(id, path)| ((*id).to_string(), normalize(&root.join(path))))
             .collect()
     }
 

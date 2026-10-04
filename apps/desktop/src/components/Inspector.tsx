@@ -23,7 +23,11 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const usedBy = edges.filter((e) => e.target === id)
 
   const loadContext = async () => {
-    setContext(await componentContext(useStore.getState().toProject(), id))
+    try {
+      setContext(await componentContext(useStore.getState().toProject(), id))
+    } catch (e) {
+      setContext(String(e))
+    }
   }
 
   return (

@@ -7,7 +7,7 @@
 
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
-    check_component_dir, normalize, relative_path,
+    check_component_dir, normalize, relative_path, resolve_dir,
 };
 use anyhow::{Result, bail};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -571,19 +571,22 @@ pub fn detect(root: &Path) -> Result<Project> {
 }
 
 /// Add components (and their links) found by `detected` whose folder is not
-/// already on the map. Existing components are left untouched.
-/// Returns how many components were added.
+/// already on the map. Folders are compared once resolved, so `../billing`
+/// and the path of the folder it links to are the same component. Existing
+/// components are left untouched. `detected` paths must be relative to
+/// `existing.root`. Returns how many components were added; they and their
+/// links are appended to the end of `existing.components` and `existing.links`.
 pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
-    let known: HashSet<String> = existing.components.iter().map(|c| c.path.clone()).collect();
-    let id_for_path: HashMap<String, String> = existing
+    let dir = |path: &str| resolve_dir(&Path::new(&existing.root).join(path));
+    let id_for_dir: HashMap<PathBuf, String> = existing
         .components
         .iter()
-        .map(|c| (c.path.clone(), c.id.clone()))
+        .map(|c| (dir(&c.path), c.id.clone()))
         .collect();
-    let detected_paths: HashMap<String, String> = detected
+    let detected_dirs: HashMap<String, PathBuf> = detected
         .components
         .iter()
-        .map(|c| (c.id.clone(), c.path.clone()))
+        .map(|c| (c.id.clone(), dir(&c.path)))
         .collect();
     let mut taken: HashSet<String> = existing.components.iter().map(|c| c.id.clone()).collect();
 
@@ -598,7 +601,10 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
     let mut new_ids: HashMap<String, String> = HashMap::new();
     let mut added = 0;
     for mut c in detected.components {
-        if known.contains(&c.path) {
+        if detected_dirs
+            .get(&c.id)
+            .is_some_and(|d| id_for_dir.contains_key(d))
+        {
             continue;
         }
         let mut id = c.id.clone();
@@ -620,12 +626,12 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
         added += 1;
     }
 
-    // Map a detected id to the id now on the map (new or pre-existing by path).
+    // Map a detected id to the id now on the map (new or pre-existing by folder).
     let resolve = |id: &str| -> Option<String> {
         new_ids.get(id).cloned().or_else(|| {
-            detected_paths
+            detected_dirs
                 .get(id)
-                .and_then(|p| id_for_path.get(p).cloned())
+                .and_then(|d| id_for_dir.get(d).cloned())
         })
     };
     for l in detected.links {
@@ -840,6 +846,24 @@ mod tests {
                 .iter()
                 .any(|c| c.path == "../billing/cmd/api")
         );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rescan_does_not_duplicate_an_external_repo_behind_a_symlink() {
+        let base = env::temp_dir().join(format!("patchbay-link-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(&base, "shop/package.json", r#"{"name":"shop"}"#);
+        write(&base, "data/billing/go.mod", "module example.com/billing\n");
+        std::os::unix::fs::symlink(base.join("data/billing"), base.join("billing")).unwrap();
+        let mut project = detect(&base.join("shop").canonicalize().unwrap()).unwrap();
+        let found = detect_folder(&project, &base.join("billing")).unwrap();
+        assert_eq!(merge_new(&mut project, found), 1);
+        // A hand-written path through the link names the same folder.
+        project.components.last_mut().unwrap().path = "../billing".into();
+        let externals = project.external_dirs();
+        assert_eq!(rescan(&mut project, &externals).unwrap(), 0);
         let _ = fs::remove_dir_all(base);
     }
 
