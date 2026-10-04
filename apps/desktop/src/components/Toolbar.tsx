@@ -71,14 +71,10 @@ export default function Toolbar() {
                 Add repo…
               </MenuItem>
               {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
-              <MenuSeparator />
-              <MenuItem onClick={() => void saveCurrentProject()} shortcut={`${mod}S`}>
-                Save
-              </MenuItem>
             </>
           )}
         </Menu>
-        <Menu label="Tools">
+        <Menu label="Tools" keepMounted>
           <MenuItem
             onClick={() => useStore.getState().setPaletteOpen(true)}
             shortcut={`${shiftMod}P`}
@@ -116,7 +112,11 @@ export default function Toolbar() {
               <span className="file-name">{project.name}</span>
               {dirty && <span className="dirty" title="Unsaved changes" />}
             </span>
-            <button className="primary" onClick={() => void saveCurrentProject()}>
+            <button
+              className="primary"
+              title={`Save patchbay.json (${mod}S)`}
+              onClick={() => void saveCurrentProject()}
+            >
               Save
             </button>
           </>

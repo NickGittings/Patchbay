@@ -14,9 +14,7 @@ export default function Toast() {
 
   useEffect(() => {
     if (!transient) return
-    const timer = setTimeout(() => {
-      if (useStore.getState().messageId === id) useStore.getState().setMessage('')
-    }, HIDE_AFTER_MS)
+    const timer = setTimeout(() => useStore.getState().setMessage(''), HIDE_AFTER_MS)
     return () => clearTimeout(timer)
   }, [id, transient])
 

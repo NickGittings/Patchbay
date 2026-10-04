@@ -269,7 +269,7 @@ select:focus {
   width: 100%;
   white-space: nowrap;
 }
-.toolbar .menu-item:hover:not(:disabled),
+.toolbar .menu-item:hover,
 .attention-item:hover {
   background: var(--panel-2);
 }

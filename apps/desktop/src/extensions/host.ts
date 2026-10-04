@@ -426,7 +426,7 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       return null
     }
     case 'window.showMessage':
-      s.setMessage(text(0, 2048))
+      s.setMessage(text(0, 2048), true)
       return null
     case 'storage.get': {
       await storageQueues.get(id)
