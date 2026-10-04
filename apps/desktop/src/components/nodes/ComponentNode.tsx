@@ -5,11 +5,13 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, useState, type CSSProperties } from 'react'
 import { nearbyIds } from '../../lib/plan'
 import { useShallow } from 'zustand/react/shallow'
-import { mostUrgent } from '../../lib/attention'
-import { KIND_COLOR, terminalStatus } from '../../lib/display'
+import { componentTerminals, mostUrgent } from '../../lib/attention'
+import { useClockTick } from '../../lib/clock'
+import { KIND_COLOR, statusTitle, terminalStatus } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
 import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
+import AttentionPill from '../status/AttentionPill'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -19,11 +21,22 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const planClass =
     planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
-  // Only this node's sessions, so other terminals' status updates don't re-render it.
-  const sessions = useStore(
-    useShallow((s) => data.terminals.map((t) => s.sessions[sessionId(id, t.id)])),
+  // Only this node's sessions (with those its extensions started), so other terminals' status
+  // updates don't re-render it.
+  // Flat lists of strings and existing objects, which compare equal when nothing changed.
+  const kinds = useStore(
+    useShallow((s) =>
+      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([, t]) => t.kind),
+    ),
   )
-  const statuses = data.terminals.map((t, i) => terminalStatus(t.kind, sessions[i]))
+  const sessions = useStore(
+    useShallow((s) =>
+      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([sid]) => s.sessions[sid]),
+    ),
+  )
+  useClockTick()
+  // Its own terminals come first, so `statuses[i]` matches `data.terminals[i]`.
+  const statuses = kinds.map((kind, i) => terminalStatus(kind, sessions[i]))
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const repo = useStore((s) => s.repos[id])
   const activeSession = useStore((s) => s.activeSession)
@@ -79,11 +92,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             ±{changes}
           </span>
         )}
-        {attention && (
-          <span className={`attention-pill health-${attention.health}`} title={attention.detail}>
-            {attention.label}
-          </span>
-        )}
+        <AttentionPill status={attention} />
         <ExtensionBadges componentId={id} />
         <button
           className="nodrag popout-button"
@@ -115,9 +124,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
               }}
               aria-disabled={planning}
               tabIndex={planning ? -1 : undefined}
-              title={[status.label, status.detail, t.command || 'interactive shell']
-                .filter(Boolean)
-                .join('\n')}
+              title={statusTitle(status, t.command || 'interactive shell')}
             >
               <span className="status-dot" />
               {t.name}

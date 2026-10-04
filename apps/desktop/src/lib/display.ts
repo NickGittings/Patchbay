@@ -33,12 +33,21 @@ export interface TerminalStatus {
   detail?: string
   url?: string
   attention: Attention
+  /**
+   * When the result or failure that asks for attention happened (Unix ms), until a window has
+   * shown the session; showing it then calls `terminal_seen`.
+   */
+  unseenSince?: number
 }
 
 /** "3m" style duration since a Unix millisecond time. */
 const age = (ms: number, now: number) => ago(ms, now).replace(/ ago$/, '')
 
 const join = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(' — ')
+
+/** A status's label and detail (and any further lines) as one tooltip. */
+export const statusTitle = (status: TerminalStatus, ...extra: (string | undefined)[]) =>
+  join(status.label, status.detail, ...extra)
 
 /**
  * What a terminal is doing: not started, stopped or exited; for agents working, needing input,
@@ -64,6 +73,7 @@ export function terminalStatus(
       label: 'Failed',
       detail: join(`Exited ${session.exitCode ?? '?'}`, when),
       attention: unseen ? 3 : 0,
+      unseenSince: unseen ? session.exitedMs : undefined,
     }
   }
   const status = session.status
@@ -92,6 +102,7 @@ export function terminalStatus(
             label: 'Ready for review',
             detail: join(agent.prompt && `Finished: ${agent.prompt}`, ago(agent.sinceMs, now)),
             attention: 2,
+            unseenSince: agent.sinceMs,
           }
         break
     }

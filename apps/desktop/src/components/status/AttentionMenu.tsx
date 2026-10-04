@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { attentionItems, revealTerminal } from '../../lib/attention'
+import { useClockTick } from '../../lib/clock'
 import { useStore } from '../../store'
 
 const SUMMARY: Record<string, string> = {
@@ -13,6 +14,7 @@ const SUMMARY: Record<string, string> = {
 export default function AttentionMenu() {
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
   const [open, setOpen] = useState(false)

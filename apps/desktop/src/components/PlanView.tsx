@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { describeTerminal, KIND_COLOR, terminalStatus } from '../lib/display'
+import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { planContext } from '../lib/ipc'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
@@ -18,6 +19,7 @@ export default function PlanView() {
   const highlighted = useStore((s) => s.highlighted)
   const startedWith = useStore((s) => s.planStartedWith)
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
   const activeId = useStore((s) => s.planActive)
@@ -112,7 +114,7 @@ export default function PlanView() {
                   <button
                     key={t.id}
                     className={`tab health-${status.health} ${t.id === active.id ? 'active' : ''}`}
-                    title={[status.label, status.detail].filter(Boolean).join(' — ')}
+                    title={statusTitle(status)}
                     onClick={() => setActiveId(t.id)}
                   >
                     <span className="status-dot" />

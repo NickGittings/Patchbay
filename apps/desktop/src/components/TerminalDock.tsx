@@ -1,6 +1,7 @@
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
-import { describeTerminal, terminalStatus } from '../lib/display'
+import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
@@ -19,6 +20,7 @@ function useTabs(): Tab[] {
   const nodes = useStore((s) => s.nodes)
   const selectedId = useStore((s) => s.selectedId)
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
 
   const runtime = useStore((s) => s.runtimeTerminals)
   const all = nodes.flatMap((n) =>
@@ -46,6 +48,7 @@ export default function TerminalDock() {
   const extensionViews = useExtensionViews('dock')
   const tabs = useTabs()
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   const activeSession = useStore((s) => s.activeSession)
   const setActiveSession = useStore((s) => s.setActiveSession)
   const active = tabs.find((t) => t.sid === activeSession) ?? null
@@ -60,7 +63,7 @@ export default function TerminalDock() {
             <button
               key={t.sid}
               className={`tab health-${status.health} ${t.sid === activeSession ? 'active' : ''}`}
-              title={[status.label, status.detail].filter(Boolean).join(' — ')}
+              title={statusTitle(status)}
               onClick={() => {
                 extensionViews.setSelected(null)
                 setActiveSession(t.sid)

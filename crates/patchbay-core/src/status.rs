@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Env var naming the file a session may write its agent state to.
 pub const STATUS_ENV: &str = "PATCHBAY_STATUS_FILE";
@@ -223,6 +223,8 @@ fn find_local_url(line: &str) -> Option<(String, u16)> {
             .chars()
             .take_while(|c| c.is_ascii_graphic() && !matches!(c, '"' | '\'' | ')' | '>' | ','))
             .collect();
+        // Sentence punctuation after the URL isn't part of it.
+        let path = path.trim_end_matches(['.', ',', ';', ':', '!', '?', ']', '}']);
         if path.chars().next().is_some_and(|c| c != '/') {
             continue;
         }
@@ -247,13 +249,66 @@ pub fn probe(port: u16) -> bool {
     .any(|addr| TcpStream::connect_timeout(addr, timeout).is_ok())
 }
 
-/// Whether input answers a prompt: a key press or Enter rather than an escape
-/// sequence such as a focus report or an arrow key.
-fn is_answer(data: &[u8]) -> bool {
-    data.first() != Some(&0x1b)
+/// Whether a line announces someone else's address rather than the service's
+/// own: a proxy target, a database it connects to, or a connection error.
+fn mentions_other_address(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    [
+        "proxy",
+        "->",
+        "=>",
+        "error",
+        "refused",
+        "failed",
+        "connecting to",
+        "connected to",
+        "database",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// What input means for an agent's state: Esc or Ctrl+C interrupts it
+/// (`Idle`); a key press or Enter answers a prompt (`Working`); an escape
+/// sequence such as a focus report or an arrow key means nothing.
+fn input_effect(data: &[u8]) -> Option<AgentState> {
+    if data == [0x1b] || data.contains(&0x03) {
+        Some(AgentState::Idle)
+    } else if data.first() != Some(&0x1b)
         && data
             .iter()
             .any(|&b| b == b'\r' || (0x20..0x7f).contains(&b))
+    {
+        Some(AgentState::Working)
+    } else {
+        None
+    }
+}
+
+/// A status file's modification time and length, which tell one write from
+/// another.
+pub type Stamp = (SystemTime, u64);
+
+/// Moves a state on after input that resolves it: answering a prompt resumes
+/// the agent, and an interrupt stops it. Returns whether it changed.
+fn resolve(state: &mut AgentState, message: &mut Option<String>, effect: AgentState) -> bool {
+    let resolves = match effect {
+        AgentState::Working => *state == AgentState::NeedsInput,
+        AgentState::Idle => matches!(*state, AgentState::NeedsInput | AgentState::Working),
+        _ => false,
+    };
+    if resolves {
+        *state = effect;
+        *message = None;
+    }
+    resolves
+}
+
+fn unix_ms(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 /// Status of one session incarnation.
@@ -264,11 +319,17 @@ pub struct Tracker {
     ready_when: String,
     lines: LineScanner,
     last_input_ms: Option<u64>,
+    /// The last input that answered or interrupted the agent, and its effect.
+    resolved: Option<(u64, AgentState)>,
     port: Option<u16>,
     probing: bool,
     next_probe_ms: u64,
     failures: u32,
     report: Option<AgentReport>,
+    /// The status file write `report` came from.
+    report_stamp: Option<Stamp>,
+    /// When the agent last reported or was resumed, in Unix milliseconds.
+    heard_ms: u64,
     status: SessionStatus,
     emitted: SessionStatus,
 }
@@ -285,17 +346,20 @@ impl Tracker {
         }
     }
 
-    /// Answering a prompt that needs input resumes the agent; it reports
-    /// again only once the approved step finishes.
+    /// Answering a prompt that needs input resumes the agent (it reports again
+    /// only once the approved step finishes); Esc or Ctrl+C stops it, which it
+    /// never reports.
     pub fn on_input(&mut self, data: &[u8], now: u64) {
         self.last_input_ms = Some(now);
+        let Some(effect) = input_effect(data) else {
+            return;
+        };
+        self.resolved = Some((now, effect));
         if let Some(report) = &mut self.report
-            && report.state == AgentState::NeedsInput
-            && is_answer(data)
+            && resolve(&mut report.state, &mut report.message, effect)
         {
-            report.state = AgentState::Working;
             report.since_ms = now;
-            report.message = None;
+            self.heard_ms = now;
         }
     }
 
@@ -319,29 +383,63 @@ impl Tracker {
         if !self.service {
             return;
         }
-        let (status, port, ready_when) = (&mut self.status, &mut self.port, &self.ready_when);
-        self.lines.feed(data, |line| {
-            if status.url.is_none()
-                && let Some((url, p)) = find_local_url(line)
-            {
-                status.url = Some(url);
-                status.ready = true;
-                *port = Some(p);
-            }
-            if !ready_when.is_empty() && line.to_lowercase().contains(ready_when.as_str()) {
-                status.ready = true;
-            }
-        });
+        let mut lines = Vec::new();
+        self.lines.feed(data, |line| lines.push(line.to_owned()));
+        for line in lines {
+            self.scan_line(&line);
+        }
     }
 
-    /// Apply the contents of the status file.
-    pub fn on_report(&mut self, text: &str, now: u64) {
-        let Some(report) = parse_report(text) else {
+    fn scan_line(&mut self, line: &str) {
+        if let Some((url, port)) = find_local_url(line)
+            && !mentions_other_address(line)
+            // Until its port answers, a later address may be the real one
+            // (e.g. after a test server's).
+            && (self.status.url.is_none()
+                || (self.status.healthy != Some(true) && self.port != Some(port)))
+        {
+            self.status.url = Some(url);
+            self.status.ready = true;
+            self.status.healthy = None;
+            self.port = Some(port);
+            self.failures = 0;
+            self.next_probe_ms = 0;
+        }
+        if !self.ready_when.is_empty() && line.to_lowercase().contains(self.ready_when.as_str()) {
+            self.status.ready = true;
+        }
+    }
+
+    /// Whether the report from this write was already applied.
+    #[must_use]
+    pub fn has_report(&self, stamp: Stamp) -> bool {
+        self.report_stamp == Some(stamp)
+    }
+
+    /// Apply the contents of the status file, written at `stamp`. A write
+    /// already applied is skipped.
+    pub fn on_report(&mut self, text: &str, stamp: Stamp, now: u64) {
+        if self.has_report(stamp) {
+            return;
+        }
+        self.report_stamp = Some(stamp);
+        let Some(mut report) = parse_report(text) else {
             return;
         };
+        // Input after the write already answered or interrupted it.
+        if let Some((at, effect)) = self.resolved
+            && at >= unix_ms(stamp.0)
+        {
+            resolve(&mut report.state, &mut report.message, effect);
+        }
+        // Tool after tool is one stretch of work; any other report starts anew.
+        let continues = report.state == AgentState::Working
+            && self.report.as_ref().is_some_and(|p| {
+                p.state == AgentState::Working && self.quiet_ms(now) <= STALE_WORKING_MS
+            });
         let previous = self.report.take();
         let since_ms = match &previous {
-            Some(p) if p.state == report.state => p.since_ms,
+            Some(p) if continues => p.since_ms,
             _ => now,
         };
         // A prompt carries over until the next one; a message only while it's asked.
@@ -349,6 +447,7 @@ impl Tracker {
         let message = (report.state == AgentState::NeedsInput)
             .then_some(report.message)
             .flatten();
+        self.heard_ms = now;
         self.report = Some(AgentReport {
             state: report.state,
             since_ms,
@@ -368,8 +467,12 @@ impl Tracker {
         Some(port)
     }
 
-    pub fn on_probe(&mut self, ok: bool, now: u64) {
+    /// The result of probing `port`, ignored if the service's port changed since.
+    pub fn on_probe(&mut self, port: u16, ok: bool, now: u64) {
         self.probing = false;
+        if self.port != Some(port) {
+            return;
+        }
         self.next_probe_ms = now + PROBE_INTERVAL_MS;
         self.failures = if ok { 0 } else { self.failures + 1 };
         if ok {
@@ -379,17 +482,27 @@ impl Tracker {
         }
     }
 
+    /// When the agent last showed a sign of life: output, a report, or resuming.
+    fn last_heard(&self) -> u64 {
+        self.status.last_output_ms.unwrap_or(0).max(self.heard_ms)
+    }
+
+    fn quiet_ms(&self, now: u64) -> u64 {
+        now.saturating_sub(self.last_heard())
+    }
+
     /// Recompute time-dependent fields.
     fn refresh(&mut self, now: u64) {
-        let quiet = self
+        self.status.active = self
             .status
             .last_output_ms
-            .map_or(u64::MAX, |t| now.saturating_sub(t));
-        self.status.active = quiet <= ACTIVE_MS;
+            .is_some_and(|t| now.saturating_sub(t) <= ACTIVE_MS);
+        let stale = self.quiet_ms(now) > STALE_WORKING_MS;
+        let last_heard = self.last_heard();
         self.status.agent = self.report.clone().map(|mut r| {
-            if r.state == AgentState::Working && quiet > STALE_WORKING_MS {
+            if r.state == AgentState::Working && stale {
                 r.state = AgentState::Idle;
-                r.since_ms = self.status.last_output_ms.unwrap_or(r.since_ms);
+                r.since_ms = last_heard;
             }
             r
         });
@@ -444,6 +557,15 @@ pub fn claude_hooks_settings() -> String {
 mod tests {
     use super::*;
 
+    /// Apply a report as if the status file was written at `now`.
+    fn report(tracker: &mut Tracker, text: &str, now: u64) {
+        let stamp = (
+            SystemTime::UNIX_EPOCH + Duration::from_millis(now),
+            text.len() as u64,
+        );
+        tracker.on_report(text, stamp, now);
+    }
+
     #[test]
     fn parses_reports_and_ignores_idle_notifications() {
         let report = parse_report("working\n{\"prompt\":\"fix the build\\nplease\"}").unwrap();
@@ -482,8 +604,13 @@ mod tests {
             ("(127.0.0.1:9000)", "http://127.0.0.1:9000"),
             (
                 "server at https://[::1]:8443/app.",
-                "https://[::1]:8443/app.",
+                "https://[::1]:8443/app",
             ),
+            (
+                "Server listening on http://localhost:3000.",
+                "http://localhost:3000",
+            ),
+            ("bound to localhost:3000;", "http://localhost:3000"),
             (
                 "ready - started server on [::]:3000, url: x",
                 "http://localhost:3000",
@@ -541,22 +668,22 @@ mod tests {
     #[test]
     fn reports_keep_prompt_and_go_stale_when_quiet() {
         let mut tracker = Tracker::new("", true);
-        tracker.on_report("working\n{\"prompt\":\"add tests\"}", 100);
+        report(&mut tracker, "working\n{\"prompt\":\"add tests\"}", 100);
         tracker.on_output(b"spinner", 200);
         let agent = tracker.status(300).agent.unwrap();
         assert_eq!((agent.state, agent.since_ms), (AgentState::Working, 100));
-        tracker.on_report("notify\n{\"message\":\"Allow Bash?\"}", 400);
+        report(&mut tracker, "notify\n{\"message\":\"Allow Bash?\"}", 400);
         let agent = tracker.status(400).agent.unwrap();
         assert_eq!(agent.state, AgentState::NeedsInput);
         assert_eq!(agent.message.as_deref(), Some("Allow Bash?"));
         assert_eq!(agent.prompt.as_deref(), Some("add tests"));
-        tracker.on_report("working\n{}", 500);
-        tracker.on_report("review\n{}", 600);
+        report(&mut tracker, "working\n{}", 500);
+        report(&mut tracker, "review\n{}", 600);
         let agent = tracker.status(600).agent.unwrap();
         assert_eq!((agent.state, agent.message), (AgentState::Review, None));
         assert_eq!(agent.prompt.as_deref(), Some("add tests"));
 
-        tracker.on_report("working\n{}", 700);
+        report(&mut tracker, "working\n{}", 700);
         tracker.on_output(b"spinner", 700);
         assert_eq!(
             tracker
@@ -572,7 +699,7 @@ mod tests {
     fn answering_clears_needs_input_and_shells_never_become_services() {
         let mut tracker = Tracker::new("", true);
         tracker.on_output(b"spinner", 50);
-        tracker.on_report("notify\n{\"message\":\"Allow?\"}", 100);
+        report(&mut tracker, "notify\n{\"message\":\"Allow?\"}", 100);
         tracker.on_input(b"\x1b[I", 200);
         assert_eq!(
             tracker.status(200).agent.unwrap().state,
@@ -591,6 +718,99 @@ mod tests {
     }
 
     #[test]
+    fn skips_other_addresses_until_the_service_answers() {
+        let mut tracker = Tracker::new("", true);
+        tracker.on_output(
+            b"[HPM] Proxy created: /api -> http://localhost:8080\n\
+              connect ECONNREFUSED 127.0.0.1:5432\n",
+            0,
+        );
+        assert!(tracker.status(0).url.is_none());
+        tracker.on_output(b"test server on http://localhost:4000\n", 0);
+        assert_eq!(tracker.due_probe(0), Some(4000));
+        tracker.on_probe(4000, false, 0);
+        // An address printed later replaces one that hasn't answered.
+        tracker.on_output(b"running at http://localhost:3000/\n", 0);
+        assert_eq!(
+            tracker.status(0).url.as_deref(),
+            Some("http://localhost:3000/")
+        );
+        assert_eq!(tracker.due_probe(0), Some(3000));
+        tracker.on_probe(3000, true, 0);
+        tracker.on_output(b"also http://localhost:9999\n", 0);
+        let status = tracker.status(0);
+        assert_eq!(status.url.as_deref(), Some("http://localhost:3000/"));
+        assert_eq!(status.healthy, Some(true));
+    }
+
+    #[test]
+    fn interrupting_stops_the_agent() {
+        let mut tracker = Tracker::new("", false);
+        report(&mut tracker, "notify\n{}", 100);
+        tracker.on_input(b"\x1b", 200);
+        let agent = tracker.status(200).agent.unwrap();
+        assert_eq!((agent.state, agent.since_ms), (AgentState::Idle, 200));
+        report(&mut tracker, "working\n{}", 300);
+        tracker.on_input(b"\x03", 400);
+        assert_eq!(tracker.status(400).agent.unwrap().state, AgentState::Idle);
+        // Typing a prompt while it works changes nothing.
+        report(&mut tracker, "working\n{}", 500);
+        tracker.on_input(b"q\r", 600);
+        assert_eq!(
+            tracker.status(600).agent.unwrap().state,
+            AgentState::Working
+        );
+    }
+
+    #[test]
+    fn an_answer_before_the_report_is_read_still_counts() {
+        let mut tracker = Tracker::new("", false);
+        tracker.on_input(b"1", 150);
+        report_written(&mut tracker, "notify\n{}", 100, 250);
+        assert_eq!(
+            tracker.status(250).agent.unwrap().state,
+            AgentState::Working
+        );
+        // A prompt written after the answer still needs input.
+        report_written(&mut tracker, "notify\n{}", 300, 400);
+        assert_eq!(
+            tracker.status(400).agent.unwrap().state,
+            AgentState::NeedsInput
+        );
+    }
+
+    fn report_written(tracker: &mut Tracker, text: &str, written: u64, now: u64) {
+        let stamp = (
+            SystemTime::UNIX_EPOCH + Duration::from_millis(written),
+            text.len() as u64,
+        );
+        tracker.on_report(text, stamp, now);
+        assert!(tracker.has_report(stamp));
+    }
+
+    #[test]
+    fn each_new_stretch_of_work_and_result_starts_its_own_time() {
+        let mut tracker = Tracker::new("", false);
+        // Reported without printing anything: fresh, not stale.
+        report(&mut tracker, "working\n{}", 100_000);
+        assert_eq!(
+            tracker.status(100_500).agent.unwrap().state,
+            AgentState::Working
+        );
+        report(&mut tracker, "working\n{}", 101_000);
+        assert_eq!(tracker.status(101_000).agent.unwrap().since_ms, 100_000);
+        // After going stale, the next prompt is new work.
+        let later = 101_000 + STALE_WORKING_MS + 1;
+        assert_eq!(tracker.status(later).agent.unwrap().state, AgentState::Idle);
+        report(&mut tracker, "working\n{}", later + 1);
+        assert_eq!(tracker.status(later + 1).agent.unwrap().since_ms, later + 1);
+        // A second result is new even if the work between went unread.
+        report(&mut tracker, "review\n{}", 200_000);
+        report(&mut tracker, "review\n{ }", 300_000);
+        assert_eq!(tracker.status(300_000).agent.unwrap().since_ms, 300_000);
+    }
+
+    #[test]
     fn changed_skips_output_time_only_updates() {
         let mut tracker = Tracker::new("", true);
         assert!(tracker.changed(0).is_none());
@@ -606,13 +826,13 @@ mod tests {
         let mut tracker = Tracker::new("", true);
         tracker.on_output(b"http://localhost:4000\n", 0);
         assert_eq!(tracker.due_probe(0), Some(4000));
-        tracker.on_probe(false, 0);
+        tracker.on_probe(4000, false, 0);
         assert_eq!(tracker.status(0).healthy, None);
         assert_eq!(tracker.due_probe(1), None);
         assert_eq!(tracker.due_probe(PROBE_INTERVAL_MS), Some(4000));
-        tracker.on_probe(false, PROBE_INTERVAL_MS);
+        tracker.on_probe(4000, false, PROBE_INTERVAL_MS);
         assert_eq!(tracker.status(0).healthy, Some(false));
-        tracker.on_probe(true, PROBE_INTERVAL_MS * 2);
+        tracker.on_probe(4000, true, PROBE_INTERVAL_MS * 2);
         assert_eq!(tracker.status(0).healthy, Some(true));
     }
 

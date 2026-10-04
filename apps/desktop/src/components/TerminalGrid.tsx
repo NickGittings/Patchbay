@@ -1,4 +1,5 @@
 import { describeTerminal, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
@@ -14,6 +15,7 @@ export default function TerminalGrid({
   terminals: TerminalSpec[]
 }) {
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   return (
     <div className="terminal-grid">
       {terminals.map((terminal) => {

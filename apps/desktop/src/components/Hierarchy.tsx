@@ -2,18 +2,22 @@ import ExtensionBadges from '../extensions/Badges'
 import { useReactFlow } from '@xyflow/react'
 import { openComponentWindow } from '../lib/windows'
 import { componentAttention } from '../lib/attention'
+import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
 import { sessionId } from '../types'
+import AttentionPill from './status/AttentionPill'
 
 /** Outline of every component, like a game engine's scene hierarchy. */
 export default function Hierarchy() {
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
+  const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const gitChanges = useStore((s) => s.gitChanges)
   const selectedId = useStore((s) => s.selectedId)
   const select = useStore((s) => s.select)
   const { setCenter } = useReactFlow()
+  useClockTick()
 
   const focus = (id: string) => {
     select(id)
@@ -38,7 +42,7 @@ export default function Hierarchy() {
           (t) => sessions[sessionId(n.id, t.id)]?.running,
         ).length
         const changes = gitChanges[n.id] ?? 0
-        const attention = componentAttention(n.id, n.data.terminals, sessions)
+        const attention = componentAttention(n.id, n.data.terminals, sessions, runtimeTerminals)
         return (
           <button
             key={n.id}
@@ -49,14 +53,7 @@ export default function Hierarchy() {
             <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
             <span className="hierarchy-name">{n.data.name}</span>
             <ExtensionBadges componentId={n.id} />
-            {attention && (
-              <span
-                className={`attention-pill health-${attention.health}`}
-                title={attention.detail}
-              >
-                {attention.label}
-              </span>
-            )}
+            <AttentionPill status={attention} />
             {running > 0 && (
               <span className="count running" title={`${running} running`}>
                 {running}

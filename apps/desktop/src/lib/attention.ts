@@ -60,14 +60,31 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
     .sort((a, b) => b.status.attention - a.status.attention || a.sinceMs - b.sinceMs)
 }
 
+/** A component's terminals by session id: its own, then those its extensions started. */
+export function componentTerminals(
+  componentId: string,
+  terminals: TerminalSpec[],
+  runtimeTerminals: Snapshot['runtimeTerminals'],
+): [string, TerminalSpec][] {
+  return [
+    ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id), t]),
+    ...Object.entries(runtimeTerminals)
+      .filter(([, r]) => r.componentId === componentId)
+      .map(([sid, r]): [string, TerminalSpec] => [sid, r.terminal]),
+  ]
+}
+
 /** The most urgent status among a component's terminals, if any wants the user. */
 export function componentAttention(
   componentId: string,
   terminals: TerminalSpec[],
   sessions: Record<string, SessionState>,
+  runtimeTerminals: Snapshot['runtimeTerminals'],
 ): TerminalStatus | null {
   return mostUrgent(
-    terminals.map((t) => terminalStatus(t.kind, sessions[sessionId(componentId, t.id)])),
+    componentTerminals(componentId, terminals, runtimeTerminals).map(([sid, t]) =>
+      terminalStatus(t.kind, sessions[sid]),
+    ),
   )
 }
 

@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { componentAttention } from '../lib/attention'
+import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
 import { startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId } from '../types'
 import ChangesPanel from './changes/ChangesPanel'
+import AttentionPill from './status/AttentionPill'
 import TerminalGrid from './TerminalGrid'
 
 export default function ImplementationView() {
@@ -14,9 +16,11 @@ export default function ImplementationView() {
   const selectedId = useStore((s) => s.selectedId)
   const highlighted = useStore((s) => s.highlighted)
   const sessions = useStore((s) => s.sessions)
+  const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const gitChanges = useStore((s) => s.gitChanges)
   const select = useStore((s) => s.select)
   const [showChanges, setShowChanges] = useState(false)
+  useClockTick()
   const target =
     nodes.find((n) => n.id === selectedId) ?? nodes.find((n) => n.id === highlighted[0]) ?? nodes[0]
   const stopped =
@@ -33,7 +37,7 @@ export default function ImplementationView() {
               (t) => sessions[sessionId(n.id, t.id)]?.running,
             ).length
             const changes = gitChanges[n.id] ?? 0
-            const attention = componentAttention(n.id, n.data.terminals, sessions)
+            const attention = componentAttention(n.id, n.data.terminals, sessions, runtimeTerminals)
             return (
               <button
                 key={n.id}
@@ -48,14 +52,7 @@ export default function ImplementationView() {
                     ±{changes}
                   </span>
                 )}
-                {attention && (
-                  <span
-                    className={`attention-pill health-${attention.health}`}
-                    title={attention.detail}
-                  >
-                    {attention.label}
-                  </span>
-                )}
+                <AttentionPill status={attention} />
                 {running > 0 && (
                   <span className="count running" title={`${running} running`}>
                     {running}

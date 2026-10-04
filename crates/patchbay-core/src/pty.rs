@@ -1,5 +1,5 @@
 use crate::events::{EventSink, TerminalEvent};
-use crate::status::{STATUS_ENV, SessionStatus, Tracker, probe};
+use crate::status::{STATUS_ENV, SessionStatus, Stamp, Tracker, probe};
 use anyhow::{Result, anyhow, bail};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -152,8 +152,19 @@ struct Watched {
     backlog: Arc<Mutex<Backlog>>,
     sink: Arc<dyn EventSink>,
     status_file: Option<PathBuf>,
-    /// Modification time and length of the status file when last read.
-    seen: Option<(SystemTime, u64)>,
+    /// The status file write last read.
+    seen: Option<Stamp>,
+}
+
+/// A status file's contents with its stamp, unless the write is `seen` or
+/// there is none. Reads without taking any lock.
+fn read_status_file(file: &Path, seen: Option<Stamp>) -> Option<(Stamp, String)> {
+    let meta = std::fs::metadata(file).ok()?;
+    let stamp = (meta.modified().ok()?, meta.len());
+    if seen == Some(stamp) {
+        return None;
+    }
+    Some((stamp, std::fs::read_to_string(file).ok()?))
 }
 
 /// A private folder (owner-only on Unix) for one manager's status files. It is
@@ -359,8 +370,11 @@ impl PtyManager {
         std::thread::spawn(move || {
             let status = child.wait();
             manager.orphans.lock().unwrap().remove(&generation);
+            // Read a report written just before exiting, e.g. a finished turn.
+            let file = manager.status_file(generation);
+            let last_report = file.as_deref().and_then(|f| read_status_file(f, None));
             manager.watched.lock().unwrap().remove(&generation);
-            remove_status_file(manager.status_file(generation).as_deref());
+            remove_status_file(file.as_deref());
             // Let the reader drain; on Windows it only sees EOF once the master closes.
             let _ = done_rx.recv_timeout(Duration::from_millis(500));
             let mut sessions = manager.sessions.lock().unwrap();
@@ -378,15 +392,17 @@ impl PtyManager {
                 Err(_) => 1,
             };
             let exited_ms = now_ms();
-            let status = {
-                let mut backlog = backlog.lock().unwrap();
-                backlog.running = false;
-                backlog.exit_code = Some(exit_code);
-                backlog.exited_ms = Some(exited_ms);
-                backlog.tracker.changed(exited_ms)
-            };
+            let mut backlog = backlog.lock().unwrap();
+            if let Some((stamp, text)) = last_report {
+                backlog.tracker.on_report(&text, stamp, exited_ms);
+            }
+            backlog.running = false;
+            backlog.exit_code = Some(exit_code);
+            backlog.exited_ms = Some(exited_ms);
             // The monitor stopped watching it, so report e.g. a stop it missed.
-            if let Some(status) = status {
+            // Emitted under the backlog lock, like the monitor's, so no
+            // earlier status can follow these.
+            if let Some(status) = backlog.tracker.changed(exited_ms) {
                 sink.emit(TerminalEvent::Status {
                     session_id: spec.id.clone(),
                     generation,
@@ -440,59 +456,50 @@ impl PtyManager {
             .unwrap()
             .iter()
             .map(|(&generation, w)| {
-                let file = w.status_file.clone();
                 (
                     generation,
                     w.id.clone(),
                     w.backlog.clone(),
                     w.sink.clone(),
-                    file,
+                    w.status_file.clone(),
                     w.seen,
                 )
             })
             .collect();
-        let mut events = Vec::new();
         for (generation, id, backlog, sink, file, seen) in watched {
             // Read a changed status file without holding any lock.
-            let report = file.as_deref().and_then(|file| {
-                let meta = std::fs::metadata(file).ok()?;
-                let stamp = (meta.modified().ok()?, meta.len());
-                if seen == Some(stamp) {
-                    return None;
-                }
-                let text = std::fs::read_to_string(file).ok()?;
-                if let Some(w) = self.watched.lock().unwrap().get_mut(&generation) {
-                    w.seen = Some(stamp);
-                }
-                Some(text)
-            });
-            let (port, status) = {
-                let mut backlog = backlog.lock().unwrap();
-                if let Some(text) = report {
-                    backlog.tracker.on_report(&text, now);
-                }
-                (backlog.tracker.due_probe(now), backlog.tracker.changed(now))
-            };
+            let report = file.as_deref().and_then(|f| read_status_file(f, seen));
+            if let Some((stamp, _)) = &report
+                && let Some(w) = self.watched.lock().unwrap().get_mut(&generation)
+            {
+                w.seen = Some(*stamp);
+            }
+            let mut guard = backlog.lock().unwrap();
+            if let Some((stamp, text)) = report {
+                guard.tracker.on_report(&text, stamp, now);
+            }
+            // Once exited, the waiter has sent the last status.
+            if !guard.running {
+                continue;
+            }
+            let port = guard.tracker.due_probe(now);
+            // Emitted under the backlog lock so it can't follow the waiter's
+            // final status and exit.
+            if let Some(status) = guard.tracker.changed(now) {
+                sink.emit(TerminalEvent::Status {
+                    session_id: id,
+                    generation,
+                    status,
+                });
+            }
+            drop(guard);
             if let Some(port) = port {
                 let backlog = backlog.clone();
                 std::thread::spawn(move || {
                     let ok = probe(port);
-                    backlog.lock().unwrap().tracker.on_probe(ok, now_ms());
+                    backlog.lock().unwrap().tracker.on_probe(port, ok, now_ms());
                 });
             }
-            if let Some(status) = status {
-                events.push((
-                    sink,
-                    TerminalEvent::Status {
-                        session_id: id,
-                        generation,
-                        status,
-                    },
-                ));
-            }
-        }
-        for (sink, event) in events {
-            sink.emit(event);
         }
     }
 
@@ -821,6 +828,46 @@ mod tests {
         pty.write("c/agent", b"\n").unwrap();
         assert_eq!(sink.wait_for_exit(), 0);
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn reads_a_report_written_just_before_exit() {
+        use crate::status::AgentState;
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(
+            SessionSpec {
+                id: "c/agent".into(),
+                command: "printf 'review\\n' > \"$PATCHBAY_STATUS_FILE\"".into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::new(),
+                ready_when: String::new(),
+                service: false,
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        let events = sink.0.lock().unwrap();
+        let exited = events
+            .iter()
+            .position(|e| matches!(e, TerminalEvent::Exited { .. }))
+            .unwrap();
+        // The final status comes before the exit, and nothing after it.
+        assert!(
+            !events[exited..]
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::Status { .. }))
+        );
+        let agent = events[..exited]
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                TerminalEvent::Status { status, .. } => status.agent.clone(),
+                _ => None,
+            })
+            .expect("a status with the report");
+        assert_eq!(agent.state, AgentState::Review);
     }
 
     #[test]

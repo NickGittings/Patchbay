@@ -19,16 +19,7 @@ export default function TerminalPane({
 }) {
   const sid = sessionId(componentId, terminal.id)
   const session = useStore((s) => s.sessions[sid])
-  // When a finished review or a failure that no window has shown yet happened.
-  const { health, attention } = terminalStatus(terminal.kind, session)
-  const unseen =
-    attention === 0
-      ? undefined
-      : health === 'review'
-        ? session?.status?.agent?.sinceMs
-        : health === 'fail'
-          ? session?.exitedMs
-          : undefined
+  const unseen = terminalStatus(terminal.kind, session).unseenSince
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
 
