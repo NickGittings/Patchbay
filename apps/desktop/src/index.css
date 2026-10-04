@@ -213,20 +213,28 @@ select:focus {
   cursor: pointer;
 }
 
-/* Toolbar list of terminals that need the user */
+/* Toolbar dropdowns: generic menus and the list of terminals that need the user */
+.menu,
 .attention {
   position: relative;
 }
+.menu-trigger,
 .attention-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
+.menu-caret {
+  font-size: 9px;
+  color: var(--muted);
+}
+.menu-overlay,
 .attention-overlay {
   position: fixed;
   inset: 0;
   z-index: 40;
 }
+.menu-list,
 .attention-list {
   position: absolute;
   top: calc(100% + 4px);
@@ -234,8 +242,7 @@ select:focus {
   z-index: 41;
   display: flex;
   flex-direction: column;
-  min-width: 320px;
-  max-width: 480px;
+  min-width: 200px;
   max-height: 60vh;
   overflow: auto;
   padding: 4px;
@@ -244,6 +251,16 @@ select:focus {
   border-radius: 6px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
 }
+.menu-list.right,
+.attention-list {
+  right: 0;
+  left: auto;
+}
+.attention-list {
+  min-width: 320px;
+  max-width: 480px;
+}
+.toolbar .menu-item,
 .attention-item {
   display: flex;
   align-items: center;
@@ -252,8 +269,28 @@ select:focus {
   background: none;
   border: none;
 }
+.toolbar .menu-item {
+  justify-content: space-between;
+  gap: 24px;
+  height: 28px;
+  width: 100%;
+}
+.toolbar .menu-item:hover:not(:disabled),
 .attention-item:hover {
   background: var(--panel-2);
+}
+.menu-item-label {
+  white-space: nowrap;
+}
+.menu-shortcut {
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+}
+.menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
 }
 .attention-what {
   display: flex;
@@ -303,39 +340,116 @@ select:focus {
 }
 
 .toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 12px;
+  height: 44px;
+  padding: 0 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.brand {
-  font-weight: 700;
-  letter-spacing: 0.04em;
+.toolbar button {
+  height: 28px;
+  padding: 0 10px;
+  white-space: nowrap;
+  flex: none;
+}
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.toolbar-group.end {
+  justify-content: flex-end;
+}
+.toolbar .attention {
+  min-width: 0;
+}
+.toolbar .attention-button {
+  max-width: 100%;
+}
+.attention-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.view-switcher {
+  display: flex;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.toolbar .view-switcher button {
+  min-width: 104px;
+  height: 26px;
+  color: var(--muted);
+  background: none;
+  border: none;
+}
+.toolbar .view-switcher button:hover:not(.active) {
+  color: var(--text);
+  background: var(--panel-2);
+}
+@media (max-width: 1000px) {
+  .toolbar .view-switcher button {
+    min-width: 0;
+  }
+}
+.toolbar .view-switcher button.active {
   color: var(--accent);
-  margin-right: 8px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 .file {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
+}
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dirty {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
+  flex: none;
 }
-.message {
-  color: var(--accent);
+.toast {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(440px, calc(100vw - 24px));
+  padding: 10px 10px 10px 14px;
   font-size: 12px;
-  max-width: 50ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+}
+.toast-text {
+  overflow-wrap: anywhere;
+}
+.toast-close {
+  flex: none;
+  padding: 0 6px;
+  line-height: 1.4;
+  color: var(--muted);
+  background: none;
+  border: none;
 }
 
 .panel {

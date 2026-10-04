@@ -24,6 +24,7 @@ export default function AttentionMenu() {
   const counts = new Map<string, number>()
   for (const item of items)
     counts.set(item.status.health, (counts.get(item.status.health) ?? 0) + 1)
+  const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')
 
   return (
     <div className="attention">
@@ -32,10 +33,10 @@ export default function AttentionMenu() {
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => setOpen(!open)}
-        title="Terminals that need you"
+        title={`Terminals that need you: ${summary}`}
       >
         <span className="status-dot" />
-        {[...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')}
+        <span className="attention-summary">{summary}</span>
       </button>
       {open && (
         <>
