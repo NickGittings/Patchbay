@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listDir, revealPath } from '../lib/ipc'
+import { listDir, onFileAccessChanged, revealPath } from '../lib/ipc'
 import { absolutePath } from '../lib/windows'
 import { useStore } from '../store'
 import type { DirEntry } from '../types'
@@ -93,13 +93,23 @@ export default function FileTree({ root, path }: { root: string; path: string })
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
     let last = Date.now()
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void onFileAccessChanged(() => setRefresh((n) => n + 1)).then((cleanup) => {
+      if (disposed) cleanup()
+      else unlisten = cleanup
+    })
     const reload = () => {
       if (Date.now() - last < FOCUS_REFRESH_MS) return
       last = Date.now()
       setRefresh((n) => n + 1)
     }
     window.addEventListener('focus', reload)
-    return () => window.removeEventListener('focus', reload)
+    return () => {
+      disposed = true
+      unlisten?.()
+      window.removeEventListener('focus', reload)
+    }
   }, [])
   return (
     <div className="file-tree">

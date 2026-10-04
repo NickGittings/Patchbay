@@ -12,9 +12,9 @@ import type {
   TerminalSpec,
 } from '../types'
 
-/** May ask (in a native dialog) whether folders outside the project may be read. */
-export const openProject = (root: string) =>
-  invoke<{ project: Project; detected: boolean; locked: string[] }>('open_project', { root })
+/** Backend folder picker; may also ask whether external folders may be read. */
+export const openProject = () =>
+  invoke<{ project: Project; detected: boolean; locked: string[] } | null>('open_project')
 export const rescanProject = (project: Project) => invoke<Added>('rescan_project', { project })
 export const saveProject = (project: Project) => invoke<string>('save_project', { project })
 export const componentContext = (project: Project, componentId: string) =>
@@ -25,6 +25,8 @@ export const addFolder = (project: Project) => invoke<Added | null>('add_folder'
 export const pickComponentFolder = () => invoke<string | null>('pick_component_folder')
 /** Tell the backend which component folders are on the map; it can only narrow file access. */
 export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
+export const onFileAccessChanged = (handler: () => void) =>
+  listen('patchbay://file-access', handler)
 export const gitStatus = (components: { id: string; path: string }[]) =>
   invoke<GitStatus>('git_status', { components })
 export const planContext = (project: Project, componentIds: string[]) =>

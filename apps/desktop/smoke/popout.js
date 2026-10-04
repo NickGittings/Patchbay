@@ -22,7 +22,7 @@
 
   try {
     if (popout === null) {
-      const { project } = await smoke.openProject(window.__PATCHBAY_SMOKE_ROOT)
+      const { project } = await smoke.openProject()
       smoke.store.getState().loadProject(project)
       const node = smoke.store.getState().nodes.find(shellOf)
       if (!node) throw new Error('no component with a shell terminal')

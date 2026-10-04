@@ -9,7 +9,7 @@ import { sessionId } from '../../types'
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const planning = useStore((s) => s.view === 'plan')
   const highlighted = useStore((s) => s.highlighted.includes(id))
-  const nearby = useStore((s) => nearbyIds(s.highlighted, s.edges).has(id))
+  const nearby = useStore((s) => s.view === 'plan' && nearbyIds(s.highlighted, s.edges).has(id))
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const planClass =
     planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''

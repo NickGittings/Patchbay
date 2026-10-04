@@ -212,7 +212,7 @@ pub fn plan_session_spec(
                 std::iter::once(*c).chain(project.neighbours(&c.id).into_iter().map(|(n, _)| n));
             for n in reach {
                 let dir = project.component_dir(n);
-                if project.is_external(n) && !dirs.contains(&dir) {
+                if !dir.starts_with(&project.root) && !dirs.contains(&dir) {
                     dirs.push(dir);
                 }
             }

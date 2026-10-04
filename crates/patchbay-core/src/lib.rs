@@ -2,6 +2,7 @@
 //! agent context and terminal presets. Has no UI dependency so it can be driven
 //! by the desktop app, the CLI, or a future server.
 
+pub mod access;
 pub mod context;
 pub mod detect;
 pub mod devices;

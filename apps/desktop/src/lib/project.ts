@@ -1,4 +1,3 @@
-import { open } from '@tauri-apps/plugin-dialog'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
@@ -6,6 +5,7 @@ import type { Added } from '../types'
 import { addFolder, openProject, rescanProject, saveProject, terminalReset } from './ipc'
 import { resetSessions } from './sessions'
 import { closeComponentWindows } from './windows'
+import { syncCurrentRoots } from './access'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -17,11 +17,11 @@ const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
 export function useOpenProject() {
   const { fitView } = useReactFlow()
   return useCallback(async () => {
-    const root = await open({ directory: true, multiple: false })
-    if (typeof root !== 'string') return
     const s = useStore.getState()
     try {
-      const { project, detected, locked } = await openProject(root)
+      const opened = await openProject()
+      if (!opened) return
+      const { project, detected, locked } = opened
       await closeComponentWindows()
       resetSessions(await terminalReset())
       s.loadProject(project)
@@ -57,7 +57,7 @@ export async function saveCurrentProject() {
  * folder dialog was open) survive. A component whose id or folder the user took meanwhile is
  * dropped, with its links. Keeps live session and git state. Returns how many were added.
  */
-function applyAdded(added: Added, none: string): number {
+export function applyAdded(added: Added, none: string): number {
   const s = useStore.getState()
   const current = s.toProject()
   const taken = new Set(current.components.map((c) => c.id))
@@ -73,22 +73,12 @@ function applyAdded(added: Added, none: string): number {
   const valid = (id: string) => kept.has(id) || (!fresh.has(id) && taken.has(id))
   const linkIds = new Set(current.links.map((l) => l.id))
   const links = added.links.filter((l) => valid(l.source) && valid(l.target) && !linkIds.has(l.id))
-  const { sessions, gitChanges, repos, activeSession, view, highlighted, planStartedWith } = s
-  s.loadProject({
+  s.syncProject({
     ...current,
     components: [...current.components, ...components],
     links: [...current.links, ...links],
   })
-  useStore.setState({
-    sessions,
-    gitChanges,
-    repos,
-    activeSession,
-    view,
-    highlighted,
-    planStartedWith,
-    dirty: true,
-  })
+  useStore.setState({ dirty: true })
   s.setMessage(`Added ${components.length} component(s)`)
   return components.length
 }
@@ -118,6 +108,7 @@ export function useAddFolder() {
       const added = await addFolder(s.toProject())
       if (!added) return
       if (applyAdded(added, 'Everything in that folder is already on the map')) fitSoon(fitView)
+      await syncCurrentRoots()
     } catch (e) {
       s.setMessage(String(e))
     }

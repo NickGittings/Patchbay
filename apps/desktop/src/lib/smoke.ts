@@ -5,10 +5,12 @@ import { openProject, terminalReset, terminalWrite } from './ipc'
 import { resetSessions, startTerminal } from './sessions'
 import { terminalText } from './terminals'
 import { openComponentWindow } from './windows'
+import { applyAdded } from './project'
 
 const hooks = {
   store: useStore,
   openProject,
+  applyAdded,
   startTerminal,
   terminalReset,
   resetSessions,

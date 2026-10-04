@@ -14,7 +14,7 @@ pub struct Project {
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub name: String,
-    /// Absolute repo root. Not written to disk so the file stays portable.
+    /// Canonical absolute repo root. Not written to disk so the file stays portable.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub root: String,
     #[serde(default)]
@@ -119,9 +119,7 @@ impl Project {
     /// Whether a component's folder lies outside the project root.
     #[must_use]
     pub fn is_external(&self, component: &Component) -> bool {
-        !self
-            .component_dir(component)
-            .starts_with(resolve_dir(Path::new(&self.root)))
+        !self.component_dir(component).starts_with(&self.root)
     }
 
     /// Folders of components outside the project root: the project's other
@@ -130,8 +128,8 @@ impl Project {
     pub fn external_dirs(&self) -> Vec<PathBuf> {
         self.components
             .iter()
-            .filter(|c| self.is_external(c))
             .map(|c| self.component_dir(c))
+            .filter(|dir| !dir.starts_with(&self.root))
             .collect()
     }
 
@@ -160,11 +158,24 @@ impl Project {
         let text = std::fs::read_to_string(&file)?;
         let mut project: Self =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
-        project.root = root.display().to_string();
+        project.root = root.canonicalize()?.display().to_string();
+        project.validate()?;
         Ok(Some(project))
     }
 
+    /// Check invariants required by component and planner session routing.
+    ///
+    /// # Errors
+    /// Fails if a component uses the reserved planner scope.
+    pub fn validate(&self) -> Result<()> {
+        if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
+            anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
+        }
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<PathBuf> {
+        self.validate()?;
         let file = Path::new(&self.root).join(PROJECT_FILE);
         let mut text = serde_json::to_string_pretty(self)?;
         text.push('\n');

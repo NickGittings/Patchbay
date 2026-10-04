@@ -29,7 +29,7 @@
   }
 
   try {
-    const { project: detected } = await smoke.openProject(window.__PATCHBAY_SMOKE_ROOT)
+    const { project: detected } = await smoke.openProject()
     const component = (id, x) => ({
       id,
       name: id.toUpperCase(),
@@ -184,6 +184,46 @@
       JSON.stringify(state().toProject()) === baseline && !state().dirty,
       'view actions changed the saved model',
     )
+    // Rescan and Add repo share this merge path. It must preserve selection and
+    // active sessions throughout the update, including intermediate snapshots.
+    state().setView('implementation')
+    state().onNodesChange([{ type: 'select', id: 'beta', selected: true }])
+    const beforeAdd = state()
+    let selectionChanged = false
+    const unsubscribe = smoke.store.subscribe((s) => {
+      if (s.selectedId !== 'beta' || s.view !== 'implementation') selectionChanged = true
+    })
+    const added = { ...component('added', 1280), path: 'devices' }
+    assert(smoke.applyAdded({ components: [added], links: [] }, '') === 1, 'merge added nothing')
+    unsubscribe()
+    assert(!selectionChanged, 'merge temporarily clears selection or changes view')
+    assert(
+      state().activeSession === beforeAdd.activeSession &&
+        state().sessions === beforeAdd.sessions &&
+        state().highlighted === beforeAdd.highlighted &&
+        state().planStartedWith === beforeAdd.planStartedWith &&
+        state().nodes.find((n) => n.id === 'beta').selected,
+      'merge loses session, planner, or canvas selection state',
+    )
+    await until('implementation still on beta', () =>
+      document.querySelector('.implementation-view .terminal-tile')?.textContent.includes('Task'),
+    )
+    state().selectEdge('ab')
+    state().onEdgesChange([{ type: 'select', id: 'ab', selected: true }])
+    smoke.applyAdded(
+      { components: [{ ...component('another', 1600), path: 'crates' }], links: [] },
+      '',
+    )
+    assert(
+      state().selectedEdgeId === 'ab' && state().edges.find((e) => e.id === 'ab').selected,
+      'merge loses edge selection',
+    )
+    state().select('beta')
+    assert(
+      smoke.applyAdded({ components: [added], links: [] }, 'Already present') === 0 &&
+        state().selectedId === 'beta',
+      'adding an existing folder changes selection',
+    )
     state().onNodesChange([{ type: 'remove', id: 'alpha' }])
     assert(state().highlighted.length === 0, 'removed highlight was not pruned')
     smoke.resetSessions(await smoke.terminalReset())
@@ -197,7 +237,7 @@
       'project change retains planner sessions',
     )
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, project reset',
+      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, merge selection, project reset',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

@@ -8,7 +8,8 @@ import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { gitStatus, listDevices, syncRoots } from './lib/ipc'
+import { gitStatus, listDevices } from './lib/ipc'
+import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
@@ -48,13 +49,24 @@ function useGitPolling() {
 function useRootSync() {
   useEffect(() => {
     let last: string[] = []
-    return useStore.subscribe((s, prev) => {
-      if (!s.project || s.nodes === prev.nodes) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (!s.project || (s.nodes === prev.nodes && s.project === prev.project)) return
       // A drag replaces nodes every frame but keeps their paths: compare without allocating.
-      if (s.nodes.length === last.length && s.nodes.every((n, i) => n.data.path === last[i])) return
+      if (
+        s.project === prev.project &&
+        s.nodes.length === last.length &&
+        s.nodes.every((n, i) => n.data.path === last[i])
+      )
+        return
       last = s.nodes.map((n) => n.data.path)
-      void syncRoots(last).catch(() => {})
+      clearTimeout(timer)
+      timer = setTimeout(() => void syncCurrentRoots().catch(() => {}), 150)
     })
+    return () => {
+      unsubscribe()
+      clearTimeout(timer)
+    }
   }, [])
 }
 

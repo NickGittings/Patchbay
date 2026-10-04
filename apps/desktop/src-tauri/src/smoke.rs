@@ -22,11 +22,6 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
             std::process::exit(1);
         }
     };
-    let root = std::env::var("PATCHBAY_SMOKE_ROOT").unwrap_or_default();
-    let script = format!(
-        "window.__PATCHBAY_SMOKE_ROOT = {};\n{script}",
-        serde_json::Value::String(root)
-    );
 
     builder
         .on_page_load(move |webview, payload| {
@@ -56,4 +51,10 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
             });
             Ok(())
         })
+}
+
+/// A root configured by the test process, never by an IPC caller.
+pub fn project_root() -> Option<std::path::PathBuf> {
+    std::env::var_os("PATCHBAY_SMOKE_SCRIPT")?;
+    std::env::var_os("PATCHBAY_SMOKE_ROOT").map(std::path::PathBuf::from)
 }

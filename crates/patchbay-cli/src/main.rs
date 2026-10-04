@@ -22,7 +22,7 @@ enum Cmd {
     },
     /// Print a planner briefing for selected component ids, or the whole project.
     Plan {
-        #[arg(default_value = ".")]
+        #[arg(long, default_value = ".")]
         dir: PathBuf,
         component_ids: Vec<String>,
     },
@@ -73,4 +73,42 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_ids_are_positional_and_directory_is_a_flag() {
+        let Cli {
+            cmd: Cmd::Plan { dir, component_ids },
+        } = Cli::try_parse_from(["patchbay", "plan", "api", "web"]).unwrap()
+        else {
+            panic!("expected plan command")
+        };
+        assert_eq!(dir, PathBuf::from("."));
+        assert_eq!(component_ids, ["api", "web"]);
+
+        let Cli {
+            cmd: Cmd::Plan { dir, component_ids },
+        } = Cli::try_parse_from(["patchbay", "plan", "api", "--dir", "../shop"]).unwrap()
+        else {
+            panic!("expected plan command")
+        };
+        assert_eq!(dir, PathBuf::from("../shop"));
+        assert_eq!(component_ids, ["api"]);
+    }
+
+    #[test]
+    fn plan_without_ids_uses_the_current_project() {
+        let Cli {
+            cmd: Cmd::Plan { dir, component_ids },
+        } = Cli::try_parse_from(["patchbay", "plan"]).unwrap()
+        else {
+            panic!("expected plan command")
+        };
+        assert_eq!(dir, PathBuf::from("."));
+        assert!(component_ids.is_empty());
+    }
 }

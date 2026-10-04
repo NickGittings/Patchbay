@@ -457,8 +457,10 @@ fn layout(components: &mut [Component], links: &[Link]) {
 /// Suggest a project for `root`. Falls back to a single root component.
 ///
 /// # Errors
-/// Currently infallible; reserved for I/O errors on unreadable roots.
+/// Fails if the project root cannot be resolved.
 pub fn detect(root: &Path) -> Result<Project> {
+    let root = root.canonicalize()?;
+    let root = root.as_path();
     let mut found = Vec::new();
     walk(root, root, 0, &mut found);
     if found.is_empty() {

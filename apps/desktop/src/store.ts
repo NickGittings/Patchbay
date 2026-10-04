@@ -128,10 +128,14 @@ export const useStore = create<State>((set, get) => ({
     }),
 
   syncProject: (p) =>
-    set({
-      project: { name: p.name, root: p.root },
-      nodes: p.components.map(componentToNode),
-      edges: p.links.map(linkToEdge),
+    set((s) => {
+      const selected = new Set(s.nodes.filter((n) => n.selected).map((n) => n.id))
+      const selectedEdges = new Set(s.edges.filter((e) => e.selected).map((e) => e.id))
+      return {
+        project: { name: p.name, root: p.root },
+        nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
+        edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
+      }
     }),
 
   toProject: () => {

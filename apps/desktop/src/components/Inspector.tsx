@@ -2,6 +2,7 @@ import { openComponentWindow } from '../lib/windows'
 import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
+import { syncCurrentRoots } from '../lib/access'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore, type FlowNode } from '../store'
 import { COMPONENT_KINDS, sessionId, type ComponentKind, type TerminalKind } from '../types'
@@ -65,7 +66,10 @@ function ComponentInspector({ node }: { node: FlowNode }) {
             onClick={async () => {
               try {
                 const path = await pickComponentFolder()
-                if (path) updateComponent(id, { path })
+                if (path) {
+                  updateComponent(id, { path })
+                  await syncCurrentRoots()
+                }
               } catch (e) {
                 useStore.getState().setMessage(String(e))
               }
