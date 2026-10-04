@@ -48,7 +48,11 @@ export interface Patchbay {
     readonly component: Component | null
     onDidChangeSelection(fn: (component: Component | null) => void): Disposable
   }
-  /** Requires terminals. All launches go through the application's policy and allowed roots. */
+  /**
+   * Requires terminals. All launches go through the application's policy and allowed roots.
+   * `run` reuses one session per command and component (at most eight per extension) and
+   * rejects while that command is still running there.
+   */
   terminals: {
     start(componentId: string, terminalId: string): Promise<string>
     run(

@@ -54,13 +54,24 @@ export const planStart = async (project: Project, componentIds: string[], termin
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })
 
-export const terminalStart = async (project: Project, componentId: string, terminalId: string) =>
-  invoke<string>('terminal_start', {
+/** Only agent terminals get a briefing, so only they wait for extension context. */
+export const terminalStart = async (
+  project: Project,
+  componentId: string,
+  terminalId: string,
+  caller?: string,
+) => {
+  const terminal = project.components
+    .find((c) => c.id === componentId)
+    ?.terminals.find((t) => t.id === terminalId)
+  return invoke<string>('terminal_start', {
     project,
     componentId,
     terminalId,
-    extraContext: await extraContext(project, [componentId]),
+    extraContext:
+      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller) : [],
   })
+}
 export const terminalWrite = (sessionId: string, data: string) =>
   invoke<void>('terminal_write', { sessionId, data })
 export const terminalResize = (sessionId: string, cols: number, rows: number) =>
@@ -95,11 +106,11 @@ export const extensionTerminalRun = (
   extensionId: string,
   componentId: string,
   command: string,
-  requestId: string,
+  key: string,
 ) =>
   invoke<string>('extension_terminal_run', {
     project,
-    request: { extensionId, componentId, command, requestId },
+    request: { extensionId, componentId, command, key },
   })
 export const extensionStorageGet = (extensionId: string) =>
   invoke<Record<string, unknown>>('extension_storage_get', { extensionId })

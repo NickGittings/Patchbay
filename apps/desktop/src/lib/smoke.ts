@@ -1,4 +1,4 @@
-import { reloadExtensions } from './ipc'
+import { extensionStorageGet, reloadExtensions } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
 import { executeExtensionCommand } from '../extensions/host'
@@ -17,6 +17,7 @@ const hooks = {
   store: useStore,
   evaluateWhen,
   reloadExtensions,
+  extensionStorageGet,
   refreshExtensions,
   componentContext,
   executeExtensionCommand,

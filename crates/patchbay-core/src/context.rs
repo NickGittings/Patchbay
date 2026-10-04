@@ -323,11 +323,56 @@ pub fn session_spec(
     })
 }
 
+/// Build the session for a terminal that isn't on the map (an extension command
+/// or `terminals.run`), as if `component_id` had it. The map itself is not saved.
+///
+/// # Errors
+/// Fails if the component does not exist, or the policy rejects it.
+pub fn extra_session_spec(
+    mut project: Project,
+    component_id: &str,
+    terminal: TerminalSpec,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
+    let component = project
+        .components
+        .iter_mut()
+        .find(|c| c.id == component_id)
+        .ok_or_else(|| anyhow!("unknown component {component_id}"))?;
+    let terminal_id = terminal.id.clone();
+    component.terminals.retain(|t| t.id != terminal_id);
+    component.terminals.push(terminal);
+    session_spec(&project, component_id, &terminal_id, policy, sections)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Component, ComponentKind, Link, TerminalSpec};
     use crate::policy::AllowAll;
+
+    #[test]
+    fn extra_terminals_launch_in_the_component_and_replace_same_ids() {
+        let terminal = TerminalSpec {
+            id: "agent".into(),
+            name: "Ad hoc".into(),
+            command: "echo hi".into(),
+            kind: TerminalKind::Task,
+        };
+        let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
+        assert_eq!(spec.id, "api/agent");
+        assert_eq!(spec.command, "echo hi");
+        assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
+        assert!(!spec.env.contains_key(CONTEXT_ENV));
+        let missing = TerminalSpec {
+            id: "x".into(),
+            name: "X".into(),
+            command: "true".into(),
+            kind: TerminalKind::Task,
+        };
+        assert!(extra_session_spec(project(), "nope", missing, &AllowAll, &[]).is_err());
+    }
 
     fn component(id: &str, path: &str, terminals: Vec<TerminalSpec>) -> Component {
         Component {

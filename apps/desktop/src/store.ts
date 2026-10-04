@@ -46,7 +46,8 @@ interface State {
   setExtensions: (registry: ExtensionRegistry) => void
   setExtensionBadges: (badges: Record<string, ExtensionBadge[]>) => void
   setExtensionView: (id: string, html: string) => void
-  addRuntimeTerminal: (sid: string, terminal: RuntimeTerminal) => void
+  /** `focus` makes it the dock's active tab (user-started commands only). */
+  addRuntimeTerminal: (sid: string, terminal: RuntimeTerminal, focus?: boolean) => void
   setExtensionsPanelOpen: (open: boolean) => void
   setPaletteOpen: (open: boolean) => void
   devices: DeviceManifest[]
@@ -141,10 +142,10 @@ export const useStore = create<State>((set, get) => ({
   setExtensionBadges: (extensionBadges) => set({ extensionBadges }),
   setExtensionView: (id, html) =>
     set((s) => ({ extensionViews: { ...s.extensionViews, [id]: html } })),
-  addRuntimeTerminal: (sid, terminal) =>
+  addRuntimeTerminal: (sid, terminal, focus = false) =>
     set((s) => ({
       runtimeTerminals: { ...s.runtimeTerminals, [sid]: terminal },
-      activeSession: sid,
+      activeSession: focus ? sid : s.activeSession,
     })),
   setExtensionsPanelOpen: (extensionsPanelOpen) => set({ extensionsPanelOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),

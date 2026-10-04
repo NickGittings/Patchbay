@@ -76,7 +76,8 @@ For code, set `main` to an ES module exporting `activate(patchbay)` and optional
 Project changes, disabling an extension, and Reload dispose old hosts. Code runs only in the
 main window, in opaque-origin `sandbox="allow-scripts"` frames. The broker binds each request
 to its sending frame, checks permissions, bounds messages and concurrent calls, and stops
-hosts on timeouts or excessive traffic. Extension frames receive no Tauri API. CSP blocks
+hosts that stop answering (three timeouts in a row) or send excessive traffic; a single slow
+call just fails. Commands have a 60-second deadline. Extension frames receive no Tauri API. CSP blocks
 network/IPC connections; asset requests are canonicalized inside their extension directory.
 
 The API declarations are in [`packages/extension-api/index.d.ts`](packages/extension-api/index.d.ts).
@@ -84,7 +85,9 @@ Use `project:read` for project/selection snapshots, Git status, and badge/contex
 `terminals` for terminal launches; and `files:read` for bounded project file reads. Storage is
 per extension under `~/.patchbay/extension-data/` (alongside an overridden registry). No raw
 filesystem or network API is exposed. `terminals.run` returns captured output and exit status,
-or `running: true` after eight seconds for a longer task; its session remains in the dock.
+or `running: true` after eight seconds for a longer task; its session remains in the dock
+(without taking focus), and running the same command again in that component reuses it. An
+extension keeps at most eight such sessions. Extension context in a briefing is capped at 128 KiB.
 Context and badge providers have a two-second response deadline. Views use
 `views.registerWebviewView(id, { resolve(view), onMessage(message) })`; `view.render(html)`
 mounts sandboxed HTML, and `patchbayView.postMessage` / `patchbayView.onMessage` communicate

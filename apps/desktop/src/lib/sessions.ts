@@ -66,13 +66,13 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
       const s = useStore.getState()
       const runtime = s.runtimeTerminals[sid]
       if (runtime?.commandId) await executeExtensionCommand(runtime.commandId, [], componentId)
-      else if (runtime?.extensionId && runtime.requestId)
+      else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
           s.toProject(),
           runtime.extensionId,
           componentId,
           runtime.terminal.command,
-          runtime.requestId,
+          runtime.key,
         )
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(s.devices).find((t) => t.id === terminalId)

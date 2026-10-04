@@ -90,6 +90,22 @@
         result.foreignCommandRejected,
       `sandbox probe failed: ${JSON.stringify(result)}`,
     )
+    // The probe forged postMessage IPC writes; give them time to land, then make sure none did.
+    await new Promise((r) => setTimeout(r, 500))
+    const stored = await smoke.extensionStorageGet('acme.docker')
+    assert(
+      !stored.forged,
+      `forged IPC from the sandbox reached a command (${result.forgedTransports} transports)`,
+    )
+    // Repeated runs reuse one session and never take the dock away from the user.
+    state().setActiveSession(sid)
+    await smoke.executeExtensionCommand('acme.docker.refresh').catch(() => {})
+    await smoke.executeExtensionCommand('acme.docker.refresh').catch(() => {})
+    const runs = Object.values(state().runtimeTerminals).filter(
+      (t) => t.extensionId === 'acme.docker',
+    )
+    assert(runs.length === 1, `terminals.run left ${runs.length} sessions`)
+    assert(state().activeSession === sid, 'terminals.run stole the active terminal')
     const oldHost = document.querySelector('iframe[data-extension-host="acme.docker"]')
     await smoke.refreshExtensions(await smoke.reloadExtensions())
     await until('host replaced after reload', () => {
@@ -114,7 +130,7 @@
     )
     await smoke.terminalReset()
     await smoke.report(
-      'PASS extensions: manifest, device, detector, palette session, context, badge, Inspector view, IPC sandbox',
+      'PASS extensions: manifest, device, detector, palette session, context, badge, Inspector view, IPC sandbox, forged IPC, run reuse',
     )
   } catch (error) {
     await smoke.report(`FAIL extensions: ${error.message}; app: ${state().message}`)

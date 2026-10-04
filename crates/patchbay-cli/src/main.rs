@@ -70,10 +70,11 @@ fn main() -> Result<()> {
                 context::plan_context(
                     &project,
                     &component_ids,
-                    &registry.file_sections(
+                    &registry.sections(
                         &project,
                         &component_ids,
-                        &[PathBuf::from(&project.root)]
+                        &[PathBuf::from(&project.root)],
+                        vec![],
                     )
                 )
             );
@@ -92,10 +93,11 @@ fn main() -> Result<()> {
                 context::component_context(
                     &project,
                     &c.id,
-                    &registry.file_sections(
+                    &registry.sections(
                         &project,
                         std::slice::from_ref(&c.id),
-                        &[PathBuf::from(&project.root)]
+                        &[PathBuf::from(&project.root)],
+                        vec![],
                     )
                 )
             );

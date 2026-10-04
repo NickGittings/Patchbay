@@ -169,5 +169,6 @@ export interface RuntimeTerminal {
   terminal: TerminalSpec
   commandId?: string
   extensionId?: string
-  requestId?: string
+  /** Names a `terminals.run` session, so repeating the command reuses it. */
+  key?: string
 }

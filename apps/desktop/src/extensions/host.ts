@@ -3,9 +3,17 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import * as ipc from '../lib/ipc'
 import { useStore } from '../store'
 import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
-import { setContextCollector } from './context'
+import { serveContextRequests, setContextCollector } from './context'
 
 const TIMEOUT = 10000
+/** Commands may legitimately wait on slow tools (docker, builds). */
+const COMMAND_TIMEOUT = 60000
+/** API calls such as `terminals.run` poll for up to 8s after spawning. */
+const API_TIMEOUT = 30000
+/** Consecutive request timeouts before an unresponsive host is stopped. */
+const MAX_TIMEOUTS = 3
+/** Distinct `terminals.run` sessions one extension may keep. */
+const MAX_RUN_TERMINALS = 8
 interface Pending {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
@@ -15,6 +23,7 @@ interface Runtime {
   extension: Extension
   frame: HTMLIFrameElement
   ready: Promise<void>
+  isReady: boolean
   resolveReady: () => void
   rejectReady: (error: Error) => void
   pending: Map<number, Pending>
@@ -22,6 +31,7 @@ interface Runtime {
   providers: Set<string>
   views: Set<string>
   inflight: number
+  timeouts: number
   calls: number
   period: number
   disposed: boolean
@@ -34,6 +44,9 @@ let epoch = 0
 let stopping: Promise<void> = Promise.resolve()
 let badgeTimer: ReturnType<typeof setTimeout> | undefined
 let badgeEpoch = 0
+let notifyTimer: ReturnType<typeof setTimeout> | undefined
+let lastProjectKey = ''
+let lastSelection = ''
 let installed = false
 const error = (e: unknown) => useStore.getState().setMessage(String(e))
 const active = () =>
@@ -59,7 +72,11 @@ function request(
     const timer = setTimeout(() => {
       runtime.pending.delete(id)
       reject(new Error(`${runtime.extension.id}: ${target} timed out`))
-      shutdown(runtime)
+      // One slow call isn't a fault; a host that keeps not answering is.
+      if (++runtime.timeouts >= MAX_TIMEOUTS) {
+        error(`${runtime.extension.id} stopped responding`)
+        shutdown(runtime)
+      }
     }, timeout)
     runtime.pending.set(id, { resolve, reject, timer })
     send(runtime, { method: 'call', id, target, key, args })
@@ -109,16 +126,43 @@ async function deactivateAll() {
   )
   quarantined.clear()
 }
-function notify(runtime: Runtime) {
+function notify(runtime: Runtime, events = { project: true, selection: true }) {
+  if (!runtime.extension.manifest.permissions.includes('project:read')) return
   const s = useStore.getState()
-  if (runtime.extension.manifest.permissions.includes('project:read')) {
-    send(runtime, { method: 'event', event: 'project', value: s.project ? s.toProject() : null })
+  const project = s.project ? s.toProject() : null
+  if (events.project) send(runtime, { method: 'event', event: 'project', value: project })
+  if (events.selection)
     send(runtime, {
       method: 'event',
       event: 'selection',
-      value: s.toProject().components.find((c) => c.id === s.selectedId) ?? null,
+      value: project?.components.find((c) => c.id === s.selectedId) ?? null,
     })
-  }
+}
+/** The project as extensions see it, minus canvas positions, which change on every drag step. */
+function projectKey(project: Project | null) {
+  return JSON.stringify(
+    project && { ...project, components: project.components.map(withoutPosition) },
+  )
+}
+function withoutPosition(component: Component) {
+  return { ...component, position: undefined }
+}
+/** Tell running hosts about map or selection edits, coalesced and only when they changed. */
+function scheduleNotify() {
+  clearTimeout(notifyTimer)
+  notifyTimer = setTimeout(() => {
+    const s = useStore.getState()
+    const project = s.project ? s.toProject() : null
+    const key = projectKey(project)
+    const selected = project?.components.find((c) => c.id === s.selectedId)
+    const selection = JSON.stringify(selected ? withoutPosition(selected) : null)
+    const events = { project: key !== lastProjectKey, selection: selection !== lastSelection }
+    lastProjectKey = key
+    lastSelection = selection
+    if (!events.project && !events.selection) return
+    for (const runtime of runtimes.values()) notify(runtime, events)
+    if (events.project) scheduleBadges()
+  }, 150)
 }
 export async function activateExtension(extension: Extension): Promise<Runtime | undefined> {
   if (!extension.manifest.main || !installed) return undefined
@@ -146,6 +190,7 @@ export async function activateExtension(extension: Extension): Promise<Runtime |
     extension,
     frame,
     ready,
+    isReady: false,
     resolveReady,
     rejectReady,
     pending: new Map(),
@@ -153,6 +198,7 @@ export async function activateExtension(extension: Extension): Promise<Runtime |
     providers: new Set(),
     views: new Set(),
     inflight: 0,
+    timeouts: 0,
     calls: 0,
     period: Date.now(),
     disposed: false,
@@ -165,6 +211,7 @@ export async function activateExtension(extension: Extension): Promise<Runtime |
   document.body.append(frame)
   try {
     await ready
+    runtime.isReady = true
     notify(runtime)
     scheduleBadges()
     return runtime
@@ -219,28 +266,47 @@ export async function executeExtensionCommand(
       await ipc.terminalStop(sid)
       throw new Error('Project changed during command launch')
     }
-    s.addRuntimeTerminal(sid, {
-      componentId,
-      terminal: { id: `ext-${id}`, name: command.title, ...command.run },
-      commandId: id,
-    })
+    s.addRuntimeTerminal(
+      sid,
+      {
+        componentId,
+        terminal: { id: `ext-${id}`, name: command.title, ...command.run },
+        commandId: id,
+      },
+      true,
+    )
     return sid
   }
   const runtime = await activateExtension(extension)
   if (!runtime?.commands.has(id)) throw new Error(`Command ${id} was not registered`)
-  return request(runtime, 'command', id, args)
+  return request(runtime, 'command', id, args, COMMAND_TIMEOUT)
+}
+/** Short stable name for a command, so repeating a `terminals.run` reuses its session. */
+function runKey(command: string) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < command.length; i++)
+    hash = Math.imul(hash ^ command.charCodeAt(i), 0x01000193) >>> 0
+  return hash.toString(16)
 }
 async function runTerminal(runtime: Runtime, componentId: string, command: string) {
   const s = useStore.getState()
   if (!s.project) throw new Error('Open a project first')
   const current = epoch
-  const requestId = String(++next)
+  const key = runKey(command)
+  const own = Object.entries(s.runtimeTerminals).filter(
+    ([, t]) => t.extensionId === runtime.extension.id,
+  )
+  const existing = own.find(([, t]) => t.componentId === componentId && t.key === key)
+  if (existing && s.sessions[existing[0]]?.running)
+    throw new Error('That command is still running in this component')
+  if (!existing && own.length >= MAX_RUN_TERMINALS)
+    throw new Error(`An extension may keep at most ${MAX_RUN_TERMINALS} terminals`)
   const sid = await ipc.extensionTerminalRun(
     s.toProject(),
     runtime.extension.id,
     componentId,
     command,
-    requestId,
+    key,
   )
   if (current !== epoch || runtime.disposed || useStore.getState().project !== s.project) {
     await ipc.terminalStop(sid)
@@ -255,7 +321,7 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
       kind: 'task',
     },
     extensionId: runtime.extension.id,
-    requestId,
+    key,
   })
   const deadline = Date.now() + 8000
   let snapshot = await ipc.terminalSnapshot(sid)
@@ -295,9 +361,13 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       if (command?.run) permission(runtime, 'terminals')
       if (target?.id !== id)
         for (const required of target?.manifest.permissions ?? []) permission(runtime, required)
-      if (target?.id === id && !command?.run && runtime.commands.has(text(0)))
-        return request(runtime, 'command', text(0), Array.isArray(args[1]) ? args[1] : [])
-      return executeExtensionCommand(text(0), Array.isArray(args[1]) ? args[1] : [])
+      const commandArgs = Array.isArray(args[1]) ? args[1] : []
+      if (target?.id === id && !command?.run) {
+        // Never wait on our own activation from inside it.
+        if (!runtime.commands.has(text(0))) throw new Error(`Command ${text(0)} is not registered`)
+        return request(runtime, 'command', text(0), commandArgs, COMMAND_TIMEOUT)
+      }
+      return executeExtensionCommand(text(0), commandArgs)
     }
     case 'project.get':
       permission(runtime, 'project:read')
@@ -308,7 +378,7 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
     case 'terminals.start':
       permission(runtime, 'terminals')
       if (!s.project) throw new Error('Open a project first')
-      return ipc.terminalStart(s.toProject(), text(0), text(1))
+      return ipc.terminalStart(s.toProject(), text(0), text(1), id)
     case 'terminals.run':
       permission(runtime, 'terminals')
       return runTerminal(runtime, text(0), text(1))
@@ -411,6 +481,7 @@ async function onMessage(event: MessageEvent) {
     if (pending) {
       clearTimeout(pending.timer)
       runtime.pending.delete(message.reply)
+      runtime.timeouts = 0
       if (message.error) pending.reject(new Error(String(message.error)))
       else pending.resolve(message.result)
     }
@@ -451,10 +522,7 @@ async function onMessage(event: MessageEvent) {
     const result = await Promise.race([
       api(runtime, message.method, message.args),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error('API call timed out'))
-          shutdown(runtime)
-        }, TIMEOUT)
+        timer = setTimeout(() => reject(new Error('API call timed out')), API_TIMEOUT)
       }),
     ])
     if (!runtime.disposed) send(runtime, { reply: message.id, result: result ?? null })
@@ -465,40 +533,42 @@ async function onMessage(event: MessageEvent) {
     runtime.inflight--
   }
 }
-async function activateProviders() {
+/** Start the extensions that activate eagerly, except `caller`, which may still be activating. */
+async function activateProviders(caller?: string) {
   if (!useStore.getState().project) return
   await Promise.all(
     active()
-      .filter((e) => !e.manifest.activationEvents.length && !quarantined.has(e.id))
+      .filter(
+        (e) => !e.manifest.activationEvents.length && !quarantined.has(e.id) && e.id !== caller,
+      )
       .map((e) => activateExtension(e).catch(error)),
   )
 }
-async function collectContext(project: Project, ids: string[]): Promise<ContextSection[]> {
-  await activateProviders()
+/** Ask every ready context provider about each component, all in parallel. */
+async function collectContext(
+  project: Project,
+  ids: string[],
+  caller?: string,
+): Promise<ContextSection[]> {
+  await activateProviders(caller)
   const current = epoch
-  const sections: ContextSection[] = []
-  await Promise.all(
-    [...runtimes.values()]
-      .filter((r) => r.providers.has('context'))
-      .map(async (runtime) => {
-        for (const component of project.components.filter(
-          (c) => !ids.length || ids.includes(c.id),
-        )) {
-          if (current !== epoch) return
-          try {
-            const body = await request(runtime, 'provider', 'context', [component], 2000)
-            if (typeof body === 'string')
-              sections.push({
-                title: `${runtime.extension.manifest.displayName ?? runtime.extension.id} — ${component.name}`,
-                body: body.slice(0, 32768),
-              })
-          } catch (e) {
-            error(e)
-            break
-          }
+  const components = project.components.filter((c) => !ids.length || ids.includes(c.id))
+  const asks = [...runtimes.values()]
+    .filter((r) => r.isReady && r.providers.has('context'))
+    .flatMap((runtime) =>
+      components.map(async (component) => {
+        try {
+          const body = await request(runtime, 'provider', 'context', [component], 2000)
+          if (typeof body !== 'string' || !body) return []
+          const name = runtime.extension.manifest.displayName ?? runtime.extension.id
+          return [{ title: `${name} — ${component.name}`, body: body.slice(0, 32768) }]
+        } catch (e) {
+          error(e)
+          return []
         }
       }),
-  )
+    )
+  const sections = (await Promise.all(asks)).flat()
   return current === epoch ? sections : []
 }
 function scheduleBadges() {
@@ -556,6 +626,13 @@ export function startExtensionHost() {
   installed = true
   window.addEventListener('message', onMessage)
   setContextCollector(collectContext)
+  const project = useStore.getState().project ? useStore.getState().toProject() : null
+  lastProjectKey = projectKey(project)
+  // Pop-outs send only ids; answer from the main window's own map.
+  const unsubscribeContext = serveContextRequests((ids) => {
+    const s = useStore.getState()
+    return s.project ? collectContext(s.toProject(), ids) : Promise.resolve([])
+  })
   const unsubscribe = useStore.subscribe((s, previous) => {
     if (s.extensions !== previous.extensions || s.project !== previous.project) {
       stopping = stopping.then(deactivateAll)
@@ -571,15 +648,16 @@ export function startExtensionHost() {
       s.edges !== previous.edges ||
       s.selectedId !== previous.selectedId
     ) {
-      for (const runtime of runtimes.values()) notify(runtime)
-      if (s.nodes !== previous.nodes || s.edges !== previous.edges) scheduleBadges()
+      scheduleNotify()
     } else if (s.sessions !== previous.sessions || s.gitChanges !== previous.gitChanges)
       scheduleBadges()
   })
   void activationEvent('onStartup').then(projectActivation).catch(error)
   return () => {
     installed = false
+    clearTimeout(notifyTimer)
     unsubscribe()
+    unsubscribeContext()
     window.removeEventListener('message', onMessage)
     setContextCollector(undefined)
     stopping = stopping.then(deactivateAll)
