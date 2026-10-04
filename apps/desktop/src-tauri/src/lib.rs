@@ -2,6 +2,7 @@
 
 use patchbay_core::TerminalSpec;
 use patchbay_core::access::{Access, AccessSnapshot, external_candidates};
+use patchbay_core::actions::{ActionPlan, ActionReport, ActionRequest, GraphActions};
 use patchbay_core::context::ContextSection;
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::extensions::{self, Registry};
@@ -28,6 +29,7 @@ const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
 #[derive(Default)]
 struct AppState {
     pty: Arc<PtyManager>,
+    actions: Arc<GraphActions>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
     extensions: Arc<Extensions>,
@@ -613,6 +615,57 @@ async fn terminal_start(
 }
 
 #[tauri::command]
+async fn graph_action_plan(
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+) -> CmdResult<ActionPlan> {
+    state.access.snapshot().trust(&mut project).map_err(err)?;
+    ActionPlan::build(&project, request).map_err(err)
+}
+
+#[tauri::command]
+async fn graph_action_run(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+) -> CmdResult<ActionReport> {
+    main_only(&window)?;
+    let access = state.access.snapshot();
+    let actions = state.actions.clone();
+    let epoch = actions.epoch();
+    let pty = state.pty.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        // Compute affected scope before filtering access so locked consumers
+        // produce an error instead of disappearing from validation.
+        let plan = ActionPlan::build(&project, request).map_err(err)?;
+        let project = access
+            .restrict(project, &plan.component_ids())
+            .map_err(err)?;
+        actions
+            .execute(&project, plan, epoch, &pty, Arc::new(TauriSink(app)))
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn graph_group_stop(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    group_id: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let actions = state.actions.clone();
+    let epoch = actions.epoch();
+    let pty = state.pty.clone();
+    blocking(move || actions.stop_group(&group_id, epoch, &pty).map_err(err)).await
+}
+
+#[tauri::command]
 fn terminal_write(state: State<AppState>, session_id: String, data: String) -> CmdResult<()> {
     state.pty.write(&session_id, data.as_bytes()).map_err(err)
 }
@@ -665,7 +718,9 @@ async fn reveal_path(state: State<'_, AppState>, path: String) -> CmdResult<()> 
 /// Async because it waits for stubborn processes to die.
 #[tauri::command]
 async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
-    Ok(state.pty.reset())
+    let actions = state.actions.clone();
+    let pty = state.pty.clone();
+    blocking(move || Ok(actions.reset(&pty))).await
 }
 
 /// # Panics
@@ -733,6 +788,9 @@ pub fn run() {
                 list_devices,
                 save_device,
                 terminal_start,
+                graph_action_plan,
+                graph_action_run,
+                graph_group_stop,
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
@@ -759,7 +817,8 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 app.state::<AppState>().watcher.stop();
-                app.state::<AppState>().pty.reset();
+                let state = app.state::<AppState>();
+                state.actions.reset(&state.pty);
             }
         });
 }

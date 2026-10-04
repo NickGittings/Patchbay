@@ -45,6 +45,7 @@ fn task(id: &str, name: &str, command: String) -> TerminalSpec {
         command,
         kind: TerminalKind::Task,
         ready_when: String::new(),
+        action: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn default_terminals() -> Vec<TerminalSpec> {
             command: String::new(),
             kind: TerminalKind::Shell,
             ready_when: String::new(),
+            action: None,
         },
         TerminalSpec {
             id: "claude".into(),
@@ -63,6 +65,7 @@ fn default_terminals() -> Vec<TerminalSpec> {
             command: "claude".into(),
             kind: TerminalKind::Agent,
             ready_when: String::new(),
+            action: None,
         },
     ]
 }
@@ -597,6 +600,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         root: root.display().to_string(),
         components,
         links,
+        groups: vec![],
     })
 }
 

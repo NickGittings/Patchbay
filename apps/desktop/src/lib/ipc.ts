@@ -5,6 +5,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  ActionPlan,
+  ActionReport,
+  ActionRequest,
   ChangedFile,
   DeviceManifest,
   DirEntry,
@@ -25,6 +28,11 @@ export const openProject = () =>
   invoke<{ project: Project; detected: boolean; locked: string[] } | null>('open_project')
 export const rescanProject = (project: Project) => invoke<Added>('rescan_project', { project })
 export const saveProject = (project: Project) => invoke<string>('save_project', { project })
+export const graphActionPlan = (project: Project, request: ActionRequest) =>
+  invoke<ActionPlan>('graph_action_plan', { project, request })
+export const graphActionRun = (project: Project, request: ActionRequest) =>
+  invoke<ActionReport>('graph_action_run', { project, request })
+export const graphGroupStop = (groupId: string) => invoke<void>('graph_group_stop', { groupId })
 export const componentContext = async (project: Project, componentId: string) =>
   invoke<string>('component_context', {
     project,

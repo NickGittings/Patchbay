@@ -102,6 +102,7 @@ struct Backlog {
     exited_ms: Option<u64>,
     tracker: Tracker,
     notice: Option<String>,
+    launch: Option<SessionSpec>,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -352,6 +353,7 @@ impl PtyManager {
             started_ms,
             tracker: Tracker::new(&spec.ready_when, spec.service),
             notice: spec.notice.clone(),
+            launch: Some(spec.clone()),
             ..Backlog::default()
         }));
         if reserved {
@@ -650,6 +652,25 @@ impl PtyManager {
         self.sessions.lock().unwrap().contains_key(id)
     }
 
+    /// Readiness belongs to the launched configuration, so graph actions must
+    /// not reuse it after a command, folder or readiness gate has changed.
+    pub(crate) fn launch_matches(&self, spec: &SessionSpec) -> bool {
+        let backlogs = self.backlogs.lock().unwrap();
+        let Some(backlog) = backlogs.get(&spec.id) else {
+            return false;
+        };
+        let backlog = backlog.lock().unwrap();
+        backlog.launch.as_ref().is_some_and(|launch| {
+            launch.command == spec.command
+                && launch.cwd == spec.cwd
+                && launch.service == spec.service
+                && launch
+                    .ready_when
+                    .trim()
+                    .eq_ignore_ascii_case(spec.ready_when.trim())
+        })
+    }
+
     /// # Errors
     /// Fails if the session is not running or the write fails.
     ///
@@ -706,6 +727,36 @@ impl PtyManager {
             if backlog.generation == generation {
                 backlog.tracker.on_stop();
             }
+        }
+    }
+
+    /// Stop this particular run, escalating after the grace period. A newer
+    /// run with the same id is never signalled.
+    pub fn stop_generation(&self, id: &str, generation: u64) {
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) else {
+                return;
+            };
+            session.process.hang_up();
+            if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
+                backlog.lock().unwrap().tracker.on_stop();
+            }
+        }
+        let deadline = Instant::now() + RESET_GRACE;
+        loop {
+            {
+                let mut sessions = self.sessions.lock().unwrap();
+                let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation)
+                else {
+                    return;
+                };
+                if Instant::now() >= deadline {
+                    session.process.force_kill();
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 

@@ -14,6 +14,7 @@
     "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
     "smoke:views": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/views.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
     "smoke:git": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/git.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
+    "smoke:actions": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/actions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
     "smoke:extensions": "PATCHBAY_EXTENSIONS_DIR=\"$PWD/../../examples/extensions\" PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/extensions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../../examples/extensions/docker/fixture\" tauri dev"
   },
   "dependencies": {

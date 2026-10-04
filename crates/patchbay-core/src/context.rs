@@ -925,6 +925,7 @@ mod tests {
             command: "echo hi".into(),
             kind: TerminalKind::Task,
             ready_when: String::new(),
+            action: None,
         };
         let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
         assert_eq!(spec.id, "api/agent");
@@ -937,6 +938,7 @@ mod tests {
             command: "true".into(),
             kind: TerminalKind::Task,
             ready_when: String::new(),
+            action: None,
         };
         assert!(extra_session_spec(project(), "nope", missing, &AllowAll, &[]).is_err());
     }
@@ -968,6 +970,7 @@ mod tests {
                         command: "claude".into(),
                         kind: TerminalKind::Agent,
                         ready_when: String::new(),
+                        action: None,
                     }],
                 ),
                 component("db", "db", vec![]),
@@ -978,6 +981,7 @@ mod tests {
                 target: "db".into(),
                 label: None,
             }],
+            groups: vec![],
         }
     }
 
@@ -1066,6 +1070,7 @@ mod tests {
             command: "claude".into(),
             kind: TerminalKind::Agent,
             ready_when: String::new(),
+            action: None,
         }
     }
 

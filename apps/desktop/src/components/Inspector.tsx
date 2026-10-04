@@ -8,8 +8,15 @@ import { useClockTick } from '../lib/clock'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
 import { syncCurrentRoots } from '../lib/access'
 import { startTerminal, stopTerminal } from '../lib/sessions'
+import { runGraphAction } from '../lib/actions'
 import { useStore, type FlowNode } from '../store'
-import { COMPONENT_KINDS, sessionId, type ComponentKind, type TerminalKind } from '../types'
+import {
+  COMPONENT_KINDS,
+  sessionId,
+  type ComponentKind,
+  type TerminalKind,
+  type TerminalAction,
+} from '../types'
 
 const TERMINAL_KINDS: TerminalKind[] = ['shell', 'task', 'agent']
 
@@ -17,6 +24,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
   const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
+  const graphActionBusy = useStore((s) => s.graphActionBusy)
   useClockTick()
   const edges = useStore((s) => s.edges)
   const nodes = useStore((s) => s.nodes)
@@ -47,6 +55,13 @@ function ComponentInspector({ node }: { node: FlowNode }) {
       </button>
       <div className="row">
         <ExtensionMenu slot="component/actions" componentId={id} />
+        <button
+          disabled={graphActionBusy}
+          title="Run validation task terminals for this component and all transitive consumers"
+          onClick={() => void runGraphAction({ kind: 'validateAffected', componentId: id })}
+        >
+          Validate affected
+        </button>
       </div>
       <div className="row">
         <label className="grow">
@@ -113,7 +128,12 @@ function ComponentInspector({ node }: { node: FlowNode }) {
               />
               <select
                 value={t.kind}
-                onChange={(e) => updateTerminal(id, t.id, { kind: e.target.value as TerminalKind })}
+                onChange={(e) =>
+                  updateTerminal(id, t.id, {
+                    kind: e.target.value as TerminalKind,
+                    action: e.target.value === 'task' ? t.action : undefined,
+                  })
+                }
               >
                 {TERMINAL_KINDS.map((k) => (
                   <option key={k}>{k}</option>
@@ -150,10 +170,27 @@ function ComponentInspector({ node }: { node: FlowNode }) {
               onChange={(e) => updateTerminal(id, t.id, { command: e.target.value })}
             />
             {t.kind === 'task' && (
+              <label>
+                Graph action
+                <select
+                  value={t.action ?? ''}
+                  onChange={(e) =>
+                    updateTerminal(id, t.id, {
+                      action: (e.target.value || undefined) as TerminalAction | undefined,
+                    })
+                  }
+                >
+                  <option value="">Manual only</option>
+                  <option value="development">Development environment</option>
+                  <option value="validation">Validation</option>
+                </select>
+              </label>
+            )}
+            {t.kind === 'task' && (
               <input
                 className="mono"
                 spellCheck={false}
-                placeholder="Ready when output contains… (a local URL also counts)"
+                placeholder="Ready when output contains…"
                 title="Output text that means this service is ready"
                 value={t.readyWhen ?? ''}
                 onChange={(e) =>
