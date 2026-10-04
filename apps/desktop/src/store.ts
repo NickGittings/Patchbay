@@ -23,10 +23,11 @@ import type {
   Link,
   Project,
   SessionState,
+  Task,
   TerminalSpec,
   View,
 } from './types'
-import { sessionId } from './types'
+import { retask, sessionId } from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null }>
@@ -68,6 +69,15 @@ interface State {
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
   markPlanStarted: (sid: string, ids: string[]) => void
+  /** The repo's tasks (stored per user by the backend, never in `patchbay.json`). */
+  tasks: Task[]
+  /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
+  activeTask: string | null
+  setTasks: (tasks: Task[]) => void
+  setActiveTask: (id: string | null) => void
+  /** Components to seed the new-task dialog with while it is open (UI only). */
+  newTask: string[] | null
+  setNewTask: (components: string[] | null) => void
   dirty: boolean
   message: string
 
@@ -115,6 +125,17 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
+
+/** Move the active terminal to the same terminal of the task switched to. */
+function switchTask(s: State, activeTask: string | null): Partial<State> {
+  if (s.activeTask === activeTask) return {}
+  const current = s.activeSession
+  const runtime = current && s.runtimeTerminals[current]
+  return {
+    activeTask,
+    activeSession: current && !runtime ? retask(current, activeTask) : current,
+  }
+}
 
 export const useStore = create<State>((set, get) => ({
   project: null,
@@ -166,6 +187,16 @@ export const useStore = create<State>((set, get) => ({
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
+  tasks: [],
+  activeTask: null,
+  setTasks: (tasks) =>
+    set((s) => {
+      const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
+      return active ? { tasks } : { tasks, ...switchTask(s, null) }
+    }),
+  setActiveTask: (id) => set((s) => switchTask(s, id)),
+  newTask: null,
+  setNewTask: (newTask) => set({ newTask }),
 
   loadProject: (p) =>
     set({
@@ -176,6 +207,8 @@ export const useStore = create<State>((set, get) => ({
       highlighted: [],
       planStartedWith: {},
       planActive: null,
+      tasks: [],
+      activeTask: null,
       sessions: {},
       runtimeTerminals: {},
       extensionBadges: {},
@@ -281,7 +314,7 @@ export const useStore = create<State>((set, get) => ({
         ...d,
         terminals: [...d.terminals, terminal],
       })),
-      activeSession: sessionId(componentId, terminal.id),
+      activeSession: sessionId(componentId, terminal.id, s.activeTask),
       dirty: true,
     }))
   },
@@ -334,7 +367,7 @@ export const useStore = create<State>((set, get) => ({
     set({
       selectedId: id,
       selectedEdgeId: null,
-      activeSession: keep ? current : first ? sessionId(id, first.id) : null,
+      activeSession: keep ? current : first ? sessionId(id, first.id, get().activeTask) : null,
     })
   },
   selectEdge: (selectedEdgeId) => set({ selectedEdgeId, selectedId: null }),

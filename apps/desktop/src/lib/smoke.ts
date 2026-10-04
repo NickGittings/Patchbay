@@ -12,6 +12,7 @@ import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
+import { createTask, refreshTasks, removeTask } from './tasks'
 
 const hooks = {
   store: useStore,
@@ -32,6 +33,9 @@ const hooks = {
   terminalWrite,
   terminalText,
   openComponentWindow,
+  createTask,
+  refreshTasks,
+  removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
 }
 

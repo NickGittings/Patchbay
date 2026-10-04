@@ -19,19 +19,23 @@ function describe({ state, session }: Validation) {
 }
 
 /**
- * Which of a component's task terminals ran since `changedAt`, with a button to (re)run those
- * that didn't pass after the change.
+ * Which of a component's task terminals ran since `changedAt` (in `task`'s worktree, by default
+ * the active task's), with a button to (re)run those that didn't pass after the change.
  */
 export default function ValidationChips({
   componentId,
   changedAt,
+  task: taskProp,
 }: {
   componentId: string
   changedAt: number | undefined
+  task?: string | null
 }) {
+  const activeTask = useStore((s) => s.activeTask)
+  const task = taskProp === undefined ? activeTask : taskProp
   const terminals = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.terminals)
   const sessions = useStore((s) => s.sessions)
-  const checks = validations(componentId, terminals ?? [], sessions, changedAt)
+  const checks = validations(componentId, terminals ?? [], sessions, changedAt, task)
   if (!checks.length) return <div className="validation-chips none">No task terminals</div>
   return (
     <div className="validation-chips">
@@ -47,7 +51,7 @@ export default function ValidationChips({
               title={`Run ${v.terminal.name}`}
               aria-label={`Run ${v.terminal.name}`}
               onClick={() =>
-                void startTerminal(componentId, v.terminal.id).catch((e) =>
+                void startTerminal(componentId, v.terminal.id, task).catch((e) =>
                   useStore.getState().setMessage(String(e)),
                 )
               }

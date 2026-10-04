@@ -1554,3 +1554,127 @@ button.review-name:hover:not(:disabled) {
   flex-direction: column;
   gap: 4px;
 }
+
+/* Tasks */
+.task-menu {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.task-select {
+  max-width: 220px;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.task-select.in-task {
+  border-color: var(--running);
+  color: var(--running);
+}
+.component-node.in-task:not(.selected) {
+  border-color: color-mix(in srgb, var(--running) 60%, transparent);
+  border-top-color: var(--kind);
+}
+.attention-task {
+  color: var(--muted);
+  font-style: normal;
+}
+.task-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-dialog .row {
+  gap: 8px;
+}
+.tasks-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+}
+.tasks-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.tasks-list {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.task-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-card.active {
+  border-color: var(--running);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--running) 50%, transparent);
+}
+.task-card.missing {
+  opacity: 0.6;
+}
+.task-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.task-tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+.task-tag.bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+}
+.task-tag.attention {
+  color: var(--input);
+  border-color: color-mix(in srgb, var(--input) 50%, transparent);
+}
+.task-path {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-confirm {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+  font-size: 12px;
+}
+.task-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: start;
+  gap: 8px;
+}
+.task-row .section-title {
+  margin: 4px 0 0;
+}
+.chip.off {
+  opacity: 0.45;
+}
+.task-notes {
+  width: 100%;
+}
+.muted {
+  color: var(--muted);
+}

@@ -3,6 +3,7 @@ import { Group, Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
 import { gitReview, gitWorktrees } from '../lib/ipc'
 import { latestChange, latestChangeOf, lineTotals } from '../lib/review'
+import { activeWorktree } from '../lib/tasks'
 import { useStore } from '../store'
 import { PROJECT_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
@@ -10,7 +11,7 @@ import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
 
-/** The watcher only covers the open worktree; another one is polled while shown. */
+/** The watcher covers the open and active task's worktrees; another one is polled while shown. */
 const WORKTREE_POLL_MS = 5000
 
 interface ChangeGroup {
@@ -48,12 +49,21 @@ export default function ReviewView() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState<string[]>([])
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
-  const [worktree, setWorktree] = useState<string>()
+  const tasks = useStore((s) => s.tasks)
+  const activeTask = useStore((s) => s.activeTask)
+  const taskWorktree = useStore(activeWorktree)
+  // The worktree picked here; until then (and after switching tasks) the active task's.
+  const [picked, setPicked] = useState<{ task: string | null; path: string | undefined }>()
+  const worktree = picked?.task === activeTask ? picked.path : taskWorktree
   const [refresh, setRefresh] = useState(0)
 
   const other = worktrees.find((w) => w.path === worktree && !w.current)
   // `undefined` reviews the open worktree, which the watcher keeps current.
   const target = other?.path
+  // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
+  const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
+  const validationTask = other ? (reviewTask?.id ?? undefined) : null
+  const watched = !other || other.path === taskWorktree
 
   useEffect(() => {
     let disposed = false
@@ -69,7 +79,7 @@ export default function ReviewView() {
 
   // Another worktree has no watcher: poll it while shown, and refresh on focus.
   useEffect(() => {
-    if (!target) return
+    if (!target || watched) return
     const bump = () => setRefresh((n) => n + 1)
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)
@@ -77,7 +87,7 @@ export default function ReviewView() {
       window.clearInterval(timer)
       window.removeEventListener('focus', bump)
     }
-  }, [target])
+  }, [target, watched])
 
   useEffect(() => {
     let disposed = false
@@ -155,16 +165,20 @@ export default function ReviewView() {
                     title="Worktree to review"
                     value={other?.path ?? ''}
                     onChange={(e) => {
-                      setWorktree(e.target.value || undefined)
+                      setPicked({ task: activeTask, path: e.target.value || undefined })
                       setSelected(null)
                       setReview(null)
                     }}
                   >
-                    {worktrees.map((w) => (
-                      <option key={w.path} value={w.current ? '' : w.path}>
-                        {worktreeLabel(w)}
-                      </option>
-                    ))}
+                    {worktrees.map((w) => {
+                      const task = tasks.find((t) => t.worktree === w.path)
+                      return (
+                        <option key={w.path} value={w.current ? '' : w.path}>
+                          {task ? `${task.title} — ` : ''}
+                          {worktreeLabel(w)}
+                        </option>
+                      )
+                    })}
                   </select>
                 )}
                 <button
@@ -212,9 +226,10 @@ export default function ReviewView() {
             </div>
             {other && (
               <div className="review-banner">
-                Viewing worktree <code>{other.branch ?? other.head.slice(0, 7)}</code> at{' '}
-                <code title={other.path}>{other.path}</code>. Task status is hidden; terminals run
-                in the open worktree.
+                Viewing {reviewTask ? <>task “{reviewTask.title}” on </> : 'worktree '}
+                <code>{other.branch ?? other.head.slice(0, 7)}</code> at{' '}
+                <code title={other.path}>{other.path}</code>.
+                {!reviewTask && ' Task status is hidden; it has no task to run terminals in.'}
               </div>
             )}
             {error && <div className="hint file-tree-error">{error}</div>}
@@ -255,8 +270,12 @@ export default function ReviewView() {
                     <span className="review-count">{plural(g.files.length, 'file')}</span>
                     <DiffStat {...lineTotals(g.files)} />
                   </header>
-                  {!project && !other && (
-                    <ValidationChips componentId={g.id} changedAt={latestChange(g.files)} />
+                  {!project && validationTask !== undefined && (
+                    <ValidationChips
+                      componentId={g.id}
+                      changedAt={latestChange(g.files)}
+                      task={validationTask}
+                    />
                   )}
                   {open && (
                     <ChangeList
@@ -288,10 +307,11 @@ export default function ReviewView() {
                         </button>
                         <span className="review-via">via {a.via.map(nameOf).join(', ')}</span>
                       </header>
-                      {!other && (
+                      {validationTask !== undefined && (
                         <ValidationChips
                           componentId={a.id}
                           changedAt={latestChangeOf(review.changes, a.via)}
+                          task={validationTask}
                         />
                       )}
                     </section>

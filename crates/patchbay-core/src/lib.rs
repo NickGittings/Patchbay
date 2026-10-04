@@ -14,6 +14,7 @@ pub mod model;
 pub mod policy;
 pub mod pty;
 pub mod status;
+pub mod tasks;
 pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};

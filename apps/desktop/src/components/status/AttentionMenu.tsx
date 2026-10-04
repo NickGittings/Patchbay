@@ -17,8 +17,9 @@ export default function AttentionMenu() {
   useClockTick()
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
+  const tasks = useStore((s) => s.tasks)
   const [open, setOpen] = useState(false)
-  const items = attentionItems({ nodes, sessions, runtimeTerminals, devices })
+  const items = attentionItems({ nodes, sessions, runtimeTerminals, devices, tasks })
 
   if (items.length === 0) return null
   const counts = new Map<string, number>()
@@ -55,6 +56,7 @@ export default function AttentionMenu() {
                 <span className="attention-what">
                   <span>
                     <strong>{item.owner}</strong> · {item.terminal.name}
+                    {item.taskTitle && <em className="attention-task"> · {item.taskTitle}</em>}
                   </span>
                   {item.status.detail && <small>{item.status.detail}</small>}
                 </span>

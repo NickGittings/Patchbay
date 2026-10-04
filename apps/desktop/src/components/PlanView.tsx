@@ -19,6 +19,8 @@ export default function PlanView() {
   const highlighted = useStore((s) => s.highlighted)
   const startedWith = useStore((s) => s.planStartedWith)
   const sessions = useStore((s) => s.sessions)
+  const task = useStore((s) => s.activeTask)
+  const setNewTask = useStore((s) => s.setNewTask)
   useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
@@ -29,7 +31,7 @@ export default function PlanView() {
   const [restarting, setRestarting] = useState(false)
   const terminals = planTerminals(devices)
   const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
-  const sid = sessionId(PLAN_SCOPE, active.id)
+  const sid = sessionId(PLAN_SCOPE, active.id, task)
   const session = sessions[sid]
   const nearby = nearbyIds(highlighted, edges)
   const stale = session?.running && startedWith[sid] !== [...highlighted].sort().join(',')
@@ -37,7 +39,7 @@ export default function PlanView() {
   useEffect(() => {
     if (!contextOpen || !project) return
     let disposed = false
-    void planContext(useStore.getState().toProject(), highlighted)
+    void planContext(useStore.getState().toProject(), highlighted, task ?? undefined)
       .then((text) => {
         if (!disposed) setContext(text)
       })
@@ -47,12 +49,12 @@ export default function PlanView() {
     return () => {
       disposed = true
     }
-  }, [contextOpen, project, nodes, edges, highlighted])
+  }, [contextOpen, project, nodes, edges, highlighted, task])
 
   const restart = async () => {
     setRestarting(true)
     try {
-      await restartTerminal(PLAN_SCOPE, active.id)
+      await restartTerminal(PLAN_SCOPE, active.id, task)
     } finally {
       setRestarting(false)
     }
@@ -72,6 +74,13 @@ export default function PlanView() {
               <span className="spacer" />
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
+              </button>
+              <button
+                disabled={highlighted.length === 0}
+                title="Create a branch and worktree for the highlighted components"
+                onClick={() => setNewTask([...highlighted])}
+              >
+                Start task…
               </button>
             </div>
             <div className="hint flush">
@@ -108,7 +117,7 @@ export default function PlanView() {
           <div className="terminal-dock planner-terminal">
             <div className="tabs">
               {terminals.map((t) => {
-                const tabSid = sessionId(PLAN_SCOPE, t.id)
+                const tabSid = sessionId(PLAN_SCOPE, t.id, task)
                 const status = terminalStatus(t.kind, sessions[tabSid])
                 return (
                   <button
@@ -138,7 +147,7 @@ export default function PlanView() {
                 ) : (
                   <button
                     disabled={restarting}
-                    onClick={() => void startTerminal(PLAN_SCOPE, active.id)}
+                    onClick={() => void startTerminal(PLAN_SCOPE, active.id, task)}
                   >
                     ▶ {restarting ? 'Stopping…' : session ? 'Restart' : 'Start'}
                   </button>

@@ -17,6 +17,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
   const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
+  const task = useStore((s) => s.activeTask)
   useClockTick()
   const edges = useStore((s) => s.edges)
   const nodes = useStore((s) => s.nodes)
@@ -30,7 +31,8 @@ function ComponentInspector({ node }: { node: FlowNode }) {
 
   const loadContext = async () => {
     try {
-      setContext(await componentContext(useStore.getState().toProject(), id))
+      const s = useStore.getState()
+      setContext(await componentContext(s.toProject(), id, s.activeTask ?? undefined))
     } catch (e) {
       setContext(String(e))
     }
@@ -99,7 +101,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
 
       <div className="section-title">Terminals</div>
       {data.terminals.map((t) => {
-        const sid = sessionId(id, t.id)
+        const sid = sessionId(id, t.id, task)
         const session = sessions[sid]
         const status = terminalStatus(t.kind, session)
         return (
@@ -128,7 +130,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
                   title="Start"
                   onClick={() => {
                     setActiveSession(sid)
-                    void startTerminal(id, t.id)
+                    void startTerminal(id, t.id, task)
                   }}
                 >
                   ▶

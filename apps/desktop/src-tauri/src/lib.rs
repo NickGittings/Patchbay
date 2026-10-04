@@ -9,10 +9,11 @@ use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::{PtyManager, Snapshot};
+use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -31,6 +32,8 @@ struct AppState {
     access: Arc<Access>,
     watcher: watch::GitWatcher,
     extensions: Arc<Extensions>,
+    /// The active task's worktree, watched besides the open project's roots.
+    task_root: Arc<Mutex<Option<PathBuf>>>,
 }
 
 /// The extension registry, read from disk on first use. Callers run on blocking
@@ -77,9 +80,20 @@ fn main_only(window: &WebviewWindow) -> CmdResult<()> {
 fn rewatch(app: &AppHandle) {
     let state = app.state::<AppState>();
     let access = state.access.clone();
+    let task_root = state.task_root.clone();
     let handle = app.clone();
     state.watcher.update(
-        move || access.watch_roots(),
+        move || {
+            let mut roots = access.watch_roots();
+            let task = task_root.lock().unwrap_or_else(PoisonError::into_inner);
+            roots.extend(
+                task.iter()
+                    .filter(|r| !roots.contains(r))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            roots
+        },
         move || {
             let _ = handle.emit_to("main", GIT_DIRTY_EVENT, ());
         },
@@ -198,6 +212,7 @@ async fn open_project(
 ) -> CmdResult<Option<Opened>> {
     let access = state.access.clone();
     let extensions = state.extensions.clone();
+    let task_root = state.task_root.clone();
     blocking(move || {
         let detectors = extensions.get().detectors();
         // Smoke tests may use only a root configured by the backend's environment.
@@ -220,6 +235,7 @@ async fn open_project(
         let candidates = external_candidates(&project, &root);
         let allowed = !candidates.is_empty() && confirm_external(&window, &root, &candidates);
         access.open(&project).map_err(err)?;
+        *task_root.lock().unwrap_or_else(PoisonError::into_inner) = None;
         if allowed {
             for dir in candidates {
                 access.grant(&dir).map_err(err)?;
@@ -365,19 +381,20 @@ async fn component_context(
     project: Project,
     component_id: String,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = state.roots();
     blocking(move || {
-        let project = access
-            .restrict(project, std::slice::from_ref(&component_id))
-            .map_err(err)?;
+        let ids = std::slice::from_ref(&component_id);
+        let project = access.restrict(project, ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let sections = extensions.get().sections(
             &project,
-            std::slice::from_ref(&component_id),
+            ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
         Ok(context::component_context(
             &project,
@@ -395,17 +412,19 @@ async fn plan_context(
     project: Project,
     component_ids: Vec<String>,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = state.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = extensions.get().sections(
             &project,
             &component_ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
     })
@@ -420,6 +439,7 @@ async fn plan_start(
     component_ids: Vec<String>,
     terminal: TerminalSpec,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
     let extensions = state.extensions.clone();
@@ -427,15 +447,22 @@ async fn plan_start(
     let pty = state.pty.clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = extensions.get().sections(
             &project,
             &component_ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
-        let spec =
-            context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
-                .map_err(err)?;
+        let spec = context::plan_session_spec_for(
+            &project,
+            &component_ids,
+            &terminal,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+        )
+        .map_err(err)?;
         let id = spec.id.clone();
         pty.spawn(spec, Arc::new(TauriSink(app))).map_err(err)?;
         Ok(id)
@@ -462,11 +489,56 @@ fn readable_components(
         .collect()
 }
 
+/// `project` (trusted and restricted) moved into `task`'s worktree when one is
+/// given, with the readable roots there and the briefing section naming the
+/// task. The task is looked up in the backend's store, so the webview only
+/// names it.
+fn for_task(
+    project: Project,
+    task: Option<&str>,
+    required: &[String],
+    roots: Vec<PathBuf>,
+) -> CmdResult<(Project, Vec<PathBuf>, Option<context::ContextSection>)> {
+    let Some(id) = task else {
+        return Ok((project, roots, None));
+    };
+    let task = tasks::stored(Path::new(&project.root), id).map_err(err)?;
+    let (moved, dropped) = tasks::project_in(&project, &task, required).map_err(err)?;
+    let section = tasks::context_section(&moved, &task, &dropped);
+    let roots = vec![PathBuf::from(&moved.root)];
+    Ok((moved, roots, Some(section)))
+}
+
+/// Extension context with the task's section first.
+fn with_task_section(
+    section: Option<ContextSection>,
+    extra: Option<Vec<ContextSection>>,
+) -> Vec<ContextSection> {
+    section
+        .into_iter()
+        .chain(extra.unwrap_or_default())
+        .collect()
+}
+
+/// `root` and `components` in `task`'s worktree, or unchanged without a task.
+fn components_in_task(
+    root: PathBuf,
+    components: Vec<(String, PathBuf)>,
+    task: Option<&str>,
+) -> CmdResult<(PathBuf, Vec<(String, PathBuf)>)> {
+    let Some(id) = task else {
+        return Ok((root, components));
+    };
+    let task = tasks::stored(&root, id).map_err(err)?;
+    git::in_worktree(&root, components, Some(&task.worktree)).map_err(err)
+}
+
 /// Takes only ids and folders for event-driven status refreshes.
 #[tauri::command]
 async fn git_status(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
+    task: Option<String>,
 ) -> CmdResult<git::GitStatus> {
     // Resolve folders on a copy so the lock isn't held for the filesystem calls.
     let access = state.access.snapshot();
@@ -474,10 +546,9 @@ async fn git_status(
         let Some(root) = access.root() else {
             return Ok(git::GitStatus::default());
         };
-        Ok(git::status(
-            &root,
-            &readable_components(&access, components),
-        ))
+        let components = readable_components(&access, components);
+        let (root, components) = components_in_task(root, components, task.as_deref())?;
+        Ok(git::status(&root, &components))
     })
     .await
 }
@@ -489,6 +560,7 @@ async fn git_changes(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
     component_id: String,
+    task: Option<String>,
 ) -> CmdResult<Vec<git::ChangedFile>> {
     let access = state.access.snapshot();
     blocking(move || {
@@ -496,6 +568,7 @@ async fn git_changes(
             return Ok(Vec::new());
         };
         let components = readable_components(&access, components);
+        let (root, components) = components_in_task(root, components, task.as_deref())?;
         Ok(git::component_changes(&root, &components, &component_id))
     })
     .await
@@ -566,6 +639,108 @@ async fn git_review(
     .await
 }
 
+/// The open project root, for task commands.
+fn task_repo(state: &AppState) -> CmdResult<PathBuf> {
+    state
+        .access
+        .snapshot()
+        .root()
+        .ok_or_else(|| "No project is open".to_string())
+}
+
+/// The tasks of the open project's repo.
+#[tauri::command]
+async fn task_list(state: State<'_, AppState>) -> CmdResult<Vec<Task>> {
+    let root = task_repo(&state)?;
+    blocking(move || tasks::list(&root).map_err(err)).await
+}
+
+/// Create a branch and worktree beside the repo, and a task for them.
+#[tauri::command]
+async fn task_create(state: State<'_, AppState>, draft: TaskDraft) -> CmdResult<Task> {
+    let root = task_repo(&state)?;
+    blocking(move || tasks::create(&root, draft).map_err(err)).await
+}
+
+/// Make a task of one of the repo's existing worktrees.
+#[tauri::command]
+async fn task_attach(
+    state: State<'_, AppState>,
+    worktree: String,
+    title: Option<String>,
+    components: Vec<String>,
+) -> CmdResult<Task> {
+    let root = task_repo(&state)?;
+    blocking(move || tasks::attach(&root, &worktree, title, components).map_err(err)).await
+}
+
+#[tauri::command]
+async fn task_update(state: State<'_, AppState>, id: String, patch: TaskPatch) -> CmdResult<Task> {
+    let root = task_repo(&state)?;
+    blocking(move || tasks::update(&root, &id, patch).map_err(err)).await
+}
+
+/// Forget a task and optionally remove its (clean) worktree; the branch stays.
+#[tauri::command]
+async fn task_remove(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    delete_worktree: bool,
+) -> CmdResult<()> {
+    let root = task_repo(&state)?;
+    let task_root = state.task_root.clone();
+    blocking(move || {
+        let worktree = tasks::list(&root)
+            .map_err(err)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .map(|t| PathBuf::from(t.worktree));
+        tasks::remove(&root, &id, delete_worktree).map_err(err)?;
+        let mut active = task_root.lock().unwrap_or_else(PoisonError::into_inner);
+        if active.is_some() && *active == worktree {
+            *active = None;
+            drop(active);
+            rewatch(&app);
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Watch the worktree of the task the user switched to (none for the open one).
+#[tauri::command]
+async fn task_activate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: Option<String>,
+) -> CmdResult<()> {
+    let root = task_repo(&state)?;
+    let task_root = state.task_root.clone();
+    let access = state.access.clone();
+    blocking(move || {
+        let worktree = match id {
+            Some(id) => {
+                let task = tasks::find(&root, &id).map_err(err)?;
+                (!task.current).then(|| PathBuf::from(task.worktree))
+            }
+            None => None,
+        };
+        let mut active = task_root.lock().unwrap_or_else(PoisonError::into_inner);
+        // Another project may have opened meanwhile; its reset wins.
+        if access.snapshot().root().as_ref() != Some(&root) {
+            return Ok(());
+        }
+        if *active != worktree {
+            *active = worktree;
+            drop(active);
+            rewatch(&app);
+        }
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn list_devices(state: State<'_, AppState>) -> CmdResult<Vec<DeviceManifest>> {
     let extensions = state.extensions.clone();
@@ -587,24 +762,31 @@ async fn terminal_start(
     component_id: String,
     terminal_id: String,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = state.roots();
     let pty = state.pty.clone();
     blocking(move || {
-        let project = access
-            .restrict(project, std::slice::from_ref(&component_id))
-            .map_err(err)?;
+        let ids = std::slice::from_ref(&component_id);
+        let project = access.restrict(project, ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let sections = extensions.get().sections(
             &project,
-            std::slice::from_ref(&component_id),
+            ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
-        let spec =
-            context::session_spec(&project, &component_id, &terminal_id, &AllowAll, &sections)
-                .map_err(err)?;
+        let spec = context::session_spec_for(
+            &project,
+            &component_id,
+            &terminal_id,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+        )
+        .map_err(err)?;
         let id = spec.id.clone();
         pty.spawn(spec, Arc::new(TauriSink(app))).map_err(err)?;
         Ok(id)
@@ -724,6 +906,12 @@ pub fn run() {
                 save_project,
                 component_context,
                 git_status,
+                task_list,
+                task_create,
+                task_attach,
+                task_update,
+                task_remove,
+                task_activate,
                 git_changes,
                 git_diff,
                 git_review,
