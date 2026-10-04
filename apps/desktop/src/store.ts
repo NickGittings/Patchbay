@@ -26,13 +26,58 @@ import type {
   TerminalSpec,
   View,
 } from './types'
-import { sessionId } from './types'
+import { sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null }>
 
+export interface ProjectState {
+  project: { id: string; name: string; root: string } | null
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+  selectedId: string | null
+  selectedEdgeId: string | null
+  activeSession: string | null
+  view: View
+  highlighted: string[]
+  planStartedWith: Record<string, string>
+  planActive: string | null
+  dirty: boolean
+  gitChanges: Record<string, number>
+  repos: Record<string, string>
+  extensionBadges: Record<string, ExtensionBadge[]>
+  extensionViews: Record<string, string>
+  viewport?: { x: number; y: number; zoom: number }
+  panels: Record<string, Record<string, number>>
+}
+export interface ProjectEntry {
+  id: string
+  name: string
+  root: string
+  fingerprint: string
+  state?: ProjectState
+  unavailable?: string
+  conflict?: Project
+  draftFingerprint?: string
+  unavailableLayout?: Record<string, unknown>
+}
 interface State {
-  project: { name: string; root: string } | null
+  project: { id: string; name: string; root: string } | null
+  projects: Record<string, ProjectEntry>
+  activeProjectId: string | null
+  projectOrder: string[]
+  sessionRecords: SessionRecord[]
+  serviceInstance: string
+  serviceConnected: boolean
+  sessionsPanelOpen: boolean
+  restoring: boolean
+  viewport?: { x: number; y: number; zoom: number }
+  panels: Record<string, Record<string, number>>
+  setViewport: (viewport: { x: number; y: number; zoom: number }) => void
+  setPanelLayout: (id: string, layout: Record<string, number>) => void
+  activateProject: (id: string) => void
+  closeProject: (id: string) => void
+  captureProjects: () => Record<string, ProjectEntry>
   nodes: FlowNode[]
   edges: FlowEdge[]
   extensions: ExtensionRegistry
@@ -118,6 +163,48 @@ const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => Compone
 
 export const useStore = create<State>((set, get) => ({
   project: null,
+  activeProjectId: null,
+  projects: {},
+  projectOrder: [],
+  sessionRecords: [],
+  serviceInstance: '',
+  serviceConnected: false,
+  sessionsPanelOpen: false,
+  restoring: true,
+  panels: {},
+  setViewport: (viewport) => set({ viewport }),
+  setPanelLayout: (id, layout) => set((s) => ({ panels: { ...s.panels, [id]: layout } })),
+  captureProjects: () => {
+    const s = get()
+    if (!s.project) return s.projects
+    return {
+      ...s.projects,
+      [s.project.id]: { ...s.projects[s.project.id], state: projectState(s) },
+    }
+  },
+  activateProject: (id) => {
+    const projects = get().captureProjects()
+    const entry = projects[id]
+    if (!entry) return
+    setProjectIdentity(id)
+    set({
+      projects,
+      ...(entry.state ?? emptyProjectState()),
+      project: entry.state?.project ?? null,
+      activeProjectId: id,
+    } as Partial<State>)
+  },
+  closeProject: (id) => {
+    const projects = get().captureProjects()
+    delete projects[id]
+    const projectOrder = get().projectOrder.filter((p) => p !== id)
+    const current = get().project?.id === id || get().activeProjectId === id
+    if (current) {
+      setProjectIdentity('')
+      set({ ...emptyProjectState(), activeProjectId: null, projects, projectOrder })
+      if (projectOrder[0]) get().activateProject(projectOrder[0])
+    } else set({ projects, projectOrder })
+  },
   nodes: [],
   edges: [],
   extensions: { extensions: [], errors: [] },
@@ -147,8 +234,14 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ extensionViews: { ...s.extensionViews, [id]: html } })),
   addRuntimeTerminal: (sid, terminal, focus = false) =>
     set((s) => ({
-      runtimeTerminals: { ...s.runtimeTerminals, [sid]: terminal },
-      activeSession: focus ? sid : s.activeSession,
+      runtimeTerminals: {
+        ...s.runtimeTerminals,
+        [sid]: { ...terminal, projectId: terminal.projectId ?? s.project?.id },
+      },
+      activeSession:
+        focus && (!terminal.projectId || terminal.projectId === s.project?.id)
+          ? sid
+          : s.activeSession,
     })),
   setExtensionsPanelOpen: (extensionsPanelOpen) => set({ extensionsPanelOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
@@ -167,33 +260,53 @@ export const useStore = create<State>((set, get) => ({
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
 
-  loadProject: (p) =>
-    set({
-      project: { name: p.name, root: p.root },
+  loadProject: (p) => {
+    const id = p.projectId ?? p.root
+    if (get().projects[id]?.state) {
+      get().activateProject(id)
+      return
+    }
+    const projects = get().captureProjects()
+    const state = {
+      ...emptyProjectState(),
+      project: { id, name: p.name, root: p.root },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
-      view: 'navigation',
-      highlighted: [],
-      planStartedWith: {},
-      planActive: null,
-      sessions: {},
-      runtimeTerminals: {},
-      extensionBadges: {},
-      extensionViews: {},
-      gitChanges: {},
-      repos: {},
-      selectedId: null,
-      selectedEdgeId: null,
-      activeSession: null,
-      dirty: false,
-    }),
+    }
+    setProjectIdentity(id)
+    set({
+      ...state,
+      projects: { ...projects, [id]: { id, root: p.root, name: p.name, fingerprint: '', state } },
+      projectOrder: [...get().projectOrder.filter((p) => p !== id), id],
+      activeProjectId: id,
+    })
+  },
 
   syncProject: (p) =>
     set((s) => {
+      if (p.projectId && p.projectId !== s.activeProjectId) {
+        const entry = s.projects[p.projectId]
+        if (!entry?.state) return {}
+        return {
+          projects: {
+            ...s.projects,
+            [p.projectId]: {
+              ...entry,
+              state: {
+                ...entry.state,
+                project: { id: p.projectId, name: p.name, root: p.root },
+                nodes: p.components.map(componentToNode),
+                edges: p.links.map(linkToEdge),
+                dirty: true,
+              },
+            },
+          },
+        }
+      }
       const selected = new Set(s.nodes.filter((n) => n.selected).map((n) => n.id))
       const selectedEdges = new Set(s.edges.filter((e) => e.selected).map((e) => e.id))
       return {
-        project: { name: p.name, root: p.root },
+        project: { id: p.projectId ?? get().project?.id ?? p.root, name: p.name, root: p.root },
         nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
         edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
       }
@@ -202,6 +315,7 @@ export const useStore = create<State>((set, get) => ({
   toProject: () => {
     const { project, nodes, edges } = get()
     return {
+      projectId: project?.id,
       schemaVersion: 2,
       name: project?.name ?? 'project',
       root: project?.root ?? '',
@@ -274,6 +388,7 @@ export const useStore = create<State>((set, get) => ({
       name: device?.name ?? 'Task',
       command: device?.command ?? '',
       kind: device?.kind ?? 'task',
+      ...(device?.adapter ? { adapter: device.adapter } : {}),
       ...(device?.readyWhen ? { readyWhen: device.readyWhen } : {}),
     }
     set((s) => ({
@@ -329,7 +444,7 @@ export const useStore = create<State>((set, get) => ({
     if (!id) return set({ selectedId: null })
     const current = get().activeSession
     const node = get().nodes.find((n) => n.id === id)
-    const keep = current?.startsWith(`${id}/`)
+    const keep = current && sessionMetadata.get(current)?.componentId === id
     const first = node?.data.terminals[0]
     set({
       selectedId: id,
@@ -346,3 +461,66 @@ export const useStore = create<State>((set, get) => ({
   setMessage: (message) => set({ message }),
   markSaved: () => set({ dirty: false }),
 }))
+
+function emptyProjectState(): ProjectState {
+  return {
+    project: null,
+    nodes: [],
+    edges: [],
+    selectedId: null,
+    selectedEdgeId: null,
+    activeSession: null,
+    view: 'navigation',
+    highlighted: [],
+    planStartedWith: {},
+    planActive: null,
+    dirty: false,
+    gitChanges: {},
+    repos: {},
+    extensionBadges: {},
+    extensionViews: {},
+    panels: {},
+  }
+}
+function projectState(s: State): ProjectState {
+  const {
+    project,
+    nodes,
+    edges,
+    selectedId,
+    selectedEdgeId,
+    activeSession,
+    view,
+    highlighted,
+    planStartedWith,
+    planActive,
+    dirty,
+    gitChanges,
+    repos,
+    extensionBadges,
+    extensionViews,
+    viewport,
+    panels,
+  } = s
+  return {
+    project,
+    nodes,
+    edges,
+    selectedId,
+    selectedEdgeId,
+    activeSession,
+    view,
+    highlighted,
+    planStartedWith,
+    planActive,
+    dirty,
+    gitChanges,
+    repos,
+    extensionBadges,
+    extensionViews,
+    viewport,
+    panels,
+  }
+}
+
+useStore.subscribe((s) => setProjectIdentity(s.project?.id ?? s.activeProjectId ?? ''))

@@ -1554,3 +1554,66 @@ button.review-name:hover:not(:disabled) {
   flex-direction: column;
   gap: 4px;
 }
+
+.project-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #30333e;
+  overflow-x: auto;
+}
+.project-tab {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid #30333e;
+  border-radius: 5px;
+}
+.project-tab.active {
+  border-color: #f5a524;
+}
+.project-tab button {
+  border: 0;
+  background: transparent;
+}
+.recovery-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #3d3120;
+}
+.sessions-panel {
+  width: min(1200px, 95vw);
+  max-height: 90vh;
+  padding: 20px;
+  overflow: auto;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid #30333e;
+}
+.session-row > div {
+  flex: 1;
+  min-width: 200px;
+}
+.session-row small {
+  display: block;
+  color: #9299aa;
+}
+.session-preview {
+  height: 320px;
+  display: flex;
+  flex-direction: column;
+  margin: 14px 0;
+}
+.session-preview .terminal-area,
+.session-preview pre {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}

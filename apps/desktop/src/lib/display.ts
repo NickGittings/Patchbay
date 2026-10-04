@@ -60,6 +60,8 @@ export function terminalStatus(
   now = Date.now(),
 ): TerminalStatus {
   if (!session) return { health: 'idle', label: 'Not started', attention: 0 }
+  if (session.disconnected) return { health: 'idle', label: 'Disconnected', attention: 0 }
+  if (session.interrupted) return { health: 'fail', label: 'Interrupted', attention: 1 }
   const seenMs = session.status?.seenMs ?? 0
   if (!session.running) {
     const when = session.exitedMs ? ago(session.exitedMs, now) : undefined

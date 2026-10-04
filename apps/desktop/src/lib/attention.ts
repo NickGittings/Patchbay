@@ -34,12 +34,14 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal,
       })),
     ),
-    ...Object.entries(s.runtimeTerminals).map(([sid, r]) => ({
-      sid,
-      componentId: r.componentId,
-      owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
-      terminal: r.terminal,
-    })),
+    ...Object.entries(s.runtimeTerminals)
+      .filter(([, r]) => r.projectId === useStore.getState().project?.id)
+      .map(([sid, r]) => ({
+        sid,
+        componentId: r.componentId,
+        owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
+        terminal: r.terminal,
+      })),
     ...planTerminals(s.devices).map((terminal) => ({
       sid: sessionId(PLAN_SCOPE, terminal.id),
       componentId: PLAN_SCOPE,
@@ -69,6 +71,7 @@ export function componentTerminals(
   return [
     ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id), t]),
     ...Object.entries(runtimeTerminals)
+      .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(([, r]) => r.componentId === componentId)
       .map(([sid, r]): [string, TerminalSpec] => [sid, r.terminal]),
   ]

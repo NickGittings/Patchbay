@@ -9,6 +9,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<crate::adapters::Adapter>,
     pub id: String,
     pub name: String,
     #[serde(default = "default_category")]

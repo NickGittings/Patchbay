@@ -1,8 +1,8 @@
 use crate::status::SessionStatus;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Structured terminal events. Every consumer (UI, CLI, future audit log) sees the same stream.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",

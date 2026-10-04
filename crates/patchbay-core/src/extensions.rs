@@ -568,6 +568,7 @@ pub fn command_terminal(registry: &Registry, command_id: &str) -> Result<Termina
         .run
         .context("code command must be executed in the extension host")?;
     Ok(TerminalSpec {
+        adapter: None,
         id: format!("ext-{command_id}"),
         name: command.title,
         command: run.command,
@@ -589,6 +590,7 @@ pub fn run_terminal(extension_id: &str, command: String, key: &str) -> Result<Te
         bail!("invalid terminal request");
     }
     Ok(TerminalSpec {
+        adapter: None,
         id: format!("ext-{extension_id}-{key}"),
         name: extension_id.into(),
         command,

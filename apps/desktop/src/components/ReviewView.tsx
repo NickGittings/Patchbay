@@ -1,5 +1,6 @@
+import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
 import { gitReview, gitWorktrees } from '../lib/ipc'
 import { latestChange, latestChangeOf, lineTotals } from '../lib/review'
@@ -143,8 +144,8 @@ export default function ReviewView() {
 
   return (
     <div className="workspace review-view">
-      <Group orientation="horizontal">
-        <Panel defaultSize="38" minSize="20">
+      <PersistedGroup layoutId="ReviewView-1" orientation="horizontal">
+        <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
           <div className="review-list">
             <div className="review-header">
               <div className="review-title-row">
@@ -302,7 +303,7 @@ export default function ReviewView() {
           </div>
         </Panel>
         <Separator className="separator" />
-        <Panel defaultSize="62" minSize="30">
+        <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
           {current ? (
             <DiffView
               componentId={current.componentId}
@@ -314,7 +315,7 @@ export default function ReviewView() {
             <div className="diff-view hint">Nothing to review.</div>
           )}
         </Panel>
-      </Group>
+      </PersistedGroup>
     </div>
   )
 }

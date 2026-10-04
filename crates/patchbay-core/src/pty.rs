@@ -20,7 +20,7 @@ const MONITOR_TICK: Duration = Duration::from_millis(250);
 const COMMAND_ENV: &str = "PATCHBAY_LAUNCH_COMMAND";
 
 /// What to launch in a terminal session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionSpec {
     pub id: String,
     /// Empty for an interactive shell.
@@ -127,11 +127,16 @@ impl Backlog {
 }
 
 /// Retained output and lifecycle state for one session incarnation.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    #[serde(default)]
+    pub truncated: bool,
     /// Base64 on the wire: a JSON number array is ~4x larger.
-    #[serde(serialize_with = "serialize_base64")]
+    #[serde(
+        serialize_with = "serialize_base64",
+        deserialize_with = "deserialize_base64"
+    )]
     pub data: Vec<u8>,
     pub end: u64,
     pub generation: u64,
@@ -150,6 +155,14 @@ pub struct Snapshot {
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
     use base64::Engine;
     s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+fn deserialize_base64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    use base64::Engine;
+    let text = <String as serde::Deserialize>::deserialize(d)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(serde::de::Error::custom)
 }
 
 /// Long-lived PTY sessions keyed by session id. Output and exit are reported
@@ -631,6 +644,7 @@ impl PtyManager {
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
         Some(Snapshot {
+            truncated: backlog.end > backlog.data.len() as u64,
             data: backlog.data.iter().copied().collect(),
             end: backlog.end,
             generation: backlog.generation,
@@ -728,9 +742,46 @@ impl PtyManager {
         })
     }
 
-    /// Kill every session and forget all retained output, e.g. when another
-    /// project is opened or the app exits. Session ids are not project-scoped,
-    /// so history must not carry over. Blocks for up to about twice
+    /// Explicitly stop work, retaining snapshots for reconnect and recovery.
+    pub fn stop(&self, id: &str) {
+        let generation = self.sessions.lock().unwrap().get(id).map(|s| s.generation);
+        self.kill(id);
+        let deadline = Instant::now() + RESET_GRACE;
+        while self.is_running(id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(session) = self.sessions.lock().unwrap().get_mut(id)
+            && Some(session.generation) == generation
+        {
+            session.process.force_kill();
+        }
+    }
+    pub fn has_running(&self) -> bool {
+        !self.sessions.lock().unwrap().is_empty() || !self.starting.lock().unwrap().is_empty()
+    }
+
+    pub fn stop_all(&self) {
+        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
+        for id in &ids {
+            self.kill(id);
+        }
+        std::thread::sleep(RESET_GRACE);
+        for session in self.sessions.lock().unwrap().values_mut() {
+            session.process.force_kill();
+        }
+        let deadline = Instant::now() + RESET_GRACE;
+        while !self.sessions.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    pub fn forget(&self, id: &str) {
+        if !self.is_running(id) {
+            self.backlogs.lock().unwrap().remove(id);
+        }
+    }
+
+    /// Explicit test/reset operation: kill every session and forget retained output.
+    /// Normal project switching and desktop quit never use this. Blocks for up to about twice
     /// [`RESET_GRACE`]: processes still alive after the grace period are
     /// force-killed with their process group, so they can't keep ports or files
     /// the next project needs. Returns the last generation issued: every event

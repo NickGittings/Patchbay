@@ -3,56 +3,55 @@ import { useStore } from '../store'
 import { gitStatus } from './ipc'
 
 let running: Promise<void> | undefined
-let pending = false
-let revision = 0
-
+const pending = new Set<string>()
 /** Component ids and folders, which is all the Git commands need from the map. */
 export const componentPaths = () =>
   useStore.getState().nodes.map((n) => ({ id: n.id, path: n.data.path }))
-
-/** Drop outstanding results when the main window changes projects or unmounts. */
 export function invalidateGitRefresh() {
-  revision++
-  pending = false
+  pending.clear()
 }
-
-/** Coalesce signals into one Git request at a time, owned by the main window. */
-export function requestGitRefresh(): Promise<void> {
-  if (getCurrentWebviewWindow().label !== 'main' || !useStore.getState().project)
-    return Promise.resolve()
-  pending = true
+/** Each watcher refreshes its originating project's status, even when its tab is inactive. */
+export function requestGitRefresh(projectId = useStore.getState().project?.id): Promise<void> {
+  if (getCurrentWebviewWindow().label !== 'main' || !projectId) return Promise.resolve()
+  pending.add(projectId)
   running ??= refresh().finally(() => {
     running = undefined
-    // A signal can arrive in a microtask between the loop finishing and this
-    // cleanup. Carry it forward even when no later filesystem event follows.
-    if (pending) return requestGitRefresh()
+    if (pending.size) return requestGitRefresh([...pending][0])
   })
   return running
 }
-
 async function refresh() {
-  while (pending) {
-    pending = false
-    const requested = revision
-    const { project } = useStore.getState()
-    if (!project) continue
-    const components = componentPaths()
+  while (pending.size) {
+    const id = [...pending][0]
+    pending.delete(id)
+    const state = useStore.getState().captureProjects()[id]?.state
+    if (!state?.project) continue
+    const components = state.nodes.map((n) => ({ id: n.id, path: n.data.path }))
     try {
-      const status = await gitStatus(components)
+      const status = await gitStatus(components, id)
       const current = useStore.getState()
-      // Object identity also catches reopening the same root; compare paths so
-      // edits during a slow status call cannot restore removed component badges.
+      const target = current.captureProjects()[id]?.state
       if (
-        requested === revision &&
-        current.project === project &&
-        current.nodes.length === components.length &&
-        current.nodes.every(
+        !target ||
+        target.nodes.length !== components.length ||
+        !target.nodes.every(
           (n, i) => n.id === components[i].id && n.data.path === components[i].path,
         )
       )
-        current.setGitStatus(status)
+        continue
+      if (current.project?.id === id) current.setGitStatus(status)
+      else
+        useStore.setState((s) => ({
+          projects: {
+            ...s.projects,
+            [id]: {
+              ...s.projects[id],
+              state: { ...target, gitChanges: status.changes, repos: status.repos },
+            },
+          },
+        }))
     } catch {
-      // Git missing or an unavailable repo: retain the last status.
+      /* Missing Git or unavailable roots retain the last known status. */
     }
   }
 }

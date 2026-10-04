@@ -1,7 +1,16 @@
+import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { sessionsList } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
+import {
+  PLAN_SCOPE,
+  sessionMetadata,
+  sessionId,
+  type TerminalEvent,
+  type TerminalSnapshot,
+} from '../types'
 import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
 import { planTerminals } from './plan'
 import { requestGitRefresh } from './git'
@@ -32,7 +41,7 @@ let epoch = 0
  * `generationFloor` comes from `terminalReset`; later events from killed sessions are dropped.
  */
 export function resetSessions(generationFloor: number) {
-  floor = Math.max(floor, generationFloor)
+  floor = generationFloor
   epoch++
   lastSeq.clear()
   pending.clear()
@@ -45,8 +54,16 @@ const decodeBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.char
 
 /** Each webview keeps one listener for its lifetime, including React StrictMode remounts. */
 export function listenForTerminals() {
-  listening ??= onTerminalEvent(handleTerminalEvent)
-    .then(() => {})
+  listening ??= Promise.all([
+    onTerminalEvent(handleTerminalEvent),
+    listen<{ connected: boolean; instanceId?: string }>('patchbay://service', (e) => {
+      if (!e.payload.connected) useStore.setState({ serviceConnected: false })
+      else void reconcileSessions().catch(() => {})
+    }),
+  ])
+    .then(() => {
+      setInterval(() => void reconcileSessions(false).catch(() => {}), 2000)
+    })
     .catch((e) => {
       listening = undefined
       throw e
@@ -58,17 +75,24 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
   const sid = sessionId(componentId, terminalId)
   const existing = starting.get(sid)
   if (existing) return existing
+  const origin = useStore.getState()
+  const project = origin.toProject()
+  const requestId = launchRequests.get(sid) ?? crypto.randomUUID()
+  launchRequests.set(sid, requestId)
   const request = (async () => {
     const requestedEpoch = epoch
     try {
       await listenForTerminals()
       if (requestedEpoch !== epoch) return
-      const s = useStore.getState()
+      if (!useStore.getState().serviceConnected)
+        throw new Error('Disconnected; reconnect before starting work')
+      const s = origin
       const runtime = s.runtimeTerminals[sid]
-      if (runtime?.commandId) await executeExtensionCommand(runtime.commandId, [], componentId)
+      if (runtime?.commandId)
+        await executeExtensionCommand(runtime.commandId, [], componentId, project)
       else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
-          s.toProject(),
+          project,
           runtime.extensionId,
           componentId,
           runtime.terminal.command,
@@ -78,11 +102,34 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
         const terminal = planTerminals(s.devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = [...s.highlighted]
-        await planStart(s.toProject(), ids, terminal)
-        if (requestedEpoch === epoch) s.markPlanStarted(sid, ids)
+        await planStart(project, ids, terminal, requestId)
+        if (requestedEpoch === epoch) {
+          const current = useStore.getState()
+          if (current.activeProjectId === project.projectId) s.markPlanStarted(sid, ids)
+          else {
+            const entry = current.projects[project.projectId!]
+            if (entry?.state)
+              useStore.setState({
+                projects: {
+                  ...current.projects,
+                  [project.projectId!]: {
+                    ...entry,
+                    state: {
+                      ...entry.state,
+                      planStartedWith: {
+                        ...entry.state.planStartedWith,
+                        [sid]: [...ids].sort().join(','),
+                      },
+                    },
+                  },
+                },
+              })
+          }
+        }
       } else {
-        await terminalStart(s.toProject(), componentId, terminalId)
+        await terminalStart(project, componentId, terminalId, undefined, requestId)
       }
+      launchRequests.delete(sid)
     } catch (e) {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
@@ -118,6 +165,10 @@ export async function restartTerminal(componentId: string, terminalId: string) {
 
 /** Apply a backend terminal event to the store and the session's xterm. */
 export function handleTerminalEvent(e: TerminalEvent) {
+  if (e.instanceId && e.instanceId !== useStore.getState().serviceInstance) {
+    void reconcileSessions().catch(() => {})
+    return
+  }
   if (e.generation <= floor) return
   const queue = pending.get(e.sessionId)
   if (queue) {
@@ -153,7 +204,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
     case 'exited':
       if (!s.sessions[e.sessionId]?.running && s.sessions[e.sessionId]?.exitCode === e.exitCode)
         break
-      void requestGitRefresh()
+      void requestGitRefresh(sessionMetadata.get(e.sessionId)?.projectId)
       s.setSession(e.sessionId, {
         ...s.sessions[e.sessionId],
         running: false,
@@ -196,6 +247,8 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           exitedMs: snapshot.exitedMs ?? undefined,
           status: snapshot.status,
           notice: snapshot.notice ?? undefined,
+          interrupted: useStore.getState().sessionRecords.find((r) => r.id === sid)?.interrupted,
+          truncated: snapshot.truncated,
         })
       }
       return snapshot
@@ -232,4 +285,78 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
   if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
   await restoreOutput(sid, bytes)
   lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
+}
+
+const launchRequests = new Map<string, string>()
+let reconciling: Promise<void> | undefined
+export function reconcileSessions(force = true): Promise<void> {
+  reconciling ??= (async () => {
+    try {
+      const status = await invoke<{ connected: boolean; instanceId: string }>('service_status')
+      if (!status.connected) {
+        useStore.setState({ serviceConnected: false })
+        return
+      }
+      const records = await sessionsList()
+      const current = useStore.getState()
+      const changed = status.instanceId !== current.serviceInstance
+      const reconnecting = !current.serviceConnected || changed
+      if (changed) resetSessions(0)
+      useStore.setState({
+        serviceConnected: reconnecting ? false : current.serviceConnected,
+        serviceInstance: status.instanceId,
+        sessionRecords: records,
+      })
+      for (const r of records) {
+        sessionMetadata.set(r.id, r.metadata)
+        const snapshot = r.snapshot
+        if (snapshot)
+          current.setSession(r.id, {
+            running: snapshot.running,
+            exitCode: snapshot.exitCode ?? undefined,
+            startedMs: snapshot.startedMs,
+            exitedMs: snapshot.exitedMs ?? undefined,
+            status: snapshot.status,
+            notice: snapshot.notice ?? undefined,
+            interrupted: r.interrupted,
+            truncated: snapshot.truncated,
+          })
+        if (
+          r.metadata.componentId !== PLAN_SCOPE &&
+          !current
+            .captureProjects()
+            [r.metadata.projectId]?.state?.nodes.some(
+              (n) =>
+                n.id === r.metadata.componentId &&
+                n.data.terminals.some((t) => t.id === r.metadata.terminalId),
+            )
+        )
+          current.addRuntimeTerminal(r.id, {
+            projectId: r.metadata.projectId,
+            commandId: r.metadata.commandId ?? undefined,
+            extensionId: r.metadata.extensionId ?? undefined,
+            key: r.metadata.key ?? undefined,
+            componentId: r.metadata.componentId,
+            terminal: {
+              id: r.metadata.terminalId,
+              name: r.metadata.name,
+              kind: r.metadata.kind,
+              command: r.spec.command,
+            },
+          })
+        if (force || reconnecting) {
+          hydration.delete(r.id)
+          await hydrateSession(r.id)
+        }
+      }
+      useStore.setState({ serviceConnected: true })
+      if (reconnecting) window.dispatchEvent(new Event('patchbay:reconnected'))
+    } catch (e) {
+      useStore.setState({ serviceConnected: false })
+      throw e
+    }
+  })().finally(() => {
+    reconciling = undefined
+  })
+  return reconciling
 }

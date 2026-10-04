@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core'
+import { sessionMetadata } from '../types'
 import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   getAllWebviewWindows,
@@ -36,8 +38,8 @@ export const ACTIVE_CHANGED = 'patchbay:active-changed'
 
 // Encoding code points avoids collisions between ids with different punctuation.
 // Must match `component_window_label` in src-tauri/src/lib.rs.
-const componentLabel = (id: string) =>
-  `component-${Array.from(id, (c) => c.codePointAt(0)!.toString(16)).join('-')}`
+export const componentLabel = (id: string, projectId: string) =>
+  `component-${Array.from(JSON.stringify([projectId, id]), (c) => c.codePointAt(0)!.toString(16)).join('-')}`
 
 const ownLabel = getCurrentWebviewWindow().label
 /** The window that most recently had focus, as last heard by this webview. */
@@ -81,15 +83,17 @@ export function ownsSession(sid: string) {
 
 /** Labels of the pop-outs that could show `sid`; component ids may themselves contain `/`. */
 function labelsShowing(sid: string) {
-  const labels: string[] = []
-  for (let i = sid.indexOf('/'); i >= 0; i = sid.indexOf('/', i + 1))
-    labels.push(componentLabel(sid.slice(0, i)))
-  return labels
+  const metadata = sessionMetadata.get(sid)
+  return metadata ? [componentLabel(metadata.componentId, metadata.projectId)] : []
 }
 const opening = new Map<string, Promise<void>>()
 
-export function openComponentWindow(componentId: string, name: string): Promise<void> {
-  const label = componentLabel(componentId)
+export function openComponentWindow(
+  componentId: string,
+  name: string,
+  projectId = useStore.getState().project?.id ?? '',
+): Promise<void> {
+  const label = componentLabel(componentId, projectId)
   const existing = opening.get(label)
   if (existing) return existing
   const request = (async () => {
@@ -98,15 +102,21 @@ export function openComponentWindow(componentId: string, name: string): Promise<
       await window.setFocus()
       return
     }
-    const project = useStore.getState().project
+    const project = useStore.getState().captureProjects()[projectId]
     if (!project) return
+    const geometry = await invoke<Record<string, number | boolean>>('window_register', {
+      label,
+      projectId,
+      componentId,
+    })
     const popout = new WebviewWindow(label, {
-      url: `index.html?component=${encodeURIComponent(componentId)}`,
+      url: `index.html?component=${encodeURIComponent(componentId)}&project=${encodeURIComponent(projectId)}`,
       title: `${project.name} · ${name}`,
       width: 1100,
       height: 700,
       minWidth: 600,
       minHeight: 400,
+      ...geometry,
     })
     await new Promise<void>((resolve, reject) => {
       void popout.once('tauri://created', () => resolve())
@@ -119,10 +129,21 @@ export function openComponentWindow(componentId: string, name: string): Promise<
   return request
 }
 
-/** Close every pop-out, e.g. before switching projects so none shows stale sessions. */
-export async function closeComponentWindows() {
+/** Close a detached project's pop-outs, or all component windows on main-window closure. */
+export async function closeComponentWindows(projectId?: string) {
   const windows = await getAllWebviewWindows()
-  await Promise.all(windows.filter((w) => w.label.startsWith('component-')).map((w) => w.close()))
+  await Promise.all(
+    windows
+      .filter(
+        (w) =>
+          w.label.startsWith('component-') &&
+          (!projectId ||
+            Object.values(
+              useStore.getState().captureProjects()[projectId]?.state?.nodes ?? [],
+            ).some((n) => componentLabel(n.id, projectId) === w.label)),
+      )
+      .map((w) => w.close()),
+  )
 }
 
 /** Main window owns project edits; pop-outs receive models without losing session state. */
@@ -130,39 +151,47 @@ export function syncComponentWindows(): () => void {
   let disposed = false
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  // Last payloads broadcast, so selection and drags don't re-send the project. Git status is
-  // re-sent on every refresh (a new object), even with equal counts: pop-out change lists and
-  // diffs reload on it, since editing an already-changed file leaves the counts as they were.
-  let sentProject = ''
-  let sentGit: unknown = null
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
+  const payload = (projectId: string) => {
+    const entry = useStore.getState().captureProjects()[projectId]
+    const state = entry?.state
+    if (!state?.project) return null
+    return {
+      project: {
+        schemaVersion: 2,
+        projectId,
+        name: entry.name,
+        root: entry.root,
+        components: state.nodes.map(({ id, position, data }) => ({ id, position, ...data })),
+        links: state.edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.data?.label,
+        })),
+      } as Project,
+      git: state.gitChanges,
+    }
+  }
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
     if (disposed) return
-    if (!windows.some((w) => w.label.startsWith('component-'))) {
-      // Nobody received the changes, so the next pop-out's READY reply is its baseline.
-      sentProject = ''
-      sentGit = null
-      return
-    }
-    const s = useStore.getState()
-    if (!s.project) return
-    const project = s.toProject()
-    const projectJson = JSON.stringify(project)
-    if (projectJson !== sentProject) {
-      sentProject = projectJson
-      await emit<Project>(PROJECT_EVENT, project)
-    }
-    if (s.gitChanges !== sentGit) {
-      sentGit = s.gitChanges
-      await emit(GIT_EVENT, s.gitChanges)
+    for (const [projectId, entry] of Object.entries(useStore.getState().captureProjects())) {
+      const data = payload(projectId)
+      if (!data) continue
+      for (const node of entry.state?.nodes ?? []) {
+        const label = componentLabel(node.id, projectId)
+        if (!windows.some((w) => w.label === label)) continue
+        await emitTo(label, PROJECT_EVENT, data.project)
+        await emitTo(label, GIT_EVENT, data.git)
+      }
     }
   }
-  void listen<{ label: string }>(READY_EVENT, (e) => {
-    const s = useStore.getState()
-    if (!s.project || !e.payload.label.startsWith('component-')) return
-    void emitTo(e.payload.label, PROJECT_EVENT, s.toProject()).catch(report)
-    void emitTo(e.payload.label, GIT_EVENT, s.gitChanges).catch(report)
+  void listen<{ label: string; projectId: string }>(READY_EVENT, (e) => {
+    const data = payload(e.payload.projectId)
+    if (!data || !e.payload.label.startsWith('component-')) return
+    void emitTo(e.payload.label, PROJECT_EVENT, data.project).catch(report)
+    void emitTo(e.payload.label, GIT_EVENT, data.git).catch(report)
   })
     .then((f) => {
       if (disposed) f()
@@ -174,6 +203,7 @@ export function syncComponentWindows(): () => void {
       s.nodes === prev.nodes &&
       s.edges === prev.edges &&
       s.project === prev.project &&
+      s.projects === prev.projects &&
       s.gitChanges === prev.gitChanges
     )
       return

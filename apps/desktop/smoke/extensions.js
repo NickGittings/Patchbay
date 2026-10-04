@@ -61,7 +61,7 @@
         document.querySelector('[data-command-id="acme.docker.up"]'),
       ),
     )
-    const sid = `${component.id}/ext-acme.docker.up`
+    const sid = smoke.sessionId(component.id, 'ext-acme.docker.up')
     await until('command session', () => state().sessions[sid])
     assert(
       !state()
@@ -120,12 +120,12 @@
     )
     const reloadedHost = document.querySelector('iframe[data-extension-host="acme.docker"]')
     state().loadProject({ ...state().toProject(), name: 'switched project' })
-    await until('host replaced after project switch', () => {
-      const host = document.querySelector('iframe[data-extension-host="acme.docker"]')
-      return host && host !== reloadedHost
-    })
+    assert(
+      document.querySelector('iframe[data-extension-host="acme.docker"]') === reloadedHost,
+      'Reopening the same project replaced its host',
+    )
     await until(
-      'badge restored after project switch',
+      'badge retained after reopening',
       () => state().extensionBadges[component.id]?.length,
     )
     await smoke.terminalReset()

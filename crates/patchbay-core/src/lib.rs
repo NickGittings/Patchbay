@@ -18,3 +18,7 @@ pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};
 pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalSpec};
+
+pub mod adapters;
+pub mod session;
+pub mod workspace;

@@ -1,10 +1,14 @@
+import PersistedGroup from './components/PersistedGroup'
+import WorkspaceTabs from './components/WorkspaceTabs'
+import SessionsPanel from './components/SessionsPanel'
+import { initializeWorkspace } from './lib/workspace'
 import CommandPalette from './components/CommandPalette'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
 import { useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
@@ -22,12 +26,10 @@ import { useStore } from './store'
 
 /** Refresh on project changes, file mutations and focus in any app window. */
 function useGitRefresh() {
-  const project = useStore((s) => s.project)
   useEffect(() => {
-    if (!project) return
     let stopped = false
-    const unlisten = listen(GIT_DIRTY_EVENT, () => {
-      if (!stopped) void requestGitRefresh()
+    const unlisten = listen<string>(GIT_DIRTY_EVENT, (event) => {
+      if (!stopped) void requestGitRefresh(event.payload)
     })
     void unlisten.catch((e) => useStore.getState().setMessage(String(e)))
     return () => {
@@ -35,7 +37,7 @@ function useGitRefresh() {
       invalidateGitRefresh()
       void unlisten.then((stop) => stop()).catch(() => {})
     }
-  }, [project])
+  }, [])
 }
 
 /** Keep the backend's readable folders in step with the component folders on the map. */
@@ -65,7 +67,10 @@ function useRootSync() {
 
 export default function App() {
   const view = useStore((s) => s.view)
+  const projectId = useStore((s) => s.project?.id)
+  const restoring = useStore((s) => s.restoring)
   useEffect(() => {
+    void initializeWorkspace()
     const stopHost = startExtensionHost()
     void refreshExtensions().catch((e) => useStore.getState().setMessage(String(e)))
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
@@ -82,36 +87,45 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
+        <WorkspaceTabs />
+        <SessionsPanel />
         <CommandPalette />
         <ExtensionsPanel />
-        {view === 'plan' ? (
-          <PlanView />
+        {restoring ? (
+          <div className="hint">Restoring workspace…</div>
+        ) : view === 'plan' ? (
+          <PlanView key={projectId} />
         ) : view === 'implementation' ? (
-          <ImplementationView />
+          <ImplementationView key={projectId} />
         ) : view === 'review' ? (
-          <ReviewView />
+          <ReviewView key={projectId} />
         ) : (
-          <Group orientation="horizontal" className="workspace">
-            <Panel defaultSize="14" minSize="10">
+          <PersistedGroup
+            layoutId="App-1"
+            orientation="horizontal"
+            className="workspace"
+            key={projectId}
+          >
+            <Panel id="App-pane-1" defaultSize="14" minSize="10">
               <Hierarchy />
             </Panel>
             <Separator className="separator" />
-            <Panel defaultSize="62">
-              <Group orientation="vertical">
-                <Panel defaultSize="58" minSize="20">
+            <Panel id="App-pane-2" defaultSize="62">
+              <PersistedGroup layoutId="App-2" orientation="vertical">
+                <Panel id="App-pane-3" defaultSize="58" minSize="20">
                   <Canvas />
                 </Panel>
                 <Separator className="separator horizontal" />
-                <Panel defaultSize="42" minSize="10">
+                <Panel id="App-pane-4" defaultSize="42" minSize="10">
                   <TerminalDock />
                 </Panel>
-              </Group>
+              </PersistedGroup>
             </Panel>
             <Separator className="separator" />
-            <Panel defaultSize="24" minSize="16">
+            <Panel id="App-pane-5" defaultSize="24" minSize="16">
               <Inspector />
             </Panel>
-          </Group>
+          </PersistedGroup>
         )}
       </div>
     </ReactFlowProvider>

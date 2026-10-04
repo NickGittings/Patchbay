@@ -32,12 +32,14 @@ function useTabs(): Tab[] {
     })),
   )
   all.push(
-    ...Object.entries(runtime).map(([sid, t]) => ({
-      sid,
-      componentId: t.componentId,
-      terminal: t.terminal,
-      label: t.terminal.name,
-    })),
+    ...Object.entries(runtime)
+      .filter(([, t]) => t.projectId === useStore.getState().project?.id)
+      .map(([sid, t]) => ({
+        sid,
+        componentId: t.componentId,
+        terminal: t.terminal,
+        label: t.terminal.name,
+      })),
   )
   return selectedId
     ? all.filter((t) => t.componentId === selectedId)

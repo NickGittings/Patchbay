@@ -1,5 +1,6 @@
+import PersistedGroup from './PersistedGroup'
 import { useEffect, useState } from 'react'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { planContext } from '../lib/ipc'
@@ -59,12 +60,12 @@ export default function PlanView() {
   }
 
   return (
-    <Group orientation="vertical" className="workspace">
-      <Panel defaultSize="45" minSize="20">
+    <PersistedGroup layoutId="PlanView-1" orientation="vertical" className="workspace">
+      <Panel id="PlanView-pane-1" defaultSize="45" minSize="20">
         <Canvas />
       </Panel>
       <Separator className="separator horizontal" />
-      <Panel defaultSize="55" minSize="20">
+      <Panel id="PlanView-pane-2" defaultSize="55" minSize="20">
         <div className="plan-dock">
           <aside className="plan-scope">
             <div className="row">
@@ -154,6 +155,6 @@ export default function PlanView() {
           </div>
         </div>
       </Panel>
-    </Group>
+    </PersistedGroup>
   )
 }

@@ -4,5 +4,6 @@
   "category": "Agents",
   "description": "Codex CLI scoped to this component, with related components as context.",
   "command": "codex",
-  "kind": "agent"
+  "kind": "agent",
+  "adapter": "codex"
 }

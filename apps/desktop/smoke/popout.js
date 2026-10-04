@@ -27,7 +27,7 @@
       const node = smoke.store.getState().nodes.find(shellOf)
       if (!node) throw new Error('no component with a shell terminal')
       const shell = shellOf(node)
-      const sid = `${node.id}/${shell.id}`
+      const sid = smoke.sessionId(node.id, shell.id)
       await smoke.startTerminal(node.id, shell.id)
       await until('shell to start', () => smoke.store.getState().sessions[sid]?.running)
       // Arithmetic so the typed command never matches the expected output.
@@ -40,7 +40,7 @@
     const node = await until('project sync', () =>
       smoke.store.getState().nodes.find((n) => n.id === popout),
     )
-    const sid = `${popout}/${shellOf(node).id}`
+    const sid = smoke.sessionId(popout, shellOf(node).id)
     await until('replayed backlog', () => textOf(sid).includes('backlog-42'))
     await smoke.terminalWrite(sid, 'echo live-$((1+1))\r')
     await until('live output', () => textOf(sid).includes('live-2'))

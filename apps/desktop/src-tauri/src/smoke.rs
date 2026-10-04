@@ -23,38 +23,46 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
         }
     };
 
-    builder
-        .on_page_load(move |webview, payload| {
-            if matches!(payload.event(), PageLoadEvent::Finished) {
-                let _ = webview.eval(&script);
-            }
-        })
-        .setup(|app| {
-            let handle = app.handle().clone();
-            app.listen(REPORT_EVENT, move |event| {
-                let message: String = serde_json::from_str(event.payload()).unwrap_or_default();
-                eprintln!("PATCHBAY_SMOKE: {message}");
-                if message.starts_with("PASS") {
-                    handle.exit(0);
-                } else if message.starts_with("FAIL") {
-                    handle.exit(1);
-                }
-            });
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(TIMEOUT);
-                eprintln!(
-                    "PATCHBAY_SMOKE: FAIL timed out after {}s",
-                    TIMEOUT.as_secs()
-                );
-                handle.exit(1);
-            });
-            Ok(())
-        })
+    builder.on_page_load(move |webview, payload| {
+        if matches!(payload.event(), PageLoadEvent::Finished) {
+            let _ = webview.eval(&script);
+        }
+    })
 }
 
 /// A root configured by the test process, never by an IPC caller.
-pub fn project_root() -> Option<std::path::PathBuf> {
+pub fn project_root(second: bool) -> Option<std::path::PathBuf> {
     std::env::var_os("PATCHBAY_SMOKE_SCRIPT")?;
-    std::env::var_os("PATCHBAY_SMOKE_ROOT").map(std::path::PathBuf::from)
+    std::env::var_os(if second {
+        "PATCHBAY_SMOKE_ROOT_2"
+    } else {
+        "PATCHBAY_SMOKE_ROOT"
+    })
+    .map(std::path::PathBuf::from)
+}
+
+pub fn setup(app: &mut tauri::App) {
+    if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
+        return;
+    }
+
+    let handle = app.handle().clone();
+    app.listen(REPORT_EVENT, move |event| {
+        let message: String = serde_json::from_str(event.payload()).unwrap_or_default();
+        eprintln!("PATCHBAY_SMOKE: {message}");
+        if message.starts_with("PASS") {
+            handle.exit(0);
+        } else if message.starts_with("FAIL") {
+            handle.exit(1);
+        }
+    });
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(TIMEOUT);
+        eprintln!(
+            "PATCHBAY_SMOKE: FAIL timed out after {}s",
+            TIMEOUT.as_secs()
+        );
+        handle.exit(1);
+    });
 }

@@ -27,6 +27,7 @@ export interface TerminalSpec {
   command: string
   kind: TerminalKind
   /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
+  adapter?: 'claude' | 'codex'
   readyWhen?: string
 }
 
@@ -56,6 +57,7 @@ export interface Added {
 }
 
 export interface Project {
+  projectId?: string
   schemaVersion: number
   name: string
   root: string
@@ -122,11 +124,12 @@ export interface DeviceManifest {
   description?: string | null
   command: string
   kind: TerminalKind
+  adapter?: 'claude' | 'codex'
   readyWhen?: string
   source: string
 }
 
-export type TerminalEvent =
+export type TerminalEvent = (
   | {
       type: 'started'
       sessionId: string
@@ -137,6 +140,7 @@ export type TerminalEvent =
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
   | { type: 'status'; sessionId: string; generation: number; status: SessionStatus }
+) & { instanceId?: string }
 
 /** `status::AgentState`. */
 export type AgentState = 'working' | 'needsInput' | 'review' | 'idle'
@@ -165,6 +169,7 @@ export interface SessionStatus {
 }
 
 export interface TerminalSnapshot {
+  truncated: boolean
   /** Base64. */
   data: string
   end: number
@@ -186,6 +191,9 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  disconnected?: boolean
+  interrupted?: boolean
+  truncated?: boolean
   running: boolean
   exitCode?: number
   /** When the current or last run started and ended, in Unix milliseconds. */
@@ -199,7 +207,84 @@ export interface SessionState {
 /** Data carried on each React Flow node. */
 export type ComponentData = Omit<Component, 'id' | 'position'> & Record<string, unknown>
 
-export const sessionId = (componentId: string, terminalId: string) => `${componentId}/${terminalId}`
+let activeProjectId = ''
+export const setProjectIdentity = (id: string) => {
+  activeProjectId = id
+}
+export const sessionMetadata = new Map<
+  string,
+  { projectId: string; componentId: string; terminalId: string }
+>()
+export function sessionId(componentId: string, terminalId: string, projectId = activeProjectId) {
+  let a = 0xcbf29ce484222325n
+  let b = 0x84222325cbf29ce4n
+  for (const value of [projectId, componentId, terminalId]) {
+    const bytes = new TextEncoder().encode(value)
+    const length = new Uint8Array(8)
+    new DataView(length.buffer).setBigUint64(0, BigInt(bytes.length), true)
+    for (const byte of [...length, ...bytes]) {
+      a = BigInt.asUintN(64, (a ^ BigInt(byte)) * 0x100000001b3n)
+      b = BigInt.asUintN(64, (b ^ BigInt(byte)) * 0x100000001b3n)
+    }
+  }
+  const id = `s-${a.toString(16).padStart(16, '0')}${b.toString(16).padStart(16, '0')}`
+  sessionMetadata.set(id, { projectId, componentId, terminalId })
+  return id
+}
+
+export interface SessionRecord {
+  id: string
+  metadata: {
+    projectId: string
+    projectRoot: string
+    projectName: string
+    componentId: string
+    terminalId: string
+    name: string
+    kind: TerminalKind
+    adapter: 'claude' | 'codex' | null
+    commandId?: string | null
+    extensionId?: string | null
+    key?: string | null
+    conversationId: string | null
+  }
+  snapshot: TerminalSnapshot | null
+  history: TerminalSnapshot[]
+  interrupted: boolean
+  spec: { cwd: string; command: string }
+}
+export interface WorkspaceProject {
+  id: string
+  root: string
+  name: string
+  savedFingerprint: string
+  draft: Project | null
+  layout: Record<string, unknown>
+}
+export interface WorkspaceDocument {
+  version: number
+  projects: WorkspaceProject[]
+  activeProject: string | null
+  windows: Record<
+    string,
+    {
+      projectId?: string
+      componentId?: string
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      maximized?: boolean
+    }
+  >
+}
+export interface OpenedProject {
+  id: string
+  fingerprint: string
+  project: Project
+  detected: boolean
+  locked: string[]
+}
 
 export interface ContextSection {
   title: string
@@ -261,6 +346,7 @@ export interface ExtensionBadge {
   tooltip?: string
 }
 export interface RuntimeTerminal {
+  projectId?: string
   componentId: string
   terminal: TerminalSpec
   commandId?: string

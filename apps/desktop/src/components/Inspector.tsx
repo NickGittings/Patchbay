@@ -149,6 +149,23 @@ function ComponentInspector({ node }: { node: FlowNode }) {
               value={t.command}
               onChange={(e) => updateTerminal(id, t.id, { command: e.target.value })}
             />
+            {t.kind === 'agent' && (
+              <label>
+                Conversation adapter
+                <select
+                  value={t.adapter ?? ''}
+                  onChange={(e) =>
+                    updateTerminal(id, t.id, {
+                      adapter: (e.target.value || undefined) as 'claude' | 'codex' | undefined,
+                    })
+                  }
+                >
+                  <option value="">Auto (recognized commands)</option>
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
+            )}
             {t.kind === 'task' && (
               <input
                 className="mono"

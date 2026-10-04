@@ -1,5 +1,6 @@
+import PersistedGroup from '../PersistedGroup'
 import { useEffect, useState } from 'react'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import { componentPaths } from '../../lib/git'
 import { gitChanges } from '../../lib/ipc'
 import { latestChange, lineTotals } from '../../lib/review'
@@ -58,15 +59,15 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       ) : !files.length ? (
         <div className="hint">No uncommitted changes.</div>
       ) : (
-        <Group orientation="vertical" className="changes-split">
-          <Panel defaultSize="35" minSize="15">
+        <PersistedGroup layoutId="ChangesPanel-1" orientation="vertical" className="changes-split">
+          <Panel id="ChangesPanel-pane-1" defaultSize="35" minSize="15">
             <ChangeList files={files} base={base} selected={file?.path} onSelect={setSelected} />
           </Panel>
           <Separator className="separator horizontal" />
-          <Panel defaultSize="65" minSize="20">
+          <Panel id="ChangesPanel-pane-2" defaultSize="65" minSize="20">
             <DiffView componentId={componentId} file={file} revision={revision} />
           </Panel>
-        </Group>
+        </PersistedGroup>
       )}
     </div>
   )

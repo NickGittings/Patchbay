@@ -133,7 +133,7 @@
         .querySelector('.plan-scope pre')
         ?.textContent.includes('**ALPHA** depends on **BETA** — calls'),
     )
-    const sid = '@plan/smoke-planner'
+    const sid = smoke.sessionId('@plan', 'smoke-planner')
     await smoke.startTerminal('@plan', 'smoke-planner')
     await until('planner running', () => state().sessions[sid]?.running)
     await until(
@@ -180,8 +180,11 @@
         b.textContent.includes('Start all'),
       ),
     )
-    await until('start all', () => state().sessions['beta/task']?.running)
-    assert(state().sessions['beta/task'].startedMs > 0, 'session has no start time')
+    await until('start all', () => state().sessions[smoke.sessionId('beta', 'task')]?.running)
+    assert(
+      state().sessions[smoke.sessionId('beta', 'task')].startedMs > 0,
+      'session has no start time',
+    )
     click(
       Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
         b.textContent.includes('Changes'),
@@ -280,11 +283,15 @@
     await smoke.startTerminal('unrelated', 'server')
     await until(
       'agent needing input',
-      () => state().sessions['unrelated/agent']?.status?.agent?.message === 'Allow smoke?',
+      () =>
+        state().sessions[smoke.sessionId('unrelated', 'agent')]?.status?.agent?.message ===
+        'Allow smoke?',
     )
     await until(
       'server URL',
-      () => state().sessions['unrelated/server']?.status?.url === 'http://localhost:9/',
+      () =>
+        state().sessions[smoke.sessionId('unrelated', 'server')]?.status?.url ===
+        'http://localhost:9/',
     )
     const attention = await until('attention menu', () =>
       Array.from(document.querySelectorAll('.attention-button')).find((b) =>
@@ -298,12 +305,12 @@
       () =>
         state().view === 'implementation' &&
         state().selectedId === 'unrelated' &&
-        state().activeSession === 'unrelated/agent' &&
+        state().activeSession === smoke.sessionId('unrelated', 'agent') &&
         document.querySelector('.implementation-view .status-label.health-input'),
     )
-    smoke.stopTerminal('unrelated/server')
+    smoke.stopTerminal(smoke.sessionId('unrelated', 'server'))
     await until('stopped server', () => {
-      const server = state().sessions['unrelated/server']
+      const server = state().sessions[smoke.sessionId('unrelated', 'server')]
       return server && !server.running && server.status?.stopped
     })
     assert(
@@ -313,18 +320,23 @@
       'a stopped task counts as failed',
     )
 
-    smoke.resetSessions(await smoke.terminalReset())
-    state().loadProject({ ...project, name: 'another-project' })
+    const scopeBefore = [...state().highlighted]
+    const plansBefore = { ...state().planStartedWith }
+    state().loadProject(project)
     assert(
-      state().highlighted.length === 0 && Object.keys(state().planStartedWith).length === 0,
-      'project change retains planner scope',
+      JSON.stringify(state().highlighted) === JSON.stringify(scopeBefore),
+      'Reopening a project lost planner scope',
     )
     assert(
-      Object.keys(state().sessions).length === 0 && !textOf(sid),
-      'project change retains planner sessions',
+      JSON.stringify(state().planStartedWith) === JSON.stringify(plansBefore),
+      'Reopening a project lost planner history',
+    )
+    assert(
+      Object.keys(state().sessions).length > 0 && textOf(sid),
+      'Reopening a project lost retained sessions',
     )
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, project reset',
+      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

@@ -3,3 +3,5 @@ node_modules
 dist
 apps/desktop/src-tauri/gen
 .DS_Store
+
+apps/desktop/src-tauri/binaries/

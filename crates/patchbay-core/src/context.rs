@@ -1,9 +1,7 @@
 //! Turns a component's terminal into a launchable session, giving agent
 //! terminals the component's neighbours as context.
 
-use crate::model::{
-    Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec, session_id,
-};
+use crate::model::{Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec};
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
 use anyhow::{Result, anyhow};
@@ -819,7 +817,7 @@ pub fn plan_session_spec(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        id: session_id(PLAN_SCOPE, &terminal.id),
+        id: crate::workspace::session_id(&project.root, PLAN_SCOPE, &terminal.id),
         command,
         cwd: PathBuf::from(&project.root),
         env,
@@ -878,7 +876,7 @@ pub fn session_spec(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
-        id: session_id(component_id, terminal_id),
+        id: crate::workspace::session_id(&project.root, component_id, terminal_id),
         command,
         cwd: project.component_dir(component),
         env,
@@ -911,6 +909,13 @@ pub fn extra_session_spec(
     session_spec(&project, component_id, &terminal_id, policy, sections)
 }
 
+pub(crate) fn launch_words(command: &str) -> Option<Vec<String>> {
+    command_tokens(command, Shell::current())
+}
+pub(crate) fn quote_argument(value: &str) -> String {
+    Shell::current().quote(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +925,7 @@ mod tests {
     #[test]
     fn extra_terminals_launch_in_the_component_and_replace_same_ids() {
         let terminal = TerminalSpec {
+            adapter: None,
             id: "agent".into(),
             name: "Ad hoc".into(),
             command: "echo hi".into(),
@@ -927,11 +933,15 @@ mod tests {
             ready_when: String::new(),
         };
         let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "api/agent");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id("/repo", "api", "agent")
+        );
         assert_eq!(spec.command, "echo hi");
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         assert!(!spec.env.contains_key(CONTEXT_ENV));
         let missing = TerminalSpec {
+            adapter: None,
             id: "x".into(),
             name: "X".into(),
             command: "true".into(),
@@ -963,6 +973,7 @@ mod tests {
                     "api",
                     "services/api",
                     vec![TerminalSpec {
+                        adapter: None,
                         id: "agent".into(),
                         name: "Claude".into(),
                         command: "claude".into(),
@@ -1014,7 +1025,10 @@ mod tests {
     fn claude_gets_neighbour_dirs_and_context() {
         let p = project();
         let spec = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "api/agent");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id(&p.root, "api", "agent")
+        );
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         let neighbour = p.component_dir(&p.components[1]);
         assert!(spec.command.starts_with(&format!(
@@ -1061,6 +1075,7 @@ mod tests {
 
     fn planner() -> TerminalSpec {
         TerminalSpec {
+            adapter: None,
             id: "claude".into(),
             name: "Claude".into(),
             command: "claude".into(),
@@ -1124,7 +1139,10 @@ mod tests {
         let mut p = project();
         p.name = "root-scope-demo".into();
         let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "@plan/claude");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id(&p.root, PLAN_SCOPE, "claude")
+        );
         assert_eq!(spec.cwd, PathBuf::from("/repo"));
         assert_eq!(spec.env[COMPONENT_ENV], "plan");
         assert!(spec.env.contains_key(CONTEXT_ENV));

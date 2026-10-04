@@ -1,18 +1,17 @@
+import { invoke } from '@tauri-apps/api/core'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
 import type { Added } from '../types'
-import { addFolder, openProject, rescanProject, saveProject, terminalReset } from './ipc'
-import { resetSessions } from './sessions'
-import { closeComponentWindows } from './windows'
+import { addFolder, openProject, rescanProject, saveProject } from './ipc'
+import { acceptOpened, projectFromState } from './workspace'
 import { syncCurrentRoots } from './access'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
 
 /**
- * Pick a folder, close the current project's pop-outs and terminals (session ids aren't
- * project-scoped, so no history may carry over), and load the new map.
+ * Pick a folder and select its workspace tab, preserving running work.
  */
 export function useOpenProject() {
   const { fitView } = useReactFlow()
@@ -22,9 +21,7 @@ export function useOpenProject() {
       const opened = await openProject()
       if (!opened) return
       const { project, detected, locked } = opened
-      await closeComponentWindows()
-      resetSessions(await terminalReset())
-      s.loadProject(project)
+      acceptOpened(opened)
       s.setMessage(
         detected
           ? `Detected ${project.components.length} component(s). Review, then Save to create patchbay.json.`
@@ -43,9 +40,22 @@ export function useOpenProject() {
 export async function saveCurrentProject() {
   const s = useStore.getState()
   if (!s.project) return
+  const captured = s.toProject()
   try {
-    const path = await saveProject(s.toProject())
-    s.markSaved()
+    const path = await saveProject(captured)
+    const current = useStore.getState()
+    if (
+      current.project?.id === s.project.id &&
+      JSON.stringify(current.toProject()) === JSON.stringify(captured)
+    )
+      s.markSaved()
+    const fingerprint = await invoke<string>('project_fingerprint', { projectId: s.project.id })
+    useStore.setState((current) => ({
+      projects: {
+        ...current.projects,
+        [s.project!.id]: { ...current.projects[s.project!.id], fingerprint },
+      },
+    }))
     s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`)
   } catch (e) {
     s.setMessage(String(e))
@@ -57,9 +67,15 @@ export async function saveCurrentProject() {
  * folder dialog was open) survive. A component whose id or folder the user took meanwhile is
  * dropped, with its links. Keeps live session and git state. Returns how many were added.
  */
-export function applyAdded(added: Added, none: string): number {
+export function applyAdded(
+  added: Added,
+  none: string,
+  projectId = useStore.getState().activeProjectId,
+): number {
   const s = useStore.getState()
-  const current = s.toProject()
+  const state = projectId ? s.captureProjects()[projectId]?.state : undefined
+  if (!state?.project) return 0
+  const current = projectFromState(state)
   const taken = new Set(current.components.map((c) => c.id))
   const paths = new Set(current.components.map((c) => c.path))
   const components = added.components.filter((c) => !taken.has(c.id) && !paths.has(c.path))
@@ -78,7 +94,7 @@ export function applyAdded(added: Added, none: string): number {
     components: [...current.components, ...components],
     links: [...current.links, ...links],
   })
-  useStore.setState({ dirty: true })
+  if (s.activeProjectId === projectId) useStore.setState({ dirty: true })
   s.setMessage(`Added ${components.length} component(s)`)
   return components.length
 }
@@ -91,7 +107,7 @@ export function useRescanProject() {
     if (!s.project) return
     try {
       const added = await rescanProject(s.toProject())
-      if (applyAdded(added, 'No new components found')) fitSoon(fitView)
+      if (applyAdded(added, 'No new components found', s.project.id)) fitSoon(fitView)
     } catch (e) {
       s.setMessage(String(e))
     }
@@ -107,7 +123,8 @@ export function useAddFolder() {
     try {
       const added = await addFolder(s.toProject())
       if (!added) return
-      if (applyAdded(added, 'Everything in that folder is already on the map')) fitSoon(fitView)
+      if (applyAdded(added, 'Everything in that folder is already on the map', s.project.id))
+        fitSoon(fitView)
       await syncCurrentRoots()
     } catch (e) {
       s.setMessage(String(e))

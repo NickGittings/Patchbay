@@ -83,6 +83,8 @@ pub enum TerminalKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<crate::adapters::Adapter>,
     pub id: String,
     pub name: String,
     /// Empty for an interactive shell.
@@ -333,7 +335,7 @@ fn plain_path(path: &str) -> String {
 
 /// Session ids identify one terminal of one component.
 pub fn session_id(component_id: &str, terminal_id: &str) -> String {
-    format!("{component_id}/{terminal_id}")
+    crate::workspace::session_id("", component_id, terminal_id)
 }
 
 #[cfg(test)]
