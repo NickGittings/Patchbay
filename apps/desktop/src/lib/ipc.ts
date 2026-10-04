@@ -38,13 +38,17 @@ export const gitStatus = (components: { id: string; path: string }[]) =>
 /** Every component on the map is sent so files are attributed as `gitStatus` counts them. */
 export const gitChanges = (components: { id: string; path: string }[], componentId: string) =>
   invoke<ChangedFile[]>('git_changes', { components, componentId })
-/** `path` must be one of the component's changes, relative to the project root. */
+/**
+ * `path` must be one of the component's changes, relative to the project root; `oldPath` is the
+ * one it lists for a rename, so the diff shows the rename.
+ */
 export const gitDiff = (
   components: { id: string; path: string }[],
   componentId: string,
   path: string,
+  oldPath?: string,
   worktree?: string,
-) => invoke<FileDiff>('git_diff', { components, componentId, path, worktree })
+) => invoke<FileDiff>('git_diff', { components, componentId, path, oldPath, worktree })
 /** `worktree` is a path `gitWorktrees` returned; omitted for the open one. */
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, worktree })

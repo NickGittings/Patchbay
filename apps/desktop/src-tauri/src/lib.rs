@@ -414,9 +414,7 @@ async fn git_changes(
             return Ok(Vec::new());
         };
         let components = readable_components(&access, components);
-        Ok(git::changes(&root, &components)
-            .remove(&component_id)
-            .unwrap_or_default())
+        Ok(git::component_changes(&root, &components, &component_id))
     })
     .await
 }
@@ -434,23 +432,28 @@ async fn git_worktrees(state: State<'_, AppState>) -> CmdResult<Vec<git::Worktre
     .await
 }
 
-/// The diff of one of a component's changed files, `path` relative to the
-/// root, in `worktree` (one `git_worktrees` listed) or the open one.
+/// The diff of one of a component's changed files, `path` (and a rename's
+/// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
+/// listed) or the open one.
 #[tauri::command]
 async fn git_diff(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
     component_id: String,
     path: String,
+    old_path: Option<String>,
     worktree: Option<String>,
 ) -> CmdResult<git::FileDiff> {
     let access = state.access.snapshot();
     blocking(move || {
         let root = access.root().ok_or("No project is open")?;
+        let target = git::DiffTarget {
+            component_id: &component_id,
+            path: &path,
+            old_path: old_path.as_deref(),
+        };
         let components = readable_components(&access, components);
-        let (root, components) =
-            git::in_worktree(&root, components, worktree.as_deref()).map_err(err)?;
-        git::diff(&root, &components, &component_id, &path).map_err(err)
+        git::diff(&root, components, worktree.as_deref(), target).map_err(err)
     })
     .await
 }
@@ -475,14 +478,8 @@ async fn git_review(
             })
             .collect();
         // Only folders readable in the open worktree are mapped into another.
-        let (root, components) = git::in_worktree(
-            Path::new(&project.root),
-            readable_components(&access, folders),
-            worktree.as_deref(),
-        )
-        .map_err(err)?;
-        project.root = root.to_string_lossy().into_owned();
-        Ok(git::review(&project, &components))
+        let components = readable_components(&access, folders);
+        git::review(&project, components, worktree.as_deref()).map_err(err)
     })
     .await
 }

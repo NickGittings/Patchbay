@@ -2,14 +2,15 @@
 //! of repos, or repos added from elsewhere), so components are grouped by the
 //! repo that contains them and each repo is queried once.
 
-use crate::model::{PROJECT_SCOPE, Project, relative_path};
+use crate::model::{PROJECT_SCOPE, Project, normalize, relative_path};
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 /// The nearest folder at or above `dir` containing `.git` (a directory, or a
@@ -33,6 +34,21 @@ pub struct RepoGroup {
     /// `(component id, folder prefix within the repo)`; the prefix is empty for
     /// the repo root and otherwise ends in `/`.
     pub members: Vec<(String, String)>,
+}
+
+impl RepoGroup {
+    /// Pathspecs limiting a query to the members' folders, so a component (or
+    /// the project scope) deep inside a large repo doesn't scan all of it.
+    /// Empty, meaning the whole repo, when a member sits at the repo root.
+    fn pathspecs(&self) -> Vec<String> {
+        if self.members.iter().any(|(_, prefix)| prefix.is_empty()) {
+            return Vec::new();
+        }
+        self.members
+            .iter()
+            .map(|(_, prefix)| prefix.trim_end_matches('/').to_string())
+            .collect()
+    }
 }
 
 /// Group components, given as `(id, canonical folder)`, by containing repo.
@@ -149,7 +165,7 @@ impl Entry {
             .then(|| modified_ms(&abs))
             .flatten();
         let (added, removed) = if self.kind == ChangeKind::Untracked {
-            (count_lines(&abs), Some(0))
+            (cached_line_count(&abs), Some(0))
         } else {
             counts
                 .get(&self.path)
@@ -174,6 +190,34 @@ fn modified_ms(path: &Path) -> Option<u64> {
     u64::try_from(since.as_millis()).ok()
 }
 
+/// Line counts of untracked files by path, with the size and mtime they were
+/// counted at, so refreshes don't re-read files that haven't changed.
+type LineCache = HashMap<PathBuf, (u64, Option<SystemTime>, Option<u32>)>;
+static LINE_CACHE: LazyLock<Mutex<LineCache>> = LazyLock::new(Mutex::default);
+/// Past this many entries the cache is dropped rather than tracked per entry.
+const LINE_CACHE_LIMIT: usize = 20_000;
+
+/// [`count_lines`], reusing the last count while the file's size and mtime
+/// are unchanged.
+fn cached_line_count(path: &Path) -> Option<u32> {
+    let meta = path.symlink_metadata().ok()?;
+    let stamp = (meta.len(), meta.modified().ok());
+    if let Ok(cache) = LINE_CACHE.lock()
+        && let Some(&(len, modified, lines)) = cache.get(path)
+        && (len, modified) == stamp
+    {
+        return lines;
+    }
+    let lines = count_lines(path);
+    if let Ok(mut cache) = LINE_CACHE.lock() {
+        if cache.len() >= LINE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), (stamp.0, stamp.1, lines));
+    }
+    lines
+}
+
 /// Lines in an untracked regular file, or `None` for a binary file, one
 /// larger than [`MAX_DIFF_BYTES`], or anything else (a symlink or a FIFO).
 fn count_lines(path: &Path) -> Option<u32> {
@@ -196,19 +240,19 @@ fn count_lines(path: &Path) -> Option<u32> {
 
 /// Run `query` for every group's repo at once (in parallel, so many sibling
 /// repos don't add up to one long refresh). `None` where it panicked.
-fn per_repo<T: Send>(groups: &[RepoGroup], query: impl Fn(&Path) -> T + Sync) -> Vec<Option<T>> {
+fn per_repo<T: Send>(
+    groups: &[RepoGroup],
+    query: impl Fn(&RepoGroup) -> T + Sync,
+) -> Vec<Option<T>> {
     std::thread::scope(|scope| {
-        let handles: Vec<_> = groups
-            .iter()
-            .map(|g| scope.spawn(|| query(&g.root)))
-            .collect();
+        let handles: Vec<_> = groups.iter().map(|g| scope.spawn(|| query(g))).collect();
         handles.into_iter().map(|h| h.join().ok()).collect()
     })
 }
 
 /// Run `git status` for every group. `None` where git failed.
 fn query_groups(groups: &[RepoGroup]) -> Vec<Option<Vec<Entry>>> {
-    per_repo(groups, changed_entries)
+    per_repo(groups, |g| changed_entries(&g.root, &g.pathspecs()))
         .into_iter()
         .map(Option::flatten)
         .collect()
@@ -265,8 +309,34 @@ pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
 /// a repo get a (possibly empty) list sorted by path; the rest are absent.
 #[must_use]
 pub fn changes(root: &Path, components: &[(String, PathBuf)]) -> HashMap<String, Vec<ChangedFile>> {
-    let groups = group_by_repo(&with_project_scope(root, components));
-    let results = per_repo(&groups, |repo| (changed_entries(repo), line_counts(repo)));
+    changes_in(root, &group_by_repo(&with_project_scope(root, components)))
+}
+
+/// One component's [`changes`]. Only the repo containing it is queried, but
+/// with every component of that repo, so files are attributed the same way.
+#[must_use]
+pub fn component_changes(
+    root: &Path,
+    components: &[(String, PathBuf)],
+    component_id: &str,
+) -> Vec<ChangedFile> {
+    let groups: Vec<RepoGroup> = group_by_repo(&with_project_scope(root, components))
+        .into_iter()
+        .filter(|g| g.members.iter().any(|(id, _)| id == component_id))
+        .collect();
+    changes_in(root, &groups)
+        .remove(component_id)
+        .unwrap_or_default()
+}
+
+fn changes_in(root: &Path, groups: &[RepoGroup]) -> HashMap<String, Vec<ChangedFile>> {
+    let results = per_repo(groups, |g| {
+        let pathspecs = g.pathspecs();
+        (
+            changed_entries(&g.root, &pathspecs),
+            line_counts(&g.root, &pathspecs),
+        )
+    });
     let mut out: HashMap<String, Vec<ChangedFile>> = HashMap::new();
     for (group, result) in groups.iter().zip(results) {
         let Some((Some(entries), counts)) = result else {
@@ -307,12 +377,20 @@ pub struct Review {
 }
 
 /// [`changes`] for `components` (`(id, canonical folder)`, only folders the
-/// user allowed), plus the components of `project` that depend on a changed
-/// one. Those can include components not in `components`, since that only
-/// reads the map.
-#[must_use]
-pub fn review(project: &Project, components: &[(String, PathBuf)]) -> Review {
-    let changes = changes(Path::new(&project.root), components);
+/// user allowed) in `worktree` (see [`in_worktree`]), plus the components of
+/// `project` that depend on a changed one. Those can include components not
+/// in `components`, since that only reads the map.
+///
+/// # Errors
+/// Fails if `worktree` isn't one of the project repo's worktrees, or the
+/// project folder doesn't exist in it.
+pub fn review(
+    project: &Project,
+    components: Vec<(String, PathBuf)>,
+    worktree: Option<&str>,
+) -> Result<Review> {
+    let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
+    let changes = changes(&root, &components);
     let mut changed: Vec<String> = changes
         .iter()
         .filter(|(id, files)| !files.is_empty() && id.as_str() != PROJECT_SCOPE)
@@ -324,35 +402,61 @@ pub fn review(project: &Project, components: &[(String, PathBuf)]) -> Review {
         .into_iter()
         .map(|(id, via)| Affected { id, via })
         .collect();
-    Review { changes, affected }
+    Ok(Review { changes, affected })
 }
 
-/// The diff against `HEAD` of `path` (relative to the project root), which
-/// must be one of `component_id`'s [`changes`]: only listed paths are read, so
-/// the webview can't use this to read arbitrary files. Untracked files diff as
-/// fully added; in a repo without commits everything diffs against the empty
-/// tree. External diff drivers and textconv filters are off, since they would
-/// run commands a repo's config names.
+/// Which changed file to diff: `path` (relative to the project root) as
+/// listed by [`changes`] for `component_id`, with the `old_path` it lists for
+/// a rename, so the rename is detected.
+#[derive(Debug, Clone, Copy)]
+pub struct DiffTarget<'a> {
+    pub component_id: &'a str,
+    pub path: &'a str,
+    pub old_path: Option<&'a str>,
+}
+
+/// The diff against `HEAD` of a changed file in `worktree` (see
+/// [`in_worktree`]). The file must be one of the component's [`changes`]:
+/// only listed paths are read, so the webview can't use this to read
+/// arbitrary files. Untracked files diff as fully added; in a repo without
+/// commits everything diffs against the empty tree. External diff drivers and
+/// textconv filters are off, since they would run commands a repo's config
+/// names.
 ///
 /// # Errors
-/// Fails if the component isn't in a repo, `path` isn't one of its changes, or
-/// git fails.
+/// Fails if `worktree` isn't usable, the component isn't in a repo, the path
+/// isn't one of its changes, or git fails.
 pub fn diff(
     root: &Path,
-    components: &[(String, PathBuf)],
-    component_id: &str,
-    path: &str,
+    components: Vec<(String, PathBuf)>,
+    worktree: Option<&str>,
+    target: DiffTarget<'_>,
 ) -> Result<FileDiff> {
-    let group = group_by_repo(&with_project_scope(root, components))
+    let (root, components) = in_worktree(root, components, worktree)?;
+    let DiffTarget {
+        component_id,
+        path,
+        old_path,
+    } = target;
+    let group = group_by_repo(&with_project_scope(&root, &components))
         .into_iter()
         .find(|g| g.members.iter().any(|(id, _)| id == component_id))
         .ok_or_else(|| anyhow!("This component isn't in a git repo"))?;
-    let entry = changed_entries(&group.root)
+    let not_listed = || anyhow!("{path} has no uncommitted changes");
+    // Ask git about just this file (and its rename source), not the whole repo.
+    let in_repo = |p: &str| {
+        let abs = normalize(&root.join(p));
+        (abs != group.root && abs.starts_with(&group.root))
+            .then(|| relative_path(&group.root, &abs))
+    };
+    let mut pathspecs = vec![in_repo(path).ok_or_else(not_listed)?];
+    pathspecs.extend(old_path.and_then(in_repo));
+    let entry = changed_entries(&group.root, &pathspecs)
         .ok_or_else(|| anyhow!("git status failed"))?
         .into_iter()
         .filter(|e| owner_of(&e.path, &group.members) == Some(component_id))
-        .find(|e| relative_path(root, &group.root.join(&e.path)) == path)
-        .ok_or_else(|| anyhow!("{path} has no uncommitted changes"))?;
+        .find(|e| relative_path(&root, &group.root.join(&e.path)) == path)
+        .ok_or_else(not_listed)?;
     let repo = &group.root;
     let mut args: Vec<String> = ["diff", "--no-ext-diff", "--no-textconv", "--no-color"]
         .map(String::from)
@@ -371,8 +475,9 @@ pub fn diff(
 
 /// Lines added and removed per changed tracked path (relative to `repo`, the
 /// new path for a rename), from one `git diff --numstat` against `HEAD`, like
-/// [`diff`] compares. Binary files are absent; so is everything if git fails.
-fn line_counts(repo: &Path) -> HashMap<String, (u32, u32)> {
+/// [`diff`] compares, limited to `pathspecs` (none for the whole repo).
+/// Binary files are absent; so is everything if git fails.
+fn line_counts(repo: &Path, pathspecs: &[String]) -> HashMap<String, (u32, u32)> {
     let Ok(base) = base_tree(repo) else {
         return HashMap::new();
     };
@@ -387,6 +492,7 @@ fn line_counts(repo: &Path) -> HashMap<String, (u32, u32)> {
             &base,
             "--",
         ])
+        .args(pathspecs)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output();
@@ -612,28 +718,45 @@ fn run_capped(repo: &Path, args: &[String], ok: &[i32]) -> Result<FileDiff> {
 
 /// `git -C repo` with fsmonitor off, so refreshes and review never start a
 /// hook or daemon, and without optional locks, so they never rewrite the
-/// index (which would wake the watcher again).
+/// index (which would wake the watcher again). Pathspecs are literal, so
+/// folder and file names like `[id]` match only themselves.
 fn git(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(repo)
-        .args(["-c", "core.fsmonitor=false", "--no-optional-locks"]);
+    cmd.arg("-C").arg(repo).args([
+        "-c",
+        "core.fsmonitor=false",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+    ]);
     cmd
 }
 
 /// Paths with uncommitted changes, relative to `repo`.
 #[cfg(test)]
 fn changed_paths(repo: &Path) -> Option<Vec<String>> {
-    Some(changed_entries(repo)?.into_iter().map(|e| e.path).collect())
+    Some(
+        changed_entries(repo, &[])?
+            .into_iter()
+            .map(|e| e.path)
+            .collect(),
+    )
 }
 
-/// Uncommitted changes, relative to `repo`. Nested repos and submodules are
-/// skipped: they are counted as their own repo. Like `git status` in a
-/// terminal this still honours the repo's own config (filters, for one), so
-/// callers must pass only folders the user opened or allowed.
-fn changed_entries(repo: &Path) -> Option<Vec<Entry>> {
+/// Uncommitted changes, relative to `repo`, limited to `pathspecs` (none for
+/// the whole repo). Nested repos and submodules are skipped: they are counted
+/// as their own repo. Like `git status` in a terminal this still honours the
+/// repo's own config (filters, for one), so callers must pass only folders
+/// the user opened or allowed.
+fn changed_entries(repo: &Path, pathspecs: &[String]) -> Option<Vec<Entry>> {
     let output = git(repo)
-        .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+        .args([
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--",
+        ])
+        .args(pathspecs)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -651,7 +774,8 @@ fn kind_of(xy: &str) -> ChangeKind {
     let (x, y) = (letters.next(), letters.next());
     match (x, y) {
         (_, Some('D')) | (Some('D'), _) => ChangeKind::Deleted,
-        (Some('A' | 'C'), _) => ChangeKind::Added,
+        // `.A` is an intent-to-add file (`git add -N`), also absent from HEAD.
+        (Some('A' | 'C'), _) | (_, Some('A')) => ChangeKind::Added,
         (Some('R'), _) => ChangeKind::Renamed,
         (Some('T'), _) | (_, Some('T')) => ChangeKind::TypeChanged,
         _ => ChangeKind::Modified,
@@ -661,8 +785,12 @@ fn kind_of(xy: &str) -> ChangeKind {
 /// Changes from `git status --porcelain=v2 -z` output. Submodules are
 /// dropped, as are untracked folders (`dir/`, how git lists a nested repo) for
 /// which `is_repo` holds; only those few entries cost a filesystem check.
+/// A path is listed once: after `git rm --cached` git reports it both as a
+/// staged deletion and as untracked, and the deletion (listed first) is what
+/// a diff against `HEAD` shows.
 fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
-    let mut entries = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut seen = HashSet::new();
     let mut records = out.split('\0');
     while let Some(record) = records.next() {
         // Tracked entries: "<kind> <XY> <sub> ..." with the path as the last field.
@@ -675,6 +803,7 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
                 let path = &record[2..];
                 match path.strip_suffix('/') {
                     Some(dir) if is_repo(dir) => {}
+                    _ if !seen.insert(path) => {}
                     _ => entries.push(Entry {
                         path: path.to_string(),
                         kind: ChangeKind::Untracked,
@@ -687,6 +816,9 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
         };
         let parts: Vec<&str> = record.splitn(fields, ' ').collect();
         if parts.len() != fields || parts[2].starts_with('S') {
+            continue;
+        }
+        if !seen.insert(parts[fields - 1]) {
             continue;
         }
         let kind = if fields == 11 {
@@ -762,6 +894,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// [`diff`] of a listed file in the open worktree.
+    fn d(root: &Path, c: &[(String, PathBuf)], id: &str, path: &str) -> Result<FileDiff> {
+        renamed_diff(root, c, id, path, None)
+    }
+
+    fn renamed_diff(
+        root: &Path,
+        c: &[(String, PathBuf)],
+        id: &str,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> Result<FileDiff> {
+        let target = DiffTarget {
+            component_id: id,
+            path,
+            old_path,
+        };
+        diff(root, c.to_vec(), None, target)
     }
 
     fn components(root: &Path, components: &[(&str, &str)]) -> Vec<(String, PathBuf)> {
@@ -890,6 +1042,69 @@ mod tests {
         assert_eq!(kind_of("D."), ChangeKind::Deleted);
         assert_eq!(kind_of("R."), ChangeKind::Renamed);
         assert_eq!(kind_of(".T"), ChangeKind::TypeChanged);
+        assert_eq!(kind_of(".A"), ChangeKind::Added);
+    }
+
+    #[test]
+    fn a_path_both_deleted_and_untracked_is_listed_once() {
+        let out = "1 D. N... 100644 000000 000000 abc 000 .env\0? .env\0";
+        let entries = parse_porcelain_v2(out, |_| false);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, ChangeKind::Deleted);
+
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        assert!(run_git(&f.0, &["rm", "-q", "--cached", "README"]));
+        let c = components(&f.0, &[("root", ".")]);
+        let all = changes(&f.0, &c);
+        assert_eq!(all["root"].len(), 1);
+        assert_eq!(all["root"][0].kind, ChangeKind::Deleted);
+        assert!(d(&f.0, &c, "root", "README").unwrap().patch.contains("-hi"));
+    }
+
+    #[test]
+    fn project_scope_inside_a_larger_repo_only_queries_the_project_folder() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("elsewhere/big.txt", "x");
+        f.write("code/parent/notes.md", "n");
+        f.write("code/parent/[id]/page.tsx", "p");
+        let root = f.0.join("code/parent");
+        let all = changes(&root, &[]);
+        let paths: Vec<&str> = all[PROJECT_SCOPE].iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["[id]/page.tsx", "notes.md"]);
+        assert!(!all.contains_key("elsewhere"));
+        assert!(d(&root, &[], PROJECT_SCOPE, "[id]/page.tsx").is_ok());
+        assert!(d(&root, &[], PROJECT_SCOPE, "../../elsewhere/big.txt").is_err());
+    }
+
+    #[test]
+    fn component_changes_only_lists_that_component() {
+        let f = Fixture::new();
+        if !(f.repo("web") && f.repo("api")) {
+            return;
+        }
+        f.write("web/a.ts", "x");
+        f.write("api/b.py", "y");
+        let c = components(&f.0, &[("web", "web"), ("api", "api")]);
+        let web = component_changes(&f.0, &c, "web");
+        assert_eq!(web.len(), 1);
+        assert_eq!(web[0].path, "web/a.ts");
+        assert!(component_changes(&f.0, &c, "missing").is_empty());
+    }
+
+    #[test]
+    fn untracked_line_counts_follow_edits() {
+        let f = Fixture::new();
+        f.write("a.txt", "one\n");
+        let path = f.0.join("a.txt");
+        assert_eq!(cached_line_count(&path), Some(1));
+        f.write("a.txt", "one\ntwo\nthree\n");
+        assert_eq!(cached_line_count(&path), Some(3));
     }
 
     /// Run git in `dir` with a throwaway identity; false if it failed.
@@ -951,11 +1166,11 @@ mod tests {
         f.write("README", "bye");
         f.write("new.txt", "fresh\n");
         let c = components(&f.0, &[("root", ".")]);
-        let modified = diff(&f.0, &c, "root", "README").unwrap();
+        let modified = d(&f.0, &c, "root", "README").unwrap();
         assert!(modified.patch.contains("-hi"), "{}", modified.patch);
         assert!(modified.patch.contains("+bye"), "{}", modified.patch);
         assert!(!modified.binary && !modified.truncated);
-        let added = diff(&f.0, &c, "root", "new.txt").unwrap();
+        let added = d(&f.0, &c, "root", "new.txt").unwrap();
         assert!(added.patch.contains("+fresh"), "{}", added.patch);
 
         f.write("README", "hi");
@@ -963,7 +1178,9 @@ mod tests {
         let renamed = &changes(&f.0, &c)["root"];
         assert_eq!(renamed[0].kind, ChangeKind::Renamed);
         assert_eq!(renamed[0].old_path.as_deref(), Some("README"));
-        let patch = diff(&f.0, &c, "root", "README.md").unwrap().patch;
+        let patch = renamed_diff(&f.0, &c, "root", "README.md", Some("README"))
+            .unwrap()
+            .patch;
         assert!(patch.contains("rename from README"), "{patch}");
     }
 
@@ -975,11 +1192,11 @@ mod tests {
         }
         f.write("apps/web/a.ts", "x");
         let c = components(&f.0, &[("root", "."), ("web", "apps/web")]);
-        assert!(diff(&f.0, &c, "root", "README").is_err());
-        assert!(diff(&f.0, &c, "root", "/etc/passwd").is_err());
+        assert!(d(&f.0, &c, "root", "README").is_err());
+        assert!(d(&f.0, &c, "root", "/etc/passwd").is_err());
         // Listed, but owned by the nested component.
-        assert!(diff(&f.0, &c, "root", "apps/web/a.ts").is_err());
-        assert!(diff(&f.0, &c, "web", "apps/web/a.ts").is_ok());
+        assert!(d(&f.0, &c, "root", "apps/web/a.ts").is_err());
+        assert!(d(&f.0, &c, "web", "apps/web/a.ts").is_ok());
     }
 
     #[test]
@@ -992,9 +1209,9 @@ mod tests {
         fs::write(f.0.join("blob.bin"), [0u8, 159, 146, 150, 0, 1]).unwrap();
         assert!(run_git(&f.0, &["add", "."]));
         let c = components(&f.0, &[("root", ".")]);
-        let text = diff(&f.0, &c, "root", "a.txt").unwrap();
+        let text = d(&f.0, &c, "root", "a.txt").unwrap();
         assert!(text.patch.contains("+one"), "{}", text.patch);
-        assert!(diff(&f.0, &c, "root", "blob.bin").unwrap().binary);
+        assert!(d(&f.0, &c, "root", "blob.bin").unwrap().binary);
     }
 
     #[test]
@@ -1016,7 +1233,7 @@ mod tests {
         }))
         .unwrap();
         let c = components(&f.0, &[("lib", "lib"), ("app", "app")]);
-        let r = review(&project, &c);
+        let r = review(&project, c.clone(), None).unwrap();
         assert_eq!(r.changes["lib"].len(), 1);
         assert!(r.changes["app"].is_empty());
         assert_eq!(
@@ -1036,7 +1253,7 @@ mod tests {
         }
         f.write("big.txt", &"line of text\n".repeat(MAX_DIFF_BYTES / 8));
         let c = components(&f.0, &[("root", ".")]);
-        let big = diff(&f.0, &c, "root", "big.txt").unwrap();
+        let big = d(&f.0, &c, "root", "big.txt").unwrap();
         assert!(big.truncated);
         assert_eq!(big.patch.len(), MAX_DIFF_BYTES);
     }
@@ -1059,12 +1276,12 @@ mod tests {
         assert_eq!((web[0].added, web[0].removed), (Some(3), Some(0)));
         assert_eq!(status(&f.0, &c).changes.get(PROJECT_SCOPE), Some(&1));
         assert!(
-            diff(&f.0, &c, PROJECT_SCOPE, "README")
+            d(&f.0, &c, PROJECT_SCOPE, "README")
                 .unwrap()
                 .patch
                 .contains("+two")
         );
-        assert!(diff(&f.0, &c, PROJECT_SCOPE, "apps/web/new.ts").is_err());
+        assert!(d(&f.0, &c, PROJECT_SCOPE, "apps/web/new.ts").is_err());
 
         let project = Project {
             schema_version: crate::model::SCHEMA_VERSION,
@@ -1073,7 +1290,12 @@ mod tests {
             components: Vec::new(),
             links: Vec::new(),
         };
-        assert!(review(&project, &c).affected.is_empty());
+        assert!(
+            review(&project, c.clone(), None)
+                .unwrap()
+                .affected
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1155,12 +1377,19 @@ mod tests {
         // The current worktree is unchanged.
         assert!(changes(&main, &c)["web"].is_empty());
         let (root, mapped) = in_worktree(&main, c.clone(), Some(&wt.path)).unwrap();
+        let target = DiffTarget {
+            component_id: "web",
+            path: "apps/web/a.ts",
+            old_path: None,
+        };
+        let through = diff(&main, c.clone(), Some(&wt.path), target).unwrap();
+        assert!(through.patch.contains("+y"), "{}", through.patch);
         assert_eq!(root, wt_dir.canonicalize().unwrap());
         let all = changes(&root, &mapped);
         assert_eq!(all["web"][0].path, "apps/web/a.ts");
         assert_eq!(all[PROJECT_SCOPE][0].path, "notes.md");
         assert!(
-            diff(&root, &mapped, "web", "apps/web/a.ts")
+            d(&root, &mapped, "web", "apps/web/a.ts")
                 .unwrap()
                 .patch
                 .contains("+y")

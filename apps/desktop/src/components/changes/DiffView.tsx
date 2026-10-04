@@ -49,28 +49,31 @@ export default function DiffView({
   worktree?: string
 }) {
   const path = file?.path
+  const oldPath = file?.oldPath
   const [diff, setDiff] = useState<{ key: string; diff: FileDiff } | null>(null)
-  const [error, setError] = useState('')
+  // Keyed like the diff, so one file's error never shows under another's header.
+  const [failure, setFailure] = useState<{ key: string; error: string } | null>(null)
   const key = `${worktree ?? ''}\0${path ?? ''}`
   useEffect(() => {
     if (!path) return
     let disposed = false
-    void gitDiff(componentPaths(), componentId, path, worktree)
+    void gitDiff(componentPaths(), componentId, path, oldPath, worktree)
       .then((d) => {
         if (!disposed) {
           setDiff({ key, diff: d })
-          setError('')
+          setFailure(null)
         }
       })
       .catch((e) => {
-        if (!disposed) setError(String(e))
+        if (!disposed) setFailure({ key, error: String(e) })
       })
     return () => {
       disposed = true
     }
-  }, [componentId, path, worktree, key, revision])
+  }, [componentId, path, oldPath, worktree, key, revision])
 
   const loaded = diff?.key === key ? diff.diff : null
+  const error = failure?.key === key ? failure.error : ''
   const parsed = useMemo(
     () => (loaded && !loaded.binary ? parsePatch(loaded.patch) : null),
     [loaded],
