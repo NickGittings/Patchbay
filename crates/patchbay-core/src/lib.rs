@@ -12,6 +12,7 @@ pub mod git;
 pub mod model;
 pub mod policy;
 pub mod pty;
+pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};
 pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalSpec};

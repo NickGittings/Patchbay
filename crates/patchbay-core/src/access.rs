@@ -20,6 +20,7 @@ pub struct AccessSnapshot {
     root: Option<PathBuf>,
     granted: Vec<PathBuf>,
     roots: Vec<PathBuf>,
+    watch_roots: Vec<PathBuf>,
     paths: Vec<String>,
     revision: u64,
 }
@@ -35,6 +36,13 @@ impl Access {
         self.state.lock().unwrap().roots.clone()
     }
 
+    /// Approved component folders, including nested folders that enclosing
+    /// repositories may ignore. Keep these as independent watcher entry points.
+    #[must_use]
+    pub fn watch_roots(&self) -> Vec<PathBuf> {
+        self.state.lock().unwrap().watch_roots.clone()
+    }
+
     /// Reset permissions for a project opened by a trusted picker.
     ///
     /// # Errors
@@ -47,7 +55,8 @@ impl Access {
             state.revision += 1;
             state.root = Some(root.clone());
             state.granted.clear();
-            state.roots = vec![root];
+            state.roots = vec![root.clone()];
+            state.watch_roots = vec![root];
             state.paths = project.components.iter().map(|c| c.path.clone()).collect();
         }
         self.refresh();
@@ -94,18 +103,22 @@ impl Access {
                 return;
             };
             let mut roots = vec![root.clone()];
+            let mut watch_roots = roots.clone();
             for path in &snapshot.paths {
-                if let Some(dir) = snapshot.readable(path)
-                    && !dir.starts_with(&root)
-                    && !roots.contains(&dir)
-                {
-                    roots.push(dir);
+                if let Some(dir) = snapshot.readable(path) {
+                    if !dir.starts_with(&root) && !roots.contains(&dir) {
+                        roots.push(dir.clone());
+                    }
+                    if !watch_roots.contains(&dir) {
+                        watch_roots.push(dir);
+                    }
                 }
             }
             let mut state = self.state.lock().unwrap();
             // A newer map, grant, or opened project wins over an in-flight scan.
             if state.revision == snapshot.revision {
                 state.roots = roots;
+                state.watch_roots = watch_roots;
                 return;
             }
         }
@@ -301,6 +314,30 @@ mod tests {
         assert!(files::list_dir(&access.roots(), Path::new("../billing")).is_err());
         access.sync(vec![".".into()]);
         assert!(files::list_dir(&access.roots(), Path::new("../billing/api")).is_err());
+    }
+
+    #[test]
+    fn watch_roots_include_internal_components_and_only_approved_external_components() {
+        let fixture = Fixture::new();
+        let mut project = fixture.project();
+        fs::create_dir_all(fixture.0.join("shop/child/src")).unwrap();
+        project.components.push(component("child", "child/src"));
+        let access = Access::default();
+        access.open(&project).unwrap();
+        let shop = fixture.0.join("shop");
+        assert_eq!(access.roots(), vec![shop.clone()]);
+        assert_eq!(
+            access.watch_roots(),
+            vec![shop.clone(), shop.join("child/src")]
+        );
+        access.grant(&fixture.0.join("billing/api")).unwrap();
+        assert!(
+            access
+                .watch_roots()
+                .contains(&fixture.0.join("billing/api"))
+        );
+        access.sync(vec![".".into(), "../secret".into()]);
+        assert_eq!(access.watch_roots(), vec![shop]);
     }
 
     #[test]

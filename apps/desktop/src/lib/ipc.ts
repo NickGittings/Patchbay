@@ -12,6 +12,8 @@ import type {
   TerminalSpec,
 } from '../types'
 
+export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
+
 /** Backend folder picker; may also ask whether external folders may be read. */
 export const openProject = () =>
   invoke<{ project: Project; detected: boolean; locked: string[] } | null>('open_project')

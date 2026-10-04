@@ -2,6 +2,7 @@ import { useStore } from '../store'
 import { PLAN_SCOPE, sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
 import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
 import { planTerminals } from './plan'
+import { requestGitRefresh } from './git'
 import { disposeAll, replayOutput, restoreOutput, writeNote, writeOutput } from './terminals'
 
 /**
@@ -136,6 +137,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
     case 'exited':
       if (!s.sessions[e.sessionId]?.running && s.sessions[e.sessionId]?.exitCode === e.exitCode)
         break
+      void requestGitRefresh()
       s.setSession(e.sessionId, { running: false, exitCode: e.exitCode })
       writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
       break

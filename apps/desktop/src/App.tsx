@@ -1,5 +1,6 @@
 import { ReactFlowProvider } from '@xyflow/react'
 import { useEffect } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Hierarchy from './components/Hierarchy'
@@ -8,41 +9,29 @@ import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { gitStatus, listDevices } from './lib/ipc'
+import { GIT_DIRTY_EVENT, listDevices } from './lib/ipc'
+import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
 
-const GIT_POLL_MS = 5000
-
-/**
- * Poll uncommitted changes per component (across every repo on the map) while a project is open.
- * The next poll is scheduled only once the last one finishes, so slow repos can't pile up git
- * processes, and results arriving after the project changed are dropped.
- */
-function useGitPolling() {
-  const root = useStore((s) => s.project?.root)
+/** Refresh on project changes, file mutations and focus in any app window. */
+function useGitRefresh() {
+  const project = useStore((s) => s.project)
   useEffect(() => {
-    if (!root) return
+    if (!project) return
     let stopped = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async () => {
-      const s = useStore.getState()
-      try {
-        const status = await gitStatus(s.nodes.map((n) => ({ id: n.id, path: n.data.path })))
-        if (!stopped) useStore.getState().setGitStatus(status)
-      } catch {
-        // Not a repo, or git missing: leave the last status as is.
-      }
-      if (!stopped) timer = setTimeout(() => void poll(), GIT_POLL_MS)
-    }
-    void poll()
+    const unlisten = listen(GIT_DIRTY_EVENT, () => {
+      if (!stopped) void requestGitRefresh()
+    })
+    void unlisten.catch((e) => useStore.getState().setMessage(String(e)))
     return () => {
       stopped = true
-      clearTimeout(timer)
+      invalidateGitRefresh()
+      void unlisten.then((stop) => stop()).catch(() => {})
     }
-  }, [root])
+  }, [project])
 }
 
 /** Keep the backend's readable folders in step with the component folders on the map. */
@@ -61,7 +50,7 @@ function useRootSync() {
         return
       last = s.nodes.map((n) => n.data.path)
       clearTimeout(timer)
-      timer = setTimeout(() => void syncCurrentRoots().catch(() => {}), 150)
+      timer = setTimeout(() => void syncCurrentRoots(false).catch(() => {}), 150)
     })
     return () => {
       unsubscribe()
@@ -77,7 +66,7 @@ export default function App() {
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
     return syncComponentWindows()
   }, [])
-  useGitPolling()
+  useGitRefresh()
   useRootSync()
 
   return (

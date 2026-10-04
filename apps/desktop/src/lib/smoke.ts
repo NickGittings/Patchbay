@@ -6,11 +6,15 @@ import { resetSessions, startTerminal } from './sessions'
 import { terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
+import { requestGitRefresh } from './git'
+import { syncCurrentRoots } from './access'
 
 const hooks = {
   store: useStore,
   openProject,
   applyAdded,
+  requestGitRefresh,
+  syncCurrentRoots,
   startTerminal,
   terminalReset,
   resetSessions,
