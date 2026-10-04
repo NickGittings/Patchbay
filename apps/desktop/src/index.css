@@ -360,9 +360,12 @@ select:focus {
   justify-content: flex-end;
 }
 .toolbar .attention {
+  flex: 0 1 auto;
   min-width: 0;
 }
-.toolbar .attention-button {
+.toolbar .attention .attention-button {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
 }
 .attention-summary {

@@ -1,6 +1,13 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+} from 'react'
 
-const CloseMenu = createContext<() => void>(() => {})
+import { CloseMenu, MenuOpen } from './menuContext'
 
 const items = (list: HTMLElement | null) =>
   Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
@@ -55,7 +62,7 @@ export default function Menu({
     const active = document.activeElement
     previous.current = keyboard
       ? trigger.current
-      : active instanceof HTMLElement && active !== document.body && !active.closest('.menu')
+      : active instanceof HTMLElement && active !== document.body && !active.closest('.menu-list')
         ? active
         : null
     setOpen({ keyboard })
@@ -83,18 +90,23 @@ export default function Menu({
     if (open.keyboard) items(listEl)[0]?.focus()
     else listEl?.focus()
     // A press outside closes the menu without swallowing it, so the next control still gets it;
-    // presses in frames or other windows blur this one.
+    // presses in frames or other windows blur this one. Pressing another menu's trigger hands
+    // focus back first, so that menu can return it to the same place.
     const onPointer = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) closeRef.current(false)
+      const target = e.target as Element
+      if (root.current?.contains(target)) return
+      closeRef.current(!!target.closest?.('.menu-trigger'))
     }
     const onBlur = () => closeRef.current(true)
     // If the focused item went away (an attention item resolved), focus is nowhere, so the menu
     // no longer hears keys; listening on the window then takes nothing from anyone.
     const onStrandedKey = (e: KeyboardEvent) => {
       if (document.activeElement !== document.body) return
+      if (e.key !== 'Escape' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      e.preventDefault()
+      e.stopPropagation()
       if (e.key === 'Escape') closeRef.current(true)
-      else if (e.key === 'ArrowDown') move(items(listEl), 1)
-      else if (e.key === 'ArrowUp') move(items(listEl), -1)
+      else move(items(listEl), e.key === 'ArrowDown' ? 1 : -1)
     }
     window.addEventListener('pointerdown', onPointer, true)
     window.addEventListener('blur', onBlur)
@@ -165,7 +177,9 @@ export default function Menu({
           tabIndex={-1}
           hidden={!open}
         >
-          <CloseMenu.Provider value={() => close(true)}>{children}</CloseMenu.Provider>
+          <MenuOpen.Provider value={!!open}>
+            <CloseMenu.Provider value={() => close(true)}>{children}</CloseMenu.Provider>
+          </MenuOpen.Provider>
         </div>
       )}
     </div>
@@ -176,17 +190,13 @@ export default function Menu({
 export function MenuItem({
   onClick,
   shortcut,
-  title,
   className = 'menu-item',
   children,
   ...rest
-}: {
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'role'> & {
   onClick: () => void
   shortcut?: string
-  title?: string
-  className?: string
   children: ReactNode
-  'data-extension-command'?: string
 }) {
   const close = useContext(CloseMenu)
   return (
@@ -194,7 +204,6 @@ export function MenuItem({
       {...rest}
       role="menuitem"
       className={className}
-      title={title}
       onClick={() => {
         // Close (handing focus back) first, so an item that moves focus itself has the last word.
         close()
