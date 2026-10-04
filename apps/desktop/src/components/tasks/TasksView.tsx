@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { attentionCounts, revealTerminal } from '../../lib/attention'
 import { useClockTick } from '../../lib/clock'
 import { KIND_COLOR } from '../../lib/display'
@@ -56,6 +56,16 @@ export default function TasksView() {
   )
 }
 
+/** Save notes still waiting in `pending`, once. */
+function saveNotes(pending: RefObject<{ id: string; notes: string } | null>) {
+  const edit = pending.current
+  if (!edit) return
+  pending.current = null
+  void taskUpdate(edit.id, { notes: edit.notes })
+    .then(() => refreshTasks())
+    .catch((e) => useStore.getState().setMessage(String(e)))
+}
+
 function TaskCard({
   task,
   attention,
@@ -74,6 +84,20 @@ function TaskCard({
   const [review, setReview] = useState<Review | null>(null)
   const [error, setError] = useState('')
   const [notes, setNotes] = useState(task?.notes ?? '')
+  // Saved shortly after typing stops, and when the card goes away, since a blur isn't reliable.
+  const pendingNotes = useRef<{ id: string; notes: string } | null>(null)
+  const taskId = task?.id
+  const savedNotes = task?.notes
+  useEffect(() => {
+    if (!taskId || notes === savedNotes) {
+      pendingNotes.current = null
+      return
+    }
+    pendingNotes.current = { id: taskId, notes }
+    const timer = setTimeout(() => saveNotes(pendingNotes), 600)
+    return () => clearTimeout(timer)
+  }, [taskId, notes, savedNotes])
+  useEffect(() => () => saveNotes(pendingNotes), [])
   const [confirming, setConfirming] = useState(false)
   useClockTick()
   const active = activeTask === id
@@ -134,20 +158,14 @@ function TaskCard({
     )
   }
 
-  const saveNotes = () => {
-    if (!task || notes === task.notes) return
-    void taskUpdate(task.id, { notes })
-      .then(() => refreshTasks())
-      .catch((e) => useStore.getState().setMessage(String(e)))
-  }
   const toggleComponent = (cid: string) => {
     if (!task) return
-    const components = task.components.includes(cid)
-      ? task.components.filter((c) => c !== cid)
-      : [...task.components, cid]
-    void taskUpdate(task.id, { components })
-      .then(() => refreshTasks())
-      .catch((e) => useStore.getState().setMessage(String(e)))
+    // From the latest copy, updated at once, so quick toggles don't overwrite each other.
+    const s = useStore.getState()
+    const current = s.tasks.find((t) => t.id === task.id)?.components ?? task.components
+    const components = current.includes(cid) ? current.filter((c) => c !== cid) : [...current, cid]
+    s.setTasks(s.tasks.map((t) => (t.id === task.id ? { ...t, components } : t)))
+    void taskUpdate(task.id, { components }).catch((e) => useStore.getState().setMessage(String(e)))
   }
 
   return (
@@ -287,7 +305,6 @@ function TaskCard({
           placeholder="Notes for this task (shared with its agents)"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          onBlur={saveNotes}
         />
       )}
     </section>

@@ -130,16 +130,14 @@
       refused = true
     })
     assert(refused && state().tasks.some((t) => t.id === task.id), 'dirty worktree removed')
+    // A refused removal leaves the task's terminals running.
+    assert(state().sessions[taskSid]?.running, 'a refused removal stopped task terminals')
+    await smoke.terminalWrite(shellSid, 'rm smoke.txt\r')
+    await sleep(800)
+    await smoke.removeTask(task.id, true)
     // Removing stops the task's terminals, but not the open worktree's.
     await until('task terminals stopped', () => !state().sessions[taskSid]?.running)
     assert(state().sessions[mainSid]?.running, 'removing a task stopped the open worktree')
-    await smoke.startTerminal('web', 'shell', task.id)
-    await until('task shell again', () => state().sessions[shellSid]?.running)
-    await sleep(1500)
-    await smoke.terminalWrite(shellSid, 'rm smoke.txt\r')
-    await sleep(800)
-    smoke.resetSessions(await smoke.terminalReset())
-    await smoke.removeTask(task.id, true)
     assert(state().tasks.length === 0 && state().activeTask === null, 'task not removed')
     task = undefined
     await smoke.report('PASS tasks: create, parallel worktree terminals, badges, review, remove')

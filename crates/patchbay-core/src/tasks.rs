@@ -245,6 +245,20 @@ fn check_branch(repo: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether exactly one remote has `branch`, so `git worktree add <path> <branch>`
+/// creates a local branch tracking it.
+fn on_one_remote(repo: &Path, branch: &str) -> bool {
+    run(git(repo).args(["for-each-ref", "--format=%(refname)", "refs/remotes"])).is_ok_and(|out| {
+        out.lines()
+            .filter(|r| {
+                r.ends_with(&format!("/{branch}"))
+                    && r.split('/').count() == branch.split('/').count() + 3
+            })
+            .count()
+            == 1
+    })
+}
+
 fn verifies(repo: &Path, rev: &str) -> bool {
     run(git(repo).args(["rev-parse", "--verify", "-q", rev])).is_ok()
 }
@@ -307,7 +321,10 @@ pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
     let existing = verifies(&repo, &format!("refs/heads/{branch}"));
     let mut cmd = git(&repo);
     cmd.args(["worktree", "add"]);
-    if existing {
+    if !existing && base.is_none() && on_one_remote(&repo, branch) {
+        // git checks out a local branch tracking the remote one.
+        cmd.arg(&path).arg(branch);
+    } else if existing {
         if base.is_some() {
             bail!("Branch {branch} already exists; leave the base empty to use it");
         }
@@ -423,6 +440,33 @@ pub fn update(root: &Path, id: &str, patch: TaskPatch) -> Result<Task> {
     Ok(task)
 }
 
+/// Check that [`remove`] with `delete_worktree` would succeed: the project
+/// isn't open in the task's worktree and it has no uncommitted or untracked
+/// changes. Lets callers ask before stopping the task's terminals.
+///
+/// # Errors
+/// Fails with the reason the worktree can't be removed.
+pub fn check_removable(root: &Path, id: &str) -> Result<Task> {
+    let task = list(root)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| anyhow!("There is no task {id}"))?;
+    if task.missing {
+        return Ok(task);
+    }
+    if task.current {
+        bail!("The project is open in this task's worktree");
+    }
+    let dirty = run(git(Path::new(&task.worktree)).args(["status", "--porcelain"]))?;
+    if !dirty.is_empty() {
+        bail!(
+            "“{}” has uncommitted or untracked changes; commit or discard them first",
+            task.title
+        );
+    }
+    Ok(task)
+}
+
 /// Forget a task and, with `delete_worktree`, remove its worktree. git refuses
 /// to remove a worktree with uncommitted or untracked changes, and the branch
 /// is always kept.
@@ -431,14 +475,15 @@ pub fn update(root: &Path, id: &str, patch: TaskPatch) -> Result<Task> {
 /// Fails if there is no such task, the project is open in its worktree, or git
 /// refuses to remove it.
 pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
-    let task = list(root)?
-        .into_iter()
-        .find(|t| t.id == id)
-        .ok_or_else(|| anyhow!("There is no task {id}"))?;
+    let task = if delete_worktree {
+        check_removable(root, id)?
+    } else {
+        list(root)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow!("There is no task {id}"))?
+    };
     if delete_worktree && !task.missing {
-        if task.current {
-            bail!("The project is open in this task's worktree");
-        }
         run(git(&repo_of(root)?).args(["worktree", "remove", &task.worktree]))?;
     }
     modify(root, |tasks| {
@@ -650,6 +695,36 @@ mod tests {
         assert!(list(&root).unwrap().is_empty());
         // The branch is kept.
         assert!(verifies(&root, "refs/heads/fix/login"));
+    }
+
+    #[test]
+    fn checks_out_a_branch_that_only_a_remote_has() {
+        let f = Fixture::new();
+        if f.repo().is_none() {
+            return;
+        }
+        assert!(f.git("shop", &["branch", "feature/x"]));
+        assert!(f.git(".", &["clone", "-q", "shop", "copy"]));
+        let copy = f.0.join("copy");
+        assert!(!verifies(&copy, "refs/heads/feature/x"));
+        let task = create(
+            &copy,
+            TaskDraft {
+                title: "Remote".into(),
+                branch: "feature/x".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(task.branch.as_deref(), Some("feature/x"));
+        let upstream =
+            run(git(Path::new(&task.worktree)).args(["rev-parse", "--abbrev-ref", "@{upstream}"]))
+                .unwrap();
+        assert_eq!(upstream, "origin/feature/x");
+        assert!(check_removable(&copy, &task.id).is_ok());
+        f.write("copy-feature-x/dirty.txt", "x");
+        assert!(check_removable(&copy, &task.id).is_err());
     }
 
     #[test]

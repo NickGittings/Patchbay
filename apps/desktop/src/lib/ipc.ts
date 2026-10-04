@@ -99,6 +99,8 @@ export const taskUpdate = (id: string, patch: TaskPatch) =>
 /** git refuses to remove a worktree with changes; the branch is always kept. */
 export const taskRemove = (id: string, deleteWorktree: boolean) =>
   invoke<void>('task_remove', { id, deleteWorktree })
+/** Fails with the reason the task's worktree can't be removed (e.g. uncommitted changes). */
+export const taskCheckRemovable = (id: string) => invoke<void>('task_check_removable', { id })
 /** Watch the task's worktree (none for the open one). */
 export const taskActivate = (id: string | null) => invoke<void>('task_activate', { id })
 

@@ -5,6 +5,7 @@ import { invalidateGitRefresh, requestGitRefresh } from './git'
 import {
   taskActivate,
   taskAttach,
+  taskCheckRemovable,
   taskCreate,
   taskList,
   taskRemove,
@@ -48,10 +49,27 @@ export async function refreshTasks() {
  */
 export function followActiveTask() {
   let last = useStore.getState().activeTask
-  return useStore.subscribe((s) => {
+  // One activation at a time, always for the latest task, so a slow earlier call can't leave the
+  // watcher on a worktree the user already switched away from.
+  let sent: string | null | undefined
+  let activating: Promise<void> | undefined
+  const activate = (): Promise<void> => {
+    activating ??= (async () => {
+      while (useStore.getState().project && sent !== useStore.getState().activeTask) {
+        sent = useStore.getState().activeTask
+        await taskActivate(sent).catch((e) => useStore.getState().setMessage(String(e)))
+      }
+    })().finally(() => {
+      activating = undefined
+    })
+    return activating
+  }
+  return useStore.subscribe((s, prev) => {
+    // A new project's backend starts without a task.
+    if (s.project !== prev.project) sent = null
     if (s.activeTask === last) return
     last = s.activeTask
-    if (s.project) void taskActivate(last).catch((e) => s.setMessage(String(e)))
+    void activate()
     invalidateGitRefresh()
     useStore.getState().setGitStatus({ changes: {}, repos: {} })
     void requestGitRefresh()
@@ -89,6 +107,8 @@ async function stopTaskSessions(id: string) {
  * `deleteWorktree`, remove its worktree.
  */
 export async function removeTask(id: string, deleteWorktree: boolean) {
+  // Ask first, so a worktree git won't remove doesn't cost the task its running terminals.
+  if (deleteWorktree) await taskCheckRemovable(id)
   await stopTaskSessions(id)
   if (useStore.getState().activeTask === id) useStore.getState().setActiveTask(null)
   try {

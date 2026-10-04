@@ -680,6 +680,14 @@ async fn task_update(state: State<'_, AppState>, id: String, patch: TaskPatch) -
     blocking(move || tasks::update(&root, &id, patch).map_err(err)).await
 }
 
+/// Fails with the reason a task's worktree can't be removed, so the webview can
+/// ask before stopping its terminals.
+#[tauri::command]
+async fn task_check_removable(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let root = task_repo(&state)?;
+    blocking(move || tasks::check_removable(&root, &id).map(|_| ()).map_err(err)).await
+}
+
 /// Forget a task and optionally remove its (clean) worktree; the branch stays.
 #[tauri::command]
 async fn task_remove(
@@ -911,6 +919,7 @@ pub fn run() {
                 task_attach,
                 task_update,
                 task_remove,
+                task_check_removable,
                 task_activate,
                 git_changes,
                 git_diff,

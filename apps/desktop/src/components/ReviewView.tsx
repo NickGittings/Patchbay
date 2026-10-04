@@ -62,7 +62,10 @@ export default function ReviewView() {
   const target = other?.path
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
-  const validationTask = other ? (reviewTask?.id ?? undefined) : null
+  // The open worktree's sessions belong to the active task when the project is open in its
+  // worktree, and to no task otherwise.
+  const openTask = tasks.find((t) => t.id === activeTask && t.current)?.id ?? null
+  const validationTask = other ? (reviewTask?.id ?? undefined) : openTask
   const watched = !other || other.path === taskWorktree
 
   useEffect(() => {
