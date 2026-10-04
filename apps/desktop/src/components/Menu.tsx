@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import { CloseMenu, MenuOpen } from './menuContext'
+import { CloseMenu, MenuOpens } from './menuContext'
 
 const items = (list: HTMLElement | null) =>
   Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
@@ -57,6 +57,7 @@ export default function Menu({
   // Where focus was when the menu opened. The trigger never takes focus on a mouse press, so
   // this is read once at open time.
   const previous = useRef<HTMLElement | null>(null)
+  const [opens, setOpens] = useState(0)
 
   const openMenu = (keyboard: boolean) => {
     const active = document.activeElement
@@ -66,6 +67,7 @@ export default function Menu({
         ? active
         : null
     setOpen({ keyboard })
+    setOpens((n) => n + 1)
   }
 
   /** Close, handing focus back if it is still inside the menu (or nowhere). */
@@ -98,25 +100,19 @@ export default function Menu({
       closeRef.current(!!target.closest?.('.menu-trigger'))
     }
     const onBlur = () => closeRef.current(true)
-    // If the focused item went away (an attention item resolved), focus is nowhere, so the menu
-    // no longer hears keys; listening on the window then takes nothing from anyone.
-    const onStrandedKey = (e: KeyboardEvent) => {
-      if (document.activeElement !== document.body) return
-      if (e.key !== 'Escape' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-      e.preventDefault()
-      e.stopPropagation()
-      if (e.key === 'Escape') closeRef.current(true)
-      else move(items(listEl), e.key === 'ArrowDown' ? 1 : -1)
-    }
     window.addEventListener('pointerdown', onPointer, true)
     window.addEventListener('blur', onBlur)
-    window.addEventListener('keydown', onStrandedKey)
     return () => {
       window.removeEventListener('pointerdown', onPointer, true)
       window.removeEventListener('blur', onBlur)
-      window.removeEventListener('keydown', onStrandedKey)
     }
   }, [open])
+
+  // If the focused item went away (an attention item resolved), focus fell to <body>; take it
+  // back so the menu keeps hearing keys.
+  useEffect(() => {
+    if (open && document.activeElement === document.body) list.current?.focus()
+  })
 
   // Unmounted while open and focused (the attention list emptied): focus has fallen to <body>,
   // so hand it back to where it was.
@@ -140,6 +136,16 @@ export default function Menu({
           }
           return
         }
+        // A held Enter/Space that opened the menu must not also choose its first item.
+        if (e.repeat && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          return
+        }
+        // Tab leaves the menu: hand focus back, then let Tab move on from there.
+        if (e.key === 'Tab') {
+          close(true)
+          return
+        }
         if (e.key !== 'Escape' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
         e.preventDefault()
         e.stopPropagation()
@@ -147,7 +153,7 @@ export default function Menu({
         else move(items(list.current), e.key === 'ArrowDown' ? 1 : -1)
       }}
       onBlur={(e) => {
-        // Focus moved to another control (Tab, or the command palette opening).
+        // Focus moved to another control (the command palette opening, say).
         if (open && e.relatedTarget && !root.current?.contains(e.relatedTarget)) close(false)
       }}
     >
@@ -177,9 +183,9 @@ export default function Menu({
           tabIndex={-1}
           hidden={!open}
         >
-          <MenuOpen.Provider value={!!open}>
+          <MenuOpens.Provider value={opens}>
             <CloseMenu.Provider value={() => close(true)}>{children}</CloseMenu.Provider>
-          </MenuOpen.Provider>
+          </MenuOpens.Provider>
         </div>
       )}
     </div>
@@ -203,6 +209,8 @@ export function MenuItem({
     <button
       {...rest}
       role="menuitem"
+      // Arrow keys move between items; Tab leaves the menu.
+      tabIndex={-1}
       className={className}
       onClick={() => {
         // Close (handing focus back) first, so an item that moves focus itself has the last word.

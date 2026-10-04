@@ -1,6 +1,6 @@
 import { useContext } from 'react'
 import { MenuItem, MenuSeparator } from '../components/Menu'
-import { MenuOpen } from '../components/menuContext'
+import { MenuOpens } from '../components/menuContext'
 import { useExtensionCommands } from './commands'
 
 /**
@@ -17,8 +17,8 @@ export default function ExtensionMenu({
   asMenuItems?: boolean
 }) {
   // Inside a menu, re-read the component's files each time it opens (as the palette does).
-  const menuOpen = useContext(MenuOpen)
-  const { entries, run } = useExtensionCommands(slot, componentId, asMenuItems && menuOpen)
+  const opens = useContext(MenuOpens)
+  const { entries, run } = useExtensionCommands(slot, componentId, asMenuItems ? opens : 0)
   if (entries.length === 0) return null
   const Item = asMenuItems ? MenuItem : 'button'
   return (
