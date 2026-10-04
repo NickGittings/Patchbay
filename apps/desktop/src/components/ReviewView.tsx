@@ -1,17 +1,39 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
-import { gitReview } from '../lib/ipc'
-import { latestChange, latestChangeOf } from '../lib/review'
+import { gitReview, gitWorktrees } from '../lib/ipc'
+import { latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useStore } from '../store'
-import type { Review } from '../types'
+import { PROJECT_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
+import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
 
+/** The watcher only covers the open worktree; another one is polled while shown. */
+const WORKTREE_POLL_MS = 5000
+
+interface ChangeGroup {
+  id: string
+  name: string
+  color: string
+  base: string
+  files: ChangedFile[]
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+function worktreeLabel(w: Worktree) {
+  const name = w.path.split(/[\\/]/).pop() ?? w.path
+  const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
+  return `${branch} · ${name}${w.current ? ' (open)' : ''}`
+}
+
 /**
- * Every uncommitted change on the map, grouped by component, with the components that depend on
- * changed ones and whether each one's task terminals ran since the change.
+ * Every uncommitted change on the map, grouped by component (plus project files no component
+ * contains), with the components that depend on changed ones and whether each one's task
+ * terminals ran since the change. Chips filter the components; another worktree of the repo can
+ * be reviewed in place of the open one.
  */
 export default function ReviewView() {
   const revision = useStore((s) => s.gitChanges)
@@ -24,11 +46,42 @@ export default function ReviewView() {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<{ componentId: string; path: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [filter, setFilter] = useState<string[]>([])
+  const [worktrees, setWorktrees] = useState<Worktree[]>([])
+  const [worktree, setWorktree] = useState<string>()
   const [refresh, setRefresh] = useState(0)
+
+  const other = worktrees.find((w) => w.path === worktree && !w.current)
+  // `undefined` reviews the open worktree, which the watcher keeps current.
+  const target = other?.path
 
   useEffect(() => {
     let disposed = false
-    void gitReview(useStore.getState().toProject())
+    void gitWorktrees()
+      .then((list) => {
+        if (!disposed) setWorktrees(list)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [pathsKey, refresh])
+
+  // Another worktree has no watcher: poll it while shown, and refresh on focus.
+  useEffect(() => {
+    if (!target) return
+    const bump = () => setRefresh((n) => n + 1)
+    const timer = window.setInterval(bump, WORKTREE_POLL_MS)
+    window.addEventListener('focus', bump)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', bump)
+    }
+  }, [target])
+
+  useEffect(() => {
+    let disposed = false
+    void gitReview(useStore.getState().toProject(), target)
       .then((r) => {
         if (!disposed) {
           setReview(r)
@@ -41,78 +94,186 @@ export default function ReviewView() {
     return () => {
       disposed = true
     }
-  }, [revision, pathsKey, linksKey, refresh])
+  }, [revision, pathsKey, linksKey, refresh, target])
+
+  const groups: ChangeGroup[] = []
+  if (review) {
+    for (const n of nodes) {
+      const files = review.changes[n.id]
+      if (files?.length)
+        groups.push({
+          id: n.id,
+          name: n.data.name,
+          color: KIND_COLOR[n.data.kind],
+          base: n.data.path,
+          files,
+        })
+    }
+    const loose = review.changes[PROJECT_SCOPE]
+    if (loose?.length)
+      groups.push({ id: PROJECT_SCOPE, name: 'Project files', color: '', base: '.', files: loose })
+  }
+  const active = filter.filter((id) => groups.some((g) => g.id === id))
+  const shown = active.length ? groups.filter((g) => active.includes(g.id)) : groups
+  const shownFiles = shown.flatMap((g) => g.files)
+  const totals = lineTotals(shownFiles)
+  const componentCount = shown.filter((g) => g.id !== PROJECT_SCOPE).length
+  const affected = (review?.affected ?? []).filter(
+    (a) => !active.length || a.via.some((id) => active.includes(id)),
+  )
 
   const nameOf = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
-  const changed = review ? nodes.filter((n) => review.changes[n.id]?.length) : []
-  const fileCount = changed.reduce((sum, n) => sum + review!.changes[n.id].length, 0)
   const current =
     (selected &&
-      review?.changes[selected.componentId]?.find((f) => f.path === selected.path) &&
+      shown.some(
+        (g) => g.id === selected.componentId && g.files.some((f) => f.path === selected.path),
+      ) &&
       selected) ||
-    (changed[0] && { componentId: changed[0].id, path: review!.changes[changed[0].id][0].path })
+    (shown[0] && { componentId: shown[0].id, path: shown[0].files[0].path })
   const currentFile = current
     ? (review?.changes[current.componentId]?.find((f) => f.path === current.path) ?? null)
     : null
+
+  // Click shows one component; Cmd/Ctrl/Shift-click adds or removes it.
+  const toggleFilter = (id: string, e: MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey)
+      setFilter(active.includes(id) ? active.filter((x) => x !== id) : [...active, id])
+    else setFilter(active.length === 1 && active[0] === id ? [] : [id])
+  }
 
   return (
     <div className="workspace review-view">
       <Group orientation="horizontal">
         <Panel defaultSize="38" minSize="20">
           <div className="review-list">
-            <div className="changes-header">
-              <span className="panel-title">
-                Review
-                {review && (
-                  <span className="review-summary">
-                    {fileCount} file{fileCount === 1 ? '' : 's'} in {changed.length} component
-                    {changed.length === 1 ? '' : 's'}
-                  </span>
+            <div className="review-header">
+              <div className="review-title-row">
+                <span className="review-title">Review</span>
+                {worktrees.length > 1 && (
+                  <select
+                    className="review-worktree"
+                    title="Worktree to review"
+                    value={other?.path ?? ''}
+                    onChange={(e) => {
+                      setWorktree(e.target.value || undefined)
+                      setSelected(null)
+                      setReview(null)
+                    }}
+                  >
+                    {worktrees.map((w) => (
+                      <option key={w.path} value={w.current ? '' : w.path}>
+                        {worktreeLabel(w)}
+                      </option>
+                    ))}
+                  </select>
                 )}
-              </span>
-              <button title="Refresh review" onClick={() => setRefresh((n) => n + 1)}>
-                ↻ Refresh
-              </button>
+                <button
+                  className="review-refresh"
+                  title="Refresh review"
+                  onClick={() => setRefresh((n) => n + 1)}
+                >
+                  ↻
+                </button>
+              </div>
+              {review && (
+                <div className="review-summary">
+                  <span>{plural(shownFiles.length, 'file')}</span>
+                  {shownFiles.length > 0 && <DiffStat {...totals} />}
+                  {componentCount > 0 && <span>{plural(componentCount, 'component')}</span>}
+                </div>
+              )}
+              {groups.length > 1 && (
+                <div className="review-filter" role="toolbar" aria-label="Filter components">
+                  <button
+                    className={`filter-chip ${active.length ? '' : 'on'}`}
+                    aria-pressed={!active.length}
+                    onClick={() => setFilter([])}
+                  >
+                    All
+                  </button>
+                  {groups.map((g) => (
+                    <button
+                      key={g.id}
+                      className={`filter-chip ${active.includes(g.id) ? 'on' : ''}`}
+                      aria-pressed={active.includes(g.id)}
+                      title={`Show only ${g.name} (⌘/⇧-click to add)`}
+                      onClick={(e) => toggleFilter(g.id, e)}
+                    >
+                      <span
+                        className={`kind-dot ${g.color ? '' : 'project'}`}
+                        style={g.color ? { background: g.color } : undefined}
+                      />
+                      {g.name}
+                      <span className="filter-count">{g.files.length}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+            {other && (
+              <div className="review-banner">
+                Viewing worktree <code>{other.branch ?? other.head.slice(0, 7)}</code> at{' '}
+                <code title={other.path}>{other.path}</code>. Task status is hidden; terminals run
+                in the open worktree.
+              </div>
+            )}
             {error && <div className="hint file-tree-error">{error}</div>}
             {!review && !error && <div className="hint">Loading…</div>}
-            {review && !changed.length && <div className="hint">No uncommitted changes.</div>}
-            {changed.map((n) => {
-              const files = review!.changes[n.id]
-              const open = !collapsed[n.id]
+            {review && !groups.length && (
+              <div className="review-empty">
+                <div className="review-empty-mark">✓</div>
+                No uncommitted changes.
+              </div>
+            )}
+            {shown.map((g) => {
+              const open = !collapsed[g.id]
+              const project = g.id === PROJECT_SCOPE
               return (
-                <section key={n.id} className="review-group">
+                <section key={g.id} className="review-group">
                   <header className="review-group-header">
                     <button
                       className="review-toggle"
                       aria-expanded={open}
                       aria-label={open ? 'Collapse' : 'Expand'}
-                      onClick={() => setCollapsed({ ...collapsed, [n.id]: open })}
+                      onClick={() => setCollapsed({ ...collapsed, [g.id]: open })}
                     >
                       {open ? '▾' : '▸'}
                     </button>
-                    <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
-                    <button className="review-name" onClick={() => select(n.id)}>
-                      {n.data.name}
-                    </button>
-                    <span className="git-badge">±{files.length}</span>
+                    <span
+                      className={`kind-dot ${project ? 'project' : ''}`}
+                      style={project ? undefined : { background: g.color }}
+                    />
+                    {project ? (
+                      <span className="review-name" title="Files no component contains">
+                        {g.name}
+                      </span>
+                    ) : (
+                      <button className="review-name" onClick={() => select(g.id)}>
+                        {g.name}
+                      </button>
+                    )}
+                    <span className="review-count">{plural(g.files.length, 'file')}</span>
+                    <DiffStat {...lineTotals(g.files)} />
                   </header>
-                  <ValidationChips componentId={n.id} changedAt={latestChange(files)} />
+                  {!project && !other && (
+                    <ValidationChips componentId={g.id} changedAt={latestChange(g.files)} />
+                  )}
                   {open && (
                     <ChangeList
-                      files={files}
-                      base={n.data.path}
-                      selected={current?.componentId === n.id ? current.path : undefined}
-                      onSelect={(path) => setSelected({ componentId: n.id, path })}
+                      files={g.files}
+                      base={g.base}
+                      selected={current?.componentId === g.id ? current.path : undefined}
+                      onSelect={(path) => setSelected({ componentId: g.id, path })}
+                      reveal={!other}
                     />
                   )}
                 </section>
               )
             })}
-            {review && review.affected.length > 0 && (
+            {review && affected.length > 0 && (
               <>
                 <div className="panel-title review-affected-title">May be affected</div>
-                {review.affected.map((a) => {
+                {affected.map((a) => {
                   const node = nodes.find((n) => n.id === a.id)
                   if (!node) return null
                   return (
@@ -127,10 +288,12 @@ export default function ReviewView() {
                         </button>
                         <span className="review-via">via {a.via.map(nameOf).join(', ')}</span>
                       </header>
-                      <ValidationChips
-                        componentId={a.id}
-                        changedAt={latestChangeOf(review.changes, a.via)}
-                      />
+                      {!other && (
+                        <ValidationChips
+                          componentId={a.id}
+                          changedAt={latestChangeOf(review.changes, a.via)}
+                        />
+                      )}
                     </section>
                   )
                 })}
@@ -141,7 +304,12 @@ export default function ReviewView() {
         <Separator className="separator" />
         <Panel defaultSize="62" minSize="30">
           {current ? (
-            <DiffView componentId={current.componentId} file={currentFile} revision={revision} />
+            <DiffView
+              componentId={current.componentId}
+              file={currentFile}
+              revision={review}
+              worktree={target}
+            />
           ) : (
             <div className="diff-view hint">Nothing to review.</div>
           )}

@@ -2,10 +2,11 @@
 //! of repos, or repos added from elsewhere), so components are grouped by the
 //! repo that contains them and each repo is queried once.
 
-use crate::model::{Project, relative_path};
+use crate::model::{PROJECT_SCOPE, Project, relative_path};
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -106,6 +107,12 @@ pub struct ChangedFile {
     /// Last modification, in Unix milliseconds; absent for deleted files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_ms: Option<u64>,
+    /// Lines added and removed against `HEAD`; absent for binary files and
+    /// untracked files too large to count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u32>,
 }
 
 /// A file's diff against `HEAD`.
@@ -130,11 +137,24 @@ struct Entry {
 }
 
 impl Entry {
-    fn into_changed(self, root: &Path, repo: &Path) -> ChangedFile {
+    /// `counts` are a repo's [`line_counts`]; untracked files are counted here.
+    fn into_changed(
+        self,
+        root: &Path,
+        repo: &Path,
+        counts: &HashMap<String, (u32, u32)>,
+    ) -> ChangedFile {
         let abs = repo.join(&self.path);
         let modified_ms = (self.kind != ChangeKind::Deleted)
             .then(|| modified_ms(&abs))
             .flatten();
+        let (added, removed) = if self.kind == ChangeKind::Untracked {
+            (count_lines(&abs), Some(0))
+        } else {
+            counts
+                .get(&self.path)
+                .map_or((None, None), |&(a, r)| (Some(a), Some(r)))
+        };
         ChangedFile {
             path: relative_path(root, &abs),
             kind: self.kind,
@@ -142,6 +162,8 @@ impl Entry {
                 .old_path
                 .map(|old| relative_path(root, &repo.join(old))),
             modified_ms,
+            added,
+            removed: added.and(removed),
         }
     }
 }
@@ -152,29 +174,66 @@ fn modified_ms(path: &Path) -> Option<u64> {
     u64::try_from(since.as_millis()).ok()
 }
 
-/// Run `git status` for every group at once (in parallel, so many sibling
-/// repos don't add up to one long refresh). `None` where git failed.
-fn query_groups(groups: &[RepoGroup]) -> Vec<Option<Vec<Entry>>> {
+/// Lines in an untracked regular file, or `None` for a binary file, one
+/// larger than [`MAX_DIFF_BYTES`], or anything else (a symlink or a FIFO).
+fn count_lines(path: &Path) -> Option<u32> {
+    if !path.symlink_metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(MAX_DIFF_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_DIFF_BYTES || bytes.contains(&0) {
+        return None;
+    }
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count();
+    let unterminated = usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
+    u32::try_from(newlines + unterminated).ok()
+}
+
+/// Run `query` for every group's repo at once (in parallel, so many sibling
+/// repos don't add up to one long refresh). `None` where it panicked.
+fn per_repo<T: Send>(groups: &[RepoGroup], query: impl Fn(&Path) -> T + Sync) -> Vec<Option<T>> {
     std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .iter()
-            .map(|g| scope.spawn(|| changed_entries(&g.root)))
+            .map(|g| scope.spawn(|| query(&g.root)))
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().ok().flatten())
-            .collect()
+        handles.into_iter().map(|h| h.join().ok()).collect()
     })
+}
+
+/// Run `git status` for every group. `None` where git failed.
+fn query_groups(groups: &[RepoGroup]) -> Vec<Option<Vec<Entry>>> {
+    per_repo(groups, changed_entries)
+        .into_iter()
+        .map(Option::flatten)
+        .collect()
+}
+
+/// `components` plus a [`PROJECT_SCOPE`] member at `root` that takes the
+/// changed files under the root no component contains, unless a component
+/// already sits at the root.
+fn with_project_scope(root: &Path, components: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
+    let mut all = components.to_vec();
+    if !components.iter().any(|(_, dir)| dir == root) {
+        all.push((PROJECT_SCOPE.to_string(), root.to_path_buf()));
+    }
+    all
 }
 
 /// Count uncommitted changes per component, running `git status` once per
 /// repo. Each changed file is attributed to the most specific component
-/// containing it. `components` are `(id, canonical folder)`; `root` is the
-/// project root.
+/// containing it; files under `root` that no component contains count for
+/// [`PROJECT_SCOPE`]. `components` are `(id, canonical folder)`; `root` is the
+/// canonical project root.
 #[must_use]
 pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
     let project_repo = repo_root(root);
-    let groups = group_by_repo(components);
+    let groups = group_by_repo(&with_project_scope(root, components));
     let mut out = GitStatus::default();
     for (group, entries) in groups.iter().zip(query_groups(&groups)) {
         if project_repo.as_ref() != Some(&group.root) {
@@ -202,14 +261,15 @@ pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
 }
 
 /// The changed files per component, attributed like [`status`] counts them,
-/// so the lists match the counts. Components in a repo get a (possibly empty)
-/// list sorted by path; the rest are absent.
+/// so the lists match the counts (including [`PROJECT_SCOPE`]). Components in
+/// a repo get a (possibly empty) list sorted by path; the rest are absent.
 #[must_use]
 pub fn changes(root: &Path, components: &[(String, PathBuf)]) -> HashMap<String, Vec<ChangedFile>> {
-    let groups = group_by_repo(components);
+    let groups = group_by_repo(&with_project_scope(root, components));
+    let results = per_repo(&groups, |repo| (changed_entries(repo), line_counts(repo)));
     let mut out: HashMap<String, Vec<ChangedFile>> = HashMap::new();
-    for (group, entries) in groups.iter().zip(query_groups(&groups)) {
-        let Some(entries) = entries else {
+    for (group, result) in groups.iter().zip(results) {
+        let Some((Some(entries), counts)) = result else {
             continue;
         };
         for (id, _) in &group.members {
@@ -217,7 +277,7 @@ pub fn changes(root: &Path, components: &[(String, PathBuf)]) -> HashMap<String,
         }
         for entry in entries {
             if let Some(id) = owner_of(&entry.path, &group.members) {
-                let file = entry.into_changed(root, &group.root);
+                let file = entry.into_changed(root, &group.root, &counts);
                 out.entry(id.to_string()).or_default().push(file);
             }
         }
@@ -255,7 +315,7 @@ pub fn review(project: &Project, components: &[(String, PathBuf)]) -> Review {
     let changes = changes(Path::new(&project.root), components);
     let mut changed: Vec<String> = changes
         .iter()
-        .filter(|(_, files)| !files.is_empty())
+        .filter(|(id, files)| !files.is_empty() && id.as_str() != PROJECT_SCOPE)
         .map(|(id, _)| id.clone())
         .collect();
     changed.sort();
@@ -283,7 +343,7 @@ pub fn diff(
     component_id: &str,
     path: &str,
 ) -> Result<FileDiff> {
-    let group = group_by_repo(components)
+    let group = group_by_repo(&with_project_scope(root, components))
         .into_iter()
         .find(|g| g.members.iter().any(|(id, _)| id == component_id))
         .ok_or_else(|| anyhow!("This component isn't in a git repo"))?;
@@ -307,6 +367,191 @@ pub fn diff(
     }
     // `--no-index` exits 1 when the files differ.
     run_capped(repo, &args, &[0, 1])
+}
+
+/// Lines added and removed per changed tracked path (relative to `repo`, the
+/// new path for a rename), from one `git diff --numstat` against `HEAD`, like
+/// [`diff`] compares. Binary files are absent; so is everything if git fails.
+fn line_counts(repo: &Path) -> HashMap<String, (u32, u32)> {
+    let Ok(base) = base_tree(repo) else {
+        return HashMap::new();
+    };
+    let output = git(repo)
+        .args([
+            "diff",
+            "--numstat",
+            "-z",
+            "-M",
+            "--no-ext-diff",
+            "--no-textconv",
+            &base,
+            "--",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(o) if o.status.success() => parse_numstat(&String::from_utf8_lossy(&o.stdout)),
+        _ => HashMap::new(),
+    }
+}
+
+/// `git diff --numstat -z` output: `added\tremoved\tpath\0`, or for a rename
+/// `added\tremoved\t\0old\0new\0`. Binary files (`-\t-`) are skipped.
+fn parse_numstat(out: &str) -> HashMap<String, (u32, u32)> {
+    let mut counts = HashMap::new();
+    let mut records = out.split('\0');
+    while let Some(record) = records.next() {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            records.next();
+            records.next().unwrap_or_default()
+        } else {
+            path
+        };
+        if let (Ok(a), Ok(r)) = (added.parse(), removed.parse()) {
+            counts.insert(path.to_string(), (a, r));
+        }
+    }
+    counts
+}
+
+/// A worktree of the project root's repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    /// Absolute and canonical; [`in_worktree`] takes it back.
+    pub path: String,
+    /// Short branch name; absent for a detached `HEAD`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub head: String,
+    /// The repo's main worktree, which git lists first.
+    pub main: bool,
+    /// The worktree the project is open in.
+    pub current: bool,
+}
+
+/// The worktrees of the repo containing `root` (canonical), main first. Bare
+/// and missing (prunable) worktrees are left out; empty if `root` isn't in a
+/// repo or git fails.
+#[must_use]
+pub fn worktrees(root: &Path) -> Vec<Worktree> {
+    let Some(repo) = nearest_repo(root) else {
+        return Vec::new();
+    };
+    let output = git(&repo)
+        .args(["worktree", "list", "--porcelain"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_worktrees(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .enumerate()
+        .filter(|(_, w)| !w.bare)
+        .filter_map(|(i, w)| {
+            let path = Path::new(&w.path).canonicalize().ok()?;
+            Some(Worktree {
+                current: path == repo,
+                path: path.to_string_lossy().into_owned(),
+                branch: w.branch,
+                head: w.head,
+                main: i == 0,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RawWorktree {
+    path: String,
+    head: String,
+    branch: Option<String>,
+    bare: bool,
+}
+
+/// `git worktree list --porcelain`: blank-line separated blocks of
+/// `worktree <path>`, `HEAD <sha>`, `branch refs/heads/<name>` or `detached`,
+/// and flags such as `bare`, `locked` and `prunable`.
+fn parse_worktrees(out: &str) -> Vec<RawWorktree> {
+    let mut list = Vec::new();
+    let mut current: Option<RawWorktree> = None;
+    for line in out.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            list.extend(current.take());
+            current = Some(RawWorktree {
+                path: path.to_string(),
+                ..RawWorktree::default()
+            });
+            continue;
+        }
+        let Some(w) = current.as_mut() else {
+            continue;
+        };
+        if let Some(head) = line.strip_prefix("HEAD ") {
+            w.head = head.to_string();
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+            w.branch = Some(short.to_string());
+        } else if line == "bare" {
+            w.bare = true;
+        }
+    }
+    list.extend(current);
+    list
+}
+
+/// `root` and `components` (canonical) as they are in `worktree`, a path
+/// [`worktrees`] returned for the project root's repo, so the webview can only
+/// pick the repo's own worktrees. Components outside that repo, or whose
+/// folder doesn't exist in the worktree, are left out. `None`, or the current
+/// worktree, returns them unchanged. Worktrees share the repo's config, so
+/// running git there trusts no more than the open project already does.
+///
+/// # Errors
+/// Fails if `worktree` isn't one of the repo's worktrees, or the project
+/// folder doesn't exist in it.
+pub fn in_worktree(
+    root: &Path,
+    components: Vec<(String, PathBuf)>,
+    worktree: Option<&str>,
+) -> Result<(PathBuf, Vec<(String, PathBuf)>)> {
+    let Some(worktree) = worktree else {
+        return Ok((root.to_path_buf(), components));
+    };
+    let repo = nearest_repo(root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
+    let target = worktrees(root)
+        .into_iter()
+        .find(|w| w.path == worktree)
+        .map(|w| PathBuf::from(w.path))
+        .ok_or_else(|| anyhow!("{worktree} isn't a worktree of this repo"))?;
+    if target == repo {
+        return Ok((root.to_path_buf(), components));
+    }
+    let mapped = |dir: &Path| -> Option<PathBuf> {
+        let rel = dir.strip_prefix(&repo).ok()?;
+        let dir = target.join(rel).canonicalize().ok()?;
+        (dir.starts_with(&target) && dir.is_dir()).then_some(dir)
+    };
+    let new_root =
+        mapped(root).ok_or_else(|| anyhow!("The project folder isn't in that worktree"))?;
+    let components = components
+        .into_iter()
+        .filter(|(_, dir)| nearest_repo(dir).as_ref() == Some(&repo))
+        .filter_map(|(id, dir)| Some((id, mapped(&dir)?)))
+        .collect();
+    Ok((new_root, components))
 }
 
 /// `HEAD`, or the empty tree in a repo without commits.
@@ -794,5 +1039,135 @@ mod tests {
         let big = diff(&f.0, &c, "root", "big.txt").unwrap();
         assert!(big.truncated);
         assert_eq!(big.patch.len(), MAX_DIFF_BYTES);
+    }
+
+    #[test]
+    fn files_no_component_contains_belong_to_the_project_scope() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("README", "one\ntwo\n");
+        f.write("apps/web/new.ts", "a\nb\nc");
+        let c = components(&f.0, &[("web", "apps/web")]);
+        let all = changes(&f.0, &c);
+        let project = &all[PROJECT_SCOPE];
+        assert_eq!(project.len(), 1);
+        assert_eq!(project[0].path, "README");
+        assert_eq!((project[0].added, project[0].removed), (Some(2), Some(1)));
+        let web = &all["web"];
+        assert_eq!((web[0].added, web[0].removed), (Some(3), Some(0)));
+        assert_eq!(status(&f.0, &c).changes.get(PROJECT_SCOPE), Some(&1));
+        assert!(
+            diff(&f.0, &c, PROJECT_SCOPE, "README")
+                .unwrap()
+                .patch
+                .contains("+two")
+        );
+        assert!(diff(&f.0, &c, PROJECT_SCOPE, "apps/web/new.ts").is_err());
+
+        let project = Project {
+            schema_version: crate::model::SCHEMA_VERSION,
+            name: "p".into(),
+            root: f.0.to_string_lossy().into_owned(),
+            components: Vec::new(),
+            links: Vec::new(),
+        };
+        assert!(review(&project, &c).affected.is_empty());
+    }
+
+    #[test]
+    fn a_component_at_the_root_keeps_root_files() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("README", "changed");
+        let c = components(&f.0, &[("root", ".")]);
+        let all = changes(&f.0, &c);
+        assert!(!all.contains_key(PROJECT_SCOPE));
+        assert_eq!(all["root"].len(), 1);
+    }
+
+    #[test]
+    fn numstat_handles_renames_and_binaries() {
+        let counts = parse_numstat("3\t1\ta.txt\0-\t-\tlogo.png\x002\t0\t\0old.rs\0new.rs\0");
+        assert_eq!(counts.get("a.txt"), Some(&(3, 1)));
+        assert_eq!(counts.get("logo.png"), None);
+        assert_eq!(counts.get("new.rs"), Some(&(2, 0)));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn parses_worktree_list() {
+        let list = parse_worktrees(
+            "worktree /r\nHEAD abc\nbranch refs/heads/main\n\n\
+             worktree /w\nHEAD def\ndetached\nlocked\n\n\
+             worktree /b\nbare\n",
+        );
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].branch.as_deref(), Some("main"));
+        assert_eq!(list[1].path, "/w");
+        assert_eq!(list[1].head, "def");
+        assert_eq!(list[1].branch, None);
+        assert!(list[2].bare);
+    }
+
+    #[test]
+    fn reviews_changes_in_another_worktree() {
+        let f = Fixture::new();
+        if !f.repo("main") {
+            return;
+        }
+        let main = f.0.join("main");
+        f.write("main/apps/web/a.ts", "x");
+        let commit = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        assert!(commit(&["add", "."]) && commit(&["commit", "-qm", "web"]));
+        let wt_dir = f.0.join("wt");
+        assert!(commit(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            wt_dir.to_str().unwrap()
+        ]));
+        f.write("wt/apps/web/a.ts", "y\n");
+        f.write("wt/notes.md", "n");
+
+        let list = worktrees(&main);
+        assert_eq!(list.len(), 2);
+        assert!(list[0].main && list[0].current);
+        let wt = &list[1];
+        assert_eq!(wt.branch.as_deref(), Some("feature"));
+        assert!(!wt.main && !wt.current);
+
+        let c = components(&main, &[("web", "apps/web")]);
+        // The current worktree is unchanged.
+        assert!(changes(&main, &c)["web"].is_empty());
+        let (root, mapped) = in_worktree(&main, c.clone(), Some(&wt.path)).unwrap();
+        assert_eq!(root, wt_dir.canonicalize().unwrap());
+        let all = changes(&root, &mapped);
+        assert_eq!(all["web"][0].path, "apps/web/a.ts");
+        assert_eq!(all[PROJECT_SCOPE][0].path, "notes.md");
+        assert!(
+            diff(&root, &mapped, "web", "apps/web/a.ts")
+                .unwrap()
+                .patch
+                .contains("+y")
+        );
+
+        assert!(in_worktree(&main, c.clone(), Some(f.0.to_str().unwrap())).is_err());
+        let (same, _) = in_worktree(&main, c, Some(&list[0].path)).unwrap();
+        assert_eq!(same, main);
     }
 }

@@ -1,6 +1,8 @@
 // Mirrors patchbay-core's serde types.
 
 export const PLAN_SCOPE = '@plan'
+/** Reserved id for changed files under the project root that no component contains. */
+export const PROJECT_SCOPE = '@project'
 export type View = 'navigation' | 'plan' | 'implementation' | 'review'
 
 export type ComponentKind =
@@ -76,6 +78,20 @@ export interface ChangedFile {
   oldPath?: string
   /** Unix milliseconds; absent for deleted files. */
   modifiedMs?: number
+  /** Lines added and removed; absent for binary files. */
+  added?: number
+  removed?: number
+}
+
+/** A worktree of the project root's repo (`git::Worktree`). */
+export interface Worktree {
+  /** Absolute; passed back to select it. */
+  path: string
+  /** Absent for a detached `HEAD`. */
+  branch?: string
+  head: string
+  main: boolean
+  current: boolean
 }
 
 /** A file's diff against `HEAD` (`git::FileDiff`). */

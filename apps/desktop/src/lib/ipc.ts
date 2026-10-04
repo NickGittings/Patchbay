@@ -13,6 +13,7 @@ import type {
   TerminalEvent,
   TerminalSnapshot,
   TerminalSpec,
+  Worktree,
 } from '../types'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
@@ -42,8 +43,12 @@ export const gitDiff = (
   components: { id: string; path: string }[],
   componentId: string,
   path: string,
-) => invoke<FileDiff>('git_diff', { components, componentId, path })
-export const gitReview = (project: Project) => invoke<Review>('git_review', { project })
+  worktree?: string,
+) => invoke<FileDiff>('git_diff', { components, componentId, path, worktree })
+/** `worktree` is a path `gitWorktrees` returned; omitted for the open one. */
+export const gitReview = (project: Project, worktree?: string) =>
+  invoke<Review>('git_review', { project, worktree })
+export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
 export const planContext = (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', { project, componentIds })
 export const planStart = (project: Project, componentIds: string[], terminal: TerminalSpec) =>

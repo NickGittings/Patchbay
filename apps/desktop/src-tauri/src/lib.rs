@@ -421,26 +421,48 @@ async fn git_changes(
     .await
 }
 
-/// The diff of one of a component's changed files, `path` relative to the root.
+/// The worktrees of the project root's repo, for review.
+#[tauri::command]
+async fn git_worktrees(state: State<'_, AppState>) -> CmdResult<Vec<git::Worktree>> {
+    let access = state.access.snapshot();
+    blocking(move || {
+        Ok(access
+            .root()
+            .map(|r| git::worktrees(&r))
+            .unwrap_or_default())
+    })
+    .await
+}
+
+/// The diff of one of a component's changed files, `path` relative to the
+/// root, in `worktree` (one `git_worktrees` listed) or the open one.
 #[tauri::command]
 async fn git_diff(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
     component_id: String,
     path: String,
+    worktree: Option<String>,
 ) -> CmdResult<git::FileDiff> {
     let access = state.access.snapshot();
     blocking(move || {
         let root = access.root().ok_or("No project is open")?;
         let components = readable_components(&access, components);
+        let (root, components) =
+            git::in_worktree(&root, components, worktree.as_deref()).map_err(err)?;
         git::diff(&root, &components, &component_id, &path).map_err(err)
     })
     .await
 }
 
-/// Changes across the map plus the components that depend on changed ones.
+/// Changes across the map, in `worktree` or the open one, plus the components
+/// that depend on changed ones.
 #[tauri::command]
-async fn git_review(state: State<'_, AppState>, mut project: Project) -> CmdResult<git::Review> {
+async fn git_review(
+    state: State<'_, AppState>,
+    mut project: Project,
+    worktree: Option<String>,
+) -> CmdResult<git::Review> {
     let access = state.access.snapshot();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
@@ -452,10 +474,15 @@ async fn git_review(state: State<'_, AppState>, mut project: Project) -> CmdResu
                 path: c.path.clone(),
             })
             .collect();
-        Ok(git::review(
-            &project,
-            &readable_components(&access, folders),
-        ))
+        // Only folders readable in the open worktree are mapped into another.
+        let (root, components) = git::in_worktree(
+            Path::new(&project.root),
+            readable_components(&access, folders),
+            worktree.as_deref(),
+        )
+        .map_err(err)?;
+        project.root = root.to_string_lossy().into_owned();
+        Ok(git::review(&project, &components))
     })
     .await
 }
@@ -584,6 +611,7 @@ pub fn run() {
             git_changes,
             git_diff,
             git_review,
+            git_worktrees,
             plan_context,
             plan_start,
             list_devices,

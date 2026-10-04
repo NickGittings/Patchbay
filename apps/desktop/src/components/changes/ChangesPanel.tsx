@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { componentPaths } from '../../lib/git'
 import { gitChanges } from '../../lib/ipc'
-import { latestChange } from '../../lib/review'
+import { latestChange, lineTotals } from '../../lib/review'
 import { useStore } from '../../store'
 import type { ChangedFile } from '../../types'
 import ChangeList from './ChangeList'
+import DiffStat from './DiffStat'
 import DiffView from './DiffView'
 import ValidationChips from './ValidationChips'
 
@@ -43,6 +44,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       <div className="changes-header">
         <span className="panel-title">
           Changes{files && files.length > 0 && <span className="git-badge">±{files.length}</span>}
+          {files && files.length > 0 && <DiffStat {...lineTotals(files)} />}
         </span>
         <button title="Refresh changes" onClick={() => setRefresh((n) => n + 1)}>
           ↻ Refresh

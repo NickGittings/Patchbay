@@ -6,6 +6,9 @@ use std::path::{Component as PathPart, Path, PathBuf};
 pub const SCHEMA_VERSION: u32 = 2;
 /// Reserved component scope for project-level planner sessions.
 pub const PLAN_SCOPE: &str = "@plan";
+/// Reserved component id for changed files under the project root that no
+/// component contains (root files like `README.md`), as git reports them.
+pub const PROJECT_SCOPE: &str = "@project";
 /// Saved at the repo root so the map can be committed alongside the code.
 pub const PROJECT_FILE: &str = "patchbay.json";
 
@@ -210,10 +213,13 @@ impl Project {
     /// Check invariants required by component and planner session routing.
     ///
     /// # Errors
-    /// Fails if a component uses the reserved planner scope.
+    /// Fails if a component uses a reserved id.
     pub fn validate(&self) -> Result<()> {
         if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
             anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
+        }
+        if self.components.iter().any(|c| c.id == PROJECT_SCOPE) {
+            anyhow::bail!("Component id {PROJECT_SCOPE} is reserved for project files");
         }
         Ok(())
     }

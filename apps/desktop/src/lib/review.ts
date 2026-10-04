@@ -1,4 +1,10 @@
-import { sessionId, type ChangedFile, type SessionState, type TerminalSpec } from '../types'
+import {
+  sessionId,
+  type ChangedFile,
+  type ChangeKind,
+  type SessionState,
+  type TerminalSpec,
+} from '../types'
 
 /** Whether a task terminal's last run covers the current changes. */
 export type ValidationState = 'running' | 'passed' | 'failed' | 'stale' | 'notRun'
@@ -72,4 +78,41 @@ export function pathWithin(path: string, base: string): string {
   if (base === '.' || base === '') return path
   const prefix = base.endsWith('/') ? base : `${base}/`
   return path.startsWith(prefix) ? path.slice(prefix.length) : path
+}
+
+/** `[folder with trailing slash, file name]`, so lists can dim the folder. */
+export function splitPath(path: string): [string, string] {
+  const slash = path.lastIndexOf('/')
+  return slash < 0 ? ['', path] : [path.slice(0, slash + 1), path.slice(slash + 1)]
+}
+
+/** Total lines added and removed across files; files without counts are skipped. */
+export function lineTotals(files: ChangedFile[]): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const f of files) {
+    added += f.added ?? 0
+    removed += f.removed ?? 0
+  }
+  return { added, removed }
+}
+
+export const KIND_LETTER: Record<ChangeKind, string> = {
+  modified: 'M',
+  added: 'A',
+  deleted: 'D',
+  renamed: 'R',
+  typeChanged: 'T',
+  conflicted: '!',
+  untracked: 'U',
+}
+
+export const KIND_LABEL: Record<ChangeKind, string> = {
+  modified: 'Modified',
+  added: 'Added',
+  deleted: 'Deleted',
+  renamed: 'Renamed',
+  typeChanged: 'Type changed',
+  conflicted: 'Conflicted',
+  untracked: 'New file',
 }
