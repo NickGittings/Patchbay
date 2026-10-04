@@ -2,7 +2,7 @@
   "id": "codex",
   "name": "Codex",
   "category": "Agents",
-  "description": "Codex CLI in this component's folder. Context file path is in $PATCHBAY_CONTEXT_FILE.",
+  "description": "Codex CLI scoped to this component, with related components as context.",
   "command": "codex",
   "kind": "agent"
 }
