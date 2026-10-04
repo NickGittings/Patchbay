@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
 pub const COMPONENT_ENV: &str = "PATCHBAY_COMPONENT";
@@ -157,7 +158,19 @@ fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     let dir = std::env::temp_dir().join("patchbay");
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{slug}.md"));
-    std::fs::write(&file, contents)?;
+    // Write then rename, so a reader (e.g. `cat` in a starting agent) never
+    // sees a half-written file while another launch rewrites it.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        ".{slug}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, contents)?;
+    if let Err(e) = std::fs::rename(&tmp, &file) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(file)
 }
 
@@ -406,7 +419,8 @@ mod tests {
 
     #[test]
     fn planner_session_uses_root_scope_and_context() {
-        let p = project();
+        let mut p = project();
+        p.name = "root-scope-demo".into();
         let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll).unwrap();
         assert_eq!(spec.id, "@plan/claude");
         assert_eq!(spec.cwd, PathBuf::from("/repo"));
