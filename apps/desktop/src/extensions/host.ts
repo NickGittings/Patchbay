@@ -393,7 +393,8 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
     case 'terminals.start':
       permission(runtime, 'terminals')
       if (!s.project) throw new Error('Open a project first')
-      return ipc.terminalStart(s.toProject(), text(0), text(1), id)
+      // In the active task's worktree, like terminals the user starts.
+      return ipc.terminalStart(s.toProject(), text(0), text(1), id, s.activeTask ?? undefined)
     case 'terminals.run':
       permission(runtime, 'terminals')
       return runTerminal(runtime, text(0), text(1))

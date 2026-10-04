@@ -13,6 +13,8 @@ interface Tab {
   componentId: string
   terminal: TerminalSpec
   label: string
+  /** `null` for the open worktree and for extension terminals. */
+  task: string | null
 }
 
 /** Tabs for the selected component's terminals, or every started session when nothing is selected. */
@@ -23,12 +25,14 @@ function useTabs(): Tab[] {
   useClockTick()
 
   const runtime = useStore((s) => s.runtimeTerminals)
-  const all = nodes.flatMap((n) =>
+  const task = useStore((s) => s.activeTask)
+  const all: Tab[] = nodes.flatMap((n) =>
     n.data.terminals.map((t) => ({
-      sid: sessionId(n.id, t.id),
+      sid: sessionId(n.id, t.id, task),
       componentId: n.id,
       terminal: t,
       label: selectedId ? t.name : `${n.data.name} · ${t.name}`,
+      task,
     })),
   )
   all.push(
@@ -37,6 +41,7 @@ function useTabs(): Tab[] {
       componentId: t.componentId,
       terminal: t.terminal,
       label: t.terminal.name,
+      task: null,
     })),
   )
   return selectedId
@@ -95,7 +100,11 @@ export default function TerminalDock() {
             {session?.running ? (
               <button onClick={() => stopTerminal(active.sid)}>■ Stop</button>
             ) : (
-              <button onClick={() => void startTerminal(active.componentId, active.terminal.id)}>
+              <button
+                onClick={() =>
+                  void startTerminal(active.componentId, active.terminal.id, active.task)
+                }
+              >
                 ▶ {session ? 'Restart' : 'Start'}
               </button>
             )}
@@ -109,6 +118,7 @@ export default function TerminalDock() {
           key={active.sid}
           componentId={active.componentId}
           terminal={active.terminal}
+          task={active.task}
         />
       ) : (
         <div className="terminal-area" />

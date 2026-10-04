@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
 import AttentionMenu from './status/AttentionMenu'
+import TaskMenu from './tasks/TaskMenu'
 import type { View } from '../types'
 
 const views: { id: View; label: string }[] = [
@@ -11,6 +12,7 @@ const views: { id: View; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Implementation' },
   { id: 'review', label: 'Review' },
+  { id: 'tasks', label: 'Tasks' },
 ]
 
 export default function Toolbar() {
@@ -77,6 +79,7 @@ export default function Toolbar() {
               </button>
             ))}
           </div>
+          <TaskMenu />
           <AttentionMenu />
         </>
       )}

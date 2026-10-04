@@ -15,11 +15,12 @@ export default function TerminalGrid({
   terminals: TerminalSpec[]
 }) {
   const sessions = useStore((s) => s.sessions)
+  const task = useStore((s) => s.activeTask)
   useClockTick()
   return (
     <div className="terminal-grid">
       {terminals.map((terminal) => {
-        const sid = sessionId(componentId, terminal.id)
+        const sid = sessionId(componentId, terminal.id, task)
         const session = sessions[sid]
         const status = terminalStatus(terminal.kind, session)
         return (
@@ -32,7 +33,7 @@ export default function TerminalGrid({
               {session?.running ? (
                 <button onClick={() => stopTerminal(sid)}>■ Stop</button>
               ) : (
-                <button onClick={() => void startTerminal(componentId, terminal.id)}>
+                <button onClick={() => void startTerminal(componentId, terminal.id, task)}>
                   ▶ {session ? 'Restart' : 'Start'}
                 </button>
               )}

@@ -407,7 +407,7 @@ fn walk(
     }
 }
 
-fn slug(rel: &str) -> String {
+pub(crate) fn slug(rel: &str) -> String {
     if rel == "." {
         return "root".into();
     }

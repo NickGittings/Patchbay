@@ -11,12 +11,15 @@ import Inspector from './components/Inspector'
 import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import ReviewView from './components/ReviewView'
+import NewTaskDialog from './components/tasks/NewTaskDialog'
+import TasksView from './components/tasks/TasksView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
 import { GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
+import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
 import { useStore } from './store'
 
@@ -70,11 +73,18 @@ export default function App() {
     void refreshExtensions().catch((e) => useStore.getState().setMessage(String(e)))
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
     const stopWindows = syncComponentWindows()
+    const stopTasks = followActiveTask()
     return () => {
       stopHost()
       stopWindows()
+      stopTasks()
     }
   }, [])
+  // Tasks belong to the repo, so each opened project loads its own.
+  const project = useStore((s) => s.project)
+  useEffect(() => {
+    if (project) void refreshTasks()
+  }, [project])
   useGitRefresh()
   useRootSync()
 
@@ -84,8 +94,11 @@ export default function App() {
         <Toolbar />
         <CommandPalette />
         <ExtensionsPanel />
+        <NewTaskDialog />
         {view === 'plan' ? (
           <PlanView />
+        ) : view === 'tasks' ? (
+          <TasksView />
         ) : view === 'implementation' ? (
           <ImplementationView />
         ) : view === 'review' ? (

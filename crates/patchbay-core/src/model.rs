@@ -336,6 +336,21 @@ pub fn session_id(component_id: &str, terminal_id: &str) -> String {
     format!("{component_id}/{terminal_id}")
 }
 
+/// Separates a task id at the end of a session id. Task ids are ASCII letters
+/// and digits, so the last occurrence marks it.
+pub const TASK_SEPARATOR: &str = "@task-";
+
+/// [`session_id`] of a terminal run for a task (`{component}/{terminal}@task-{task}`),
+/// so the same terminal can run in several worktrees at once. The component id
+/// stays before the last `/`, which event routing relies on.
+#[must_use]
+pub fn task_session_id(component_id: &str, terminal_id: &str, task: Option<&str>) -> String {
+    match task {
+        Some(task) => format!("{component_id}/{terminal_id}{TASK_SEPARATOR}{task}"),
+        None => session_id(component_id, terminal_id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

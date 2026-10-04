@@ -34,17 +34,18 @@ async function refresh() {
   while (pending) {
     pending = false
     const requested = revision
-    const { project } = useStore.getState()
+    const { project, activeTask } = useStore.getState()
     if (!project) continue
     const components = componentPaths()
     try {
-      const status = await gitStatus(components)
+      const status = await gitStatus(components, activeTask ?? undefined)
       const current = useStore.getState()
       // Object identity also catches reopening the same root; compare paths so
       // edits during a slow status call cannot restore removed component badges.
       if (
         requested === revision &&
         current.project === project &&
+        current.activeTask === activeTask &&
         current.nodes.length === components.length &&
         current.nodes.every(
           (n, i) => n.id === components[i].id && n.data.path === components[i].path,
@@ -52,7 +53,7 @@ async function refresh() {
       )
         current.setGitStatus(status)
     } catch {
-      // Git missing or an unavailable repo: retain the last status.
+      // Git missing, an unavailable repo or a vanished task worktree: retain the last status.
     }
   }
 }
