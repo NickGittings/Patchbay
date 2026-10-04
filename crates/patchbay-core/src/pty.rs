@@ -731,30 +731,51 @@ impl PtyManager {
     }
 
     /// Stop this particular run, escalating after the grace period. A newer
-    /// run with the same id is never signalled.
-    pub fn stop_generation(&self, id: &str, generation: u64) {
+    /// run with the same id is never signalled. Wait for both the process and
+    /// its final terminal lifecycle update before allowing an immediate restart.
+    ///
+    /// # Errors
+    /// Fails if the run has not finished stopping within the bounded grace periods.
+    pub fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
         {
             let mut sessions = self.sessions.lock().unwrap();
-            let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) else {
-                return;
-            };
-            session.process.hang_up();
-            if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
-                backlog.lock().unwrap().tracker.on_stop();
+            if let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) {
+                session.process.hang_up();
+                if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
+                    backlog.lock().unwrap().tracker.on_stop();
+                }
             }
         }
         let deadline = Instant::now() + RESET_GRACE;
+        let final_deadline = deadline + RESET_GRACE;
+        let mut forced = false;
         loop {
-            {
+            let process_running = {
                 let mut sessions = self.sessions.lock().unwrap();
-                let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation)
-                else {
-                    return;
-                };
-                if Instant::now() >= deadline {
-                    session.process.force_kill();
-                    return;
+                if let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) {
+                    if !forced && Instant::now() >= deadline {
+                        session.process.force_kill();
+                        forced = true;
+                    }
+                    true
+                } else {
+                    false
                 }
+            };
+            let terminal_running = self
+                .backlogs
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|backlog| {
+                    let backlog = backlog.lock().unwrap();
+                    backlog.generation == generation && backlog.running
+                });
+            if !process_running && !terminal_running {
+                return Ok(());
+            }
+            if Instant::now() >= final_deadline {
+                bail!("Terminal {id} did not finish stopping after hangup and force-kill");
             }
             std::thread::sleep(Duration::from_millis(20));
         }

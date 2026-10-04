@@ -270,12 +270,14 @@ impl GraphActions {
         }
         let mut launched = Vec::new();
         let mut acquired = Vec::new();
-        let result = (|| {
+        let mut participating = Vec::new();
+        let mut result = (|| {
             let mut results = Vec::new();
             for stage in stages {
                 let mut waits = Vec::new();
                 for spec in stage {
                     check_cancelled(&cancelled)?;
+                    check_environment_running(pty, &participating)?;
                     let id = spec.id.clone();
                     let ready = spec.ready_when.trim().to_string();
                     let (run, reused) = {
@@ -327,6 +329,7 @@ impl GraphActions {
                         (run, reused)
                     };
                     if environment.is_some() {
+                        participating.push(run.clone());
                         results.push(TaskResult {
                             session_id: run.id.clone(),
                             outcome: if reused {
@@ -353,11 +356,12 @@ impl GraphActions {
                 if environment.is_some() {
                     let deadline = Instant::now() + timeout;
                     for (run, ready) in &waits {
-                        wait_for_readiness(pty, run, ready, deadline, &cancelled)?;
+                        wait_for_readiness(pty, run, ready, deadline, &cancelled, &participating)?;
                     }
                 }
             }
             check_cancelled(&cancelled)?;
+            check_environment_running(pty, &participating)?;
             Ok(ActionReport { plan, results })
         })();
         if result.is_err() {
@@ -382,8 +386,29 @@ impl GraphActions {
                 );
                 rollback
             };
+            let mut failures = Vec::new();
             for run in rollback.iter().rev() {
-                pty.stop_generation(&run.id, run.generation);
+                if let Err(error) = pty.stop_generation(&run.id, run.generation) {
+                    failures.push(error.to_string());
+                    // Preserve a retryable owner when cleanup did not finish.
+                    let mut state = self.0.lock().unwrap();
+                    if state.epoch == epoch
+                        && let Some(group) = &environment
+                    {
+                        state
+                            .environments
+                            .entry(group.clone())
+                            .or_default()
+                            .push(run.clone());
+                    }
+                }
+            }
+            if !failures.is_empty() {
+                result = Err(anyhow!(
+                    "{}; rollback incomplete: {}",
+                    result.unwrap_err(),
+                    failures.join("; ")
+                ));
             }
         }
         self.0.lock().unwrap().active = None;
@@ -406,10 +431,29 @@ impl GraphActions {
             runs.retain(|run| !state.environments.values().any(|other| other.contains(run)));
             runs
         };
+        let mut failures = Vec::new();
+        let mut unfinished = Vec::new();
         for run in runs.iter().rev() {
-            pty.stop_generation(&run.id, run.generation);
+            if let Err(error) = pty.stop_generation(&run.id, run.generation) {
+                failures.push(error.to_string());
+                unfinished.push(run.clone());
+            }
         }
-        self.0.lock().unwrap().stopping = false;
+        let mut state = self.0.lock().unwrap();
+        if state.epoch == epoch && !unfinished.is_empty() {
+            unfinished.reverse();
+            state
+                .environments
+                .entry(group_id.to_string())
+                .or_default()
+                .extend(unfinished);
+        }
+        state.stopping = false;
+        ensure!(
+            failures.is_empty(),
+            "Environment did not finish stopping: {}",
+            failures.join("; ")
+        );
         Ok(())
     }
 
@@ -454,15 +498,30 @@ fn wait_for_exit(pty: &PtyManager, run: &Run, cancelled: &AtomicBool) -> Result<
     }
 }
 
+fn check_environment_running(pty: &PtyManager, runs: &[Run]) -> Result<()> {
+    for run in runs {
+        let snapshot = snapshot_run(pty, run)?;
+        ensure!(
+            snapshot.running,
+            "Development terminal {} exited before startup completed (exit {:?})",
+            run.id,
+            snapshot.exit_code
+        );
+    }
+    Ok(())
+}
+
 fn wait_for_readiness(
     pty: &PtyManager,
     run: &Run,
     ready: &str,
     deadline: Instant,
     cancelled: &AtomicBool,
+    participating: &[Run],
 ) -> Result<()> {
     loop {
         check_cancelled(cancelled)?;
+        check_environment_running(pty, participating)?;
         let snapshot = snapshot_run(pty, run)?;
         if !snapshot.running {
             bail!(
@@ -744,6 +803,27 @@ mod tests {
         }
 
         #[test]
+        fn a_ready_task_exiting_during_other_tasks_startup_rolls_back_the_environment() {
+            for ordered in [true, false] {
+                let mut f = Fixture::new();
+                f.project.groups[0].ordered_startup = ordered;
+                f.project.components[1].terminals[0].command =
+                    "printf 'READY\\n'; sleep 0.3; exit 7".into();
+                f.project.components[0].terminals[0].command =
+                    "sleep 1; printf 'WEB READY\\n'; cat".into();
+                f.project.components[0].terminals[0].ready_when = "WEB READY".into();
+                let error = f.run(start()).unwrap_err().to_string();
+                assert!(
+                    error.contains("api/dev") && error.contains("exited"),
+                    "{error}"
+                );
+                assert!(!f.pty.is_running("api/dev"));
+                assert!(!f.pty.is_running("web/dev"));
+                assert!(f.pty.snapshot("web/dev").unwrap().status.stopped);
+            }
+        }
+
+        #[test]
         fn stop_and_project_reset_cancel_pending_startup() {
             let mut f = Fixture::new();
             f.project.components[1].terminals[0].command = "sleep 30".into();
@@ -868,13 +948,16 @@ mod tests {
             f.run(start()).unwrap();
             let generation = f.pty.snapshot("api/dev").unwrap().generation;
             f.actions.stop_group("dev", 0, &f.pty).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while f.pty.is_running("api/dev") {
-                assert!(Instant::now() < deadline, "stubborn process was not killed");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            assert!(
+                !f.pty.is_running("api/dev"),
+                "Stop returned before the process exited"
+            );
+            assert!(
+                !f.pty.snapshot("api/dev").unwrap().running,
+                "Stop returned before the terminal lifecycle completed"
+            );
             f.run(start()).unwrap();
-            f.pty.stop_generation("api/dev", generation);
+            f.pty.stop_generation("api/dev", generation).unwrap();
             assert!(f.pty.is_running("api/dev"));
             assert!(f.pty.snapshot("api/dev").unwrap().generation > generation);
         }
