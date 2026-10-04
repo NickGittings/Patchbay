@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component as PathPart, Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -131,6 +132,49 @@ impl Project {
             .map(|c| self.component_dir(c))
             .filter(|dir| !dir.starts_with(&self.root))
             .collect()
+    }
+
+    /// Components that may be affected by changes to `changed`: everything that
+    /// depends on them, directly or through other components (a `Link` means
+    /// `source` depends on `target`). Each comes with the changed components
+    /// it depends on, sorted; changed components themselves are left out.
+    /// Ordered by distance from the nearest change, then by id.
+    #[must_use]
+    pub fn dependents(&self, changed: &[String]) -> Vec<(String, Vec<String>)> {
+        let mut found: BTreeMap<&str, (usize, Vec<String>)> = BTreeMap::new();
+        for start in changed {
+            let mut seen = HashSet::from([start.as_str()]);
+            let mut frontier = vec![start.as_str()];
+            let mut depth = 0;
+            while !frontier.is_empty() {
+                depth += 1;
+                let mut next = Vec::new();
+                for link in &self.links {
+                    if frontier.contains(&link.target.as_str()) && seen.insert(&link.source) {
+                        next.push(link.source.as_str());
+                    }
+                }
+                for id in &next {
+                    if changed.iter().any(|c| c == id) {
+                        continue;
+                    }
+                    let entry = found.entry(id).or_insert((depth, Vec::new()));
+                    entry.0 = entry.0.min(depth);
+                    entry.1.push(start.clone());
+                }
+                frontier = next;
+            }
+        }
+        let mut out: Vec<(usize, String, Vec<String>)> = found
+            .into_iter()
+            .map(|(id, (depth, mut via))| {
+                via.sort();
+                via.dedup();
+                (depth, id.to_string(), via)
+            })
+            .collect();
+        out.sort();
+        out.into_iter().map(|(_, id, via)| (id, via)).collect()
     }
 
     /// Components linked to `id`, with the direction of the relationship.
@@ -285,6 +329,59 @@ pub fn session_id(component_id: &str, terminal_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project whose links are `(source, target)`: source depends on target.
+    fn linked(links: &[(&str, &str)]) -> Project {
+        let links: Vec<_> = links
+            .iter()
+            .map(|(s, t)| serde_json::json!({ "id": format!("{s}-{t}"), "source": s, "target": t }))
+            .collect();
+        serde_json::from_value(serde_json::json!({ "name": "p", "links": links })).unwrap()
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn dependents_follow_used_by_links_transitively() {
+        // web -> api -> core, cli -> core
+        let p = linked(&[("web", "api"), ("api", "core"), ("cli", "core")]);
+        assert_eq!(
+            p.dependents(&ids(&["core"])),
+            [
+                ("api".to_string(), ids(&["core"])),
+                ("cli".to_string(), ids(&["core"])),
+                ("web".to_string(), ids(&["core"])),
+            ]
+        );
+        assert!(p.dependents(&ids(&["web"])).is_empty());
+    }
+
+    #[test]
+    fn dependents_leave_out_changed_components_and_merge_paths() {
+        // Diamond: app -> a -> lib, app -> b -> lib.
+        let p = linked(&[("app", "a"), ("app", "b"), ("a", "lib"), ("b", "lib")]);
+        assert_eq!(
+            p.dependents(&ids(&["lib", "a"])),
+            [
+                ("app".to_string(), ids(&["a", "lib"])),
+                ("b".to_string(), ids(&["lib"])),
+            ]
+        );
+    }
+
+    #[test]
+    fn dependents_survive_cycles() {
+        let p = linked(&[("a", "b"), ("b", "a"), ("c", "a")]);
+        assert_eq!(
+            p.dependents(&ids(&["a"])),
+            [
+                ("b".to_string(), ids(&["a"])),
+                ("c".to_string(), ids(&["a"])),
+            ]
+        );
+    }
 
     #[test]
     fn normalizes_dots() {

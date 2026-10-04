@@ -1,8 +1,11 @@
+import { useState } from 'react'
+import { Group, Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
 import { startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId } from '../types'
+import ChangesPanel from './changes/ChangesPanel'
 import TerminalGrid from './TerminalGrid'
 
 export default function ImplementationView() {
@@ -12,6 +15,7 @@ export default function ImplementationView() {
   const sessions = useStore((s) => s.sessions)
   const gitChanges = useStore((s) => s.gitChanges)
   const select = useStore((s) => s.select)
+  const [showChanges, setShowChanges] = useState(false)
   const target =
     nodes.find((n) => n.id === selectedId) ?? nodes.find((n) => n.id === highlighted[0]) ?? nodes[0]
   const stopped =
@@ -57,6 +61,14 @@ export default function ImplementationView() {
               ⧉ Pop out
             </button>
             <button
+              aria-pressed={showChanges}
+              className={showChanges ? 'active' : ''}
+              title="Show this component's uncommitted changes"
+              onClick={() => setShowChanges(!showChanges)}
+            >
+              ± Changes
+            </button>
+            <button
               disabled={stopped.length === 0}
               onClick={() => {
                 for (const t of stopped) void startTerminal(target.id, t.id)
@@ -68,7 +80,17 @@ export default function ImplementationView() {
         )}
       </header>
       <div className="implementation-terminals">
-        {target ? (
+        {target && showChanges ? (
+          <Group orientation="horizontal">
+            <Panel defaultSize="62" minSize="30">
+              <TerminalGrid componentId={target.id} terminals={target.data.terminals} />
+            </Panel>
+            <Separator className="separator" />
+            <Panel defaultSize="38" minSize="20">
+              <ChangesPanel key={target.id} componentId={target.id} />
+            </Panel>
+          </Group>
+        ) : target ? (
           <TerminalGrid componentId={target.id} terminals={target.data.terminals} />
         ) : (
           <div className="hint">Add a component in Navigation to configure terminals.</div>

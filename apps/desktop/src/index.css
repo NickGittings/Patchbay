@@ -759,3 +759,229 @@ select:focus {
   flex: 1;
   min-height: 0;
 }
+
+/* Changes and review */
+.side-tabs-panel,
+.changes-panel,
+.review-list {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  min-width: 0;
+}
+.review-list {
+  overflow: auto;
+}
+.side-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.side-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.side-tabs button.active {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.side-tab-content {
+  flex: 1;
+  min-height: 0;
+}
+.changes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.changes-header .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-summary {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.changes-split {
+  flex: 1;
+  min-height: 0;
+}
+.change-list {
+  height: 100%;
+  overflow: auto;
+  padding: 4px 0;
+}
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.change-row.active {
+  background: var(--panel-2);
+}
+.change-letter {
+  width: 12px;
+  flex: none;
+  font-weight: 700;
+  color: var(--accent);
+}
+.kind-added .change-letter,
+.kind-untracked .change-letter {
+  color: var(--ok);
+}
+.kind-deleted .change-letter,
+.kind-conflicted .change-letter {
+  color: var(--bad);
+}
+.kind-renamed .change-letter {
+  color: var(--running);
+}
+.change-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.change-old {
+  color: var(--muted);
+}
+.diff-view {
+  height: 100%;
+  overflow: auto;
+  background: var(--bg);
+}
+.diff-error {
+  overflow-wrap: anywhere;
+}
+.diff {
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  min-width: max-content;
+}
+.diff-line {
+  padding: 0 12px;
+  white-space: pre;
+}
+.diff-line.add {
+  background: rgba(62, 207, 142, 0.12);
+  color: #9be8c3;
+}
+.diff-line.del {
+  background: rgba(255, 92, 92, 0.12);
+  color: #ffb0b0;
+}
+.diff-line.hunk {
+  color: var(--running);
+  background: var(--panel);
+}
+.diff-line.meta {
+  color: var(--muted);
+}
+.validation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  flex: none;
+}
+.validation-chips.none {
+  color: var(--muted);
+  font-size: 11px;
+}
+.validation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  color: var(--muted);
+}
+.validation-chip.passed {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.validation-chip.failed {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.validation-chip.running {
+  color: var(--running);
+  border-color: var(--running);
+}
+.validation-chip.stale {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.validation-chip button {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.review-view {
+  min-width: 0;
+}
+.review-group {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.review-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0 6px;
+}
+.review-group.affected .review-group-header {
+  padding-left: 12px;
+}
+.review-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.review-name {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-via {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-affected-title {
+  padding-top: 14px;
+}

@@ -7,6 +7,7 @@ import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
 import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
+import ReviewView from './components/ReviewView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
 import { GIT_DIRTY_EVENT, listDevices } from './lib/ipc'
@@ -77,6 +78,8 @@ export default function App() {
           <PlanView />
         ) : view === 'implementation' ? (
           <ImplementationView />
+        ) : view === 'review' ? (
+          <ReviewView />
         ) : (
           <Group orientation="horizontal" className="workspace">
             <Panel defaultSize="14" minSize="10">

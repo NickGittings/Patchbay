@@ -124,7 +124,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
   switch (e.type) {
     case 'started':
       if (!newGeneration) break // Snapshot already includes this start.
-      s.setSession(e.sessionId, { running: true })
+      s.setSession(e.sessionId, { running: true, startedMs: e.startedMs })
       writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
       break
     case 'output': {
@@ -138,7 +138,12 @@ export function handleTerminalEvent(e: TerminalEvent) {
       if (!s.sessions[e.sessionId]?.running && s.sessions[e.sessionId]?.exitCode === e.exitCode)
         break
       void requestGitRefresh()
-      s.setSession(e.sessionId, { running: false, exitCode: e.exitCode })
+      s.setSession(e.sessionId, {
+        ...s.sessions[e.sessionId],
+        running: false,
+        exitCode: e.exitCode,
+        exitedMs: e.exitedMs,
+      })
       writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
       break
   }
@@ -161,6 +166,8 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
         useStore.getState().setSession(sid, {
           running: snapshot.running,
           exitCode: snapshot.exitCode ?? undefined,
+          startedMs: snapshot.startedMs,
+          exitedMs: snapshot.exitedMs ?? undefined,
         })
       }
       return snapshot

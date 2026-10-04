@@ -6,6 +6,10 @@ let running: Promise<void> | undefined
 let pending = false
 let revision = 0
 
+/** Component ids and folders, which is all the Git commands need from the map. */
+export const componentPaths = () =>
+  useStore.getState().nodes.map((n) => ({ id: n.id, path: n.data.path }))
+
 /** Drop outstanding results when the main window changes projects or unmounts. */
 export function invalidateGitRefresh() {
   revision++
@@ -30,9 +34,9 @@ async function refresh() {
   while (pending) {
     pending = false
     const requested = revision
-    const { project, nodes } = useStore.getState()
+    const { project } = useStore.getState()
     if (!project) continue
-    const components = nodes.map((n) => ({ id: n.id, path: n.data.path }))
+    const components = componentPaths()
     try {
       const status = await gitStatus(components)
       const current = useStore.getState()

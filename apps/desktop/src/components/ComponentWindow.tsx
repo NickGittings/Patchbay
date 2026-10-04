@@ -8,6 +8,7 @@ import { listenForTerminals } from '../lib/sessions'
 import { absolutePath, GIT_EVENT, PROJECT_EVENT, READY_EVENT } from '../lib/windows'
 import { useStore } from '../store'
 import { type Project } from '../types'
+import ChangesPanel from './changes/ChangesPanel'
 import FileTree from './FileTree'
 import TerminalGrid from './TerminalGrid'
 
@@ -17,6 +18,7 @@ export default function ComponentWindow({ id }: { id: string }) {
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const message = useStore((s) => s.message)
   const [received, setReceived] = useState(false)
+  const [tab, setTab] = useState<'files' | 'changes'>('files')
 
   useEffect(() => {
     let disposed = false
@@ -95,11 +97,41 @@ export default function ComponentWindow({ id }: { id: string }) {
         </div>
       )}
       <Group orientation="horizontal" className="workspace">
-        <Panel defaultSize="24" minSize="15">
-          <FileTree key={`${project.root}/${data.path}`} root={project.root} path={data.path} />
+        <Panel defaultSize="28" minSize="15">
+          <div className="side-tabs-panel">
+            <div className="side-tabs" role="tablist">
+              <button
+                role="tab"
+                aria-selected={tab === 'files'}
+                className={tab === 'files' ? 'active' : ''}
+                onClick={() => setTab('files')}
+              >
+                Files
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === 'changes'}
+                className={tab === 'changes' ? 'active' : ''}
+                onClick={() => setTab('changes')}
+              >
+                Changes{changes > 0 && <span className="git-badge">±{changes}</span>}
+              </button>
+            </div>
+            <div className="side-tab-content">
+              {tab === 'files' ? (
+                <FileTree
+                  key={`${project.root}/${data.path}`}
+                  root={project.root}
+                  path={data.path}
+                />
+              ) : (
+                <ChangesPanel componentId={id} />
+              )}
+            </div>
+          </div>
         </Panel>
         <Separator className="separator" />
-        <Panel defaultSize="76" minSize="30">
+        <Panel defaultSize="72" minSize="30">
           <TerminalGrid componentId={id} terminals={data.terminals} />
         </Panel>
       </Group>

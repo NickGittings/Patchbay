@@ -8,6 +8,7 @@ const views: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Implementation' },
+  { id: 'review', label: 'Review' },
 ]
 
 export default function Toolbar() {
@@ -31,7 +32,7 @@ export default function Toolbar() {
       const s = useStore.getState()
       if ((e.metaKey || e.ctrlKey) && s.project) {
         const target = views[Number(e.key) - 1]
-        if (target && ['1', '2', '3'].includes(e.key)) {
+        if (target && /^[1-9]$/.test(e.key)) {
           e.preventDefault()
           s.setView(target.id)
         }
