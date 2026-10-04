@@ -1,7 +1,7 @@
 //! Thin Tauri adapter over patchbay-core: commands in, terminal events out.
 
 use patchbay_core::TerminalSpec;
-use patchbay_core::access::{Access, external_candidates};
+use patchbay_core::access::{Access, AccessSnapshot, external_candidates};
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
@@ -367,9 +367,20 @@ struct ComponentPath {
     path: String,
 }
 
-/// Takes only ids and folders for event-driven status refreshes. Folders
-/// the backend hasn't granted are left out, so the webview can't run git
-/// anywhere else on disk.
+/// `(id, canonical folder)` for the components whose folders the backend has
+/// granted. The rest are left out, so the webview can't run git anywhere else
+/// on disk.
+fn readable_components(
+    access: &AccessSnapshot,
+    components: Vec<ComponentPath>,
+) -> Vec<(String, PathBuf)> {
+    components
+        .into_iter()
+        .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+        .collect()
+}
+
+/// Takes only ids and folders for event-driven status refreshes.
 #[tauri::command]
 async fn git_status(
     state: State<'_, AppState>,
@@ -381,11 +392,94 @@ async fn git_status(
         let Some(root) = access.root() else {
             return Ok(git::GitStatus::default());
         };
-        let components: Vec<(String, PathBuf)> = components
-            .into_iter()
-            .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+        Ok(git::status(
+            &root,
+            &readable_components(&access, components),
+        ))
+    })
+    .await
+}
+
+/// One component's uncommitted changes. Takes every component on the map so
+/// files are attributed exactly as `git_status` counts them.
+#[tauri::command]
+async fn git_changes(
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+    component_id: String,
+) -> CmdResult<Vec<git::ChangedFile>> {
+    let access = state.access.snapshot();
+    blocking(move || {
+        let Some(root) = access.root() else {
+            return Ok(Vec::new());
+        };
+        let components = readable_components(&access, components);
+        Ok(git::component_changes(&root, &components, &component_id))
+    })
+    .await
+}
+
+/// The worktrees of the project root's repo, for review.
+#[tauri::command]
+async fn git_worktrees(state: State<'_, AppState>) -> CmdResult<Vec<git::Worktree>> {
+    let access = state.access.snapshot();
+    blocking(move || {
+        Ok(access
+            .root()
+            .map(|r| git::worktrees(&r))
+            .unwrap_or_default())
+    })
+    .await
+}
+
+/// The diff of one of a component's changed files, `path` (and a rename's
+/// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
+/// listed) or the open one.
+#[tauri::command]
+async fn git_diff(
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+    component_id: String,
+    path: String,
+    old_path: Option<String>,
+    worktree: Option<String>,
+) -> CmdResult<git::FileDiff> {
+    let access = state.access.snapshot();
+    blocking(move || {
+        let root = access.root().ok_or("No project is open")?;
+        let target = git::DiffTarget {
+            component_id: &component_id,
+            path: &path,
+            old_path: old_path.as_deref(),
+        };
+        let components = readable_components(&access, components);
+        git::diff(&root, components, worktree.as_deref(), target).map_err(err)
+    })
+    .await
+}
+
+/// Changes across the map, in `worktree` or the open one, plus the components
+/// that depend on changed ones.
+#[tauri::command]
+async fn git_review(
+    state: State<'_, AppState>,
+    mut project: Project,
+    worktree: Option<String>,
+) -> CmdResult<git::Review> {
+    let access = state.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let folders = project
+            .components
+            .iter()
+            .map(|c| ComponentPath {
+                id: c.id.clone(),
+                path: c.path.clone(),
+            })
             .collect();
-        Ok(git::status(&root, &components))
+        // Only folders readable in the open worktree are mapped into another.
+        let components = readable_components(&access, folders);
+        git::review(&project, components, worktree.as_deref()).map_err(err)
     })
     .await
 }
@@ -511,6 +605,10 @@ pub fn run() {
             save_project,
             component_context,
             git_status,
+            git_changes,
+            git_diff,
+            git_review,
+            git_worktrees,
             plan_context,
             plan_start,
             list_devices,

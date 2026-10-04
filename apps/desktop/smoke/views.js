@@ -27,6 +27,14 @@
   const assert = (value, message) => {
     if (!value) throw new Error(message)
   }
+  // A changes list (or its empty state) has loaded under `selector`; errors fail the run.
+  const changesSettled = (selector) => {
+    const el = document.querySelector(selector)
+    if (!el) return false
+    const error = el.querySelector('.file-tree-error, .diff-error')
+    if (error) throw new Error(`${selector}: ${error.textContent}`)
+    return el.querySelector('.change-list') || el.textContent.includes('No uncommitted changes')
+  }
 
   try {
     const { project: detected } = await smoke.openProject()
@@ -173,6 +181,30 @@
       ),
     )
     await until('start all', () => state().sessions['beta/task']?.running)
+    assert(state().sessions['beta/task'].startedMs > 0, 'session has no start time')
+    click(
+      Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
+        b.textContent.includes('Changes'),
+      ),
+    )
+    await until('implementation changes panel', () =>
+      changesSettled('.implementation-view .changes-panel'),
+    )
+    assert(
+      document.querySelector('.implementation-view .terminal-tile'),
+      'changes panel hides the terminals',
+    )
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '4', metaKey: true, bubbles: true }))
+    await until('review shortcut', () => document.querySelector('.review-view'))
+    await until('review list', () => changesSettled('.review-view'))
+    if (document.querySelector('.review-view .change-list')) {
+      await until('review diff', () => {
+        const error = document.querySelector('.review-view .diff-error')
+        if (error) throw new Error(error.textContent)
+        const view = document.querySelector('.review-view .diff-view')
+        return view && !view.classList.contains('diff-loading')
+      })
+    }
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', metaKey: true, bubbles: true }))
     await until('navigation shortcut', () => document.querySelector('.hierarchy'))
     await until('navigation viewport restored', () => viewport() === savedViewport)
@@ -237,7 +269,7 @@
       'project change retains planner sessions',
     )
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, merge selection, project reset',
+      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, project reset',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

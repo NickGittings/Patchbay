@@ -3,13 +3,17 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  ChangedFile,
   DeviceManifest,
   DirEntry,
+  FileDiff,
   GitStatus,
   Project,
+  Review,
   TerminalEvent,
   TerminalSnapshot,
   TerminalSpec,
+  Worktree,
 } from '../types'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
@@ -31,6 +35,24 @@ export const onFileAccessChanged = (handler: () => void) =>
   listen('patchbay://file-access', handler)
 export const gitStatus = (components: { id: string; path: string }[]) =>
   invoke<GitStatus>('git_status', { components })
+/** Every component on the map is sent so files are attributed as `gitStatus` counts them. */
+export const gitChanges = (components: { id: string; path: string }[], componentId: string) =>
+  invoke<ChangedFile[]>('git_changes', { components, componentId })
+/**
+ * `path` must be one of the component's changes, relative to the project root; `oldPath` is the
+ * one it lists for a rename, so the diff shows the rename.
+ */
+export const gitDiff = (
+  components: { id: string; path: string }[],
+  componentId: string,
+  path: string,
+  oldPath?: string,
+  worktree?: string,
+) => invoke<FileDiff>('git_diff', { components, componentId, path, oldPath, worktree })
+/** `worktree` is a path `gitWorktrees` returned; omitted for the open one. */
+export const gitReview = (project: Project, worktree?: string) =>
+  invoke<Review>('git_review', { project, worktree })
+export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
 export const planContext = (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', { project, componentIds })
 export const planStart = (project: Project, componentIds: string[], terminal: TerminalSpec) =>

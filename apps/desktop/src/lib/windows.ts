@@ -130,9 +130,11 @@ export function syncComponentWindows(): () => void {
   let disposed = false
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  // Last payloads broadcast, so selection, drags and unchanged git polls don't re-send.
+  // Last payloads broadcast, so selection and drags don't re-send the project. Git status is
+  // re-sent on every refresh (a new object), even with equal counts: pop-out change lists and
+  // diffs reload on it, since editing an already-changed file leaves the counts as they were.
   let sentProject = ''
-  let sentGit = ''
+  let sentGit: unknown = null
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
@@ -140,20 +142,19 @@ export function syncComponentWindows(): () => void {
     if (!windows.some((w) => w.label.startsWith('component-'))) {
       // Nobody received the changes, so the next pop-out's READY reply is its baseline.
       sentProject = ''
-      sentGit = ''
+      sentGit = null
       return
     }
     const s = useStore.getState()
     if (!s.project) return
     const project = s.toProject()
     const projectJson = JSON.stringify(project)
-    const gitJson = JSON.stringify(s.gitChanges)
     if (projectJson !== sentProject) {
       sentProject = projectJson
       await emit<Project>(PROJECT_EVENT, project)
     }
-    if (gitJson !== sentGit) {
-      sentGit = gitJson
+    if (s.gitChanges !== sentGit) {
+      sentGit = s.gitChanges
       await emit(GIT_EVENT, s.gitChanges)
     }
   }

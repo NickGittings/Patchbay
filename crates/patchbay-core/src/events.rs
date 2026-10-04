@@ -11,6 +11,8 @@ pub enum TerminalEvent {
     Started {
         session_id: String,
         generation: u64,
+        /// Unix milliseconds.
+        started_ms: u64,
     },
     Output {
         session_id: String,
@@ -22,6 +24,8 @@ pub enum TerminalEvent {
         session_id: String,
         generation: u64,
         exit_code: i32,
+        /// Unix milliseconds.
+        exited_ms: u64,
     },
 }
 

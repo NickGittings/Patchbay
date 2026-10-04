@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const BACKLOG_CAPACITY: usize = 512 * 1024;
 
@@ -66,6 +66,18 @@ struct Backlog {
     generation: u64,
     running: bool,
     exit_code: Option<i32>,
+    started_ms: u64,
+    exited_ms: Option<u64>,
+}
+
+/// Wall-clock Unix milliseconds, the clock file modification times use, so
+/// runs can be compared with edits.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 impl Backlog {
@@ -91,6 +103,10 @@ pub struct Snapshot {
     pub generation: u64,
     pub running: bool,
     pub exit_code: Option<i32>,
+    /// When the process was started, in Unix milliseconds.
+    pub started_ms: u64,
+    /// When it exited, in Unix milliseconds.
+    pub exited_ms: Option<u64>,
 }
 
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
@@ -172,6 +188,8 @@ impl PtyManager {
             starting.insert(spec.id.clone(), generation);
             generation
         };
+        // Taken before the process starts, so edits it makes count as after the run began.
+        let started_ms = now_ms();
         let started = self.start_process(&spec);
         let mut sessions = self.sessions.lock().unwrap();
         // A reset while starting clears the reservation (and may let a newer spawn
@@ -193,6 +211,7 @@ impl PtyManager {
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
             running: true,
+            started_ms,
             ..Backlog::default()
         }));
         if reserved {
@@ -222,6 +241,7 @@ impl PtyManager {
         sink.emit(TerminalEvent::Started {
             session_id: spec.id.clone(),
             generation,
+            started_ms,
         });
 
         let (done_tx, done_rx) = mpsc::channel();
@@ -270,15 +290,18 @@ impl PtyManager {
                 Ok(s) => i32::try_from(s.exit_code()).unwrap_or(i32::MAX).max(1),
                 Err(_) => 1,
             };
+            let exited_ms = now_ms();
             {
                 let mut backlog = backlog.lock().unwrap();
                 backlog.running = false;
                 backlog.exit_code = Some(exit_code);
+                backlog.exited_ms = Some(exited_ms);
             }
             sink.emit(TerminalEvent::Exited {
                 session_id: spec.id,
                 generation,
                 exit_code,
+                exited_ms,
             });
         });
         Ok(())
@@ -338,6 +361,8 @@ impl PtyManager {
             generation: backlog.generation,
             running: backlog.running,
             exit_code: backlog.exit_code,
+            started_ms: backlog.started_ms,
+            exited_ms: backlog.exited_ms,
         })
     }
 
@@ -504,6 +529,8 @@ mod tests {
         assert_eq!(snapshot.end, snapshot.data.len() as u64);
         assert!(!snapshot.running);
         assert_eq!(snapshot.exit_code, Some(3));
+        let exited = snapshot.exited_ms.unwrap();
+        assert!(snapshot.started_ms > 0 && snapshot.started_ms <= exited);
         let events = sink.0.lock().unwrap();
         let mut end = 0;
         for event in events.iter() {

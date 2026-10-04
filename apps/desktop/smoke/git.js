@@ -16,7 +16,8 @@
   const state = () => smoke.store.getState()
   const id = 'git-smoke'
   const sid = `${id}/shell`
-  const scratch = `.patchbay-smoke-git-${Date.now()}`
+  // The shell starts in the component folder; the file goes at the project root.
+  const scratch = `../.patchbay-smoke-git-${Date.now()}`
   let started = false
   let originalSetStatus
   try {
@@ -29,7 +30,8 @@
           id,
           name: 'Git smoke',
           kind: 'other',
-          path: '.',
+          // Not the root, so the root-level scratch file must count as a project file.
+          path: 'crates',
           notes: '',
           position: { x: 0, y: 0 },
           terminals: [{ id: 'shell', name: 'Shell', command: '', kind: 'shell' }],
@@ -43,8 +45,9 @@
     await until('shell running', () => state().sessions[sid]?.running)
     await sleep(1500)
     await smoke.requestGitRefresh()
-    const baseline = state().gitChanges[id]
-    if (typeof baseline !== 'number') throw new Error('root is not a Git repository')
+    const project = '@project'
+    if (typeof state().gitChanges[id] !== 'number') throw new Error('root is not a Git repository')
+    const baseline = state().gitChanges[project] ?? 0
     originalSetStatus = state().setGitStatus
     let refreshes = 0
     smoke.store.setState({
@@ -55,9 +58,9 @@
     })
     const write = (command) => smoke.terminalWrite(sid, `${command}\r`)
     await write(`printf scratch > '${scratch}'`)
-    await until('new file badge', () => state().gitChanges[id] === baseline + 1)
+    await until('new project file', () => state().gitChanges[project] === baseline + 1)
     await write(`rm '${scratch}'`)
-    await until('removed file badge', () => state().gitChanges[id] === baseline)
+    await until('removed project file', () => (state().gitChanges[project] ?? 0) === baseline)
     // Flush any already-debounced batch, then wait beyond the former poll interval.
     await sleep(2500)
     const beforeIdle = refreshes
@@ -67,7 +70,7 @@
     smoke.store.setState({ setGitStatus: originalSetStatus })
     smoke.resetSessions(await smoke.terminalReset())
     await smoke.report(
-      'PASS git: live file creation/deletion, idle without polling or self-trigger',
+      'PASS git: live root file creation/deletion, idle without polling or self-trigger',
     )
   } catch (e) {
     if (originalSetStatus) smoke.store.setState({ setGitStatus: originalSetStatus })

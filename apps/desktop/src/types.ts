@@ -1,7 +1,9 @@
 // Mirrors patchbay-core's serde types.
 
 export const PLAN_SCOPE = '@plan'
-export type View = 'navigation' | 'plan' | 'implementation'
+/** Reserved id for changed files under the project root that no component contains. */
+export const PROJECT_SCOPE = '@project'
+export type View = 'navigation' | 'plan' | 'implementation' | 'review'
 
 export type ComponentKind =
   'frontend' | 'backend' | 'service' | 'library' | 'database' | 'app' | 'other'
@@ -65,6 +67,52 @@ export interface GitStatus {
   repos: Record<string, string>
 }
 
+/** How a file differs from `HEAD` (`git::ChangeKind`). */
+export type ChangeKind =
+  'modified' | 'added' | 'deleted' | 'renamed' | 'typeChanged' | 'conflicted' | 'untracked'
+
+/** One uncommitted change (`git::ChangedFile`). Paths are relative to the project root. */
+export interface ChangedFile {
+  path: string
+  kind: ChangeKind
+  oldPath?: string
+  /** Unix milliseconds; absent for deleted files. */
+  modifiedMs?: number
+  /** Lines added and removed; absent for binary files. */
+  added?: number
+  removed?: number
+}
+
+/** A worktree of the project root's repo (`git::Worktree`). */
+export interface Worktree {
+  /** Absolute; passed back to select it. */
+  path: string
+  /** Absent for a detached `HEAD`. */
+  branch?: string
+  head: string
+  main: boolean
+  current: boolean
+}
+
+/** A file's diff against `HEAD` (`git::FileDiff`). */
+export interface FileDiff {
+  patch: string
+  binary: boolean
+  truncated: boolean
+}
+
+/** A component that depends on changed components (`git::Affected`). */
+export interface Affected {
+  id: string
+  via: string[]
+}
+
+/** Changes per component plus their dependents (`git::Review`). */
+export interface Review {
+  changes: Record<string, ChangedFile[]>
+  affected: Affected[]
+}
+
 export interface DeviceManifest {
   id: string
   name: string
@@ -76,9 +124,9 @@ export interface DeviceManifest {
 }
 
 export type TerminalEvent =
-  | { type: 'started'; sessionId: string; generation: number }
+  | { type: 'started'; sessionId: string; generation: number; startedMs: number }
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
-  | { type: 'exited'; sessionId: string; generation: number; exitCode: number }
+  | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
 
 export interface TerminalSnapshot {
   /** Base64. */
@@ -87,6 +135,9 @@ export interface TerminalSnapshot {
   generation: number
   running: boolean
   exitCode: number | null
+  /** Unix milliseconds. */
+  startedMs: number
+  exitedMs: number | null
 }
 
 export interface DirEntry {
@@ -98,6 +149,9 @@ export interface DirEntry {
 export interface SessionState {
   running: boolean
   exitCode?: number
+  /** When the current or last run started and ended, in Unix milliseconds. */
+  startedMs?: number
+  exitedMs?: number
 }
 
 /** Data carried on each React Flow node. */
