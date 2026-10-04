@@ -12,7 +12,9 @@ export default function Toast() {
   const message = useStore((s) => s.message)
   const id = useStore((s) => s.messageId)
   const transient = useStore((s) => s.messageTransient)
-  const [hovered, setHovered] = useState(false)
+  // Tagged with the message id, so a toast that unmounts while hovered doesn't pin later ones.
+  const [hoveredId, setHoveredId] = useState<number | null>(null)
+  const hovered = hoveredId === id
 
   useEffect(() => {
     if (!transient || hovered) return
@@ -25,17 +27,14 @@ export default function Toast() {
       {message && (
         <div
           className="toast"
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
+          onMouseEnter={() => setHoveredId(id)}
+          onMouseLeave={() => setHoveredId(null)}
         >
           <span className="toast-text">{message}</span>
           <button
             className="toast-close"
             aria-label="Dismiss"
-            onClick={() => {
-              setHovered(false)
-              useStore.getState().setMessage('')
-            }}
+            onClick={() => useStore.getState().setMessage('')}
           >
             ×
           </button>

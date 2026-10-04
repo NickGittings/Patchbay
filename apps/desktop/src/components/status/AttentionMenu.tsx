@@ -47,8 +47,8 @@ export default function AttentionMenu() {
           className={`attention-item health-${item.status.health}`}
           onClick={() => {
             revealTerminal(item)
-            // After the view switch renders, so typing answers the revealed terminal.
-            requestAnimationFrame(() => focusTerminal(item.sid))
+            // So typing answers the revealed terminal, once the view switch has attached it.
+            focusTerminal(item.sid)
           }}
         >
           <span className="status-dot" />

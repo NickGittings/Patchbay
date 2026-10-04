@@ -256,7 +256,7 @@ select:focus {
   min-width: 320px;
   max-width: 480px;
 }
-.toolbar .menu-item,
+.menu-list .menu-item,
 .attention-item {
   display: flex;
   align-items: center;
@@ -265,14 +265,14 @@ select:focus {
   background: none;
   border: none;
 }
-.toolbar .menu-item {
+.menu-list .menu-item {
   justify-content: space-between;
   gap: 24px;
   height: 28px;
   width: 100%;
   white-space: nowrap;
 }
-.toolbar .menu-item:hover,
+.menu-list .menu-item:hover,
 .attention-item:hover {
   background: var(--panel-2);
 }

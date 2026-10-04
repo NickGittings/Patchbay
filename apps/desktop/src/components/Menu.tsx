@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -48,6 +49,17 @@ export default function Menu({
   const trigger = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const previous = useRef<HTMLElement | null>(null)
+  // What had focus when the trigger was pressed, read before the press moves focus.
+  const pressedFrom = useRef<HTMLElement | null>(null)
+
+  // Unmounted while holding focus (the attention list emptied): hand focus back.
+  useLayoutEffect(() => {
+    const el = root.current
+    return () => {
+      if (el?.contains(document.activeElement) && previous.current?.isConnected)
+        previous.current.focus()
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -68,9 +80,8 @@ export default function Menu({
   }, [open])
 
   const show = (keyboard: boolean) => {
-    const active = document.activeElement
-    previous.current =
-      !keyboard && active instanceof HTMLElement && active !== document.body ? active : null
+    previous.current = keyboard ? null : pressedFrom.current
+    pressedFrom.current = null
     setOpen({ keyboard })
   }
 
@@ -126,8 +137,17 @@ export default function Menu({
         aria-haspopup="menu"
         aria-expanded={!!open}
         title={title}
+        onPointerDown={() => {
+          const active = document.activeElement
+          pressedFrom.current =
+            active instanceof HTMLElement &&
+            active !== document.body &&
+            !root.current?.contains(active)
+              ? active
+              : null
+        }}
         // `detail` is 0 when the click came from Enter or Space.
-        onClick={(e) => (open ? setOpen(false) : show(e.detail === 0))}
+        onClick={(e) => (open ? closeAndRestore() : show(e.detail === 0))}
       >
         {label}
         {caret && (
