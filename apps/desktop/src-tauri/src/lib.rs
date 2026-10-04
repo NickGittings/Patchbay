@@ -377,14 +377,17 @@ async fn git_status(
 ) -> CmdResult<git::GitStatus> {
     // Resolve folders on a copy so the lock isn't held for the filesystem calls.
     let access = state.access.snapshot();
-    let Some(root) = access.root() else {
-        return Ok(git::GitStatus::default());
-    };
-    let components: Vec<(String, PathBuf)> = components
-        .into_iter()
-        .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
-        .collect();
-    Ok(git::status(&root, &components))
+    blocking(move || {
+        let Some(root) = access.root() else {
+            return Ok(git::GitStatus::default());
+        };
+        let components: Vec<(String, PathBuf)> = components
+            .into_iter()
+            .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+            .collect();
+        Ok(git::status(&root, &components))
+    })
+    .await
 }
 
 #[tauri::command]

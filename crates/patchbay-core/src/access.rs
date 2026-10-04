@@ -38,6 +38,9 @@ impl Access {
 
     /// Approved component folders, including nested folders that enclosing
     /// repositories may ignore. Keep these as independent watcher entry points.
+    ///
+    /// # Panics
+    /// Panics if the access lock is poisoned.
     #[must_use]
     pub fn watch_roots(&self) -> Vec<PathBuf> {
         self.state.lock().unwrap().watch_roots.clone()
