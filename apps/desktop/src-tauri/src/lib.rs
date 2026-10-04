@@ -7,7 +7,7 @@ use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::{PtyManager, Snapshot};
-use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git};
+use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,11 +21,25 @@ const TERMINAL_EVENT: &str = "patchbay://terminal";
 /// Emitted with a window's label when it closes, so the others can pick a new active window.
 const WINDOW_CLOSED_EVENT: &str = "patchbay://window-closed";
 const FILE_ACCESS_EVENT: &str = "patchbay://file-access";
+const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
 
 #[derive(Default)]
 struct AppState {
     pty: Arc<PtyManager>,
     access: Arc<Access>,
+    watcher: watch::GitWatcher,
+}
+
+fn rewatch(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let access = state.access.clone();
+    let handle = app.clone();
+    state.watcher.update(
+        move || access.watch_roots(),
+        move || {
+            let _ = handle.emit_to("main", GIT_DIRTY_EVENT, ());
+        },
+    );
 }
 
 /// Ask whether the external folders a `patchbay.json` lists may be read. The
@@ -134,6 +148,7 @@ struct Opened {
 /// is asked (in a dialog run here, not in the webview) whether to allow them.
 #[tauri::command]
 async fn open_project(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> CmdResult<Option<Opened>> {
@@ -164,6 +179,7 @@ async fn open_project(
                 access.grant(&dir).map_err(err)?;
             }
         }
+        rewatch(&app);
         let snapshot = access.snapshot();
         let locked = project
             .components
@@ -223,6 +239,7 @@ async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> Cmd
 /// webview so only folders the user chose become readable. `None` if cancelled.
 #[tauri::command]
 async fn add_folder(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
     mut project: Project,
@@ -237,6 +254,7 @@ async fn add_folder(
         let (components, links) = (project.components.len(), project.links.len());
         detect::merge_new(&mut project, found);
         access.grant(&dir).map_err(err)?;
+        rewatch(&app);
         let _ = window.emit(FILE_ACCESS_EVENT, ());
         Ok(Some(Added::since(project, components, links)))
     })
@@ -247,6 +265,7 @@ async fn add_folder(
 /// relative to the root. `None` if cancelled.
 #[tauri::command]
 async fn pick_component_folder(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> CmdResult<Option<String>> {
@@ -258,6 +277,7 @@ async fn pick_component_folder(
         };
         let dir = dir.canonicalize().map_err(err)?;
         access.grant(&dir).map_err(err)?;
+        rewatch(&app);
         let _ = window.emit(FILE_ACCESS_EVENT, ());
         Ok(Some(model::relative_path(&root, &dir)))
     })
@@ -274,6 +294,7 @@ async fn sync_roots(
     let access = state.access.clone();
     blocking(move || {
         access.sync(paths);
+        rewatch(&app);
         let _ = app.emit(FILE_ACCESS_EVENT, ());
         Ok(())
     })
@@ -346,7 +367,7 @@ struct ComponentPath {
     path: String,
 }
 
-/// Takes only ids and folders, since it is polled every few seconds. Folders
+/// Takes only ids and folders for event-driven status refreshes. Folders
 /// the backend hasn't granted are left out, so the webview can't run git
 /// anywhere else on disk.
 #[tauri::command]
@@ -356,14 +377,17 @@ async fn git_status(
 ) -> CmdResult<git::GitStatus> {
     // Resolve folders on a copy so the lock isn't held for the filesystem calls.
     let access = state.access.snapshot();
-    let Some(root) = access.root() else {
-        return Ok(git::GitStatus::default());
-    };
-    let components: Vec<(String, PathBuf)> = components
-        .into_iter()
-        .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
-        .collect();
-    Ok(git::status(&root, &components))
+    blocking(move || {
+        let Some(root) = access.root() else {
+            return Ok(git::GitStatus::default());
+        };
+        let components: Vec<(String, PathBuf)> = components
+            .into_iter()
+            .filter_map(|c| Some((c.id, access.readable(&c.path)?)))
+            .collect();
+        Ok(git::status(&root, &components))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -460,6 +484,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| match event {
+            WindowEvent::Focused(true) => {
+                let _ = window.app_handle().emit_to("main", GIT_DIRTY_EVENT, ());
+            }
             WindowEvent::CloseRequested { .. } if window.label() == "main" => {
                 for (label, popout) in window.app_handle().webview_windows() {
                     if label.starts_with("component-") {
@@ -501,6 +528,7 @@ pub fn run() {
         .expect("error while building Patchbay")
         .run(|app, event| {
             if let RunEvent::Exit = event {
+                app.state::<AppState>().watcher.stop();
                 app.state::<AppState>().pty.reset();
             }
         });

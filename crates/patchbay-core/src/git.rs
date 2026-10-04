@@ -122,7 +122,7 @@ pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
 
 /// Paths with uncommitted changes, relative to `repo`. Nested repos and
 /// submodules are skipped: they are counted as their own repo. fsmonitor is
-/// off so polling never starts a hook or daemon. Like `git status` in a
+/// off so refreshes never start a hook or daemon. Like `git status` in a
 /// terminal this still honours the repo's own config (filters, for one), so
 /// callers must pass only folders the user opened or allowed.
 fn changed_paths(repo: &Path) -> Option<Vec<String>> {
@@ -132,6 +132,7 @@ fn changed_paths(repo: &Path) -> Option<Vec<String>> {
         .args([
             "-c",
             "core.fsmonitor=false",
+            "--no-optional-locks",
             "status",
             "--porcelain=v2",
             "-z",
@@ -246,6 +247,22 @@ mod tests {
             .iter()
             .map(|(id, path)| ((*id).to_string(), normalize(&root.join(path))))
             .collect()
+    }
+
+    #[test]
+    fn status_does_not_rewrite_the_index_to_refresh_file_stats() {
+        let f = Fixture::new();
+        if !f.repo("repo") {
+            return;
+        }
+        let repo = f.0.join("repo");
+        let index = repo.join(".git/index");
+        let before = fs::read(&index).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Same content, changed stat: an ordinary status may update the index.
+        f.write("repo/README", "hi");
+        assert!(changed_paths(&repo).unwrap().is_empty());
+        assert_eq!(fs::read(index).unwrap(), before);
     }
 
     #[test]
