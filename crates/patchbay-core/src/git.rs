@@ -192,28 +192,55 @@ fn modified_ms(path: &Path) -> Option<u64> {
 
 /// Line counts of untracked files by path, with the size and mtime they were
 /// counted at, so refreshes don't re-read files that haven't changed.
-type LineCache = HashMap<PathBuf, (u64, Option<SystemTime>, Option<u32>)>;
+#[derive(Default)]
+struct LineCache {
+    /// Path → (size, mtime, lines, the refresh that last used it).
+    entries: HashMap<PathBuf, (u64, Option<SystemTime>, Option<u32>, u64)>,
+    /// Bumped by every [`changes`] refresh.
+    refresh: u64,
+    /// Size at which entries the last two refreshes didn't use are dropped.
+    prune_at: usize,
+}
 static LINE_CACHE: LazyLock<Mutex<LineCache>> = LazyLock::new(Mutex::default);
-/// Past this many entries the cache is dropped rather than tracked per entry.
+/// The cache is pruned no sooner than at this many entries.
 const LINE_CACHE_LIMIT: usize = 20_000;
 
+/// Start a refresh, so entries it uses survive the next prune.
+fn next_line_refresh() {
+    if let Ok(mut cache) = LINE_CACHE.lock() {
+        cache.refresh += 1;
+    }
+}
+
 /// [`count_lines`], reusing the last count while the file's size and mtime
-/// are unchanged.
+/// are unchanged. Only entries no recent refresh used are evicted, so a repo
+/// with more untracked files than [`LINE_CACHE_LIMIT`] still hits the cache.
 fn cached_line_count(path: &Path) -> Option<u32> {
     let meta = path.symlink_metadata().ok()?;
     let stamp = (meta.len(), meta.modified().ok());
-    if let Ok(cache) = LINE_CACHE.lock()
-        && let Some(&(len, modified, lines)) = cache.get(path)
-        && (len, modified) == stamp
-    {
-        return lines;
+    if let Ok(mut cache) = LINE_CACHE.lock() {
+        let refresh = cache.refresh;
+        if let Some(entry) = cache.entries.get_mut(path)
+            && (entry.0, entry.1) == stamp
+        {
+            entry.3 = refresh;
+            return entry.2;
+        }
     }
     let lines = count_lines(path);
     if let Ok(mut cache) = LINE_CACHE.lock() {
-        if cache.len() >= LINE_CACHE_LIMIT {
-            cache.clear();
+        let cache = &mut *cache;
+        if cache.entries.len() >= cache.prune_at.max(LINE_CACHE_LIMIT) {
+            let recent = cache.refresh.saturating_sub(1);
+            cache.entries.retain(|_, e| e.3 >= recent);
+            // A working set past the limit grows the cache instead of
+            // pruning on every insert.
+            cache.prune_at = cache.entries.len() * 2;
         }
-        cache.insert(path.to_path_buf(), (stamp.0, stamp.1, lines));
+        let refresh = cache.refresh;
+        cache
+            .entries
+            .insert(path.to_path_buf(), (stamp.0, stamp.1, lines, refresh));
     }
     lines
 }
@@ -309,7 +336,11 @@ pub fn status(root: &Path, components: &[(String, PathBuf)]) -> GitStatus {
 /// a repo get a (possibly empty) list sorted by path; the rest are absent.
 #[must_use]
 pub fn changes(root: &Path, components: &[(String, PathBuf)]) -> HashMap<String, Vec<ChangedFile>> {
-    changes_in(root, &group_by_repo(&with_project_scope(root, components)))
+    changes_in(
+        root,
+        &group_by_repo(&with_project_scope(root, components)),
+        None,
+    )
 }
 
 /// One component's [`changes`]. Only the repo containing it is queried, but
@@ -324,33 +355,43 @@ pub fn component_changes(
         .into_iter()
         .filter(|g| g.members.iter().any(|(id, _)| id == component_id))
         .collect();
-    changes_in(root, &groups)
+    changes_in(root, &groups, Some(component_id))
         .remove(component_id)
         .unwrap_or_default()
 }
 
-fn changes_in(root: &Path, groups: &[RepoGroup]) -> HashMap<String, Vec<ChangedFile>> {
+/// The changed files per member of `groups`, or only `only`'s, so other
+/// members' untracked files aren't read just to be dropped. Files are built
+/// (stat and line count) inside each repo's thread.
+fn changes_in(
+    root: &Path,
+    groups: &[RepoGroup],
+    only: Option<&str>,
+) -> HashMap<String, Vec<ChangedFile>> {
+    next_line_refresh();
     let results = per_repo(groups, |g| {
         let pathspecs = g.pathspecs();
-        (
-            changed_entries(&g.root, &pathspecs),
-            line_counts(&g.root, &pathspecs),
-        )
-    });
-    let mut out: HashMap<String, Vec<ChangedFile>> = HashMap::new();
-    for (group, result) in groups.iter().zip(results) {
-        let Some((Some(entries), counts)) = result else {
-            continue;
-        };
-        for (id, _) in &group.members {
-            out.insert(id.clone(), Vec::new());
-        }
+        let entries = changed_entries(&g.root, &pathspecs)?;
+        let counts = line_counts(&g.root, &pathspecs);
+        let mut out: HashMap<String, Vec<ChangedFile>> = g
+            .members
+            .iter()
+            .filter(|(id, _)| only.is_none_or(|only| id == only))
+            .map(|(id, _)| (id.clone(), Vec::new()))
+            .collect();
         for entry in entries {
-            if let Some(id) = owner_of(&entry.path, &group.members) {
-                let file = entry.into_changed(root, &group.root, &counts);
-                out.entry(id.to_string()).or_default().push(file);
+            let Some(id) = owner_of(&entry.path, &g.members) else {
+                continue;
+            };
+            if let Some(files) = out.get_mut(id) {
+                files.push(entry.into_changed(root, &g.root, &counts));
             }
         }
+        Some(out)
+    });
+    let mut out: HashMap<String, Vec<ChangedFile>> = HashMap::new();
+    for result in results.into_iter().flatten().flatten() {
+        out.extend(result);
     }
     for files in out.values_mut() {
         files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -818,7 +859,18 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
         if parts.len() != fields || parts[2].starts_with('S') {
             continue;
         }
-        if !seen.insert(parts[fields - 1]) {
+        // Staged, then deleted from the working tree: compared with `HEAD`, an
+        // added or copied path never existed, and a renamed one is just the
+        // deletion of its original path.
+        let (path, original) = match parts[1].as_bytes() {
+            [b'A' | b'C', b'D'] if fields != 11 => continue,
+            [b'R', b'D'] if fields != 11 => match original {
+                Some(old) => (old, None),
+                None => continue,
+            },
+            _ => (parts[fields - 1], original),
+        };
+        if !seen.insert(path) {
             continue;
         }
         let kind = if fields == 11 {
@@ -827,7 +879,7 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
             kind_of(parts[1])
         };
         entries.push(Entry {
-            path: parts[fields - 1].to_string(),
+            path: path.to_string(),
             kind,
             old_path: original
                 .filter(|_| kind == ChangeKind::Renamed)
@@ -1043,6 +1095,28 @@ mod tests {
         assert_eq!(kind_of("R."), ChangeKind::Renamed);
         assert_eq!(kind_of(".T"), ChangeKind::TypeChanged);
         assert_eq!(kind_of(".A"), ChangeKind::Added);
+    }
+
+    #[test]
+    fn staged_then_deleted_files_compare_against_head() {
+        let out = [
+            "2 RD N... 100644 100644 000000 abc abc R100 new.rs",
+            "old.rs",
+            "1 AD N... 000000 100644 000000 000 def added.rs",
+            "2 CD N... 100644 100644 000000 abc abc C100 copy.rs",
+            "src.rs",
+            "",
+        ]
+        .join("\0");
+        let entries = parse_porcelain_v2(&out, |_| false);
+        assert_eq!(
+            entries,
+            [Entry {
+                path: "old.rs".to_string(),
+                kind: ChangeKind::Deleted,
+                old_path: None,
+            }]
+        );
     }
 
     #[test]
