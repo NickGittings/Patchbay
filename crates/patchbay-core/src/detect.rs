@@ -5,6 +5,7 @@
 //! any nested git repo without one. Dependencies between detected packages
 //! become links.
 
+use crate::extensions::DetectorContribution;
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
     check_component_dir, normalize, relative_path, resolve_dir,
@@ -323,7 +324,7 @@ fn read(dir: &Path, file: &str) -> Option<String> {
     std::fs::read_to_string(dir.join(file)).ok()
 }
 
-fn candidate_for(dir: &Path, root: &Path) -> Option<Candidate> {
+fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) -> Option<Candidate> {
     if let Some(text) = read(dir, "package.json") {
         return from_package_json(dir, root, &text);
     }
@@ -339,6 +340,17 @@ fn candidate_for(dir: &Path, root: &Path) -> Option<Candidate> {
     if let Some(text) = read(dir, "go.mod") {
         return Some(from_go_mod(dir, &text));
     }
+    for detector in detectors {
+        if detector.files.iter().any(|file| dir.join(file).is_file()) {
+            return Some(Candidate {
+                rel: String::new(),
+                name: dir_name(dir),
+                kind: detector.kind,
+                tasks: detector.terminals.clone(),
+                deps: HashSet::new(),
+            });
+        }
+    }
     None
 }
 
@@ -353,8 +365,14 @@ fn repo_candidate(dir: &Path) -> Candidate {
     }
 }
 
-fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<Candidate>) {
-    let candidate = candidate_for(dir, root)
+fn walk(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<Candidate>,
+    detectors: &[DetectorContribution],
+) {
+    let candidate = candidate_for(dir, root, detectors)
         .or_else(|| (dir != root && dir.join(".git").exists()).then(|| repo_candidate(dir)));
     if let Some(mut c) = candidate {
         let rel = dir.strip_prefix(root).unwrap_or(dir);
@@ -382,7 +400,7 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<Candidate>) {
         .collect();
     dirs.sort();
     for d in dirs {
-        walk(root, &d, depth + 1, out);
+        walk(root, &d, depth + 1, out, detectors);
     }
 }
 
@@ -459,10 +477,17 @@ fn layout(components: &mut [Component], links: &[Link]) {
 /// # Errors
 /// Fails if the project root cannot be resolved.
 pub fn detect(root: &Path) -> Result<Project> {
+    detect_with(root, &[])
+}
+
+/// Detection with declarative extension detectors.
+/// # Errors
+/// Fails for inaccessible or invalid folders.
+pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Project> {
     let root = root.canonicalize()?;
     let root = root.as_path();
     let mut found = Vec::new();
-    walk(root, root, 0, &mut found);
+    walk(root, root, 0, &mut found, detectors);
     if found.is_empty() {
         found.push(Candidate {
             rel: ".".into(),
@@ -662,13 +687,24 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
 /// Fails if `dir` or the project root cannot be resolved, or `dir` is the
 /// project root itself (use [`rescan`]) or contains it.
 pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
+    detect_folder_with(project, dir, &[])
+}
+
+/// Detection with declarative extension detectors.
+/// # Errors
+/// Fails for inaccessible or invalid folders.
+pub fn detect_folder_with(
+    project: &Project,
+    dir: &Path,
+    detectors: &[DetectorContribution],
+) -> Result<Project> {
     let dir = dir.canonicalize()?;
     let root = Path::new(&project.root).canonicalize()?;
     if dir == root {
         bail!("That is the project folder itself; use Rescan instead");
     }
     check_component_dir(&root, &dir)?;
-    let mut found = detect(&dir)?;
+    let mut found = detect_with(&dir, detectors)?;
     let prefix = slug(&dir_name(&dir));
     let rename = |id: &str| {
         if id == "root" {
@@ -698,7 +734,18 @@ pub fn detect_folder(project: &Project, dir: &Path) -> Result<Project> {
 /// # Errors
 /// Fails if the project root cannot be read.
 pub fn rescan(project: &mut Project, folders: &[PathBuf]) -> Result<usize> {
-    let mut added = merge_new(project, detect(Path::new(&project.root))?);
+    rescan_with(project, folders, &[])
+}
+
+/// Detection with declarative extension detectors.
+/// # Errors
+/// Fails for inaccessible or invalid folders.
+pub fn rescan_with(
+    project: &mut Project,
+    folders: &[PathBuf],
+    detectors: &[DetectorContribution],
+) -> Result<usize> {
+    let mut added = merge_new(project, detect_with(Path::new(&project.root), detectors)?);
     let folders: BTreeSet<_> = folders.iter().map(|d| normalize(d)).collect();
     // Scanning a folder covers everything below it.
     let tops: Vec<_> = folders
@@ -707,7 +754,7 @@ pub fn rescan(project: &mut Project, folders: &[PathBuf]) -> Result<usize> {
         .collect();
     for dir in tops {
         // A folder that vanished (or now contains the root) is simply skipped.
-        if let Ok(found) = detect_folder(project, dir) {
+        if let Ok(found) = detect_folder_with(project, dir, detectors) {
             added += merge_new(project, found);
         }
     }
@@ -718,6 +765,52 @@ pub fn rescan(project: &mut Project, folders: &[PathBuf]) -> Result<usize> {
 mod tests {
     use super::*;
     use std::{env, fs, process};
+
+    #[test]
+    fn extension_detectors_claim_unknown_folders_and_preserve_user_edits() {
+        let root = env::temp_dir().join(format!("patchbay-extension-detectors-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write(&root, "compose/compose.yaml", "services: {}");
+        write(&root, "compose/.git/HEAD", "ref: refs/heads/main");
+        write(&root, "builtin/compose.yaml", "services: {}");
+        write(
+            &root,
+            "builtin/package.json",
+            r#"{"name":"builtin","dependencies":{"react":"*"}}"#,
+        );
+        let detector = DetectorContribution {
+            id: "compose".into(),
+            files: vec!["compose.yaml".into()],
+            kind: ComponentKind::Service,
+            terminals: vec![task("up", "Up", "docker compose up".into())],
+        };
+        let detectors = [detector];
+        let mut project = detect_with(&root, &detectors).unwrap();
+        assert_eq!(
+            project.component("builtin").unwrap().kind,
+            ComponentKind::Frontend
+        );
+        let compose = project
+            .components
+            .iter_mut()
+            .find(|c| c.id == "compose")
+            .unwrap();
+        assert_eq!(compose.kind, ComponentKind::Service);
+        assert!(compose.terminals.iter().any(|t| t.id == "up"));
+        compose.notes = "user notes".into();
+        compose.terminals[1].command = "user command".into();
+        assert_eq!(rescan_with(&mut project, &[], &detectors).unwrap(), 0);
+        assert_eq!(project.component("compose").unwrap().notes, "user notes");
+        assert_eq!(
+            project.component("compose").unwrap().terminals[1].command,
+            "user command"
+        );
+        let nested = root.join("new");
+        write(&nested, "compose.yaml", "services: {}");
+        let found = detect_folder_with(&project, &nested, &detectors).unwrap();
+        assert_eq!(found.components[0].kind, ComponentKind::Service);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);

@@ -12,12 +12,33 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSection {
+    pub title: String,
+    pub body: String,
+}
+fn append_sections(out: &mut String, sections: &[ContextSection]) {
+    for section in sections {
+        let _ = writeln!(
+            out,
+            "\n## {}\n\n{}",
+            section.title.replace(['\n', '\r'], " "),
+            section.body
+        );
+    }
+}
+
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
 pub const COMPONENT_ENV: &str = "PATCHBAY_COMPONENT";
 
 /// Markdown briefing for an agent working on one component.
 #[must_use]
-pub fn component_context(project: &Project, component_id: &str) -> String {
+pub fn component_context(
+    project: &Project,
+    component_id: &str,
+    sections: &[ContextSection],
+) -> String {
     let Some(c) = project.component(component_id) else {
         return String::new();
     };
@@ -59,6 +80,7 @@ pub fn component_context(project: &Project, component_id: &str) -> String {
         "\nStay focused on this component. Read related components for context, but only \
          change them when asked.\n",
     );
+    append_sections(&mut out, sections);
     out
 }
 
@@ -69,7 +91,11 @@ fn sh_quote(s: &str) -> String {
 
 /// Markdown briefing for planning across a highlighted set, or the whole project.
 #[must_use]
-pub fn plan_context(project: &Project, component_ids: &[String]) -> String {
+pub fn plan_context(
+    project: &Project,
+    component_ids: &[String],
+    sections: &[ContextSection],
+) -> String {
     let components = plan_components(project, component_ids);
     let ids: HashSet<&str> = components.iter().map(|c| c.id.as_str()).collect();
     let mut out = format!(
@@ -119,6 +145,7 @@ pub fn plan_context(project: &Project, component_ids: &[String]) -> String {
         "\nYou are planning, not implementing: explore, ask questions and produce a plan; \
          don't edit files unless asked.\n",
     );
+    append_sections(&mut out, sections);
     out
 }
 
@@ -203,6 +230,7 @@ pub fn plan_session_spec(
     component_ids: &[String],
     terminal: &TerminalSpec,
     policy: &dyn Policy,
+    sections: &[ContextSection],
 ) -> Result<SessionSpec> {
     for id in component_ids {
         if project.component(id).is_none() {
@@ -215,7 +243,7 @@ pub fn plan_session_spec(
     if terminal.kind == TerminalKind::Agent {
         let file = context_file(
             &format!("{}-{PLAN_SCOPE}-{}", project.name, terminal.id),
-            &plan_context(project, component_ids),
+            &plan_context(project, component_ids, sections),
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         // cwd is the root; components in other repos must be added explicitly.
@@ -255,6 +283,7 @@ pub fn session_spec(
     component_id: &str,
     terminal_id: &str,
     policy: &dyn Policy,
+    sections: &[ContextSection],
 ) -> Result<SessionSpec> {
     let component = project
         .component(component_id)
@@ -271,7 +300,7 @@ pub fn session_spec(
     if terminal.kind == TerminalKind::Agent {
         let file = context_file(
             &format!("{}-{component_id}", project.name),
-            &component_context(project, component_id),
+            &component_context(project, component_id, sections),
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         let dirs: Vec<_> = project
@@ -294,11 +323,56 @@ pub fn session_spec(
     })
 }
 
+/// Build the session for a terminal that isn't on the map (an extension command
+/// or `terminals.run`), as if `component_id` had it. The map itself is not saved.
+///
+/// # Errors
+/// Fails if the component does not exist, or the policy rejects it.
+pub fn extra_session_spec(
+    mut project: Project,
+    component_id: &str,
+    terminal: TerminalSpec,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
+    let component = project
+        .components
+        .iter_mut()
+        .find(|c| c.id == component_id)
+        .ok_or_else(|| anyhow!("unknown component {component_id}"))?;
+    let terminal_id = terminal.id.clone();
+    component.terminals.retain(|t| t.id != terminal_id);
+    component.terminals.push(terminal);
+    session_spec(&project, component_id, &terminal_id, policy, sections)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Component, ComponentKind, Link, TerminalSpec};
     use crate::policy::AllowAll;
+
+    #[test]
+    fn extra_terminals_launch_in_the_component_and_replace_same_ids() {
+        let terminal = TerminalSpec {
+            id: "agent".into(),
+            name: "Ad hoc".into(),
+            command: "echo hi".into(),
+            kind: TerminalKind::Task,
+        };
+        let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
+        assert_eq!(spec.id, "api/agent");
+        assert_eq!(spec.command, "echo hi");
+        assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
+        assert!(!spec.env.contains_key(CONTEXT_ENV));
+        let missing = TerminalSpec {
+            id: "x".into(),
+            name: "X".into(),
+            command: "true".into(),
+            kind: TerminalKind::Task,
+        };
+        assert!(extra_session_spec(project(), "nope", missing, &AllowAll, &[]).is_err());
+    }
 
     fn component(id: &str, path: &str, terminals: Vec<TerminalSpec>) -> Component {
         Component {
@@ -340,8 +414,29 @@ mod tests {
     }
 
     #[test]
+    fn contributed_sections_reach_component_planner_and_agent_session() {
+        let sections = vec![ContextSection {
+            title: "Services".into(),
+            body: "api: port 8080".into(),
+        }];
+        assert!(
+            component_context(&project(), "api", &sections)
+                .contains("## Services\n\napi: port 8080")
+        );
+        assert!(plan_context(&project(), &[], &sections).contains("## Services\n\napi: port 8080"));
+        let mut p = project();
+        p.name = "extension-context-demo".into();
+        let spec = session_spec(&p, "api", "agent", &AllowAll, &sections).unwrap();
+        assert!(
+            std::fs::read_to_string(&spec.env[CONTEXT_ENV])
+                .unwrap()
+                .contains("api: port 8080")
+        );
+    }
+
+    #[test]
     fn context_lists_neighbours() {
-        let text = component_context(&project(), "api");
+        let text = component_context(&project(), "api", &[]);
         assert!(text.contains("**API**"));
         assert!(text.contains("depends on **DB**"));
         assert!(text.contains("db notes"));
@@ -350,7 +445,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn claude_gets_neighbour_dirs_and_context() {
-        let spec = session_spec(&project(), "api", "agent", &AllowAll).unwrap();
+        let spec = session_spec(&project(), "api", "agent", &AllowAll, &[]).unwrap();
         assert_eq!(spec.id, "api/agent");
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         assert!(spec.command.starts_with("claude --add-dir '/repo/db'"));
@@ -386,7 +481,7 @@ mod tests {
             target: "db".into(),
             label: None,
         });
-        let text = plan_context(&p, &["web".into(), "api".into(), "api".into()]);
+        let text = plan_context(&p, &["web".into(), "api".into(), "api".into()], &[]);
         let (scope, nearby) = text.split_once("## Nearby components").unwrap();
         assert!(scope.contains("**API** (Backend) at `/repo/services/api` — api notes"));
         assert!(scope.contains("**WEB** depends on **API** — calls"));
@@ -398,7 +493,7 @@ mod tests {
 
     #[test]
     fn empty_plan_scope_lists_the_whole_project() {
-        let text = plan_context(&project(), &[]);
+        let text = plan_context(&project(), &[], &[]);
         assert!(text.contains("**API**"));
         assert!(text.contains("**DB**"));
         assert!(text.contains("**API** depends on **DB**"));
@@ -407,12 +502,12 @@ mod tests {
 
     #[test]
     fn plan_omits_empty_sections() {
-        let text = plan_context(&project(), &["db".into()]);
+        let text = plan_context(&project(), &["db".into()], &[]);
         assert!(!text.contains("## Links between them"));
         assert!(text.contains("## Nearby components"));
         let mut p = project();
         p.links.clear();
-        let text = plan_context(&p, &["api".into()]);
+        let text = plan_context(&p, &["api".into()], &[]);
         assert!(!text.contains("## Links between them"));
         assert!(!text.contains("## Nearby components"));
     }
@@ -421,7 +516,7 @@ mod tests {
     fn planner_session_uses_root_scope_and_context() {
         let mut p = project();
         p.name = "root-scope-demo".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll).unwrap();
+        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
         assert_eq!(spec.id, "@plan/claude");
         assert_eq!(spec.cwd, PathBuf::from("/repo"));
         assert_eq!(spec.env[COMPONENT_ENV], "plan");
@@ -440,14 +535,14 @@ mod tests {
     fn planner_adds_dirs_for_components_outside_the_root() {
         let mut p = project();
         p.components[1].path = "../shared/db".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll).unwrap();
+        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
         assert_eq!(spec.command.matches("--add-dir").count(), 1);
         assert!(spec.command.contains("--add-dir '/shared/db'"));
     }
 
     #[test]
     fn planner_rejects_unknown_components() {
-        let result = plan_session_spec(&project(), &["missing".into()], &planner(), &AllowAll);
+        let result = plan_session_spec(&project(), &["missing".into()], &planner(), &AllowAll, &[]);
         assert_eq!(
             result.err().unwrap().to_string(),
             "unknown component missing"
@@ -459,12 +554,12 @@ mod tests {
         let mut p = project();
         p.name = "context-scope-demo".into();
         p.components[0].id = "plan-claude".into();
-        let component = session_spec(&p, "plan-claude", "agent", &AllowAll).unwrap();
-        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll).unwrap();
+        let component = session_spec(&p, "plan-claude", "agent", &AllowAll, &[]).unwrap();
+        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
         assert_ne!(component.env[CONTEXT_ENV], planner.env[CONTEXT_ENV]);
         assert_eq!(
             std::fs::read_to_string(&component.env[CONTEXT_ENV]).unwrap(),
-            component_context(&p, "plan-claude")
+            component_context(&p, "plan-claude", &[])
         );
     }
 
@@ -483,7 +578,7 @@ mod tests {
         }
         let mut p = project();
         p.name = "policy-demo".into();
-        let result = plan_session_spec(&p, &[], &planner(), &Deny);
+        let result = plan_session_spec(&p, &[], &planner(), &Deny, &[]);
         assert_eq!(
             result.err().unwrap().to_string(),
             "blocked by policy: planning disabled"

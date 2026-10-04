@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Child frames (sandboxed extension hosts and views) may only load extension assets, so a
+         frame can't navigate itself to a remote page and carry data or the extension's API there. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="frame-src patchbay-ext: http://patchbay-ext.localhost https://patchbay-ext.localhost"
+    />
     <title>Patchbay</title>
   </head>
   <body>

@@ -1,3 +1,4 @@
+import ExtensionBadges from '../extensions/Badges'
 import { useReactFlow } from '@xyflow/react'
 import { openComponentWindow } from '../lib/windows'
 import { KIND_COLOR } from '../lib/display'
@@ -45,6 +46,7 @@ export default function Hierarchy() {
           >
             <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
             <span className="hierarchy-name">{n.data.name}</span>
+            <ExtensionBadges componentId={n.id} />
             {running > 0 && (
               <span className="count running" title={`${running} running`}>
                 {running}

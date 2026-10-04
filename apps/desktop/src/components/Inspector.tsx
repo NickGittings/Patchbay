@@ -1,3 +1,6 @@
+import ExtensionMenu from '../extensions/ExtensionMenu'
+import { ExtensionView } from '../extensions/views'
+import { useExtensionViews } from '../extensions/useExtensionViews'
 import { openComponentWindow } from '../lib/windows'
 import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
@@ -40,6 +43,9 @@ function ComponentInspector({ node }: { node: FlowNode }) {
       <button className="inspector-popout" onClick={() => void openComponentWindow(id, data.name)}>
         ⧉ Open in window
       </button>
+      <div className="row">
+        <ExtensionMenu slot="component/actions" componentId={id} />
+      </div>
       <div className="row">
         <label className="grow">
           Kind
@@ -224,6 +230,7 @@ function LinkInspector({ edgeId }: { edgeId: string }) {
 }
 
 export default function Inspector() {
+  const extensionViews = useExtensionViews('inspector')
   const node = useStore((s) => s.nodes.find((n) => n.id === s.selectedId))
   const edgeId = useStore((s) => s.selectedEdgeId)
   const project = useStore((s) => s.project)
@@ -231,7 +238,29 @@ export default function Inspector() {
   return (
     <div className="panel inspector">
       <div className="panel-title">{node ? 'Component' : edgeId ? 'Link' : 'Inspector'}</div>
-      {node ? (
+      {extensionViews.views.length > 0 && (
+        <div className="tabs">
+          <button
+            className={!extensionViews.selected ? 'active' : ''}
+            onClick={() => extensionViews.setSelected(null)}
+          >
+            Component
+          </button>
+          {extensionViews.views.map((view) => (
+            <button
+              key={view.id}
+              data-extension-view-tab={view.id}
+              className={extensionViews.selected === view.id ? 'active' : ''}
+              onClick={() => extensionViews.setSelected(view.id)}
+            >
+              {view.title}
+            </button>
+          ))}
+        </div>
+      )}
+      {extensionViews.selected ? (
+        <ExtensionView id={extensionViews.selected} />
+      ) : node ? (
         <ComponentInspector key={node.id} node={node} />
       ) : edgeId ? (
         <LinkInspector edgeId={edgeId} />

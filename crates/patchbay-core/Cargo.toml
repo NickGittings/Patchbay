@@ -13,6 +13,7 @@ dirs = "6"
 toml = "0.9"
 base64 = "0.22"
 notify = "8"
+semver = "1"
 
 [lints]
 workspace = true

@@ -49,7 +49,7 @@ Three Cargo workspace members plus a React frontend:
 
 ### Data flow: the frontend owns the project
 
-The backend is stateless with respect to the project map; it only holds PTY sessions and their output backlogs, plus core-owned file access and a Git watcher (`access.rs`/`watch.rs`, `AppState { pty, access, watcher }`): the open project's root (chosen in the backend's `open_project` picker) and the external folders the user vouched for (`AccessSnapshot.granted`: folders picked in a backend-run dialog — `add_folder`, `pick_component_folder` — or external folders of a loaded `patchbay.json` that the user allowed in the dialog `open_project` shows; until then those components are "locked", returned in `Opened.locked`). File commands (`list_dir`, `reveal_path`) take paths relative to the root and may read only the root plus external component folders on the map that lie within `granted`; the frontend's `sync_roots` (debounced and ordered after component path changes, `App.tsx` and `lib/access.ts`) can narrow that set but never widen it. Grants refresh the current map even when its paths are unchanged; `patchbay://file-access` tells open file trees to retry. Filesystem checks run on snapshots without holding the access lock; the adapter dispatches synchronization, briefing and launch work to blocking workers. All access checks compare canonical paths (so symlinks can't widen them), and no granted folder may contain the project root (`model::check_component_dir`). Every command that takes a `Project` replaces its root with the backend's (`AccessSnapshot::trust`); commands that launch or brief (`terminal_start`, `plan_start`, `component_context`, `plan_context`) also drop locked components (`AccessSnapshot::restrict`), and the git commands (`git_status`, `git_changes`, `git_diff`, `git_review`) skip folders that aren't readable. `rescan_project`/`add_folder` return only what they added (`Added`), which the frontend appends to its current map. The zustand store (`src/store.ts`) holds the map as React Flow `nodes`/`edges`, and `toProject()` rebuilds a full `Project` that is passed to every command that needs it (`terminal_start`, `component_context`, `save_project`, `rescan_project`). `dirty` tracks unsaved edits.
+The backend is stateless with respect to the project map; it only holds PTY sessions and their output backlogs, plus core-owned file access and a Git watcher (`access.rs`/`watch.rs`, `AppState { pty, access, watcher, extensions }`): the open project's root (chosen in the backend's `open_project` picker) and the external folders the user vouched for (`AccessSnapshot.granted`: folders picked in a backend-run dialog — `add_folder`, `pick_component_folder` — or external folders of a loaded `patchbay.json` that the user allowed in the dialog `open_project` shows; until then those components are "locked", returned in `Opened.locked`). File commands (`list_dir`, `reveal_path`) take paths relative to the root and may read only the root plus external component folders on the map that lie within `granted`; the frontend's `sync_roots` (debounced and ordered after component path changes, `App.tsx` and `lib/access.ts`) can narrow that set but never widen it. Grants refresh the current map even when its paths are unchanged; `patchbay://file-access` tells open file trees to retry. Filesystem checks run on snapshots without holding the access lock; the adapter dispatches synchronization, briefing and launch work to blocking workers. All access checks compare canonical paths (so symlinks can't widen them), and no granted folder may contain the project root (`model::check_component_dir`). Every command that takes a `Project` replaces its root with the backend's (`AccessSnapshot::trust`); commands that launch or brief (`terminal_start`, `plan_start`, `component_context`, `plan_context`) also drop locked components (`AccessSnapshot::restrict`), and the git commands (`git_status`, `git_changes`, `git_diff`, `git_review`) skip folders that aren't readable. `rescan_project`/`add_folder` return only what they added (`Added`), which the frontend appends to its current map. The zustand store (`src/store.ts`) holds the map as React Flow `nodes`/`edges`, and `toProject()` rebuilds a full `Project` that is passed to every command that needs it (`terminal_start`, `component_context`, `save_project`, `rescan_project`). `dirty` tracks unsaved edits.
 
 ### Keeping Rust and TS in sync
 
@@ -87,3 +87,46 @@ The main window switches between Navigation (hierarchy, canvas, dock and inspect
 ### Component windows
 
 Each component can open in a native window labelled `component-<hex-encoded id>` that loads `index.html?component=<id>`; `main.tsx` routes that to `ComponentWindow` (Files/Changes tabs + every terminal tiled). Every webview is a separate JS context with its own store and xterm registry. The main window stays the owner of the project: a pop-out emits `patchbay://popout-ready`, and `lib/windows.ts` answers with `patchbay://project` and `patchbay://git`, re-broadcasting (debounced) on edits; pop-outs apply it with `syncProject`, which keeps session state. Closing the main window closes all pop-outs (`lib.rs` `on_window_event`), and opening another project closes them too. Terminal events go to the main window on `patchbay://terminal` and to a pop-out only on `patchbay://terminal/<its label>` (`TauriSink`; `component_window_label` must match `componentLabel` in `windows.ts`). A session can be shown in several windows at once; `windows.ts` tracks the last-focused window across webviews and `ownsSession` picks one window per session to resize its PTY and answer terminal queries (xterm `onData` is gated on focus or ownership, and replayed output never replies). New window labels must match `component-*` in `capabilities/default.json`.
+
+### Extensions
+
+- `crates/patchbay-core/src/extensions.rs` validates local manifests (`engines.patchbay`), isolates
+  errors, persists disabled ids (disabled extensions claim no contribution ids; enabling one whose
+  ids an active extension holds is refused), installs folders, serves extension assets
+  (`asset_request`/`read_asset`, capped at `ASSET_LIMIT` while reading), checks permissions
+  (`Registry::allowed`), stores per-extension JSON, builds ad-hoc terminals (`command_terminal`,
+  `run_terminal`, launched with `context::extra_session_spec`), and assembles all extension context
+  (`Registry::sections`: file sections read through `files::resolve`, then provider sections, within
+  one `CONTEXT_BUDGET`, since `claude` gets the briefing as an argument). Keep this logic in core.
+  The adapter's `Extensions` loads the `Registry` on first use, always on a blocking worker.
+- `extensions.rs` contribution/registry types and `context.rs::ContextSection` ↔ `src/types.ts`;
+  maintain these Rust/TS mirrors by hand. `packages/extension-api/index.d.ts` is the author API.
+- `devices::load_devices(&Registry)` orders builtin < extension < user. `detect_with`,
+  `detect_folder_with`, and `rescan_with` take extension detectors; original wrappers remain.
+  All context/session builders now take `&[ContextSection]`.
+- Backend commands ↔ `lib/ipc.ts`: `list_extensions`, `set_extension_enabled`, `reload_extensions`,
+  `install_extension`, `reveal_extensions_dir`, `command_run`, `extension_terminal_run`,
+  `extension_storage_get`, `extension_storage_set`, `extension_file_read`. Terminal/context
+  commands accept optional `extraContext` for code providers, added to core-owned file sections.
+  The frontend collects it only for agent terminals and briefings (`extensions/context.ts`);
+  pop-outs ask the main window over `patchbay://context-request`/`-reply`, so every window gives
+  an agent the same briefing. Extension commands, file I/O and the `patchbay-ext` protocol run
+  off the main thread.
+- `src/extensions/host.ts` owns hidden opaque-origin extension frames in the main window only.
+  Source-bound JSON-RPC checks manifest permissions and limits sizes/concurrency/rate. A timed-out
+  call only fails; a host is stopped after `MAX_TIMEOUTS` consecutive timeouts or a protocol
+  violation. Calls made during an extension's own activation never wait on it. `terminals.run`
+  names its session after the command, so repeats reuse it (at most `MAX_RUN_TERMINALS` per
+  extension), and never takes the dock's focus. Hosts hear map edits debounced and without
+  position-only changes. `bootstrap.js` is compiled into the backend's `patchbay-ext` protocol HTML; don't inject
+  Tauri into it. The protocol only serves enabled extensions to the main webview and resolves
+  assets canonically inside their folders. The IPC boundary is Tauri's invoke key, injected into
+  top frames only (frames can reach `window.webkit.messageHandlers.ipc`; the smoke probe forges
+  it); the null-Origin rejection is defense in depth. Keep capability remote origins absent. Visible views use separate sandboxed, CSP-restricted frames.
+- `when.ts` parses declarative clauses without eval. `whenContext.ts` fetches filename sets through
+  `list_dir`. Runtime extension terminals, badges, and rendered view HTML live only in UI state.
+  Ad-hoc commands never mutate `patchbay.json`. Reload/disable/project switch disposes code hosts.
+- `npm run smoke:extensions` uses `PATCHBAY_EXTENSIONS_DIR=examples/extensions` and the Docker
+  fixture, checks contributions, palette launches, context, badges, views, iframe IPC denial
+  (fetch and forged postMessage) and `terminals.run` reuse.
+  Existing pop-out and view smoke checks must continue passing. Smoke handles stay debug-only.

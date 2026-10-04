@@ -2,7 +2,9 @@
 
 use patchbay_core::TerminalSpec;
 use patchbay_core::access::{Access, AccessSnapshot, external_candidates};
+use patchbay_core::context::ContextSection;
 use patchbay_core::devices::{self, DeviceManifest};
+use patchbay_core::extensions::{self, Registry};
 use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
@@ -10,7 +12,7 @@ use patchbay_core::pty::{PtyManager, Snapshot};
 use patchbay_core::{EventSink, Project, TerminalEvent, context, detect, git, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -28,6 +30,48 @@ struct AppState {
     pty: Arc<PtyManager>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
+    extensions: Arc<Extensions>,
+}
+
+/// The extension registry, read from disk on first use. Callers run on blocking
+/// workers, so loading never stalls the main thread or app startup.
+#[derive(Default)]
+struct Extensions(RwLock<Option<Arc<Registry>>>);
+
+impl Extensions {
+    fn get(&self) -> Arc<Registry> {
+        if let Some(registry) = &*self.0.read().unwrap_or_else(PoisonError::into_inner) {
+            return registry.clone();
+        }
+        self.0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| Arc::new(Registry::load()))
+            .clone()
+    }
+
+    fn set(&self, registry: Registry) -> Registry {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(registry.clone()));
+        registry
+    }
+
+    fn set_enabled(&self, id: &str, enabled: bool) -> CmdResult<Registry> {
+        let mut slot = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let mut registry = slot
+            .get_or_insert_with(|| Arc::new(Registry::load()))
+            .as_ref()
+            .clone();
+        registry.set_enabled(id, enabled).map_err(err)?;
+        *slot = Some(Arc::new(registry.clone()));
+        Ok(registry)
+    }
+}
+
+fn main_only(window: &WebviewWindow) -> CmdResult<()> {
+    if window.label() != "main" {
+        return Err("extensions are owned by the main window".into());
+    }
+    Ok(())
 }
 
 fn rewatch(app: &AppHandle) {
@@ -153,7 +197,9 @@ async fn open_project(
     state: State<'_, AppState>,
 ) -> CmdResult<Option<Opened>> {
     let access = state.access.clone();
+    let extensions = state.extensions.clone();
     blocking(move || {
+        let detectors = extensions.get().detectors();
         // Smoke tests may use only a root configured by the backend's environment.
         #[cfg(debug_assertions)]
         let preset = smoke::project_root();
@@ -169,7 +215,7 @@ async fn open_project(
         let root = root.canonicalize().map_err(err)?;
         let (project, detected) = match Project::load(&root).map_err(err)? {
             Some(project) => (project, false),
-            None => (detect::detect(&root).map_err(err)?, true),
+            None => (detect::detect_with(&root, &detectors).map_err(err)?, true),
         };
         let candidates = external_candidates(&project, &root);
         let allowed = !candidates.is_empty() && confirm_external(&window, &root, &candidates);
@@ -220,7 +266,9 @@ impl Added {
 #[tauri::command]
 async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> CmdResult<Added> {
     let access = state.access.snapshot();
+    let extensions = state.extensions.clone();
     blocking(move || {
+        let detectors = extensions.get().detectors();
         access.trust(&mut project).map_err(err)?;
         let externals: Vec<_> = project
             .external_dirs()
@@ -228,7 +276,7 @@ async fn rescan_project(state: State<'_, AppState>, mut project: Project) -> Cmd
             .filter(|d| access.is_granted(d))
             .collect();
         let (components, links) = (project.components.len(), project.links.len());
-        detect::rescan(&mut project, &externals).map_err(err)?;
+        detect::rescan_with(&mut project, &externals, &detectors).map_err(err)?;
         Ok(Added::since(project, components, links))
     })
     .await
@@ -245,12 +293,14 @@ async fn add_folder(
     mut project: Project,
 ) -> CmdResult<Option<Added>> {
     let access = state.access.clone();
+    let extensions = state.extensions.clone();
     blocking(move || {
+        let detectors = extensions.get().detectors();
         let root = access.snapshot().trust(&mut project).map_err(err)?;
         let Some(dir) = pick_folder(&window, "Add a repo or folder", root.parent())? else {
             return Ok(None);
         };
-        let found = detect::detect_folder(&project, &dir).map_err(err)?;
+        let found = detect::detect_folder_with(&project, &dir, &detectors).map_err(err)?;
         let (components, links) = (project.components.len(), project.links.len());
         detect::merge_new(&mut project, found);
         access.grant(&dir).map_err(err)?;
@@ -314,13 +364,26 @@ async fn component_context(
     state: State<'_, AppState>,
     project: Project,
     component_id: String,
+    extra_context: Option<Vec<ContextSection>>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
+    let extensions = state.extensions.clone();
+    let roots = state.roots();
     blocking(move || {
         let project = access
             .restrict(project, std::slice::from_ref(&component_id))
             .map_err(err)?;
-        Ok(context::component_context(&project, &component_id))
+        let sections = extensions.get().sections(
+            &project,
+            std::slice::from_ref(&component_id),
+            &roots,
+            extra_context.unwrap_or_default(),
+        );
+        Ok(context::component_context(
+            &project,
+            &component_id,
+            &sections,
+        ))
     })
     .await
 }
@@ -331,11 +394,20 @@ async fn plan_context(
     state: State<'_, AppState>,
     project: Project,
     component_ids: Vec<String>,
+    extra_context: Option<Vec<ContextSection>>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
+    let extensions = state.extensions.clone();
+    let roots = state.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        Ok(context::plan_context(&project, &component_ids))
+        let sections = extensions.get().sections(
+            &project,
+            &component_ids,
+            &roots,
+            extra_context.unwrap_or_default(),
+        );
+        Ok(context::plan_context(&project, &component_ids, &sections))
     })
     .await
 }
@@ -347,13 +419,23 @@ async fn plan_start(
     project: Project,
     component_ids: Vec<String>,
     terminal: TerminalSpec,
+    extra_context: Option<Vec<ContextSection>>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
+    let extensions = state.extensions.clone();
+    let roots = state.roots();
     let pty = state.pty.clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        let spec = context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll)
-            .map_err(err)?;
+        let sections = extensions.get().sections(
+            &project,
+            &component_ids,
+            &roots,
+            extra_context.unwrap_or_default(),
+        );
+        let spec =
+            context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
+                .map_err(err)?;
         let id = spec.id.clone();
         pty.spawn(spec, Arc::new(TauriSink(app))).map_err(err)?;
         Ok(id)
@@ -485,8 +567,9 @@ async fn git_review(
 }
 
 #[tauri::command]
-fn list_devices() -> Vec<DeviceManifest> {
-    devices::load_devices()
+async fn list_devices(state: State<'_, AppState>) -> CmdResult<Vec<DeviceManifest>> {
+    let extensions = state.extensions.clone();
+    blocking(move || Ok(devices::load_devices(&extensions.get()))).await
 }
 
 #[tauri::command]
@@ -503,15 +586,25 @@ async fn terminal_start(
     project: Project,
     component_id: String,
     terminal_id: String,
+    extra_context: Option<Vec<ContextSection>>,
 ) -> CmdResult<String> {
     let access = state.access.snapshot();
+    let extensions = state.extensions.clone();
+    let roots = state.roots();
     let pty = state.pty.clone();
     blocking(move || {
         let project = access
             .restrict(project, std::slice::from_ref(&component_id))
             .map_err(err)?;
+        let sections = extensions.get().sections(
+            &project,
+            std::slice::from_ref(&component_id),
+            &roots,
+            extra_context.unwrap_or_default(),
+        );
         let spec =
-            context::session_spec(&project, &component_id, &terminal_id, &AllowAll).map_err(err)?;
+            context::session_spec(&project, &component_id, &terminal_id, &AllowAll, &sections)
+                .map_err(err)?;
         let id = spec.id.clone();
         pty.spawn(spec, Arc::new(TauriSink(app))).map_err(err)?;
         Ok(id)
@@ -575,6 +668,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     let builder = smoke::install(builder);
     builder
+        .register_asynchronous_uri_scheme_protocol("patchbay-ext", extension_protocol)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| match event {
@@ -596,32 +690,61 @@ pub fn run() {
             _ => {}
         })
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![
-            open_project,
-            rescan_project,
-            add_folder,
-            pick_component_folder,
-            sync_roots,
-            save_project,
-            component_context,
-            git_status,
-            git_changes,
-            git_diff,
-            git_review,
-            git_worktrees,
-            plan_context,
-            plan_start,
-            list_devices,
-            save_device,
-            terminal_start,
-            terminal_write,
-            terminal_resize,
-            terminal_stop,
-            terminal_reset,
-            terminal_snapshot,
-            list_dir,
-            reveal_path,
-        ])
+        .invoke_handler(|invoke| {
+            // Extension code runs in sandboxed, opaque-origin frames inside `main`.
+            // The boundary is Tauri's per-launch invoke key: every IPC message
+            // (custom protocol or postMessage, plugin commands included) must carry
+            // it, and the init scripts holding it run in the top frame only, so
+            // those frames can't invoke anything (smoke/extensions.js probes both
+            // transports). This check is defense in depth for protocol requests,
+            // whose Origin the browser sets; postMessage headers are caller-supplied.
+            if invoke
+                .message
+                .headers()
+                .get("origin")
+                .is_some_and(|origin| origin == "null")
+            {
+                invoke.resolver.reject("opaque origins cannot invoke Tauri");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                open_project,
+                rescan_project,
+                add_folder,
+                pick_component_folder,
+                sync_roots,
+                save_project,
+                component_context,
+                git_status,
+                git_changes,
+                git_diff,
+                git_review,
+                git_worktrees,
+                plan_context,
+                plan_start,
+                list_devices,
+                save_device,
+                terminal_start,
+                terminal_write,
+                terminal_resize,
+                terminal_stop,
+                terminal_reset,
+                terminal_snapshot,
+                list_dir,
+                reveal_path,
+                list_extensions,
+                set_extension_enabled,
+                reload_extensions,
+                install_extension,
+                reveal_extensions_dir,
+                command_run,
+                extension_terminal_run,
+                extension_storage_get,
+                extension_storage_set,
+                extension_file_read,
+            ];
+            handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building Patchbay")
         .run(|app, event| {
@@ -630,4 +753,250 @@ pub fn run() {
                 app.state::<AppState>().pty.reset();
             }
         });
+}
+
+#[tauri::command]
+async fn list_extensions(window: WebviewWindow, state: State<'_, AppState>) -> CmdResult<Registry> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || Ok(extensions.get().as_ref().clone())).await
+}
+#[tauri::command]
+async fn set_extension_enabled(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> CmdResult<Registry> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || extensions.set_enabled(&id, enabled)).await
+}
+#[tauri::command]
+async fn reload_extensions(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<Registry> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || Ok(extensions.set(Registry::load()))).await
+}
+#[tauri::command]
+async fn install_extension(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<Registry>> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let Some(source) = pick_folder(&window, "Install extension from folder", None)? else {
+            return Ok(None);
+        };
+        let dir = extensions::user_extensions_dir().ok_or("no home directory")?;
+        extensions::install(&source, &dir).map_err(err)?;
+        Ok(Some(extensions.set(Registry::load())))
+    })
+    .await
+}
+#[tauri::command]
+async fn reveal_extensions_dir(window: WebviewWindow) -> CmdResult<()> {
+    main_only(&window)?;
+    blocking(|| {
+        let dir = extensions::user_extensions_dir().ok_or("no home directory")?;
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        tauri_plugin_opener::open_path(dir, None::<&str>).map_err(err)
+    })
+    .await
+}
+
+/// Run a declarative (`run`) command as an ad-hoc terminal of the component.
+#[tauri::command]
+async fn command_run(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project: Project,
+    component_id: String,
+    command_id: String,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    launch_extension_terminal(app, &state, project, component_id, move |registry| {
+        extensions::command_terminal(registry, &command_id).map_err(err)
+    })
+    .await
+}
+
+/// Spawn a terminal that isn't on the map, with the component's file context.
+async fn launch_extension_terminal(
+    app: AppHandle,
+    state: &AppState,
+    project: Project,
+    component_id: String,
+    terminal: impl FnOnce(&Registry) -> CmdResult<TerminalSpec> + Send + 'static,
+) -> CmdResult<String> {
+    let access = state.access.snapshot();
+    let roots = state.roots();
+    let extensions = state.extensions.clone();
+    let pty = state.pty.clone();
+    blocking(move || {
+        let registry = extensions.get();
+        let terminal = terminal(&registry)?;
+        let project = access
+            .restrict(project, std::slice::from_ref(&component_id))
+            .map_err(err)?;
+        let ids = std::slice::from_ref(&component_id);
+        let sections = registry.sections(&project, ids, &roots, vec![]);
+        let spec =
+            context::extra_session_spec(project, &component_id, terminal, &AllowAll, &sections)
+                .map_err(err)?;
+        let id = spec.id.clone();
+        pty.spawn(spec, Arc::new(TauriSink(app))).map_err(err)?;
+        Ok(id)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionTerminalRequest {
+    extension_id: String,
+    component_id: String,
+    command: String,
+    /// Names the terminal, so repeating a run reuses its session.
+    key: String,
+}
+
+/// An extension's `terminals.run`, which needs its `terminals` permission.
+#[tauri::command]
+async fn extension_terminal_run(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project: Project,
+    request: ExtensionTerminalRequest,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let ExtensionTerminalRequest {
+        extension_id,
+        component_id,
+        command,
+        key,
+    } = request;
+    launch_extension_terminal(app, &state, project, component_id, move |registry| {
+        registry
+            .allowed(&extension_id, Some("terminals"))
+            .map_err(err)?;
+        extensions::run_terminal(&extension_id, command, &key).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_storage_get(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+) -> CmdResult<serde_json::Value> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions.get().allowed(&extension_id, None).map_err(err)?;
+        extensions::storage_get(&extension_id).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_storage_set(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    data: serde_json::Value,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions.get().allowed(&extension_id, None).map_err(err)?;
+        extensions::storage_set(&extension_id, &data).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_file_read(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    path: String,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    let roots = state.roots();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("files:read"))
+            .map_err(err)?;
+        extensions::read_file(&roots, Path::new(&path)).map_err(err)
+    })
+    .await
+}
+
+const EXTENSION_CSP: &str = "default-src 'none'; script-src 'unsafe-inline' patchbay-ext: http://patchbay-ext.localhost https://patchbay-ext.localhost; style-src 'unsafe-inline'; img-src data:; connect-src patchbay-ext: http://patchbay-ext.localhost https://patchbay-ext.localhost; frame-src 'none'; form-action 'none'; base-uri 'none'";
+
+/// Serves extension hosts and their assets to the main window, on a blocking worker.
+fn extension_protocol(
+    ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    let main = ctx.webview_label() == "main";
+    let extensions = ctx.app_handle().state::<AppState>().extensions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (status, body, mime) = match extension_asset(main, &extensions, &request) {
+            Ok((body, mime)) => (200, body, mime),
+            Err(e) => (403, e.into_bytes(), "text/plain"),
+        };
+        let response = tauri::http::Response::builder()
+            .status(status)
+            .header("Content-Type", mime)
+            .header("Access-Control-Allow-Origin", "null")
+            .header("X-Content-Type-Options", "nosniff")
+            .header("Content-Security-Policy", EXTENSION_CSP)
+            .body(body);
+        if let Ok(response) = response {
+            responder.respond(response);
+        }
+    });
+}
+
+fn extension_asset(
+    main: bool,
+    extensions: &Extensions,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> CmdResult<(Vec<u8>, &'static str)> {
+    if !main || request.method() != tauri::http::Method::GET {
+        return Err("extension assets are main-window only".into());
+    }
+    let path = percent_encoding::percent_decode_str(request.uri().path())
+        .decode_utf8()
+        .map_err(err)?;
+    let host = request.uri().host().unwrap_or_default();
+    let (id, path) = extensions::asset_request(host, &path).ok_or("missing extension path")?;
+    let registry = extensions.get();
+    let extension = registry.allowed(id, None).map_err(err)?;
+    if path != "__bootstrap.html" {
+        return extensions::read_asset(&extension.dir, path).map_err(err);
+    }
+    let main = extension
+        .manifest
+        .main
+        .as_ref()
+        .ok_or("extension has no main")?;
+    let main = serde_json::to_string(&format!("./{main}")).map_err(err)?;
+    let bootstrap = include_str!("../../src/extensions/bootstrap.js");
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><script>{bootstrap}</script><script type=module>try {{ const m = await import({main}); window.__patchbayDeactivate = m.deactivate; await m.activate?.(patchbay); parent.postMessage({{patchbay:1,method:'ready'}}, '*') }} catch(e) {{ parent.postMessage({{patchbay:1,method:'failed',error:String(e)}}, '*') }}</script>"
+    );
+    Ok((html.into_bytes(), "text/html"))
 }

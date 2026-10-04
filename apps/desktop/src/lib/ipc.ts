@@ -1,3 +1,5 @@
+import { extraContext } from '../extensions/context'
+import type { ExtensionRegistry } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -23,8 +25,12 @@ export const openProject = () =>
   invoke<{ project: Project; detected: boolean; locked: string[] } | null>('open_project')
 export const rescanProject = (project: Project) => invoke<Added>('rescan_project', { project })
 export const saveProject = (project: Project) => invoke<string>('save_project', { project })
-export const componentContext = (project: Project, componentId: string) =>
-  invoke<string>('component_context', { project, componentId })
+export const componentContext = async (project: Project, componentId: string) =>
+  invoke<string>('component_context', {
+    project,
+    componentId,
+    extraContext: await extraContext(project, [componentId]),
+  })
 /** Opens a folder picker; `null` if cancelled. */
 export const addFolder = (project: Project) => invoke<Added | null>('add_folder', { project })
 /** Opens a folder picker for a component's folder; the path relative to the root, or `null`. */
@@ -53,16 +59,41 @@ export const gitDiff = (
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, worktree })
 export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
-export const planContext = (project: Project, componentIds: string[]) =>
-  invoke<string>('plan_context', { project, componentIds })
-export const planStart = (project: Project, componentIds: string[], terminal: TerminalSpec) =>
-  invoke<string>('plan_start', { project, componentIds, terminal })
+export const planContext = async (project: Project, componentIds: string[]) =>
+  invoke<string>('plan_context', {
+    project,
+    componentIds,
+    extraContext: await extraContext(project, componentIds),
+  })
+export const planStart = async (project: Project, componentIds: string[], terminal: TerminalSpec) =>
+  invoke<string>('plan_start', {
+    project,
+    componentIds,
+    terminal,
+    extraContext: await extraContext(project, componentIds),
+  })
 
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })
 
-export const terminalStart = (project: Project, componentId: string, terminalId: string) =>
-  invoke<string>('terminal_start', { project, componentId, terminalId })
+/** Only agent terminals get a briefing, so only they wait for extension context. */
+export const terminalStart = async (
+  project: Project,
+  componentId: string,
+  terminalId: string,
+  caller?: string,
+) => {
+  const terminal = project.components
+    .find((c) => c.id === componentId)
+    ?.terminals.find((t) => t.id === terminalId)
+  return invoke<string>('terminal_start', {
+    project,
+    componentId,
+    terminalId,
+    extraContext:
+      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller) : [],
+  })
+}
 export const terminalWrite = (sessionId: string, data: string) =>
   invoke<void>('terminal_write', { sessionId, data })
 export const terminalResize = (sessionId: string, cols: number, rows: number) =>
@@ -83,3 +114,29 @@ export const terminalSnapshot = (sessionId: string) =>
 /** `path` is relative to the open project's root; the backend refuses anything outside it. */
 export const listDir = (path: string) => invoke<DirEntry[]>('list_dir', { path })
 export const revealPath = (path: string) => invoke<void>('reveal_path', { path })
+
+export const listExtensions = () => invoke<ExtensionRegistry>('list_extensions')
+export const reloadExtensions = () => invoke<ExtensionRegistry>('reload_extensions')
+export const setExtensionEnabled = (id: string, enabled: boolean) =>
+  invoke<ExtensionRegistry>('set_extension_enabled', { id, enabled })
+export const installExtension = () => invoke<ExtensionRegistry | null>('install_extension')
+export const revealExtensionsDir = () => invoke<void>('reveal_extensions_dir')
+export const commandRun = (project: Project, componentId: string, commandId: string) =>
+  invoke<string>('command_run', { project, componentId, commandId })
+export const extensionTerminalRun = (
+  project: Project,
+  extensionId: string,
+  componentId: string,
+  command: string,
+  key: string,
+) =>
+  invoke<string>('extension_terminal_run', {
+    project,
+    request: { extensionId, componentId, command, key },
+  })
+export const extensionStorageGet = (extensionId: string) =>
+  invoke<Record<string, unknown>>('extension_storage_get', { extensionId })
+export const extensionStorageSet = (extensionId: string, data: Record<string, unknown>) =>
+  invoke<void>('extension_storage_set', { extensionId, data })
+export const extensionFileRead = (extensionId: string, path: string) =>
+  invoke<string>('extension_file_read', { extensionId, path })

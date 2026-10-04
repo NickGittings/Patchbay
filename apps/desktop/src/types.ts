@@ -158,3 +158,71 @@ export interface SessionState {
 export type ComponentData = Omit<Component, 'id' | 'position'> & Record<string, unknown>
 
 export const sessionId = (componentId: string, terminalId: string) => `${componentId}/${terminalId}`
+
+export interface ContextSection {
+  title: string
+  body: string
+}
+export interface DetectorContribution {
+  id: string
+  files: string[]
+  kind: ComponentKind
+  terminals: TerminalSpec[]
+}
+export interface CommandContribution {
+  id: string
+  title: string
+  run: { command: string; kind: TerminalKind } | null
+  when?: string | null
+}
+export interface MenuContribution {
+  command: string
+  when?: string | null
+}
+export interface ViewContribution {
+  id: string
+  title: string
+  location: 'inspector' | 'dock'
+}
+export interface ExtensionManifest {
+  name: string
+  publisher: string
+  version: string
+  displayName?: string | null
+  engines: { patchbay: string }
+  main?: string | null
+  activationEvents: string[]
+  permissions: string[]
+  contributes: {
+    devices: DeviceManifest[]
+    detectors: DetectorContribution[]
+    commands: CommandContribution[]
+    menus: Record<string, MenuContribution[]>
+    context: { title: string; file: string }[]
+    views: ViewContribution[]
+  }
+}
+export interface Extension {
+  id: string
+  dir: string
+  manifest: ExtensionManifest
+  enabled: boolean
+  errors: string[]
+}
+export interface ExtensionRegistry {
+  extensions: Extension[]
+  errors: string[]
+}
+export interface ExtensionBadge {
+  text: string
+  tone?: 'info' | 'success' | 'warning' | 'error'
+  tooltip?: string
+}
+export interface RuntimeTerminal {
+  componentId: string
+  terminal: TerminalSpec
+  commandId?: string
+  extensionId?: string
+  /** Names a `terminals.run` session, so repeating the command reuses it. */
+  key?: string
+}

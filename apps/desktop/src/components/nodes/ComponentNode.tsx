@@ -1,5 +1,8 @@
+import { createPortal } from 'react-dom'
+import ExtensionBadges from '../../extensions/Badges'
+import ExtensionMenu from '../../extensions/ExtensionMenu'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { memo, type CSSProperties } from 'react'
+import { memo, useState, type CSSProperties } from 'react'
 import { nearbyIds } from '../../lib/plan'
 import { KIND_COLOR, terminalHealth } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
@@ -7,6 +10,7 @@ import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const planning = useStore((s) => s.view === 'plan')
   const highlighted = useStore((s) => s.highlighted.includes(id))
   const nearby = useStore((s) => s.view === 'plan' && nearbyIds(s.highlighted, s.edges).has(id))
@@ -28,8 +32,32 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   return (
     <div
       className={`component-node ${!planning && selected ? 'selected' : ''} ${planClass}`}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        useStore.getState().select(id)
+        setMenu({ x: e.clientX, y: e.clientY })
+      }}
       style={{ '--kind': color } as CSSProperties}
     >
+      {menu &&
+        createPortal(
+          <div
+            className="node-menu-overlay nodrag"
+            onClick={(e) => {
+              e.stopPropagation()
+              setMenu(null)
+            }}
+          >
+            <div className="node-extension-menu" style={{ left: menu.x, top: menu.y }}>
+              <ExtensionMenu slot="component/actions" componentId={id} />
+              <button onClick={() => void openComponentWindow(id, data.name)}>
+                Open in window
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
       <Handle type="target" position={Position.Left} className="link-handle" />
       <div className="component-header">
         <span className="kind-badge">{data.kind}</span>
@@ -44,6 +72,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             ±{changes}
           </span>
         )}
+        <ExtensionBadges componentId={id} />
         <button
           className="nodrag popout-button"
           title="Open component in window"

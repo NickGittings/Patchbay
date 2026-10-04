@@ -1,0 +1,4 @@
+services:
+  hello:
+    image: alpine:3
+    command: echo Hello from Patchbay
