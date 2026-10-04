@@ -20,6 +20,9 @@ pub struct DeviceManifest {
     pub command: String,
     #[serde(default)]
     pub kind: TerminalKind,
+    /// Copied to the terminal's `readyWhen`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ready_when: String,
     /// "builtin", "extension:<id>" or "user"; filled in on load.
     #[serde(default)]
     pub source: String,

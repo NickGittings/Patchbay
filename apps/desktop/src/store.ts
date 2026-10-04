@@ -61,6 +61,9 @@ interface State {
   view: View
   highlighted: string[]
   planStartedWith: Record<string, string>
+  /** The planner's shown terminal id (UI only). */
+  planActive: string | null
+  setPlanActive: (id: string | null) => void
   setView: (view: View) => void
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
@@ -161,6 +164,8 @@ export const useStore = create<State>((set, get) => ({
   view: 'navigation',
   highlighted: [],
   planStartedWith: {},
+  planActive: null,
+  setPlanActive: (planActive) => set({ planActive }),
 
   loadProject: (p) =>
     set({
@@ -170,6 +175,7 @@ export const useStore = create<State>((set, get) => ({
       view: 'navigation',
       highlighted: [],
       planStartedWith: {},
+      planActive: null,
       sessions: {},
       runtimeTerminals: {},
       extensionBadges: {},
@@ -268,6 +274,7 @@ export const useStore = create<State>((set, get) => ({
       name: device?.name ?? 'Task',
       command: device?.command ?? '',
       kind: device?.kind ?? 'task',
+      ...(device?.readyWhen ? { readyWhen: device.readyWhen } : {}),
     }
     set((s) => ({
       nodes: mapNode(s.nodes, componentId, (d) => ({

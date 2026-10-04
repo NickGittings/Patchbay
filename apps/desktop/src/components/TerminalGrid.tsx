@@ -1,7 +1,9 @@
-import { describeTerminal, terminalHealth } from '../lib/display'
+import { describeTerminal, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
+import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 
 /** Shared tiled sessions for the implementation view and component pop-outs. */
@@ -13,16 +15,19 @@ export default function TerminalGrid({
   terminals: TerminalSpec[]
 }) {
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   return (
     <div className="terminal-grid">
       {terminals.map((terminal) => {
         const sid = sessionId(componentId, terminal.id)
         const session = sessions[sid]
+        const status = terminalStatus(terminal.kind, session)
         return (
-          <section key={sid} className={`terminal-tile health-${terminalHealth(session)}`}>
+          <section key={sid} className={`terminal-tile health-${status.health}`}>
             <div className="terminal-tile-header">
               <span className="status-dot" />
               <strong>{terminal.name}</strong>
+              <StatusLabel status={status} />
               <code title={describeTerminal(terminal)}>{describeTerminal(terminal)}</code>
               {session?.running ? (
                 <button onClick={() => stopTerminal(sid)}>■ Stop</button>

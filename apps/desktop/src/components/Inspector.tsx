@@ -3,7 +3,8 @@ import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
 import { openComponentWindow } from '../lib/windows'
 import { useState } from 'react'
-import { describeTerminal, KIND_COLOR, terminalHealth } from '../lib/display'
+import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
 import { syncCurrentRoots } from '../lib/access'
 import { startTerminal, stopTerminal } from '../lib/sessions'
@@ -16,6 +17,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
   const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   const edges = useStore((s) => s.edges)
   const nodes = useStore((s) => s.nodes)
   const { updateComponent, updateTerminal, removeTerminal, addTerminal, setActiveSession } =
@@ -99,10 +101,11 @@ function ComponentInspector({ node }: { node: FlowNode }) {
       {data.terminals.map((t) => {
         const sid = sessionId(id, t.id)
         const session = sessions[sid]
+        const status = terminalStatus(t.kind, session)
         return (
-          <div key={t.id} className={`terminal-row health-${terminalHealth(session)}`}>
+          <div key={t.id} className={`terminal-row health-${status.health}`}>
             <div className="row">
-              <span className="status-dot" />
+              <span className="status-dot" title={statusTitle(status)} />
               <input
                 className="grow"
                 value={t.name}
@@ -146,6 +149,18 @@ function ComponentInspector({ node }: { node: FlowNode }) {
               value={t.command}
               onChange={(e) => updateTerminal(id, t.id, { command: e.target.value })}
             />
+            {t.kind === 'task' && (
+              <input
+                className="mono"
+                spellCheck={false}
+                placeholder="Ready when output contains… (a local URL also counts)"
+                title="Output text that means this service is ready"
+                value={t.readyWhen ?? ''}
+                onChange={(e) =>
+                  updateTerminal(id, t.id, { readyWhen: e.target.value || undefined })
+                }
+              />
+            )}
           </div>
         )
       })}

@@ -4,10 +4,14 @@ import ExtensionMenu from '../../extensions/ExtensionMenu'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, useState, type CSSProperties } from 'react'
 import { nearbyIds } from '../../lib/plan'
-import { KIND_COLOR, terminalHealth } from '../../lib/display'
+import { useShallow } from 'zustand/react/shallow'
+import { componentTerminals, mostUrgent } from '../../lib/attention'
+import { useClockTick } from '../../lib/clock'
+import { KIND_COLOR, statusTitle, terminalStatus } from '../../lib/display'
 import { useStore, type FlowNode } from '../../store'
 import { openComponentWindow } from '../../lib/windows'
 import { sessionId } from '../../types'
+import AttentionPill from '../status/AttentionPill'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -17,11 +21,27 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const planClass =
     planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
-  const sessions = useStore((s) => s.sessions)
+  // Only this node's sessions (with those its extensions started), so other terminals' status
+  // updates don't re-render it.
+  // Flat lists of strings and existing objects, which compare equal when nothing changed.
+  const kinds = useStore(
+    useShallow((s) =>
+      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([, t]) => t.kind),
+    ),
+  )
+  const sessions = useStore(
+    useShallow((s) =>
+      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([sid]) => s.sessions[sid]),
+    ),
+  )
+  useClockTick()
+  // Its own terminals come first, so `statuses[i]` matches `data.terminals[i]`.
+  const statuses = kinds.map((kind, i) => terminalStatus(kind, sessions[i]))
   const changes = useStore((s) => s.gitChanges[id] ?? 0)
   const repo = useStore((s) => s.repos[id])
   const activeSession = useStore((s) => s.activeSession)
   const color = KIND_COLOR[data.kind]
+  const attention = mostUrgent(statuses)
 
   const openTerminal = (terminalId: string) => {
     const s = useStore.getState()
@@ -72,6 +92,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             ±{changes}
           </span>
         )}
+        <AttentionPill status={attention} />
         <ExtensionBadges componentId={id} />
         <button
           className="nodrag popout-button"
@@ -87,12 +108,13 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       </div>
       <div className="component-path">{data.path === '.' ? '(repo root)' : data.path}</div>
       <div className="terminal-chips">
-        {data.terminals.map((t) => {
+        {data.terminals.map((t, i) => {
           const sid = sessionId(id, t.id)
+          const status = statuses[i]
           return (
             <button
               key={t.id}
-              className={`chip health-${terminalHealth(sessions[sid])} ${
+              className={`chip health-${status.health} ${
                 activeSession === sid ? 'active' : ''
               } nodrag`}
               onClick={(e) => {
@@ -102,7 +124,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
               }}
               aria-disabled={planning}
               tabIndex={planning ? -1 : undefined}
-              title={t.command || 'interactive shell'}
+              title={statusTitle(status, t.command || 'interactive shell')}
             >
               <span className="status-dot" />
               {t.name}

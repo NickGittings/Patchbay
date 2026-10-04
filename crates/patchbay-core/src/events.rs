@@ -1,3 +1,4 @@
+use crate::status::SessionStatus;
 use serde::Serialize;
 
 /// Structured terminal events. Every consumer (UI, CLI, future audit log) sees the same stream.
@@ -29,6 +30,12 @@ pub enum TerminalEvent {
         /// Unix milliseconds.
         exited_ms: u64,
     },
+    /// What a running session is doing changed (see [`SessionStatus`]).
+    Status {
+        session_id: String,
+        generation: u64,
+        status: SessionStatus,
+    },
 }
 
 impl TerminalEvent {
@@ -37,7 +44,8 @@ impl TerminalEvent {
         match self {
             Self::Started { session_id, .. }
             | Self::Output { session_id, .. }
-            | Self::Exited { session_id, .. } => session_id,
+            | Self::Exited { session_id, .. }
+            | Self::Status { session_id, .. } => session_id,
         }
     }
 }

@@ -675,6 +675,21 @@ fn decorate_agent(
                 " --append-system-prompt-file {}",
                 quote_path(shell, briefing.file, env)
             );
+            // Hooks that report working / needs input / done to Patchbay. They
+            // are POSIX shell, and claude takes one `--settings`, so never
+            // replace one the user passes.
+            let own_settings = command_tokens(command, shell).is_none_or(|tokens| {
+                tokens
+                    .iter()
+                    .any(|a| a == "--settings" || a.starts_with("--settings="))
+            });
+            if shell == Shell::Unix && !own_settings {
+                let _ = write!(
+                    command,
+                    " --settings {}",
+                    shell.quote(&crate::status::claude_hooks_settings())
+                );
+            }
         }
         Agent::Codex => {
             let argument = |text: &str| {
@@ -808,6 +823,8 @@ pub fn plan_session_spec(
         command,
         cwd: PathBuf::from(&project.root),
         env,
+        ready_when: terminal.ready_when.clone(),
+        service: terminal.kind == TerminalKind::Task,
         notice,
     })
 }
@@ -865,6 +882,8 @@ pub fn session_spec(
         command,
         cwd: project.component_dir(component),
         env,
+        ready_when: terminal.ready_when.clone(),
+        service: terminal.kind == TerminalKind::Task,
         notice,
     })
 }
@@ -905,6 +924,7 @@ mod tests {
             name: "Ad hoc".into(),
             command: "echo hi".into(),
             kind: TerminalKind::Task,
+            ready_when: String::new(),
         };
         let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
         assert_eq!(spec.id, "api/agent");
@@ -916,6 +936,7 @@ mod tests {
             name: "X".into(),
             command: "true".into(),
             kind: TerminalKind::Task,
+            ready_when: String::new(),
         };
         assert!(extra_session_spec(project(), "nope", missing, &AllowAll, &[]).is_err());
     }
@@ -946,6 +967,7 @@ mod tests {
                         name: "Claude".into(),
                         command: "claude".into(),
                         kind: TerminalKind::Agent,
+                        ready_when: String::new(),
                     }],
                 ),
                 component("db", "db", vec![]),
@@ -1006,6 +1028,35 @@ mod tests {
         assert!(!spec.command.contains("$(cat"));
         assert!(spec.env.contains_key(CONTEXT_ENV));
         assert!(spec.notice.is_none());
+        assert!(!spec.service);
+        if cfg!(unix) {
+            assert!(spec.command.contains(" --settings '{\"hooks\""));
+        }
+    }
+
+    #[test]
+    fn claude_keeps_the_users_own_settings() {
+        let briefing = Briefing {
+            file: Path::new("/tmp/ctx.md"),
+            text: "",
+            dirs: &[],
+        };
+        for command in [
+            "claude --settings ./team.json",
+            "claude --settings=./team.json",
+        ] {
+            let mut command = command.to_string();
+            decorate_agent(
+                &mut command,
+                Agent::Claude,
+                &briefing,
+                None,
+                Shell::Unix,
+                &mut BTreeMap::new(),
+            );
+            assert_eq!(command.matches("--settings").count(), 1, "{command}");
+            assert!(command.contains("--append-system-prompt-file"));
+        }
     }
 
     fn planner() -> TerminalSpec {
@@ -1014,6 +1065,7 @@ mod tests {
             name: "Claude".into(),
             command: "claude".into(),
             kind: TerminalKind::Agent,
+            ready_when: String::new(),
         }
     }
 
@@ -1658,7 +1710,7 @@ mod tests {
                         assert_eq!(exit_code, 0);
                         break;
                     }
-                    TerminalEvent::Started { .. } => {}
+                    TerminalEvent::Started { .. } | TerminalEvent::Status { .. } => {}
                 }
             }
             String::from_utf8(output).unwrap()

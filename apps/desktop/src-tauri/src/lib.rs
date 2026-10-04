@@ -632,6 +632,14 @@ fn terminal_stop(state: State<AppState>, session_id: String) {
     state.pty.kill(&session_id);
 }
 
+/// A window showed the session to the user; every window hears the new status.
+#[tauri::command]
+fn terminal_seen(app: AppHandle, state: State<AppState>, session_id: String) {
+    if let Some(event) = state.pty.mark_seen(&session_id) {
+        TauriSink(app).emit(event);
+    }
+}
+
 /// Async so copying and encoding a large backlog stays off the main thread.
 #[tauri::command]
 async fn terminal_snapshot(
@@ -728,6 +736,7 @@ pub fn run() {
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
+                terminal_seen,
                 terminal_reset,
                 terminal_snapshot,
                 list_dir,

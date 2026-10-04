@@ -572,6 +572,7 @@ pub fn command_terminal(registry: &Registry, command_id: &str) -> Result<Termina
         name: command.title,
         command: run.command,
         kind: run.kind,
+        ready_when: String::new(),
     })
 }
 
@@ -592,6 +593,7 @@ pub fn run_terminal(extension_id: &str, command: String, key: &str) -> Result<Te
         name: extension_id.into(),
         command,
         kind: TerminalKind::Task,
+        ready_when: String::new(),
     })
 }
 

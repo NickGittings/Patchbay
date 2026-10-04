@@ -44,6 +44,7 @@ fn task(id: &str, name: &str, command: String) -> TerminalSpec {
         name: name.into(),
         command,
         kind: TerminalKind::Task,
+        ready_when: String::new(),
     }
 }
 
@@ -54,12 +55,14 @@ fn default_terminals() -> Vec<TerminalSpec> {
             name: "Shell".into(),
             command: String::new(),
             kind: TerminalKind::Shell,
+            ready_when: String::new(),
         },
         TerminalSpec {
             id: "claude".into(),
             name: "Claude".into(),
             command: "claude".into(),
             kind: TerminalKind::Agent,
+            ready_when: String::new(),
         },
     ]
 }

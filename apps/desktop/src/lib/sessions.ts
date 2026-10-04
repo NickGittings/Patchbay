@@ -162,6 +162,16 @@ export function handleTerminalEvent(e: TerminalEvent) {
       })
       writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
       break
+    case 'status': {
+      const prev = s.sessions[e.sessionId]
+      // Exited runs still get status (stopped, seen); it never revives one.
+      s.setSession(e.sessionId, {
+        ...prev,
+        running: newGeneration || (prev?.running ?? true),
+        status: e.status,
+      })
+      break
+    }
   }
 }
 
@@ -184,6 +194,7 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           exitCode: snapshot.exitCode ?? undefined,
           startedMs: snapshot.startedMs,
           exitedMs: snapshot.exitedMs ?? undefined,
+          status: snapshot.status,
           notice: snapshot.notice ?? undefined,
         })
       }

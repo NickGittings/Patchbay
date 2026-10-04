@@ -90,6 +90,10 @@ pub struct TerminalSpec {
     pub command: String,
     #[serde(default)]
     pub kind: TerminalKind,
+    /// Output text (case-insensitive) that means a service is ready. A local
+    /// URL in the output counts as ready without it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ready_when: String,
 }
 
 /// `source` depends on `target`.

@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
+import AttentionMenu from './status/AttentionMenu'
 import type { View } from '../types'
 
 const views: { id: View; label: string }[] = [
@@ -76,6 +77,7 @@ export default function Toolbar() {
               </button>
             ))}
           </div>
+          <AttentionMenu />
         </>
       )}
       <ExtensionMenu slot="toolbar" />

@@ -26,6 +26,8 @@ export interface TerminalSpec {
   /** Empty for an interactive shell. */
   command: string
   kind: TerminalKind
+  /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
+  readyWhen?: string
 }
 
 export interface Component {
@@ -120,6 +122,7 @@ export interface DeviceManifest {
   description?: string | null
   command: string
   kind: TerminalKind
+  readyWhen?: string
   source: string
 }
 
@@ -133,6 +136,33 @@ export type TerminalEvent =
     }
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
+  | { type: 'status'; sessionId: string; generation: number; status: SessionStatus }
+
+/** `status::AgentState`. */
+export type AgentState = 'working' | 'needsInput' | 'review' | 'idle'
+
+/** `status::AgentReport`: what an agent last reported through `PATCHBAY_STATUS_FILE`. */
+export interface AgentReport {
+  state: AgentState
+  /** Unix milliseconds. */
+  sinceMs: number
+  message: string | null
+  prompt: string | null
+}
+
+/** `status::SessionStatus`: what a running session is doing. */
+export interface SessionStatus {
+  lastOutputMs: number | null
+  active: boolean
+  agent: AgentReport | null
+  url: string | null
+  ready: boolean
+  healthy: boolean | null
+  /** The user asked it to stop, so a non-zero exit isn't a failure. */
+  stopped: boolean
+  /** When a window last showed it to the user (`terminal_seen`), in Unix ms. */
+  seenMs: number | null
+}
 
 export interface TerminalSnapshot {
   /** Base64. */
@@ -144,6 +174,7 @@ export interface TerminalSnapshot {
   /** Unix milliseconds. */
   startedMs: number
   exitedMs: number | null
+  status: SessionStatus
   /** Why an agent's briefing wasn't injected normally, if it wasn't. */
   notice: string | null
 }
@@ -160,6 +191,7 @@ export interface SessionState {
   /** When the current or last run started and ended, in Unix milliseconds. */
   startedMs?: number
   exitedMs?: number
+  status?: SessionStatus
   /** Shown above the terminal, since full-screen agents hide the dim output line. */
   notice?: string
 }
