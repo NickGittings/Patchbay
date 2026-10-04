@@ -42,8 +42,11 @@ struct Process {
 }
 
 impl Process {
-    /// Ask nicely: portable-pty sends SIGHUP on Unix and terminates on Windows.
+    /// Ask nicely: portable-pty sends SIGHUP on Unix. Windows has no hangup, so
+    /// the whole tree is terminated.
     fn hang_up(&mut self) {
+        #[cfg(windows)]
+        self.kill_tree();
         let _ = self.killer.kill();
     }
 
@@ -59,7 +62,25 @@ impl Process {
                 .status();
             return;
         }
+        #[cfg(windows)]
+        self.kill_tree();
         let _ = self.killer.kill();
+    }
+
+    /// The PTY child is only `cmd.exe` (or the PowerShell bootstrap that starts it),
+    /// so terminating it alone would leave the real program running.
+    #[cfg(windows)]
+    fn kill_tree(&self) {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Some(pid) = self.pid {
+            let _ = std::process::Command::new("taskkill.exe")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
     }
 }
 
@@ -72,6 +93,7 @@ struct Backlog {
     exit_code: Option<i32>,
     started_ms: u64,
     exited_ms: Option<u64>,
+    notice: Option<String>,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -111,6 +133,9 @@ pub struct Snapshot {
     pub started_ms: u64,
     /// When it exited, in Unix milliseconds.
     pub exited_ms: Option<u64>,
+    /// The spec's notice. Full-screen programs hide the dim backlog line, so
+    /// windows show this outside the terminal as well.
+    pub notice: Option<String>,
 }
 
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
@@ -156,6 +181,13 @@ fn shell_command(command: &str) -> CommandBuilder {
 fn windows_shell_command(command: &str) -> CommandBuilder {
     if command.is_empty() {
         return CommandBuilder::new("powershell.exe");
+    }
+    // Without quotes, portable-pty at most wraps the command in quotes (which /S
+    // strips again) and doubles trailing backslashes, so cmd can start it directly.
+    if !command.contains('"') && !command.ends_with('\\') {
+        let mut cmd = CommandBuilder::new("cmd.exe");
+        cmd.args(["/V:OFF", "/S", "/C", command]);
+        return cmd;
     }
     use base64::Engine as _;
     // portable-pty MSVC-quotes every argument, but cmd.exe expects raw syntax
@@ -239,6 +271,7 @@ impl PtyManager {
             generation,
             running: true,
             started_ms,
+            notice: spec.notice.clone(),
             ..Backlog::default()
         }));
         if reserved {
@@ -269,6 +302,7 @@ impl PtyManager {
             session_id: spec.id.clone(),
             generation,
             started_ms,
+            notice: spec.notice.clone(),
         });
 
         if let Some(notice) = &spec.notice {
@@ -378,12 +412,13 @@ impl PtyManager {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
         // A spec must not replace the private command transport variable.
-        if cfg!(windows) && !spec.command.is_empty() {
-            cmd.env(COMMAND_ENV, &spec.command);
+        for (k, v) in spec
+            .env
+            .iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case(COMMAND_ENV))
+        {
+            cmd.env(k, v);
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -409,6 +444,7 @@ impl PtyManager {
             exit_code: backlog.exit_code,
             started_ms: backlog.started_ms,
             exited_ms: backlog.exited_ms,
+            notice: backlog.notice.clone(),
         })
     }
 
@@ -585,6 +621,14 @@ mod tests {
             }
         }
         assert_eq!(end, snapshot.end);
+        assert_eq!(
+            snapshot.notice.as_deref(),
+            Some("Briefing is in $PATCHBAY_CONTEXT_FILE.")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TerminalEvent::Started { notice: Some(n), .. } if n == "Briefing is in $PATCHBAY_CONTEXT_FILE."
+        )));
     }
 
     #[test]
@@ -783,6 +827,19 @@ mod backlog_tests {
         assert_eq!(
             windows_shell_command("").get_argv(),
             &[std::ffi::OsString::from("powershell.exe")]
+        );
+        // Commands portable-pty can pass through intact skip the PowerShell start-up.
+        for command in ["npm test", "cargo test & echo done", r"dir C:\temp\x"] {
+            let cmd = windows_shell_command(command);
+            assert_eq!(
+                cmd.get_argv(),
+                &["cmd.exe", "/V:OFF", "/S", "/C", command].map(std::ffi::OsString::from)
+            );
+            assert_eq!(cmd.get_env(COMMAND_ENV), None);
+        }
+        assert_eq!(
+            windows_shell_command(r"dir C:\").get_argv()[0],
+            std::ffi::OsString::from("powershell.exe")
         );
     }
 

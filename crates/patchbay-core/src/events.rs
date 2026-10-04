@@ -13,6 +13,8 @@ pub enum TerminalEvent {
         generation: u64,
         /// Unix milliseconds.
         started_ms: u64,
+        /// Why an agent's briefing wasn't injected normally, if it wasn't.
+        notice: Option<String>,
     },
     Output {
         session_id: String,

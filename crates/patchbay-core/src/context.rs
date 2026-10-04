@@ -95,9 +95,54 @@ enum Agent {
     Codex,
 }
 
-/// Enough shell lexing to identify simple invocations without rewriting them.
-/// Quoted operators are literal arguments; compound or dynamic commands fall back.
-fn command_tokens(command: &str) -> Option<Vec<String>> {
+/// The shell that runs a terminal's command: the login shell, or `cmd.exe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    Unix,
+    Windows,
+}
+
+impl Shell {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+
+    fn quote(self, s: &str) -> String {
+        match self {
+            Self::Unix => sh_quote(s),
+            Self::Windows => cmd_quote(s),
+        }
+    }
+
+    /// How this shell spells the context file variable, for notices.
+    fn context_var(self) -> &'static str {
+        match self {
+            Self::Unix => "$PATCHBAY_CONTEXT_FILE",
+            Self::Windows => "%PATCHBAY_CONTEXT_FILE%",
+        }
+    }
+}
+
+/// Enough lexing, in the syntax of the shell that runs the command, to identify
+/// simple invocations without rewriting them. Quoted operators are literal
+/// arguments; compound or dynamic commands fall back.
+fn command_tokens(command: &str, shell: Shell) -> Option<Vec<String>> {
+    let tokens = match shell {
+        Shell::Unix => sh_tokens(command)?,
+        Shell::Windows => cmd_tokens(command)?,
+    };
+    // Appended flags after an option terminator would become prompt text.
+    if tokens.iter().any(|t| t == "--") {
+        return None;
+    }
+    Some(tokens)
+}
+
+fn sh_tokens(command: &str) -> Option<Vec<String>> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quote = None;
@@ -144,20 +189,51 @@ fn command_tokens(command: &str) -> Option<Vec<String>> {
     if started {
         tokens.push(token);
     }
-    // Appended flags after an option terminator would become prompt text.
-    if tokens.iter().any(|t| t == "--") {
+    Some(tokens)
+}
+
+/// cmd.exe knows only double quotes, which a backslash never escapes, and
+/// escapes operators with `^`. Single quotes are literal, so `'a & b'` is
+/// compound. `%VAR%` arguments are kept, like `$VAR` on Unix.
+fn cmd_tokens(command: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for c in command.chars() {
+        if c == '\n' || c == '\r' {
+            return None;
+        } else if c == '"' {
+            quoted = !quoted;
+            started = true;
+        } else if quoted {
+            token.push(c);
+        } else if "&|<>()^".contains(c) {
+            return None;
+        } else if c.is_whitespace() {
+            if started {
+                tokens.push(std::mem::take(&mut token));
+                started = false;
+            }
+        } else {
+            token.push(c);
+            started = true;
+        }
+    }
+    if quoted {
         return None;
+    }
+    if started {
+        tokens.push(token);
     }
     Some(tokens)
 }
 
-fn program_token(command: &str) -> Option<String> {
-    let mut tokens = command_tokens(command)?.into_iter().peekable();
-    if tokens.peek().is_some_and(|token| token == "env") {
-        tokens.next();
-    }
-    tokens.find(|token| {
-        let Some((name, _)) = token.split_once('=') else {
+/// The program's position, after a leading `env` and `NAME=value` assignments.
+fn program_index(tokens: &[String]) -> Option<usize> {
+    let skip = usize::from(tokens.first().is_some_and(|token| token == "env"));
+    (skip..tokens.len()).find(|&i| {
+        let Some((name, _)) = tokens[i].split_once('=') else {
             return true;
         };
         let mut chars = name.chars();
@@ -168,9 +244,8 @@ fn program_token(command: &str) -> Option<String> {
     })
 }
 
-fn agent_program(command: &str) -> Option<Agent> {
-    let token = program_token(command)?;
-    let program = token.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
+fn agent_named(program: &str) -> Option<Agent> {
+    let program = program.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
     let program = [".exe", ".cmd", ".bat"]
         .iter()
         .find_map(|ext| program.strip_suffix(ext))
@@ -182,12 +257,9 @@ fn agent_program(command: &str) -> Option<Agent> {
     }
 }
 
-fn unsupported_codex_subcommand(command: &str, program: &str) -> bool {
-    let tokens = command_tokens(command).unwrap_or_default();
-    let Some(index) = tokens.iter().position(|token| token == program) else {
-        return true;
-    };
-    let mut args = tokens[index + 1..].iter();
+/// `args` are the arguments after the `codex` program.
+fn unsupported_codex_subcommand(args: &[String]) -> bool {
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg.starts_with('-') {
             if !arg.contains('=')
@@ -254,29 +326,6 @@ fn unsupported_codex_subcommand(command: &str, program: &str) -> bool {
     false
 }
 
-#[derive(Clone, Copy)]
-enum Shell {
-    Unix,
-    Windows,
-}
-
-impl Shell {
-    fn current() -> Self {
-        if cfg!(windows) {
-            Self::Windows
-        } else {
-            Self::Unix
-        }
-    }
-
-    fn quote(self, s: &str) -> String {
-        match self {
-            Self::Unix => sh_quote(s),
-            Self::Windows => cmd_quote(s),
-        }
-    }
-}
-
 /// Quote a Windows argument using MSVC argv rules, including trailing slashes.
 fn cmd_quote(s: &str) -> String {
     let mut out = String::from("\"");
@@ -324,11 +373,12 @@ fn quote_path(shell: Shell, path: &Path, env: &mut BTreeMap<String, String>) -> 
 }
 
 /// A TOML basic string whose content is inert even through npm's cmd shims.
-/// Quotes and backslashes occur only as TOML delimiters and Unicode escapes.
+/// Quotes and backslashes occur only as TOML delimiters and Unicode escapes;
+/// parentheses are escaped too, since shims expand `%*` inside `IF (...)` blocks.
 fn toml_inert(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
-        if c.is_ascii_alphanumeric() || " .,:_/()-".contains(c) {
+        if c.is_ascii_alphanumeric() || " .,:_/-".contains(c) {
             out.push(c);
         } else if u32::from(c) <= 0xffff {
             let _ = write!(out, "\\u{:04X}", u32::from(c));
@@ -338,6 +388,151 @@ fn toml_inert(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// A plain TOML basic string. On Unix the whole argument is single-quoted, so
+/// only TOML itself needs escaping.
+fn toml_basic(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push('\t'),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04X}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn toml_string(shell: Shell, s: &str) -> String {
+    match shell {
+        Shell::Unix => toml_basic(s),
+        Shell::Windows => toml_inert(s),
+    }
+}
+
+/// cmd.exe rejects lines over 8191 UTF-16 units after expanding variables. npm,
+/// pnpm and yarn shims re-run `%*` inside a longer line that repeats their own
+/// folder, so leave room for that.
+const CMD_BUDGET: usize = 8191 - 1024;
+
+/// Linux limits a single argument to 128 KiB, and the login shell receives the
+/// whole command as one.
+const SHELL_ARG_BUDGET: usize = 120 * 1024;
+
+/// UTF-16 length of `command` once cmd.exe expands `%VAR%`, looking variables up
+/// in the session's environment and then Patchbay's own. Undefined ones stay literal.
+fn cmd_expanded_len(command: &str, env: &BTreeMap<String, String>) -> usize {
+    let lookup = |name: &str| {
+        // `%VAR:~0,5%` is at most the variable's length; `%VAR:a=b%` at most
+        // that many copies of `b`.
+        let (name, edit) = name.split_once(':').unwrap_or((name, ""));
+        let growth = edit
+            .split_once('=')
+            .map_or(1, |(_, to)| to.encode_utf16().count().max(1));
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var(name).ok())
+            .map(|value| value.encode_utf16().count() * growth)
+    };
+    let units = |s: &str| s.encode_utf16().count();
+    let mut len = 0;
+    let mut rest = command;
+    while let Some(start) = rest.find('%') {
+        len += units(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) if end > 0 => {
+                if let Some(value) = lookup(&after[..end]) {
+                    len += value;
+                    rest = &after[end + 1..];
+                } else {
+                    // The closing `%` may open the next variable.
+                    len += 1 + units(&after[..end]);
+                    rest = &after[end..];
+                }
+            }
+            _ => {
+                len += 1;
+                rest = after;
+            }
+        }
+    }
+    len + units(rest)
+}
+
+/// Codex reads a `-c` value as TOML, or as a raw string when that fails.
+fn codex_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    match toml::from_str::<toml::Table>(&format!("v = {raw}")) {
+        Ok(table) => table.get("v")?.as_str().map(Into::into),
+        Err(_) => Some(raw.into()),
+    }
+}
+
+/// The `developer_instructions` Codex would use without Patchbay's override, so
+/// they can be kept: a `-c` override in the command, else the selected profile's,
+/// else the top-level setting.
+fn codex_instructions(args: &[String], config: Option<&toml::Table>) -> Option<String> {
+    let mut cli = None;
+    let mut profile = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        match flag {
+            "-c" | "--config" => {
+                if let Some(value) = inline.or_else(|| args.next().cloned())
+                    && let Some((key, value)) = value.split_once('=')
+                    && key.trim() == "developer_instructions"
+                {
+                    cli = codex_value(value);
+                }
+            }
+            "-p" | "--profile" => profile = inline.or_else(|| args.next().cloned()),
+            _ => {}
+        }
+    }
+    if cli.is_some() {
+        return cli;
+    }
+    let config = config?;
+    let instructions = |table: &toml::Value| {
+        table
+            .get("developer_instructions")?
+            .as_str()
+            .map(String::from)
+    };
+    profile
+        .or_else(|| config.get("profile")?.as_str().map(Into::into))
+        .and_then(|name| instructions(config.get("profiles")?.get(&name)?))
+        .or_else(|| {
+            config
+                .get("developer_instructions")?
+                .as_str()
+                .map(Into::into)
+        })
+}
+
+/// The user's Codex configuration, `$CODEX_HOME/config.toml` (`~/.codex` by default).
+fn codex_config() -> Option<toml::Table> {
+    // Unit tests must not depend on the developer's own Codex configuration.
+    if cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))?;
+    toml::from_str(&std::fs::read_to_string(home.join("config.toml")).ok()?).ok()
 }
 
 /// Markdown briefing for planning across a highlighted set, or the whole project.
@@ -452,47 +647,58 @@ fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     Ok(file)
 }
 
+/// An agent briefing: its file, its text, and the folders the agent may also read.
+struct Briefing<'a> {
+    file: &'a Path,
+    text: &'a str,
+    dirs: &'a [PathBuf],
+}
+
 /// Returns false when Codex receives a file pointer instead of the full text.
+/// `existing` holds the user's own Codex instructions, which the override keeps.
 fn decorate_agent(
     command: &mut String,
     agent: Agent,
-    file: &Path,
-    briefing: &str,
-    dirs: &[PathBuf],
+    briefing: &Briefing<'_>,
+    existing: Option<&str>,
     shell: Shell,
     env: &mut BTreeMap<String, String>,
 ) -> bool {
-    for dir in dirs {
+    for dir in briefing.dirs {
         let _ = write!(command, " --add-dir {}", quote_path(shell, dir, env));
     }
     match agent {
         Agent::Claude => {
+            // Interactive sessions honour the file flag (checked with Claude Code 2.1.289).
             let _ = write!(
                 command,
                 " --append-system-prompt-file {}",
-                quote_path(shell, file, env)
+                quote_path(shell, briefing.file, env)
             );
         }
         Agent::Codex => {
             let argument = |text: &str| {
+                let text = match existing {
+                    Some(existing) => format!("{existing}\n\n{text}"),
+                    None => text.into(),
+                };
                 format!(
                     " -c {}",
-                    shell.quote(&format!("developer_instructions={}", toml_inert(text)))
+                    shell.quote(&format!(
+                        "developer_instructions={}",
+                        toml_string(shell, &text)
+                    ))
                 )
             };
-            let inline = argument(briefing);
-            // Leave room below cmd.exe's 8191 UTF-16 units and Linux's usual
-            // 128 KiB per-argument limit (the shell receives the entire command).
+            let inline = argument(briefing.text);
             let too_long = match shell {
-                Shell::Windows => {
-                    command.encode_utf16().count() + inline.encode_utf16().count() > 8000
-                }
-                Shell::Unix => command.len() + inline.len() > 120 * 1024,
+                Shell::Windows => cmd_expanded_len(&format!("{command}{inline}"), env) > CMD_BUDGET,
+                Shell::Unix => command.len() + inline.len() > SHELL_ARG_BUDGET,
             };
             if too_long {
                 command.push_str(&argument(&format!(
                     "Your Patchbay briefing is in {}; read it before starting.",
-                    file.display()
+                    briefing.file.display()
                 )));
                 return false;
             }
@@ -504,30 +710,36 @@ fn decorate_agent(
 
 fn brief_agent(
     command: &mut String,
-    file: &Path,
-    briefing: &str,
-    dirs: &[PathBuf],
+    briefing: &Briefing<'_>,
     shell: Shell,
     env: &mut BTreeMap<String, String>,
 ) -> Option<String> {
-    let Some(agent) = agent_program(command) else {
-        let program = program_token(command).unwrap_or_else(|| {
-            command
-                .split_whitespace()
-                .next()
-                .unwrap_or("this command")
-                .into()
-        });
+    let var = shell.context_var();
+    let Some(tokens) = command_tokens(command, shell) else {
         return Some(format!(
-            "Briefing not injected automatically for {program} — it's at $PATCHBAY_CONTEXT_FILE."
+            "Briefing not injected automatically: Patchbay only adds it to a plain claude or \
+             codex command, without shell operators, substitutions or --. It's at {var}."
         ));
     };
-    if agent == Agent::Codex
-        && unsupported_codex_subcommand(command, &program_token(command).unwrap_or_default())
-    {
-        return Some("Briefing not injected automatically for this Codex subcommand — it's at $PATCHBAY_CONTEXT_FILE.".into());
-    }
-    if decorate_agent(command, agent, file, briefing, dirs, shell, env) {
+    let invocation = program_index(&tokens).map(|i| (tokens[i].as_str(), &tokens[i + 1..]));
+    let Some((agent, args)) =
+        invocation.and_then(|(program, args)| Some((agent_named(program)?, args)))
+    else {
+        let program = invocation.map_or("this command", |(program, _)| program);
+        return Some(format!(
+            "Briefing not injected automatically for {program} — it's at {var}."
+        ));
+    };
+    let existing = match agent {
+        Agent::Claude => None,
+        Agent::Codex if unsupported_codex_subcommand(args) => {
+            return Some(format!(
+                "Briefing not injected automatically for this Codex subcommand — it's at {var}."
+            ));
+        }
+        Agent::Codex => codex_instructions(args, codex_config().as_ref()),
+    };
+    if decorate_agent(command, agent, briefing, existing.as_deref(), shell, env) {
         None
     } else {
         let launcher = match shell {
@@ -535,7 +747,7 @@ fn brief_agent(
             Shell::Unix => "the login shell",
         };
         Some(format!(
-            "Briefing too long for {launcher}; Codex was told to read $PATCHBAY_CONTEXT_FILE."
+            "Briefing too long for {launcher}; Codex was told to read {var}."
         ))
     }
 }
@@ -581,14 +793,12 @@ pub fn plan_session_spec(
                 }
             }
         }
-        notice = brief_agent(
-            &mut command,
-            &file,
-            &briefing,
-            &dirs,
-            Shell::current(),
-            &mut env,
-        );
+        let briefing = Briefing {
+            file: &file,
+            text: &briefing,
+            dirs: &dirs,
+        };
+        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
     policy
         .check(Scope::Plan(&components), &command)
@@ -638,14 +848,12 @@ pub fn session_spec(
             .iter()
             .map(|(n, _)| project.component_dir(n))
             .collect();
-        notice = brief_agent(
-            &mut command,
-            &file,
-            &briefing,
-            &dirs,
-            Shell::current(),
-            &mut env,
-        );
+        let briefing = Briefing {
+            file: &file,
+            text: &briefing,
+            dirs: &dirs,
+        };
+        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
 
     policy
@@ -935,6 +1143,15 @@ mod tests {
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
     }
 
+    fn agent_program(command: &str, shell: Shell) -> Option<Agent> {
+        let tokens = command_tokens(command, shell)?;
+        agent_named(&tokens[program_index(&tokens)?])
+    }
+
+    fn briefing<'a>(file: &'a Path, text: &'a str, dirs: &'a [PathBuf]) -> Briefing<'a> {
+        Briefing { file, text, dirs }
+    }
+
     #[test]
     fn detects_agent_programs_and_leaves_compound_commands_alone() {
         for (command, expected) in [
@@ -966,7 +1183,35 @@ mod tests {
             ("codex\necho hi", None),
             ("", None),
         ] {
-            assert_eq!(agent_program(command), expected, "{command}");
+            assert_eq!(agent_program(command, Shell::Unix), expected, "{command}");
+        }
+    }
+
+    #[test]
+    fn windows_detection_follows_cmd_syntax() {
+        for (command, expected) in [
+            ("codex.cmd --model x", Some(Agent::Codex)),
+            (
+                r#""C:\Program Files\tools\codex.exe" --model x"#,
+                Some(Agent::Codex),
+            ),
+            (r#"codex "explain A | B & C""#, Some(Agent::Codex)),
+            ("claude --model %MODEL%", Some(Agent::Claude)),
+            ("codex it's", Some(Agent::Codex)),
+            // Single quotes don't quote in cmd, and a backslash doesn't escape a quote.
+            ("codex 'explain A & B'", None),
+            (r#"codex "a \" & b""#, None),
+            ("codex ^& echo", None),
+            ("codex (x)", None),
+            ("codex -- prompt", None),
+            (r#"codex "unterminated"#, None),
+            ("codex\r\necho hi", None),
+        ] {
+            assert_eq!(
+                agent_program(command, Shell::Windows),
+                expected,
+                "{command}"
+            );
         }
     }
 
@@ -977,12 +1222,12 @@ mod tests {
 
     #[test]
     fn inert_toml_round_trips_shell_characters_and_unicode() {
-        let text = "quotes \"' and \\ % ^ & | < > ! ` $\n\r\t café 世界 🦀\0";
+        let text = "quotes \"' and \\ % ^ & | < > ! ` $ (a) \n\r\t café 世界 🦀\0";
         let encoded = toml_inert(text);
         // TOML requires delimiter quotes and escape backslashes. Everything else
         // must be an allowed literal or a Unicode escape, never raw shell syntax.
         assert!(!encoded.contains([
-            '\'', '%', '^', '&', '|', '<', '>', '!', '`', '$', '\n', '\r'
+            '\'', '%', '^', '&', '|', '<', '>', '!', '`', '$', '(', ')', '\n', '\r'
         ]));
         assert_eq!(encoded.matches('"').count(), 2);
         let content = &encoded[1..encoded.len() - 1];
@@ -1002,6 +1247,22 @@ mod tests {
     }
 
     #[test]
+    fn unix_toml_escapes_only_what_toml_needs() {
+        let text = "quotes \"' and \\ % & $ (a) # * `x`\n\r\t café 世界 🦀\0";
+        let encoded = toml_basic(text);
+        assert!(encoded.contains("café 世界 🦀"));
+        assert!(encoded.contains("(a) # * `x`"));
+        assert_eq!(
+            decode_instructions(&format!("developer_instructions={encoded}")),
+            text
+        );
+        // Markdown stays close to its own size instead of growing several times over.
+        let markdown = "## Heading\n\n- **item** `code`\n".repeat(100);
+        assert!(toml_basic(&markdown).len() < markdown.len() * 5 / 4);
+        assert!(toml_inert(&markdown).len() > markdown.len() * 2);
+    }
+
+    #[test]
     fn codex_receives_exact_component_briefing() {
         let mut p = project();
         p.components[0].terminals[0].command = "env A=1 codex --model x".into();
@@ -1016,7 +1277,7 @@ mod tests {
         );
         let config = format!(
             "developer_instructions={}",
-            toml_inert(&component_context(&p, "api", &sections))
+            toml_string(Shell::current(), &component_context(&p, "api", &sections))
         );
         assert!(
             spec.command
@@ -1030,18 +1291,79 @@ mod tests {
     }
 
     #[test]
+    fn codex_keeps_the_users_own_instructions() {
+        let args = |command: &str| -> Vec<String> {
+            command_tokens(command, Shell::Unix).unwrap()[1..].to_vec()
+        };
+        let config: toml::Table = toml::from_str(
+            r#"
+            developer_instructions = "top level"
+            [profiles.fast]
+            developer_instructions = "fast profile"
+            "#,
+        )
+        .unwrap();
+        for (command, expected) in [
+            ("codex", Some("top level")),
+            ("codex -p fast", Some("fast profile")),
+            ("codex --profile=fast", Some("fast profile")),
+            ("codex -p missing", Some("top level")),
+            (
+                r#"codex -c 'developer_instructions="Run fmt"' -p fast"#,
+                Some("Run fmt"),
+            ),
+            ("codex --config developer_instructions=raw", Some("raw")),
+            ("codex -c model=x", Some("top level")),
+        ] {
+            assert_eq!(
+                codex_instructions(&args(command), Some(&config)).as_deref(),
+                expected,
+                "{command}"
+            );
+        }
+        let selected: toml::Table = toml::from_str(
+            "profile = \"fast\"\n[profiles.fast]\ndeveloper_instructions = \"default profile\"",
+        )
+        .unwrap();
+        assert_eq!(
+            codex_instructions(&args("codex"), Some(&selected)).as_deref(),
+            Some("default profile")
+        );
+        assert_eq!(codex_instructions(&args("codex"), None), None);
+
+        let file = Path::new("/tmp/briefing.md");
+        let mut command = "codex".into();
+        assert!(decorate_agent(
+            &mut command,
+            Agent::Codex,
+            &briefing(file, "the briefing", &[]),
+            Some("Run fmt"),
+            Shell::Unix,
+            &mut BTreeMap::new(),
+        ));
+        let config = command
+            .strip_prefix("codex -c '")
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        assert_eq!(decode_instructions(config), "Run fmt\n\nthe briefing");
+    }
+
+    #[test]
     fn unknown_agent_and_compound_commands_keep_command_and_get_a_notice() {
-        for command in ["aider", "codex && echo done"] {
+        for (command, notice) in [
+            ("aider", "for aider"),
+            ("codex && echo done", "plain claude or codex command"),
+        ] {
             let mut p = project();
             p.components[0].terminals[0].command = command.into();
             let spec = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
             assert_eq!(spec.command, command);
             assert!(spec.env.contains_key(CONTEXT_ENV));
-            assert!(
-                spec.notice
-                    .unwrap()
-                    .contains("Briefing not injected automatically")
-            );
+            let text = spec.notice.unwrap();
+            assert!(text.starts_with("Briefing not injected automatically"));
+            assert!(text.contains(notice), "{text}");
+            assert!(text.contains(Shell::current().context_var()));
         }
         let mut p = project();
         p.components[0].terminals[0].kind = TerminalKind::Task;
@@ -1049,6 +1371,22 @@ mod tests {
         assert!(spec.notice.is_none());
         assert_eq!(spec.command, "claude");
         assert!(!spec.env.contains_key(CONTEXT_ENV));
+    }
+
+    #[test]
+    fn windows_notices_use_cmd_variable_syntax() {
+        let file = Path::new(r"C:\Temp\briefing.md");
+        for command in ["aider", "codex 'a & b'", "codex exec x"] {
+            let notice = brief_agent(
+                &mut command.into(),
+                &briefing(file, "briefing", &[]),
+                Shell::Windows,
+                &mut BTreeMap::new(),
+            )
+            .unwrap();
+            assert!(notice.contains("%PATCHBAY_CONTEXT_FILE%"), "{notice}");
+            assert!(!notice.contains('$'), "{notice}");
+        }
     }
 
     #[test]
@@ -1088,9 +1426,8 @@ mod tests {
         assert!(decorate_agent(
             &mut command,
             Agent::Claude,
-            file,
-            "briefing",
-            std::slice::from_ref(&dir),
+            &briefing(file, "briefing", std::slice::from_ref(&dir)),
+            None,
             Shell::Windows,
             &mut env
         ));
@@ -1117,9 +1454,12 @@ mod tests {
         assert!(decorate_agent(
             &mut command,
             Agent::Claude,
-            Path::new(r"C:\Temp\briefing.md"),
-            "briefing",
-            &[PathBuf::from(r"C:\Program Files\db")],
+            &briefing(
+                Path::new(r"C:\Temp\briefing.md"),
+                "briefing",
+                &[PathBuf::from(r"C:\Program Files\db")]
+            ),
+            None,
             Shell::Windows,
             &mut BTreeMap::new(),
         ));
@@ -1130,16 +1470,29 @@ mod tests {
     }
 
     #[test]
+    fn cmd_length_counts_expanded_variables() {
+        let env = BTreeMap::from([("Long".to_string(), "x".repeat(100))]);
+        assert_eq!(cmd_expanded_len("a %LONG% b", &env), 104);
+        assert_eq!(cmd_expanded_len("a %LONG:~0,5% b", &env), 104);
+        assert_eq!(cmd_expanded_len("a %LONG:x=yy% b", &env), 204);
+        // Undefined variables and stray percent signs stay literal.
+        assert_eq!(
+            cmd_expanded_len("%PATCHBAY_TEST_UNDEFINED% 5%", &env),
+            "%PATCHBAY_TEST_UNDEFINED% 5%".len()
+        );
+        assert_eq!(cmd_expanded_len("100% %LONG%", &env), "100% ".len() + 100);
+    }
+
+    #[test]
     fn windows_codex_uses_a_pointer_when_the_complete_command_is_too_long() {
         let file = Path::new(r"C:\Temp\briefing.md");
-        let briefing = "🦀".repeat(1000);
+        let text = "🦀".repeat(1000);
         let mut command = "codex.cmd".into();
         assert!(!decorate_agent(
             &mut command,
             Agent::Codex,
-            file,
-            &briefing,
-            &[],
+            &briefing(file, &text, &[]),
+            None,
             Shell::Windows,
             &mut BTreeMap::new(),
         ));
@@ -1154,19 +1507,17 @@ mod tests {
                 cmd_quote(&format!("developer_instructions={}", toml_inert(&pointer)))
             )
         );
-        assert!(command.encode_utf16().count() < 8000);
+        assert!(command.encode_utf16().count() < CMD_BUDGET);
         let mut noticed = "codex.cmd".into();
         assert_eq!(
             brief_agent(
                 &mut noticed,
-                file,
-                &briefing,
-                &[],
+                &briefing(file, &text, &[]),
                 Shell::Windows,
                 &mut BTreeMap::new()
             )
             .as_deref(),
-            Some("Briefing too long for cmd.exe; Codex was told to read $PATCHBAY_CONTEXT_FILE.")
+            Some("Briefing too long for cmd.exe; Codex was told to read %PATCHBAY_CONTEXT_FILE%.")
         );
         assert_eq!(noticed, command);
 
@@ -1174,35 +1525,48 @@ mod tests {
         assert!(decorate_agent(
             &mut unix,
             Agent::Codex,
-            file,
-            &briefing,
-            &[],
+            &briefing(file, &text, &[]),
+            None,
             Shell::Unix,
             &mut BTreeMap::new(),
         ));
-        assert!(unix.len() > 8000);
+        assert!(unix.contains(&text));
         let mut short = "codex".into();
         assert!(decorate_agent(
             &mut short,
             Agent::Codex,
-            file,
-            "short briefing",
-            &[],
+            &briefing(file, "short briefing", &[]),
+            None,
             Shell::Windows,
             &mut BTreeMap::new(),
         ));
         assert!(short.contains(r#"developer_instructions=\"short briefing\""#));
-        // Existing flags also count against the limit.
-        let mut long_command = format!("codex --model {}", "x".repeat(7950));
+        // Existing flags also count against the limit, and leave room for a shim.
+        let mut long_command = format!("codex --model {}", "x".repeat(7100));
         assert!(!decorate_agent(
             &mut long_command,
             Agent::Codex,
-            file,
-            "x".repeat(100).as_str(),
-            &[],
+            &briefing(file, &"x".repeat(100), &[]),
+            None,
             Shell::Windows,
             &mut BTreeMap::new(),
         ));
+        // Paths moved into variables count at their expanded length.
+        let dirs = [
+            PathBuf::from(format!(r"C:\%X%\{}", "a".repeat(3000))),
+            PathBuf::from(format!(r"C:\%X%\{}", "b".repeat(3000))),
+        ];
+        let mut expanded = "codex".into();
+        let mut env = BTreeMap::new();
+        assert!(!decorate_agent(
+            &mut expanded,
+            Agent::Codex,
+            &briefing(file, &"x".repeat(1500), &dirs),
+            None,
+            Shell::Windows,
+            &mut env,
+        ));
+        assert!(expanded.encode_utf16().count() < 1000);
     }
 
     #[test]
@@ -1211,9 +1575,7 @@ mod tests {
         let mut command = "codex".into();
         let notice = brief_agent(
             &mut command,
-            file,
-            &"🦀".repeat(16 * 1024),
-            &[],
+            &briefing(file, &"🦀".repeat(32 * 1024), &[]),
             Shell::Unix,
             &mut BTreeMap::new(),
         );
@@ -1232,7 +1594,7 @@ mod tests {
             decode_instructions(config),
             "Your Patchbay briefing is in /tmp/briefing.md; read it before starting."
         );
-        assert!(command.len() < 120 * 1024);
+        assert!(command.len() < SHELL_ARG_BUDGET);
     }
 
     #[test]
@@ -1255,7 +1617,7 @@ mod tests {
         assert_eq!(spec.command.matches("--add-dir").count(), 1);
         let config = format!(
             "developer_instructions={}",
-            toml_inert(&plan_context(&p, &scope, &[]))
+            toml_string(Shell::current(), &plan_context(&p, &scope, &[]))
         );
         assert!(
             spec.command
@@ -1366,7 +1728,7 @@ mod tests {
 
         let sections = [ContextSection {
             title: "Large".into(),
-            body: "🦀".repeat(16 * 1024),
+            body: "🦀".repeat(32 * 1024),
         }];
         let mut spec = session_spec(&p, "api", "agent", &AllowAll, &sections).unwrap();
         spec.env.insert("PB_MODEL".into(), "test".into());
@@ -1394,9 +1756,8 @@ mod tests {
             assert!(decorate_agent(
                 &mut command,
                 Agent::Claude,
-                &file,
-                "briefing",
-                &[],
+                &briefing(&file, "briefing", &[]),
+                None,
                 Shell::Windows,
                 &mut env
             ));
