@@ -46,7 +46,7 @@ export async function saveCurrentProject() {
   try {
     const path = await saveProject(s.toProject())
     s.markSaved()
-    s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`)
+    s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`, true)
   } catch (e) {
     s.setMessage(String(e))
   }
@@ -64,7 +64,7 @@ export function applyAdded(added: Added, none: string): number {
   const paths = new Set(current.components.map((c) => c.path))
   const components = added.components.filter((c) => !taken.has(c.id) && !paths.has(c.path))
   if (components.length === 0) {
-    s.setMessage(none)
+    s.setMessage(none, true)
     return 0
   }
   const fresh = new Set(added.components.map((c) => c.id))
@@ -79,7 +79,7 @@ export function applyAdded(added: Added, none: string): number {
     links: [...current.links, ...links],
   })
   useStore.setState({ dirty: true })
-  s.setMessage(`Added ${components.length} component(s)`)
+  s.setMessage(`Added ${components.length} component(s)`, true)
   return components.length
 }
 

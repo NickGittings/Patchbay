@@ -1,9 +1,10 @@
-import ExtensionMenu from '../extensions/ExtensionMenu'
+import { useExtensionCommands } from '../extensions/commands'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
+import Toast from './Toast'
 import AttentionMenu from './status/AttentionMenu'
 import type { View } from '../types'
 
@@ -14,7 +15,9 @@ const views: { id: View; label: string }[] = [
   { id: 'review', label: 'Review' },
 ]
 
-const mod = /mac/i.test(navigator.userAgent) ? '⌘' : 'Ctrl+'
+const mac = /mac/i.test(navigator.userAgent)
+const mod = mac ? '⌘' : 'Ctrl+'
+const shiftMod = mac ? '⇧⌘' : 'Ctrl+Shift+'
 
 export default function Toolbar() {
   const project = useStore((s) => s.project)
@@ -25,6 +28,8 @@ export default function Toolbar() {
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
   const { screenToFlowPosition } = useReactFlow()
+  // Kept mounted with the toolbar so `when` contexts are ready before the menu opens.
+  const extensionCommands = useExtensionCommands('toolbar')
 
   const addComponent = () =>
     useStore
@@ -84,13 +89,25 @@ export default function Toolbar() {
           )}
         </Menu>
         <Menu label="Tools">
-          <MenuItem onClick={() => useStore.getState().setPaletteOpen(true)} shortcut={`${mod}⇧P`}>
+          <MenuItem
+            onClick={() => useStore.getState().setPaletteOpen(true)}
+            shortcut={`${shiftMod}P`}
+          >
             Commands…
           </MenuItem>
           <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
             Extensions…
           </MenuItem>
-          <ExtensionMenu slot="toolbar" as="menuitem" />
+          {extensionCommands.entries.length > 0 && <MenuSeparator />}
+          {extensionCommands.entries.map((e) => (
+            <MenuItem
+              key={e.id}
+              data-extension-command={e.id}
+              onClick={() => extensionCommands.run(e.id)}
+            >
+              {e.title}
+            </MenuItem>
+          ))}
         </Menu>
       </div>
       {project ? (
@@ -124,6 +141,7 @@ export default function Toolbar() {
           </>
         )}
       </div>
+      <Toast />
     </div>
   )
 }

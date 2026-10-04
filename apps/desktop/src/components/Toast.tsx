@@ -1,22 +1,24 @@
 import { useEffect } from 'react'
 import { useStore } from '../store'
 
-const HIDE_AFTER_MS = 8000
+const HIDE_AFTER_MS = 6000
 
-/** Hints that ask the user to act stay until dismissed or replaced. */
-const sticky = (message: string) => /^(Detected|Locked)\b/.test(message)
-
-/** The latest app message, shown in full below the toolbar. */
+/**
+ * The latest app message, shown in full below the toolbar. Errors and hints stay until dismissed
+ * or replaced; transient confirmations hide on their own.
+ */
 export default function Toast() {
   const message = useStore((s) => s.message)
+  const id = useStore((s) => s.messageId)
+  const transient = useStore((s) => s.messageTransient)
 
   useEffect(() => {
-    if (!message || sticky(message)) return
+    if (!transient) return
     const timer = setTimeout(() => {
-      if (useStore.getState().message === message) useStore.getState().setMessage('')
+      if (useStore.getState().messageId === id) useStore.getState().setMessage('')
     }, HIDE_AFTER_MS)
     return () => clearTimeout(timer)
-  }, [message])
+  }, [id, transient])
 
   if (!message) return null
   return (

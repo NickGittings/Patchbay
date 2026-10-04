@@ -7,42 +7,54 @@ export default function Menu({
   label,
   title,
   align = 'left',
+  triggerClassName = '',
+  listClassName = '',
+  caret = true,
   children,
 }: {
   label: ReactNode
   title?: string
   align?: 'left' | 'right'
+  triggerClassName?: string
+  listClassName?: string
+  caret?: boolean
   children: ReactNode
 }) {
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
+    // Capture and stop Escape so a focused terminal underneath doesn't also receive it.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      setOpen(false)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [open])
 
   return (
     <div className="menu">
       <button
-        className="menu-trigger"
+        className={`menu-trigger ${triggerClassName}`}
         aria-haspopup="menu"
         aria-expanded={open}
         title={title}
         onClick={() => setOpen(!open)}
       >
         {label}
-        <span className="menu-caret" aria-hidden>
-          ▾
-        </span>
+        {caret && (
+          <span className="menu-caret" aria-hidden>
+            ▾
+          </span>
+        )}
       </button>
       {open && (
         <>
           <div className="menu-overlay" onClick={() => setOpen(false)} />
-          <div className={`menu-list ${align}`} role="menu">
+          <div className={`menu-list ${align} ${listClassName}`} role="menu">
             <CloseMenu.Provider value={() => setOpen(false)}>{children}</CloseMenu.Provider>
           </div>
         </>
@@ -51,11 +63,13 @@ export default function Menu({
   )
 }
 
+/** A menu entry; `className` replaces the default `menu-item` look for custom rows. */
 export function MenuItem({
   onClick,
   shortcut,
   disabled,
   title,
+  className = 'menu-item',
   children,
   ...rest
 }: {
@@ -63,6 +77,7 @@ export function MenuItem({
   shortcut?: string
   disabled?: boolean
   title?: string
+  className?: string
   children: ReactNode
   'data-extension-command'?: string
 }) {
@@ -71,7 +86,7 @@ export function MenuItem({
     <button
       {...rest}
       role="menuitem"
-      className="menu-item"
+      className={className}
       disabled={disabled}
       title={title}
       onClick={() => {
@@ -79,7 +94,7 @@ export function MenuItem({
         onClick()
       }}
     >
-      <span className="menu-item-label">{children}</span>
+      {children}
       {shortcut && <kbd className="menu-shortcut">{shortcut}</kbd>}
     </button>
   )

@@ -1,7 +1,7 @@
-import { useState } from 'react'
 import { attentionItems, revealTerminal } from '../../lib/attention'
 import { useClockTick } from '../../lib/clock'
 import { useStore } from '../../store'
+import Menu, { MenuItem } from '../Menu'
 
 const SUMMARY: Record<string, string> = {
   input: 'need input',
@@ -17,7 +17,6 @@ export default function AttentionMenu() {
   useClockTick()
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
-  const [open, setOpen] = useState(false)
   const items = attentionItems({ nodes, sessions, runtimeTerminals, devices })
 
   if (items.length === 0) return null
@@ -28,43 +27,36 @@ export default function AttentionMenu() {
 
   return (
     <div className="attention">
-      <button
-        className={`attention-button health-${items[0].status.health}`}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        onClick={() => setOpen(!open)}
+      <Menu
+        align="right"
+        caret={false}
+        triggerClassName={`attention-button health-${items[0].status.health}`}
+        listClassName="attention-list"
         title={`Terminals that need you: ${summary}`}
+        label={
+          <>
+            <span className="status-dot" />
+            <span className="attention-summary">{summary}</span>
+          </>
+        }
       >
-        <span className="status-dot" />
-        <span className="attention-summary">{summary}</span>
-      </button>
-      {open && (
-        <>
-          <div className="attention-overlay" onClick={() => setOpen(false)} />
-          <div className="attention-list" role="menu">
-            {items.map((item) => (
-              <button
-                key={item.sid}
-                role="menuitem"
-                className={`attention-item health-${item.status.health}`}
-                onClick={() => {
-                  setOpen(false)
-                  revealTerminal(item)
-                }}
-              >
-                <span className="status-dot" />
-                <span className="attention-what">
-                  <span>
-                    <strong>{item.owner}</strong> · {item.terminal.name}
-                  </span>
-                  {item.status.detail && <small>{item.status.detail}</small>}
-                </span>
-                <span className="attention-label">{item.status.label}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+        {items.map((item) => (
+          <MenuItem
+            key={item.sid}
+            className={`attention-item health-${item.status.health}`}
+            onClick={() => revealTerminal(item)}
+          >
+            <span className="status-dot" />
+            <span className="attention-what">
+              <span>
+                <strong>{item.owner}</strong> · {item.terminal.name}
+              </span>
+              {item.status.detail && <small>{item.status.detail}</small>}
+            </span>
+            <span className="attention-label">{item.status.label}</span>
+          </MenuItem>
+        ))}
+      </Menu>
     </div>
   )
 }

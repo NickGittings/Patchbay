@@ -12,7 +12,6 @@ import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import ReviewView from './components/ReviewView'
 import TerminalDock from './components/TerminalDock'
-import Toast from './components/Toast'
 import Toolbar from './components/Toolbar'
 import { GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
@@ -83,7 +82,6 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
-        <Toast />
         <CommandPalette />
         <ExtensionsPanel />
         {view === 'plan' ? (

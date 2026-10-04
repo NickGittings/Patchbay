@@ -274,13 +274,11 @@ select:focus {
   gap: 24px;
   height: 28px;
   width: 100%;
+  white-space: nowrap;
 }
 .toolbar .menu-item:hover:not(:disabled),
 .attention-item:hover {
   background: var(--panel-2);
-}
-.menu-item-label {
-  white-space: nowrap;
 }
 .menu-shortcut {
   font: inherit;
@@ -340,6 +338,7 @@ select:focus {
 }
 
 .toolbar {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
@@ -349,7 +348,7 @@ select:focus {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.toolbar button {
+.toolbar button:not([role='menuitem']) {
   height: 28px;
   padding: 0 10px;
   white-space: nowrap;
@@ -364,7 +363,8 @@ select:focus {
 .toolbar-group.end {
   justify-content: flex-end;
 }
-.toolbar .attention {
+.toolbar .attention,
+.toolbar .attention .menu {
   min-width: 0;
 }
 .toolbar .attention-button {
@@ -423,8 +423,8 @@ select:focus {
   flex: none;
 }
 .toast {
-  position: fixed;
-  top: 52px;
+  position: absolute;
+  top: calc(100% + 8px);
   right: 12px;
   z-index: 30;
   display: flex;
@@ -443,8 +443,9 @@ select:focus {
 .toast-text {
   overflow-wrap: anywhere;
 }
-.toast-close {
+.toolbar .toast .toast-close {
   flex: none;
+  height: auto;
   padding: 0 6px;
   line-height: 1.4;
   color: var(--muted);
