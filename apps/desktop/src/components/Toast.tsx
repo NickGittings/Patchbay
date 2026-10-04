@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 
 const HIDE_AFTER_MS = 6000
@@ -12,24 +12,24 @@ export default function Toast() {
   const message = useStore((s) => s.message)
   const id = useStore((s) => s.messageId)
   const transient = useStore((s) => s.messageTransient)
-  // Tagged with the message id, so a toast that unmounts while hovered doesn't pin later ones.
-  const [hoveredId, setHoveredId] = useState<number | null>(null)
-  const hovered = hoveredId === id
+  const toast = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!transient || hovered) return
-    const timer = setTimeout(() => useStore.getState().setMessage(''), HIDE_AFTER_MS)
+    if (!transient) return
+    // Checked when due rather than tracked, so a toast that appears under the pointer counts.
+    let timer: ReturnType<typeof setTimeout>
+    const hide = () => {
+      if (toast.current?.matches(':hover')) timer = setTimeout(hide, 1000)
+      else useStore.getState().setMessage('')
+    }
+    timer = setTimeout(hide, HIDE_AFTER_MS)
     return () => clearTimeout(timer)
-  }, [id, transient, hovered])
+  }, [id, transient])
 
   return (
     <div className="toast-region" aria-live="polite">
       {message && (
-        <div
-          className="toast"
-          onMouseEnter={() => setHoveredId(id)}
-          onMouseLeave={() => setHoveredId(null)}
-        >
+        <div className="toast" ref={toast}>
           <span className="toast-text">{message}</span>
           <button
             className="toast-close"

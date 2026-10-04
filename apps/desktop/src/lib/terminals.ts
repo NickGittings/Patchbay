@@ -94,13 +94,15 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
 }
 
 /**
- * Focus the session's terminal once it is on screen, waiting up to `frames` animation frames for
- * a view switch or new pane to attach it.
+ * Focus the session's terminal after the current render: from the next animation frame (so a
+ * view switch has moved it into its new pane), waiting up to `frames` frames for it to attach.
  */
 export function focusTerminal(sessionId: string, frames = 30) {
-  const e = registry.get(sessionId)
-  if (e?.opened && e.el.isConnected) e.term.focus()
-  else if (frames > 0) requestAnimationFrame(() => focusTerminal(sessionId, frames - 1))
+  requestAnimationFrame(() => {
+    const e = registry.get(sessionId)
+    if (e?.opened && e.el.isConnected) e.term.focus()
+    else if (frames > 0) focusTerminal(sessionId, frames - 1)
+  })
 }
 
 /**

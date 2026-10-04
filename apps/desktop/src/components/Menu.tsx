@@ -2,7 +2,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -48,21 +47,14 @@ export default function Menu({
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
-  const previous = useRef<HTMLElement | null>(null)
   // What had focus when the trigger was pressed, read before the press moves focus.
   const pressedFrom = useRef<HTMLElement | null>(null)
 
-  // Unmounted while holding focus (the attention list emptied): hand focus back.
-  useLayoutEffect(() => {
-    const el = root.current
-    return () => {
-      if (el?.contains(document.activeElement) && previous.current?.isConnected)
-        previous.current.focus()
-    }
-  }, [])
-
   useEffect(() => {
     if (!open) return
+    const el = root.current
+    const previous = open.keyboard ? null : pressedFrom.current
+    pressedFrom.current = null
     if (open.keyboard) items(list.current)[0]?.focus()
     else list.current?.focus()
     // A press outside closes the menu without swallowing it, so the next control still gets it;
@@ -71,39 +63,46 @@ export default function Menu({
       if (!root.current?.contains(e.target as Node)) setOpen(false)
     }
     const onBlur = () => setOpen(false)
+    // If the focused item went away (an attention item resolved), focus is nowhere, so the menu
+    // root no longer hears keys; listening on the window then takes nothing from anyone.
+    const onStrandedKey = (e: globalThis.KeyboardEvent) => {
+      if (document.activeElement !== document.body) return
+      if (e.key === 'Escape') setOpen(false)
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') items(list.current)[0]?.focus()
+    }
     window.addEventListener('pointerdown', onPointer, true)
     window.addEventListener('blur', onBlur)
+    window.addEventListener('keydown', onStrandedKey)
     return () => {
       window.removeEventListener('pointerdown', onPointer, true)
       window.removeEventListener('blur', onBlur)
+      window.removeEventListener('keydown', onStrandedKey)
+      // However the menu closed or unmounted: if focus is left in it (hidden now) or nowhere,
+      // return it to where it was, or to the trigger when opened from the keyboard. Focus the
+      // user moved elsewhere stays put.
+      const active = document.activeElement
+      const stranded = !active || active === document.body || !!el?.contains(active)
+      if (!stranded) return
+      if (previous?.isConnected && !previous.closest('.menu-list')) previous.focus()
+      else if (open.keyboard) trigger.current?.focus()
     }
   }, [open])
 
-  const show = (keyboard: boolean) => {
-    previous.current = keyboard ? null : pressedFrom.current
-    pressedFrom.current = null
-    setOpen({ keyboard })
-  }
-
-  const closeAndRestore = () => {
-    setOpen(false)
-    const back = previous.current?.isConnected ? previous.current : trigger.current
-    back?.focus()
-  }
+  const close = () => setOpen(false)
 
   // Keys are handled only while focus is in the menu, so they're never taken from anything else.
   const onKey = (e: KeyboardEvent) => {
     if (!open) {
       if (e.key === 'ArrowDown' && e.target === trigger.current) {
         e.preventDefault()
-        show(true)
+        setOpen({ keyboard: true })
       }
       return
     }
     if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
-      closeAndRestore()
+      close()
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       e.stopPropagation()
@@ -128,7 +127,7 @@ export default function Menu({
       onBlur={(e) => {
         // Focus moved to another control (Tab, or the command palette opening). A click that
         // leaves no element focused is handled by the pointerdown listener instead.
-        if (e.relatedTarget && !root.current?.contains(e.relatedTarget)) setOpen(false)
+        if (e.relatedTarget && !root.current?.contains(e.relatedTarget)) close()
       }}
     >
       <button
@@ -140,14 +139,12 @@ export default function Menu({
         onPointerDown={() => {
           const active = document.activeElement
           pressedFrom.current =
-            active instanceof HTMLElement &&
-            active !== document.body &&
-            !root.current?.contains(active)
+            active instanceof HTMLElement && active !== document.body && !active.closest('.menu')
               ? active
               : null
         }}
         // `detail` is 0 when the click came from Enter or Space.
-        onClick={(e) => (open ? closeAndRestore() : show(e.detail === 0))}
+        onClick={(e) => (open ? close() : setOpen({ keyboard: e.detail === 0 }))}
       >
         {label}
         {caret && (
@@ -164,7 +161,7 @@ export default function Menu({
           tabIndex={-1}
           hidden={!open}
         >
-          <CloseMenu.Provider value={closeAndRestore}>{children}</CloseMenu.Provider>
+          <CloseMenu.Provider value={close}>{children}</CloseMenu.Provider>
         </div>
       )}
     </div>
@@ -195,7 +192,8 @@ export function MenuItem({
       className={className}
       title={title}
       onClick={() => {
-        // Close (restoring focus) first, so an item that moves focus itself has the last word.
+        // Closing restores focus when React commits, so an item that moves focus later (a
+        // revealed terminal, a frame on) has the last word.
         close()
         onClick()
       }}
