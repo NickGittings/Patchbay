@@ -93,6 +93,12 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
   if (options?.focus !== false) e.term.focus()
 }
 
+/** Focus the session's terminal if it is on screen. */
+export function focusTerminal(sessionId: string) {
+  const e = registry.get(sessionId)
+  if (e?.opened && e.el.isConnected) e.term.focus()
+}
+
 /**
  * Fit the xterm to its container. Only the session's owner (see `ownsSession`) resizes the
  * shared PTY, so a session shown in the dock and in a pop-out doesn't flip between sizes.

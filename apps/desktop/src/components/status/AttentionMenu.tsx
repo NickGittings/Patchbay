@@ -1,5 +1,6 @@
 import { attentionItems, revealTerminal } from '../../lib/attention'
 import { useClockTick } from '../../lib/clock'
+import { focusTerminal } from '../../lib/terminals'
 import { useStore } from '../../store'
 import Menu, { MenuItem } from '../Menu'
 
@@ -44,7 +45,11 @@ export default function AttentionMenu() {
         <MenuItem
           key={item.sid}
           className={`attention-item health-${item.status.health}`}
-          onClick={() => revealTerminal(item)}
+          onClick={() => {
+            revealTerminal(item)
+            // After the view switch renders, so typing answers the revealed terminal.
+            requestAnimationFrame(() => focusTerminal(item.sid))
+          }}
         >
           <span className="status-dot" />
           <span className="attention-what">

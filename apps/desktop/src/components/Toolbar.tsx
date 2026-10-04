@@ -1,4 +1,4 @@
-import { ExtensionMenuItems } from '../extensions/ExtensionMenu'
+import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
@@ -84,7 +84,7 @@ export default function Toolbar() {
           <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
             Extensions…
           </MenuItem>
-          <ExtensionMenuItems slot="toolbar" />
+          <ExtensionMenu slot="toolbar" asMenuItems />
         </Menu>
       </div>
       {project ? (

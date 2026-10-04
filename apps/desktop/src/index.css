@@ -245,6 +245,9 @@ select:focus {
 .menu-list[hidden] {
   display: none;
 }
+.menu-list:focus {
+  outline: none;
+}
 .menu-list.right {
   right: 0;
   left: auto;
@@ -368,6 +371,7 @@ select:focus {
 }
 .view-switcher {
   display: flex;
+  gap: 2px;
   padding: 2px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -414,11 +418,13 @@ select:focus {
   background: var(--accent);
   flex: none;
 }
-.toast {
+.toast-region {
   position: absolute;
   top: calc(100% + 8px);
   right: 12px;
   z-index: 30;
+}
+.toast {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -926,23 +932,6 @@ select:focus {
 }
 
 /* Workspace views */
-.view-switcher {
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px;
-  gap: 2px;
-}
-.view-switcher button {
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-}
-.view-switcher button.active {
-  color: var(--accent);
-  background: var(--panel-2);
-  border-color: var(--border-strong);
-}
 .component-node.highlighted {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);

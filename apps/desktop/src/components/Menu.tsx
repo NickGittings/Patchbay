@@ -15,9 +15,11 @@ const items = (list: HTMLElement | null) =>
 
 /**
  * A toolbar dropdown: a trigger button and a list of `MenuItem`s that closes on any choice, a
- * press elsewhere, focus leaving it, the window losing focus, or Escape. With `keepMounted` the
- * list stays rendered (hidden) while closed, so items that load state, like extension `when`
- * contexts, are ready when it opens.
+ * press elsewhere, focus leaving it, the window losing focus, or Escape. While open it holds
+ * focus, so keys never reach a terminal underneath; on close focus returns to where it was (the
+ * trigger, when the menu was opened from the keyboard). With `keepMounted` the list stays
+ * rendered (hidden) while closed, so items that load state, like extension `when` contexts, are
+ * ready when it opens.
  */
 export default function Menu({
   label,
@@ -40,14 +42,17 @@ export default function Menu({
   keepMounted?: boolean
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(false)
+  // `keyboard`: opened with Enter/Space/arrows, so the first item takes focus.
+  const [open, setOpen] = useState<false | { keyboard: boolean }>(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
+  const previous = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!open) return
-    items(list.current)[0]?.focus()
+    if (open.keyboard) items(list.current)[0]?.focus()
+    else list.current?.focus()
     // A press outside closes the menu without swallowing it, so the next control still gets it;
     // presses in frames or other windows only blur this one.
     const onPointer = (e: PointerEvent) => {
@@ -62,18 +67,32 @@ export default function Menu({
     }
   }, [open])
 
-  const closeToTrigger = () => {
-    setOpen(false)
-    trigger.current?.focus()
+  const show = (keyboard: boolean) => {
+    const active = document.activeElement
+    previous.current =
+      !keyboard && active instanceof HTMLElement && active !== document.body ? active : null
+    setOpen({ keyboard })
   }
 
-  // Keys are handled only while focus is inside the list, so they never reach a terminal
-  // underneath and never steal them from anything else.
-  const onListKey = (e: KeyboardEvent) => {
+  const closeAndRestore = () => {
+    setOpen(false)
+    const back = previous.current?.isConnected ? previous.current : trigger.current
+    back?.focus()
+  }
+
+  // Keys are handled only while focus is in the menu, so they're never taken from anything else.
+  const onKey = (e: KeyboardEvent) => {
+    if (!open) {
+      if (e.key === 'ArrowDown' && e.target === trigger.current) {
+        e.preventDefault()
+        show(true)
+      }
+      return
+    }
     if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
-      closeToTrigger()
+      closeAndRestore()
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       e.stopPropagation()
@@ -90,22 +109,11 @@ export default function Menu({
     }
   }
 
-  const listElement = (
-    <div
-      ref={list}
-      className={`menu-list ${align} ${listClassName}`}
-      role="menu"
-      hidden={!open}
-      onKeyDown={onListKey}
-    >
-      <CloseMenu.Provider value={closeToTrigger}>{children}</CloseMenu.Provider>
-    </div>
-  )
-
   return (
     <div
       className={`menu ${className}`}
       ref={root}
+      onKeyDown={onKey}
       onBlur={(e) => {
         // Focus moved to another control (Tab, or the command palette opening). A click that
         // leaves no element focused is handled by the pointerdown listener instead.
@@ -116,9 +124,10 @@ export default function Menu({
         ref={trigger}
         className={`menu-trigger ${triggerClassName}`}
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={!!open}
         title={title}
-        onClick={() => setOpen(!open)}
+        // `detail` is 0 when the click came from Enter or Space.
+        onClick={(e) => (open ? setOpen(false) : show(e.detail === 0))}
       >
         {label}
         {caret && (
@@ -127,7 +136,17 @@ export default function Menu({
           </span>
         )}
       </button>
-      {(open || keepMounted) && listElement}
+      {(open || keepMounted) && (
+        <div
+          ref={list}
+          className={`menu-list ${align} ${listClassName}`}
+          role="menu"
+          tabIndex={-1}
+          hidden={!open}
+        >
+          <CloseMenu.Provider value={closeAndRestore}>{children}</CloseMenu.Provider>
+        </div>
+      )}
     </div>
   )
 }
@@ -156,7 +175,7 @@ export function MenuItem({
       className={className}
       title={title}
       onClick={() => {
-        // Close first, so an item that moves focus (revealing a terminal) has the last word.
+        // Close (restoring focus) first, so an item that moves focus itself has the last word.
         close()
         onClick()
       }}
