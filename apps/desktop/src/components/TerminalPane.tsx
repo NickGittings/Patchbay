@@ -22,6 +22,8 @@ export default function TerminalPane({
   const unseen = terminalStatus(terminal.kind, session).unseenSince
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
+  // Dismissal lasts for one run; a restart shows its own notice again.
+  const [dismissed, setDismissed] = useState<number>()
 
   useEffect(() => {
     const host = hostRef.current
@@ -63,6 +65,14 @@ export default function TerminalPane({
 
   return (
     <div className="terminal-area">
+      {session?.notice && dismissed !== session.startedMs && (
+        <div className="terminal-notice" role="status">
+          <span>{session.notice}</span>
+          <button title="Dismiss" onClick={() => setDismissed(session.startedMs)}>
+            ×
+          </button>
+        </div>
+      )}
       <div className="terminal-host" ref={hostRef} />
       {ready && !session && terminal.kind !== 'shell' && (
         <div className="terminal-overlay">

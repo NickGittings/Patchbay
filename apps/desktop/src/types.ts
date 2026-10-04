@@ -127,7 +127,13 @@ export interface DeviceManifest {
 }
 
 export type TerminalEvent =
-  | { type: 'started'; sessionId: string; generation: number; startedMs: number }
+  | {
+      type: 'started'
+      sessionId: string
+      generation: number
+      startedMs: number
+      notice: string | null
+    }
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
   | { type: 'status'; sessionId: string; generation: number; status: SessionStatus }
@@ -169,6 +175,8 @@ export interface TerminalSnapshot {
   startedMs: number
   exitedMs: number | null
   status: SessionStatus
+  /** Why an agent's briefing wasn't injected normally, if it wasn't. */
+  notice: string | null
 }
 
 export interface DirEntry {
@@ -184,6 +192,8 @@ export interface SessionState {
   startedMs?: number
   exitedMs?: number
   status?: SessionStatus
+  /** Shown above the terminal, since full-screen agents hide the dim output line. */
+  notice?: string
 }
 
 /** Data carried on each React Flow node. */

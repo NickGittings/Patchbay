@@ -645,6 +645,28 @@ select:focus {
   position: absolute;
   inset: 6px 0 0 8px;
 }
+.terminal-notice {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 16px));
+  padding: 6px 6px 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.terminal-notice button {
+  padding: 0 5px;
+  line-height: 1.2;
+}
 .terminal-overlay {
   position: absolute;
   inset: 0;

@@ -17,6 +17,7 @@ const DEFAULT_SIZE: (u16, u16) = (120, 30);
 
 /// How often running sessions' status files, activity and health are checked.
 const MONITOR_TICK: Duration = Duration::from_millis(250);
+const COMMAND_ENV: &str = "PATCHBAY_LAUNCH_COMMAND";
 
 /// What to launch in a terminal session.
 #[derive(Debug, Clone)]
@@ -30,6 +31,8 @@ pub struct SessionSpec {
     pub ready_when: String,
     /// A task terminal: watch its output for a local URL or `ready_when`.
     pub service: bool,
+    /// A dim line retained and emitted before the process's output.
+    pub notice: Option<String>,
 }
 
 struct Session {
@@ -46,8 +49,11 @@ struct Process {
 }
 
 impl Process {
-    /// Ask nicely: portable-pty sends SIGHUP on Unix and terminates on Windows.
+    /// Ask nicely: portable-pty sends SIGHUP on Unix. Windows has no hangup, so
+    /// the whole tree is terminated.
     fn hang_up(&mut self) {
+        #[cfg(windows)]
+        self.kill_tree();
         let _ = self.killer.kill();
     }
 
@@ -63,7 +69,25 @@ impl Process {
                 .status();
             return;
         }
+        #[cfg(windows)]
+        self.kill_tree();
         let _ = self.killer.kill();
+    }
+
+    /// The PTY child is only `cmd.exe` (or the PowerShell bootstrap that starts it),
+    /// so terminating it alone would leave the real program running.
+    #[cfg(windows)]
+    fn kill_tree(&self) {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Some(pid) = self.pid {
+            let _ = std::process::Command::new("taskkill.exe")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
     }
 }
 
@@ -77,6 +101,7 @@ struct Backlog {
     started_ms: u64,
     exited_ms: Option<u64>,
     tracker: Tracker,
+    notice: Option<String>,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -117,6 +142,9 @@ pub struct Snapshot {
     /// When it exited, in Unix milliseconds.
     pub exited_ms: Option<u64>,
     pub status: SessionStatus,
+    /// The spec's notice. Full-screen programs hide the dim backlog line, so
+    /// windows show this outside the terminal as well.
+    pub notice: Option<String>,
 }
 
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
@@ -216,13 +244,7 @@ fn remove_status_file(path: Option<&Path>) {
 /// the app is launched from the dock.
 fn shell_command(command: &str) -> CommandBuilder {
     if cfg!(windows) {
-        if command.is_empty() {
-            CommandBuilder::new("powershell.exe")
-        } else {
-            let mut cmd = CommandBuilder::new("cmd.exe");
-            cmd.args(["/C", command]);
-            cmd
-        }
+        windows_shell_command(command)
     } else {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = CommandBuilder::new(shell);
@@ -233,6 +255,42 @@ fn shell_command(command: &str) -> CommandBuilder {
         }
         cmd
     }
+}
+
+fn windows_shell_command(command: &str) -> CommandBuilder {
+    if command.is_empty() {
+        return CommandBuilder::new("powershell.exe");
+    }
+    // Without quotes, portable-pty at most wraps the command in quotes (which /S
+    // strips again) and doubles trailing backslashes, so cmd can start it directly.
+    if !command.contains('"') && !command.ends_with('\\') {
+        let mut cmd = CommandBuilder::new("cmd.exe");
+        cmd.args(["/V:OFF", "/S", "/C", command]);
+        return cmd;
+    }
+    use base64::Engine as _;
+    // portable-pty MSVC-quotes every argument, but cmd.exe expects raw syntax
+    // after /C. A constant encoded PowerShell bootstrap starts cmd with a raw
+    // Arguments string. The command travels in the environment, so user quotes
+    // are never parsed as PowerShell and cmd still expands the user's %VAR%.
+    let bootstrap = format!(
+        "$ErrorActionPreference = 'Stop'; \
+         $p = New-Object System.Diagnostics.ProcessStartInfo; \
+         $p.FileName = 'cmd.exe'; \
+         $p.Arguments = '/V:OFF /S /C \"' + $env:{COMMAND_ENV} + '\"'; \
+         $p.UseShellExecute = $false; \
+         $child = [System.Diagnostics.Process]::Start($p); \
+         $child.WaitForExit(); exit $child.ExitCode"
+    );
+    let bytes: Vec<_> = bootstrap
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mut cmd = CommandBuilder::new("powershell.exe");
+    cmd.args(["-NoLogo", "-NoProfile", "-EncodedCommand", &encoded]);
+    cmd.env(COMMAND_ENV, command);
+    cmd
 }
 
 fn pty_size((cols, rows): (u16, u16)) -> PtySize {
@@ -293,6 +351,7 @@ impl PtyManager {
             running: true,
             started_ms,
             tracker: Tracker::new(&spec.ready_when, spec.service),
+            notice: spec.notice.clone(),
             ..Backlog::default()
         }));
         if reserved {
@@ -334,7 +393,23 @@ impl PtyManager {
             session_id: spec.id.clone(),
             generation,
             started_ms,
+            notice: spec.notice.clone(),
         });
+
+        if let Some(notice) = &spec.notice {
+            let data = format!(
+                "\x1b[2m[patchbay] {}\x1b[0m\r\n",
+                notice.replace(['\r', '\n', '\x1b'], " ")
+            )
+            .into_bytes();
+            let seq = backlog.lock().unwrap().append(&data);
+            sink.emit(TerminalEvent::Output {
+                session_id: spec.id.clone(),
+                generation,
+                seq,
+                data,
+            });
+        }
 
         let (done_tx, done_rx) = mpsc::channel();
         {
@@ -530,7 +605,12 @@ impl PtyManager {
         if let Some(status) = self.status_file(generation) {
             cmd.env(STATUS_ENV, status);
         }
-        for (k, v) in &spec.env {
+        // A spec must not replace the private command transport variable.
+        for (k, v) in spec
+            .env
+            .iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case(COMMAND_ENV))
+        {
             cmd.env(k, v);
         }
 
@@ -559,6 +639,7 @@ impl PtyManager {
             started_ms: backlog.started_ms,
             exited_ms: backlog.exited_ms,
             status,
+            notice: backlog.notice.clone(),
         })
     }
 
@@ -743,6 +824,51 @@ mod tests {
     }
 
     #[test]
+    fn notice_precedes_process_output_in_backlog_and_events() {
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(
+            SessionSpec {
+                id: "notice".into(),
+                command: "printf process-output".into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::new(),
+                notice: Some("Briefing is in $PATCHBAY_CONTEXT_FILE.".into()),
+                ready_when: String::new(),
+                service: false,
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        let snapshot = pty.snapshot("notice").unwrap();
+        let expected = "\x1b[2m[patchbay] Briefing is in $PATCHBAY_CONTEXT_FILE.\x1b[0m\r\n";
+        assert!(snapshot.data.starts_with(expected.as_bytes()));
+        assert!(String::from_utf8_lossy(&snapshot.data).contains("process-output"));
+        assert_eq!(String::from_utf8_lossy(&snapshot.data), sink.output());
+        let events = sink.0.lock().unwrap();
+        let mut end = 0;
+        for event in events.iter() {
+            if let TerminalEvent::Output { seq, data, .. } = event {
+                assert_eq!(*seq, end);
+                if end == 0 {
+                    assert_eq!(data, expected.as_bytes());
+                }
+                end += data.len() as u64;
+            }
+        }
+        assert_eq!(end, snapshot.end);
+        assert_eq!(
+            snapshot.notice.as_deref(),
+            Some("Briefing is in $PATCHBAY_CONTEXT_FILE.")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TerminalEvent::Started { notice: Some(n), .. } if n == "Briefing is in $PATCHBAY_CONTEXT_FILE."
+        )));
+    }
+
+    #[test]
     fn runs_command_and_reports_exit() {
         let pty = Arc::new(PtyManager::new());
         let sink = Arc::new(Collect::default());
@@ -754,6 +880,7 @@ mod tests {
                 env: BTreeMap::from([("PB_TEST".into(), "hello".into())]),
                 ready_when: String::new(),
                 service: false,
+                notice: None,
             },
             sink.clone(),
         )
@@ -796,6 +923,7 @@ mod tests {
                 env: BTreeMap::new(),
                 ready_when: "ALL SET".into(),
                 service: true,
+                notice: None,
             },
             sink.clone(),
         )
@@ -843,6 +971,7 @@ mod tests {
                 env: BTreeMap::new(),
                 ready_when: String::new(),
                 service: false,
+                notice: None,
             },
             sink.clone(),
         )
@@ -880,6 +1009,7 @@ mod tests {
             env: BTreeMap::new(),
             ready_when: String::new(),
             service: false,
+            notice: None,
         };
         let old = Arc::new(Collect::default());
         pty.spawn(spec("sleep 5"), old.clone()).unwrap();
@@ -909,6 +1039,7 @@ mod tests {
                 env: BTreeMap::new(),
                 ready_when: String::new(),
                 service: false,
+                notice: None,
             },
             sink.clone(),
         )
@@ -940,6 +1071,7 @@ mod tests {
                     env: BTreeMap::new(),
                     ready_when: String::new(),
                     service: false,
+                    notice: None,
                 },
                 sink.clone(),
             )
@@ -976,6 +1108,7 @@ mod tests {
                             env: BTreeMap::new(),
                             ready_when: String::new(),
                             service: false,
+                            notice: None,
                         },
                         sink,
                     )
@@ -998,6 +1131,56 @@ mod tests {
 #[cfg(test)]
 mod backlog_tests {
     use super::*;
+
+    #[test]
+    fn windows_command_syntax_bypasses_msvc_argument_requoting() {
+        use base64::Engine as _;
+        let command = r#""C:\Program Files\codex.cmd" -c "developer_instructions=\"some text\"""#;
+        let cmd = windows_shell_command(command);
+        assert_eq!(
+            &cmd.get_argv()[..4],
+            &["powershell.exe", "-NoLogo", "-NoProfile", "-EncodedCommand"]
+                .map(std::ffi::OsString::from)
+        );
+        let encoded = cmd.get_argv()[4].to_str().unwrap();
+        assert!(!encoded.contains(['"', ' ', '%', '&']));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units: Vec<_> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        let bootstrap = String::from_utf16(&units).unwrap();
+        assert!(
+            bootstrap
+                .contains("$p.Arguments = '/V:OFF /S /C \"' + $env:PATCHBAY_LAUNCH_COMMAND + '\"'")
+        );
+        assert!(!bootstrap.contains(command));
+        assert_eq!(
+            cmd.get_env(COMMAND_ENV),
+            Some(std::ffi::OsStr::new(command))
+        );
+        assert_eq!(
+            windows_shell_command("").get_argv(),
+            &[std::ffi::OsString::from("powershell.exe")]
+        );
+        // Commands portable-pty can pass through intact skip the PowerShell start-up.
+        for command in ["npm test", "cargo test & echo done", r"dir C:\temp\x"] {
+            let cmd = windows_shell_command(command);
+            assert_eq!(
+                cmd.get_argv(),
+                &["cmd.exe", "/V:OFF", "/S", "/C", command].map(std::ffi::OsString::from)
+            );
+            assert_eq!(cmd.get_env(COMMAND_ENV), None);
+        }
+        assert_eq!(
+            windows_shell_command(r"dir C:\").get_argv()[0],
+            std::ffi::OsString::from("powershell.exe")
+        );
+    }
 
     #[test]
     fn retains_only_tail_with_total_byte_offset() {
