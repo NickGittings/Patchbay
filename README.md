@@ -42,7 +42,7 @@ cargo test --workspace
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
 - **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders, double-click a file to reveal it in Finder (files are never opened directly, so a double-click can't run an executable from the repo), or use **Reveal in Finder** for the component folder. Closing the main window also closes component windows and stops their terminals.
 - **Terminal**: a real PTY that opens in the component's folder. Kinds are `shell` (interactive, starts when first viewed), `task` (dev server, tests…) and `agent`.
-- **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. `claude` additionally gets that briefing appended to its system prompt and the related folders via `--add-dir`.
+- **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
 
 ## Extensions

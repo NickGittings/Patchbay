@@ -136,7 +136,11 @@ export function handleTerminalEvent(e: TerminalEvent) {
   switch (e.type) {
     case 'started':
       if (!newGeneration) break // Snapshot already includes this start.
-      s.setSession(e.sessionId, { running: true, startedMs: e.startedMs })
+      s.setSession(e.sessionId, {
+        running: true,
+        startedMs: e.startedMs,
+        notice: e.notice ?? undefined,
+      })
       writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
       break
     case 'output': {
@@ -180,6 +184,7 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           exitCode: snapshot.exitCode ?? undefined,
           startedMs: snapshot.startedMs,
           exitedMs: snapshot.exitedMs ?? undefined,
+          notice: snapshot.notice ?? undefined,
         })
       }
       return snapshot
