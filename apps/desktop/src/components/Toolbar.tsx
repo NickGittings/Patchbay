@@ -1,4 +1,4 @@
-import { useExtensionCommands } from '../extensions/commands'
+import { ExtensionMenuItems } from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
@@ -28,8 +28,6 @@ export default function Toolbar() {
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
   const { screenToFlowPosition } = useReactFlow()
-  // Kept mounted with the toolbar so `when` contexts are ready before the menu opens.
-  const extensionCommands = useExtensionCommands('toolbar')
 
   const addComponent = () =>
     useStore
@@ -72,15 +70,7 @@ export default function Toolbar() {
               >
                 Add repo…
               </MenuItem>
-              <MenuItem
-                onClick={addComponent}
-                disabled={view !== 'navigation'}
-                title={
-                  view === 'navigation' ? undefined : 'Switch to Navigation to add a component'
-                }
-              >
-                New component
-              </MenuItem>
+              {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
               <MenuSeparator />
               <MenuItem onClick={() => void saveCurrentProject()} shortcut={`${mod}S`}>
                 Save
@@ -98,16 +88,7 @@ export default function Toolbar() {
           <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
             Extensions…
           </MenuItem>
-          {extensionCommands.entries.length > 0 && <MenuSeparator />}
-          {extensionCommands.entries.map((e) => (
-            <MenuItem
-              key={e.id}
-              data-extension-command={e.id}
-              onClick={() => extensionCommands.run(e.id)}
-            >
-              {e.title}
-            </MenuItem>
-          ))}
+          <ExtensionMenuItems slot="toolbar" />
         </Menu>
       </div>
       {project ? (

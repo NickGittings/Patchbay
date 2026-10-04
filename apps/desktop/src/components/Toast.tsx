@@ -22,7 +22,7 @@ export default function Toast() {
 
   if (!message) return null
   return (
-    <div className="toast" role="status">
+    <div className="toast" role={transient ? 'status' : 'alert'}>
       <span className="toast-text">{message}</span>
       <button
         className="toast-close"

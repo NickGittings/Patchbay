@@ -26,37 +26,36 @@ export default function AttentionMenu() {
   const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')
 
   return (
-    <div className="attention">
-      <Menu
-        align="right"
-        caret={false}
-        triggerClassName={`attention-button health-${items[0].status.health}`}
-        listClassName="attention-list"
-        title={`Terminals that need you: ${summary}`}
-        label={
-          <>
-            <span className="status-dot" />
-            <span className="attention-summary">{summary}</span>
-          </>
-        }
-      >
-        {items.map((item) => (
-          <MenuItem
-            key={item.sid}
-            className={`attention-item health-${item.status.health}`}
-            onClick={() => revealTerminal(item)}
-          >
-            <span className="status-dot" />
-            <span className="attention-what">
-              <span>
-                <strong>{item.owner}</strong> · {item.terminal.name}
-              </span>
-              {item.status.detail && <small>{item.status.detail}</small>}
+    <Menu
+      className="attention"
+      align="right"
+      caret={false}
+      triggerClassName={`attention-button health-${items[0].status.health}`}
+      listClassName="attention-list"
+      title={`Terminals that need you: ${summary}`}
+      label={
+        <>
+          <span className="status-dot" />
+          <span className="attention-summary">{summary}</span>
+        </>
+      }
+    >
+      {items.map((item) => (
+        <MenuItem
+          key={item.sid}
+          className={`attention-item health-${item.status.health}`}
+          onClick={() => revealTerminal(item)}
+        >
+          <span className="status-dot" />
+          <span className="attention-what">
+            <span>
+              <strong>{item.owner}</strong> · {item.terminal.name}
             </span>
-            <span className="attention-label">{item.status.label}</span>
-          </MenuItem>
-        ))}
-      </Menu>
-    </div>
+            {item.status.detail && <small>{item.status.detail}</small>}
+          </span>
+          <span className="attention-label">{item.status.label}</span>
+        </MenuItem>
+      ))}
+    </Menu>
   )
 }

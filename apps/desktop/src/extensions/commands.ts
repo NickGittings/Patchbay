@@ -1,7 +1,7 @@
 import { useStore } from '../store'
 import { executeExtensionCommand } from './host'
 import { evaluateWhen } from './when'
-import { useWhenContext } from './whenContext'
+import { commandEnabled, useWhenContext } from './whenContext'
 
 /** Extension commands contributed to `slot` whose `when` clauses hold, and a way to run one. */
 export function useExtensionCommands(slot: string, componentId?: string | null) {
@@ -11,8 +11,7 @@ export function useExtensionCommands(slot: string, componentId?: string | null) 
   const entries = (menus[slot] ?? []).flatMap((entry) => {
     if (!evaluateWhen(entry.when, context)) return []
     const command = commands.find((c) => c.id === entry.command)
-    if (!command || !evaluateWhen(command.when, context) || (command.run && !context.component))
-      return []
+    if (!command || !commandEnabled(command, context)) return []
     return [{ id: entry.command, title: command.title }]
   })
   const run = (id: string) =>

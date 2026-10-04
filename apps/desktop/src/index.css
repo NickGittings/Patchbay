@@ -214,12 +214,10 @@ select:focus {
 }
 
 /* Toolbar dropdowns: generic menus and the list of terminals that need the user */
-.menu,
-.attention {
+.menu {
   position: relative;
 }
-.menu-trigger,
-.attention-button {
+.menu-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -228,14 +226,7 @@ select:focus {
   font-size: 9px;
   color: var(--muted);
 }
-.menu-overlay,
-.attention-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-}
-.menu-list,
-.attention-list {
+.menu-list {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -251,8 +242,10 @@ select:focus {
   border-radius: 6px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
 }
-.menu-list.right,
-.attention-list {
+.menu-list[hidden] {
+  display: none;
+}
+.menu-list.right {
   right: 0;
   left: auto;
 }
@@ -363,8 +356,7 @@ select:focus {
 .toolbar-group.end {
   justify-content: flex-end;
 }
-.toolbar .attention,
-.toolbar .attention .menu {
+.toolbar .attention {
   min-width: 0;
 }
 .toolbar .attention-button {
@@ -442,6 +434,8 @@ select:focus {
 }
 .toast-text {
   overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 .toolbar .toast .toast-close {
   flex: none;
