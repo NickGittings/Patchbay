@@ -1,0 +1,96 @@
+{
+  "name": "docker",
+  "publisher": "acme",
+  "version": "0.1.0",
+  "displayName": "Docker",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onProjectOpen",
+    "onCommand:acme.docker.refresh",
+    "onView:acme.docker.panel",
+    "workspaceContains:compose.yaml"
+  ],
+  "permissions": [
+    "terminals",
+    "project:read",
+    "files:read"
+  ],
+  "contributes": {
+    "devices": [
+      {
+        "id": "compose-logs",
+        "name": "Compose logs",
+        "command": "docker compose logs -f",
+        "kind": "task",
+        "category": "Docker"
+      }
+    ],
+    "detectors": [
+      {
+        "id": "compose",
+        "files": [
+          "compose.yaml",
+          "docker-compose.yml"
+        ],
+        "kind": "service",
+        "terminals": [
+          {
+            "id": "up",
+            "name": "Up",
+            "command": "docker compose up",
+            "kind": "task"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "acme.docker.up",
+        "title": "Compose up",
+        "run": {
+          "command": "docker compose up",
+          "kind": "task"
+        }
+      },
+      {
+        "id": "acme.docker.refresh",
+        "title": "Refresh containers",
+        "when": "component.hasFile('compose.yaml')"
+      },
+      {
+        "id": "acme.docker.sandboxProbe",
+        "title": "Check Docker extension sandbox"
+      }
+    ],
+    "menus": {
+      "component/actions": [
+        {
+          "command": "acme.docker.up",
+          "when": "component.hasFile('compose.yaml') || component.hasFile('docker-compose.yml')"
+        }
+      ],
+      "toolbar": [
+        {
+          "command": "acme.docker.refresh",
+          "when": "component.kind == 'service'"
+        }
+      ]
+    },
+    "context": [
+      {
+        "title": "Services",
+        "file": "compose.yaml"
+      }
+    ],
+    "views": [
+      {
+        "id": "acme.docker.panel",
+        "title": "Containers",
+        "location": "inspector"
+      }
+    ]
+  }
+}

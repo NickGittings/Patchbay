@@ -20,7 +20,7 @@ pub struct DeviceManifest {
     pub command: String,
     #[serde(default)]
     pub kind: TerminalKind,
-    /// "builtin" or "user"; filled in on load.
+    /// "builtin", "extension:<id>" or "user"; filled in on load.
     #[serde(default)]
     pub source: String,
 }
@@ -41,10 +41,17 @@ pub fn user_devices_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".patchbay").join("devices"))
 }
 
-/// Built-in devices plus everything in `~/.patchbay/devices/*.device.json`.
-/// User devices with the same id override built-ins.
+/// Built-in devices, enabled extension devices, then user device files.
+/// Later sources override earlier devices with the same id.
 #[must_use]
-pub fn load_devices() -> Vec<DeviceManifest> {
+pub fn load_devices(registry: &crate::extensions::Registry) -> Vec<DeviceManifest> {
+    load_from(registry, user_devices_dir().as_deref())
+}
+
+fn load_from(
+    registry: &crate::extensions::Registry,
+    user_dir: Option<&std::path::Path>,
+) -> Vec<DeviceManifest> {
     let mut devices: Vec<DeviceManifest> = BUILTIN
         .iter()
         .filter_map(|s| serde_json::from_str::<DeviceManifest>(s).ok())
@@ -54,7 +61,11 @@ pub fn load_devices() -> Vec<DeviceManifest> {
         })
         .collect();
 
-    if let Some(dir) = user_devices_dir()
+    for device in registry.devices() {
+        devices.retain(|d| d.id != device.id);
+        devices.push(device);
+    }
+    if let Some(dir) = user_dir
         && let Ok(entries) = std::fs::read_dir(dir)
     {
         for entry in entries.flatten() {
@@ -101,6 +112,48 @@ pub fn save_device(device: &DeviceManifest) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn precedence_is_builtin_extension_user() {
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-device-precedence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let device: super::DeviceManifest =
+            serde_json::from_str(r#"{"id":"shell","name":"Extension shell","command":"ext"}"#)
+                .unwrap();
+        let mut manifest = crate::extensions::ExtensionManifest::default();
+        manifest.contributes.devices.push(device);
+        let registry = crate::extensions::Registry {
+            extensions: vec![crate::extensions::Extension {
+                id: "acme.test".into(),
+                dir: dir.clone(),
+                manifest,
+                enabled: true,
+                errors: vec![],
+            }],
+            errors: vec![],
+        };
+        let devices = super::load_from(&registry, None);
+        assert_eq!(
+            devices.iter().find(|d| d.id == "shell").unwrap().command,
+            "ext"
+        );
+        std::fs::write(
+            dir.join("shell.device.json"),
+            r#"{"id":"shell","name":"User shell","command":"user"}"#,
+        )
+        .unwrap();
+        let devices = super::load_from(&registry, Some(&dir));
+        let shell = devices.iter().find(|d| d.id == "shell").unwrap();
+        assert_eq!(shell.command, "user");
+        assert_eq!(shell.source, "user");
+        assert!(
+            devices
+                .iter()
+                .any(|d| d.id != "shell" && d.source == "builtin")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn builtins_parse() {
         for s in super::BUILTIN {

@@ -1,3 +1,4 @@
+import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
@@ -76,6 +77,11 @@ export default function Toolbar() {
           </div>
         </>
       )}
+      <ExtensionMenu slot="toolbar" />
+      <button onClick={() => useStore.getState().setPaletteOpen(true)} title="Cmd/Ctrl+Shift+P">
+        Commands
+      </button>
+      <button onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>Extensions</button>
       <span className="spacer" />
       {message && <span className="message">{message}</span>}
       {project && (

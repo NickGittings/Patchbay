@@ -1,7 +1,11 @@
+import { reloadExtensions } from './ipc'
+import { refreshExtensions } from '../extensions/host'
+import { evaluateWhen } from '../extensions/when'
+import { executeExtensionCommand } from '../extensions/host'
 // Dev-only handles for smoke/popout.js, loaded from main.tsx when import.meta.env.DEV.
 import { emit } from '@tauri-apps/api/event'
 import { useStore } from '../store'
-import { openProject, terminalReset, terminalWrite } from './ipc'
+import { componentContext, openProject, terminalReset, terminalWrite } from './ipc'
 import { resetSessions, startTerminal } from './sessions'
 import { terminalText } from './terminals'
 import { openComponentWindow } from './windows'
@@ -11,6 +15,11 @@ import { syncCurrentRoots } from './access'
 
 const hooks = {
   store: useStore,
+  evaluateWhen,
+  reloadExtensions,
+  refreshExtensions,
+  componentContext,
+  executeExtensionCommand,
   openProject,
   applyAdded,
   requestGitRefresh,

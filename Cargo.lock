@@ -2675,6 +2675,7 @@ dependencies = [
  "dirs 6.0.0",
  "notify",
  "portable-pty",
+ "semver",
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
@@ -2685,6 +2686,7 @@ name = "patchbay-desktop"
 version = "0.1.0"
 dependencies = [
  "patchbay-core",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

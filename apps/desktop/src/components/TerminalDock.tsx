@@ -1,3 +1,5 @@
+import { ExtensionView } from '../extensions/views'
+import { useExtensionViews } from '../extensions/useExtensionViews'
 import { describeTerminal, terminalHealth } from '../lib/display'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
@@ -17,6 +19,7 @@ function useTabs(): Tab[] {
   const selectedId = useStore((s) => s.selectedId)
   const sessions = useStore((s) => s.sessions)
 
+  const runtime = useStore((s) => s.runtimeTerminals)
   const all = nodes.flatMap((n) =>
     n.data.terminals.map((t) => ({
       sid: sessionId(n.id, t.id),
@@ -25,12 +28,21 @@ function useTabs(): Tab[] {
       label: selectedId ? t.name : `${n.data.name} · ${t.name}`,
     })),
   )
+  all.push(
+    ...Object.entries(runtime).map(([sid, t]) => ({
+      sid,
+      componentId: t.componentId,
+      terminal: t.terminal,
+      label: t.terminal.name,
+    })),
+  )
   return selectedId
     ? all.filter((t) => t.componentId === selectedId)
     : all.filter((t) => sessions[t.sid])
 }
 
 export default function TerminalDock() {
+  const extensionViews = useExtensionViews('dock')
   const tabs = useTabs()
   const sessions = useStore((s) => s.sessions)
   const activeSession = useStore((s) => s.activeSession)
@@ -47,17 +59,30 @@ export default function TerminalDock() {
             className={`tab health-${terminalHealth(sessions[t.sid])} ${
               t.sid === activeSession ? 'active' : ''
             }`}
-            onClick={() => setActiveSession(t.sid)}
+            onClick={() => {
+              extensionViews.setSelected(null)
+              setActiveSession(t.sid)
+            }}
           >
             <span className="status-dot" />
             {t.label}
+          </button>
+        ))}
+        {extensionViews.views.map((view) => (
+          <button
+            key={view.id}
+            className="tab"
+            data-extension-view-tab={view.id}
+            onClick={() => extensionViews.setSelected(view.id)}
+          >
+            {view.title}
           </button>
         ))}
         {tabs.length === 0 && (
           <span className="hint">Select a component to see its terminals.</span>
         )}
         <span className="spacer" />
-        {active && (
+        {active && !extensionViews.selected && (
           <span className="tab-actions">
             <code>{describeTerminal(active.terminal)}</code>
             {session?.running ? (
@@ -70,7 +95,9 @@ export default function TerminalDock() {
           </span>
         )}
       </div>
-      {active ? (
+      {extensionViews.selected ? (
+        <ExtensionView id={extensionViews.selected} />
+      ) : active ? (
         <TerminalPane
           key={active.sid}
           componentId={active.componentId}

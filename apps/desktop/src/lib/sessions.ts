@@ -1,3 +1,5 @@
+import { executeExtensionCommand } from '../extensions/host'
+import { extensionTerminalRun } from './ipc'
 import { useStore } from '../store'
 import { PLAN_SCOPE, sessionId, type TerminalEvent, type TerminalSnapshot } from '../types'
 import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
@@ -62,7 +64,17 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
       await listenForTerminals()
       if (requestedEpoch !== epoch) return
       const s = useStore.getState()
-      if (componentId === PLAN_SCOPE) {
+      const runtime = s.runtimeTerminals[sid]
+      if (runtime?.commandId) await executeExtensionCommand(runtime.commandId, [], componentId)
+      else if (runtime?.extensionId && runtime.requestId)
+        await extensionTerminalRun(
+          s.toProject(),
+          runtime.extensionId,
+          componentId,
+          runtime.terminal.command,
+          runtime.requestId,
+        )
+      else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(s.devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = [...s.highlighted]

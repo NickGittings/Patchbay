@@ -1,3 +1,6 @@
+import CommandPalette from './components/CommandPalette'
+import ExtensionsPanel from './components/ExtensionsPanel'
+import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
 import { useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
@@ -9,7 +12,7 @@ import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import TerminalDock from './components/TerminalDock'
 import Toolbar from './components/Toolbar'
-import { GIT_DIRTY_EVENT, listDevices } from './lib/ipc'
+import { GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
@@ -62,9 +65,14 @@ function useRootSync() {
 export default function App() {
   const view = useStore((s) => s.view)
   useEffect(() => {
-    void listDevices().then(useStore.getState().setDevices)
+    const stopHost = startExtensionHost()
+    void refreshExtensions().catch((e) => useStore.getState().setMessage(String(e)))
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
-    return syncComponentWindows()
+    const stopWindows = syncComponentWindows()
+    return () => {
+      stopHost()
+      stopWindows()
+    }
   }, [])
   useGitRefresh()
   useRootSync()
@@ -73,6 +81,8 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
+        <CommandPalette />
+        <ExtensionsPanel />
         {view === 'plan' ? (
           <PlanView />
         ) : view === 'implementation' ? (

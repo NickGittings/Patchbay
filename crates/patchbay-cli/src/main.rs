@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use patchbay_core::{Project, context, detect};
+use patchbay_core::{Project, context, detect, extensions::Registry};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -15,6 +15,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// List local extensions and validation errors.
+    Extensions,
     /// Print the component map Patchbay would suggest for a repository.
     Detect {
         #[arg(default_value = ".")]
@@ -41,15 +43,20 @@ fn open(dir: &Path) -> Result<Project> {
         .with_context(|| format!("{}", dir.display()))?;
     match Project::load(&root)? {
         Some(p) => Ok(p),
-        None => detect::detect(&root),
+        None => detect::detect_with(&root, &Registry::load().detectors()),
     }
 }
 
 fn main() -> Result<()> {
+    let registry = Registry::load();
     match Cli::parse().cmd {
+        Cmd::Extensions => println!("{}", serde_json::to_string_pretty(&registry)?),
         Cmd::Detect { dir } => {
             let root = dir.canonicalize()?;
-            println!("{}", serde_json::to_string_pretty(&detect::detect(&root)?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&detect::detect_with(&root, &registry.detectors())?)?
+            );
         }
         Cmd::Plan { dir, component_ids } => {
             let project = open(&dir)?;
@@ -58,7 +65,18 @@ fn main() -> Result<()> {
                     bail!("unknown component {id}");
                 }
             }
-            print!("{}", context::plan_context(&project, &component_ids));
+            print!(
+                "{}",
+                context::plan_context(
+                    &project,
+                    &component_ids,
+                    &registry.file_sections(
+                        &project,
+                        &component_ids,
+                        &[PathBuf::from(&project.root)]
+                    )
+                )
+            );
         }
         Cmd::Context { component, dir } => {
             let project = open(&dir)?;
@@ -69,7 +87,18 @@ fn main() -> Result<()> {
             else {
                 bail!("no component named {component}");
             };
-            print!("{}", context::component_context(&project, &c.id));
+            print!(
+                "{}",
+                context::component_context(
+                    &project,
+                    &c.id,
+                    &registry.file_sections(
+                        &project,
+                        std::slice::from_ref(&c.id),
+                        &[PathBuf::from(&project.root)]
+                    )
+                )
+            );
         }
     }
     Ok(())

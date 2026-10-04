@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main and component window permissions",
-  "windows": ["main", "component-*"],
+  "description": "Main and component windows only; extension frames have opaque origins and receive no remote IPC capability",
+  "windows": [
+    "main",
+    "component-*"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
@@ -11,5 +14,9 @@
     "core:window:allow-close",
     "core:window:allow-set-title",
     "opener:default"
+  ],
+  "webviews": [
+    "main",
+    "component-*"
   ]
 }

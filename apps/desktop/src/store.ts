@@ -11,6 +11,11 @@ import {
 } from '@xyflow/react'
 import { create } from 'zustand'
 import type {
+  ExtensionRegistry,
+  CommandContribution,
+  MenuContribution,
+  ExtensionBadge,
+  RuntimeTerminal,
   Component,
   ComponentData,
   DeviceManifest,
@@ -30,6 +35,20 @@ interface State {
   project: { name: string; root: string } | null
   nodes: FlowNode[]
   edges: FlowEdge[]
+  extensions: ExtensionRegistry
+  commands: CommandContribution[]
+  menus: Record<string, MenuContribution[]>
+  extensionBadges: Record<string, ExtensionBadge[]>
+  extensionViews: Record<string, string>
+  runtimeTerminals: Record<string, RuntimeTerminal>
+  extensionsPanelOpen: boolean
+  paletteOpen: boolean
+  setExtensions: (registry: ExtensionRegistry) => void
+  setExtensionBadges: (badges: Record<string, ExtensionBadge[]>) => void
+  setExtensionView: (id: string, html: string) => void
+  addRuntimeTerminal: (sid: string, terminal: RuntimeTerminal) => void
+  setExtensionsPanelOpen: (open: boolean) => void
+  setPaletteOpen: (open: boolean) => void
   devices: DeviceManifest[]
   sessions: Record<string, SessionState>
   gitChanges: Record<string, number>
@@ -97,6 +116,38 @@ export const useStore = create<State>((set, get) => ({
   project: null,
   nodes: [],
   edges: [],
+  extensions: { extensions: [], errors: [] },
+  commands: [],
+  menus: {},
+  extensionBadges: {},
+  extensionViews: {},
+  runtimeTerminals: {},
+  extensionsPanelOpen: false,
+  paletteOpen: false,
+  setExtensions: (extensions) => {
+    const active = extensions.extensions.filter((e) => e.enabled && !e.errors.length)
+    const menus: Record<string, MenuContribution[]> = {}
+    for (const e of active)
+      for (const [slot, entries] of Object.entries(e.manifest.contributes.menus))
+        menus[slot] = [...(menus[slot] ?? []), ...entries]
+    set({
+      extensions,
+      commands: active.flatMap((e) => e.manifest.contributes.commands),
+      menus,
+      extensionBadges: {},
+      extensionViews: {},
+    })
+  },
+  setExtensionBadges: (extensionBadges) => set({ extensionBadges }),
+  setExtensionView: (id, html) =>
+    set((s) => ({ extensionViews: { ...s.extensionViews, [id]: html } })),
+  addRuntimeTerminal: (sid, terminal) =>
+    set((s) => ({
+      runtimeTerminals: { ...s.runtimeTerminals, [sid]: terminal },
+      activeSession: sid,
+    })),
+  setExtensionsPanelOpen: (extensionsPanelOpen) => set({ extensionsPanelOpen }),
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   devices: [],
   sessions: {},
   gitChanges: {},
@@ -119,6 +170,9 @@ export const useStore = create<State>((set, get) => ({
       highlighted: [],
       planStartedWith: {},
       sessions: {},
+      runtimeTerminals: {},
+      extensionBadges: {},
+      extensionViews: {},
       gitChanges: {},
       repos: {},
       selectedId: null,
