@@ -1,7 +1,8 @@
-import { useState } from 'react'
 import { attentionItems, revealTerminal } from '../../lib/attention'
 import { useClockTick } from '../../lib/clock'
+import { focusTerminal } from '../../lib/terminals'
 import { useStore } from '../../store'
+import Menu, { MenuItem } from '../Menu'
 
 const SUMMARY: Record<string, string> = {
   input: 'need input',
@@ -17,53 +18,51 @@ export default function AttentionMenu() {
   useClockTick()
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
-  const [open, setOpen] = useState(false)
-  const items = attentionItems({ nodes, sessions, runtimeTerminals, devices })
+  const tasks = useStore((s) => s.tasks)
+  const items = attentionItems({ nodes, sessions, runtimeTerminals, devices, tasks })
 
   if (items.length === 0) return null
   const counts = new Map<string, number>()
   for (const item of items)
     counts.set(item.status.health, (counts.get(item.status.health) ?? 0) + 1)
+  const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')
 
   return (
-    <div className="attention">
-      <button
-        className={`attention-button health-${items[0].status.health}`}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        onClick={() => setOpen(!open)}
-        title="Terminals that need you"
-      >
-        <span className="status-dot" />
-        {[...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')}
-      </button>
-      {open && (
+    <Menu
+      className="attention"
+      align="right"
+      caret={false}
+      triggerClassName={`attention-button health-${items[0].status.health}`}
+      listClassName="attention-list"
+      title={`Terminals that need you: ${summary}`}
+      label={
         <>
-          <div className="attention-overlay" onClick={() => setOpen(false)} />
-          <div className="attention-list" role="menu">
-            {items.map((item) => (
-              <button
-                key={item.sid}
-                role="menuitem"
-                className={`attention-item health-${item.status.health}`}
-                onClick={() => {
-                  setOpen(false)
-                  revealTerminal(item)
-                }}
-              >
-                <span className="status-dot" />
-                <span className="attention-what">
-                  <span>
-                    <strong>{item.owner}</strong> · {item.terminal.name}
-                  </span>
-                  {item.status.detail && <small>{item.status.detail}</small>}
-                </span>
-                <span className="attention-label">{item.status.label}</span>
-              </button>
-            ))}
-          </div>
+          <span className="status-dot" />
+          <span className="attention-summary">{summary}</span>
         </>
-      )}
-    </div>
+      }
+    >
+      {items.map((item) => (
+        <MenuItem
+          key={item.sid}
+          className={`attention-item health-${item.status.health}`}
+          onClick={() => {
+            revealTerminal(item)
+            // So typing answers the revealed terminal, once the view switch has attached it.
+            focusTerminal(item.sid)
+          }}
+        >
+          <span className="status-dot" />
+          <span className="attention-what">
+            <span>
+              <strong>{item.owner}</strong> · {item.terminal.name}
+              {item.taskTitle && <em className="attention-task"> · {item.taskTitle}</em>}
+            </span>
+            {item.status.detail && <small>{item.status.detail}</small>}
+          </span>
+          <span className="attention-label">{item.status.label}</span>
+        </MenuItem>
+      ))}
+    </Menu>
   )
 }

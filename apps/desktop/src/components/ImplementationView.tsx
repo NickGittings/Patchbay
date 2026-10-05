@@ -17,6 +17,7 @@ export default function ImplementationView() {
   const highlighted = useStore((s) => s.highlighted)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
+  const task = useStore((s) => s.activeTask)
   const gitChanges = useStore((s) => s.gitChanges)
   const select = useStore((s) => s.select)
   const [showChanges, setShowChanges] = useState(false)
@@ -25,7 +26,7 @@ export default function ImplementationView() {
     nodes.find((n) => n.id === selectedId) ?? nodes.find((n) => n.id === highlighted[0]) ?? nodes[0]
   const stopped =
     target?.data.terminals.filter(
-      (t) => t.kind !== 'shell' && !sessions[sessionId(target.id, t.id)]?.running,
+      (t) => t.kind !== 'shell' && !sessions[sessionId(target.id, t.id, task)]?.running,
     ) ?? []
 
   return (
@@ -34,10 +35,16 @@ export default function ImplementationView() {
         <div className="component-switcher" role="group" aria-label="Component">
           {nodes.map((n) => {
             const running = n.data.terminals.filter(
-              (t) => sessions[sessionId(n.id, t.id)]?.running,
+              (t) => sessions[sessionId(n.id, t.id, task)]?.running,
             ).length
             const changes = gitChanges[n.id] ?? 0
-            const attention = componentAttention(n.id, n.data.terminals, sessions, runtimeTerminals)
+            const attention = componentAttention(
+              n.id,
+              n.data.terminals,
+              sessions,
+              runtimeTerminals,
+              task,
+            )
             return (
               <button
                 key={n.id}
@@ -94,7 +101,7 @@ export default function ImplementationView() {
             </Panel>
             <Separator className="separator" />
             <Panel defaultSize="38" minSize="20">
-              <ChangesPanel key={target.id} componentId={target.id} />
+              <ChangesPanel key={`${target.id}/${task ?? ''}`} componentId={target.id} />
             </Panel>
           </Group>
         ) : target ? (

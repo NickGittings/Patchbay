@@ -3,7 +3,7 @@
 export const PLAN_SCOPE = '@plan'
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
-export type View = 'navigation' | 'plan' | 'implementation' | 'review'
+export type View = 'navigation' | 'plan' | 'implementation' | 'review' | 'tasks'
 
 export type ComponentKind =
   'frontend' | 'backend' | 'service' | 'library' | 'database' | 'app' | 'other'
@@ -82,13 +82,15 @@ export interface ActionPlan {
   stages: string[][]
   skipped: string[]
   sessions: string[]
+  /** The task whose worktree the terminals run in (`ActionPlan::task`). */
+  task: string | null
 }
 
 export interface ActionReport {
   plan: ActionPlan
   results: {
     sessionId: string
-    outcome: 'started' | 'reused' | 'passed' | 'failed'
+    outcome: 'started' | 'reused' | 'passed' | 'failed' | 'stopped' | 'cancelled'
     exitCode: number | null
   }[]
 }
@@ -229,7 +231,72 @@ export interface SessionState {
 /** Data carried on each React Flow node. */
 export type ComponentData = Omit<Component, 'id' | 'position'> & Record<string, unknown>
 
-export const sessionId = (componentId: string, terminalId: string) => `${componentId}/${terminalId}`
+/** `model::TASK_SEPARATOR`; task ids are ASCII letters and digits, so the last one marks it. */
+const TASK_SEPARATOR = '@task-'
+
+/**
+ * Mirrors `model::task_session_id`: a task's terminals end in `@task-<task>`, so the same terminal
+ * can run in several worktrees at once. The component id stays before the last `/`.
+ */
+export const sessionId = (componentId: string, terminalId: string, task?: string | null) =>
+  task ? `${componentId}/${terminalId}${TASK_SEPARATOR}${task}` : `${componentId}/${terminalId}`
+
+/** A session id's component, terminal and task (`null` for the open worktree). */
+export function parseSessionId(sid: string) {
+  const slash = sid.lastIndexOf('/')
+  const last = sid.slice(slash + 1)
+  const at = last.lastIndexOf(TASK_SEPARATOR)
+  const task = at >= 0 ? last.slice(at + TASK_SEPARATOR.length) : ''
+  const scoped = /^[0-9a-z]+$/i.test(task)
+  return {
+    componentId: sid.slice(0, slash),
+    terminalId: scoped ? last.slice(0, at) : last,
+    task: scoped ? task : null,
+  }
+}
+
+/** The task a session id belongs to (`null` for the open worktree). */
+export const sessionTask = (sid: string) => parseSessionId(sid).task
+
+/** `sid` moved to `task`'s scope (or the open worktree's). */
+export function retask(sid: string, task: string | null): string {
+  const { componentId, terminalId } = parseSessionId(sid)
+  return sessionId(componentId, terminalId, task)
+}
+
+/** A named piece of work on its own branch and worktree (`tasks::Task`). */
+export interface Task {
+  id: string
+  title: string
+  /** Absolute, canonical worktree folder. */
+  worktree: string
+  /** Absent for a detached `HEAD`. */
+  branch?: string
+  base?: string
+  /** Components the task is about, as the user picked them. */
+  components: string[]
+  notes: string
+  createdMs: number
+  /** The worktree no longer exists. */
+  missing: boolean
+  /** The project is open in this worktree. */
+  current: boolean
+}
+
+/** `tasks::TaskDraft` */
+export interface TaskDraft {
+  title: string
+  branch: string
+  base?: string
+  components: string[]
+}
+
+/** `tasks::TaskPatch` */
+export interface TaskPatch {
+  title?: string
+  notes?: string
+  components?: string[]
+}
 
 export interface ContextSection {
   title: string

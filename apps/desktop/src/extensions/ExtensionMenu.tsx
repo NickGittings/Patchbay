@@ -1,44 +1,34 @@
-import { useStore } from '../store'
-import { executeExtensionCommand } from './host'
-import { evaluateWhen } from './when'
-import { useWhenContext } from './whenContext'
+import { useContext } from 'react'
+import { MenuItem, MenuSeparator } from '../components/Menu'
+import { MenuOpens } from '../components/menuContext'
+import { useExtensionCommands } from './commands'
 
+/**
+ * Extension commands contributed to `slot`, as buttons or, with `asMenuItems`, as items of the
+ * enclosing `Menu` after a separator (when there are any).
+ */
 export default function ExtensionMenu({
   slot,
   componentId,
+  asMenuItems = false,
 }: {
   slot: string
   componentId?: string | null
+  asMenuItems?: boolean
 }) {
-  const menus = useStore((s) => s.menus)
-  const commands = useStore((s) => s.commands)
-  const context = useWhenContext(componentId)
+  // Inside a menu, re-read the component's files each time it opens (as the palette does).
+  const opens = useContext(MenuOpens)
+  const { entries, run } = useExtensionCommands(slot, componentId, asMenuItems ? opens : 0)
+  if (entries.length === 0) return null
+  const Item = asMenuItems ? MenuItem : 'button'
   return (
     <>
-      {(menus[slot] ?? [])
-        .filter((m) => evaluateWhen(m.when, context))
-        .map((entry) => {
-          const command = commands.find((c) => c.id === entry.command)
-          if (
-            !command ||
-            !evaluateWhen(command.when, context) ||
-            (command.run && !context.component)
-          )
-            return null
-          return (
-            <button
-              key={entry.command}
-              data-extension-command={entry.command}
-              onClick={() =>
-                void executeExtensionCommand(entry.command, [], context.component?.id).catch((e) =>
-                  useStore.getState().setMessage(String(e)),
-                )
-              }
-            >
-              {command.title}
-            </button>
-          )
-        })}
+      {asMenuItems && <MenuSeparator />}
+      {entries.map((e) => (
+        <Item key={e.id} data-extension-command={e.id} onClick={() => run(e.id)}>
+          {e.title}
+        </Item>
+      ))}
     </>
   )
 }

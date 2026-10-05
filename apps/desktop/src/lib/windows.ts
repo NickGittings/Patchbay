@@ -5,7 +5,7 @@ import {
   WebviewWindow,
 } from '@tauri-apps/api/webviewWindow'
 import { useStore } from '../store'
-import type { Project } from '../types'
+import type { Project, Task } from '../types'
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -28,6 +28,12 @@ export function absolutePath(root: string, path: string) {
 export const PROJECT_EVENT = 'patchbay://project'
 export const READY_EVENT = 'patchbay://popout-ready'
 export const GIT_EVENT = 'patchbay://git'
+/** The task list and active task, so pop-outs run terminals in the same worktree. */
+export const TASKS_EVENT = 'patchbay://tasks'
+export interface TasksPayload {
+  tasks: Task[]
+  activeTask: string | null
+}
 const ACTIVE_EVENT = 'patchbay://active-window'
 /** Emitted by the backend with the label of a window that has closed. */
 const CLOSED_EVENT = 'patchbay://window-closed'
@@ -135,6 +141,11 @@ export function syncComponentWindows(): () => void {
   // diffs reload on it, since editing an already-changed file leaves the counts as they were.
   let sentProject = ''
   let sentGit: unknown = null
+  let sentTasks = ''
+  const tasksPayload = (): TasksPayload => {
+    const { tasks, activeTask } = useStore.getState()
+    return { tasks, activeTask }
+  }
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
@@ -143,6 +154,7 @@ export function syncComponentWindows(): () => void {
       // Nobody received the changes, so the next pop-out's READY reply is its baseline.
       sentProject = ''
       sentGit = null
+      sentTasks = ''
       return
     }
     const s = useStore.getState()
@@ -153,6 +165,12 @@ export function syncComponentWindows(): () => void {
       sentProject = projectJson
       await emit<Project>(PROJECT_EVENT, project)
     }
+    const tasks = tasksPayload()
+    const tasksJson = JSON.stringify(tasks)
+    if (tasksJson !== sentTasks) {
+      sentTasks = tasksJson
+      await emit<TasksPayload>(TASKS_EVENT, tasks)
+    }
     if (s.gitChanges !== sentGit) {
       sentGit = s.gitChanges
       await emit(GIT_EVENT, s.gitChanges)
@@ -162,6 +180,7 @@ export function syncComponentWindows(): () => void {
     const s = useStore.getState()
     if (!s.project || !e.payload.label.startsWith('component-')) return
     void emitTo(e.payload.label, PROJECT_EVENT, s.toProject()).catch(report)
+    void emitTo(e.payload.label, TASKS_EVENT, tasksPayload()).catch(report)
     void emitTo(e.payload.label, GIT_EVENT, s.gitChanges).catch(report)
   })
     .then((f) => {
@@ -174,7 +193,9 @@ export function syncComponentWindows(): () => void {
       s.nodes === prev.nodes &&
       s.edges === prev.edges &&
       s.project === prev.project &&
-      s.gitChanges === prev.gitChanges
+      s.gitChanges === prev.gitChanges &&
+      s.tasks === prev.tasks &&
+      s.activeTask === prev.activeTask
     )
       return
     clearTimeout(timer)

@@ -50,11 +50,12 @@ export function validations(
   terminals: TerminalSpec[],
   sessions: Record<string, SessionState>,
   changedAt: number | undefined,
+  task: string | null = null,
 ): Validation[] {
   return terminals
     .filter((t) => t.kind === 'task')
     .map((terminal) => {
-      const session = sessions[sessionId(componentId, terminal.id)]
+      const session = sessions[sessionId(componentId, terminal.id, task)]
       let state: ValidationState
       if (!session || (!session.running && session.exitCode === undefined)) state = 'notRun'
       else if (session.running) state = 'running'

@@ -21,7 +21,7 @@ pub fn repo_root(dir: &Path) -> Option<PathBuf> {
 }
 
 /// [`repo_root`] for a folder that is already canonical.
-fn nearest_repo(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn nearest_repo(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(".git").exists())
         .map(Path::to_path_buf)
@@ -761,7 +761,7 @@ fn run_capped(repo: &Path, args: &[String], ok: &[i32]) -> Result<FileDiff> {
 /// hook or daemon, and without optional locks, so they never rewrite the
 /// index (which would wake the watcher again). Pathspecs are literal, so
 /// folder and file names like `[id]` match only themselves.
-fn git(repo: &Path) -> Command {
+pub(crate) fn git(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).args([
         "-c",

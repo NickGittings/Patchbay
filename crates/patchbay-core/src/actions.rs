@@ -1,7 +1,7 @@
 //! Explicit graph actions, shared by desktop and other core clients.
 use crate::context;
 use crate::events::EventSink;
-use crate::model::{Project, TerminalAction, session_id};
+use crate::model::{Project, TASK_SEPARATOR, TerminalAction, TerminalKind, task_session_id};
 use crate::policy::AllowAll;
 use crate::pty::{PtyManager, SessionSpec};
 use anyhow::{Result, anyhow, bail, ensure};
@@ -32,10 +32,19 @@ pub struct ActionPlan {
     pub stages: Vec<Vec<String>>,
     pub skipped: Vec<String>,
     pub sessions: Vec<String>,
+    /// The task whose worktree the terminals run in; `None` for the open one.
+    pub task: Option<String>,
 }
 
 impl ActionPlan {
-    pub fn build(project: &Project, request: ActionRequest) -> Result<Self> {
+    /// Resolve which components and terminals an action runs, in order.
+    /// `project` should already be the task's ([`crate::tasks::project_in`]).
+    ///
+    /// # Errors
+    /// Fails for an invalid map, an unknown group or component, a dependency
+    /// cycle in an ordered group, an out-of-range readiness timeout, a graph
+    /// action that isn't a task with a command, or a group with nothing to start.
+    pub fn build(project: &Project, request: ActionRequest, task: Option<&str>) -> Result<Self> {
         project.validate()?;
         let (stages, action) = match &request {
             ActionRequest::StartGroup { group_id } => {
@@ -47,6 +56,11 @@ impl ActionPlan {
                 ensure!(
                     !group.component_ids.is_empty(),
                     "Group {} has no components",
+                    group.name
+                );
+                ensure!(
+                    (1..=3600).contains(&group.readiness_timeout_seconds),
+                    "Readiness timeout of {} must be between 1 and 3600 seconds",
                     group.name
                 );
                 let stages = if group.ordered_startup {
@@ -84,7 +98,9 @@ impl ActionPlan {
         let mut skipped = Vec::new();
         let mut sessions = Vec::new();
         for id in stages.iter().flatten() {
-            let component = project.component(id).unwrap();
+            let component = project
+                .component(id)
+                .ok_or_else(|| anyhow!("Unknown component {id}"))?;
             let selected: Vec<_> = component
                 .terminals
                 .iter()
@@ -93,7 +109,17 @@ impl ActionPlan {
             if selected.is_empty() {
                 skipped.push(id.clone());
             }
-            sessions.extend(selected.iter().map(|t| session_id(id, &t.id)));
+            for terminal in &selected {
+                // Checked here rather than in `validate`, so a terminal still
+                // being configured doesn't block every other command.
+                ensure!(
+                    terminal.kind == TerminalKind::Task && !terminal.command.trim().is_empty(),
+                    "{} › {} needs to be a task with a command to run as a graph action",
+                    component.name,
+                    terminal.name
+                );
+                sessions.push(task_session_id(id, &terminal.id, task));
+            }
         }
         if action == TerminalAction::Development {
             ensure!(
@@ -106,9 +132,11 @@ impl ActionPlan {
             stages,
             skipped,
             sessions,
+            task: task.map(str::to_string),
         })
     }
 
+    #[must_use]
     pub fn component_ids(&self) -> Vec<String> {
         self.stages.iter().flatten().cloned().collect()
     }
@@ -124,11 +152,13 @@ impl ActionPlan {
                         .component(id)
                         .ok_or_else(|| anyhow!("Unknown component {id}"))?;
                     for terminal in &component.terminals {
-                        if selected.contains(&session_id(id, &terminal.id)) {
-                            specs.push(context::session_spec(
+                        let session = task_session_id(id, &terminal.id, self.task.as_deref());
+                        if selected.contains(&session) {
+                            specs.push(context::session_spec_for(
                                 project,
                                 id,
                                 &terminal.id,
+                                self.task.as_deref(),
                                 &AllowAll,
                                 &[],
                             )?);
@@ -190,6 +220,26 @@ pub enum TaskOutcome {
     Reused,
     Passed,
     Failed,
+    /// A validator whose terminal the user stopped, or the one running when
+    /// the validation was stopped.
+    Stopped,
+    /// A validator that never ran because the validation was stopped.
+    Cancelled,
+}
+
+/// How a validator's run ended.
+enum Exit {
+    Code(i32),
+    Stopped,
+    Cancelled,
+}
+
+/// Environments are per task: the same group runs separately in each worktree.
+fn environment_key(group_id: &str, task: Option<&str>) -> String {
+    match task {
+        Some(task) => format!("{group_id}{TASK_SEPARATOR}{task}"),
+        None => group_id.to_string(),
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -215,10 +265,28 @@ struct State {
 pub struct GraphActions(Mutex<State>);
 
 impl GraphActions {
+    /// The project generation; [`Self::reset`] bumps it. Callers read it
+    /// before doing slow work so a project switch in between is detected.
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    #[must_use]
     pub fn epoch(&self) -> u64 {
         self.0.lock().unwrap().epoch
     }
 
+    /// Run a planned action: start a group's development terminals stage by
+    /// stage, waiting for readiness, or run validators one at a time. A failed
+    /// start stops what this attempt launched. A stopped validation returns the
+    /// results so far (see [`Self::cancel_validation`]).
+    ///
+    /// # Errors
+    /// Fails if the project changed since `epoch`, another action is running,
+    /// the plan no longer builds, a terminal can't start, or (for a group) a
+    /// task exits, times out on readiness or is cancelled before it's ready.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
     pub fn execute(
         &self,
         project: &Project,
@@ -228,15 +296,16 @@ impl GraphActions {
         sink: Arc<dyn EventSink>,
     ) -> Result<ActionReport> {
         // Rebuild against the current map; callers may have edited it since previewing.
-        let plan = ActionPlan::build(project, plan.request)?;
+        let plan = ActionPlan::build(project, plan.request, plan.task.as_deref())?;
         // Resolve every launch before running any commands.
         let stages = plan.specs(project)?;
         let (key, environment, timeout) = match &plan.request {
             ActionRequest::StartGroup { group_id } => {
                 let group = project.groups.iter().find(|g| &g.id == group_id).unwrap();
+                let environment = environment_key(group_id, plan.task.as_deref());
                 (
-                    format!("group:{group_id}"),
-                    Some(group_id.clone()),
+                    format!("group:{environment}"),
+                    Some(environment),
                     Duration::from_secs(group.readiness_timeout_seconds),
                 )
             }
@@ -276,6 +345,17 @@ impl GraphActions {
             for stage in stages {
                 let mut waits = Vec::new();
                 for spec in stage {
+                    if environment.is_none() && cancelled.load(Ordering::SeqCst) {
+                        // Stopped by the user: report what's left as not run.
+                        // A project reset changes the epoch and fails instead.
+                        ensure!(self.epoch() == epoch, "Graph action cancelled");
+                        results.push(TaskResult {
+                            session_id: spec.id,
+                            outcome: TaskOutcome::Cancelled,
+                            exit_code: None,
+                        });
+                        continue;
+                    }
                     check_cancelled(&cancelled)?;
                     check_environment_running(pty, &participating)?;
                     let id = spec.id.clone();
@@ -302,7 +382,7 @@ impl GraphActions {
                                 "Terminal {id} configuration changed; restart it before starting this environment"
                             );
                         } else {
-                            pty.spawn(spec, sink.clone())?;
+                            pty.spawn_managed(spec, sink.clone())?;
                         }
                         let snapshot = pty
                             .snapshot(&id)
@@ -346,15 +426,20 @@ impl GraphActions {
                         });
                         waits.push((run, ready));
                     } else {
-                        let code = wait_for_exit(pty, &run, &cancelled)?;
+                        let (outcome, exit_code) = match wait_for_exit(pty, &run, &cancelled)? {
+                            Exit::Code(0) => (TaskOutcome::Passed, Some(0)),
+                            Exit::Code(code) => (TaskOutcome::Failed, Some(code)),
+                            Exit::Stopped => (TaskOutcome::Stopped, None),
+                            Exit::Cancelled => {
+                                ensure!(self.epoch() == epoch, "Graph action cancelled");
+                                pty.stop_generation(&run.id, run.generation)?;
+                                (TaskOutcome::Stopped, None)
+                            }
+                        };
                         results.push(TaskResult {
                             session_id: run.id,
-                            outcome: if code == 0 {
-                                TaskOutcome::Passed
-                            } else {
-                                TaskOutcome::Failed
-                            },
-                            exit_code: Some(code),
+                            outcome,
+                            exit_code,
                         });
                     }
                 }
@@ -365,8 +450,10 @@ impl GraphActions {
                     }
                 }
             }
-            check_cancelled(&cancelled)?;
-            check_environment_running(pty, &participating)?;
+            if environment.is_some() {
+                check_cancelled(&cancelled)?;
+                check_environment_running(pty, &participating)?;
+            }
             Ok(ActionReport { plan, results })
         })();
         if result.is_err() {
@@ -420,8 +507,42 @@ impl GraphActions {
         result
     }
 
+    /// Stop the running validation: the validator in progress is stopped,
+    /// the rest are reported as cancelled. Returns whether one was running.
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    pub fn cancel_validation(&self) -> bool {
+        let state = self.0.lock().unwrap();
+        let Some(active) = state
+            .active
+            .as_ref()
+            .filter(|a| a.key.starts_with("validation:"))
+        else {
+            return false;
+        };
+        active.cancelled.store(true, Ordering::SeqCst);
+        true
+    }
+
     /// Cancel in-flight startup and stop owned sessions in reverse startup order.
-    pub fn stop_group(&self, group_id: &str, epoch: u64, pty: &PtyManager) -> Result<()> {
+    ///
+    /// # Errors
+    /// Fails if the project changed since `epoch`, another environment is
+    /// stopping, or a terminal doesn't finish stopping (it stays owned, so
+    /// stopping again retries).
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    pub fn stop_group(
+        &self,
+        group_id: &str,
+        task: Option<&str>,
+        epoch: u64,
+        pty: &PtyManager,
+    ) -> Result<()> {
+        let group_id = environment_key(group_id, task);
+        let group_id = group_id.as_str();
         let runs = {
             let mut state = self.0.lock().unwrap();
             ensure!(state.epoch == epoch, "Project changed before stop started");
@@ -463,6 +584,10 @@ impl GraphActions {
     }
 
     /// Cancel actions before resetting terminals so delayed workers cannot spawn in a new project.
+    /// Returns [`PtyManager::reset`]'s generation floor.
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
     pub fn reset(&self, pty: &PtyManager) -> u64 {
         let mut state = self.0.lock().unwrap();
         state.epoch += 1;
@@ -492,12 +617,25 @@ fn snapshot_run(pty: &PtyManager, run: &Run) -> Result<crate::pty::Snapshot> {
     Ok(snapshot)
 }
 
-fn wait_for_exit(pty: &PtyManager, run: &Run, cancelled: &AtomicBool) -> Result<i32> {
+fn wait_for_exit(pty: &PtyManager, run: &Run, cancelled: &AtomicBool) -> Result<Exit> {
     loop {
-        check_cancelled(cancelled)?;
-        let snapshot = snapshot_run(pty, run)?;
+        if cancelled.load(Ordering::SeqCst) {
+            return Ok(Exit::Cancelled);
+        }
+        let snapshot = pty
+            .snapshot(&run.id)
+            .ok_or_else(|| anyhow!("Session {} disappeared", run.id))?;
+        ensure!(
+            snapshot.generation == run.generation,
+            "Session {} was restarted",
+            run.id
+        );
+        // A validator the user stopped doesn't fail the others.
+        if snapshot.status.stopped {
+            return Ok(Exit::Stopped);
+        }
         if !snapshot.running {
-            return Ok(snapshot.exit_code.unwrap_or(-1));
+            return Ok(Exit::Code(snapshot.exit_code.unwrap_or(-1)));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -577,6 +715,10 @@ mod tests {
         })).unwrap()
     }
 
+    fn build(project: &Project, request: ActionRequest) -> Result<ActionPlan> {
+        ActionPlan::build(project, request, None)
+    }
+
     fn start() -> ActionRequest {
         ActionRequest::StartGroup {
             group_id: "dev".into(),
@@ -593,7 +735,7 @@ mod tests {
         .unwrap();
         assert!(p.groups.is_empty());
         assert_eq!(p.components[0].terminals[0].action, None);
-        assert!(ActionPlan::build(&p, start()).is_err());
+        assert!(build(&p, start()).is_err());
     }
 
     #[test]
@@ -612,30 +754,46 @@ mod tests {
         p.groups[0].component_ids.push("web".into());
         assert!(p.validate().is_err());
         p.groups[0].component_ids.pop();
+        // A half-configured role only fails the action, never the whole map.
         p.components[0].terminals[0].kind = TerminalKind::Shell;
-        assert!(p.validate().is_err());
+        assert!(p.validate().is_ok());
+        assert!(build(&p, start()).is_err());
         p.components[0].terminals[0].kind = TerminalKind::Task;
         p.components[0].terminals[0].command.clear();
-        assert!(p.validate().is_err());
+        assert!(p.validate().is_ok());
+        let error = build(&p, start()).unwrap_err().to_string();
+        assert!(
+            error.contains("needs to be a task with a command"),
+            "{error}"
+        );
+        p.components[0].terminals[0].command = "sleep 30".into();
+        p.groups[0].readiness_timeout_seconds = 0;
+        assert!(p.validate().is_ok());
+        assert!(build(&p, start()).is_err());
+    }
+
+    #[test]
+    fn task_plans_use_task_session_ids() {
+        let plan = ActionPlan::build(&project(), start(), Some("t1")).unwrap();
+        assert_eq!(plan.sessions, ["api/dev@task-t1", "web/dev@task-t1"]);
+        assert_eq!(environment_key("dev", Some("t1")), "dev@task-t1");
+        assert_eq!(environment_key("dev", None), "dev");
     }
 
     #[test]
     fn startup_is_ordered_only_when_configured_and_stays_inside_group() {
         let mut p = project();
-        let plan = ActionPlan::build(&p, start()).unwrap();
+        let plan = build(&p, start()).unwrap();
         assert_eq!(plan.stages, [vec!["lib"], vec!["api"], vec!["web"]]);
         assert_eq!(plan.skipped, ["lib"]);
         p.groups[0].ordered_startup = false;
         assert_eq!(
-            ActionPlan::build(&p, start()).unwrap().stages,
+            build(&p, start()).unwrap().stages,
             [vec!["web", "api", "lib"]]
         );
         p.groups[0].component_ids = vec!["web".into()];
         p.groups[0].ordered_startup = true;
-        assert_eq!(
-            ActionPlan::build(&p, start()).unwrap().sessions,
-            ["web/dev"]
-        );
+        assert_eq!(build(&p, start()).unwrap().sessions, ["web/dev"]);
     }
 
     #[test]
@@ -648,12 +806,12 @@ mod tests {
             label: None,
         });
         assert!(
-            ActionPlan::build(&p, start())
+            build(&p, start())
                 .unwrap_err()
                 .to_string()
                 .contains("cycle")
         );
-        let plan = ActionPlan::build(
+        let plan = build(
             &p,
             ActionRequest::ValidateAffected {
                 component_id: "lib".into(),
@@ -697,7 +855,7 @@ mod tests {
                 }
             }
             fn run(&self, request: ActionRequest) -> Result<ActionReport> {
-                let plan = ActionPlan::build(&self.project, request)?;
+                let plan = build(&self.project, request)?;
                 self.actions.execute(
                     &self.project,
                     plan,
@@ -714,7 +872,7 @@ mod tests {
                 std::thread::spawn(move || {
                     actions.execute(
                         &project,
-                        ActionPlan::build(&project, start())?,
+                        build(&project, start())?,
                         epoch,
                         &pty,
                         Arc::new(Silent),
@@ -761,9 +919,9 @@ mod tests {
                     .iter()
                     .all(|r| matches!(r.outcome, TaskOutcome::Reused))
             );
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             assert!(f.pty.is_running("api/dev"));
-            f.actions.stop_group("second", 0, &f.pty).unwrap();
+            f.actions.stop_group("second", None, 0, &f.pty).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             while f.pty.is_running("api/dev") || f.pty.is_running("web/dev") {
                 assert!(Instant::now() < deadline);
@@ -794,7 +952,7 @@ mod tests {
                 )
                 .unwrap();
             f.run(start()).unwrap();
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             assert!(f.pty.is_running("api/dev"));
             f.actions.reset(&f.pty);
             f.project.components[1].terminals[0].command = "exit 2".into();
@@ -835,7 +993,7 @@ mod tests {
             let worker = f.start_in_thread();
             f.wait_running("api/dev");
             assert!(f.run(start()).is_err());
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             assert!(worker.join().unwrap().is_err());
             assert!(f.pty.snapshot("web/dev").is_none());
             let worker = f.start_in_thread();
@@ -847,7 +1005,7 @@ mod tests {
                 f.actions
                     .execute(
                         &f.project,
-                        ActionPlan::build(&f.project, start()).unwrap(),
+                        build(&f.project, start()).unwrap(),
                         0,
                         &f.pty,
                         Arc::new(Silent)
@@ -868,6 +1026,87 @@ mod tests {
             assert_eq!(report.results.len(), 2);
             assert!(matches!(report.results[0].outcome, TaskOutcome::Failed));
             assert_eq!(report.results[0].exit_code, Some(3));
+            assert!(matches!(report.results[1].outcome, TaskOutcome::Passed));
+        }
+
+        #[test]
+        fn stopping_a_validation_keeps_its_results() {
+            let mut f = Fixture::new();
+            f.project.components[1].terminals[1].command = "exit 0".into();
+            f.project.components[0].terminals[1].command = "sleep 30".into();
+            let mut extra = f.project.components[0].clone();
+            extra.id = "app".into();
+            extra.terminals[1].command = "exit 0".into();
+            f.project.components.push(extra);
+            f.project.links.push(crate::Link {
+                id: "app-web".into(),
+                source: "app".into(),
+                target: "web".into(),
+                label: None,
+            });
+            let worker = {
+                let project = f.project.clone();
+                let actions = f.actions.clone();
+                let pty = f.pty.clone();
+                std::thread::spawn(move || {
+                    let request = ActionRequest::ValidateAffected {
+                        component_id: "lib".into(),
+                    };
+                    actions.execute(
+                        &project,
+                        build(&project, request)?,
+                        0,
+                        &pty,
+                        Arc::new(Silent),
+                    )
+                })
+            };
+            f.wait_running("web/check");
+            assert!(f.actions.cancel_validation());
+            let report = worker.join().unwrap().unwrap();
+            let outcomes: Vec<_> = report
+                .results
+                .iter()
+                .map(|r| (r.session_id.as_str(), r.outcome))
+                .collect();
+            assert!(matches!(
+                outcomes[..],
+                [
+                    ("api/check", TaskOutcome::Passed),
+                    ("web/check", TaskOutcome::Stopped),
+                    ("app/check", TaskOutcome::Cancelled)
+                ]
+            ));
+            assert!(!f.pty.is_running("web/check"));
+            assert!(f.pty.snapshot("app/check").is_none());
+            assert!(!f.actions.cancel_validation());
+        }
+
+        #[test]
+        fn a_validator_stopped_by_the_user_does_not_end_the_validation() {
+            let mut f = Fixture::new();
+            f.project.components[1].terminals[1].command = "sleep 30".into();
+            let worker = {
+                let project = f.project.clone();
+                let actions = f.actions.clone();
+                let pty = f.pty.clone();
+                std::thread::spawn(move || {
+                    let request = ActionRequest::ValidateAffected {
+                        component_id: "lib".into(),
+                    };
+                    actions.execute(
+                        &project,
+                        build(&project, request)?,
+                        0,
+                        &pty,
+                        Arc::new(Silent),
+                    )
+                })
+            };
+            f.wait_running("api/check");
+            f.pty.kill("api/check");
+            let report = worker.join().unwrap().unwrap();
+            assert!(matches!(report.results[0].outcome, TaskOutcome::Stopped));
             assert!(matches!(report.results[1].outcome, TaskOutcome::Passed));
         }
 
@@ -905,7 +1144,7 @@ mod tests {
                 })
                 .is_err()
             );
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             assert!(
                 !f.pty.is_running("api/dev"),
                 "failed group retained a shared owner"
@@ -952,7 +1191,7 @@ mod tests {
                 "trap '' HUP; printf 'READY\\n'; cat".into();
             f.run(start()).unwrap();
             let generation = f.pty.snapshot("api/dev").unwrap().generation;
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             assert!(
                 !f.pty.is_running("api/dev"),
                 "Stop returned before the process exited"
@@ -998,7 +1237,7 @@ mod tests {
                 std::thread::spawn(move || {
                     actions.execute(
                         &project,
-                        ActionPlan::build(
+                        build(
                             &project,
                             ActionRequest::StartGroup {
                                 group_id: "second".into(),
@@ -1011,11 +1250,11 @@ mod tests {
                 })
             };
             f.wait_running("web/dev");
-            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
             worker.join().unwrap().unwrap();
             assert!(f.pty.is_running("api/dev"));
             assert!(f.pty.snapshot("api/dev").unwrap().generation > generation);
-            f.actions.stop_group("second", 0, &f.pty).unwrap();
+            f.actions.stop_group("second", None, 0, &f.pty).unwrap();
             assert!(!f.pty.is_running("api/dev"));
         }
 
@@ -1032,7 +1271,7 @@ mod tests {
                 } else {
                     f.project.groups[0].component_ids = vec!["api".into()];
                     f.run(start()).unwrap();
-                    f.actions.stop_group("dev", 0, &f.pty).unwrap();
+                    f.actions.stop_group("dev", None, 0, &f.pty).unwrap();
                 }
                 let pid = std::fs::read_to_string(
                     std::path::Path::new(&f.project.root).join("worker.pid"),
@@ -1068,6 +1307,18 @@ mod tests {
                 loaded.components[0].terminals[1].action,
                 Some(TerminalAction::Validation)
             );
+            assert_eq!(loaded.schema_version, crate::model::SCHEMA_VERSION);
+            let file = std::path::Path::new(&f.project.root).join(crate::model::PROJECT_FILE);
+            let text = std::fs::read_to_string(&file).unwrap().replacen(
+                &format!("\"schemaVersion\": {}", crate::model::SCHEMA_VERSION),
+                "\"schemaVersion\": 99",
+                1,
+            );
+            std::fs::write(&file, text).unwrap();
+            let error = Project::load(std::path::Path::new(&f.project.root))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("newer Patchbay"), "{error}");
         }
     }
 }

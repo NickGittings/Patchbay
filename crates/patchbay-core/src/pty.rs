@@ -46,6 +46,8 @@ struct Session {
 struct Process {
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// A graph action's service ([`PtyManager::spawn_managed`]).
+    reap_workers: bool,
 }
 
 impl Process {
@@ -57,12 +59,15 @@ impl Process {
         let _ = self.killer.kill();
     }
 
-    /// Interactive shells can give background jobs separate process groups.
-    /// Terminate every live process in the PTY's session, not only its leader's group.
+    /// The PTY child leads its own session, so on Unix killing its process group
+    /// also reaches dev servers and other descendants that ignore SIGHUP. For a
+    /// graph action's service, also kill background jobs in their own groups.
     fn force_kill(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.pid {
-            kill_session_workers(pid);
+            if self.reap_workers {
+                kill_session_workers(pid);
+            }
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", "--", &format!("-{pid}")])
                 .stdout(std::process::Stdio::null())
@@ -354,6 +359,33 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn spawn(self: &Arc<Self>, spec: SessionSpec, sink: Arc<dyn EventSink>) -> Result<()> {
+        self.spawn_inner(spec, sink, false)
+    }
+
+    /// [`Self::spawn`] for a graph action's service: when its shell exits,
+    /// background workers still in the terminal's session are killed before
+    /// the run counts as exited, so a restart finds its ports free. Ordinary
+    /// terminals keep `nohup` and `disown`ed jobs alive.
+    ///
+    /// # Errors
+    /// Fails if a session with the same id is running or the process cannot start.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn spawn_managed(
+        self: &Arc<Self>,
+        spec: SessionSpec,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<()> {
+        self.spawn_inner(spec, sink, true)
+    }
+
+    fn spawn_inner(
+        self: &Arc<Self>,
+        spec: SessionSpec,
+        sink: Arc<dyn EventSink>,
+        reap_workers: bool,
+    ) -> Result<()> {
         let generation = {
             let sessions = self.sessions.lock().unwrap();
             let mut starting = self.starting.lock().unwrap();
@@ -382,9 +414,10 @@ impl PtyManager {
         let mut process = Process {
             pid: child.process_id(),
             killer: child.clone_killer(),
+            reap_workers,
         };
         #[cfg(unix)]
-        let session_pid = process.pid;
+        let session_pid = process.pid.filter(|_| reap_workers);
 
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
@@ -485,8 +518,8 @@ impl PtyManager {
         let manager = Arc::clone(self);
         std::thread::spawn(move || {
             let status = child.wait();
-            // A shell can exit on hangup while its workers ignore it. Keep this
-            // generation running until those workers release their ports and PTY.
+            // A managed shell can exit on hangup while its workers ignore it. Keep
+            // this generation running until those workers release their ports and PTY.
             #[cfg(unix)]
             let cleanup_error = finish_session_workers(session_pid)
                 .err()

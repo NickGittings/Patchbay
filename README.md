@@ -47,9 +47,9 @@ cargo test --workspace
 
 ## Extensions
 
-Extensions are local folders containing a `package.json`. Open **Extensions** in the toolbar,
-choose **Install from folder…**, and select the extension folder. Installed folders live in
-`~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
+Extensions are local folders containing a `package.json`. Open **Tools → Extensions…** in the
+toolbar, choose **Install from folder…**, and select the extension folder. Installed folders live
+in `~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
 `~/.patchbay/extensions.json`. **Reload** reloads manifests and restarts code hosts. Invalid
 manifests stay visible with errors while other extensions continue loading. Set
 `PATCHBAY_EXTENSIONS_DIR` to use another registry (including `examples/extensions`).
@@ -65,8 +65,8 @@ limited to 32 KiB, and checked against the same allowed roots as the file tree.
 **Cmd/Ctrl+Shift+P** opens the command palette. Commands with a `run` block create a temporary
 terminal at the selected component, using the existing session, policy, and PTY launch path.
 These terminals appear in the dock without changing the saved project. Place commands in
-`contributes.menus["component/actions"]` or `contributes.menus.toolbar`. Optional `when` clauses
-support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
+`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Tools**).
+Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
 `component.hasTerminal('id')`, `component.hasFile('file')`, and `view`. Unknown or malformed
 expressions hide the contribution.
 
@@ -109,14 +109,16 @@ membership. **Plan** uses the group as the planner scope. Save persists groups a
 
 In the component inspector, assign each task terminal a **Graph action**: **Development
 environment**, **Validation**, or **Manual only** (the default). Shells and agents are never
-started by graph actions. Commands are opt-in; detection does not guess which tasks to run.
+started by graph actions. Commands are opt-in; detection (including extension detectors) never assigns a role. A role on a
+terminal that isn't a task with a command only fails the action that would run it.
 
 A group's **Start** launches its development tasks together. **Start dependencies first**
 opts into dependency ordering within that group: targets start before their consumers.
 Components in the same stage start together. A task's configured **Ready when output contains…**
 text gates successful startup and the next stage; the match ignores case and terminal escapes. A printed URL cannot
 bypass explicit readiness text. Without readiness text, spawning is the only startup gate.
-Dependencies outside the group are not automatically started. Ordering cycles fail before
+Each group's **Readiness timeout** (whole seconds, 1–3600) bounds how long a task may take to
+print its readiness text, ordered or not. Dependencies outside the group are not automatically started. Ordering cycles fail before
 any task launches. Readiness timeouts or early exits roll back tasks launched by that attempt.
 
 **Stop** cancels pending startup and stops the group's managed tasks in reverse startup order,
@@ -129,8 +131,13 @@ is saved separately. Opening another project cancels actions and resets terminal
 transitive consumer, once each. Validation runs sequentially and continues after nonzero exits.
 An already-running validation task blocks the run. Components without configured validators
 are reported as skipped. Locked or missing component folders fail before any command launches.
-Results appear under Groups; click a result to open its terminal output. Terminal Stop can
-cancel a running validation. Only one coordinated graph action runs at a time.
+Results appear under Groups; click a result to open its terminal output. Stopping one
+validator's terminal marks it stopped and moves on; **Stop validation** stops the running one and
+reports the rest as not run, keeping earlier results. Only one coordinated graph action runs at a time.
+
+With a task active, graph actions run in its worktree under its session ids, and each task keeps
+its own environment per group. A group or validation that needs a component outside the task's
+repository fails before anything launches.
 
 `npm run smoke:actions` exercises task roles, group configuration, ordered startup, readiness,
 shutdown, affected validation, terminal results, planner reuse and project reset in the app.

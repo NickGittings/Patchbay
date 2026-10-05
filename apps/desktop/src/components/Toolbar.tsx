@@ -3,7 +3,10 @@ import { useReactFlow } from '@xyflow/react'
 import { useEffect } from 'react'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
+import Menu, { MenuItem, MenuSeparator } from './Menu'
+import Toast from './Toast'
 import AttentionMenu from './status/AttentionMenu'
+import TaskMenu from './tasks/TaskMenu'
 import type { View } from '../types'
 
 const views: { id: View; label: string }[] = [
@@ -11,14 +14,18 @@ const views: { id: View; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Implementation' },
   { id: 'review', label: 'Review' },
+  { id: 'tasks', label: 'Tasks' },
 ]
+
+const mac = /mac/i.test(navigator.userAgent)
+const mod = mac ? '⌘' : 'Ctrl+'
+const shiftMod = mac ? '⇧⌘' : 'Ctrl+Shift+'
 
 export default function Toolbar() {
   const project = useStore((s) => s.project)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
   const dirty = useStore((s) => s.dirty)
-  const message = useStore((s) => s.message)
   const openFolder = useOpenProject()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -50,54 +57,75 @@ export default function Toolbar() {
 
   return (
     <div className="toolbar">
-      <span className="brand">Patchbay</span>
-      <button onClick={() => void openFolder()}>Open folder…</button>
-      {project && (
-        <>
-          <button onClick={() => void rescan()} title="Add components for new folders">
-            Rescan
-          </button>
-          <button
-            onClick={() => void addRepo()}
-            title="Add a repo beside this project, or a folder Rescan missed"
-          >
-            Add repo…
-          </button>
-          {view === 'navigation' && <button onClick={addComponent}>+ Component</button>}
-          <div className="view-switcher" role="group" aria-label="Workspace view">
-            {views.map((v, i) => (
-              <button
-                key={v.id}
-                aria-pressed={view === v.id}
-                className={view === v.id ? 'active' : ''}
-                title={`${v.label} (⌘${i + 1} / Ctrl+${i + 1})`}
-                onClick={() => setView(v.id)}
+      <div className="toolbar-group">
+        <Menu label="Project">
+          <MenuItem onClick={() => void openFolder()}>Open folder…</MenuItem>
+          {project && (
+            <>
+              <MenuSeparator />
+              <MenuItem onClick={() => void rescan()} title="Add components for new folders">
+                Rescan
+              </MenuItem>
+              <MenuItem
+                onClick={() => void addRepo()}
+                title="Add a repo beside this project, or a folder Rescan missed"
               >
-                {v.label}
-              </button>
-            ))}
-          </div>
-          <AttentionMenu />
-        </>
+                Add repo…
+              </MenuItem>
+              {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
+            </>
+          )}
+        </Menu>
+        <Menu label="Tools" keepMounted>
+          <MenuItem
+            onClick={() => useStore.getState().setPaletteOpen(true)}
+            shortcut={`${shiftMod}P`}
+          >
+            Commands…
+          </MenuItem>
+          <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
+            Extensions…
+          </MenuItem>
+          <ExtensionMenu slot="toolbar" asMenuItems />
+        </Menu>
+      </div>
+      {project ? (
+        <div className="view-switcher" role="group" aria-label="Workspace view">
+          {views.map((v, i) => (
+            <button
+              key={v.id}
+              aria-pressed={view === v.id}
+              className={view === v.id ? 'active' : ''}
+              title={`${v.label} (${mod}${i + 1})`}
+              onClick={() => setView(v.id)}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <span />
       )}
-      <ExtensionMenu slot="toolbar" />
-      <button onClick={() => useStore.getState().setPaletteOpen(true)} title="Cmd/Ctrl+Shift+P">
-        Commands
-      </button>
-      <button onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>Extensions</button>
-      <span className="spacer" />
-      {message && <span className="message">{message}</span>}
-      {project && (
-        <>
-          <span className="file" title={project.root}>
-            {project.name}
-            {dirty && <span className="dirty" title="Unsaved changes" />}
-          </span>
-          <button className="primary" onClick={() => void saveCurrentProject()}>
-            Save
-          </button>
-        </>
-      )}
+      <div className="toolbar-group end">
+        {project && (
+          <>
+            <TaskMenu />
+            <AttentionMenu />
+            <span className="file" title={project.root}>
+              <span className="file-name">{project.name}</span>
+              {dirty && <span className="dirty" title="Unsaved changes" />}
+            </span>
+            <button
+              className="primary"
+              title={`Save patchbay.json (${mod}S)`}
+              onClick={() => void saveCurrentProject()}
+            >
+              Save
+            </button>
+          </>
+        )}
+      </div>
+      <Toast />
     </div>
   )
 }

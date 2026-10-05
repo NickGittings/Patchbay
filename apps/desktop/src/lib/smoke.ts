@@ -14,6 +14,7 @@ import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
 import { runGraphAction, stopGroup } from './actions'
 import { graphActionPlan } from './ipc'
+import { createTask, refreshTasks, removeTask } from './tasks'
 
 const hooks = {
   store: useStore,
@@ -37,6 +38,9 @@ const hooks = {
   terminalWrite,
   terminalText,
   openComponentWindow,
+  createTask,
+  refreshTasks,
+  removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
 }
 

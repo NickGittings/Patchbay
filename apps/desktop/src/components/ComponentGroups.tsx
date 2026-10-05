@@ -1,7 +1,46 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import { runGraphAction, stopGroup } from '../lib/actions'
-import type { ComponentGroup } from '../types'
+import { parseSessionId, type ComponentGroup } from '../types'
+
+const MAX_TIMEOUT = 3600
+
+/** Whole seconds within the range `ActionPlan::build` accepts, or `null` while unusable. */
+function parseTimeout(text: string) {
+  const seconds = Math.round(Number(text))
+  return text.trim() && Number.isFinite(seconds)
+    ? Math.max(1, Math.min(MAX_TIMEOUT, seconds))
+    : null
+}
+
+/** Edits a draft and commits on blur or Enter, so typing isn't rewritten mid-way. */
+function TimeoutField({ group }: { group: ComponentGroup }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = () => {
+    const seconds = draft === null ? null : parseTimeout(draft)
+    if (seconds !== null && seconds !== group.readinessTimeoutSeconds)
+      useStore.getState().updateGroup(group.id, { readinessTimeoutSeconds: seconds })
+    setDraft(null)
+  }
+  return (
+    <label title="How long each task may take to print its “ready when” text">
+      Readiness timeout (seconds)
+      <input
+        type="number"
+        min={1}
+        max={MAX_TIMEOUT}
+        step={1}
+        value={draft ?? group.readinessTimeoutSeconds}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          if (e.key === 'Escape') setDraft(null)
+        }}
+      />
+    </label>
+  )
+}
 
 function GroupEditor({ group }: { group: ComponentGroup }) {
   const nodes = useStore((s) => s.nodes)
@@ -47,22 +86,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
         />
         Start dependencies first
       </label>
-      {group.orderedStartup && (
-        <label>
-          Readiness timeout (seconds)
-          <input
-            type="number"
-            min={1}
-            max={3600}
-            value={group.readinessTimeoutSeconds}
-            onChange={(e) =>
-              updateGroup(group.id, {
-                readinessTimeoutSeconds: Math.max(1, Math.min(3600, Number(e.target.value) || 30)),
-              })
-            }
-          />
-        </label>
-      )}
+      <TimeoutField group={group} />
       <div className="row">
         <button
           disabled={busy || stopping || !group.componentIds.length}
@@ -153,14 +177,21 @@ export default function ComponentGroups() {
               className="action-result"
               key={result.sessionId}
               onClick={() => {
-                const componentId = result.sessionId.slice(0, result.sessionId.lastIndexOf('/'))
-                useStore.getState().select(componentId)
-                useStore.getState().setActiveSession(result.sessionId)
-                useStore.getState().setView('navigation')
+                // Stay in Navigation, where these results and the dock live.
+                const { componentId, task } = parseSessionId(result.sessionId)
+                const s = useStore.getState()
+                s.setActiveTask(task)
+                s.select(componentId)
+                s.setActiveSession(result.sessionId)
+                s.setView('navigation')
               }}
             >
               <span>{result.sessionId}</span>
-              <strong className={result.outcome === 'failed' ? 'failed' : ''}>
+              <strong
+                className={
+                  result.outcome === 'failed' || result.outcome === 'stopped' ? result.outcome : ''
+                }
+              >
                 {result.outcome}
                 {result.exitCode !== null ? ` (${result.exitCode})` : ''}
               </strong>

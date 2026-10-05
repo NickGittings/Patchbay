@@ -3,6 +3,7 @@ import { Group, Panel, Separator } from 'react-resizable-panels'
 import { componentPaths } from '../../lib/git'
 import { gitChanges } from '../../lib/ipc'
 import { latestChange, lineTotals } from '../../lib/review'
+import { activeWorktree } from '../../lib/tasks'
 import { useStore } from '../../store'
 import type { ChangedFile } from '../../types'
 import ChangeList from './ChangeList'
@@ -20,10 +21,12 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<string>()
   const [refresh, setRefresh] = useState(0)
+  const task = useStore((s) => s.activeTask)
+  const worktree = useStore(activeWorktree)
 
   useEffect(() => {
     let disposed = false
-    void gitChanges(componentPaths(), componentId)
+    void gitChanges(componentPaths(), componentId, task ?? undefined)
       .then((list) => {
         if (!disposed) {
           setFiles(list)
@@ -36,7 +39,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
     return () => {
       disposed = true
     }
-  }, [componentId, base, revision, refresh])
+  }, [componentId, base, revision, refresh, task])
 
   const file = files?.find((f) => f.path === selected) ?? files?.[0] ?? null
   return (
@@ -60,11 +63,22 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       ) : (
         <Group orientation="vertical" className="changes-split">
           <Panel defaultSize="35" minSize="15">
-            <ChangeList files={files} base={base} selected={file?.path} onSelect={setSelected} />
+            <ChangeList
+              files={files}
+              base={base}
+              selected={file?.path}
+              onSelect={setSelected}
+              reveal={!worktree}
+            />
           </Panel>
           <Separator className="separator horizontal" />
           <Panel defaultSize="65" minSize="20">
-            <DiffView componentId={componentId} file={file} revision={revision} />
+            <DiffView
+              componentId={componentId}
+              file={file}
+              revision={revision}
+              worktree={worktree}
+            />
           </Panel>
         </Group>
       )}

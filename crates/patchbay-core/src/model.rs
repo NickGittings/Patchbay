@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component as PathPart, Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 /// Reserved component scope for project-level planner sessions.
 pub const PLAN_SCOPE: &str = "@plan";
 /// Reserved component id for changed files under the project root that no
@@ -238,15 +238,24 @@ impl Project {
         let text = std::fs::read_to_string(&file)?;
         let mut project: Self =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+        // Saving would drop fields this build doesn't know about.
+        anyhow::ensure!(
+            project.schema_version <= SCHEMA_VERSION,
+            "{} was saved by a newer Patchbay (format {}, this build reads up to {SCHEMA_VERSION})",
+            file.display(),
+            project.schema_version
+        );
         project.root = root.canonicalize()?.display().to_string();
         project.validate()?;
         Ok(Some(project))
     }
 
-    /// Check session routing, task roles and saved group configuration.
+    /// Check session routing and group membership. Every command that takes
+    /// the map runs this, so settings a user may leave half-edited (a graph
+    /// action without a command, a timeout) are checked by the action instead.
     ///
     /// # Errors
-    /// Fails for reserved or duplicate ids, invalid task roles or group members.
+    /// Fails for reserved or duplicate ids, or invalid group members.
     pub fn validate(&self) -> Result<()> {
         if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
             anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
@@ -269,14 +278,6 @@ impl Project {
                     component.id,
                     terminal.id
                 );
-                if terminal.action.is_some() {
-                    anyhow::ensure!(
-                        terminal.kind == TerminalKind::Task && !terminal.command.trim().is_empty(),
-                        "Graph action {}/{} must be a task with a command",
-                        component.id,
-                        terminal.id
-                    );
-                }
             }
         }
         let mut group_ids = HashSet::new();
@@ -285,10 +286,6 @@ impl Project {
                 !group.id.is_empty() && group_ids.insert(&group.id),
                 "Empty or duplicate group id {}",
                 group.id
-            );
-            anyhow::ensure!(
-                (1..=3600).contains(&group.readiness_timeout_seconds),
-                "Readiness timeout must be between 1 and 3600 seconds"
             );
             let mut members = HashSet::new();
             for id in &group.component_ids {
@@ -310,7 +307,10 @@ impl Project {
     pub fn save(&self) -> Result<PathBuf> {
         self.validate()?;
         let file = Path::new(&self.root).join(PROJECT_FILE);
-        let mut text = serde_json::to_string_pretty(self)?;
+        let mut text = serde_json::to_string_pretty(&Self {
+            schema_version: SCHEMA_VERSION,
+            ..self.clone()
+        })?;
         text.push('\n');
         std::fs::write(&file, text)?;
         Ok(file)
@@ -413,6 +413,21 @@ fn plain_path(path: &str) -> String {
 /// Session ids identify one terminal of one component.
 pub fn session_id(component_id: &str, terminal_id: &str) -> String {
     format!("{component_id}/{terminal_id}")
+}
+
+/// Separates a task id at the end of a session id. Task ids are ASCII letters
+/// and digits, so the last occurrence marks it.
+pub const TASK_SEPARATOR: &str = "@task-";
+
+/// [`session_id`] of a terminal run for a task (`{component}/{terminal}@task-{task}`),
+/// so the same terminal can run in several worktrees at once. The component id
+/// stays before the last `/`, which event routing relies on.
+#[must_use]
+pub fn task_session_id(component_id: &str, terminal_id: &str, task: Option<&str>) -> String {
+    match task {
+        Some(task) => format!("{component_id}/{terminal_id}{TASK_SEPARATOR}{task}"),
+        None => session_id(component_id, terminal_id),
+    }
 }
 
 #[cfg(test)]

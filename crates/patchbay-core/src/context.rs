@@ -2,7 +2,7 @@
 //! terminals the component's neighbours as context.
 
 use crate::model::{
-    Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec, session_id,
+    Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec, task_session_id,
 };
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
@@ -617,6 +617,11 @@ fn describe_component(out: &mut String, project: &Project, c: &Component) {
     out.push('\n');
 }
 
+fn task_suffix(task: Option<&str>) -> String {
+    task.map(|t| format!("{}{t}", crate::model::TASK_SEPARATOR))
+        .unwrap_or_default()
+}
+
 fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     let slug: String = slug
         .chars()
@@ -780,6 +785,23 @@ pub fn plan_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
 ) -> Result<SessionSpec> {
+    plan_session_spec_for(project, component_ids, terminal, None, policy, sections)
+}
+
+/// [`plan_session_spec`] for a task's planner: the session id and briefing
+/// file carry the task id, so planners of different tasks run side by side.
+/// `project` should already be the task's ([`crate::tasks::project_in`]).
+///
+/// # Errors
+/// As [`plan_session_spec`].
+pub fn plan_session_spec_for(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
     for id in component_ids {
         if project.component(id).is_none() {
             return Err(anyhow!("unknown component {id}"));
@@ -792,7 +814,12 @@ pub fn plan_session_spec(
     if terminal.kind == TerminalKind::Agent {
         let briefing = plan_context(project, component_ids, sections);
         let file = context_file(
-            &format!("{}-{PLAN_SCOPE}-{}", project.name, terminal.id),
+            &format!(
+                "{}-{PLAN_SCOPE}-{}{}",
+                project.name,
+                terminal.id,
+                task_suffix(task)
+            ),
             &briefing,
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
@@ -819,7 +846,7 @@ pub fn plan_session_spec(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        id: session_id(PLAN_SCOPE, &terminal.id),
+        id: task_session_id(PLAN_SCOPE, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
         env,
@@ -843,6 +870,23 @@ pub fn session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
 ) -> Result<SessionSpec> {
+    session_spec_for(project, component_id, terminal_id, None, policy, sections)
+}
+
+/// [`session_spec`] for a task: the session id and briefing file carry the
+/// task id. `project` should already be the task's
+/// ([`crate::tasks::project_in`]), so the terminal runs in its worktree.
+///
+/// # Errors
+/// As [`session_spec`].
+pub fn session_spec_for(
+    project: &Project,
+    component_id: &str,
+    terminal_id: &str,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
     let component = project
         .component(component_id)
         .ok_or_else(|| anyhow!("unknown component {component_id}"))?;
@@ -858,7 +902,10 @@ pub fn session_spec(
 
     if terminal.kind == TerminalKind::Agent {
         let briefing = component_context(project, component_id, sections);
-        let file = context_file(&format!("{}-{component_id}", project.name), &briefing)?;
+        let file = context_file(
+            &format!("{}-{component_id}{}", project.name, task_suffix(task)),
+            &briefing,
+        )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         let dirs: Vec<_> = project
             .neighbours(component_id)
@@ -878,7 +925,7 @@ pub fn session_spec(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
-        id: session_id(component_id, terminal_id),
+        id: task_session_id(component_id, terminal_id, task),
         command,
         cwd: project.component_dir(component),
         env,
@@ -983,6 +1030,18 @@ mod tests {
             }],
             groups: vec![],
         }
+    }
+
+    #[test]
+    fn task_sessions_carry_the_task_in_their_id_and_briefing_file() {
+        let p = project();
+        let main = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
+        let task = session_spec_for(&p, "api", "agent", Some("t1"), &AllowAll, &[]).unwrap();
+        assert_eq!(main.id, "api/agent");
+        assert_eq!(task.id, "api/agent@task-t1");
+        assert_ne!(main.env[CONTEXT_ENV], task.env[CONTEXT_ENV]);
+        let plan = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
+        assert_eq!(plan.id, format!("{PLAN_SCOPE}/{}@task-t1", planner().id));
     }
 
     #[test]

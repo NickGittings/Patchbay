@@ -19,16 +19,18 @@ import type {
   Component,
   ComponentGroup,
   ActionReport,
+  ActionRequest,
   ComponentData,
   DeviceManifest,
   GitStatus,
   Link,
   Project,
   SessionState,
+  Task,
   TerminalSpec,
   View,
 } from './types'
-import { sessionId } from './types'
+import { retask, sessionId } from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null }>
@@ -43,6 +45,8 @@ interface State {
   updateGroup: (id: string, patch: Partial<ComponentGroup>) => void
   removeGroup: (id: string) => void
   graphActionBusy: boolean
+  /** The action running, while `graphActionBusy`. */
+  graphAction: ActionRequest | null
   graphActionReport: ActionReport | null
   extensions: ExtensionRegistry
   commands: CommandContribution[]
@@ -77,8 +81,21 @@ interface State {
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
   markPlanStarted: (sid: string, ids: string[]) => void
+  /** The repo's tasks (stored per user by the backend, never in `patchbay.json`). */
+  tasks: Task[]
+  /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
+  activeTask: string | null
+  setTasks: (tasks: Task[]) => void
+  setActiveTask: (id: string | null) => void
+  /** Components to seed the new-task dialog with while it is open (UI only). */
+  newTask: string[] | null
+  setNewTask: (components: string[] | null) => void
   dirty: boolean
+  /** The latest app message, shown by `Toast`; `messageId` changes on every `setMessage`. */
   message: string
+  messageId: number
+  /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
+  messageTransient: boolean
 
   loadProject: (p: Project) => void
   syncProject: (p: Project) => void
@@ -99,7 +116,7 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string) => void
+  setMessage: (m: string, transient?: boolean) => void
   markSaved: () => void
 }
 
@@ -125,6 +142,17 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
+/** Move the active terminal to the same terminal of the task switched to. */
+function switchTask(s: State, activeTask: string | null): Partial<State> {
+  if (s.activeTask === activeTask) return {}
+  const current = s.activeSession
+  const runtime = current && s.runtimeTerminals[current]
+  return {
+    activeTask,
+    activeSession: current && !runtime ? retask(current, activeTask) : current,
+  }
+}
+
 export const useStore = create<State>((set, get) => ({
   project: null,
   projectEpoch: 0,
@@ -132,6 +160,7 @@ export const useStore = create<State>((set, get) => ({
   edges: [],
   groups: [],
   graphActionBusy: false,
+  graphAction: null,
   graphActionReport: null,
   addGroup: (name, componentIds) =>
     set((s) => ({
@@ -194,11 +223,23 @@ export const useStore = create<State>((set, get) => ({
   activeSession: null,
   dirty: false,
   message: '',
+  messageId: 0,
+  messageTransient: false,
   view: 'navigation',
   highlighted: [],
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
+  tasks: [],
+  activeTask: null,
+  setTasks: (tasks) =>
+    set((s) => {
+      const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
+      return active ? { tasks } : { tasks, ...switchTask(s, null) }
+    }),
+  setActiveTask: (id) => set((s) => switchTask(s, id)),
+  newTask: null,
+  setNewTask: (newTask) => set({ newTask }),
 
   loadProject: (p) =>
     set({
@@ -208,11 +249,14 @@ export const useStore = create<State>((set, get) => ({
       edges: p.links.map(linkToEdge),
       groups: p.groups ?? [],
       graphActionBusy: false,
+      graphAction: null,
       graphActionReport: null,
       view: 'navigation',
       highlighted: [],
       planStartedWith: {},
       planActive: null,
+      tasks: [],
+      activeTask: null,
       sessions: {},
       runtimeTerminals: {},
       extensionBadges: {},
@@ -240,7 +284,7 @@ export const useStore = create<State>((set, get) => ({
   toProject: () => {
     const { project, nodes, edges, groups } = get()
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: project?.name ?? 'project',
       root: project?.root ?? '',
       components: nodes.map((n) => ({
@@ -326,7 +370,7 @@ export const useStore = create<State>((set, get) => ({
         ...d,
         terminals: [...d.terminals, terminal],
       })),
-      activeSession: sessionId(componentId, terminal.id),
+      activeSession: sessionId(componentId, terminal.id, s.activeTask),
       dirty: true,
     }))
   },
@@ -379,7 +423,7 @@ export const useStore = create<State>((set, get) => ({
     set({
       selectedId: id,
       selectedEdgeId: null,
-      activeSession: keep ? current : first ? sessionId(id, first.id) : null,
+      activeSession: keep ? current : first ? sessionId(id, first.id, get().activeTask) : null,
     })
   },
   selectEdge: (selectedEdgeId) => set({ selectedEdgeId, selectedId: null }),
@@ -388,6 +432,7 @@ export const useStore = create<State>((set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message) => set({ message }),
+  setMessage: (message, transient = false) =>
+    set((s) => ({ message, messageTransient: transient, messageId: s.messageId + 1 })),
   markSaved: () => set({ dirty: false }),
 }))
