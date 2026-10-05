@@ -12,10 +12,15 @@ import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
+import { runGraphAction, stopGroup } from './actions'
+import { graphActionPlan } from './ipc'
 import { createTask, refreshTasks, removeTask } from './tasks'
 
 const hooks = {
   store: useStore,
+  runGraphAction,
+  stopGroup,
+  graphActionPlan,
   evaluateWhen,
   reloadExtensions,
   extensionStorageGet,

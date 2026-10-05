@@ -17,6 +17,9 @@ import type {
   ExtensionBadge,
   RuntimeTerminal,
   Component,
+  ComponentGroup,
+  ActionReport,
+  ActionRequest,
   ComponentData,
   DeviceManifest,
   GitStatus,
@@ -34,8 +37,17 @@ export type FlowEdge = Edge<{ label?: string | null }>
 
 interface State {
   project: { name: string; root: string } | null
+  projectEpoch: number
   nodes: FlowNode[]
   edges: FlowEdge[]
+  groups: ComponentGroup[]
+  addGroup: (name: string, componentIds: string[]) => void
+  updateGroup: (id: string, patch: Partial<ComponentGroup>) => void
+  removeGroup: (id: string) => void
+  graphActionBusy: boolean
+  /** The action running, while `graphActionBusy`. */
+  graphAction: ActionRequest | null
+  graphActionReport: ActionReport | null
   extensions: ExtensionRegistry
   commands: CommandContribution[]
   menus: Record<string, MenuContribution[]>
@@ -143,8 +155,33 @@ function switchTask(s: State, activeTask: string | null): Partial<State> {
 
 export const useStore = create<State>((set, get) => ({
   project: null,
+  projectEpoch: 0,
   nodes: [],
   edges: [],
+  groups: [],
+  graphActionBusy: false,
+  graphAction: null,
+  graphActionReport: null,
+  addGroup: (name, componentIds) =>
+    set((s) => ({
+      groups: [
+        ...s.groups,
+        {
+          id: newId('group'),
+          name,
+          componentIds,
+          orderedStartup: false,
+          readinessTimeoutSeconds: 30,
+        },
+      ],
+      dirty: true,
+    })),
+  updateGroup: (id, patch) =>
+    set((s) => ({
+      groups: s.groups.map((g) => (g.id === id ? { ...g, ...patch } : g)),
+      dirty: true,
+    })),
+  removeGroup: (id) => set((s) => ({ groups: s.groups.filter((g) => g.id !== id), dirty: true })),
   extensions: { extensions: [], errors: [] },
   commands: [],
   menus: {},
@@ -206,9 +243,14 @@ export const useStore = create<State>((set, get) => ({
 
   loadProject: (p) =>
     set({
+      projectEpoch: get().projectEpoch + 1,
       project: { name: p.name, root: p.root },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
+      groups: p.groups ?? [],
+      graphActionBusy: false,
+      graphAction: null,
+      graphActionReport: null,
       view: 'navigation',
       highlighted: [],
       planStartedWith: {},
@@ -235,13 +277,14 @@ export const useStore = create<State>((set, get) => ({
         project: { name: p.name, root: p.root },
         nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
         edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
+        groups: p.groups ?? [],
       }
     }),
 
   toProject: () => {
-    const { project, nodes, edges } = get()
+    const { project, nodes, edges, groups } = get()
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: project?.name ?? 'project',
       root: project?.root ?? '',
       components: nodes.map((n) => ({
@@ -259,6 +302,7 @@ export const useStore = create<State>((set, get) => ({
         target: e.target,
         label: e.data?.label || null,
       })),
+      groups,
     }
   },
 
@@ -267,6 +311,12 @@ export const useStore = create<State>((set, get) => ({
     const edits = changes.some((c) => c.type === 'remove' || (c.type === 'position' && !c.dragging))
     set((s) => ({
       nodes: applyNodeChanges(changes, s.nodes),
+      groups: removed.length
+        ? s.groups.map((g) => ({
+            ...g,
+            componentIds: g.componentIds.filter((id) => !removed.includes(id)),
+          }))
+        : s.groups,
       highlighted: removed.length
         ? s.highlighted.filter((id) => !removed.includes(id))
         : s.highlighted,

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component as PathPart, Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 /// Reserved component scope for project-level planner sessions.
 pub const PLAN_SCOPE: &str = "@plan";
 /// Reserved component id for changed files under the project root that no
@@ -25,6 +25,32 @@ pub struct Project {
     pub components: Vec<Component>,
     #[serde(default)]
     pub links: Vec<Link>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ComponentGroup>,
+}
+
+/// A reusable environment. Ordering is opt-in and follows links within the group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentGroup {
+    pub id: String,
+    pub name: String,
+    pub component_ids: Vec<String>,
+    #[serde(default)]
+    pub ordered_startup: bool,
+    #[serde(default = "readiness_timeout")]
+    pub readiness_timeout_seconds: u64,
+}
+
+fn readiness_timeout() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalAction {
+    Development,
+    Validation,
 }
 
 fn schema_version() -> u32 {
@@ -91,9 +117,12 @@ pub struct TerminalSpec {
     #[serde(default)]
     pub kind: TerminalKind,
     /// Output text (case-insensitive) that means a service is ready. A local
-    /// URL in the output counts as ready without it.
+    /// URL counts only when no explicit text is configured.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ready_when: String,
+    /// Task commands included in graph actions; absent means manual only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<TerminalAction>,
 }
 
 /// `source` depends on `target`.
@@ -209,15 +238,24 @@ impl Project {
         let text = std::fs::read_to_string(&file)?;
         let mut project: Self =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+        // Saving would drop fields this build doesn't know about.
+        anyhow::ensure!(
+            project.schema_version <= SCHEMA_VERSION,
+            "{} was saved by a newer Patchbay (format {}, this build reads up to {SCHEMA_VERSION})",
+            file.display(),
+            project.schema_version
+        );
         project.root = root.canonicalize()?.display().to_string();
         project.validate()?;
         Ok(Some(project))
     }
 
-    /// Check invariants required by component and planner session routing.
+    /// Check session routing and group membership. Every command that takes
+    /// the map runs this, so settings a user may leave half-edited (a graph
+    /// action without a command, a timeout) are checked by the action instead.
     ///
     /// # Errors
-    /// Fails if a component uses a reserved id.
+    /// Fails for reserved or duplicate ids, or invalid group members.
     pub fn validate(&self) -> Result<()> {
         if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
             anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
@@ -225,13 +263,54 @@ impl Project {
         if self.components.iter().any(|c| c.id == PROJECT_SCOPE) {
             anyhow::bail!("Component id {PROJECT_SCOPE} is reserved for project files");
         }
+        let mut component_ids = HashSet::new();
+        for component in &self.components {
+            anyhow::ensure!(
+                component_ids.insert(&component.id),
+                "Duplicate component id {}",
+                component.id
+            );
+            let mut terminal_ids = HashSet::new();
+            for terminal in &component.terminals {
+                anyhow::ensure!(
+                    terminal_ids.insert(&terminal.id),
+                    "Duplicate terminal id {}/{}",
+                    component.id,
+                    terminal.id
+                );
+            }
+        }
+        let mut group_ids = HashSet::new();
+        for group in &self.groups {
+            anyhow::ensure!(
+                !group.id.is_empty() && group_ids.insert(&group.id),
+                "Empty or duplicate group id {}",
+                group.id
+            );
+            let mut members = HashSet::new();
+            for id in &group.component_ids {
+                anyhow::ensure!(
+                    self.component(id).is_some(),
+                    "Group {} references unknown component {id}",
+                    group.id
+                );
+                anyhow::ensure!(
+                    members.insert(id),
+                    "Group {} repeats component {id}",
+                    group.id
+                );
+            }
+        }
         Ok(())
     }
 
     pub fn save(&self) -> Result<PathBuf> {
         self.validate()?;
         let file = Path::new(&self.root).join(PROJECT_FILE);
-        let mut text = serde_json::to_string_pretty(self)?;
+        let mut text = serde_json::to_string_pretty(&Self {
+            schema_version: SCHEMA_VERSION,
+            ..self.clone()
+        })?;
         text.push('\n');
         std::fs::write(&file, text)?;
         Ok(file)
@@ -475,6 +554,7 @@ mod tests {
             root: "/code/shop".into(),
             components: vec![],
             links: vec![],
+            groups: vec![],
         };
         let billing = component("../billing");
         assert_eq!(

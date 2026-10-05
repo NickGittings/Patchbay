@@ -100,3 +100,44 @@ zero containers). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p 
 or `... -- detect examples/extensions/docker/fixture` to inspect it. `npm run smoke:extensions`
 checks the example inside the desktop app, including the iframe IPC sandbox. Project-local
 extensions, marketplace/URL installs, and extension views in pop-out windows are future work.
+
+## Graph actions
+
+Use **Groups** beneath the component hierarchy to save reusable component sets in
+`patchbay.json`. New groups include the selected canvas components; expand a group to edit
+membership. **Plan** uses the group as the planner scope. Save persists groups and task roles.
+
+In the component inspector, assign each task terminal a **Graph action**: **Development
+environment**, **Validation**, or **Manual only** (the default). Shells and agents are never
+started by graph actions. Commands are opt-in; detection (including extension detectors) never assigns a role. A role on a
+terminal that isn't a task with a command only fails the action that would run it.
+
+A group's **Start** launches its development tasks together. **Start dependencies first**
+opts into dependency ordering within that group: targets start before their consumers.
+Components in the same stage start together. A task's configured **Ready when output contains…**
+text gates successful startup and the next stage; the match ignores case and terminal escapes. A printed URL cannot
+bypass explicit readiness text. Without readiness text, spawning is the only startup gate.
+Each group's **Readiness timeout** (whole seconds, 1–3600) bounds how long a task may take to
+print its readiness text, ordered or not. Dependencies outside the group are not automatically started. Ordering cycles fail before
+any task launches. Readiness timeouts or early exits roll back tasks launched by that attempt.
+
+**Stop** cancels pending startup and stops the group's managed tasks in reverse startup order,
+escalating to kill stubborn processes. Tasks shared by another started group keep running.
+Manually started tasks are reused but remain outside group ownership. Deleting a group stops
+its managed tasks first. Environment ownership lasts for the current app session; configuration
+is saved separately. Opening another project cancels actions and resets terminals.
+
+**Validate affected** runs the component's validation tasks and the validation tasks of every
+transitive consumer, once each. Validation runs sequentially and continues after nonzero exits.
+An already-running validation task blocks the run. Components without configured validators
+are reported as skipped. Locked or missing component folders fail before any command launches.
+Results appear under Groups; click a result to open its terminal output. Stopping one
+validator's terminal marks it stopped and moves on; **Stop validation** stops the running one and
+reports the rest as not run, keeping earlier results. Only one coordinated graph action runs at a time.
+
+With a task active, graph actions run in its worktree under its session ids, and each task keeps
+its own environment per group. A group or validation that needs a component outside the task's
+repository fails before anything launches.
+
+`npm run smoke:actions` exercises task roles, group configuration, ordered startup, readiness,
+shutdown, affected validation, terminal results, planner reuse and project reset in the app.

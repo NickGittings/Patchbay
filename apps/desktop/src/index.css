@@ -1666,6 +1666,63 @@ button.review-name:hover:not(:disabled) {
   gap: 4px;
 }
 
+/* Saved graph actions */
+.component-groups {
+  padding: 0 12px;
+}
+.component-groups form input {
+  min-width: 0;
+  width: 100%;
+}
+.component-group {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.component-group summary,
+.action-results summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.component-group label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.component-group .group-option {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.group-option input {
+  flex: none;
+  width: auto;
+}
+.group-members {
+  max-height: 180px;
+  overflow: auto;
+}
+.component-group .row {
+  flex-wrap: wrap;
+}
+.action-result {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.action-result .failed {
+  color: var(--bad);
+}
+.action-result .stopped {
+  color: var(--muted);
+}
 /* Tasks */
 .task-menu {
   display: flex;

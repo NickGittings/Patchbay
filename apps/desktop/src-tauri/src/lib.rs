@@ -2,6 +2,7 @@
 
 use patchbay_core::TerminalSpec;
 use patchbay_core::access::{Access, AccessSnapshot, external_candidates};
+use patchbay_core::actions::{ActionPlan, ActionReport, ActionRequest, GraphActions};
 use patchbay_core::context::ContextSection;
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::extensions::{self, Registry};
@@ -29,6 +30,7 @@ const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
 #[derive(Default)]
 struct AppState {
     pty: Arc<PtyManager>,
+    actions: Arc<GraphActions>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
     extensions: Arc<Extensions>,
@@ -803,6 +805,85 @@ async fn terminal_start(
 }
 
 #[tauri::command]
+async fn graph_action_plan(
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+    task: Option<String>,
+) -> CmdResult<ActionPlan> {
+    let access = state.access.snapshot();
+    let roots = state.roots();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let (project, _, _) = for_task(project, task.as_deref(), &[], roots)?;
+        ActionPlan::build(&project, request, task.as_deref()).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn graph_action_run(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+    task: Option<String>,
+) -> CmdResult<ActionReport> {
+    main_only(&window)?;
+    let access = state.access.snapshot();
+    let roots = state.roots();
+    let actions = state.actions.clone();
+    let epoch = actions.epoch();
+    let pty = state.pty.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        // Compute affected scope before filtering access or moving into the
+        // task's worktree, so locked consumers or ones outside the task's repo
+        // produce an error instead of disappearing from validation.
+        let plan = ActionPlan::build(&project, request, task.as_deref()).map_err(err)?;
+        let ids = plan.component_ids();
+        let project = access.restrict(project, &ids).map_err(err)?;
+        let (project, _, _) = for_task(project, task.as_deref(), &ids, roots)?;
+        actions
+            .execute(&project, plan, epoch, &pty, Arc::new(TauriSink(app)))
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn graph_group_stop(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    group_id: String,
+    task: Option<String>,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let actions = state.actions.clone();
+    let epoch = actions.epoch();
+    let pty = state.pty.clone();
+    blocking(move || {
+        actions
+            .stop_group(&group_id, task.as_deref(), epoch, &pty)
+            .map_err(err)
+    })
+    .await
+}
+
+/// Stop the running validation; it still reports the validators that ran.
+/// Async so waiting on the actions lock (held during a reset) never blocks the UI thread.
+#[tauri::command]
+async fn graph_validation_cancel(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
+    main_only(&window)?;
+    let actions = state.actions.clone();
+    blocking(move || Ok(actions.cancel_validation())).await
+}
+
+#[tauri::command]
 fn terminal_write(state: State<AppState>, session_id: String, data: String) -> CmdResult<()> {
     state.pty.write(&session_id, data.as_bytes()).map_err(err)
 }
@@ -855,7 +936,9 @@ async fn reveal_path(state: State<'_, AppState>, path: String) -> CmdResult<()> 
 /// Async because it waits for stubborn processes to die.
 #[tauri::command]
 async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
-    Ok(state.pty.reset())
+    let actions = state.actions.clone();
+    let pty = state.pty.clone();
+    blocking(move || Ok(actions.reset(&pty))).await
 }
 
 /// # Panics
@@ -930,6 +1013,10 @@ pub fn run() {
                 list_devices,
                 save_device,
                 terminal_start,
+                graph_action_plan,
+                graph_action_run,
+                graph_group_stop,
+                graph_validation_cancel,
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
@@ -956,7 +1043,8 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 app.state::<AppState>().watcher.stop();
-                app.state::<AppState>().pty.reset();
+                let state = app.state::<AppState>();
+                state.actions.reset(&state.pty);
             }
         });
 }

@@ -222,6 +222,17 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
   return request
 }
 
+/** Refresh a completed hydration after a graph action reused or started a run. */
+export async function refreshSession(sid: string): Promise<TerminalSnapshot | null> {
+  const started = epoch
+  const previous = hydration.get(sid)
+  if (previous) await previous.catch(() => null)
+  if (started !== epoch) return null
+  // Concurrent refreshes join the newer hydration rather than replacing its event queue.
+  if (hydration.get(sid) === previous) hydration.delete(sid)
+  return hydrateSession(sid)
+}
+
 /**
  * Bring the xterm up to date with a snapshot. If it already holds this run from the start,
  * append only the missing tail so earlier runs and notes stay in the scrollback.

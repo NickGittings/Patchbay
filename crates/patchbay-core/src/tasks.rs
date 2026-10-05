@@ -529,6 +529,9 @@ pub fn project_in(
     out.components.retain(|c| kept.contains(&c.id));
     out.links
         .retain(|l| kept.contains(&l.source) && kept.contains(&l.target));
+    for group in &mut out.groups {
+        group.component_ids.retain(|id| kept.contains(id));
+    }
     Ok((out, dropped))
 }
 

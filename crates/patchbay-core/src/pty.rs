@@ -46,6 +46,9 @@ struct Session {
 struct Process {
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// A graph action's service ([`PtyManager::spawn_managed`]).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    reap_workers: bool,
 }
 
 impl Process {
@@ -58,10 +61,14 @@ impl Process {
     }
 
     /// The PTY child leads its own session, so on Unix killing its process group
-    /// also reaches dev servers and other descendants that ignore SIGHUP.
+    /// also reaches dev servers and other descendants that ignore SIGHUP. For a
+    /// graph action's service, also kill background jobs in their own groups.
     fn force_kill(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.pid {
+            if self.reap_workers {
+                kill_session_workers(pid);
+            }
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", "--", &format!("-{pid}")])
                 .stdout(std::process::Stdio::null())
@@ -91,6 +98,41 @@ impl Process {
     }
 }
 
+/// portable-pty creates a new Unix session whose id is the child's pid.
+/// Background jobs remain in that session even after the shell exits.
+#[cfg(unix)]
+fn kill_session_workers(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut found = false;
+    for process in system.processes().values() {
+        if process.session_id() == Some(Pid::from_u32(pid))
+            && !matches!(
+                process.status(),
+                ProcessStatus::Zombie | ProcessStatus::Dead
+            )
+        {
+            found = true;
+            process.kill();
+        }
+    }
+    found
+}
+
+#[cfg(unix)]
+fn finish_session_workers(pid: Option<u32>) -> Result<()> {
+    let Some(pid) = pid else { return Ok(()) };
+    let deadline = Instant::now() + RESET_GRACE;
+    while kill_session_workers(pid) {
+        if Instant::now() >= deadline {
+            bail!("Workers in terminal session {pid} did not exit after force-kill");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Backlog {
     data: VecDeque<u8>,
@@ -102,6 +144,8 @@ struct Backlog {
     exited_ms: Option<u64>,
     tracker: Tracker,
     notice: Option<String>,
+    launch: Option<SessionSpec>,
+    cleanup_error: Option<String>,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -316,6 +360,33 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn spawn(self: &Arc<Self>, spec: SessionSpec, sink: Arc<dyn EventSink>) -> Result<()> {
+        self.spawn_inner(spec, sink, false)
+    }
+
+    /// [`Self::spawn`] for a graph action's service: when its shell exits,
+    /// background workers still in the terminal's session are killed before
+    /// the run counts as exited, so a restart finds its ports free. Ordinary
+    /// terminals keep `nohup` and `disown`ed jobs alive.
+    ///
+    /// # Errors
+    /// Fails if a session with the same id is running or the process cannot start.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn spawn_managed(
+        self: &Arc<Self>,
+        spec: SessionSpec,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<()> {
+        self.spawn_inner(spec, sink, true)
+    }
+
+    fn spawn_inner(
+        self: &Arc<Self>,
+        spec: SessionSpec,
+        sink: Arc<dyn EventSink>,
+        reap_workers: bool,
+    ) -> Result<()> {
         let generation = {
             let sessions = self.sessions.lock().unwrap();
             let mut starting = self.starting.lock().unwrap();
@@ -344,7 +415,10 @@ impl PtyManager {
         let mut process = Process {
             pid: child.process_id(),
             killer: child.clone_killer(),
+            reap_workers,
         };
+        #[cfg(unix)]
+        let session_pid = process.pid.filter(|_| reap_workers);
 
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
@@ -352,6 +426,7 @@ impl PtyManager {
             started_ms,
             tracker: Tracker::new(&spec.ready_when, spec.service),
             notice: spec.notice.clone(),
+            launch: Some(spec.clone()),
             ..Backlog::default()
         }));
         if reserved {
@@ -444,6 +519,14 @@ impl PtyManager {
         let manager = Arc::clone(self);
         std::thread::spawn(move || {
             let status = child.wait();
+            // A managed shell can exit on hangup while its workers ignore it. Keep
+            // this generation running until those workers release their ports and PTY.
+            #[cfg(unix)]
+            let cleanup_error = finish_session_workers(session_pid)
+                .err()
+                .map(|e| e.to_string());
+            #[cfg(not(unix))]
+            let cleanup_error = None;
             manager.orphans.lock().unwrap().remove(&generation);
             // Read a report written just before exiting, e.g. a finished turn.
             let file = manager.status_file(generation);
@@ -472,6 +555,7 @@ impl PtyManager {
                 backlog.tracker.on_report(&text, stamp, exited_ms);
             }
             backlog.running = false;
+            backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
             backlog.exited_ms = Some(exited_ms);
             // The monitor stopped watching it, so report e.g. a stop it missed.
@@ -650,6 +734,25 @@ impl PtyManager {
         self.sessions.lock().unwrap().contains_key(id)
     }
 
+    /// Readiness belongs to the launched configuration, so graph actions must
+    /// not reuse it after a command, folder or readiness gate has changed.
+    pub(crate) fn launch_matches(&self, spec: &SessionSpec) -> bool {
+        let backlogs = self.backlogs.lock().unwrap();
+        let Some(backlog) = backlogs.get(&spec.id) else {
+            return false;
+        };
+        let backlog = backlog.lock().unwrap();
+        backlog.launch.as_ref().is_some_and(|launch| {
+            launch.command == spec.command
+                && launch.cwd == spec.cwd
+                && launch.service == spec.service
+                && launch
+                    .ready_when
+                    .trim()
+                    .eq_ignore_ascii_case(spec.ready_when.trim())
+        })
+    }
+
     /// # Errors
     /// Fails if the session is not running or the write fails.
     ///
@@ -706,6 +809,76 @@ impl PtyManager {
             if backlog.generation == generation {
                 backlog.tracker.on_stop();
             }
+        }
+    }
+
+    /// Stop this particular run, escalating after the grace period. A newer
+    /// run with the same id is never signalled. Wait for both the process and
+    /// its final terminal lifecycle update before allowing an immediate restart.
+    ///
+    /// A failed worker cleanup is reported once; stopping again succeeds, since
+    /// nothing more can be done about workers that survive a force-kill.
+    ///
+    /// # Errors
+    /// Fails if the run has not finished stopping within the bounded grace periods.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) {
+                session.process.hang_up();
+                if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
+                    backlog.lock().unwrap().tracker.on_stop();
+                }
+            }
+        }
+        let deadline = Instant::now() + RESET_GRACE;
+        let final_deadline = deadline + RESET_GRACE;
+        let mut forced = false;
+        loop {
+            let process_running = {
+                let mut sessions = self.sessions.lock().unwrap();
+                if let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) {
+                    if !forced && Instant::now() >= deadline {
+                        session.process.force_kill();
+                        forced = true;
+                    }
+                    true
+                } else {
+                    false
+                }
+            };
+            let (terminal_running, cleanup_error) =
+                self.backlogs
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .map_or((false, None), |backlog| {
+                        let mut backlog = backlog.lock().unwrap();
+                        if backlog.generation == generation {
+                            let running = backlog.running;
+                            let error = if running {
+                                None
+                            } else {
+                                backlog.cleanup_error.take()
+                            };
+                            (running, error)
+                        } else {
+                            (false, None)
+                        }
+                    });
+            if !process_running && !terminal_running {
+                if let Some(error) = cleanup_error {
+                    bail!("Terminal {id}: {error}");
+                }
+                return Ok(());
+            }
+            if Instant::now() >= final_deadline {
+                bail!("Terminal {id} did not finish stopping after hangup and force-kill");
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 

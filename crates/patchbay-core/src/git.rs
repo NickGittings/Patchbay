@@ -1363,6 +1363,7 @@ mod tests {
             root: f.0.to_string_lossy().into_owned(),
             components: Vec::new(),
             links: Vec::new(),
+            groups: vec![],
         };
         assert!(
             review(&project, c.clone(), None)

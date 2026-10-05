@@ -3,6 +3,7 @@
 //! by the desktop app, the CLI, or a future server.
 
 pub mod access;
+pub mod actions;
 pub mod context;
 pub mod detect;
 pub mod devices;

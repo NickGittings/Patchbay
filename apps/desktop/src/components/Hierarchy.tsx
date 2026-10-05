@@ -7,9 +7,11 @@ import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
 import { sessionId } from '../types'
 import AttentionPill from './status/AttentionPill'
+import ComponentGroups from './ComponentGroups'
 
 /** Outline of every component, like a game engine's scene hierarchy. */
 export default function Hierarchy() {
+  const project = useStore((s) => s.project)
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
@@ -74,7 +76,10 @@ export default function Hierarchy() {
           </button>
         )
       })}
-      {nodes.length === 0 && <div className="hint">No project open.</div>}
+      {nodes.length === 0 && (
+        <div className="hint">{project ? 'No components.' : 'No project open.'}</div>
+      )}
+      {project && <ComponentGroups />}
     </div>
   )
 }

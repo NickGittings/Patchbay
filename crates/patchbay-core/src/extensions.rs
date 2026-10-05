@@ -573,6 +573,7 @@ pub fn command_terminal(registry: &Registry, command_id: &str) -> Result<Termina
         command: run.command,
         kind: run.kind,
         ready_when: String::new(),
+        action: None,
     })
 }
 
@@ -594,6 +595,7 @@ pub fn run_terminal(extension_id: &str, command: String, key: &str) -> Result<Te
         command,
         kind: TerminalKind::Task,
         ready_when: String::new(),
+        action: None,
     })
 }
 
@@ -983,6 +985,7 @@ mod tests {
             root: root.display().to_string(),
             components,
             links: vec![],
+            groups: vec![],
         };
         let extra = vec![ContextSection {
             title: "Provider\nline".into(),

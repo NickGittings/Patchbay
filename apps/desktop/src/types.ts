@@ -19,6 +19,7 @@ export const COMPONENT_KINDS: ComponentKind[] = [
 ]
 
 export type TerminalKind = 'shell' | 'task' | 'agent'
+export type TerminalAction = 'development' | 'validation'
 
 export interface TerminalSpec {
   id: string
@@ -28,6 +29,7 @@ export interface TerminalSpec {
   kind: TerminalKind
   /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
   readyWhen?: string
+  action?: TerminalAction
 }
 
 export interface Component {
@@ -61,6 +63,36 @@ export interface Project {
   root: string
   components: Component[]
   links: Link[]
+  groups?: ComponentGroup[]
+}
+
+export interface ComponentGroup {
+  id: string
+  name: string
+  componentIds: string[]
+  orderedStartup: boolean
+  readinessTimeoutSeconds: number
+}
+
+export type ActionRequest =
+  { kind: 'startGroup'; groupId: string } | { kind: 'validateAffected'; componentId: string }
+
+export interface ActionPlan {
+  request: ActionRequest
+  stages: string[][]
+  skipped: string[]
+  sessions: string[]
+  /** The task whose worktree the terminals run in (`ActionPlan::task`). */
+  task: string | null
+}
+
+export interface ActionReport {
+  plan: ActionPlan
+  results: {
+    sessionId: string
+    outcome: 'started' | 'reused' | 'passed' | 'failed' | 'stopped' | 'cancelled'
+    exitCode: number | null
+  }[]
 }
 
 /** Uncommitted changes per component, and the repo of components not in the project root's repo. */
