@@ -56,7 +56,7 @@ export async function saveCurrentProject() {
         [s.project!.id]: { ...current.projects[s.project!.id], fingerprint },
       },
     }))
-    s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`)
+    s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`, true)
   } catch (e) {
     s.setMessage(String(e))
   }
@@ -80,7 +80,7 @@ export function applyAdded(
   const paths = new Set(current.components.map((c) => c.path))
   const components = added.components.filter((c) => !taken.has(c.id) && !paths.has(c.path))
   if (components.length === 0) {
-    s.setMessage(none)
+    s.setMessage(none, true)
     return 0
   }
   const fresh = new Set(added.components.map((c) => c.id))
@@ -95,7 +95,7 @@ export function applyAdded(
     links: [...current.links, ...links],
   })
   if (s.activeProjectId === projectId) useStore.setState({ dirty: true })
-  s.setMessage(`Added ${components.length} component(s)`)
+  s.setMessage(`Added ${components.length} component(s)`, true)
   return components.length
 }
 

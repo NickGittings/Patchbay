@@ -187,6 +187,9 @@ impl AccessSnapshot {
         project
             .links
             .retain(|l| !locked.contains(&l.source) && !locked.contains(&l.target));
+        for group in &mut project.groups {
+            group.component_ids.retain(|id| !locked.contains(id));
+        }
         Ok(project)
     }
 }
@@ -248,6 +251,7 @@ mod tests {
                     target: "billing".into(),
                     label: None,
                 }],
+                groups: vec![],
             }
         }
     }

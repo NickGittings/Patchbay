@@ -7,12 +7,15 @@ import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
 import { sessionId } from '../types'
 import AttentionPill from './status/AttentionPill'
+import ComponentGroups from './ComponentGroups'
 
 /** Outline of every component, like a game engine's scene hierarchy. */
 export default function Hierarchy() {
+  const project = useStore((s) => s.project)
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
+  const task = useStore((s) => s.activeTask)
   const gitChanges = useStore((s) => s.gitChanges)
   const selectedId = useStore((s) => s.selectedId)
   const select = useStore((s) => s.select)
@@ -39,10 +42,16 @@ export default function Hierarchy() {
       <div className="panel-title">Components</div>
       {sorted.map((n) => {
         const running = n.data.terminals.filter(
-          (t) => sessions[sessionId(n.id, t.id)]?.running,
+          (t) => sessions[sessionId(n.id, t.id, task)]?.running,
         ).length
         const changes = gitChanges[n.id] ?? 0
-        const attention = componentAttention(n.id, n.data.terminals, sessions, runtimeTerminals)
+        const attention = componentAttention(
+          n.id,
+          n.data.terminals,
+          sessions,
+          runtimeTerminals,
+          task,
+        )
         return (
           <button
             key={n.id}
@@ -67,7 +76,10 @@ export default function Hierarchy() {
           </button>
         )
       })}
-      {nodes.length === 0 && <div className="hint">No project open.</div>}
+      {nodes.length === 0 && (
+        <div className="hint">{project ? 'No components.' : 'No project open.'}</div>
+      )}
+      {project && <ComponentGroups />}
     </div>
   )
 }

@@ -10,6 +10,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  ActionPlan,
+  ActionReport,
+  ActionRequest,
   ChangedFile,
   DeviceManifest,
   DirEntry,
@@ -17,6 +20,9 @@ import type {
   GitStatus,
   Project,
   Review,
+  Task,
+  TaskDraft,
+  TaskPatch,
   TerminalEvent,
   TerminalSnapshot,
   TerminalSpec,
@@ -36,12 +42,35 @@ export const rescanProject = (project: Project) =>
   invoke<Added>('rescan_project', { project, projectId: project.projectId })
 export const saveProject = (project: Project) =>
   invoke<string>('save_project', { project, projectId: project.projectId })
-export const componentContext = async (project: Project, componentId: string) =>
+export const graphActionPlan = (project: Project, request: ActionRequest, task?: string) =>
+  invoke<ActionPlan>('graph_action_plan', {
+    project,
+    projectId: project.projectId,
+    request,
+    task,
+  })
+/** Runs in the session service, which owns the terminals it starts. */
+export const graphActionRun = (project: Project, request: ActionRequest, task?: string) =>
+  invoke<ActionReport>('graph_action_run', {
+    project,
+    projectId: project.projectId,
+    request,
+    task,
+  })
+export const graphGroupStop = (
+  groupId: string,
+  task?: string,
+  projectId = useStore.getState().project?.id,
+) => invoke<void>('graph_group_stop', { groupId, task, projectId })
+/** Stop the running validation; `false` if none was running. */
+export const graphValidationCancel = () => invoke<boolean>('graph_validation_cancel')
+export const componentContext = async (project: Project, componentId: string, task?: string) =>
   invoke<string>('component_context', {
     project,
     projectId: project.projectId,
     componentId,
     extraContext: await extraContext(project, [componentId]),
+    task,
   })
 /** Opens a folder picker; `null` if cancelled. */
 export const addFolder = (project: Project) =>
@@ -52,13 +81,18 @@ export const pickComponentFolder = () => invoke<string | null>('pick_component_f
 export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
 export const onFileAccessChanged = (handler: () => void) =>
   listen('patchbay://file-access', handler)
+/** `task` reads the task's worktree instead of the project's own. */
 export const gitStatus = (
   components: { id: string; path: string }[],
+  task?: string,
   projectId = useStore.getState().project?.id,
-) => invoke<GitStatus>('git_status', { components, projectId })
+) => invoke<GitStatus>('git_status', { components, task, projectId })
 /** Every component on the map is sent so files are attributed as `gitStatus` counts them. */
-export const gitChanges = (components: { id: string; path: string }[], componentId: string) =>
-  invoke<ChangedFile[]>('git_changes', { components, componentId })
+export const gitChanges = (
+  components: { id: string; path: string }[],
+  componentId: string,
+  task?: string,
+) => invoke<ChangedFile[]>('git_changes', { components, componentId, task })
 /**
  * `path` must be one of the component's changes, relative to the project root; `oldPath` is the
  * one it lists for a rename, so the diff shows the rename.
@@ -74,17 +108,19 @@ export const gitDiff = (
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, projectId: project.projectId, worktree })
 export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
-export const planContext = async (project: Project, componentIds: string[]) =>
+export const planContext = async (project: Project, componentIds: string[], task?: string) =>
   invoke<string>('plan_context', {
     project,
     projectId: project.projectId,
     componentIds,
     extraContext: await extraContext(project, componentIds),
+    task,
   })
 export const planStart = async (
   project: Project,
   componentIds: string[],
   terminal: TerminalSpec,
+  task?: string,
   requestId: string = crypto.randomUUID(),
 ) =>
   invoke<string>('plan_start', {
@@ -94,17 +130,39 @@ export const planStart = async (
     terminal,
     requestId,
     extraContext: await extraContext(project, componentIds),
+    task,
   })
+
+export const taskList = () => invoke<Task[]>('task_list')
+/** Creates the branch (unless it exists) and a worktree beside the repo. */
+export const taskCreate = (draft: TaskDraft) => invoke<Task>('task_create', { draft })
+/** `worktree` is a path `gitWorktrees` returned. */
+export const taskAttach = (worktree: string, title: string | undefined, components: string[]) =>
+  invoke<Task>('task_attach', { worktree, title, components })
+export const taskUpdate = (id: string, patch: TaskPatch) =>
+  invoke<Task>('task_update', { id, patch })
+/** git refuses to remove a worktree with changes; the branch is always kept. */
+export const taskRemove = (id: string, deleteWorktree: boolean) =>
+  invoke<void>('task_remove', { id, deleteWorktree })
+/** Fails with the reason the task's worktree can't be removed (e.g. uncommitted changes). */
+export const taskCheckRemovable = (id: string) => invoke<void>('task_check_removable', { id })
+/** Watch the task's worktree (none for the open one). */
+export const taskActivate = (id: string | null, projectId = useStore.getState().project?.id) =>
+  invoke<void>('task_activate', { id, projectId })
 
 export const listDevices = () => invoke<DeviceManifest[]>('list_devices')
 export const saveDevice = (device: DeviceManifest) => invoke<string>('save_device', { device })
 
-/** Only agent terminals get a briefing, so only they wait for extension context. */
+/**
+ * Only agent terminals get a briefing, so only they wait for extension context. With `task`, the
+ * terminal runs in that task's worktree.
+ */
 export const terminalStart = async (
   project: Project,
   componentId: string,
   terminalId: string,
   caller?: string,
+  task?: string,
   requestId: string = crypto.randomUUID(),
 ) => {
   const terminal = project.components
@@ -118,6 +176,7 @@ export const terminalStart = async (
     requestId,
     extraContext:
       terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller) : [],
+    task,
   })
 }
 export const terminalWrite = (sessionId: string, data: string) =>

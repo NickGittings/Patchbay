@@ -80,38 +80,52 @@ interface Launch {
   componentId: string
   terminalId: string
   projectId: string
+  task: string | null
   project: Project
   highlighted: string[]
   runtime?: RuntimeTerminal
 }
 
-function captureLaunch(componentId: string, terminalId: string, projectId?: string): Launch {
+/** `task` defaults to the project's active task; `null` is the project's own worktree. */
+function captureLaunch(
+  componentId: string,
+  terminalId: string,
+  task?: string | null,
+  projectId?: string,
+): Launch {
   const s = useStore.getState()
   const id = projectId ?? s.project?.id ?? s.activeProjectId
   const project = id ? projectOf(id) : null
   if (!id || !project) throw new Error('Open a project first')
-  const sid = sessionId(componentId, terminalId, id)
   const state = s.project?.id === id ? s : s.projects[id]?.state
+  const scope = task === undefined ? (state?.activeTask ?? null) : task
+  const sid = sessionId(componentId, terminalId, scope, id)
   return {
     sid,
     componentId,
     terminalId,
     projectId: id,
+    task: scope,
     project,
     highlighted: [...(state?.highlighted ?? [])],
-    runtime: s.runtimeTerminals[sid],
+    // Extension terminals only run in the project's own worktree.
+    runtime: scope ? undefined : s.runtimeTerminals[sid],
   }
 }
 
-/** Start a terminal of `projectId` (default: the active project). */
+/**
+ * Start a terminal of `projectId` (default: the active project) in `task`'s worktree (default:
+ * that project's active task; `null` for its own worktree).
+ */
 export function startTerminal(
   componentId: string,
   terminalId: string,
+  task?: string | null,
   projectId?: string,
 ): Promise<void> {
   let launch: Launch
   try {
-    launch = captureLaunch(componentId, terminalId, projectId)
+    launch = captureLaunch(componentId, terminalId, task, projectId)
   } catch (e) {
     useStore.getState().setMessage(String(e))
     return Promise.resolve()
@@ -121,6 +135,7 @@ export function startTerminal(
 
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
+  const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing) return existing
   const requestId = launchRequests.get(sid) ?? crypto.randomUUID()
@@ -146,10 +161,10 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, requestId)
+        await planStart(project, ids, terminal, task, requestId)
         if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
-        await terminalStart(project, componentId, terminalId, undefined, requestId)
+        await terminalStart(project, componentId, terminalId, undefined, task, requestId)
       }
       launchRequests.delete(sid)
     } catch (e) {
@@ -195,12 +210,16 @@ export const stopTerminal = (sessionId: string) =>
 
 /**
  * Restart only after the old process exits, so it cannot race the new spawn. The new run
- * belongs to the project the restart was asked in, even if another tab is active by then.
+ * belongs to the project and task the restart was asked in, even if the user has switched since.
  */
-export async function restartTerminal(componentId: string, terminalId: string) {
+export async function restartTerminal(
+  componentId: string,
+  terminalId: string,
+  task?: string | null,
+) {
   const requestedEpoch = epoch
   try {
-    const launch = captureLaunch(componentId, terminalId)
+    const launch = captureLaunch(componentId, terminalId, task)
     await terminalStop(launch.sid)
     const deadline = Date.now() + 10000
     while ((await terminalSnapshot(launch.sid))?.running) {
@@ -317,6 +336,17 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
   return request
 }
 
+/** Refresh a completed hydration after a graph action reused or started a run. */
+export async function refreshSession(sid: string): Promise<TerminalSnapshot | null> {
+  const started = epoch
+  const previous = hydration.get(sid)
+  if (previous) await previous.catch(() => null)
+  if (started !== epoch) return null
+  // Concurrent refreshes join the newer hydration rather than replacing its event queue.
+  if (hydration.get(sid) === previous) hydration.delete(sid)
+  return hydrateSession(sid)
+}
+
 /**
  * Bring the xterm up to date with a snapshot. If it already holds this run from the start,
  * append only the missing tail so earlier runs and notes stay in the scrollback.
@@ -366,7 +396,7 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionRecords: records,
       })
       for (const r of records) {
-        sessionMetadata.set(r.id, r.metadata)
+        sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot)
           current.setSession(r.id, {

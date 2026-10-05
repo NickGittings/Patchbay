@@ -101,6 +101,24 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
   if (options?.focus !== false) e.term.focus()
 }
 
+/**
+ * Focus the session's terminal after the current render: from the next animation frame (so a
+ * view switch has moved it into its new pane), waiting a few frames for it to attach. Gives up
+ * if the user puts focus somewhere else meanwhile.
+ */
+export function focusTerminal(sessionId: string) {
+  const from = document.activeElement
+  let frames = 30
+  const attempt = () => {
+    const active = document.activeElement
+    if (active !== from && active !== document.body) return
+    const e = registry.get(sessionId)
+    if (e?.opened && e.el.isConnected) e.term.focus()
+    else if (frames-- > 0) requestAnimationFrame(attempt)
+  }
+  requestAnimationFrame(attempt)
+}
+
 /** Fit locally; the service accepts PTY sizes only from its authoritative viewer. */
 export function fit(sessionId: string) {
   const e = registry.get(sessionId)

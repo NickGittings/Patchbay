@@ -3,7 +3,7 @@
 export const PLAN_SCOPE = '@plan'
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
-export type View = 'navigation' | 'plan' | 'implementation' | 'review'
+export type View = 'navigation' | 'plan' | 'implementation' | 'review' | 'tasks'
 
 export type ComponentKind =
   'frontend' | 'backend' | 'service' | 'library' | 'database' | 'app' | 'other'
@@ -19,6 +19,7 @@ export const COMPONENT_KINDS: ComponentKind[] = [
 ]
 
 export type TerminalKind = 'shell' | 'task' | 'agent'
+export type TerminalAction = 'development' | 'validation'
 
 export interface TerminalSpec {
   id: string
@@ -29,6 +30,7 @@ export interface TerminalSpec {
   /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
   adapter?: 'claude' | 'codex'
   readyWhen?: string
+  action?: TerminalAction
 }
 
 export interface Component {
@@ -63,6 +65,36 @@ export interface Project {
   root: string
   components: Component[]
   links: Link[]
+  groups?: ComponentGroup[]
+}
+
+export interface ComponentGroup {
+  id: string
+  name: string
+  componentIds: string[]
+  orderedStartup: boolean
+  readinessTimeoutSeconds: number
+}
+
+export type ActionRequest =
+  { kind: 'startGroup'; groupId: string } | { kind: 'validateAffected'; componentId: string }
+
+export interface ActionPlan {
+  request: ActionRequest
+  stages: string[][]
+  skipped: string[]
+  sessions: string[]
+  /** The task whose worktree the terminals run in (`ActionPlan::task`). */
+  task: string | null
+}
+
+export interface ActionReport {
+  plan: ActionPlan
+  results: {
+    sessionId: string
+    outcome: 'started' | 'reused' | 'passed' | 'failed' | 'stopped' | 'cancelled'
+    exitCode: number | null
+  }[]
 }
 
 /** Uncommitted changes per component, and the repo of components not in the project root's repo. */
@@ -211,14 +243,33 @@ let activeProjectId = ''
 export const setProjectIdentity = (id: string) => {
   activeProjectId = id
 }
-export const sessionMetadata = new Map<
-  string,
-  { projectId: string; componentId: string; terminalId: string }
->()
-export function sessionId(componentId: string, terminalId: string, projectId = activeProjectId) {
+/** `model::TASK_SEPARATOR`; task ids are ASCII letters and digits. */
+const TASK_SEPARATOR = '@task-'
+
+export interface SessionIdentity {
+  projectId: string
+  componentId: string
+  terminalId: string
+  /** The task whose worktree the terminal runs in; `null` for the project's own. */
+  task: string | null
+}
+/** What each opaque session id stands for; ids are never parsed. */
+export const sessionMetadata = new Map<string, SessionIdentity>()
+
+/**
+ * Mirrors `model::task_session_id`: the opaque id of a terminal of a project's component, run
+ * for `task` when given, so the same terminal can run in several worktrees and projects at once.
+ */
+export function sessionId(
+  componentId: string,
+  terminalId: string,
+  task?: string | null,
+  projectId = activeProjectId,
+) {
+  const terminal = task ? `${terminalId}${TASK_SEPARATOR}${task}` : terminalId
   let a = 0xcbf29ce484222325n
   let b = 0x84222325cbf29ce4n
-  for (const value of [projectId, componentId, terminalId]) {
+  for (const value of [projectId, componentId, terminal]) {
     const bytes = new TextEncoder().encode(value)
     const length = new Uint8Array(8)
     new DataView(length.buffer).setBigUint64(0, BigInt(bytes.length), true)
@@ -228,8 +279,29 @@ export function sessionId(componentId: string, terminalId: string, projectId = a
     }
   }
   const id = `s-${a.toString(16).padStart(16, '0')}${b.toString(16).padStart(16, '0')}`
-  sessionMetadata.set(id, { projectId, componentId, terminalId })
+  sessionMetadata.set(id, { projectId, componentId, terminalId, task: task ?? null })
   return id
+}
+
+/** A session's project, component, terminal and task, from its recorded metadata. */
+export function parseSessionId(sid: string): SessionIdentity {
+  return (
+    sessionMetadata.get(sid) ?? {
+      projectId: activeProjectId,
+      componentId: '',
+      terminalId: '',
+      task: null,
+    }
+  )
+}
+
+/** The task a session belongs to (`null` for the project's own worktree). */
+export const sessionTask = (sid: string) => parseSessionId(sid).task
+
+/** `sid` moved to `task`'s scope (or the project's own worktree). */
+export function retask(sid: string, task: string | null): string {
+  const { projectId, componentId, terminalId } = parseSessionId(sid)
+  return sessionId(componentId, terminalId, task, projectId)
 }
 
 export interface SessionRecord {
@@ -240,6 +312,7 @@ export interface SessionRecord {
     projectName: string
     componentId: string
     terminalId: string
+    task?: string | null
     name: string
     kind: TerminalKind
     adapter: 'claude' | 'codex' | null
@@ -287,6 +360,40 @@ export interface OpenedProject {
   project: Project
   detected: boolean
   locked: string[]
+}
+
+/** A named piece of work on its own branch and worktree (`tasks::Task`). */
+export interface Task {
+  id: string
+  title: string
+  /** Absolute, canonical worktree folder. */
+  worktree: string
+  /** Absent for a detached `HEAD`. */
+  branch?: string
+  base?: string
+  /** Components the task is about, as the user picked them. */
+  components: string[]
+  notes: string
+  createdMs: number
+  /** The worktree no longer exists. */
+  missing: boolean
+  /** The project is open in this worktree. */
+  current: boolean
+}
+
+/** `tasks::TaskDraft` */
+export interface TaskDraft {
+  title: string
+  branch: string
+  base?: string
+  components: string[]
+}
+
+/** `tasks::TaskPatch` */
+export interface TaskPatch {
+  title?: string
+  notes?: string
+  components?: string[]
 }
 
 export interface ContextSection {

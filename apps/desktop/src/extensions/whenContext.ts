@@ -54,9 +54,13 @@ export function useWhenContext(componentId?: string | null, refreshKey?: unknown
   }, [path, key, project, commands, menus, refreshKey])
   return { component, files: fileState.key === key ? fileState.files : new Set(), view }
 }
+/** Whether a command can run in `context`, regardless of where it is placed. */
+export function commandEnabled(command: CommandContribution, context: WhenContext): boolean {
+  return !(command.run && !context.component) && evaluateWhen(command.when, context)
+}
+
 export function commandVisible(command: CommandContribution, context: WhenContext): boolean {
-  if (command.run && !context.component) return false
-  if (!evaluateWhen(command.when, context)) return false
+  if (!commandEnabled(command, context)) return false
   const placements = Object.values(useStore.getState().menus)
     .flat()
     .filter((m) => m.command === command.id)

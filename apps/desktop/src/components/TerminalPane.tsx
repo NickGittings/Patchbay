@@ -7,19 +7,28 @@ import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 
-/** Shared xterm host with snapshot replay, sizing and first-use shell startup. */
+/**
+ * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
+ * `task` (by default the active task; `null` for the open worktree, as extension terminals are).
+ */
 export default function TerminalPane({
   componentId,
   terminal,
   focus = true,
+  task: taskProp,
   existingSessionId,
 }: {
   componentId: string
   terminal: TerminalSpec
   focus?: boolean
+  /** The task whose worktree it runs in; defaults to the active task (`null`: the project's). */
+  task?: string | null
+  /** Show this exact session (e.g. from the Sessions panel) instead of deriving its id. */
   existingSessionId?: string
 }) {
-  const sid = existingSessionId ?? sessionId(componentId, terminal.id)
+  const activeTask = useStore((s) => s.activeTask)
+  const task = taskProp === undefined ? activeTask : taskProp
+  const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)
   const connected = useStore((s) => s.serviceConnected)
   const session = useStore((s) => s.sessions[sid])
   const unseen = terminalStatus(terminal.kind, session).unseenSince
@@ -59,7 +68,7 @@ export default function TerminalPane({
           terminal.kind === 'shell' &&
           !useStore.getState().sessions[sid]
         ) {
-          void startTerminal(componentId, terminal.id)
+          void startTerminal(componentId, terminal.id, task)
         }
         refit()
       })
@@ -72,7 +81,7 @@ export default function TerminalPane({
       document.removeEventListener('visibilitychange', refit)
       window.removeEventListener(ACTIVE_CHANGED, refit)
     }
-  }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId])
+  }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId, task])
 
   // Showing a session in a focused window acknowledges it in every window.
   useEffect(() => {
@@ -111,7 +120,10 @@ export default function TerminalPane({
       <div className="terminal-host" ref={hostRef} />
       {connected && ready && !session && terminal.kind !== 'shell' && (
         <div className="terminal-overlay">
-          <button className="primary" onClick={() => void startTerminal(componentId, terminal.id)}>
+          <button
+            className="primary"
+            onClick={() => void startTerminal(componentId, terminal.id, task)}
+          >
             ▶ Start {describeTerminal(terminal)}
           </button>
         </div>

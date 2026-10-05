@@ -8,7 +8,14 @@ import { invoke } from '@tauri-apps/api/core'
 import { reconcileSessions } from '../lib/sessions'
 import { revealPath } from '../lib/ipc'
 import { listenForTerminals } from '../lib/sessions'
-import { absolutePath, GIT_EVENT, PROJECT_EVENT, READY_EVENT } from '../lib/windows'
+import {
+  absolutePath,
+  GIT_EVENT,
+  PROJECT_EVENT,
+  READY_EVENT,
+  TASKS_EVENT,
+  type TasksPayload,
+} from '../lib/windows'
 import { useStore } from '../store'
 import { type Project } from '../types'
 import ChangesPanel from './changes/ChangesPanel'
@@ -45,6 +52,13 @@ export default function ComponentWindow({ id }: { id: string }) {
             if (savedPanels) useStore.setState({ panels: savedPanels })
           } else useStore.getState().syncProject(e.payload)
           setReceived(true)
+        }),
+      )
+      await register(
+        listen<TasksPayload>(TASKS_EVENT, (e) => {
+          const s = useStore.getState()
+          s.setTasks(e.payload.tasks)
+          s.setActiveTask(e.payload.activeTask)
         }),
       )
       await register(

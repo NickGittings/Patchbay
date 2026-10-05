@@ -5,8 +5,8 @@ import {
   getCurrentWebviewWindow,
   WebviewWindow,
 } from '@tauri-apps/api/webviewWindow'
-import { useStore } from '../store'
-import type { Project } from '../types'
+import { projectFrom, useStore } from '../store'
+import type { Task } from '../types'
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -29,6 +29,12 @@ export function absolutePath(root: string, path: string) {
 export const PROJECT_EVENT = 'patchbay://project'
 export const READY_EVENT = 'patchbay://popout-ready'
 export const GIT_EVENT = 'patchbay://git'
+/** The task list and active task, so pop-outs run terminals in the same worktree. */
+export const TASKS_EVENT = 'patchbay://tasks'
+export interface TasksPayload {
+  tasks: Task[]
+  activeTask: string | null
+}
 const ACTIVE_EVENT = 'patchbay://active-window'
 /** Emitted by the backend with the label of a window that has closed. */
 const CLOSED_EVENT = 'patchbay://window-closed'
@@ -142,28 +148,20 @@ export function syncComponentWindows(): () => void {
   let disposed = false
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  // What each pop-out was last sent, so selection and drags don't re-send the project. Git
+  // status is re-sent on every refresh (a new object), even with equal counts: pop-out change
+  // lists and diffs reload on it, since editing an already-changed file leaves the counts as
+  // they were. A ready pop-out starts over.
+  const sent = new Map<string, { model: string; git: unknown; tasks: string }>()
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
-  /** What each pop-out was last sent; a ready pop-out starts over. */
-  const sent = new Map<string, { model: string; git: string }>()
   const payload = (projectId: string) => {
     const entry = useStore.getState().captureProjects()[projectId]
     const state = entry?.state
     if (!state?.project) return null
     return {
-      project: {
-        schemaVersion: 2,
-        projectId,
-        name: entry.name,
-        root: entry.root,
-        components: state.nodes.map(({ id, position, data }) => ({ id, position, ...data })),
-        links: state.edges.map((e) => ({
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          label: e.data?.label,
-        })),
-      } as Project,
+      project: projectFrom(state),
       git: state.gitChanges,
+      tasks: { tasks: state.tasks, activeTask: state.activeTask } as TasksPayload,
     }
   }
   const broadcast = async () => {
@@ -177,14 +175,15 @@ export function syncComponentWindows(): () => void {
         ...data.project,
         components: data.project.components.map((c) => ({ ...c, position: undefined })),
       })
-      const git = JSON.stringify(data.git)
+      const tasks = JSON.stringify(data.tasks)
       for (const node of entry.state?.nodes ?? []) {
         const label = componentLabel(node.id, projectId)
         if (!windows.some((w) => w.label === label)) continue
         const last = sent.get(label)
         if (last?.model !== model) await emitTo(label, PROJECT_EVENT, data.project)
-        if (last?.git !== git) await emitTo(label, GIT_EVENT, data.git)
-        sent.set(label, { model, git })
+        if (last?.tasks !== tasks) await emitTo<TasksPayload>(label, TASKS_EVENT, data.tasks)
+        if (last?.git !== data.git) await emitTo(label, GIT_EVENT, data.git)
+        sent.set(label, { model, git: data.git, tasks })
       }
     }
   }
@@ -193,6 +192,7 @@ export function syncComponentWindows(): () => void {
     if (!data || !e.payload.label.startsWith('component-')) return
     sent.delete(e.payload.label)
     void emitTo(e.payload.label, PROJECT_EVENT, data.project).catch(report)
+    void emitTo<TasksPayload>(e.payload.label, TASKS_EVENT, data.tasks).catch(report)
     void emitTo(e.payload.label, GIT_EVENT, data.git).catch(report)
   })
     .then((f) => {
@@ -206,7 +206,9 @@ export function syncComponentWindows(): () => void {
       s.edges === prev.edges &&
       s.project === prev.project &&
       s.projects === prev.projects &&
-      s.gitChanges === prev.gitChanges
+      s.gitChanges === prev.gitChanges &&
+      s.tasks === prev.tasks &&
+      s.activeTask === prev.activeTask
     )
       return
     clearTimeout(timer)

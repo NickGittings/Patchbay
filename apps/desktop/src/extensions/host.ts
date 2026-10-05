@@ -1,7 +1,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import * as ipc from '../lib/ipc'
-import { useStore } from '../store'
+import { projectFrom, useStore } from '../store'
 import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
 import { serveContextRequests, setContextCollector } from './context'
 
@@ -408,7 +408,8 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
     case 'terminals.start':
       permission(runtime, 'terminals')
       if (!s.project) throw new Error('Open a project first')
-      return ipc.terminalStart(s.toProject(), text(0), text(1), id)
+      // In the active task's worktree, like terminals the user starts.
+      return ipc.terminalStart(s.toProject(), text(0), text(1), id, s.activeTask ?? undefined)
     case 'terminals.run':
       permission(runtime, 'terminals')
       return runTerminal(runtime, text(0), text(1))
@@ -731,21 +732,7 @@ export function selectedComponent(): Component | null {
   return s.toProject().components.find((c) => c.id === s.selectedId) ?? null
 }
 
-function projectFromState(s: import('../store').ProjectState): Project {
-  return {
-    schemaVersion: 2,
-    projectId: s.project?.id,
-    name: s.project?.name ?? '',
-    root: s.project?.root ?? '',
-    components: s.nodes.map(({ id, position, data }) => ({ id, position, ...data })),
-    links: s.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: e.data?.label,
-    })),
-  }
-}
+const projectFromState = (s: import('../store').ProjectState): Project => projectFrom(s)
 function stateForRuntime(runtime: Runtime) {
   const global = useStore.getState()
   const entry = global.captureProjects()[runtime.projectId]

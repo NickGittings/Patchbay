@@ -399,7 +399,9 @@ impl Tracker {
                 || (self.status.healthy != Some(true) && self.port != Some(port)))
         {
             self.status.url = Some(url);
-            self.status.ready = true;
+            if self.ready_when.is_empty() {
+                self.status.ready = true;
+            }
             self.status.healthy = None;
             self.port = Some(port);
             self.failures = 0;
@@ -644,9 +646,15 @@ mod tests {
         tracker.on_output(b"host:\x1b[0m5173\x1b]0;title\x07/\r\n", 10_100);
         let status = tracker.status(10_100);
         assert_eq!(status.url.as_deref(), Some("http://localhost:5173/"));
-        assert!(status.ready);
+        assert!(
+            !status.ready,
+            "a URL cannot bypass the configured readiness text"
+        );
         assert_eq!(tracker.due_probe(10_100), Some(5173));
         assert_eq!(tracker.due_probe(10_100), None);
+        tracker.on_output(b"\x1b[32mCompiled Succ", 10_200);
+        tracker.on_output(b"essfully\x1b[0m\n", 10_300);
+        assert!(tracker.status(10_300).ready);
 
         let mut tracker = Tracker::new("Compiled Successfully", true);
         tracker.on_output(b"webpack compiled successfully\n", 0);

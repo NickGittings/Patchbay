@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useStore, type ProjectState } from '../store'
+import { projectFrom, useStore, type ProjectState } from '../store'
 import type { OpenedProject, Project, WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
@@ -25,19 +25,7 @@ export function acceptOpened(opened: OpenedProject) {
   if (opened.detected) useStore.setState({ dirty: true })
 }
 export function projectFromState(state: ProjectState): Project {
-  return {
-    projectId: state.project!.id,
-    schemaVersion: 2,
-    name: state.project!.name,
-    root: state.project!.root,
-    components: state.nodes.map(({ id, position, data }) => ({ id, position, ...data })),
-    links: state.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: e.data?.label,
-    })),
-  }
+  return projectFrom(state)
 }
 export function workspaceDocument(): WorkspaceDocument {
   const s = useStore.getState()

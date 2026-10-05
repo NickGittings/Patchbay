@@ -46,6 +46,7 @@ fn task(id: &str, name: &str, command: String) -> TerminalSpec {
         command,
         kind: TerminalKind::Task,
         ready_when: String::new(),
+        action: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn default_terminals() -> Vec<TerminalSpec> {
             command: String::new(),
             kind: TerminalKind::Shell,
             ready_when: String::new(),
+            action: None,
         },
         TerminalSpec {
             adapter: None,
@@ -66,6 +68,7 @@ fn default_terminals() -> Vec<TerminalSpec> {
             command: "claude".into(),
             kind: TerminalKind::Agent,
             ready_when: String::new(),
+            action: None,
         },
     ]
 }
@@ -352,7 +355,13 @@ fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) ->
                 rel: String::new(),
                 name: dir_name(dir),
                 kind: detector.kind,
-                tasks: detector.terminals.clone(),
+                // Graph actions are opt-in by the user, never by a detector.
+                tasks: detector
+                    .terminals
+                    .iter()
+                    .cloned()
+                    .map(|t| TerminalSpec { action: None, ..t })
+                    .collect(),
                 deps: HashSet::new(),
             });
         }
@@ -410,7 +419,7 @@ fn walk(
     }
 }
 
-fn slug(rel: &str) -> String {
+pub(crate) fn slug(rel: &str) -> String {
     if rel == "." {
         return "root".into();
     }
@@ -600,6 +609,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         root: root.display().to_string(),
         components,
         links,
+        groups: vec![],
     })
 }
 
@@ -788,7 +798,10 @@ mod tests {
             id: "compose".into(),
             files: vec!["compose.yaml".into()],
             kind: ComponentKind::Service,
-            terminals: vec![task("up", "Up", "docker compose up".into())],
+            terminals: vec![TerminalSpec {
+                action: Some(crate::model::TerminalAction::Development),
+                ..task("up", "Up", "docker compose up".into())
+            }],
         };
         let detectors = [detector];
         let mut project = detect_with(&root, &detectors).unwrap();
@@ -803,6 +816,7 @@ mod tests {
             .unwrap();
         assert_eq!(compose.kind, ComponentKind::Service);
         assert!(compose.terminals.iter().any(|t| t.id == "up"));
+        assert!(compose.terminals.iter().all(|t| t.action.is_none()));
         compose.notes = "user notes".into();
         compose.terminals[1].command = "user command".into();
         assert_eq!(rescan_with(&mut project, &[], &detectors).unwrap(), 0);

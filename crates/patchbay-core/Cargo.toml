@@ -17,5 +17,8 @@ semver = "1"
 uuid = { version = "1", features = ["v4"] }
 
 
+[target.'cfg(unix)'.dependencies]
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
 [lints]
 workspace = true

@@ -3,6 +3,7 @@
 //! by the desktop app, the CLI, or a future server.
 
 pub mod access;
+pub mod actions;
 pub mod context;
 pub mod detect;
 pub mod devices;
@@ -14,6 +15,7 @@ pub mod model;
 pub mod policy;
 pub mod pty;
 pub mod status;
+pub mod tasks;
 pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};

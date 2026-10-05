@@ -1,8 +1,9 @@
 import { useStore } from '../store'
 import {
   PLAN_SCOPE,
+  parseSessionId,
   sessionId,
-  sessionMetadata,
+  sessionTask,
   type SessionState,
   type TerminalSpec,
 } from '../types'
@@ -14,6 +15,10 @@ export interface AttentionItem {
   componentId: string
   /** Component name, or "Planner". */
   owner: string
+  /** The task the session runs for; `null` for the open worktree. */
+  task: string | null
+  /** The task's title, when there is one. */
+  taskTitle?: string
   terminal: TerminalSpec
   status: TerminalStatus
   /** When the session reached this state, for ordering; Unix ms. */
@@ -22,24 +27,43 @@ export interface AttentionItem {
 
 type Snapshot = Pick<
   ReturnType<typeof useStore.getState>,
-  'nodes' | 'sessions' | 'runtimeTerminals' | 'devices'
+  'nodes' | 'sessions' | 'runtimeTerminals' | 'devices' | 'tasks'
 >
 
 function since(session: SessionState | undefined) {
   return session?.status?.agent?.sinceMs ?? session?.exitedMs ?? session?.startedMs ?? 0
 }
 
-/** Every terminal that wants the user, most urgent first, oldest first within a level. */
+/**
+ * Every terminal that wants the user, in the open worktree and in every task, most urgent first,
+ * oldest first within a level.
+ */
 export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
+  const scopes: [string | null, string | undefined][] = [
+    [null, undefined],
+    ...(s.tasks ?? []).map((t): [string, string] => [t.id, t.title]),
+  ]
   const terminals: Omit<AttentionItem, 'status' | 'sinceMs'>[] = [
-    ...s.nodes.flatMap((n) =>
-      n.data.terminals.map((terminal) => ({
-        sid: sessionId(n.id, terminal.id),
-        componentId: n.id,
-        owner: n.data.name,
+    ...scopes.flatMap(([task, taskTitle]) => [
+      ...s.nodes.flatMap((n) =>
+        n.data.terminals.map((terminal) => ({
+          sid: sessionId(n.id, terminal.id, task),
+          componentId: n.id,
+          owner: n.data.name,
+          task,
+          taskTitle,
+          terminal,
+        })),
+      ),
+      ...planTerminals(s.devices).map((terminal) => ({
+        sid: sessionId(PLAN_SCOPE, terminal.id, task),
+        componentId: PLAN_SCOPE,
+        owner: 'Planner',
+        task,
+        taskTitle,
         terminal,
       })),
-    ),
+    ]),
     ...Object.entries(s.runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(
@@ -52,14 +76,9 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         sid,
         componentId: r.componentId,
         owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
+        task: null,
         terminal: r.terminal,
       })),
-    ...planTerminals(s.devices).map((terminal) => ({
-      sid: sessionId(PLAN_SCOPE, terminal.id),
-      componentId: PLAN_SCOPE,
-      owner: 'Planner',
-      terminal,
-    })),
   ]
   return terminals
     .map((t) => {
@@ -74,14 +93,31 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
     .sort((a, b) => b.status.attention - a.status.attention || a.sinceMs - b.sinceMs)
 }
 
-/** A component's terminals by session id: its own, then those its extensions started. */
+/**
+ * How many terminals want the user per task (`''` for the open worktree), as a string so a store
+ * selector only re-renders when a count changes.
+ */
+export function attentionCounts(s: Snapshot): string {
+  const counts: Record<string, number> = {}
+  for (const item of attentionItems(s)) {
+    const key = item.task ?? ''
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return JSON.stringify(counts)
+}
+
+/**
+ * A component's terminals by session id: its own (in `task`'s scope), then those its extensions
+ * started.
+ */
 export function componentTerminals(
   componentId: string,
   terminals: TerminalSpec[],
   runtimeTerminals: Snapshot['runtimeTerminals'],
+  task: string | null = null,
 ): [string, TerminalSpec][] {
   return [
-    ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id), t]),
+    ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id, task), t]),
     ...Object.entries(runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(([, r]) => r.componentId === componentId)
@@ -96,9 +132,10 @@ export function componentAttention(
   terminals: TerminalSpec[],
   sessions: Record<string, SessionState>,
   runtimeTerminals: Snapshot['runtimeTerminals'],
+  task: string | null = null,
 ): TerminalStatus | null {
   return mostUrgent(
-    componentTerminals(componentId, terminals, runtimeTerminals).map(([sid, t]) =>
+    componentTerminals(componentId, terminals, runtimeTerminals, task).map(([sid, t]) =>
       terminalStatus(t.kind, sessions[sid]),
     ),
   )
@@ -113,12 +150,14 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
 
 /**
  * Show a terminal: its tab in the planner, its tile in Implementation, or (for terminals an
- * extension started, which aren't tiled) its tab in the Navigation dock.
+ * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
+ * session's task first.
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
+  if (!s.runtimeTerminals[item.sid]) s.setActiveTask(sessionTask(item.sid))
   if (item.componentId === PLAN_SCOPE) {
-    const terminalId = sessionMetadata.get(item.sid)?.terminalId
+    const { terminalId } = parseSessionId(item.sid)
     if (!terminalId) return
     s.setPlanActive(terminalId)
     s.setView('plan')

@@ -12,6 +12,9 @@ import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
+import { runGraphAction, stopGroup } from './actions'
+import { graphActionPlan } from './ipc'
+import { createTask, refreshTasks, removeTask } from './tasks'
 
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
@@ -29,6 +32,9 @@ const hooks = {
       invoke<import('../types').OpenedProject>('open_project', { second: true }),
     ),
   store: useStore,
+  runGraphAction,
+  stopGroup,
+  graphActionPlan,
   evaluateWhen,
   reloadExtensions,
   extensionStorageGet,
@@ -57,6 +63,9 @@ const hooks = {
   },
   terminalText,
   openComponentWindow,
+  createTask,
+  refreshTasks,
+  removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
 }
 

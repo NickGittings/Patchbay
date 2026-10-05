@@ -21,17 +21,25 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const planClass =
     planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
+  const task = useStore((s) => s.activeTask)
+  const inTask = useStore(
+    (s) => !!s.activeTask && !!s.tasks.find((t) => t.id === s.activeTask)?.components.includes(id),
+  )
   // Only this node's sessions (with those its extensions started), so other terminals' status
   // updates don't re-render it.
   // Flat lists of strings and existing objects, which compare equal when nothing changed.
   const kinds = useStore(
     useShallow((s) =>
-      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([, t]) => t.kind),
+      componentTerminals(id, data.terminals, s.runtimeTerminals, s.activeTask).map(
+        ([, t]) => t.kind,
+      ),
     ),
   )
   const sessions = useStore(
     useShallow((s) =>
-      componentTerminals(id, data.terminals, s.runtimeTerminals).map(([sid]) => s.sessions[sid]),
+      componentTerminals(id, data.terminals, s.runtimeTerminals, s.activeTask).map(
+        ([sid]) => s.sessions[sid],
+      ),
     ),
   )
   useClockTick()
@@ -46,12 +54,14 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const openTerminal = (terminalId: string) => {
     const s = useStore.getState()
     s.select(id)
-    s.setActiveSession(sessionId(id, terminalId))
+    s.setActiveSession(sessionId(id, terminalId, s.activeTask))
   }
 
   return (
     <div
-      className={`component-node ${!planning && selected ? 'selected' : ''} ${planClass}`}
+      className={`component-node ${!planning && selected ? 'selected' : ''} ${planClass} ${
+        inTask ? 'in-task' : ''
+      }`}
       onContextMenu={(e) => {
         e.preventDefault()
         e.stopPropagation()
@@ -109,7 +119,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       <div className="component-path">{data.path === '.' ? '(repo root)' : data.path}</div>
       <div className="terminal-chips">
         {data.terminals.map((t, i) => {
-          const sid = sessionId(id, t.id)
+          const sid = sessionId(id, t.id, task)
           const status = statuses[i]
           return (
             <button

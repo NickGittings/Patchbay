@@ -2,6 +2,7 @@
 
 use patchbay_core::TerminalSpec;
 use patchbay_core::access::{Access, AccessSnapshot, external_candidates};
+use patchbay_core::actions::{ActionPlan, ActionReport, ActionRequest};
 use patchbay_core::context::ContextSection;
 use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::extensions::{self, Registry};
@@ -10,15 +11,15 @@ use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
 use patchbay_core::session::{self, Record, Request};
+use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
-use std::sync::Mutex;
 mod layout;
 mod service;
 use patchbay_core::{Project, context, detect, git, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -55,6 +56,8 @@ struct AppState {
 struct ProjectAccess {
     access: Arc<Access>,
     watcher: watch::GitWatcher,
+    /// The active task's worktree, watched besides the project's roots.
+    task_root: Arc<Mutex<Option<PathBuf>>>,
 }
 impl AppState {
     fn project(&self, id: &str) -> CmdResult<Arc<ProjectAccess>> {
@@ -114,10 +117,21 @@ fn rewatch(app: &AppHandle, id: &str) {
         return;
     };
     let access = project.access.clone();
+    let task_root = project.task_root.clone();
     let handle = app.clone();
     let id = id.to_string();
     project.watcher.update(
-        move || access.watch_roots(),
+        move || {
+            let mut roots = access.watch_roots();
+            let task = task_root.lock().unwrap_or_else(PoisonError::into_inner);
+            roots.extend(
+                task.iter()
+                    .filter(|r| !roots.contains(r))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            roots
+        },
         move || {
             let _ = handle.emit_to("main", GIT_DIRTY_EVENT, &id);
         },
@@ -415,20 +429,21 @@ async fn component_context(
     project: Project,
     component_id: String,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = scoped.roots();
     blocking(move || {
-        let project = access
-            .restrict(project, std::slice::from_ref(&component_id))
-            .map_err(err)?;
+        let ids = std::slice::from_ref(&component_id);
+        let project = access.restrict(project, ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let sections = extensions.get().sections(
             &project,
-            std::slice::from_ref(&component_id),
+            ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
         Ok(context::component_context(
             &project,
@@ -447,6 +462,7 @@ async fn plan_context(
     project: Project,
     component_ids: Vec<String>,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -454,17 +470,20 @@ async fn plan_context(
     let roots = scoped.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = extensions.get().sections(
             &project,
             &component_ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
     })
     .await
 }
 
+// Tauri commands take their IPC arguments individually.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn plan_start(
     request_id: String,
@@ -474,6 +493,7 @@ async fn plan_start(
     component_ids: Vec<String>,
     terminal: TerminalSpec,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -482,16 +502,24 @@ async fn plan_start(
     let bridge = state.service.clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = extensions.get().sections(
             &project,
             &component_ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
-        let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        let spec =
-            context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
-                .map_err(err)?;
+        let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
+        metadata.task.clone_from(&task);
+        let spec = context::plan_session_spec_for(
+            &project,
+            &component_ids,
+            &terminal,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+        )
+        .map_err(err)?;
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
     })
@@ -517,12 +545,57 @@ fn readable_components(
         .collect()
 }
 
+/// `project` (trusted and restricted) moved into `task`'s worktree when one is
+/// given, with the readable roots there and the briefing section naming the
+/// task. The task is looked up in the backend's store, so the webview only
+/// names it.
+fn for_task(
+    project: Project,
+    task: Option<&str>,
+    required: &[String],
+    roots: Vec<PathBuf>,
+) -> CmdResult<(Project, Vec<PathBuf>, Option<context::ContextSection>)> {
+    let Some(id) = task else {
+        return Ok((project, roots, None));
+    };
+    let task = tasks::stored(Path::new(&project.root), id).map_err(err)?;
+    let (moved, dropped) = tasks::project_in(&project, &task, required).map_err(err)?;
+    let section = tasks::context_section(&moved, &task, &dropped);
+    let roots = vec![PathBuf::from(&moved.root)];
+    Ok((moved, roots, Some(section)))
+}
+
+/// Extension context with the task's section first.
+fn with_task_section(
+    section: Option<ContextSection>,
+    extra: Option<Vec<ContextSection>>,
+) -> Vec<ContextSection> {
+    section
+        .into_iter()
+        .chain(extra.unwrap_or_default())
+        .collect()
+}
+
+/// `root` and `components` in `task`'s worktree, or unchanged without a task.
+fn components_in_task(
+    root: PathBuf,
+    components: Vec<(String, PathBuf)>,
+    task: Option<&str>,
+) -> CmdResult<(PathBuf, Vec<(String, PathBuf)>)> {
+    let Some(id) = task else {
+        return Ok((root, components));
+    };
+    let task = tasks::stored(&root, id).map_err(err)?;
+    git::in_worktree(&root, components, Some(&task.worktree)).map_err(err)
+}
+
 /// Takes only ids and folders for event-driven status refreshes.
 #[tauri::command]
 async fn git_status(
     project_id: String,
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
+    task: Option<String>,
 ) -> CmdResult<git::GitStatus> {
     let scoped = state.project(&project_id)?;
     // Resolve folders on a copy so the lock isn't held for the filesystem calls.
@@ -531,10 +604,9 @@ async fn git_status(
         let Some(root) = access.root() else {
             return Ok(git::GitStatus::default());
         };
-        Ok(git::status(
-            &root,
-            &readable_components(&access, components),
-        ))
+        let components = readable_components(&access, components);
+        let (root, components) = components_in_task(root, components, task.as_deref())?;
+        Ok(git::status(&root, &components))
     })
     .await
 }
@@ -547,6 +619,7 @@ async fn git_changes(
     state: State<'_, AppState>,
     components: Vec<ComponentPath>,
     component_id: String,
+    task: Option<String>,
 ) -> CmdResult<Vec<git::ChangedFile>> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -555,6 +628,7 @@ async fn git_changes(
             return Ok(Vec::new());
         };
         let components = readable_components(&access, components);
+        let (root, components) = components_in_task(root, components, task.as_deref())?;
         Ok(git::component_changes(&root, &components, &component_id))
     })
     .await
@@ -633,6 +707,134 @@ async fn git_review(
     .await
 }
 
+/// A project's root and access, for task commands.
+fn task_repo(state: &AppState, project_id: &str) -> CmdResult<(PathBuf, Arc<ProjectAccess>)> {
+    let scoped = state.project(project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or_else(|| "No project is open".to_string())?;
+    Ok((root, scoped))
+}
+
+/// The tasks of the project's repo.
+#[tauri::command]
+async fn task_list(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Task>> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || tasks::list(&root).map_err(err)).await
+}
+
+/// Create a branch and worktree beside the repo, and a task for them.
+#[tauri::command]
+async fn task_create(
+    project_id: String,
+    state: State<'_, AppState>,
+    draft: TaskDraft,
+) -> CmdResult<Task> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || tasks::create(&root, draft).map_err(err)).await
+}
+
+/// Make a task of one of the repo's existing worktrees.
+#[tauri::command]
+async fn task_attach(
+    project_id: String,
+    state: State<'_, AppState>,
+    worktree: String,
+    title: Option<String>,
+    components: Vec<String>,
+) -> CmdResult<Task> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || tasks::attach(&root, &worktree, title, components).map_err(err)).await
+}
+
+#[tauri::command]
+async fn task_update(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+    patch: TaskPatch,
+) -> CmdResult<Task> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || tasks::update(&root, &id, patch).map_err(err)).await
+}
+
+/// Fails with the reason a task's worktree can't be removed, so the webview can
+/// ask before stopping its terminals.
+#[tauri::command]
+async fn task_check_removable(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || tasks::check_removable(&root, &id).map(|_| ()).map_err(err)).await
+}
+
+/// Forget a task and optionally remove its (clean) worktree; the branch stays.
+#[tauri::command]
+async fn task_remove(
+    app: AppHandle,
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+    delete_worktree: bool,
+) -> CmdResult<()> {
+    let (root, scoped) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        let worktree = tasks::list(&root)
+            .map_err(err)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .map(|t| PathBuf::from(t.worktree));
+        tasks::remove(&root, &id, delete_worktree).map_err(err)?;
+        let mut active = scoped
+            .task_root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if active.is_some() && *active == worktree {
+            *active = None;
+            drop(active);
+            rewatch(&app, &project_id);
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Watch the worktree of the task the user switched to in this project (none
+/// for the project's own).
+#[tauri::command]
+async fn task_activate(
+    app: AppHandle,
+    project_id: String,
+    state: State<'_, AppState>,
+    id: Option<String>,
+) -> CmdResult<()> {
+    let (root, scoped) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        let worktree = match id {
+            Some(id) => {
+                let task = tasks::find(&root, &id).map_err(err)?;
+                (!task.current).then(|| PathBuf::from(task.worktree))
+            }
+            None => None,
+        };
+        let mut active = scoped
+            .task_root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *active != worktree {
+            *active = worktree;
+            drop(active);
+            rewatch(&app, &project_id);
+        }
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn list_devices(state: State<'_, AppState>) -> CmdResult<Vec<DeviceManifest>> {
     let extensions = state.extensions.clone();
@@ -646,6 +848,8 @@ fn save_device(device: DeviceManifest) -> CmdResult<String> {
         .map_err(err)
 }
 
+// Tauri commands take their IPC arguments individually.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn terminal_start(
     request_id: String,
@@ -655,6 +859,7 @@ async fn terminal_start(
     component_id: String,
     terminal_id: String,
     extra_context: Option<Vec<ContextSection>>,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -662,27 +867,116 @@ async fn terminal_start(
     let roots = scoped.roots();
     let bridge = state.service.clone();
     blocking(move || {
-        let project = access
-            .restrict(project, std::slice::from_ref(&component_id))
-            .map_err(err)?;
+        let ids = std::slice::from_ref(&component_id);
+        let project = access.restrict(project, ids).map_err(err)?;
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let sections = extensions.get().sections(
             &project,
-            std::slice::from_ref(&component_id),
+            ids,
             &roots,
-            extra_context.unwrap_or_default(),
+            with_task_section(section, extra_context),
         );
         let terminal = project
             .component(&component_id)
             .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
             .ok_or("Unknown terminal")?;
-        let metadata = service::metadata(&project_id, &project, &component_id, terminal);
-        let spec =
-            context::session_spec(&project, &component_id, &terminal_id, &AllowAll, &sections)
-                .map_err(err)?;
+        let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
+        metadata.task.clone_from(&task);
+        let spec = context::session_spec_for(
+            &project,
+            &component_id,
+            &terminal_id,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+        )
+        .map_err(err)?;
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
     })
     .await
+}
+
+/// Preview what a graph action would run.
+#[tauri::command]
+async fn graph_action_plan(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+    task: Option<String>,
+) -> CmdResult<ActionPlan> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let roots = scoped.roots();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let (project, _, _) = for_task(project, task.as_deref(), &[], roots)?;
+        ActionPlan::build(&project, &project_id, request, task.as_deref()).map_err(err)
+    })
+    .await
+}
+
+/// Run a graph action in the session service, which owns the terminals it starts.
+#[tauri::command]
+async fn graph_action_run(
+    project_id: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    mut project: Project,
+    request: ActionRequest,
+    task: Option<String>,
+) -> CmdResult<ActionReport> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let roots = scoped.roots();
+    let bridge = state.service.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        // Compute affected scope before filtering access or moving into the
+        // task's worktree, so locked consumers or ones outside the task's repo
+        // produce an error instead of disappearing from validation.
+        let plan = ActionPlan::build(&project, &project_id, request.clone(), task.as_deref())
+            .map_err(err)?;
+        let ids = plan.component_ids();
+        let project = access.restrict(project, &ids).map_err(err)?;
+        let (project, _, _) = for_task(project, task.as_deref(), &ids, roots)?;
+        bridge.call(Request::ActionRun {
+            project_id,
+            project: Box::new(project),
+            request,
+            task,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn graph_group_stop(
+    project_id: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    group_id: String,
+    task: Option<String>,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let request = Request::ActionStopGroup {
+        project_id,
+        group_id,
+        task,
+    };
+    service(&state, request).await
+}
+
+/// Stop the running validation; it still reports the validators that ran.
+#[tauri::command]
+async fn graph_validation_cancel(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
+    main_only(&window)?;
+    service(&state, Request::ActionCancel).await
 }
 
 /// Run a session service request on a blocking worker, never the main thread.
@@ -789,7 +1083,20 @@ async fn session_resume(
         let scoped = projects
             .get(&record.metadata.project_id)
             .ok_or("Project unavailable; locate its folder first")?;
-        session::check_resume(record, &scoped.roots()).map_err(err)?;
+        // A task's terminal may only reach the task's worktree, as when it started.
+        let roots = match &record.metadata.task {
+            Some(task) => {
+                let root = scoped
+                    .access
+                    .snapshot()
+                    .root()
+                    .ok_or("No project is open")?;
+                let worktree = tasks::stored(&root, task).map_err(err)?.worktree;
+                vec![Path::new(&worktree).canonicalize().map_err(err)?]
+            }
+            None => scoped.roots(),
+        };
+        session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
@@ -934,6 +1241,13 @@ pub fn run() {
                 save_project,
                 component_context,
                 git_status,
+                task_list,
+                task_create,
+                task_attach,
+                task_update,
+                task_remove,
+                task_check_removable,
+                task_activate,
                 git_changes,
                 git_diff,
                 git_review,
@@ -961,6 +1275,10 @@ pub fn run() {
                 workspace_load,
                 workspace_save,
                 project_relink,
+                graph_action_plan,
+                graph_action_run,
+                graph_group_stop,
+                graph_validation_cancel,
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
@@ -1435,6 +1753,7 @@ async fn project_relink(
     let relinked = Arc::new(ProjectAccess {
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),
+        task_root: scoped.task_root.clone(),
     });
     state
         .projects

@@ -1,5 +1,6 @@
 //! Versioned, authenticated loopback session service shared by desktop and CLI.
 //! Webviews never receive endpoint credentials. Disconnect is not a stop operation.
+use crate::actions::{ActionPlan, ActionRequest, GraphActions, Launch, Terminals};
 use crate::adapters::Adapter;
 use crate::pty::{PtyManager, SessionSpec, Snapshot};
 use crate::workspace::{atomic_write, home, lock, private_dir};
@@ -89,6 +90,9 @@ pub struct Metadata {
     pub project_root: String,
     pub component_id: String,
     pub terminal_id: String,
+    /// The task whose worktree this terminal runs in; `None` for the project's own.
+    #[serde(default)]
+    pub task: Option<String>,
     pub name: String,
     pub kind: TerminalKind,
     #[serde(default)]
@@ -203,6 +207,21 @@ pub enum Request {
     Shutdown {
         stop_running: bool,
     },
+    /// Run a graph action. `project` is already trusted, restricted and, for a
+    /// task, moved into its worktree by the caller. Blocks until it finishes.
+    ActionRun {
+        project_id: String,
+        project: Box<crate::Project>,
+        request: ActionRequest,
+        task: Option<String>,
+    },
+    ActionStopGroup {
+        project_id: String,
+        group_id: String,
+        task: Option<String>,
+    },
+    /// Stop the running validation; returns whether one was running.
+    ActionCancel,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
@@ -335,15 +354,18 @@ impl Client {
     pub fn call<T: DeserializeOwned>(&mut self, request: Request) -> Result<T> {
         anyhow::ensure!(!self.broken, "Session service connection was lost");
         let timeout = match request {
+            // Validators and readiness gates take as long as they take.
+            Request::ActionRun { .. } => None,
             Request::Start { .. }
             | Request::Resume { .. }
             | Request::Stop { .. }
             | Request::Forget { .. }
-            | Request::Shutdown { .. } => SLOW_TIMEOUT,
-            _ => TIMEOUT,
+            | Request::Shutdown { .. }
+            | Request::ActionStopGroup { .. } => Some(SLOW_TIMEOUT),
+            _ => Some(TIMEOUT),
         };
         let response = (|| -> Result<Response> {
-            self.stream.set_read_timeout(Some(timeout))?;
+            self.stream.set_read_timeout(timeout)?;
             write_frame(&mut self.stream, &request)?;
             read_frame(&mut self.stream)
         })();
@@ -424,6 +446,7 @@ struct Viewer {
 }
 pub struct Service {
     pty: Arc<PtyManager>,
+    actions: GraphActions,
     records: Mutex<BTreeMap<String, Record>>,
     events: Mutex<Events>,
     viewers: Mutex<BTreeMap<String, Vec<Viewer>>>,
@@ -476,6 +499,7 @@ impl Service {
         );
         Ok(Arc::new(Self {
             pty: Arc::new(PtyManager::with_generation_floor(generation)),
+            actions: GraphActions::default(),
             records: Mutex::new(records),
             events: Mutex::default(),
             viewers: Mutex::default(),
@@ -620,7 +644,7 @@ impl Service {
         metadata: Metadata,
         spec: SessionSpec,
     ) -> Result<String> {
-        self.start_with_command(request, metadata, spec, None)
+        self.start_with_command(request, metadata, spec, None, false)
     }
     fn start_with_command(
         self: &Arc<Self>,
@@ -628,12 +652,14 @@ impl Service {
         metadata: Metadata,
         mut spec: SessionSpec,
         original_command: Option<String>,
+        managed: bool,
     ) -> Result<String> {
         anyhow::ensure!(!request.is_empty(), "Launch request ID required");
-        let id = crate::workspace::session_id(
+        let id = crate::model::task_session_id(
             &metadata.project_id,
             &metadata.component_id,
             &metadata.terminal_id,
+            metadata.task.as_deref(),
         );
         spec.id.clone_from(&id);
         let _operation = self.operation.lock().unwrap();
@@ -688,7 +714,12 @@ impl Service {
                 request_ids: requests,
             },
         );
-        if let Err(e) = self.pty.spawn(spec, self.clone()) {
+        let spawned = if managed {
+            self.pty.spawn_managed(spec, self.clone())
+        } else {
+            self.pty.spawn(spec, self.clone())
+        };
+        if let Err(e) = spawned {
             let mut records = self.records.lock().unwrap();
             if let Some(r) = previous {
                 records.insert(id, r);
@@ -736,7 +767,7 @@ impl Service {
         r.spec.command = adapter.resume(&original, conversation, &r.spec.cwd)?;
         crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
         // Keep the original launch command for later resumes; context environment persists.
-        self.start_with_command(request_id, r.metadata, r.spec, Some(original))
+        self.start_with_command(request_id, r.metadata, r.spec, Some(original), false)
     }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
@@ -860,7 +891,44 @@ impl Service {
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
             }
+            Request::ActionRun {
+                project_id,
+                project,
+                request,
+                task,
+            } => {
+                let epoch = self.actions.epoch();
+                let plan = ActionPlan::build(&project, &project_id, request, task.as_deref())?;
+                let terminals = ServiceTerminals {
+                    service: self.clone(),
+                    project_id: &project_id,
+                    project: Some(&project),
+                };
+                serde_json::to_value(self.actions.execute(&project, plan, epoch, &terminals)?)?
+            }
+            Request::ActionStopGroup {
+                project_id,
+                group_id,
+                task,
+            } => {
+                let terminals = ServiceTerminals {
+                    service: self.clone(),
+                    project_id: &project_id,
+                    project: None,
+                };
+                let epoch = self.actions.epoch();
+                self.actions.stop_group(
+                    &project_id,
+                    &group_id,
+                    task.as_deref(),
+                    epoch,
+                    &terminals,
+                )?;
+                serde_json::Value::Null
+            }
+            Request::ActionCancel => serde_json::to_value(self.actions.cancel_validation())?,
             Request::Shutdown { stop_running } => {
+                self.actions.reset();
                 let _operation = self.operation.lock().unwrap();
                 anyhow::ensure!(
                     !self.pty.has_running() || stop_running,
@@ -894,6 +962,65 @@ pub fn check_resume(record: &Record, roots: &[PathBuf]) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Graph actions' view of the service's terminals: launches are recorded like
+/// any other start, under the project's identity.
+struct ServiceTerminals<'a> {
+    service: Arc<Service>,
+    project_id: &'a str,
+    /// The project launches belong to; `None` where nothing is launched.
+    project: Option<&'a crate::Project>,
+}
+impl Terminals for ServiceTerminals<'_> {
+    fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        self.service.pty.snapshot_with(id, 0)
+    }
+    fn is_running(&self, id: &str) -> bool {
+        self.service.pty.is_running(id)
+    }
+    fn launch_matches(&self, spec: &SessionSpec) -> bool {
+        self.service.pty.launch_matches(spec)
+    }
+    fn launch(&self, launch: Launch) -> Result<()> {
+        let Launch {
+            spec,
+            component_id,
+            terminal,
+            task,
+        } = launch;
+        let id = spec.id.clone();
+        let project = self.project.context("Nothing may be launched here")?;
+        let metadata = Metadata {
+            project_id: self.project_id.into(),
+            project_name: project.name.clone(),
+            project_root: project.root.clone(),
+            component_id,
+            terminal_id: terminal.id.clone(),
+            task,
+            name: terminal.name.clone(),
+            kind: terminal.kind,
+            adapter: None,
+            conversation_id: None,
+            conversation_pinned: false,
+            extension_id: None,
+            command_id: None,
+            key: None,
+            command: terminal.command.clone(),
+        };
+        let started = self.service.start_with_command(
+            uuid::Uuid::new_v4().to_string(),
+            metadata,
+            spec,
+            None,
+            true,
+        )?;
+        anyhow::ensure!(started == id, "Graph action session id mismatch for {id}");
+        Ok(())
+    }
+    fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
+        self.service.pty.stop_generation(id, generation)
+    }
 }
 
 /// Keep the newest `MAX_HISTORY` incarnations.
@@ -1091,6 +1218,7 @@ mod tests {
             project_root: dir.display().to_string(),
             component_id: "same/id".into(),
             terminal_id: "shell".into(),
+            task: None,
             name: "Counter".into(),
             kind: TerminalKind::Task,
             adapter: None,
@@ -1300,6 +1428,7 @@ mod tests {
                 project_root: project.display().to_string(),
                 component_id: "api".into(),
                 terminal_id: "agent".into(),
+                task: None,
                 name: "Agent".into(),
                 kind: TerminalKind::Agent,
                 adapter: None,

@@ -17,16 +17,20 @@ import type {
   ExtensionBadge,
   RuntimeTerminal,
   Component,
+  ComponentGroup,
+  ActionReport,
+  ActionRequest,
   ComponentData,
   DeviceManifest,
   GitStatus,
   Link,
   Project,
   SessionState,
+  Task,
   TerminalSpec,
   View,
 } from './types'
-import { sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
+import { retask, sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null }>
@@ -49,6 +53,12 @@ export interface ProjectState {
   extensionViews: Record<string, string>
   viewport?: { x: number; y: number; zoom: number }
   panels: Record<string, Record<string, number>>
+  groups: ComponentGroup[]
+  graphActionBusy: boolean
+  graphAction: ActionRequest | null
+  graphActionReport: ActionReport | null
+  tasks: Task[]
+  activeTask: string | null
 }
 export interface ProjectEntry {
   id: string
@@ -78,8 +88,18 @@ interface State {
   activateProject: (id: string) => void
   closeProject: (id: string) => void
   captureProjects: () => Record<string, ProjectEntry>
+  /** Apply `patch` to open project `id`'s state, whether or not its tab is active. */
+  patchProject: (id: string, patch: Partial<ProjectState>) => void
   nodes: FlowNode[]
   edges: FlowEdge[]
+  groups: ComponentGroup[]
+  addGroup: (name: string, componentIds: string[]) => void
+  updateGroup: (id: string, patch: Partial<ComponentGroup>) => void
+  removeGroup: (id: string) => void
+  graphActionBusy: boolean
+  /** The action running, while `graphActionBusy`. */
+  graphAction: ActionRequest | null
+  graphActionReport: ActionReport | null
   extensions: ExtensionRegistry
   commands: CommandContribution[]
   menus: Record<string, MenuContribution[]>
@@ -113,8 +133,21 @@ interface State {
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
   markPlanStarted: (sid: string, ids: string[]) => void
+  /** The repo's tasks (stored per user by the backend, never in `patchbay.json`). */
+  tasks: Task[]
+  /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
+  activeTask: string | null
+  setTasks: (tasks: Task[]) => void
+  setActiveTask: (id: string | null) => void
+  /** Components to seed the new-task dialog with while it is open (UI only). */
+  newTask: string[] | null
+  setNewTask: (components: string[] | null) => void
   dirty: boolean
+  /** The latest app message, shown by `Toast`; `messageId` changes on every `setMessage`. */
   message: string
+  messageId: number
+  /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
+  messageTransient: boolean
 
   loadProject: (p: Project) => void
   syncProject: (p: Project) => void
@@ -135,7 +168,7 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string) => void
+  setMessage: (m: string, transient?: boolean) => void
   markSaved: () => void
 }
 
@@ -161,6 +194,17 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
+/** Move the active terminal to the same terminal of the task switched to. */
+function switchTask(s: State, activeTask: string | null): Partial<State> {
+  if (s.activeTask === activeTask) return {}
+  const current = s.activeSession
+  const runtime = current && s.runtimeTerminals[current]
+  return {
+    activeTask,
+    activeSession: current && !runtime ? retask(current, activeTask) : current,
+  }
+}
+
 export const useStore = create<State>((set, get) => ({
   project: null,
   activeProjectId: null,
@@ -182,6 +226,16 @@ export const useStore = create<State>((set, get) => ({
       [s.project.id]: { ...s.projects[s.project.id], state: projectState(s) },
     }
   },
+  patchProject: (id, patch) => {
+    const s = get()
+    if (s.project?.id === id) {
+      set(patch as Partial<State>)
+      return
+    }
+    const entry = s.projects[id]
+    if (!entry?.state) return
+    set({ projects: { ...s.projects, [id]: { ...entry, state: { ...entry.state, ...patch } } } })
+  },
   activateProject: (id) => {
     const projects = get().captureProjects()
     const entry = projects[id]
@@ -201,12 +255,41 @@ export const useStore = create<State>((set, get) => ({
     const current = get().project?.id === id || get().activeProjectId === id
     if (current) {
       setProjectIdentity('')
-      set({ ...emptyProjectState(), activeProjectId: null, projects, projectOrder })
+      set({
+        ...emptyProjectState(),
+        activeProjectId: null,
+        projects,
+        projectOrder,
+      })
       if (projectOrder[0]) get().activateProject(projectOrder[0])
     } else set({ projects, projectOrder })
   },
   nodes: [],
   edges: [],
+  groups: [],
+  graphActionBusy: false,
+  graphAction: null,
+  graphActionReport: null,
+  addGroup: (name, componentIds) =>
+    set((s) => ({
+      groups: [
+        ...s.groups,
+        {
+          id: newId('group'),
+          name,
+          componentIds,
+          orderedStartup: false,
+          readinessTimeoutSeconds: 30,
+        },
+      ],
+      dirty: true,
+    })),
+  updateGroup: (id, patch) =>
+    set((s) => ({
+      groups: s.groups.map((g) => (g.id === id ? { ...g, ...patch } : g)),
+      dirty: true,
+    })),
+  removeGroup: (id) => set((s) => ({ groups: s.groups.filter((g) => g.id !== id), dirty: true })),
   extensions: { extensions: [], errors: [] },
   commands: [],
   menus: {},
@@ -254,11 +337,23 @@ export const useStore = create<State>((set, get) => ({
   activeSession: null,
   dirty: false,
   message: '',
+  messageId: 0,
+  messageTransient: false,
   view: 'navigation',
   highlighted: [],
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
+  tasks: [],
+  activeTask: null,
+  setTasks: (tasks) =>
+    set((s) => {
+      const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
+      return active ? { tasks } : { tasks, ...switchTask(s, null) }
+    }),
+  setActiveTask: (id) => set((s) => switchTask(s, id)),
+  newTask: null,
+  setNewTask: (newTask) => set({ newTask }),
 
   loadProject: (p) => {
     const id = p.projectId ?? p.root
@@ -272,6 +367,7 @@ export const useStore = create<State>((set, get) => ({
       project: { id, name: p.name, root: p.root },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
+      groups: p.groups ?? [],
     }
     setProjectIdentity(id)
     set({
@@ -297,6 +393,7 @@ export const useStore = create<State>((set, get) => ({
                 project: { id: p.projectId, name: p.name, root: p.root },
                 nodes: p.components.map(componentToNode),
                 edges: p.links.map(linkToEdge),
+                groups: p.groups ?? [],
                 dirty: true,
               },
             },
@@ -309,6 +406,7 @@ export const useStore = create<State>((set, get) => ({
         project: { id: p.projectId ?? get().project?.id ?? p.root, name: p.name, root: p.root },
         nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
         edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
+        groups: p.groups ?? [],
       }
     }),
 
@@ -319,6 +417,12 @@ export const useStore = create<State>((set, get) => ({
     const edits = changes.some((c) => c.type === 'remove' || (c.type === 'position' && !c.dragging))
     set((s) => ({
       nodes: applyNodeChanges(changes, s.nodes),
+      groups: removed.length
+        ? s.groups.map((g) => ({
+            ...g,
+            componentIds: g.componentIds.filter((id) => !removed.includes(id)),
+          }))
+        : s.groups,
       highlighted: removed.length
         ? s.highlighted.filter((id) => !removed.includes(id))
         : s.highlighted,
@@ -373,7 +477,7 @@ export const useStore = create<State>((set, get) => ({
         ...d,
         terminals: [...d.terminals, terminal],
       })),
-      activeSession: sessionId(componentId, terminal.id),
+      activeSession: sessionId(componentId, terminal.id, s.activeTask),
       dirty: true,
     }))
   },
@@ -426,7 +530,7 @@ export const useStore = create<State>((set, get) => ({
     set({
       selectedId: id,
       selectedEdgeId: null,
-      activeSession: keep ? current : first ? sessionId(id, first.id) : null,
+      activeSession: keep ? current : first ? sessionId(id, first.id, get().activeTask) : null,
     })
   },
   selectEdge: (selectedEdgeId) => set({ selectedEdgeId, selectedId: null }),
@@ -435,7 +539,8 @@ export const useStore = create<State>((set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message) => set({ message }),
+  setMessage: (message, transient = false) =>
+    set((s) => ({ message, messageTransient: transient, messageId: s.messageId + 1 })),
   markSaved: () => set({ dirty: false }),
 }))
 
@@ -447,14 +552,16 @@ export function projectOf(id: string): Project | null {
   return state?.project ? projectFrom(state) : null
 }
 
-function projectFrom({
+/** A project state as a `Project` (the map `patchbay.json` holds). */
+export function projectFrom({
   project,
   nodes,
   edges,
-}: Pick<ProjectState, 'project' | 'nodes' | 'edges'>): Project {
+  groups,
+}: Pick<ProjectState, 'project' | 'nodes' | 'edges' | 'groups'>): Project {
   return {
     projectId: project?.id,
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: project?.name ?? 'project',
     root: project?.root ?? '',
     components: nodes.map((n) => ({
@@ -472,6 +579,7 @@ function projectFrom({
       target: e.target,
       label: e.data?.label || null,
     })),
+    groups,
   }
 }
 
@@ -495,6 +603,12 @@ function emptyProjectState(): ProjectState {
     extensionBadges: {},
     extensionViews: {},
     panels: {},
+    groups: [],
+    graphActionBusy: false,
+    graphAction: null,
+    graphActionReport: null,
+    tasks: [],
+    activeTask: null,
   }
 }
 function projectState(s: State): ProjectState {
@@ -516,6 +630,12 @@ function projectState(s: State): ProjectState {
     extensionViews,
     viewport,
     panels,
+    groups,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+    tasks,
+    activeTask,
   } = s
   return {
     project,
@@ -535,6 +655,12 @@ function projectState(s: State): ProjectState {
     extensionViews,
     viewport,
     panels,
+    groups,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+    tasks,
+    activeTask,
   }
 }
 
