@@ -247,11 +247,14 @@ export interface SessionRecord {
     extensionId?: string | null
     key?: string | null
     conversationId: string | null
+    /** Set by the user, so captured resume hints don't replace it. */
+    conversationPinned?: boolean
   }
   snapshot: TerminalSnapshot | null
   history: TerminalSnapshot[]
   interrupted: boolean
-  spec: { cwd: string; command: string }
+  /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
+  spec: { cwd: string; command: string; dirs?: string[] }
 }
 export interface WorkspaceProject {
   id: string

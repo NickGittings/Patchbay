@@ -339,7 +339,8 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
     projectId: runtime.projectId,
     componentId,
     terminal: {
-      id: `run-${runtime.extension.id}-${key}`,
+      // The id `extensions::run_terminal` gives it, from which `sid` was derived.
+      id: `ext-${runtime.extension.id}-${key}`,
       name: runtime.extension.manifest.displayName ?? runtime.extension.id,
       command,
       kind: 'task',

@@ -615,6 +615,13 @@ fn describe_component(out: &mut String, project: &Project, c: &Component) {
     out.push('\n');
 }
 
+/// A briefing file name unique to the project's root, so two open projects (or
+/// worktrees of one repo, which share a map and name) never overwrite each other's.
+fn briefing_name(project: &Project, scope: &str) -> String {
+    let root = crate::workspace::session_id(&project.root, "", "");
+    format!("{}-{}-{scope}", project.name, &root[2..10])
+}
+
 fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     let slug: String = slug
         .chars()
@@ -787,15 +794,16 @@ pub fn plan_session_spec(
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), "plan".into())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut context_dirs: Vec<PathBuf> = Vec::new();
     if terminal.kind == TerminalKind::Agent {
         let briefing = plan_context(project, component_ids, sections);
         let file = context_file(
-            &format!("{}-{PLAN_SCOPE}-{}", project.name, terminal.id),
+            &briefing_name(project, &format!("{PLAN_SCOPE}-{}", terminal.id)),
             &briefing,
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         // cwd is the root; components in other repos must be added explicitly.
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        let dirs = &mut context_dirs;
         for c in &components {
             let reach =
                 std::iter::once(*c).chain(project.neighbours(&c.id).into_iter().map(|(n, _)| n));
@@ -809,7 +817,7 @@ pub fn plan_session_spec(
         let briefing = Briefing {
             file: &file,
             text: &briefing,
-            dirs: &dirs,
+            dirs,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -824,6 +832,7 @@ pub fn plan_session_spec(
         ready_when: terminal.ready_when.clone(),
         service: terminal.kind == TerminalKind::Task,
         notice,
+        dirs: context_dirs,
     })
 }
 
@@ -853,12 +862,13 @@ pub fn session_spec(
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), component.name.clone())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut context_dirs = Vec::new();
 
     if terminal.kind == TerminalKind::Agent {
         let briefing = component_context(project, component_id, sections);
-        let file = context_file(&format!("{}-{component_id}", project.name), &briefing)?;
+        let file = context_file(&briefing_name(project, component_id), &briefing)?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
-        let dirs: Vec<_> = project
+        context_dirs = project
             .neighbours(component_id)
             .iter()
             .map(|(n, _)| project.component_dir(n))
@@ -866,7 +876,7 @@ pub fn session_spec(
         let briefing = Briefing {
             file: &file,
             text: &briefing,
-            dirs: &dirs,
+            dirs: &context_dirs,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -883,6 +893,7 @@ pub fn session_spec(
         ready_when: terminal.ready_when.clone(),
         service: terminal.kind == TerminalKind::Task,
         notice,
+        dirs: context_dirs,
     })
 }
 
@@ -1837,6 +1848,7 @@ mod tests {
                 cwd: fixture.0.clone(),
                 env,
                 notice: None,
+                dirs: Vec::new(),
             });
             assert!(
                 output

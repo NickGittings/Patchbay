@@ -15,6 +15,9 @@ import ChangesPanel from './changes/ChangesPanel'
 import FileTree from './FileTree'
 import TerminalGrid from './TerminalGrid'
 
+/** Panel sizes saved for this window, applied once the project model has loaded. */
+let savedPanels: Record<string, Record<string, number>> | undefined
+
 export default function ComponentWindow({ id }: { id: string }) {
   const project = useStore((s) => s.project)
   const component = useStore((s) => s.nodes.find((n) => n.id === id))
@@ -36,8 +39,11 @@ export default function ComponentWindow({ id }: { id: string }) {
       await reconcileSessions().catch(() => {})
       await register(
         listen<Project>(PROJECT_EVENT, (e) => {
-          if (!useStore.getState().project) useStore.getState().loadProject(e.payload)
-          else useStore.getState().syncProject(e.payload)
+          if (!useStore.getState().project) {
+            useStore.getState().loadProject(e.payload)
+            // Loading resets panel sizes; put back the ones saved for this window.
+            if (savedPanels) useStore.setState({ panels: savedPanels })
+          } else useStore.getState().syncProject(e.payload)
           setReceived(true)
         }),
       )
@@ -64,7 +70,11 @@ export default function ComponentWindow({ id }: { id: string }) {
       'window_layout',
     ).then((layout) => {
       if (layout?.tab === 'files' || layout?.tab === 'changes') setTab(layout.tab)
-      if (layout?.panels) useStore.setState({ panels: layout.panels })
+      if (layout?.panels) {
+        savedPanels = layout.panels
+        // Before the model arrives, the PROJECT_EVENT handler applies them instead.
+        if (useStore.getState().project) useStore.setState({ panels: layout.panels })
+      }
     })
   }, [])
   const changeTab = (value: 'files' | 'changes') => {

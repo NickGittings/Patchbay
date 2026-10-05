@@ -9,7 +9,7 @@ use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
-use patchbay_core::session::{Record, Request};
+use patchbay_core::session::{self, Record, Request};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -29,6 +29,17 @@ mod smoke;
 const WINDOW_CLOSED_EVENT: &str = "patchbay://window-closed";
 const FILE_ACCESS_EVENT: &str = "patchbay://file-access";
 const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
+
+/// A component pop-out's window label. Must match `componentLabel` in `windows.ts`:
+/// the code points of `JSON.stringify([projectId, componentId])` in hex.
+pub(crate) fn component_window_label(project_id: &str, component_id: &str) -> String {
+    let json = serde_json::to_string(&[project_id, component_id]).unwrap_or_default();
+    let hex: Vec<String> = json
+        .chars()
+        .map(|c| format!("{:x}", u32::from(c)))
+        .collect();
+    format!("component-{}", hex.join("-"))
+}
 
 #[derive(Default)]
 struct AppState {
@@ -218,49 +229,50 @@ async fn open_project(
         let Some(root) = picked else {
             return Ok(None);
         };
-        let root = root.canonicalize().map_err(err)?;
-        let (project, detected) = match Project::load(&root).map_err(err)? {
-            Some(project) => (project, false),
-            None => (detect::detect_with(&root, &detectors).map_err(err)?, true),
-        };
-        let id = workspace::project_id(&workspace::home().map_err(err)?.join("workspaces"), &root)
-            .map_err(err)?;
+        let loaded = workspace::load_project(&root, &detectors).map_err(err)?;
         let scoped = {
             let state = app.state::<AppState>();
             let mut projects = state.projects.write().unwrap();
-            projects.entry(id.clone()).or_default().clone()
+            projects.entry(loaded.id.clone()).or_default().clone()
         };
         let access = scoped.access.clone();
-        let candidates = external_candidates(&project, &root);
-        let already_open = access.snapshot().root().is_some();
-        let allowed = !already_open
-            && !candidates.is_empty()
-            && confirm_external(&window, &root, &candidates);
-        if !already_open {
-            access.open(&project).map_err(err)?;
+        if access.snapshot().root().is_none() {
+            access.open(&loaded.project).map_err(err)?;
         }
-        if allowed {
+        // Ask about the external folders not yet allowed, also when the project
+        // is already open: a restored workspace never carries grants over.
+        let granted = access.snapshot();
+        let candidates: Vec<_> = external_candidates(&loaded.project, &loaded.root)
+            .into_iter()
+            .filter(|d| !granted.is_granted(d))
+            .collect();
+        if !candidates.is_empty() && confirm_external(&window, &loaded.root, &candidates) {
             for dir in candidates {
                 access.grant(&dir).map_err(err)?;
             }
+            let _ = app.emit(FILE_ACCESS_EVENT, ());
         }
-        rewatch(&app, &id);
-        let snapshot = access.snapshot();
-        let locked = project
-            .components
-            .iter()
-            .filter(|c| snapshot.readable(&c.path).is_none())
-            .map(|c| c.id.clone())
-            .collect();
-        Ok(Some(Opened {
-            id,
-            fingerprint: workspace::fingerprint(&root).map_err(err)?,
-            project,
-            detected,
-            locked,
-        }))
+        rewatch(&app, &loaded.id);
+        Ok(Some(to_opened(loaded, &access.snapshot())))
     })
     .await
+}
+
+fn to_opened(loaded: workspace::Loaded, access: &AccessSnapshot) -> Opened {
+    let locked = loaded
+        .project
+        .components
+        .iter()
+        .filter(|c| access.readable(&c.path).is_none())
+        .map(|c| c.id.clone())
+        .collect();
+    Opened {
+        id: loaded.id,
+        fingerprint: loaded.fingerprint,
+        project: loaded.project,
+        detected: loaded.detected,
+        locked,
+    }
 }
 
 /// Components and links a rescan or an added folder put on the map, with their
@@ -673,6 +685,16 @@ async fn terminal_start(
     .await
 }
 
+/// Run a session service request on a blocking worker, never the main thread.
+async fn service<T: serde::de::DeserializeOwned + Send + 'static>(
+    state: &AppState,
+    request: Request,
+) -> CmdResult<T> {
+    let bridge = state.service.clone();
+    blocking(move || bridge.call(request)).await
+}
+
+/// Keystrokes are queued in order and return at once.
 #[tauri::command]
 fn terminal_write(
     window: WebviewWindow,
@@ -680,7 +702,7 @@ fn terminal_write(
     session_id: String,
     data: String,
 ) -> CmdResult<()> {
-    state.service.call(Request::Write {
+    state.service.send(Request::Write {
         id: session_id,
         viewer: window.label().into(),
         data,
@@ -694,7 +716,7 @@ fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> CmdResult<()> {
-    state.service.call(Request::Resize {
+    state.service.send(Request::Resize {
         id: session_id,
         viewer: window.label().into(),
         cols,
@@ -702,91 +724,106 @@ fn terminal_resize(
     })
 }
 #[tauri::command]
-fn terminal_stop(state: State<AppState>, session_id: String) -> CmdResult<()> {
-    state.service.call(Request::Stop { id: session_id })
+async fn terminal_stop(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+    service(&state, Request::Stop { id: session_id }).await
 }
 #[tauri::command]
-fn terminal_seen(state: State<AppState>, session_id: String) -> CmdResult<()> {
-    state.service.call(Request::Seen { id: session_id })
+async fn terminal_seen(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+    service(&state, Request::Seen { id: session_id }).await
 }
 #[tauri::command]
-fn terminal_snapshot(state: State<AppState>, session_id: String) -> CmdResult<Option<Snapshot>> {
-    state.service.call(Request::Snapshot { id: session_id })
+async fn terminal_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CmdResult<Option<Snapshot>> {
+    service(&state, Request::Snapshot { id: session_id }).await
 }
+/// Register this window as a viewer (and, with `claim`, the one that types and
+/// sizes the PTY). Returns no output: windows hydrate with `terminal_snapshot`.
 #[tauri::command]
-fn terminal_attach(
+async fn terminal_attach(
     window: WebviewWindow,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     session_id: String,
     claim: bool,
-) -> CmdResult<Option<Snapshot>> {
-    state.service.call(Request::Attach {
+) -> CmdResult<()> {
+    let request = Request::Claim {
         id: session_id,
         viewer: window.label().into(),
         claim,
-    })
+    };
+    service(&state, request).await
 }
 #[tauri::command]
-fn terminal_detach(
+async fn terminal_detach(
     window: WebviewWindow,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     session_id: String,
 ) -> CmdResult<()> {
-    state.service.call(Request::Detach {
+    let request = Request::Detach {
         id: session_id,
         viewer: window.label().into(),
-    })
+    };
+    service(&state, request).await
 }
 #[tauri::command]
-fn sessions_list(state: State<AppState>) -> CmdResult<Vec<Record>> {
-    state.service.call(Request::List)
+async fn sessions_list(state: State<'_, AppState>) -> CmdResult<Vec<Record>> {
+    let bridge = state.service.clone();
+    blocking(move || bridge.list()).await
 }
 #[tauri::command]
-fn session_resume(
-    state: State<AppState>,
+async fn session_resume(
+    state: State<'_, AppState>,
     session_id: String,
     request_id: String,
 ) -> CmdResult<String> {
-    let records = state.service.call::<Vec<Record>>(Request::List)?;
-    let record = records
-        .iter()
-        .find(|r| r.id == session_id)
-        .ok_or("Unknown session")?;
-    let scoped = state.project(&record.metadata.project_id)?;
-    files::resolve(&scoped.roots(), &record.spec.cwd).map_err(err)?;
-    if let Some(extension_id) = &record.metadata.extension_id {
-        state
-            .extensions
-            .get()
-            .allowed(extension_id, None)
-            .map_err(err)?;
-    }
-    state.service.call(Request::Resume {
-        id: session_id,
-        request_id,
+    let bridge = state.service.clone();
+    let extensions = state.extensions.clone();
+    let projects: HashMap<_, _> = state.projects.read().unwrap().clone();
+    blocking(move || {
+        let records = bridge.list()?;
+        let record = records
+            .iter()
+            .find(|r| r.id == session_id)
+            .ok_or("Unknown session")?;
+        let scoped = projects
+            .get(&record.metadata.project_id)
+            .ok_or("Project unavailable; locate its folder first")?;
+        session::check_resume(record, &scoped.roots()).map_err(err)?;
+        if let Some(extension_id) = &record.metadata.extension_id {
+            extensions.get().allowed(extension_id, None).map_err(err)?;
+        }
+        bridge.call(Request::Resume {
+            id: session_id,
+            request_id,
+        })
     })
+    .await
 }
 #[tauri::command]
-fn session_conversation(
-    state: State<AppState>,
+async fn session_conversation(
+    state: State<'_, AppState>,
     session_id: String,
     conversation_id: String,
 ) -> CmdResult<()> {
-    state.service.call(Request::Conversation {
+    let request = Request::Conversation {
         id: session_id,
         conversation_id,
-    })
+    };
+    service(&state, request).await
 }
 #[tauri::command]
-fn session_forget(state: State<AppState>, session_id: String) -> CmdResult<()> {
-    state.service.call(Request::Forget { id: session_id })
+async fn session_forget(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+    service(&state, Request::Forget { id: session_id }).await
 }
 #[tauri::command]
-fn quit_patchbay(app: AppHandle, state: State<AppState>, stop_work: bool) -> CmdResult<()> {
+async fn quit_patchbay(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    stop_work: bool,
+) -> CmdResult<()> {
     if stop_work {
-        state
-            .service
-            .call::<()>(Request::Shutdown { stop_running: true })?;
+        service::<()>(&state, Request::Shutdown { stop_running: true }).await?;
     }
     state
         .quitting
@@ -1298,44 +1335,21 @@ async fn workspace_load(
         let mut errors = HashMap::new();
         for entry in &document.projects {
             let result = (|| -> CmdResult<Opened> {
-                let root = Path::new(&entry.root).canonicalize().map_err(err)?;
-                let (project, detected) = match Project::load(&root).map_err(err)? {
-                    Some(p) => (p, false),
-                    None => (
-                        detect::detect_with(&root, &extensions.get().detectors()).map_err(err)?,
-                        true,
-                    ),
-                };
-                let id = workspace::project_id(
-                    &workspace::home().map_err(err)?.join("workspaces"),
-                    &root,
-                )
-                .map_err(err)?;
-                if id != entry.id {
-                    return Err("Project identity changed; locate its folder explicitly".into());
-                }
+                let loaded = workspace::restore_project(entry, &extensions.get().detectors())
+                    .map_err(err)?;
                 let scoped = Arc::new(ProjectAccess::default());
-                scoped.access.open(&project).map_err(err)?;
-                // External grants are revalidated by trusted pickers; restoration cannot grant them.
-                let locked = project
-                    .components
-                    .iter()
-                    .filter(|c| scoped.access.snapshot().readable(&c.path).is_none())
-                    .map(|c| c.id.clone())
-                    .collect();
+                scoped.access.open(&loaded.project).map_err(err)?;
+                // External grants are revalidated by trusted pickers; restoration cannot
+                // grant them. Opening the project again asks for them.
+                let id = loaded.id.clone();
+                let restored = to_opened(loaded, &scoped.access.snapshot());
                 app.state::<AppState>()
                     .projects
                     .write()
                     .unwrap()
                     .insert(id.clone(), scoped);
                 rewatch(&app, &id);
-                Ok(Opened {
-                    id,
-                    fingerprint: workspace::fingerprint(&root).map_err(err)?,
-                    project,
-                    detected,
-                    locked,
-                })
+                Ok(restored)
             })();
             match result {
                 Ok(project) => opened.push(project),
@@ -1379,35 +1393,38 @@ async fn project_relink(
     project_id: String,
 ) -> CmdResult<Option<Opened>> {
     main_only(&window)?;
-    let entry = state
+    if !state
         .workspace
         .lock()
         .unwrap()
         .projects
         .iter()
-        .find(|p| p.id == project_id)
-        .cloned()
-        .ok_or("Unknown unavailable project")?;
+        .any(|p| p.id == project_id)
+    {
+        return Err("Unknown unavailable project".into());
+    }
     let Some(mut opened) = open_project(app.clone(), window, state, None).await? else {
         return Ok(None);
     };
     let state = app.state::<AppState>();
-    if state
-        .workspace
-        .lock()
-        .unwrap()
-        .projects
-        .iter()
-        .any(|p| p.id == opened.id && p.id != entry.id)
-    {
-        return Err("That folder is already another open project. Select its tab instead.".into());
+    let chosen = workspace::Loaded {
+        id: opened.id.clone(),
+        root: PathBuf::from(&opened.project.root),
+        project: opened.project.clone(),
+        detected: opened.detected,
+        fingerprint: opened.fingerprint.clone(),
+    };
+    let document = state.workspace.lock().unwrap().clone();
+    if let Err(e) = workspace::relink_project(&document, &project_id, &chosen) {
+        // `open_project` registered the folder under its own identity; undo that.
+        if opened.id != project_id
+            && let Some(scoped) = state.projects.write().unwrap().remove(&opened.id)
+        {
+            scoped.watcher.stop();
+        }
+        return Err(err(e));
     }
-    workspace::relink(
-        &workspace::home().map_err(err)?.join("workspaces"),
-        &entry.id,
-        Path::new(&opened.project.root),
-    )
-    .map_err(err)?;
+    let entry_id = project_id;
     let scoped = state
         .projects
         .write()
@@ -1423,9 +1440,9 @@ async fn project_relink(
         .projects
         .write()
         .unwrap()
-        .insert(entry.id.clone(), relinked);
-    rewatch(&app, &entry.id);
-    opened.id = entry.id;
+        .insert(entry_id.clone(), relinked);
+    rewatch(&app, &entry_id);
+    opened.id = entry_id;
     Ok(Some(opened))
 }
 #[tauri::command]

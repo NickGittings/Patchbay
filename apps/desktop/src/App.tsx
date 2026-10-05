@@ -28,8 +28,9 @@ import { useStore } from './store'
 function useGitRefresh() {
   useEffect(() => {
     let stopped = false
-    const unlisten = listen<string>(GIT_DIRTY_EVENT, (event) => {
-      if (!stopped) void requestGitRefresh(event.payload)
+    // Watchers name their project; window focus sends no payload (null): refresh the active one.
+    const unlisten = listen<string | null>(GIT_DIRTY_EVENT, (event) => {
+      if (!stopped) void requestGitRefresh(event.payload ?? undefined)
     })
     void unlisten.catch((e) => useStore.getState().setMessage(String(e)))
     return () => {

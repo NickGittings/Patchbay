@@ -3,9 +3,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { sessionsList } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
-import { useStore } from '../store'
+import { projectOf, useStore } from '../store'
+import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
+  type Project,
+  type RuntimeTerminal,
   sessionMetadata,
   sessionId,
   type TerminalEvent,
@@ -71,12 +74,55 @@ export function listenForTerminals() {
   return listening
 }
 
-export function startTerminal(componentId: string, terminalId: string): Promise<void> {
-  const sid = sessionId(componentId, terminalId)
+/** Everything a launch needs, read when it is requested, so a tab switch can't redirect it. */
+interface Launch {
+  sid: string
+  componentId: string
+  terminalId: string
+  projectId: string
+  project: Project
+  highlighted: string[]
+  runtime?: RuntimeTerminal
+}
+
+function captureLaunch(componentId: string, terminalId: string, projectId?: string): Launch {
+  const s = useStore.getState()
+  const id = projectId ?? s.project?.id ?? s.activeProjectId
+  const project = id ? projectOf(id) : null
+  if (!id || !project) throw new Error('Open a project first')
+  const sid = sessionId(componentId, terminalId, id)
+  const state = s.project?.id === id ? s : s.projects[id]?.state
+  return {
+    sid,
+    componentId,
+    terminalId,
+    projectId: id,
+    project,
+    highlighted: [...(state?.highlighted ?? [])],
+    runtime: s.runtimeTerminals[sid],
+  }
+}
+
+/** Start a terminal of `projectId` (default: the active project). */
+export function startTerminal(
+  componentId: string,
+  terminalId: string,
+  projectId?: string,
+): Promise<void> {
+  let launch: Launch
+  try {
+    launch = captureLaunch(componentId, terminalId, projectId)
+  } catch (e) {
+    useStore.getState().setMessage(String(e))
+    return Promise.resolve()
+  }
+  return launchTerminal(launch)
+}
+
+function launchTerminal(launch: Launch): Promise<void> {
+  const { sid, componentId, terminalId, project, runtime } = launch
   const existing = starting.get(sid)
   if (existing) return existing
-  const origin = useStore.getState()
-  const project = origin.toProject()
   const requestId = launchRequests.get(sid) ?? crypto.randomUUID()
   launchRequests.set(sid, requestId)
   const request = (async () => {
@@ -86,8 +132,6 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
       if (requestedEpoch !== epoch) return
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
-      const s = origin
-      const runtime = s.runtimeTerminals[sid]
       if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project)
       else if (runtime?.extensionId && runtime.key)
@@ -99,33 +143,11 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
           runtime.key,
         )
       else if (componentId === PLAN_SCOPE) {
-        const terminal = planTerminals(s.devices).find((t) => t.id === terminalId)
+        const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
-        const ids = [...s.highlighted]
+        const ids = launch.highlighted
         await planStart(project, ids, terminal, requestId)
-        if (requestedEpoch === epoch) {
-          const current = useStore.getState()
-          if (current.activeProjectId === project.projectId) s.markPlanStarted(sid, ids)
-          else {
-            const entry = current.projects[project.projectId!]
-            if (entry?.state)
-              useStore.setState({
-                projects: {
-                  ...current.projects,
-                  [project.projectId!]: {
-                    ...entry,
-                    state: {
-                      ...entry.state,
-                      planStartedWith: {
-                        ...entry.state.planStartedWith,
-                        [sid]: [...ids].sort().join(','),
-                      },
-                    },
-                  },
-                },
-              })
-          }
-        }
+        if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
         await terminalStart(project, componentId, terminalId, undefined, requestId)
       }
@@ -142,22 +164,51 @@ export function startTerminal(componentId: string, terminalId: string): Promise<
   return request
 }
 
+/** Record what a planner started with, in its own project even if another tab is active now. */
+function markPlanStarted(projectId: string, sid: string, ids: string[]) {
+  const current = useStore.getState()
+  if (current.project?.id === projectId) {
+    current.markPlanStarted(sid, ids)
+    return
+  }
+  const entry = current.projects[projectId]
+  if (!entry?.state) return
+  useStore.setState({
+    projects: {
+      ...current.projects,
+      [projectId]: {
+        ...entry,
+        state: {
+          ...entry.state,
+          planStartedWith: {
+            ...entry.state.planStartedWith,
+            [sid]: [...ids].sort().join(','),
+          },
+        },
+      },
+    },
+  })
+}
+
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
 
-/** Restart only after the old process exits, so it cannot race the new spawn. */
+/**
+ * Restart only after the old process exits, so it cannot race the new spawn. The new run
+ * belongs to the project the restart was asked in, even if another tab is active by then.
+ */
 export async function restartTerminal(componentId: string, terminalId: string) {
-  const sid = sessionId(componentId, terminalId)
   const requestedEpoch = epoch
   try {
-    await terminalStop(sid)
+    const launch = captureLaunch(componentId, terminalId)
+    await terminalStop(launch.sid)
     const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(sid))?.running) {
+    while ((await terminalSnapshot(launch.sid))?.running) {
       if (requestedEpoch !== epoch) return
       if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Restart again.')
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    if (requestedEpoch === epoch) await startTerminal(componentId, terminalId)
+    if (requestedEpoch === epoch) await launchTerminal(launch)
   } catch (e) {
     if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
   }
@@ -287,6 +338,13 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
   lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
 }
 
+/** Whether this window's xterm lacks output the service has, e.g. after a gap in events. */
+function behind(sid: string, snapshot: TerminalSnapshot | null) {
+  const cursor = lastSeq.get(sid)
+  if (!cursor || !snapshot) return false
+  return cursor.generation !== snapshot.generation || cursor.end < snapshot.end
+}
+
 const launchRequests = new Map<string, string>()
 let reconciling: Promise<void> | undefined
 export function reconcileSessions(force = true): Promise<void> {
@@ -358,7 +416,8 @@ export function reconcileSessions(force = true): Promise<void> {
               command: r.spec.command,
             },
           })
-        if (force || reconnecting) {
+        // Only sessions this window shows, and after lost events only those that fell behind.
+        if (showsSession(r.metadata) && (reconnecting || (force && behind(r.id, snapshot)))) {
           hydration.delete(r.id)
           await hydrateSession(r.id)
         }

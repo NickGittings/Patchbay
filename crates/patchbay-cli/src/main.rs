@@ -138,6 +138,17 @@ mod tests {
     }
 
     #[test]
+    fn control_keys_map_to_terminal_bytes() {
+        // crossterm 0.29 parses raw 0x1D (Ctrl+]) as Ctrl+5.
+        assert_eq!(control_byte('5'), Some(DETACH));
+        assert_eq!(control_byte(']'), Some(DETACH));
+        assert_eq!(control_byte('4'), Some(0x1c));
+        assert_eq!(control_byte('c'), Some(0x03));
+        assert_eq!(control_byte(' '), Some(0));
+        assert_eq!(control_byte('é'), None);
+    }
+
+    #[test]
     fn plan_without_ids_uses_the_current_project() {
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
@@ -220,6 +231,27 @@ fn sessions(command: SessionsCmd) -> Result<()> {
     }
     Ok(())
 }
+/// Ctrl+] (GS), which detaches instead of reaching the session.
+const DETACH: u8 = 0x1d;
+
+/// The byte a Ctrl+key sends. In raw mode crossterm reports 0x1C–0x1F (Ctrl+\\,
+/// Ctrl+], Ctrl+^, Ctrl+_) as Ctrl+4 to Ctrl+7 and NUL as Ctrl+Space; keyboard
+/// enhancement reports the symbols themselves.
+fn control_byte(c: char) -> Option<u8> {
+    let c = u8::try_from(u32::from(c)).ok()?;
+    match c {
+        b' ' | b'2' | b'@' => Some(0),
+        b'3' | b'[' => Some(0x1b),
+        b'4' | b'\\' => Some(0x1c),
+        b'5' | b']' => Some(0x1d),
+        b'6' | b'^' => Some(0x1e),
+        b'7' | b'_' | b'/' => Some(0x1f),
+        b'8' | b'?' => Some(0x7f),
+        b'a'..=b'z' | b'A'..=b'Z' => Some(c & 0x1f),
+        _ => None,
+    }
+}
+
 fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use patchbay_core::pty::Snapshot;
@@ -301,16 +333,17 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
         if event::poll(std::time::Duration::from_millis(50))? {
             let data = match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if key.code == KeyCode::Char(']')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
+                    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+                    let byte = match key.code {
+                        KeyCode::Char(c) if control => control_byte(c),
+                        _ => None,
+                    };
+                    if byte == Some(DETACH) {
                         break;
                     }
                     match key.code {
-                        KeyCode::Char(c)
-                            if key.modifiers.contains(KeyModifiers::CONTROL) && c.is_ascii() =>
-                        {
-                            char::from(u8::try_from(u32::from(c))? & 0x1f).to_string()
+                        KeyCode::Char(_) if control => {
+                            byte.map(|b| char::from(b).to_string()).unwrap_or_default()
                         }
                         KeyCode::Char(c) => c.to_string(),
                         KeyCode::Enter => "\r".into(),

@@ -6,7 +6,7 @@ use crate::workspace::{atomic_write, home, lock, private_dir};
 use crate::{EventSink, TerminalEvent, TerminalKind};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,17 @@ use std::time::{Duration, Instant};
 
 pub const PROTOCOL: u32 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
-const EVENT_CAP: usize = 2 * 1024 * 1024;
+/// Estimated wire size of the retained event ring (output travels as a JSON number array).
+const EVENT_CAP: usize = 8 * 1024 * 1024;
+/// Events returned by one `Poll`; a full batch tells the poller to come straight back.
+pub const POLL_LIMIT: usize = 512;
+/// Earlier incarnations kept per session, oldest dropped first.
+const MAX_HISTORY: usize = 3;
+/// How much of a finished run's output is searched for a provider's resume hint.
+const CAPTURE_TAIL: usize = 4096;
+/// Reply timeout for quick requests; slow ones (spawning, stopping, resuming) get `SLOW_TIMEOUT`.
+const TIMEOUT: Duration = Duration::from_secs(10);
+const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Endpoint {
     pub protocol: u32,
@@ -26,10 +36,18 @@ pub struct Endpoint {
     pub token: String,
     pub instance: String,
 }
+/// Where the session service keeps its endpoint, locks and records.
+///
+/// # Errors
+/// Fails if there is no home directory.
 pub fn runtime_dir() -> Result<PathBuf> {
     Ok(home()?.join("sessiond"))
 }
 
+/// Read one length-prefixed JSON frame.
+///
+/// # Errors
+/// Fails on I/O errors, an invalid length or invalid JSON.
 pub fn read_frame<T: DeserializeOwned>(stream: &mut impl Read) -> Result<T> {
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
@@ -42,6 +60,10 @@ pub fn read_frame<T: DeserializeOwned>(stream: &mut impl Read) -> Result<T> {
     stream.read_exact(&mut bytes)?;
     Ok(serde_json::from_slice(&bytes)?)
 }
+/// Write one length-prefixed JSON frame.
+///
+/// # Errors
+/// Fails on I/O errors or a frame larger than the protocol allows.
 pub fn write_frame(stream: &mut impl Write, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     anyhow::ensure!(bytes.len() <= MAX_FRAME, "Session protocol frame too large");
@@ -54,6 +76,10 @@ pub fn write_frame(stream: &mut impl Write, value: &impl Serialize) -> Result<()
 struct Hello {
     protocol: u32,
     token: String,
+    /// Connections sharing a client name share terminal authority, so one
+    /// process can use several connections in parallel. Unnamed ones stand alone.
+    #[serde(default)]
+    client: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +95,9 @@ pub struct Metadata {
     pub adapter: Option<Adapter>,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Set explicitly by the user, so captured resume hints never replace it.
+    #[serde(default)]
+    pub conversation_pinned: bool,
     #[serde(default)]
     pub extension_id: Option<String>,
     #[serde(default)]
@@ -116,6 +145,12 @@ pub enum Request {
         spec: SessionSpec,
     },
     Attach {
+        id: String,
+        viewer: String,
+        claim: bool,
+    },
+    /// `Attach` without the snapshot, for viewers that already hold the output.
+    Claim {
         id: String,
         viewer: String,
         claim: bool,
@@ -191,9 +226,24 @@ impl Response {
 pub struct Client {
     stream: TcpStream,
     pub instance: String,
+    /// Set after a transport error or timeout: the stream may still hold the
+    /// reply to an abandoned request, so it must never be read again.
+    broken: bool,
 }
 impl Client {
+    /// Connect to the running service as a standalone client.
+    ///
+    /// # Errors
+    /// Fails if no service is running, its protocol differs, or authentication fails.
     pub fn connect(dir: &Path) -> Result<Self> {
+        Self::connect_as(dir, None)
+    }
+    /// Connect as `client`: every connection with the same name shares terminal
+    /// authority, and loses it only when the last one closes.
+    ///
+    /// # Errors
+    /// Fails if no service is running, its protocol differs, or authentication fails.
+    pub fn connect_as(dir: &Path, client: Option<&str>) -> Result<Self> {
         let endpoint: Endpoint =
             serde_json::from_slice(&std::fs::read(dir.join("endpoint.json"))?)?;
         anyhow::ensure!(
@@ -202,14 +252,15 @@ impl Client {
         );
         let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
         let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(TIMEOUT))?;
+        stream.set_write_timeout(Some(TIMEOUT))?;
         stream.set_nodelay(true)?;
         write_frame(
             &mut stream,
             &Hello {
                 protocol: PROTOCOL,
                 token: endpoint.token,
+                client: client.map(Into::into),
             },
         )?;
         let response: Response = read_frame(&mut stream)?;
@@ -219,85 +270,145 @@ impl Client {
         Ok(Self {
             stream,
             instance: endpoint.instance,
+            broken: false,
         })
     }
+    /// Connect, starting the helper first if no service is running.
+    ///
+    /// # Errors
+    /// Fails if a service of another protocol is running, the helper is missing,
+    /// or no service answers within 10 seconds.
     pub fn ensure(dir: &Path, helper: &Path) -> Result<Self> {
-        if let Ok(client) = Self::connect(dir) {
+        Self::ensure_as(dir, helper, None)
+    }
+    /// `ensure` with a client name, as for `connect_as`.
+    ///
+    /// # Errors
+    /// As for `ensure`.
+    pub fn ensure_as(dir: &Path, helper: &Path, client: Option<&str>) -> Result<Self> {
+        if let Ok(client) = Self::connect_as(dir, client) {
             return Ok(client);
         }
         private_dir(dir)?;
         // A separate OS lock serializes launcher clients. Service lifetime uses service.lock.
         let startup = lock(&dir.join("startup.lock"))?;
         startup.lock()?;
-        if let Ok(client) = Self::connect(dir) {
-            return Ok(client);
-        }
-        if let Ok(bytes) = std::fs::read(dir.join("endpoint.json")) {
-            let endpoint: Endpoint = serde_json::from_slice(&bytes)?;
-            anyhow::ensure!(
-                endpoint.protocol == PROTOCOL,
-                "Session service protocol mismatch; running work was preserved. Use the matching Patchbay version."
-            );
-        }
-        let service_lock = lock(&dir.join("service.lock"))?;
-        if service_lock.try_lock().is_ok() {
-            service_lock.unlock()?;
-            anyhow::ensure!(
-                helper.is_file(),
-                "Session helper missing at {}. Build/install patchbay-sessiond alongside Patchbay.",
-                helper.display()
-            );
-            let mut command = std::process::Command::new(helper);
-            command.arg(dir);
-            let log_path = dir.join("service.log");
-            let mut options = std::fs::OpenOptions::new();
-            options.create(true).append(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > 128 * 1024) {
-                atomic_write(&log_path, b"")?;
-            }
-            command
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(options.open(log_path)?);
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                command.process_group(0);
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                command.creation_flags(0x0000_0008 | 0x0800_0000);
-            }
-            let mut child = command.spawn().context("Starting session helper")?;
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
         let until = Instant::now() + Duration::from_secs(10);
+        let mut spawned: Option<Instant> = None;
         loop {
-            match Self::connect(dir) {
+            let error = match Self::connect_as(dir, client) {
                 Ok(client) => return Ok(client),
-                Err(e) if Instant::now() >= until => {
-                    return Err(e.context("Session service unavailable; no work was restarted"));
-                }
-                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) => e,
+            };
+            if Instant::now() >= until {
+                return Err(error.context("Session service unavailable; no work was restarted"));
             }
+            // No live service holds the lifetime lock: whatever endpoint.json says is
+            // stale (an older version's, or one that exited while we connected).
+            // Start one, again if the last one we started has since gone idle.
+            if service_stopped(dir)?
+                && spawned.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
+            {
+                spawn_helper(dir, helper)?;
+                spawned = Some(Instant::now());
+            } else if spawned.is_none()
+                && let Ok(bytes) = std::fs::read(dir.join("endpoint.json"))
+                && serde_json::from_slice::<Endpoint>(&bytes).is_ok_and(|e| e.protocol != PROTOCOL)
+            {
+                bail!(
+                    "Session service protocol mismatch; running work was preserved. Use the matching Patchbay version."
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
+    /// Whether a transport error or timeout made this connection unusable.
+    #[must_use]
+    pub fn is_broken(&self) -> bool {
+        self.broken
+    }
+    /// Send one request and wait for its reply.
+    ///
+    /// # Errors
+    /// Fails if the service reports an error, or on transport errors and timeouts,
+    /// after which the client is broken and every later call fails.
     pub fn call<T: DeserializeOwned>(&mut self, request: Request) -> Result<T> {
-        write_frame(&mut self.stream, &request)?;
-        let response: Response = read_frame(&mut self.stream)?;
+        anyhow::ensure!(!self.broken, "Session service connection was lost");
+        let timeout = match request {
+            Request::Start { .. }
+            | Request::Resume { .. }
+            | Request::Stop { .. }
+            | Request::Forget { .. }
+            | Request::Shutdown { .. } => SLOW_TIMEOUT,
+            _ => TIMEOUT,
+        };
+        let response = (|| -> Result<Response> {
+            self.stream.set_read_timeout(Some(timeout))?;
+            write_frame(&mut self.stream, &request)?;
+            read_frame(&mut self.stream)
+        })();
+        let response = match response {
+            Ok(response) => response,
+            Err(e) => {
+                self.broken = true;
+                return Err(e);
+            }
+        };
         if let Some(error) = response.error {
             bail!("{error}");
         }
         Ok(serde_json::from_value(response.result)?)
     }
+}
+
+/// True when no service process holds the lifetime lock.
+fn service_stopped(dir: &Path) -> Result<bool> {
+    let service_lock = lock(&dir.join("service.lock"))?;
+    if service_lock.try_lock().is_ok() {
+        service_lock.unlock()?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn spawn_helper(dir: &Path, helper: &Path) -> Result<()> {
+    anyhow::ensure!(
+        helper.is_file(),
+        "Session helper missing at {}. Build/install patchbay-sessiond alongside Patchbay.",
+        helper.display()
+    );
+    let mut command = std::process::Command::new(helper);
+    command.arg(dir);
+    let log_path = dir.join("service.log");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > 128 * 1024) {
+        atomic_write(&log_path, b"")?;
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(options.open(log_path)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0008 | 0x0800_0000);
+    }
+    let mut child = command.spawn().context("Starting session helper")?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 #[derive(Default)]
 struct Events {
@@ -307,7 +418,7 @@ struct Events {
 }
 #[derive(Clone)]
 struct Viewer {
-    client: usize,
+    client: String,
     viewer: String,
     order: u64,
 }
@@ -316,15 +427,24 @@ pub struct Service {
     records: Mutex<BTreeMap<String, Record>>,
     events: Mutex<Events>,
     viewers: Mutex<BTreeMap<String, Vec<Viewer>>>,
+    /// Open connections per client name; viewers are dropped with the last one.
+    connections: Mutex<HashMap<String, usize>>,
+    /// Sessions that exited since the serve loop last looked for resume hints.
+    exited: Mutex<Vec<String>>,
     operation: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
     dir: PathBuf,
+    /// Records or lifecycle changed: persisted within `SAVE_DIRTY`.
     dirty: AtomicBool,
+    /// Only output arrived: persisted within `SAVE_OUTPUT`.
+    output_dirty: AtomicBool,
     shutdown: AtomicBool,
     clients: AtomicUsize,
     authority: AtomicUsize,
 }
+const SAVE_DIRTY: Duration = Duration::from_millis(500);
+const SAVE_OUTPUT: Duration = Duration::from_secs(5);
 impl Service {
     fn load(dir: &Path) -> Result<Arc<Self>> {
         let path = dir.join("sessions.json");
@@ -342,6 +462,7 @@ impl Service {
                 record.interrupted = true;
             }
             record.history.iter_mut().for_each(|s| s.running = false);
+            trim_history(&mut record.history);
         }
         let generation = records
             .values()
@@ -358,11 +479,14 @@ impl Service {
             records: Mutex::new(records),
             events: Mutex::default(),
             viewers: Mutex::default(),
+            connections: Mutex::default(),
+            exited: Mutex::default(),
             operation: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
             dir: dir.into(),
             dirty: AtomicBool::new(true),
+            output_dirty: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             clients: AtomicUsize::new(0),
             authority: AtomicUsize::new(0),
@@ -373,6 +497,7 @@ impl Service {
             .snapshot(id)
             .or_else(|| self.records.lock().unwrap().get(id)?.snapshot.clone())
     }
+    /// Every record with its live snapshot, output included, for persistence.
     fn list(&self) -> Vec<Record> {
         let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
         for r in &mut records {
@@ -382,6 +507,38 @@ impl Service {
         }
         records
     }
+    /// Records without output, environment or launch internals, for clients.
+    /// Never copies a backlog.
+    fn summaries(&self) -> Vec<Record> {
+        let bare = |s: &Snapshot| Snapshot {
+            data: Vec::new(),
+            notice: s.notice.clone(),
+            status: s.status.clone(),
+            ..*s
+        };
+        let records = self.records.lock().unwrap();
+        records
+            .values()
+            .map(|r| {
+                let mut spec = r.spec.clone();
+                spec.env.clear();
+                spec.command.clone_from(&r.metadata.command);
+                Record {
+                    id: r.id.clone(),
+                    metadata: r.metadata.clone(),
+                    spec,
+                    snapshot: self
+                        .pty
+                        .snapshot_with(&r.id, 0)
+                        .or_else(|| r.snapshot.as_ref().map(bare)),
+                    history: r.history.iter().map(bare).collect(),
+                    launch_command: String::new(),
+                    interrupted: r.interrupted,
+                    request_ids: Vec::new(),
+                }
+            })
+            .collect()
+    }
     fn persist(&self) -> Result<()> {
         let _persistence = self.persistence.lock().unwrap();
         let records: BTreeMap<_, _> = self.list().into_iter().map(|r| (r.id.clone(), r)).collect();
@@ -390,13 +547,72 @@ impl Service {
             &serde_json::to_vec(&records)?,
         )
     }
-    fn owns(&self, client: usize, id: &str, viewer: &str) -> bool {
+    fn owns(&self, client: &str, id: &str, viewer: &str) -> bool {
         self.viewers
             .lock()
             .unwrap()
             .get(id)
             .and_then(|v| v.iter().max_by_key(|v| v.order))
             .is_some_and(|v| v.client == client && v.viewer == viewer)
+    }
+    fn claim(&self, client: &str, id: String, viewer: String, claim: bool) {
+        let mut viewers = self.viewers.lock().unwrap();
+        let own = viewers.entry(id).or_default();
+        let order = self.authority.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+        match own
+            .iter_mut()
+            .find(|v| v.client == client && v.viewer == viewer)
+        {
+            Some(v) if claim => v.order = order,
+            Some(_) => {}
+            None => own.push(Viewer {
+                client: client.into(),
+                viewer,
+                order: if claim || own.is_empty() { order } else { 0 },
+            }),
+        }
+    }
+    fn connected(&self, client: &str) {
+        *self
+            .connections
+            .lock()
+            .unwrap()
+            .entry(client.into())
+            .or_default() += 1;
+    }
+    fn disconnected(&self, client: &str) {
+        let mut connections = self.connections.lock().unwrap();
+        let count = connections.entry(client.into()).or_default();
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            connections.remove(client);
+            for viewers in self.viewers.lock().unwrap().values_mut() {
+                viewers.retain(|v| v.client != client);
+            }
+        }
+    }
+    /// Read the resume hints providers print as they exit, from the tail of each
+    /// finished run. Runs outside the event path, which holds the backlog lock.
+    fn capture_conversations(&self) {
+        let exited = std::mem::take(&mut *self.exited.lock().unwrap());
+        for id in exited {
+            let Some(tail) = self.pty.snapshot_with(&id, CAPTURE_TAIL) else {
+                continue;
+            };
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(&id) else {
+                continue;
+            };
+            if record.metadata.conversation_pinned {
+                continue;
+            }
+            if let Some(adapter) = record.metadata.adapter
+                && let Some(conversation) = adapter.capture(&String::from_utf8_lossy(&tail.data))
+            {
+                record.metadata.conversation_id = Some(conversation);
+                self.dirty.store(true, Ordering::Release);
+            }
+        }
     }
     fn start(
         self: &Arc<Self>,
@@ -435,13 +651,13 @@ impl Service {
             "Terminal is already running; reconnect instead"
         );
         if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
+            let running = self.records.lock().unwrap().values().any(|r| {
+                r.metadata.adapter == Some(adapter)
+                    && r.metadata.conversation_id.as_ref() == Some(conversation)
+                    && self.pty.is_running(&r.id)
+            });
             anyhow::ensure!(
-                !self
-                    .list()
-                    .iter()
-                    .any(|r| r.metadata.adapter == Some(adapter)
-                        && r.metadata.conversation_id.as_ref() == Some(conversation)
-                        && r.snapshot.as_ref().is_some_and(|s| s.running)),
+                !running,
                 "Conversation is already running; reconnect instead"
             );
         }
@@ -452,11 +668,13 @@ impl Service {
         if let Some(snapshot) = self.snapshot(&id) {
             history.push(snapshot);
         }
-        // History is bounded per incarnation; users can explicitly forget a session.
+        trim_history(&mut history);
         let mut requests = previous
             .as_ref()
             .map_or_else(Vec::new, |r| r.request_ids.clone());
         requests.push(request);
+        // Only recent launches can be retried; older request ids are useless.
+        requests.drain(..requests.len().saturating_sub(16));
         self.records.lock().unwrap().insert(
             id.clone(),
             Record {
@@ -479,28 +697,50 @@ impl Service {
             }
             return Err(e);
         }
+        // The serve loop persists shortly; a launch never waits on a full rewrite.
         self.dirty.store(true, Ordering::Release);
-        self.persist()?;
         Ok(id)
     }
-    fn handle(self: &Arc<Self>, client: usize, request: Request) -> Result<serde_json::Value> {
+    fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
+        let mut r = self
+            .records
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .context("Unknown session")?;
+        if r.request_ids.contains(&request_id) {
+            return Ok(id.into());
+        }
+        let adapter = r
+            .metadata
+            .adapter
+            .context("Select an adapter to resume this conversation")?;
+        let conversation = r
+            .metadata
+            .conversation_id
+            .as_ref()
+            .context("Set conversation ID before resuming")?;
+        // The recorded command points at its briefing; never resume without it.
+        if let Some(file) = r.spec.env.get(crate::context::CONTEXT_ENV) {
+            anyhow::ensure!(
+                Path::new(file).is_file(),
+                "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
+            );
+        }
+        let original = if r.launch_command.is_empty() {
+            r.spec.command.clone()
+        } else {
+            r.launch_command.clone()
+        };
+        r.spec.command = adapter.resume(&original, conversation, &r.spec.cwd)?;
+        crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
+        // Keep the original launch command for later resumes; context environment persists.
+        self.start_with_command(request_id, r.metadata, r.spec, Some(original))
+    }
+    fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
-            Request::List => {
-                let mut records = self.list();
-                for r in &mut records {
-                    if let Some(s) = &mut r.snapshot {
-                        s.data.clear();
-                    }
-                    for s in &mut r.history {
-                        s.data.clear();
-                    }
-                    r.spec.env.clear();
-                    r.request_ids.clear();
-                    r.spec.command.clone_from(&r.metadata.command);
-                    r.launch_command.clear();
-                }
-                serde_json::to_value(records)?
-            }
+            Request::List => serde_json::to_value(self.summaries())?,
             Request::History { id, incarnation } => {
                 let snapshot = self
                     .records
@@ -518,23 +758,12 @@ impl Service {
             } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
             Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
             Request::Attach { id, viewer, claim } => {
-                let mut viewers = self.viewers.lock().unwrap();
-                let own = viewers.entry(id.clone()).or_default();
-                let order = self.authority.fetch_add(1, Ordering::Relaxed) as u64 + 1;
-                match own
-                    .iter_mut()
-                    .find(|v| v.client == client && v.viewer == viewer)
-                {
-                    Some(v) if claim => v.order = order,
-                    Some(_) => {}
-                    None => own.push(Viewer {
-                        client,
-                        viewer,
-                        order: if claim || own.is_empty() { order } else { 0 },
-                    }),
-                }
-                drop(viewers);
+                self.claim(client, id.clone(), viewer, claim);
                 serde_json::to_value(self.snapshot(&id))?
+            }
+            Request::Claim { id, viewer, claim } => {
+                self.claim(client, id, viewer, claim);
+                serde_json::Value::Null
             }
             Request::Detach { id, viewer } => {
                 if let Some(v) = self.viewers.lock().unwrap().get_mut(&id) {
@@ -593,7 +822,7 @@ impl Service {
                         .ring
                         .iter()
                         .filter(|(_, e)| e.sequence > after)
-                        .take(256)
+                        .take(POLL_LIMIT)
                         .map(|(_, e)| e.clone())
                         .collect(),
                 })?
@@ -613,47 +842,12 @@ impl Service {
                     "Select an agent adapter before setting a conversation ID"
                 );
                 record.metadata.conversation_id = Some(conversation_id);
+                record.metadata.conversation_pinned = true;
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
             }
             Request::Resume { id, request_id } => {
-                let mut r = self
-                    .records
-                    .lock()
-                    .unwrap()
-                    .get(&id)
-                    .cloned()
-                    .context("Unknown session")?;
-                if r.request_ids.contains(&request_id) {
-                    return Ok(serde_json::to_value(id)?);
-                }
-                let adapter = r
-                    .metadata
-                    .adapter
-                    .context("Select an adapter to resume this conversation")?;
-                let conversation = r
-                    .metadata
-                    .conversation_id
-                    .as_ref()
-                    .context("Set conversation ID before resuming")?;
-                let original = if r.launch_command.is_empty() {
-                    r.spec.command.clone()
-                } else {
-                    r.launch_command.clone()
-                };
-                r.spec.command = adapter.resume(
-                    if r.launch_command.is_empty() {
-                        &r.spec.command
-                    } else {
-                        &r.launch_command
-                    },
-                    conversation,
-                    &r.spec.cwd,
-                )?;
-                crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
-                // Keep the original launch command for later resumes; context environment persists.
-                let id = self.start_with_command(request_id, r.metadata, r.spec, Some(original))?;
-                serde_json::to_value(id)?
+                serde_json::to_value(self.resume(&id, request_id)?)?
             }
             Request::Forget { id } => {
                 let _operation = self.operation.lock().unwrap();
@@ -664,17 +858,12 @@ impl Service {
                 self.records.lock().unwrap().remove(&id);
                 self.pty.forget(&id);
                 self.dirty.store(true, Ordering::Release);
-                self.persist()?;
                 serde_json::Value::Null
             }
             Request::Shutdown { stop_running } => {
                 let _operation = self.operation.lock().unwrap();
-                let running = self
-                    .list()
-                    .iter()
-                    .any(|r| r.snapshot.as_ref().is_some_and(|s| s.running));
                 anyhow::ensure!(
-                    !running || stop_running,
+                    !self.pty.has_running() || stop_running,
                     "Work is running; shutdown requires --stop-running"
                 );
                 if stop_running {
@@ -688,22 +877,36 @@ impl Service {
         Ok(result)
     }
 }
+/// Check that resuming `record` stays within the folders the user has granted
+/// now (`roots`): its working directory and every folder its recorded launch
+/// added for the agent. Restoring a workspace doesn't restore grants, so a
+/// resume must not quietly bring back access to a folder that is locked again.
+///
+/// # Errors
+/// Fails naming the first folder that is no longer readable.
+pub fn check_resume(record: &Record, roots: &[PathBuf]) -> Result<()> {
+    for dir in std::iter::once(&record.spec.cwd).chain(&record.spec.dirs) {
+        crate::files::resolve(roots, dir).with_context(|| {
+            format!(
+                "{} is locked. Allow it (Browse… or Add repo…) before resuming, or start a fresh session.",
+                dir.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Keep the newest `MAX_HISTORY` incarnations.
+fn trim_history(history: &mut Vec<Snapshot>) {
+    history.drain(..history.len().saturating_sub(MAX_HISTORY));
+}
 impl EventSink for Service {
     fn emit(&self, event: TerminalEvent) {
-        if let TerminalEvent::Output {
-            session_id, data, ..
-        } = &event
-            && let Some(r) = self.records.lock().unwrap().get_mut(session_id)
-            && let Some(adapter) = r.metadata.adapter
-        {
-            // A bounded snapshot also handles messages split across reader chunks.
-            let bytes = self
-                .pty
-                .snapshot(session_id)
-                .map_or_else(|| data.clone(), |s| s.data);
-            if let Some(id) = adapter.capture(&String::from_utf8_lossy(&bytes)) {
-                r.metadata.conversation_id = Some(id);
-            }
+        // Called by the PTY threads, sometimes under a backlog lock: never read
+        // backlogs here.
+        let output = matches!(event, TerminalEvent::Output { .. });
+        if let TerminalEvent::Exited { session_id, .. } = &event {
+            self.exited.lock().unwrap().push(session_id.clone());
         }
         let size = match &event {
             TerminalEvent::Output { data, .. } => data.len() * 4 + 512,
@@ -723,10 +926,19 @@ impl EventSink for Service {
                 events.bytes -= size;
             }
         }
-        self.dirty.store(true, Ordering::Release);
+        if output {
+            self.output_dirty.store(true, Ordering::Release);
+        } else {
+            self.dirty.store(true, Ordering::Release);
+        }
     }
 }
 
+/// Run the session service in this process until it is shut down, or has had
+/// no clients and no running work for a minute.
+///
+/// # Errors
+/// Fails if the runtime directory, lock, listener or records can't be set up.
 pub fn serve(dir: &Path) -> Result<()> {
     private_dir(dir)?;
     let lifetime = lock(&dir.join("service.lock"))?;
@@ -746,69 +958,117 @@ pub fn serve(dir: &Path) -> Result<()> {
     let token = Arc::new(endpoint.token);
     let mut idle = Instant::now();
     let mut saved = Instant::now();
+    let mut saved_output = Instant::now();
     let next = AtomicUsize::new(1);
     while !service.shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let service = service.clone();
                 let token = token.clone();
-                let client = next.fetch_add(1, Ordering::Relaxed);
+                let connection = next.fetch_add(1, Ordering::Relaxed);
+                // Counted before the handshake, so the idle check below can't
+                // shut down under a client that is still connecting.
+                service.clients.fetch_add(1, Ordering::AcqRel);
                 std::thread::spawn(move || {
-                    let _ = stream.set_nonblocking(false);
-                    let _ = stream.set_nodelay(true);
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-                    let Ok(hello) = read_frame::<Hello>(&mut stream) else {
-                        return;
-                    };
-                    let valid = hello.protocol == PROTOCOL && hello.token == *token;
-                    let reply = if valid {
-                        Response::result(Ok(serde_json::Value::Null))
-                    } else {
-                        Response::result(Err(anyhow::anyhow!(
-                            "Session service authentication/protocol mismatch"
-                        )))
-                    };
-                    if write_frame(&mut stream, &reply).is_err() || !valid {
-                        return;
-                    }
-                    service.clients.fetch_add(1, Ordering::Relaxed);
-                    // Authenticated desktop clients poll regularly; CLI attachment does likewise.
-                    while let Ok(request) = read_frame::<Request>(&mut stream) {
-                        let reply = Response::result(service.handle(client, request));
-                        if write_frame(&mut stream, &reply).is_err() {
-                            break;
-                        }
-                    }
-                    for viewers in service.viewers.lock().unwrap().values_mut() {
-                        viewers.retain(|v| v.client != client);
-                    }
-                    service.clients.fetch_sub(1, Ordering::Relaxed);
+                    serve_connection(&service, &mut stream, &token, connection);
+                    service.clients.fetch_sub(1, Ordering::AcqRel);
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.into()),
         }
-        if saved.elapsed() >= Duration::from_millis(500) {
-            if service.dirty.swap(false, Ordering::AcqRel)
-                && let Err(e) = service.persist()
-            {
+        service.capture_conversations();
+        let metadata = saved.elapsed() >= SAVE_DIRTY && service.dirty.swap(false, Ordering::AcqRel);
+        let output = saved_output.elapsed() >= SAVE_OUTPUT
+            && service.output_dirty.swap(false, Ordering::AcqRel);
+        if metadata || output {
+            if let Err(e) = service.persist() {
                 eprintln!("Session persistence failed: {e}");
                 service.dirty.store(true, Ordering::Release);
+            } else {
+                // A full write covers pending output too.
+                service.output_dirty.store(false, Ordering::Release);
+                saved_output = Instant::now();
             }
             saved = Instant::now();
         }
-        if service.clients.load(Ordering::Relaxed) > 0 || service.pty.has_running() {
+        if service.clients.load(Ordering::Acquire) > 0 || service.pty.has_running() {
             idle = Instant::now();
         }
         if idle.elapsed() >= Duration::from_secs(60) {
-            break;
+            // Withdraw the endpoint before the last idle check, so a client either
+            // connected already (and is counted) or finds no endpoint and starts
+            // a new service once this one releases its lock.
+            let _ = std::fs::remove_file(dir.join("endpoint.json"));
+            std::thread::sleep(Duration::from_millis(50));
+            if let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+            if service.clients.load(Ordering::Acquire) == 0 && !service.pty.has_running() {
+                break;
+            }
+            atomic_write(
+                &dir.join("endpoint.json"),
+                &serde_json::to_vec(&Endpoint {
+                    protocol: PROTOCOL,
+                    port: endpoint.port,
+                    token: token.to_string(),
+                    instance: service.instance.clone(),
+                })?,
+            )?;
+            idle = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    service.capture_conversations();
     service.persist()?;
-    std::fs::remove_file(dir.join("endpoint.json"))?;
+    match std::fs::remove_file(dir.join("endpoint.json")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    drop(lifetime);
     Ok(())
+}
+
+fn serve_connection(
+    service: &Arc<Service>,
+    stream: &mut TcpStream,
+    token: &str,
+    connection: usize,
+) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(TIMEOUT));
+    let _ = stream.set_write_timeout(Some(TIMEOUT));
+    let Ok(hello) = read_frame::<Hello>(stream) else {
+        return;
+    };
+    let valid = hello.protocol == PROTOCOL && hello.token == token;
+    let reply = if valid {
+        Response::result(Ok(serde_json::Value::Null))
+    } else {
+        Response::result(Err(anyhow::anyhow!(
+            "Session service authentication/protocol mismatch"
+        )))
+    };
+    if write_frame(stream, &reply).is_err() || !valid {
+        return;
+    }
+    // Clients poll regularly, so an idle read means the client is gone; long
+    // requests are timed on the client side.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
+    let client = hello.client.map_or_else(
+        || format!("connection-{connection}"),
+        |c| format!("client-{c}"),
+    );
+    service.connected(&client);
+    while let Ok(request) = read_frame::<Request>(stream) {
+        let reply = Response::result(service.handle(&client, request));
+        if write_frame(stream, &reply).is_err() {
+            break;
+        }
+    }
+    service.disconnected(&client);
 }
 
 #[cfg(test)]
@@ -835,6 +1095,7 @@ mod tests {
             kind: TerminalKind::Task,
             adapter: None,
             conversation_id: None,
+            conversation_pinned: false,
             extension_id: None,
             command_id: None,
             key: None,
@@ -849,6 +1110,7 @@ mod tests {
             ready_when: String::new(),
             service: false,
             notice: None,
+            dirs: Vec::new(),
         };
         let starts: Vec<_> = (0..4)
             .map(|_| {
@@ -866,7 +1128,7 @@ mod tests {
         assert!(service.start("different".into(), metadata, spec).is_err());
         service
             .handle(
-                1,
+                "1",
                 Request::Attach {
                     id: id.clone(),
                     viewer: "a".into(),
@@ -876,7 +1138,7 @@ mod tests {
             .unwrap();
         service
             .handle(
-                2,
+                "2",
                 Request::Attach {
                     id: id.clone(),
                     viewer: "b".into(),
@@ -884,22 +1146,22 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(!service.owns(1, id, "a"));
-        assert!(service.owns(2, id, "b"));
+        assert!(!service.owns("1", id, "a"));
+        assert!(service.owns("2", id, "b"));
         service
             .handle(
-                2,
+                "2",
                 Request::Detach {
                     id: id.clone(),
                     viewer: "b".into(),
                 },
             )
             .unwrap();
-        assert!(service.owns(1, id, "a"));
+        assert!(service.owns("1", id, "a"));
         assert!(
             service
                 .handle(
-                    1,
+                    "1",
                     Request::Write {
                         id: id.clone(),
                         viewer: "b".into(),
@@ -914,7 +1176,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         let batch: Batch = serde_json::from_value(
             service
-                .handle(1, Request::Poll { after: baseline })
+                .handle("1", Request::Poll { after: baseline })
                 .unwrap(),
         )
         .unwrap();
@@ -938,7 +1200,7 @@ mod tests {
         assert!(
             service
                 .handle(
-                    1,
+                    "1",
                     Request::Shutdown {
                         stop_running: false
                     }
@@ -950,14 +1212,16 @@ mod tests {
         assert_ne!(service.instance, recovered.instance);
         assert!(recovered.list()[0].interrupted);
         assert!(!recovered.snapshot(id).unwrap().running);
-        service.handle(1, Request::Stop { id: id.clone() }).unwrap();
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
         let until = Instant::now() + Duration::from_secs(3);
         while service.snapshot(id).unwrap().running && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!service.snapshot(id).unwrap().running);
         service
-            .handle(1, Request::Forget { id: id.clone() })
+            .handle("1", Request::Forget { id: id.clone() })
             .unwrap();
         assert!(service.list().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
@@ -967,7 +1231,7 @@ mod tests {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
-        for seq in 0..200 {
+        for seq in 0..400 {
             service.emit(TerminalEvent::Output {
                 session_id: "unknown".into(),
                 generation: 1,
@@ -977,9 +1241,93 @@ mod tests {
         }
         assert!(service.events.lock().unwrap().bytes <= EVENT_CAP);
         let batch: Batch =
-            serde_json::from_value(service.handle(1, Request::Poll { after: 0 }).unwrap()).unwrap();
+            serde_json::from_value(service.handle("1", Request::Poll { after: 0 }).unwrap())
+                .unwrap();
         assert!(batch.gap);
         assert_eq!(batch.instance_id, service.instance);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn history_is_bounded() {
+        let snapshot = |generation| Snapshot {
+            truncated: false,
+            data: vec![b'x'; 16],
+            end: 16,
+            generation,
+            running: false,
+            exit_code: Some(0),
+            started_ms: 0,
+            exited_ms: None,
+            status: crate::status::SessionStatus::default(),
+            notice: None,
+        };
+        let mut history: Vec<_> = (0..10).map(snapshot).collect();
+        trim_history(&mut history);
+        assert_eq!(
+            history.iter().map(|s| s.generation).collect::<Vec<_>>(),
+            [7, 8, 9]
+        );
+    }
+    #[test]
+    fn connections_of_one_client_share_authority_until_the_last_closes() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        service.connected("client-a");
+        service.connected("client-a");
+        service.claim("client-a", "s".into(), "main".into(), true);
+        assert!(service.owns("client-a", "s", "main"));
+        service.disconnected("client-a");
+        assert!(service.owns("client-a", "s", "main"));
+        service.disconnected("client-a");
+        assert!(!service.owns("client-a", "s", "main"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn resume_rechecks_recorded_folders() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let project = dir.join("project");
+        let external = dir.join("billing");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let record = Record {
+            id: "s".into(),
+            metadata: Metadata {
+                project_id: "p".into(),
+                project_name: "P".into(),
+                project_root: project.display().to_string(),
+                component_id: "api".into(),
+                terminal_id: "agent".into(),
+                name: "Agent".into(),
+                kind: TerminalKind::Agent,
+                adapter: None,
+                conversation_id: None,
+                conversation_pinned: false,
+                extension_id: None,
+                command_id: None,
+                key: None,
+                command: String::new(),
+            },
+            spec: SessionSpec {
+                id: "s".into(),
+                command: String::new(),
+                cwd: project.clone(),
+                env: BTreeMap::new(),
+                ready_when: String::new(),
+                service: false,
+                notice: None,
+                dirs: vec![external.clone()],
+            },
+            snapshot: None,
+            history: vec![],
+            launch_command: String::new(),
+            interrupted: false,
+            request_ids: vec![],
+        };
+        assert!(check_resume(&record, std::slice::from_ref(&project)).is_err());
+        assert!(check_resume(&record, &[project, external]).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

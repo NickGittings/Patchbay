@@ -333,11 +333,6 @@ fn plain_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// Session ids identify one terminal of one component.
-pub fn session_id(component_id: &str, terminal_id: &str) -> String {
-    crate::workspace::session_id("", component_id, terminal_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

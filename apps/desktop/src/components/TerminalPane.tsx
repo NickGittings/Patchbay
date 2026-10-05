@@ -33,6 +33,7 @@ export default function TerminalPane({
     if (!host) return
     let disposed = false
     attach(sid, host, { focus })
+    // Becoming visible or active (re)claims the PTY; resizing only refits.
     const refit = () => {
       attach(sid, host, { focus: false })
       if (document.visibilityState === 'visible')
@@ -41,7 +42,7 @@ export default function TerminalPane({
           .catch(() => {})
       else void terminalDetach(sid).catch(() => {})
     }
-    const observer = new ResizeObserver(refit)
+    const observer = new ResizeObserver(() => attach(sid, host, { focus: false }))
     observer.observe(host)
     // Fires when this or another window gains focus, which can move PTY sizing here.
     window.addEventListener(ACTIVE_CHANGED, refit)

@@ -7,6 +7,7 @@ function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise
   return tauriInvoke<T>(command, { projectId: useStore.getState().project?.id, ...args })
 }
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
   ChangedFile,
@@ -23,6 +24,8 @@ import type {
 } from '../types'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
+/** Mirrors `service::TERMINAL_EVENT`. */
+const TERMINAL_EVENT = 'patchbay://terminal'
 
 /** Backend folder picker; may also ask whether external folders may be read. */
 export const openProject = () =>
@@ -127,9 +130,11 @@ export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen',
 /** Kill every session and drop retained output; returns the generation floor. */
 export const terminalReset = () => invoke<number>('terminal_reset')
 
-/** The main window hears every session; a pop-out only its own component's (see `TauriSink`). */
+/** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
 export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
-  return listen<{ instanceId: string; event: TerminalEvent }>('patchbay://terminal', (e) =>
+  const label = getCurrentWebviewWindow().label
+  const channel = label === 'main' ? TERMINAL_EVENT : `${TERMINAL_EVENT}/${label}`
+  return listen<{ instanceId: string; event: TerminalEvent }>(channel, (e) =>
     handler({ ...e.payload.event, instanceId: e.payload.instanceId }),
   )
 }
@@ -178,8 +183,9 @@ export const extensionFileRead = (
   projectId = useStore.getState().project?.id,
 ) => invoke<string>('extension_file_read', { extensionId, path, projectId })
 
+/** Register as a viewer; `claim` makes this window the one that types and sizes the PTY. */
 export const terminalAttach = (sessionId: string, claim = false) =>
-  invoke<TerminalSnapshot | null>('terminal_attach', { sessionId, claim })
+  invoke<void>('terminal_attach', { sessionId, claim })
 export const terminalDetach = (sessionId: string) => invoke<void>('terminal_detach', { sessionId })
 export const sessionsList = () => invoke<SessionRecord[]>('sessions_list')
 export const sessionResume = (sessionId: string, requestId: string = crypto.randomUUID()) =>

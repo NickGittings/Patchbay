@@ -33,6 +33,10 @@ pub struct SessionSpec {
     pub service: bool,
     /// A dim line retained and emitted before the process's output.
     pub notice: Option<String>,
+    /// Folders outside `cwd` an agent was given (`--add-dir`), checked again
+    /// against the user's grants before a recorded launch is resumed.
+    #[serde(default)]
+    pub dirs: Vec<PathBuf>,
 }
 
 struct Session {
@@ -649,12 +653,23 @@ impl PtyManager {
     /// Panics if an internal lock is poisoned.
     #[must_use]
     pub fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        self.snapshot_with(id, usize::MAX)
+    }
+
+    /// Like `snapshot`, but keeping at most the last `limit` bytes of output
+    /// (`0` for lifecycle state only), so listings don't copy whole backlogs.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
         let backlogs = self.backlogs.lock().unwrap();
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
+        let skip = backlog.data.len().saturating_sub(limit);
         Some(Snapshot {
             truncated: backlog.end > backlog.data.len() as u64,
-            data: backlog.data.iter().copied().collect(),
+            data: backlog.data.iter().skip(skip).copied().collect(),
             end: backlog.end,
             generation: backlog.generation,
             running: backlog.running,
@@ -894,6 +909,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::new(),
                 notice: Some("Briefing is in $PATCHBAY_CONTEXT_FILE.".into()),
+                dirs: Vec::new(),
                 ready_when: String::new(),
                 service: false,
             },
@@ -941,6 +957,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -984,6 +1001,7 @@ mod tests {
                 ready_when: "ALL SET".into(),
                 service: true,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1032,6 +1050,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1070,6 +1089,7 @@ mod tests {
             ready_when: String::new(),
             service: false,
             notice: None,
+            dirs: Vec::new(),
         };
         let old = Arc::new(Collect::default());
         pty.spawn(spec("sleep 5"), old.clone()).unwrap();
@@ -1100,6 +1120,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1132,6 +1153,7 @@ mod tests {
                     ready_when: String::new(),
                     service: false,
                     notice: None,
+                    dirs: Vec::new(),
                 },
                 sink.clone(),
             )
@@ -1169,6 +1191,7 @@ mod tests {
                             ready_when: String::new(),
                             service: false,
                             notice: None,
+                            dirs: Vec::new(),
                         },
                         sink,
                     )

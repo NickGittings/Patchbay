@@ -10,6 +10,8 @@ pub enum Adapter {
     Codex,
 }
 impl Adapter {
+    /// The adapter a plain `claude` or `codex` launch command implies.
+    #[must_use]
     pub fn default_for(command: &str) -> Option<Self> {
         let words = crate::context::launch_words(command)?;
         match Path::new(words.first()?).file_stem()?.to_str()? {
@@ -18,18 +20,27 @@ impl Adapter {
             _ => None,
         }
     }
+    /// The conversation id in the resume hint a provider prints as it exits.
+    /// Callers pass only the tail of a finished run's output, and only UUIDs (the
+    /// form both providers use) count, so ids quoted in files or docs earlier in
+    /// the run aren't mistaken for the session's own.
+    #[must_use]
     pub fn capture(self, text: &str) -> Option<String> {
-        // Only provider instructions containing the explicit resume invocation count.
         let prefix = match self {
             Self::Claude => "claude --resume ",
             Self::Codex => "codex resume ",
         };
         let (_, suffix) = text.rsplit_once(prefix)?;
         let id = suffix
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .split(|c: char| !c.is_ascii_hexdigit() && c != '-')
             .next()?;
-        valid_id(id).then(|| id.to_string())
+        is_uuid(id).then(|| id.to_ascii_lowercase())
     }
+    /// The command that resumes conversation `id` with the options of `command`.
+    ///
+    /// # Errors
+    /// Fails if the id is invalid, `cwd` is missing, the command isn't a plain
+    /// provider command, already resumes, or the provider has no history for `id`.
     pub fn resume(self, command: &str, id: &str, cwd: &Path) -> Result<String> {
         let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
         let history = match self {
@@ -145,6 +156,9 @@ fn launch_parts(command: &str) -> (&str, &str) {
 }
 
 /// Probe the same login-shell PATH before creating a resumed process incarnation.
+///
+/// # Errors
+/// Fails if the command can't be parsed or its program isn't on the login shell's PATH.
 pub fn require_executable(
     command: &str,
     cwd: &Path,
@@ -179,6 +193,17 @@ pub fn require_executable(
     Ok(())
 }
 
+fn is_uuid(id: &str) -> bool {
+    let groups: Vec<_> = id.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, n)| g.len() == n && g.bytes().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Whether a user-supplied conversation id is safe to pass on a command line.
+#[must_use]
 pub fn valid_id(id: &str) -> bool {
     id.len() >= 8 && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
@@ -187,9 +212,17 @@ mod tests {
     use super::*;
     #[test]
     fn captures_only_explicit_resume_ids() {
+        let id = "0199a213-81c0-7800-8aa1-bbab2a035a53";
         assert_eq!(
-            Adapter::Codex.capture("To continue this session, run codex resume 12345678-abcd"),
-            Some("12345678-abcd".into())
+            Adapter::Codex.capture(&format!(
+                "To continue this session, run codex resume {id}\r\n"
+            )),
+            Some(id.into())
+        );
+        assert!(
+            Adapter::Codex
+                .capture("To continue this session, run codex resume 12345678-abcd")
+                .is_none()
         );
         assert!(
             Adapter::Claude

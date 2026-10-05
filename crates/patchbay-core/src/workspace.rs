@@ -7,6 +7,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const VERSION: u32 = 1;
+/// Patchbay's machine-local state folder (`$PATCHBAY_STATE_DIR` or `~/.patchbay`).
+///
+/// # Errors
+/// Fails if `PATCHBAY_STATE_DIR` is relative or there is no home directory.
 pub fn home() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("PATCHBAY_STATE_DIR") {
         let dir = PathBuf::from(dir);
@@ -19,6 +23,9 @@ pub fn home() -> Result<PathBuf> {
 }
 
 /// Private directories also protect endpoint credentials and captured terminal output.
+///
+/// # Errors
+/// Fails if the folder can't be created, is a symlink or file, or can't be restricted.
 pub fn private_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let meta = std::fs::symlink_metadata(dir)?;
@@ -58,6 +65,10 @@ pub fn private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Open (creating) a lock file, owner-only.
+///
+/// # Errors
+/// Fails if the file can't be opened.
 pub fn lock(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -69,6 +80,10 @@ pub fn lock(path: &Path) -> Result<File> {
     Ok(options.open(path)?)
 }
 
+/// Write then rename, owner-only, synced to disk.
+///
+/// # Errors
+/// Fails if the parent can't be made private or the write or rename fails.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("Missing parent directory")?;
     private_dir(parent)?;
@@ -97,6 +112,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Length-separated UTF-8 input, two independent 64-bit hashes. Treat the result as opaque.
 /// Mirrored in types.ts; metadata is always stored separately, never decoded from the id.
+#[must_use]
 pub fn session_id(project: &str, component: &str, terminal: &str) -> String {
     let mut a: u64 = 0xcbf2_9ce4_8422_2325;
     let mut b: u64 = 0x8422_2325_cbf2_9ce4;
@@ -110,6 +126,10 @@ pub fn session_id(project: &str, component: &str, terminal: &str) -> String {
     format!("s-{a:016x}{b:016x}")
 }
 
+/// A digest of the saved `patchbay.json`, or `"absent"`, to notice edits made elsewhere.
+///
+/// # Errors
+/// Fails if the file exists but can't be read or isn't UTF-8.
 pub fn fingerprint(root: &Path) -> Result<String> {
     match std::fs::read(root.join("patchbay.json")) {
         Ok(bytes) => Ok(session_id("map", "", &String::from_utf8(bytes)?)),
@@ -118,6 +138,10 @@ pub fn fingerprint(root: &Path) -> Result<String> {
     }
 }
 
+/// The stable local identity of the project at `root`, assigned on first use.
+///
+/// # Errors
+/// Fails if the identity store can't be locked, read or written, or `root` doesn't exist.
 pub fn project_id(dir: &Path, root: &Path) -> Result<String> {
     private_dir(dir)?;
     let guard = lock(&dir.join("identities.lock"))?;
@@ -172,6 +196,8 @@ pub struct WorkspaceProject {
     pub layout: serde_json::Value,
 }
 impl Workspace {
+    /// # Errors
+    /// Fails if the file can't be read, is invalid, or has another version.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -181,6 +207,8 @@ impl Workspace {
         doc.validate()?;
         Ok(doc)
     }
+    /// # Errors
+    /// Fails on an unsupported version, duplicate or empty ids, relative roots or invalid drafts.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.version == VERSION,
@@ -203,6 +231,8 @@ impl Workspace {
         }
         Ok(())
     }
+    /// # Errors
+    /// Fails if the document is invalid or can't be written.
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
         atomic_write(path, &serde_json::to_vec(self)?)
@@ -210,6 +240,9 @@ impl Workspace {
 }
 
 /// Explicit user relinking preserves the project's local identity at its new root.
+///
+/// # Errors
+/// Fails if the identity store can't be locked, read or written, or `root` doesn't exist.
 pub fn relink(dir: &Path, id: &str, root: &Path) -> Result<()> {
     private_dir(dir)?;
     let guard = lock(&dir.join("identities.lock"))?;
@@ -223,6 +256,76 @@ pub fn relink(dir: &Path, id: &str, root: &Path) -> Result<()> {
     ids.retain(|_, existing| existing != id);
     ids.insert(root.canonicalize()?, id.into());
     atomic_write(&path, &serde_json::to_vec(&ids)?)
+}
+
+/// A project opened from disk: its saved map (or a detected one) and local identity.
+pub struct Loaded {
+    pub id: String,
+    pub root: PathBuf,
+    pub project: crate::Project,
+    /// True when no `patchbay.json` existed and the map was detected.
+    pub detected: bool,
+    pub fingerprint: String,
+}
+
+/// Open the project at `root`: its saved map or a detected one, its local
+/// identity and the saved map's fingerprint.
+///
+/// # Errors
+/// Fails if `root` doesn't exist, the saved map is invalid, detection fails, or
+/// the identity store can't be used.
+pub fn load_project(
+    root: &Path,
+    detectors: &[crate::extensions::DetectorContribution],
+) -> Result<Loaded> {
+    let root = root.canonicalize()?;
+    let (project, detected) = match crate::Project::load(&root)? {
+        Some(project) => (project, false),
+        None => (crate::detect::detect_with(&root, detectors)?, true),
+    };
+    let id = project_id(&home()?.join("workspaces"), &root)?;
+    let fingerprint = fingerprint(&root)?;
+    Ok(Loaded {
+        id,
+        root,
+        project,
+        detected,
+        fingerprint,
+    })
+}
+
+/// Restore a workspace entry: the project must still be at its recorded root
+/// under the same identity, or the user has to locate it explicitly.
+///
+/// # Errors
+/// As for `load_project`, or if the folder now belongs to another identity.
+pub fn restore_project(
+    entry: &WorkspaceProject,
+    detectors: &[crate::extensions::DetectorContribution],
+) -> Result<Loaded> {
+    let loaded = load_project(Path::new(&entry.root), detectors)?;
+    anyhow::ensure!(
+        loaded.id == entry.id,
+        "Project identity changed; locate its folder explicitly"
+    );
+    Ok(loaded)
+}
+
+/// Point workspace entry `id` at the folder the user located, keeping its identity.
+///
+/// # Errors
+/// Fails if `id` isn't in `workspace`, the folder is another open project, or
+/// the identity store can't be updated.
+pub fn relink_project(workspace: &Workspace, id: &str, chosen: &Loaded) -> Result<()> {
+    anyhow::ensure!(
+        workspace.projects.iter().any(|p| p.id == id),
+        "Unknown unavailable project"
+    );
+    anyhow::ensure!(
+        chosen.id == id || !workspace.projects.iter().any(|p| p.id == chosen.id),
+        "That folder is already another open project. Select its tab instead."
+    );
+    relink(&home()?.join("workspaces"), id, &chosen.root)
 }
 
 #[cfg(test)]

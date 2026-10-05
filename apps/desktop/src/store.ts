@@ -312,30 +312,7 @@ export const useStore = create<State>((set, get) => ({
       }
     }),
 
-  toProject: () => {
-    const { project, nodes, edges } = get()
-    return {
-      projectId: project?.id,
-      schemaVersion: 2,
-      name: project?.name ?? 'project',
-      root: project?.root ?? '',
-      components: nodes.map((n) => ({
-        id: n.id,
-        position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
-        name: n.data.name,
-        kind: n.data.kind,
-        path: n.data.path,
-        notes: n.data.notes,
-        terminals: n.data.terminals,
-      })),
-      links: edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        label: e.data?.label || null,
-      })),
-    }
-  },
+  toProject: () => projectFrom(get()),
 
   onNodesChange: (changes) => {
     const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -462,9 +439,47 @@ export const useStore = create<State>((set, get) => ({
   markSaved: () => set({ dirty: false }),
 }))
 
+/** The map of open project `id`, whether or not its tab is active. */
+export function projectOf(id: string): Project | null {
+  const s = useStore.getState()
+  if (s.project?.id === id) return s.toProject()
+  const state = s.projects[id]?.state
+  return state?.project ? projectFrom(state) : null
+}
+
+function projectFrom({
+  project,
+  nodes,
+  edges,
+}: Pick<ProjectState, 'project' | 'nodes' | 'edges'>): Project {
+  return {
+    projectId: project?.id,
+    schemaVersion: 2,
+    name: project?.name ?? 'project',
+    root: project?.root ?? '',
+    components: nodes.map((n) => ({
+      id: n.id,
+      position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+      name: n.data.name,
+      kind: n.data.kind,
+      path: n.data.path,
+      notes: n.data.notes,
+      terminals: n.data.terminals,
+    })),
+    links: edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.data?.label || null,
+    })),
+  }
+}
+
 function emptyProjectState(): ProjectState {
   return {
     project: null,
+    // Explicit, so loading a project without one doesn't keep the previous viewport.
+    viewport: undefined,
     nodes: [],
     edges: [],
     selectedId: null,

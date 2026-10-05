@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core'
-import { sessionMetadata } from '../types'
 import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   getAllWebviewWindows,
@@ -53,8 +52,7 @@ const setActive = (label: string) => {
 
 /**
  * Track which window was focused last, across webviews. Call once per webview at startup.
- * The focused window always answers its own input; `ownsSession` decides who answers when
- * nothing is focused.
+ * Panes claim terminal authority when their window becomes active (`ACTIVE_CHANGED`).
  */
 export function trackActiveWindow() {
   const activate = () => {
@@ -71,20 +69,13 @@ export function trackActiveWindow() {
 }
 
 /**
- * Exactly one window owns each session: it answers the terminal's automatic queries
- * (cursor position, device attributes…) and sizes its PTY. That's the active window when
- * it shows the session (main shows them all, a pop-out only its component's), otherwise main.
+ * Whether this window shows a session: main shows all of them, a pop-out only its
+ * component's. The backend routes terminal events the same way (`Bridge::route`).
  */
-export function ownsSession(sid: string) {
-  const activeShows =
-    activeLabel === 'main' || labelsShowing(sid).some((label) => label === activeLabel)
-  return activeShows ? activeLabel === ownLabel : ownLabel === 'main'
-}
-
-/** Labels of the pop-outs that could show `sid`; component ids may themselves contain `/`. */
-function labelsShowing(sid: string) {
-  const metadata = sessionMetadata.get(sid)
-  return metadata ? [componentLabel(metadata.componentId, metadata.projectId)] : []
+export function showsSession(metadata: { projectId: string; componentId: string }) {
+  return (
+    ownLabel === 'main' || componentLabel(metadata.componentId, metadata.projectId) === ownLabel
+  )
 }
 const opening = new Map<string, Promise<void>>()
 
@@ -152,6 +143,8 @@ export function syncComponentWindows(): () => void {
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
+  /** What each pop-out was last sent; a ready pop-out starts over. */
+  const sent = new Map<string, { model: string; git: string }>()
   const payload = (projectId: string) => {
     const entry = useStore.getState().captureProjects()[projectId]
     const state = entry?.state
@@ -179,17 +172,26 @@ export function syncComponentWindows(): () => void {
     for (const [projectId, entry] of Object.entries(useStore.getState().captureProjects())) {
       const data = payload(projectId)
       if (!data) continue
+      // Positions don't matter to pop-outs, so drags don't resend anything.
+      const model = JSON.stringify({
+        ...data.project,
+        components: data.project.components.map((c) => ({ ...c, position: undefined })),
+      })
+      const git = JSON.stringify(data.git)
       for (const node of entry.state?.nodes ?? []) {
         const label = componentLabel(node.id, projectId)
         if (!windows.some((w) => w.label === label)) continue
-        await emitTo(label, PROJECT_EVENT, data.project)
-        await emitTo(label, GIT_EVENT, data.git)
+        const last = sent.get(label)
+        if (last?.model !== model) await emitTo(label, PROJECT_EVENT, data.project)
+        if (last?.git !== git) await emitTo(label, GIT_EVENT, data.git)
+        sent.set(label, { model, git })
       }
     }
   }
   void listen<{ label: string; projectId: string }>(READY_EVENT, (e) => {
     const data = payload(e.payload.projectId)
     if (!data || !e.payload.label.startsWith('component-')) return
+    sent.delete(e.payload.label)
     void emitTo(e.payload.label, PROJECT_EVENT, data.project).catch(report)
     void emitTo(e.payload.label, GIT_EVENT, data.git).catch(report)
   })
