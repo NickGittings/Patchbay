@@ -872,10 +872,15 @@ async fn graph_group_stop(
 }
 
 /// Stop the running validation; it still reports the validators that ran.
+/// Async so waiting on the actions lock (held during a reset) never blocks the UI thread.
 #[tauri::command]
-fn graph_validation_cancel(window: WebviewWindow, state: State<AppState>) -> CmdResult<bool> {
+async fn graph_validation_cancel(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
     main_only(&window)?;
-    Ok(state.actions.cancel_validation())
+    let actions = state.actions.clone();
+    blocking(move || Ok(actions.cancel_validation())).await
 }
 
 #[tauri::command]

@@ -96,7 +96,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
         </button>
         <button
           disabled={stopping}
-          title="Stop tasks started by this group; shared tasks keep running"
+          title="Stop tasks this group started in the current worktree; shared tasks keep running"
           onClick={async () => {
             setStopping(true)
             await stopGroup(group.id)
@@ -119,7 +119,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
           disabled={busy || stopping}
           onClick={async () => {
             setStopping(true)
-            if (await stopGroup(group.id)) removeGroup(group.id)
+            if (await stopGroup(group.id, true)) removeGroup(group.id)
             setStopping(false)
           }}
         >

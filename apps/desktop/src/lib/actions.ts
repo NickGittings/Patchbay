@@ -37,11 +37,15 @@ export async function runGraphAction(request: ActionRequest) {
   }
 }
 
-/** Stops the group's environment in the active task's worktree. */
-export async function stopGroup(groupId: string) {
-  const { projectEpoch, activeTask } = useStore.getState()
+/**
+ * Stops the group's environment in the active task's worktree, or with `everywhere`
+ * in the open worktree and every task's (before deleting the group).
+ */
+export async function stopGroup(groupId: string, everywhere = false) {
+  const { projectEpoch, activeTask, tasks } = useStore.getState()
+  const targets = everywhere ? [null, ...tasks.map((t) => t.id)] : [activeTask]
   try {
-    await graphGroupStop(groupId, activeTask ?? undefined)
+    for (const task of targets) await graphGroupStop(groupId, task ?? undefined)
     if (useStore.getState().projectEpoch !== projectEpoch) return false
     useStore.getState().setMessage('Environment stopped')
     return true

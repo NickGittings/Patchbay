@@ -47,6 +47,7 @@ struct Process {
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// A graph action's service ([`PtyManager::spawn_managed`]).
+    #[cfg_attr(not(unix), allow(dead_code))]
     reap_workers: bool,
 }
 
@@ -815,8 +816,14 @@ impl PtyManager {
     /// run with the same id is never signalled. Wait for both the process and
     /// its final terminal lifecycle update before allowing an immediate restart.
     ///
+    /// A failed worker cleanup is reported once; stopping again succeeds, since
+    /// nothing more can be done about workers that survive a force-kill.
+    ///
     /// # Errors
     /// Fails if the run has not finished stopping within the bounded grace periods.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
     pub fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -849,9 +856,15 @@ impl PtyManager {
                     .unwrap()
                     .get(id)
                     .map_or((false, None), |backlog| {
-                        let backlog = backlog.lock().unwrap();
+                        let mut backlog = backlog.lock().unwrap();
                         if backlog.generation == generation {
-                            (backlog.running, backlog.cleanup_error.clone())
+                            let running = backlog.running;
+                            let error = if running {
+                                None
+                            } else {
+                                backlog.cleanup_error.take()
+                            };
+                            (running, error)
                         } else {
                             (false, None)
                         }

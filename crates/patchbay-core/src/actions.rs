@@ -360,10 +360,17 @@ impl GraphActions {
                     check_environment_running(pty, &participating)?;
                     let id = spec.id.clone();
                     let ready = spec.ready_when.trim().to_string();
-                    let (run, reused) = loop {
+                    let session = id.clone();
+                    let launched_run = loop {
                         // Stop/reset cannot interleave between spawning and recording ownership.
                         let mut state = self.0.lock().unwrap();
-                        check_cancelled(&cancelled)?;
+                        if cancelled.load(Ordering::SeqCst) {
+                            // A stopped validation keeps its report, as above.
+                            if environment.is_none() && state.epoch == epoch {
+                                break None;
+                            }
+                            bail!("Graph action cancelled");
+                        }
                         if state.stopping {
                             drop(state);
                             std::thread::sleep(Duration::from_millis(20));
@@ -411,7 +418,15 @@ impl GraphActions {
                                 }
                             }
                         }
-                        break (run, reused);
+                        break Some((run, reused));
+                    };
+                    let Some((run, reused)) = launched_run else {
+                        results.push(TaskResult {
+                            session_id: session,
+                            outcome: TaskOutcome::Cancelled,
+                            exit_code: None,
+                        });
+                        continue;
                     };
                     if environment.is_some() {
                         participating.push(run.clone());
