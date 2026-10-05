@@ -280,10 +280,15 @@ impl GraphActions {
                     check_environment_running(pty, &participating)?;
                     let id = spec.id.clone();
                     let ready = spec.ready_when.trim().to_string();
-                    let (run, reused) = {
+                    let (run, reused) = loop {
                         // Stop/reset cannot interleave between spawning and recording ownership.
                         let mut state = self.0.lock().unwrap();
                         check_cancelled(&cancelled)?;
+                        if state.stopping {
+                            drop(state);
+                            std::thread::sleep(Duration::from_millis(20));
+                            continue;
+                        }
                         let existing = pty.snapshot(&id).filter(|s| s.running);
                         let reused = existing.is_some();
                         if let Some(snapshot) = &existing {
@@ -326,7 +331,7 @@ impl GraphActions {
                                 }
                             }
                         }
-                        (run, reused)
+                        break (run, reused);
                     };
                     if environment.is_some() {
                         participating.push(run.clone());
@@ -960,6 +965,94 @@ mod tests {
             f.pty.stop_generation("api/dev", generation).unwrap();
             assert!(f.pty.is_running("api/dev"));
             assert!(f.pty.snapshot("api/dev").unwrap().generation > generation);
+        }
+
+        #[test]
+        fn startup_waits_before_reusing_a_run_selected_for_shutdown() {
+            let mut f = Fixture::new();
+            let mut stubborn = f.project.components[1].clone();
+            stubborn.id = "stubborn".into();
+            stubborn.terminals[0].command =
+                "trap '' HUP; printf 'READY\\n'; while :; do sleep 1; done".into();
+            f.project.components.push(stubborn);
+            f.project.components[0].terminals[0].command =
+                "sleep 0.3; printf 'READY\\n'; cat".into();
+            f.project.components[0].terminals[0].ready_when = "READY".into();
+            f.project.components[1].terminals[0].command = "printf 'READY\\n'; cat".into();
+            f.project.links = serde_json::from_value(serde_json::json!([
+                {"id":"one", "source":"stubborn", "target":"api"},
+                {"id":"two", "source":"api", "target":"web"}
+            ]))
+            .unwrap();
+            f.project.groups[0].component_ids = vec!["api".into(), "stubborn".into()];
+            f.run(start()).unwrap();
+            let generation = f.pty.snapshot("api/dev").unwrap().generation;
+            let mut second = f.project.groups[0].clone();
+            second.id = "second".into();
+            second.component_ids = vec!["api".into(), "web".into()];
+            f.project.groups.push(second);
+            let worker = {
+                let project = f.project.clone();
+                let actions = f.actions.clone();
+                let pty = f.pty.clone();
+                std::thread::spawn(move || {
+                    actions.execute(
+                        &project,
+                        ActionPlan::build(
+                            &project,
+                            ActionRequest::StartGroup {
+                                group_id: "second".into(),
+                            },
+                        )?,
+                        0,
+                        &pty,
+                        Arc::new(Silent),
+                    )
+                })
+            };
+            f.wait_running("web/dev");
+            f.actions.stop_group("dev", 0, &f.pty).unwrap();
+            worker.join().unwrap().unwrap();
+            assert!(f.pty.is_running("api/dev"));
+            assert!(f.pty.snapshot("api/dev").unwrap().generation > generation);
+            f.actions.stop_group("second", 0, &f.pty).unwrap();
+            assert!(!f.pty.is_running("api/dev"));
+        }
+
+        #[test]
+        fn stop_and_rollback_clean_up_background_workers_after_the_shell_exits() {
+            for rollback in [false, true] {
+                let mut f = Fixture::new();
+                f.project.components[1].terminals[0].command =
+                    "sh -c 'trap \"\" HUP; echo $$ > worker.pid; printf \"READY\\n\"; while :; do sleep 1; done' & wait".into();
+                if rollback {
+                    f.project.components[0].terminals[0].command = "exit 7".into();
+                    f.project.components[0].terminals[0].ready_when = "WEB READY".into();
+                    assert!(f.run(start()).is_err());
+                } else {
+                    f.project.groups[0].component_ids = vec!["api".into()];
+                    f.run(start()).unwrap();
+                    f.actions.stop_group("dev", 0, &f.pty).unwrap();
+                }
+                let pid = std::fs::read_to_string(
+                    std::path::Path::new(&f.project.root).join("worker.pid"),
+                )
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+                let mut system = sysinfo::System::new();
+                let pid = sysinfo::Pid::from_u32(pid);
+                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+                assert!(
+                    system.process(pid).is_none_or(|process| matches!(
+                        process.status(),
+                        sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
+                    )),
+                    "background worker survived {}",
+                    if rollback { "rollback" } else { "Stop" }
+                );
+            }
         }
 
         #[test]

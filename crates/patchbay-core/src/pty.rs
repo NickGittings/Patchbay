@@ -57,11 +57,12 @@ impl Process {
         let _ = self.killer.kill();
     }
 
-    /// The PTY child leads its own session, so on Unix killing its process group
-    /// also reaches dev servers and other descendants that ignore SIGHUP.
+    /// Interactive shells can give background jobs separate process groups.
+    /// Terminate every live process in the PTY's session, not only its leader's group.
     fn force_kill(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.pid {
+            kill_session_workers(pid);
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", "--", &format!("-{pid}")])
                 .stdout(std::process::Stdio::null())
@@ -91,6 +92,41 @@ impl Process {
     }
 }
 
+/// portable-pty creates a new Unix session whose id is the child's pid.
+/// Background jobs remain in that session even after the shell exits.
+#[cfg(unix)]
+fn kill_session_workers(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut found = false;
+    for process in system.processes().values() {
+        if process.session_id() == Some(Pid::from_u32(pid))
+            && !matches!(
+                process.status(),
+                ProcessStatus::Zombie | ProcessStatus::Dead
+            )
+        {
+            found = true;
+            process.kill();
+        }
+    }
+    found
+}
+
+#[cfg(unix)]
+fn finish_session_workers(pid: Option<u32>) -> Result<()> {
+    let Some(pid) = pid else { return Ok(()) };
+    let deadline = Instant::now() + RESET_GRACE;
+    while kill_session_workers(pid) {
+        if Instant::now() >= deadline {
+            bail!("Workers in terminal session {pid} did not exit after force-kill");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Backlog {
     data: VecDeque<u8>,
@@ -103,6 +139,7 @@ struct Backlog {
     tracker: Tracker,
     notice: Option<String>,
     launch: Option<SessionSpec>,
+    cleanup_error: Option<String>,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -346,6 +383,8 @@ impl PtyManager {
             pid: child.process_id(),
             killer: child.clone_killer(),
         };
+        #[cfg(unix)]
+        let session_pid = process.pid;
 
         let backlog = Arc::new(Mutex::new(Backlog {
             generation,
@@ -446,6 +485,14 @@ impl PtyManager {
         let manager = Arc::clone(self);
         std::thread::spawn(move || {
             let status = child.wait();
+            // A shell can exit on hangup while its workers ignore it. Keep this
+            // generation running until those workers release their ports and PTY.
+            #[cfg(unix)]
+            let cleanup_error = finish_session_workers(session_pid)
+                .err()
+                .map(|e| e.to_string());
+            #[cfg(not(unix))]
+            let cleanup_error = None;
             manager.orphans.lock().unwrap().remove(&generation);
             // Read a report written just before exiting, e.g. a finished turn.
             let file = manager.status_file(generation);
@@ -474,6 +521,7 @@ impl PtyManager {
                 backlog.tracker.on_report(&text, stamp, exited_ms);
             }
             backlog.running = false;
+            backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
             backlog.exited_ms = Some(exited_ms);
             // The monitor stopped watching it, so report e.g. a stop it missed.
@@ -762,16 +810,23 @@ impl PtyManager {
                     false
                 }
             };
-            let terminal_running = self
-                .backlogs
-                .lock()
-                .unwrap()
-                .get(id)
-                .is_some_and(|backlog| {
-                    let backlog = backlog.lock().unwrap();
-                    backlog.generation == generation && backlog.running
-                });
+            let (terminal_running, cleanup_error) =
+                self.backlogs
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .map_or((false, None), |backlog| {
+                        let backlog = backlog.lock().unwrap();
+                        if backlog.generation == generation {
+                            (backlog.running, backlog.cleanup_error.clone())
+                        } else {
+                            (false, None)
+                        }
+                    });
             if !process_running && !terminal_running {
+                if let Some(error) = cleanup_error {
+                    bail!("Terminal {id}: {error}");
+                }
                 return Ok(());
             }
             if Instant::now() >= final_deadline {

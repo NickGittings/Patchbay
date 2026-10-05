@@ -15,5 +15,8 @@ base64 = "0.22"
 notify = "8"
 semver = "1"
 
+[target.'cfg(unix)'.dependencies]
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
 [lints]
 workspace = true
