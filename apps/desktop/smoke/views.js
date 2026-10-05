@@ -335,6 +335,25 @@
       Object.keys(state().sessions).length > 0 && textOf(sid),
       'Reopening a project lost retained sessions',
     )
+    const secondary = { ...state().devices[0], id: 'other-planner', name: 'Other planner' }
+    state().setDevices([...state().devices, secondary])
+    state().setSession(smoke.sessionId('@plan', secondary.id), {
+      running: false,
+      exitCode: 1,
+      exitedMs: Date.now(),
+    })
+    click(await until('planner attention menu', () => document.querySelector('.attention-button')))
+    click(
+      await until('second planner attention item', () =>
+        [...document.querySelectorAll('.attention-item')].find((b) =>
+          b.textContent.includes('Other planner'),
+        ),
+      ),
+    )
+    await until(
+      'opaque planner attention navigation',
+      () => state().view === 'plan' && state().planActive === secondary.id,
+    )
     await smoke.report(
       'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity',
     )

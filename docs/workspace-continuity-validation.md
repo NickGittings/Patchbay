@@ -12,8 +12,11 @@ Validated locally on macOS:
 - Native pop-out, view, Git watcher, extension and two-project workspace smoke flows.
 - `npm run smoke:lifecycle`: independent app quit/relaunch with the same live counter,
   restored tabs/drafts/viewport/planner scope/pop-out, delayed extension launch across tab
-  switching, saved-map conflicts retained across another quit, explicit draft recovery,
-  and preservation of malformed workspace documents.
+  switching, per-project startup activation and view message routing, deduplicated restored
+  terminal tabs, terminal ownership returned after closing a Sessions preview, saved-map
+  conflicts retained across another quit, explicit draft recovery, and preservation of
+  malformed workspace documents. The view smoke also checks attention navigation to a
+  secondary planner with opaque session IDs.
 - macOS application bundle with the packaged session helper; an external isolated harness
   verified authenticated helper startup and the same process/service instance across app
   termination and relaunch.

@@ -63,7 +63,7 @@ export default function ComponentWindow({ id }: { id: string }) {
     void invoke<{ tab?: 'files' | 'changes'; panels?: Record<string, Record<string, number>> }>(
       'window_layout',
     ).then((layout) => {
-      if (layout?.tab) setTab(layout.tab)
+      if (layout?.tab === 'files' || layout?.tab === 'changes') setTab(layout.tab)
       if (layout?.panels) useStore.setState({ panels: layout.panels })
     })
   }, [])

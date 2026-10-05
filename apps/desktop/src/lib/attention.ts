@@ -1,5 +1,11 @@
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId, type SessionState, type TerminalSpec } from '../types'
+import {
+  PLAN_SCOPE,
+  sessionId,
+  sessionMetadata,
+  type SessionState,
+  type TerminalSpec,
+} from '../types'
 import { terminalStatus, type TerminalStatus } from './display'
 import { planTerminals } from './plan'
 
@@ -36,6 +42,12 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
     ),
     ...Object.entries(s.runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
+      .filter(
+        ([sid, r]) =>
+          !s.nodes
+            .find((n) => n.id === r.componentId)
+            ?.data.terminals.some((t) => sessionId(r.componentId, t.id) === sid),
+      )
       .map(([sid, r]) => ({
         sid,
         componentId: r.componentId,
@@ -73,6 +85,7 @@ export function componentTerminals(
     ...Object.entries(runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(([, r]) => r.componentId === componentId)
+      .filter(([sid]) => !terminals.some((t) => sessionId(componentId, t.id) === sid))
       .map(([sid, r]): [string, TerminalSpec] => [sid, r.terminal]),
   ]
 }
@@ -105,7 +118,9 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
   if (item.componentId === PLAN_SCOPE) {
-    s.setPlanActive(item.sid.slice(PLAN_SCOPE.length + 1))
+    const terminalId = sessionMetadata.get(item.sid)?.terminalId
+    if (!terminalId) return
+    s.setPlanActive(terminalId)
     s.setView('plan')
     return
   }

@@ -263,6 +263,7 @@ async function projectActivation() {
   await stopping
   if (!useStore.getState().project) return
   const project = useStore.getState().toProject()
+  await activationEvent('onStartup', project)
   await activationEvent('onProjectOpen', project)
   scheduleBadges()
   const current = epoch
@@ -435,6 +436,7 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
     case 'views.postMessage': {
       const view = text(0)
       if (!runtime.views.has(view)) throw new Error('View is not registered')
+      if (runtime.projectId !== useStore.getState().activeProjectId) return null
       viewFrames.get(view)?.contentWindow?.postMessage({ patchbay: 1, value: args[1] }, '*')
       return null
     }
@@ -492,7 +494,9 @@ async function onMessage(event: MessageEvent) {
   if (!runtime) {
     for (const [viewId, frame] of viewFrames)
       if (frame.contentWindow === event.source) {
-        const owner = [...runtimes.values()].find((r) => r.views.has(viewId))
+        const owner = [...runtimes.values()].find(
+          (r) => r.projectId === useStore.getState().activeProjectId && r.views.has(viewId),
+        )
         if (owner && encoded.length <= 512 * 1024)
           send(owner, { method: 'viewMessage', viewId, value: event.data.value })
       }

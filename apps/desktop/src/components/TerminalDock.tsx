@@ -34,6 +34,7 @@ function useTabs(): Tab[] {
   all.push(
     ...Object.entries(runtime)
       .filter(([, t]) => t.projectId === useStore.getState().project?.id)
+      .filter(([sid]) => !all.some((t) => t.sid === sid))
       .map(([sid, t]) => ({
         sid,
         componentId: t.componentId,

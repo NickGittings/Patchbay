@@ -76,9 +76,10 @@ impl Adapter {
             "--print",
             "--session-id",
         ];
-        // Codex -c is a configuration option injected by Patchbay; it is valid.
+        // Codex -c is configuration and -p selects a profile; both are launch options.
         for word in words.iter().skip(1) {
-            if forbidden.contains(&word.as_str()) && !(self == Self::Codex && word == "-c") {
+            let flag = word.split('=').next().unwrap_or(word);
+            if forbidden.contains(&flag) && !(self == Self::Codex && ["-c", "-p"].contains(&flag)) {
                 bail!("Remove existing resume/continue/print options before resuming");
             }
         }
@@ -86,16 +87,15 @@ impl Adapter {
             Self::has_history(history, id),
             "Provider history for {id} is missing; restore it or set the correct conversation ID"
         );
-        let mut result = crate::context::quote_argument(&words[0]);
+        let (program, options) = launch_parts(command);
+        let mut result = program.to_string();
         result.push_str(match self {
             Self::Claude => " --resume ",
             Self::Codex => " resume ",
         });
         result.push_str(&crate::context::quote_argument(id));
-        for word in words.iter().skip(1) {
-            result.push(' ');
-            result.push_str(&crate::context::quote_argument(word));
-        }
+        // Preserve the original shell syntax, including quoted environment variables.
+        result.push_str(options);
         Ok(result)
     }
     fn has_history(root: &Path, id: &str) -> bool {
@@ -122,6 +122,28 @@ impl Adapter {
         contains(root, id, 6)
     }
 }
+fn launch_parts(command: &str) -> (&str, &str) {
+    let command = command.trim_start();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, c) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if (cfg!(unix) && c == '\\' && quote != Some('\'')) || (cfg!(windows) && c == '^') {
+            escaped = true;
+        } else if quote == Some(c) {
+            quote = None;
+        } else if quote.is_none() && (c == '"' || (cfg!(unix) && c == '\'')) {
+            quote = Some(c);
+        } else if quote.is_none() && c.is_whitespace() {
+            return (&command[..index], &command[index..]);
+        }
+    }
+    (command, "")
+}
+
 /// Probe the same login-shell PATH before creating a resumed process incarnation.
 pub fn require_executable(
     command: &str,
@@ -134,10 +156,7 @@ pub fn require_executable(
     let mut probe = {
         let mut shell =
             std::process::Command::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
-        shell.args([
-            "-ilc",
-            &format!("command -v {}", crate::context::quote_argument(program)),
-        ]);
+        shell.args(["-ilc", &format!("command -v {}", launch_parts(command).0)]);
         shell
     };
     #[cfg(windows)]
@@ -234,6 +253,16 @@ mod tests {
                 .resume_with_history("claude --continue", id, &fixture, &history)
                 .is_err()
         );
+        assert!(
+            Adapter::Claude
+                .resume_with_history("claude --resume=87654321", id, &fixture, &history)
+                .is_err()
+        );
+        let command = "codex --model \"$MODEL\" -p fixture";
+        let resumed = Adapter::Codex
+            .resume_with_history(command, id, &fixture, &history)
+            .unwrap();
+        assert!(resumed.ends_with(" --model \"$MODEL\" -p fixture"));
         std::fs::remove_dir_all(fixture).unwrap();
     }
 }

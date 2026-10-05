@@ -321,6 +321,20 @@ export function reconcileSessions(force = true): Promise<void> {
             interrupted: r.interrupted,
             truncated: snapshot.truncated,
           })
+        const mapped = useStore
+          .getState()
+          .captureProjects()
+          [r.metadata.projectId]?.state?.nodes.some(
+            (n) =>
+              n.id === r.metadata.componentId &&
+              n.data.terminals.some((t) => t.id === r.metadata.terminalId),
+          )
+        if (mapped && useStore.getState().runtimeTerminals[r.id])
+          useStore.setState((s) => {
+            const runtimeTerminals = { ...s.runtimeTerminals }
+            delete runtimeTerminals[r.id]
+            return { runtimeTerminals }
+          })
         if (
           r.metadata.componentId !== PLAN_SCOPE &&
           !current

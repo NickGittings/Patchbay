@@ -343,8 +343,18 @@ impl Service {
             }
             record.history.iter_mut().for_each(|s| s.running = false);
         }
+        let generation = records
+            .values()
+            .flat_map(|r| r.snapshot.iter().chain(r.history.iter()))
+            .map(|s| s.generation)
+            .max()
+            .unwrap_or(0);
+        anyhow::ensure!(
+            generation < u64::MAX,
+            "Invalid persisted process generation"
+        );
         Ok(Arc::new(Self {
-            pty: Arc::new(PtyManager::new()),
+            pty: Arc::new(PtyManager::with_generation_floor(generation)),
             records: Mutex::new(records),
             events: Mutex::default(),
             viewers: Mutex::default(),

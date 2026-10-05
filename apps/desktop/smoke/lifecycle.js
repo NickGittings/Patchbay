@@ -56,9 +56,29 @@
       await until('extension registry', () =>
         state().commands.some((c) => c.id === 'fixture.continuity.run'),
       )
+      await until('startup badge in first project', () =>
+        state().extensionBadges.shared?.some((b) => b.text === 'one'),
+      )
       const pendingLaunch = smoke.executeExtensionCommand('fixture.continuity.run')
       const second = await smoke.openSecondProject()
       smoke.acceptOpened(second)
+      state().select('shared')
+      await until('startup badge in second project', () =>
+        state().extensionBadges.shared?.some((b) => b.text === 'two'),
+      )
+      const viewTab = await until('second project view tab', () =>
+        document.querySelector('button[data-extension-view-tab="fixture.continuity.panel"]'),
+      )
+      viewTab.click()
+      const view = await until('second project extension view', () =>
+        document.querySelector('iframe[data-extension-view="fixture.continuity.panel"]'),
+      )
+      await sleep(150)
+      view.contentWindow.postMessage({ patchbay: 1, value: 'probe' }, '*')
+      await until(
+        'view message routed to second project',
+        async () => (await smoke.extensionStorageGet('fixture.continuity'))['view-owner'] === 'two',
+      )
       const launched = await pendingLaunch
       await smoke.reconcileSessions()
       if (
@@ -96,6 +116,33 @@
       await until('restored pop-out', async () =>
         (await smoke.windowLabels()).some((label) => label.startsWith('component-')),
       )
+      state().setView('navigation')
+      state().select('shared')
+      const terminal = state().nodes[0].data.terminals[0]
+      state().addRuntimeTerminal(sid, { projectId: id, componentId: 'shared', terminal })
+      await until(
+        'single mapped terminal tab',
+        () =>
+          [...document.querySelectorAll('.terminal-dock .tabs .tab')].filter((b) =>
+            b.textContent.includes('Counter'),
+          ).length === 1,
+      )
+      await smoke.reconcileSessions()
+      if (state().runtimeTerminals[sid])
+        throw new Error('Mapped terminal remained in runtime registry')
+      smoke.store.setState({ sessionsPanelOpen: true })
+      const reconnect = await until('counter reconnect button', () =>
+        [...document.querySelectorAll('.session-row')]
+          .find((row) => row.textContent.includes(state().project.root))
+          ?.querySelector('button'),
+      )
+      reconnect.click()
+      await until('session preview', () => document.querySelector('.session-preview .xterm-host'))
+      smoke.store.setState({ sessionsPanelOpen: false })
+      await until('terminal returned to dock', () =>
+        document.querySelector('.terminal-dock .terminal-host .xterm-host'),
+      )
+      state().setView('plan')
       const secondId = state().projectOrder[1]
       state().activateProject(secondId)
       if (state().view !== 'review') throw new Error('Independent second layout was lost')

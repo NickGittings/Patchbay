@@ -321,6 +321,15 @@ impl PtyManager {
         Self::default()
     }
 
+    /// Continue incarnation numbering above persisted output from an earlier service instance.
+    #[must_use]
+    pub fn with_generation_floor(floor: u64) -> Self {
+        Self {
+            generation: Mutex::new(floor),
+            ..Self::default()
+        }
+    }
+
     /// Start a session. Returns once the process is spawned.
     ///
     /// # Errors

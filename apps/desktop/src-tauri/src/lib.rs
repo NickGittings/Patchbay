@@ -948,9 +948,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Patchbay")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { api, .. } = &event {
+            if let RunEvent::ExitRequested { api, code, .. } = &event {
                 let state = app.state::<AppState>();
-                if !state.quitting.load(std::sync::atomic::Ordering::Acquire)
+                if code.is_none()
+                    && !state.quitting.load(std::sync::atomic::Ordering::Acquire)
                     && app.get_webview_window("main").is_some()
                 {
                     api.prevent_exit();
@@ -1413,11 +1414,16 @@ async fn project_relink(
         .unwrap()
         .remove(&opened.id)
         .ok_or("Chosen project unavailable")?;
+    scoped.watcher.stop();
+    let relinked = Arc::new(ProjectAccess {
+        access: scoped.access.clone(),
+        watcher: watch::GitWatcher::default(),
+    });
     state
         .projects
         .write()
         .unwrap()
-        .insert(entry.id.clone(), scoped);
+        .insert(entry.id.clone(), relinked);
     rewatch(&app, &entry.id);
     opened.id = entry.id;
     Ok(Some(opened))

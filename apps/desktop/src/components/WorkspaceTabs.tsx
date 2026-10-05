@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
 import { closeComponentWindows } from '../lib/windows'
-import { acceptOpened, flushWorkspace } from '../lib/workspace'
+import { acceptOpened, flushWorkspace, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
 
 export default function WorkspaceTabs() {
@@ -57,13 +57,28 @@ export default function WorkspaceTabs() {
                   if (opened) {
                     s.closeProject(active.id)
                     acceptOpened(opened)
+                    useStore.setState(restoredLayout(active.unavailableLayout ?? {}))
                     if (active.conflict) {
-                      useStore.getState().syncProject({
-                        ...active.conflict,
-                        root: opened.project.root,
-                        projectId: opened.id,
-                      })
-                      useStore.setState({ dirty: true })
+                      const fingerprint = active.draftFingerprint ?? active.fingerprint
+                      if (fingerprint === opened.fingerprint) {
+                        useStore.getState().syncProject({
+                          ...active.conflict,
+                          root: opened.project.root,
+                          projectId: opened.id,
+                        })
+                        useStore.setState({ dirty: true })
+                      } else {
+                        useStore.setState((state) => ({
+                          projects: {
+                            ...state.projects,
+                            [opened.id]: {
+                              ...state.projects[opened.id],
+                              conflict: active.conflict,
+                              draftFingerprint: fingerprint,
+                            },
+                          },
+                        }))
+                      }
                     }
                   }
                 })

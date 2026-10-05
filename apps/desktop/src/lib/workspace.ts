@@ -82,7 +82,7 @@ export function flushWorkspace() {
     .catch((e) => useStore.getState().setMessage(String(e)))
   return writing
 }
-function restoredLayout(layout: Record<string, unknown>): Partial<ProjectState> {
+export function restoredLayout(layout: Record<string, unknown>): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
   if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']

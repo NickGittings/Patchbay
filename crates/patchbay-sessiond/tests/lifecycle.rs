@@ -74,6 +74,25 @@ fn independent_service_survives_clients_and_serializes_startup() {
     let records: Vec<Record> = restarted.call(Request::List).unwrap();
     assert_eq!(records.len(), 1);
     assert!(!records[0].snapshot.as_ref().unwrap().running);
+    let mut restored = records[0].clone();
+    restored.spec.command = "echo restarted-output".into();
+    restarted
+        .call::<String>(Request::Start {
+            request_id: "explicit-after-restart".into(),
+            metadata: Box::new(restored.metadata),
+            spec: restored.spec,
+        })
+        .unwrap();
+    let snapshot: Option<Snapshot> = restarted
+        .call(Request::Snapshot { id: id.clone() })
+        .unwrap();
+    assert!(
+        snapshot.unwrap().generation > after.generation,
+        "New output must sort after restored history"
+    );
+    restarted
+        .call::<()>(Request::Stop { id: id.clone() })
+        .unwrap();
     restarted.call::<()>(Request::Forget { id }).unwrap();
     restarted
         .call::<()>(Request::Shutdown {

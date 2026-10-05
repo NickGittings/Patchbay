@@ -48,14 +48,23 @@ writeFileSync(
     version: '0.1.0',
     engines: { patchbay: '^0.1.0' },
     main: 'extension.js',
-    activationEvents: ['onProjectOpen'],
+    activationEvents: ['onStartup'],
     permissions: ['project:read', 'terminals'],
-    contributes: { commands: [{ id: 'fixture.continuity.run', title: 'Continuity probe' }] },
+    contributes: {
+      commands: [{ id: 'fixture.continuity.run', title: 'Continuity probe' }],
+      views: [{ id: 'fixture.continuity.panel', title: 'Continuity', location: 'inspector' }],
+    },
   }),
 )
 writeFileSync(
   join(extension, 'extension.js'),
   `export async function activate(pb) {
+  const project = await pb.project.get()
+  await pb.badges.registerProvider(() => project ? ({ text: project.name }) : null).ready
+  await pb.views.registerWebviewView('fixture.continuity.panel', {
+    resolve(view) { view.render('<p>' + (project?.name || 'none') + '</p><script>patchbayView.onMessage(value => patchbayView.postMessage(value))</script>') },
+    onMessage(value) { if (value === 'probe') return pb.storage.set('view-owner', project.name) },
+  }).ready
   await pb.commands.registerCommand('fixture.continuity.run', async () => {
     await new Promise(resolve => setTimeout(resolve, 500))
     const project = await pb.project.get()

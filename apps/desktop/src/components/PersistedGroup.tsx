@@ -6,7 +6,11 @@ import { useStore } from '../store'
 export default function PersistedGroup({ layoutId, ...props }: GroupProps & { layoutId: string }) {
   const panels = useStore((s) => s.panels)
   const saved = panels[layoutId]
-  const valid = saved && Object.values(saved).every((n) => Number.isFinite(n) && n >= 0 && n <= 100)
+  const valid =
+    saved &&
+    typeof saved === 'object' &&
+    !Array.isArray(saved) &&
+    Object.values(saved).every((n) => Number.isFinite(n) && n >= 0 && n <= 100)
   return (
     <Group
       {...props}
