@@ -79,7 +79,11 @@ interface State {
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
   dirty: boolean
+  /** The latest app message, shown by `Toast`; `messageId` changes on every `setMessage`. */
   message: string
+  messageId: number
+  /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
+  messageTransient: boolean
 
   loadProject: (p: Project) => void
   syncProject: (p: Project) => void
@@ -100,7 +104,7 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string) => void
+  setMessage: (m: string, transient?: boolean) => void
   markSaved: () => void
 }
 
@@ -182,6 +186,8 @@ export const useStore = create<State>((set, get) => ({
   activeSession: null,
   dirty: false,
   message: '',
+  messageId: 0,
+  messageTransient: false,
   view: 'navigation',
   highlighted: [],
   planStartedWith: {},
@@ -376,6 +382,7 @@ export const useStore = create<State>((set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message) => set({ message }),
+  setMessage: (message, transient = false) =>
+    set((s) => ({ message, messageTransient: transient, messageId: s.messageId + 1 })),
   markSaved: () => set({ dirty: false }),
 }))
