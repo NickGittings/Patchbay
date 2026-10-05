@@ -54,6 +54,7 @@ export function workspaceDocument(): WorkspaceDocument {
               planStartedWith: state.planStartedWith,
               viewport: state.viewport,
               panels: state.panels,
+              activeTask: state.activeTask,
             }
           : (p.unavailableLayout ?? {}),
       }
@@ -72,9 +73,17 @@ export function flushWorkspace() {
 }
 export function restoredLayout(layout: Record<string, unknown>): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
-  if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
+  if (['navigation', 'plan', 'tasks', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
-  for (const key of ['selectedId', 'selectedEdgeId', 'activeSession', 'planActive'] as const)
+  // The active session belongs to the active task's scope, so both are restored together;
+  // loading the task list drops a task that no longer exists.
+  for (const key of [
+    'selectedId',
+    'selectedEdgeId',
+    'activeSession',
+    'planActive',
+    'activeTask',
+  ] as const)
     if (typeof layout[key] === 'string' || layout[key] === null)
       out[key] = layout[key] as string | null
   if (Array.isArray(layout.highlighted))
@@ -168,7 +177,9 @@ export function initializeWorkspace() {
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
           s.viewport === prev.viewport &&
-          s.panels === prev.panels)
+          s.panels === prev.panels &&
+          s.groups === prev.groups &&
+          s.activeTask === prev.activeTask)
       )
         return
       clearTimeout(timer)

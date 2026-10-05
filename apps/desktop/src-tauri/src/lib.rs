@@ -937,16 +937,14 @@ async fn graph_action_run(
         // Compute affected scope before filtering access or moving into the
         // task's worktree, so locked consumers or ones outside the task's repo
         // produce an error instead of disappearing from validation.
-        let plan = ActionPlan::build(&project, &project_id, request.clone(), task.as_deref())
-            .map_err(err)?;
+        let plan =
+            ActionPlan::build(&project, &project_id, request, task.as_deref()).map_err(err)?;
         let ids = plan.component_ids();
         let project = access.restrict(project, &ids).map_err(err)?;
         let (project, _, _) = for_task(project, task.as_deref(), &ids, roots)?;
         bridge.call(Request::ActionRun {
-            project_id,
             project: Box::new(project),
-            request,
-            task,
+            plan: Box::new(plan),
         })
     })
     .await
@@ -972,11 +970,12 @@ async fn graph_group_stop(
 /// Stop the running validation; it still reports the validators that ran.
 #[tauri::command]
 async fn graph_validation_cancel(
+    project_id: String,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> CmdResult<bool> {
     main_only(&window)?;
-    service(&state, Request::ActionCancel).await
+    service(&state, Request::ActionCancel { project_id }).await
 }
 
 /// Run a session service request on a blocking worker, never the main thread.

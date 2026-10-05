@@ -1055,7 +1055,10 @@ mod tests {
         let main = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
         let task = session_spec_for(&p, "api", "agent", Some("t1"), &AllowAll, &[]).unwrap();
         assert_eq!(main.id, task_session_id(&p.root, "api", "agent", None));
-        assert_eq!(task.id, task_session_id(&p.root, "api", "agent", Some("t1")));
+        assert_eq!(
+            task.id,
+            task_session_id(&p.root, "api", "agent", Some("t1"))
+        );
         assert_ne!(main.id, task.id);
         assert_ne!(main.env[CONTEXT_ENV], task.env[CONTEXT_ENV]);
         let plan = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();

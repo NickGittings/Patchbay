@@ -1,6 +1,6 @@
 //! Versioned, authenticated loopback session service shared by desktop and CLI.
 //! Webviews never receive endpoint credentials. Disconnect is not a stop operation.
-use crate::actions::{ActionPlan, ActionRequest, GraphActions, Launch, Terminals};
+use crate::actions::{ActionPlan, GraphActions, Launch, Terminals};
 use crate::adapters::Adapter;
 use crate::pty::{PtyManager, SessionSpec, Snapshot};
 use crate::workspace::{atomic_write, home, lock, private_dir};
@@ -207,21 +207,22 @@ pub enum Request {
     Shutdown {
         stop_running: bool,
     },
-    /// Run a graph action. `project` is already trusted, restricted and, for a
-    /// task, moved into its worktree by the caller. Blocks until it finishes.
+    /// Run a graph action `plan` (built by the caller, which also scoped it).
+    /// `project` is already trusted, restricted and, for a task, moved into its
+    /// worktree. Blocks until it finishes.
     ActionRun {
-        project_id: String,
         project: Box<crate::Project>,
-        request: ActionRequest,
-        task: Option<String>,
+        plan: Box<ActionPlan>,
     },
     ActionStopGroup {
         project_id: String,
         group_id: String,
         task: Option<String>,
     },
-    /// Stop the running validation; returns whether one was running.
-    ActionCancel,
+    /// Stop the project's running validation; returns whether one was running.
+    ActionCancel {
+        project_id: String,
+    },
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
@@ -446,7 +447,9 @@ struct Viewer {
 }
 pub struct Service {
     pty: Arc<PtyManager>,
-    actions: GraphActions,
+    /// Graph actions per project: each runs one operation at a time, and
+    /// projects never wait on or cancel each other.
+    actions: Mutex<HashMap<String, Arc<GraphActions>>>,
     records: Mutex<BTreeMap<String, Record>>,
     events: Mutex<Events>,
     viewers: Mutex<BTreeMap<String, Vec<Viewer>>>,
@@ -499,7 +502,7 @@ impl Service {
         );
         Ok(Arc::new(Self {
             pty: Arc::new(PtyManager::with_generation_floor(generation)),
-            actions: GraphActions::default(),
+            actions: Mutex::default(),
             records: Mutex::new(records),
             events: Mutex::default(),
             viewers: Mutex::default(),
@@ -515,6 +518,14 @@ impl Service {
             clients: AtomicUsize::new(0),
             authority: AtomicUsize::new(0),
         }))
+    }
+    fn actions_for(&self, project_id: &str) -> Arc<GraphActions> {
+        self.actions
+            .lock()
+            .unwrap()
+            .entry(project_id.into())
+            .or_default()
+            .clone()
     }
     fn snapshot(&self, id: &str) -> Option<Snapshot> {
         self.pty
@@ -891,20 +902,17 @@ impl Service {
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
             }
-            Request::ActionRun {
-                project_id,
-                project,
-                request,
-                task,
-            } => {
-                let epoch = self.actions.epoch();
-                let plan = ActionPlan::build(&project, &project_id, request, task.as_deref())?;
+            Request::ActionRun { project, plan } => {
+                let actions = self.actions_for(&plan.project_id);
+                let epoch = actions.epoch();
+                let project_id = plan.project_id.clone();
                 let terminals = ServiceTerminals {
                     service: self.clone(),
                     project_id: &project_id,
                     project: Some(&project),
                 };
-                serde_json::to_value(self.actions.execute(&project, plan, epoch, &terminals)?)?
+                // `execute` rebuilds the plan against `project`, as restricted.
+                serde_json::to_value(actions.execute(&project, *plan, epoch, &terminals)?)?
             }
             Request::ActionStopGroup {
                 project_id,
@@ -916,24 +924,25 @@ impl Service {
                     project_id: &project_id,
                     project: None,
                 };
-                let epoch = self.actions.epoch();
-                self.actions.stop_group(
-                    &project_id,
-                    &group_id,
-                    task.as_deref(),
-                    epoch,
-                    &terminals,
-                )?;
+                let actions = self.actions_for(&project_id);
+                let epoch = actions.epoch();
+                actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
                 serde_json::Value::Null
             }
-            Request::ActionCancel => serde_json::to_value(self.actions.cancel_validation())?,
+            Request::ActionCancel { project_id } => {
+                serde_json::to_value(self.actions_for(&project_id).cancel_validation())?
+            }
             Request::Shutdown { stop_running } => {
-                self.actions.reset();
                 let _operation = self.operation.lock().unwrap();
                 anyhow::ensure!(
                     !self.pty.has_running() || stop_running,
                     "Work is running; shutdown requires --stop-running"
                 );
+                // Only once shutting down for certain: a refused shutdown keeps
+                // running actions and environment ownership intact.
+                for actions in self.actions.lock().unwrap().values() {
+                    actions.reset();
+                }
                 if stop_running {
                     self.pty.stop_all();
                 }

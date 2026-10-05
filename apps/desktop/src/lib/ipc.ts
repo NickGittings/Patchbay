@@ -63,7 +63,8 @@ export const graphGroupStop = (
   projectId = useStore.getState().project?.id,
 ) => invoke<void>('graph_group_stop', { groupId, task, projectId })
 /** Stop the running validation; `false` if none was running. */
-export const graphValidationCancel = () => invoke<boolean>('graph_validation_cancel')
+export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
+  invoke<boolean>('graph_validation_cancel', { projectId })
 export const componentContext = async (project: Project, componentId: string, task?: string) =>
   invoke<string>('component_context', {
     project,
@@ -133,20 +134,27 @@ export const planStart = async (
     task,
   })
 
-export const taskList = () => invoke<Task[]>('task_list')
+const activeId = () => useStore.getState().project?.id
+export const taskList = (projectId = activeId()) => invoke<Task[]>('task_list', { projectId })
 /** Creates the branch (unless it exists) and a worktree beside the repo. */
-export const taskCreate = (draft: TaskDraft) => invoke<Task>('task_create', { draft })
+export const taskCreate = (draft: TaskDraft, projectId = activeId()) =>
+  invoke<Task>('task_create', { draft, projectId })
 /** `worktree` is a path `gitWorktrees` returned. */
-export const taskAttach = (worktree: string, title: string | undefined, components: string[]) =>
-  invoke<Task>('task_attach', { worktree, title, components })
+export const taskAttach = (
+  worktree: string,
+  title: string | undefined,
+  components: string[],
+  projectId = activeId(),
+) => invoke<Task>('task_attach', { worktree, title, components, projectId })
 export const taskUpdate = (id: string, patch: TaskPatch) =>
   invoke<Task>('task_update', { id, patch })
 /** git refuses to remove a worktree with changes; the branch is always kept. */
-export const taskRemove = (id: string, deleteWorktree: boolean) =>
-  invoke<void>('task_remove', { id, deleteWorktree })
+export const taskRemove = (id: string, deleteWorktree: boolean, projectId = activeId()) =>
+  invoke<void>('task_remove', { id, deleteWorktree, projectId })
 /** Fails with the reason the task's worktree can't be removed (e.g. uncommitted changes). */
-export const taskCheckRemovable = (id: string) => invoke<void>('task_check_removable', { id })
-/** Watch the task's worktree (none for the open one). */
+export const taskCheckRemovable = (id: string, projectId = activeId()) =>
+  invoke<void>('task_check_removable', { id, projectId })
+/** Watch the task's worktree (none for the project's own). */
 export const taskActivate = (id: string | null, projectId = useStore.getState().project?.id) =>
   invoke<void>('task_activate', { id, projectId })
 

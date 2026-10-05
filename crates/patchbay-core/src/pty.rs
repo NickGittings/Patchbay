@@ -941,6 +941,9 @@ impl PtyManager {
     }
 
     /// Explicitly stop work, retaining snapshots for reconnect and recovery.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
     pub fn stop(&self, id: &str) {
         let generation = self.sessions.lock().unwrap().get(id).map(|s| s.generation);
         self.kill(id);
@@ -954,10 +957,19 @@ impl PtyManager {
             session.process.force_kill();
         }
     }
+    /// Whether any session is running or starting.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
     pub fn has_running(&self) -> bool {
         !self.sessions.lock().unwrap().is_empty() || !self.starting.lock().unwrap().is_empty()
     }
 
+    /// Stop every session, waiting up to the reset grace for them to exit.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
     pub fn stop_all(&self) {
         let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
         for id in &ids {
@@ -972,6 +984,10 @@ impl PtyManager {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    /// Drop a stopped session's retained output.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
     pub fn forget(&self, id: &str) {
         if !self.is_running(id) {
             self.backlogs.lock().unwrap().remove(id);

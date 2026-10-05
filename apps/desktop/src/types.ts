@@ -267,6 +267,9 @@ export function sessionId(
   projectId = activeProjectId,
 ) {
   const terminal = task ? `${terminalId}${TASK_SEPARATOR}${task}` : terminalId
+  const key = JSON.stringify([projectId, componentId, terminal])
+  const known = hashed.get(key)
+  if (known) return known
   let a = 0xcbf29ce484222325n
   let b = 0x84222325cbf29ce4n
   for (const value of [projectId, componentId, terminal]) {
@@ -280,8 +283,11 @@ export function sessionId(
   }
   const id = `s-${a.toString(16).padStart(16, '0')}${b.toString(16).padStart(16, '0')}`
   sessionMetadata.set(id, { projectId, componentId, terminalId, task: task ?? null })
+  hashed.set(key, id)
   return id
 }
+/** Ids already hashed: selectors compute them for every terminal on every store change. */
+const hashed = new Map<string, string>()
 
 /** A session's project, component, terminal and task, from its recorded metadata. */
 export function parseSessionId(sid: string): SessionIdentity {

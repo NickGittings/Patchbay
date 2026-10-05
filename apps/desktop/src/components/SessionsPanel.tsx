@@ -127,7 +127,12 @@ export default function SessionsPanel() {
                           onClick={() =>
                             void perform(async () => {
                               useStore.getState().activateProject(r.metadata.projectId)
-                              await startTerminal(r.metadata.componentId, r.metadata.terminalId)
+                              await startTerminal(
+                                r.metadata.componentId,
+                                r.metadata.terminalId,
+                                r.metadata.task ?? null,
+                                r.metadata.projectId,
+                              )
                             })
                           }
                         >

@@ -4,17 +4,23 @@ import { gitStatus } from './ipc'
 
 let running: Promise<void> | undefined
 const pending = new Set<string>()
-/** Bumped to drop outstanding results, e.g. when a project switches task. */
-let revision = 0
+/** Per project, bumped to drop outstanding results, e.g. when it switches task. */
+const revisions = new Map<string, number>()
 
 /** Component ids and folders, which is all the Git commands need from the map. */
 export const componentPaths = () =>
   useStore.getState().nodes.map((n) => ({ id: n.id, path: n.data.path }))
 
-/** Drop outstanding results when a project switches task or the main window unmounts. */
-export function invalidateGitRefresh() {
-  revision++
-  pending.clear()
+/**
+ * Drop outstanding results for `projectId` when it switches task, or for every project when
+ * the main window unmounts.
+ */
+export function invalidateGitRefresh(projectId?: string) {
+  const ids = projectId ? [projectId] : [...new Set([...pending, ...revisions.keys()])]
+  for (const id of ids) {
+    revisions.set(id, (revisions.get(id) ?? 0) + 1)
+    pending.delete(id)
+  }
 }
 
 /**
@@ -37,7 +43,7 @@ async function refresh() {
   while (pending.size) {
     const id = [...pending][0]
     pending.delete(id)
-    const requested = revision
+    const requested = revisions.get(id) ?? 0
     const state = useStore.getState().captureProjects()[id]?.state
     if (!state?.project) continue
     const { activeTask } = state
@@ -48,7 +54,7 @@ async function refresh() {
       const target = current.captureProjects()[id]?.state
       // Compare paths so edits during a slow status call cannot restore removed badges.
       if (
-        requested !== revision ||
+        requested !== (revisions.get(id) ?? 0) ||
         !target ||
         target.activeTask !== activeTask ||
         target.nodes.length !== components.length ||

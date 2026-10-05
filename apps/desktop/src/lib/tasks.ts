@@ -1,6 +1,6 @@
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useStore } from '../store'
-import { sessionTask, type Task, type TaskDraft } from '../types'
+import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import {
   taskActivate,
@@ -29,19 +29,37 @@ export function activeWorktree(s: Snapshot): string | undefined {
 }
 
 /**
- * Reload the task list from the backend (main window only; pop-outs get it broadcast). A failure
- * keeps the list as it was (a project outside a git repo simply has none).
+ * Reload a project's task list from the backend (main window only; pop-outs get it broadcast). A
+ * failure keeps the list as it was (a project outside a git repo simply has none).
  */
-export async function refreshTasks() {
-  const { project } = useStore.getState()
-  if (getCurrentWebviewWindow().label !== 'main' || !project) return
+export async function refreshTasks(projectId = useStore.getState().project?.id) {
+  if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
   try {
-    const tasks = await taskList()
-    // Applied only while the project is still the active tab; it reloads on activation.
-    if (useStore.getState().project?.id === project.id) useStore.getState().setTasks(tasks)
+    applyTasks(projectId, await taskList(projectId))
   } catch (e) {
-    if (useStore.getState().tasks.length) useStore.getState().setMessage(String(e))
+    if (useStore.getState().project?.id === projectId && useStore.getState().tasks.length)
+      useStore.getState().setMessage(String(e))
   }
+}
+
+/** Set a project's tasks, whether or not its tab is active, dropping a vanished active task. */
+function applyTasks(projectId: string, tasks: Task[]) {
+  const s = useStore.getState()
+  if (s.project?.id === projectId) {
+    s.setTasks(tasks)
+    return
+  }
+  const state = s.projects[projectId]?.state
+  if (!state) return
+  const keep = tasks.some((t) => t.id === state.activeTask && !t.missing)
+  s.patchProject(projectId, { tasks, activeTask: keep ? state.activeTask : null })
+}
+
+/** Switch a project's task, whether or not its tab is active. */
+function activateTaskIn(projectId: string, task: string | null) {
+  const s = useStore.getState()
+  if (s.project?.id === projectId) s.setActiveTask(task)
+  else s.patchProject(projectId, { activeTask: task })
 }
 
 /**
@@ -68,33 +86,47 @@ export function followActiveTask() {
     return running
   }
   return useStore.subscribe((s, prev) => {
+    // A closed project's backend state is gone; reopening it starts from scratch.
+    if (s.projects !== prev.projects)
+      for (const id of sent.keys()) if (!s.projects[id] && s.project?.id !== id) sent.delete(id)
     const id = s.project?.id
-    if (!id || id !== prev.project?.id || s.activeTask === prev.activeTask) return
-    void activate(id)
-    invalidateGitRefresh()
+    if (!id) return
+    // Also covers a task restored with the workspace, which the backend hasn't heard of.
+    if ((sent.get(id) ?? null) !== s.activeTask) void activate(id)
+    if (id !== prev.project?.id || s.activeTask === prev.activeTask) return
+    invalidateGitRefresh(id)
     useStore.getState().setGitStatus({ changes: {}, repos: {} })
     void requestGitRefresh(id)
   })
 }
 
 export async function createTask(draft: TaskDraft): Promise<Task> {
-  const task = await taskCreate(draft)
-  await refreshTasks()
-  useStore.getState().setActiveTask(task.id)
+  const projectId = useStore.getState().project?.id
+  if (!projectId) throw new Error('Open a project first')
+  const task = await taskCreate(draft, projectId)
+  await refreshTasks(projectId)
+  activateTaskIn(projectId, task.id)
   return task
 }
 
 export async function attachTask(worktree: string, components: string[]): Promise<Task> {
-  const task = await taskAttach(worktree, undefined, components)
-  await refreshTasks()
-  useStore.getState().setActiveTask(task.id)
+  const projectId = useStore.getState().project?.id
+  if (!projectId) throw new Error('Open a project first')
+  const task = await taskAttach(worktree, undefined, components, projectId)
+  await refreshTasks(projectId)
+  activateTaskIn(projectId, task.id)
   return task
 }
 
-/** Stop a task's terminals and wait (up to 10s) for them to exit. */
-async function stopTaskSessions(id: string) {
+/** Stop a project's task terminals and wait (up to 10s) for them to exit. */
+async function stopTaskSessions(projectId: string, id: string) {
   const sids = Object.entries(useStore.getState().sessions)
-    .filter(([sid, session]) => session.running && sessionTask(sid) === id)
+    .filter(
+      ([sid, session]) =>
+        session.running &&
+        sessionTask(sid) === id &&
+        sessionMetadata.get(sid)?.projectId === projectId,
+    )
     .map(([sid]) => sid)
   await Promise.all(sids.map((sid) => terminalStop(sid).catch(() => {})))
   const deadline = Date.now() + 10000
@@ -105,17 +137,20 @@ async function stopTaskSessions(id: string) {
 
 /**
  * Stop the task's terminals (nothing would show them once it is gone), then forget it and, with
- * `deleteWorktree`, remove its worktree.
+ * `deleteWorktree`, remove its worktree. Stays with the project it was asked in.
  */
 export async function removeTask(id: string, deleteWorktree: boolean) {
+  const projectId = useStore.getState().project?.id
+  if (!projectId) return
   // Ask first, so a worktree git won't remove doesn't cost the task its running terminals.
-  if (deleteWorktree) await taskCheckRemovable(id)
-  await stopTaskSessions(id)
-  if (useStore.getState().activeTask === id) useStore.getState().setActiveTask(null)
+  if (deleteWorktree) await taskCheckRemovable(id, projectId)
+  await stopTaskSessions(projectId, id)
+  const state = useStore.getState().captureProjects()[projectId]?.state
+  if (state?.activeTask === id) activateTaskIn(projectId, null)
   try {
-    await taskRemove(id, deleteWorktree)
+    await taskRemove(id, deleteWorktree, projectId)
   } finally {
-    await refreshTasks()
+    await refreshTasks(projectId)
   }
 }
 

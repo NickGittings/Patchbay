@@ -144,7 +144,7 @@ impl Bridge {
             .unwrap()
             .get(envelope.event.session_id())
             .cloned();
-        if let Some(label) = label
+        if let Some(label) = label.filter(|l| !l.is_empty())
             && app.get_webview_window(&label).is_some()
         {
             let _ = app.emit_to(&label, &format!("{TERMINAL_EVENT}/{label}"), envelope);
@@ -222,6 +222,23 @@ impl Bridge {
                     }
                     Ok(batch) => {
                         let count = batch.events.len();
+                        // Sessions the service started itself (graph actions) or
+                        // another client started: learn their windows before routing.
+                        let unknown = {
+                            let routes = bridge.routes.lock().unwrap();
+                            batch
+                                .events
+                                .iter()
+                                .any(|e| !routes.contains_key(e.event.session_id()))
+                        };
+                        if unknown && let Ok(records) = client.call::<Vec<Record>>(Request::List) {
+                            bridge.learn(&records);
+                            // Ids with no record go to main only, without asking again.
+                            let mut routes = bridge.routes.lock().unwrap();
+                            for e in &batch.events {
+                                routes.entry(e.event.session_id().into()).or_default();
+                            }
+                        }
                         for envelope in &batch.events {
                             after = envelope.sequence;
                             bridge.route(&app, envelope);
