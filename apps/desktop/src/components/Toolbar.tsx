@@ -68,7 +68,10 @@ export default function Toolbar() {
             {project && (
               <>
                 <MenuSeparator />
-                <MenuItem onClick={() => void rescan()} title="Add components for new folders">
+                <MenuItem
+                  onClick={() => void rescan()}
+                  title="Review detected structural changes before applying them"
+                >
                   Rescan
                 </MenuItem>
                 <MenuItem

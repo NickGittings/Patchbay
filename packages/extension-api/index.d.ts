@@ -3,7 +3,12 @@ export interface Disposable {
   dispose(): void
   readonly ready: Promise<unknown>
 }
+export interface DetectionProvenance {
+  detector: string
+  packageIdentity?: string
+}
 export interface Component {
+  detection?: DetectionProvenance
   id: string
   name: string
   kind: string
@@ -26,6 +31,7 @@ export interface Project {
   root: string
   components: Component[]
   links: {
+    detection?: DetectionProvenance
     id: string
     source: string
     target: string

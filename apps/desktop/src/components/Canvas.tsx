@@ -12,6 +12,7 @@ import { KIND_COLOR } from '../lib/display'
 import { useStore, type FlowNode } from '../store'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
+import { removeComponents } from '../lib/maintenance'
 
 const nodeTypes = { component: ComponentNode }
 
@@ -74,6 +75,26 @@ export default function Canvas() {
         nodes={planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
+        onBeforeDelete={async ({ nodes: removedNodes, edges: removedEdges }) => {
+          if (!removedNodes.length) return true
+          const projectId = project.id
+          const accepted = await removeComponents(
+            removedNodes.map((n) => n.id),
+            projectId,
+          )
+          if (accepted && projectId) {
+            const s = useStore.getState()
+            const origin = s.captureProjects()[projectId]?.state
+            if (origin)
+              s.patchProject(projectId, {
+                edges: origin.edges.filter(
+                  (e) => !removedEdges.some((removed) => removed.id === e.id),
+                ),
+                dirty: true,
+              })
+          }
+          return false
+        }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

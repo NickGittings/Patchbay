@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
-import { syncCurrentRoots } from '../lib/access'
+import { repairComponentPath, provenanceLabel, useMaintenance } from '../lib/maintenance'
 import { startTerminal, stopTerminal } from '../lib/sessions'
 import { runGraphAction, stopValidation } from '../lib/actions'
 import { useStore, type FlowNode } from '../store'
@@ -22,8 +22,56 @@ import {
 
 const TERMINAL_KINDS: TerminalKind[] = ['shell', 'task', 'agent']
 
+function ComponentFolder({
+  componentId,
+  path,
+  projectId,
+}: {
+  componentId: string
+  path: string
+  projectId?: string
+}) {
+  const [folder, setFolder] = useState(path)
+  return (
+    <label>
+      Folder
+      <div className="row">
+        <input
+          spellCheck={false}
+          value={folder}
+          onChange={(e) => setFolder(e.target.value)}
+          onBlur={() => {
+            if (folder !== path)
+              void repairComponentPath(componentId, folder, projectId).then((accepted) => {
+                if (!accepted) setFolder(path)
+              })
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+        <button
+          onClick={async () => {
+            try {
+              const picked = await pickComponentFolder()
+              if (picked) await repairComponentPath(componentId, picked, projectId)
+            } catch (e) {
+              if (useStore.getState().project?.id === projectId)
+                useStore.getState().setMessage(String(e))
+            }
+          }}
+        >
+          Browse…
+        </button>
+      </div>
+    </label>
+  )
+}
+
 function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
+  const projectId = useStore((s) => s.project?.id)
+  const issue = useMaintenance((s) => s.issues[projectId ?? '']?.find((i) => i.componentId === id))
   const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
   const graphActionBusy = useStore((s) => s.graphActionBusy)
@@ -99,31 +147,21 @@ function ComponentInspector({ node }: { node: FlowNode }) {
           </select>
         </label>
       </div>
-      <label>
-        Folder
-        <div className="row">
-          <input
-            spellCheck={false}
-            value={data.path}
-            onChange={(e) => updateComponent(id, { path: e.target.value })}
-          />
-          <button
-            onClick={async () => {
-              try {
-                const path = await pickComponentFolder()
-                if (path) {
-                  updateComponent(id, { path })
-                  await syncCurrentRoots()
-                }
-              } catch (e) {
-                useStore.getState().setMessage(String(e))
-              }
-            }}
-          >
-            Browse
+      <div className="maintenance-origin">
+        Origin: {provenanceLabel(data.detection?.detector)}
+        {data.detection?.packageIdentity && <span> · {data.detection.packageIdentity}</span>}
+        {data.detection?.detector !== 'manual' && (
+          <button onClick={() => updateComponent(id, { detection: { detector: 'manual' } })}>
+            Mark manual
           </button>
-        </div>
-      </label>
+        )}
+      </div>
+      {issue && (
+        <p className="map-issue">
+          <strong>{issue.kind}</strong>: {issue.message}
+        </p>
+      )}
+      <ComponentFolder key={data.path} componentId={id} path={data.path} projectId={projectId} />
       <label>
         Notes
         <textarea
@@ -307,6 +345,25 @@ function LinkInspector({ edgeId }: { edgeId: string }) {
           onChange={(e) => setEdgeLabel(edge.id, e.target.value)}
         />
       </label>
+      <p className="maintenance-origin">
+        Origin: {provenanceLabel(edge.data?.detection?.detector)}
+      </p>
+      {edge.data?.detection?.detector !== 'manual' && (
+        <button
+          onClick={() =>
+            useStore.setState((s) => ({
+              edges: s.edges.map((e) =>
+                e.id === edge.id
+                  ? { ...e, data: { ...e.data, detection: { detector: 'manual' } } }
+                  : e,
+              ),
+              dirty: true,
+            }))
+          }
+        >
+          Mark manual
+        </button>
+      )}
       <button
         className="danger"
         onClick={() => {
@@ -352,7 +409,7 @@ export default function Inspector() {
       {extensionViews.selected ? (
         <ExtensionView id={extensionViews.selected} />
       ) : node ? (
-        <ComponentInspector key={node.id} node={node} />
+        <ComponentInspector key={`${project?.id}:${node.id}`} node={node} />
       ) : edgeId ? (
         <LinkInspector edgeId={edgeId} />
       ) : (

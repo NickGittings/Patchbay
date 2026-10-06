@@ -11,6 +11,7 @@ pub mod events;
 pub mod extensions;
 pub mod files;
 pub mod git;
+pub mod maintenance;
 pub mod model;
 pub mod navigation;
 pub mod policy;

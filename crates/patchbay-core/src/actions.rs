@@ -307,6 +307,7 @@ struct State {
     active: Option<Active>,
     stopping: bool,
     environments: BTreeMap<String, Vec<Run>>,
+    environment_components: BTreeMap<String, Vec<String>>,
 }
 
 /// Runs one coordinated operation at a time. Groups share managed sessions;
@@ -315,6 +316,39 @@ struct State {
 pub struct GraphActions(Mutex<State>);
 
 impl GraphActions {
+    /// Require affected components' managed environments and coordinated operations to be stopped.
+    /// # Errors
+    /// Fails while a coordinated action is active or an environment owns an affected session.
+    pub fn with_maintenance_guard<T>(
+        &self,
+        session_ids: &[String],
+        component_ids: &[String],
+        apply: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let state = self.0.lock().unwrap();
+        ensure!(
+            state.active.is_none() && !state.stopping,
+            "Stop graph actions before changing component folders or removing components"
+        );
+        ensure!(
+            !state
+                .environments
+                .values()
+                .flatten()
+                .any(|run| session_ids.contains(&run.id)),
+            "Stop managed environments before changing component folders or removing components"
+        );
+        ensure!(
+            !state
+                .environment_components
+                .values()
+                .flatten()
+                .any(|id| component_ids.contains(id)),
+            "Stop managed environments before changing their component scope"
+        );
+        apply()
+    }
+
     /// The project generation; [`Self::reset`] bumps it. Callers read it
     /// before doing slow work so a project switch in between is detected.
     ///
@@ -366,6 +400,16 @@ impl GraphActions {
             ActionRequest::ValidateAffected { component_id } => {
                 (format!("validation:{component_id}"), None, Duration::ZERO)
             }
+        };
+        let environment_components = match &plan.request {
+            ActionRequest::StartGroup { group_id } => project
+                .groups
+                .iter()
+                .find(|g| &g.id == group_id)
+                .unwrap()
+                .component_ids
+                .clone(),
+            _ => vec![],
         };
         let cancelled = Arc::new(AtomicBool::new(false));
         {
@@ -578,7 +622,27 @@ impl GraphActions {
                 ));
             }
         }
-        self.0.lock().unwrap().active = None;
+        {
+            let mut state = self.0.lock().unwrap();
+            if state.epoch == epoch
+                && let Some(group) = &environment
+                && state
+                    .environments
+                    .get(group)
+                    .is_some_and(|runs| !runs.is_empty())
+            {
+                let scope = state
+                    .environment_components
+                    .entry(group.clone())
+                    .or_default();
+                for id in environment_components {
+                    if !scope.contains(&id) {
+                        scope.push(id);
+                    }
+                }
+            }
+            state.active = None;
+        }
         result
     }
 
@@ -650,6 +714,9 @@ impl GraphActions {
                 .or_default()
                 .extend(unfinished);
         }
+        if state.epoch == epoch && failures.is_empty() {
+            state.environment_components.remove(group_id);
+        }
         state.stopping = false;
         ensure!(
             failures.is_empty(),
@@ -671,6 +738,7 @@ impl GraphActions {
             active.cancelled.store(true, Ordering::SeqCst);
         }
         state.environments.clear();
+        state.environment_components.clear();
     }
 }
 
@@ -806,6 +874,61 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_also_guards_managed_group_members_without_terminals() {
+        let actions = GraphActions::default();
+        actions
+            .0
+            .lock()
+            .unwrap()
+            .environment_components
+            .insert("p:dev".into(), vec!["no-terminal-library".into()]);
+        assert!(
+            actions
+                .with_maintenance_guard(&[], &["no-terminal-library".into()], || Ok(()))
+                .is_err()
+        );
+        assert!(
+            actions
+                .with_maintenance_guard(&[], &["unrelated".into()], || Ok(()))
+                .is_ok()
+        );
+        actions.reset();
+        assert!(
+            actions
+                .with_maintenance_guard(&[], &["no-terminal-library".into()], || Ok(()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn maintenance_requires_releasing_environment_ownership_even_after_exit() {
+        let actions = GraphActions::default();
+        actions.0.lock().unwrap().environments.insert(
+            "p:dev".into(),
+            vec![Run {
+                id: "owned-session".into(),
+                generation: 9,
+            }],
+        );
+        assert!(
+            actions
+                .with_maintenance_guard(&["owned-session".into()], &[], || Ok(()))
+                .is_err()
+        );
+        assert!(
+            actions
+                .with_maintenance_guard(&["other-session".into()], &[], || Ok(()))
+                .is_ok()
+        );
+        actions.0.lock().unwrap().environments.clear();
+        assert!(
+            actions
+                .with_maintenance_guard(&["owned-session".into()], &[], || Ok(()))
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn old_maps_default_to_manual_tasks_and_no_groups() {
         let p: Project = serde_json::from_value(json!({"name":"old","components":[{
             "id":"api","name":"API","path":".","terminals":[{
@@ -888,6 +1011,7 @@ mod tests {
     fn ordering_cycles_fail_and_validation_deduplicates_diamonds_and_cycles() {
         let mut p = project();
         p.links.push(crate::Link {
+            detection: None,
             id: "cycle".into(),
             source: "lib".into(),
             target: "web".into(),
@@ -1160,6 +1284,7 @@ mod tests {
             extra.terminals[1].command = "exit 0".into();
             f.project.components.push(extra);
             f.project.links.push(crate::Link {
+                detection: None,
                 id: "app-web".into(),
                 source: "app".into(),
                 target: "web".into(),

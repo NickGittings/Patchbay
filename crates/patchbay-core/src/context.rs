@@ -995,6 +995,7 @@ mod tests {
 
     fn component(id: &str, path: &str, terminals: Vec<TerminalSpec>) -> Component {
         Component {
+            detection: None,
             id: id.into(),
             name: id.to_uppercase(),
             kind: ComponentKind::Backend,
@@ -1027,6 +1028,7 @@ mod tests {
                 component("db", "db", vec![]),
             ],
             links: vec![Link {
+                detection: None,
                 id: "l1".into(),
                 source: "api".into(),
                 target: "db".into(),
@@ -1154,12 +1156,14 @@ mod tests {
             .push(component("unrelated", "elsewhere", vec![]));
         p.links[0].label = Some("queries".into());
         p.links.push(Link {
+            detection: None,
             id: "l2".into(),
             source: "web".into(),
             target: "api".into(),
             label: Some("calls".into()),
         });
         p.links.push(Link {
+            detection: None,
             id: "l3".into(),
             source: "web".into(),
             target: "db".into(),

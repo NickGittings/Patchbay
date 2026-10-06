@@ -400,7 +400,18 @@ impl Registry {
     #[must_use]
     pub fn detectors(&self) -> Vec<DetectorContribution> {
         self.active()
-            .flat_map(|e| e.manifest.contributes.detectors.clone())
+            .flat_map(|e| {
+                e.manifest
+                    .contributes
+                    .detectors
+                    .iter()
+                    .cloned()
+                    .map(|mut d| {
+                        d.id = format!("extension:{}:{}", e.id, d.id);
+                        d
+                    })
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
     #[must_use]
@@ -800,6 +811,7 @@ mod tests {
             TerminalKind::Task
         );
         assert_eq!(registry.detectors().len(), 1);
+        assert_eq!(registry.detectors()[0].id, "extension:acme.docker:compose");
     }
     #[test]
     fn rejects_engine_mismatch_bad_ids_paths_and_menu_references() {
@@ -972,6 +984,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("compose.yaml"), "x".repeat(40 * 1024)).unwrap();
             components.push(Component {
+                detection: None,
                 id: format!("svc{i}"),
                 name: format!("svc{i}"),
                 kind: ComponentKind::Service,

@@ -4,6 +4,8 @@ import SessionsPanel from './components/SessionsPanel'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
 import CommandPalette from './components/CommandPalette'
+import MapMaintenanceReview from './components/MapMaintenanceReview'
+import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
@@ -77,12 +79,14 @@ export default function App() {
   useEffect(() => {
     void initializeWorkspace()
     const stopHost = startExtensionHost()
+    const stopMaintenance = startMaintenanceChecks()
     void refreshExtensions().catch((e) => useStore.getState().setMessage(String(e)))
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
     const stopWindows = syncComponentWindows()
     const stopTasks = followActiveTask()
     return () => {
       stopHost()
+      stopMaintenance()
       stopWindows()
       stopTasks()
     }
@@ -102,6 +106,7 @@ export default function App() {
         <SessionsPanel />
         <CommandPalette />
         <NavigationDialogs />
+        <MapMaintenanceReview />
         <ExtensionsPanel />
         <NewTaskDialog />
         {restoring ? (

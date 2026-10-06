@@ -10,6 +10,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  MapIssue,
+  MapEdit,
+  ReconciliationPreview,
   ActionPlan,
   ActionReport,
   ActionRequest,
@@ -43,7 +46,33 @@ export const openProject = () =>
     (opened) => opened && { ...opened, project: { ...opened.project, projectId: opened.id } },
   )
 export const rescanProject = (project: Project) =>
-  invoke<Added>('rescan_project', { project, projectId: project.projectId })
+  invoke<ReconciliationPreview>('rescan_project', { project, projectId: project.projectId })
+export const mapIssues = (project: Project) =>
+  invoke<MapIssue[]>('map_issues', { project, projectId: project.projectId })
+export const applyReconciliation = (project: Project, previewId: string, selected: string[]) =>
+  invoke<MapEdit>('apply_reconciliation', {
+    project,
+    projectId: project.projectId,
+    previewId,
+    selected,
+  })
+export const editMapComponents = (
+  project: Project,
+  remove: string[],
+  componentId?: string,
+  path?: string,
+) =>
+  invoke<MapEdit>('edit_map_components', {
+    project,
+    projectId: project.projectId,
+    remove,
+    componentId,
+    path,
+  })
+export const cleanupComponentScopes = (project: Project, removed: string[]) =>
+  invoke<void>('cleanup_component_scopes', { project, projectId: project.projectId, removed })
+export const releaseMapEdit = (projectId: string, token: string) =>
+  invoke<void>('release_map_edit', { projectId, token })
 export const saveProject = (project: Project) =>
   invoke<string>('save_project', { project, projectId: project.projectId })
 export const graphActionPlan = (project: Project, request: ActionRequest, task?: string) =>

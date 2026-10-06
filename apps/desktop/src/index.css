@@ -1944,3 +1944,54 @@ button.review-name:hover:not(:disabled) {
 .editor-settings textarea {
   width: 100%;
 }
+
+.map-maintenance-dialog {
+  width: min(720px, 90vw);
+  max-height: 85vh;
+  overflow: auto;
+  padding: 24px;
+  background: #1e2129;
+  border: 1px solid #444;
+  border-radius: 10px;
+}
+.map-maintenance-dialog h2 {
+  margin-top: 0;
+}
+.maintenance-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 20px 0;
+}
+.maintenance-proposal {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+}
+.maintenance-proposal input {
+  width: auto;
+}
+.map-issue {
+  color: #e8b968;
+  font-size: 12px;
+}
+.map-issue strong,
+.hierarchy .map-issue {
+  text-transform: capitalize;
+}
+.maintenance-origin {
+  font-size: 11px;
+  color: #9ea4b4;
+  margin: 12px 0;
+}
+.maintenance-origin button {
+  margin-left: 8px;
+}
+.maintenance-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #0009;
+  display: grid;
+  place-items: center;
+}

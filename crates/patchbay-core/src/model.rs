@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component as PathPart, Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// Reserved component scope for project-level planner sessions.
 pub const PLAN_SCOPE: &str = "@plan";
 /// Reserved component id for changed files under the project root that no
@@ -76,9 +76,20 @@ pub struct Position {
     pub y: f64,
 }
 
+/// Origin of a detected structure. Absent records remain unclassified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionProvenance {
+    pub detector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_identity: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Component {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection: Option<DetectionProvenance>,
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -131,6 +142,8 @@ pub struct TerminalSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Link {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection: Option<DetectionProvenance>,
     pub id: String,
     pub source: String,
     pub target: String,
@@ -444,6 +457,24 @@ pub fn task_session_id(
 mod tests {
     use super::*;
 
+    #[test]
+    fn saving_legacy_map_upgrades_schema_and_retains_optional_provenance() {
+        let root =
+            std::env::temp_dir().join(format!("patchbay-legacy-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({ "schemaVersion": 3, "name": "Legacy", "root": root.display().to_string(), "components": [{ "id": "legacy", "name": "Legacy", "path": "." }, { "id": "detected", "name": "New", "path": "new", "detection": { "detector": "builtin", "packageIdentity": "npm:new" } }] })).unwrap();
+        project.save().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(PROJECT_FILE)).unwrap()).unwrap();
+        assert_eq!(saved["schemaVersion"], SCHEMA_VERSION);
+        assert!(saved["components"][0].get("detection").is_none());
+        assert_eq!(
+            saved["components"][1]["detection"]["packageIdentity"],
+            "npm:new"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A project whose links are `(source, target)`: source depends on target.
     fn linked(links: &[(&str, &str)]) -> Project {
         let links: Vec<_> = links
@@ -550,6 +581,7 @@ mod tests {
     #[test]
     fn external_components_resolve_outside_the_root() {
         let component = |path: &str| Component {
+            detection: None,
             id: "c".into(),
             name: "C".into(),
             kind: ComponentKind::Other,

@@ -143,6 +143,14 @@ pub struct Batch {
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
     List,
+    MaintenanceGuard {
+        project_id: String,
+        component_ids: Vec<String>,
+    },
+    MaintenanceRelease {
+        project_id: String,
+        token: String,
+    },
     Start {
         request_id: String,
         metadata: Box<Metadata>,
@@ -458,6 +466,7 @@ pub struct Service {
     /// Sessions that exited since the serve loop last looked for resume hints.
     exited: Mutex<Vec<String>>,
     confirmed: Mutex<Vec<(String, u64, Adapter, String)>>,
+    maintenance: Mutex<HashMap<String, MaintenanceLease>>,
     operation: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
@@ -469,6 +478,11 @@ pub struct Service {
     shutdown: AtomicBool,
     clients: AtomicUsize,
     authority: AtomicUsize,
+}
+struct MaintenanceLease {
+    project_id: String,
+    component_ids: Vec<String>,
+    expires: Instant,
 }
 const SAVE_DIRTY: Duration = Duration::from_millis(500);
 const SAVE_OUTPUT: Duration = Duration::from_secs(5);
@@ -517,6 +531,7 @@ impl Service {
             connections: Mutex::default(),
             exited: Mutex::default(),
             confirmed: Mutex::default(),
+            maintenance: Mutex::default(),
             operation: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
@@ -527,6 +542,16 @@ impl Service {
             clients: AtomicUsize::new(0),
             authority: AtomicUsize::new(0),
         }))
+    }
+    fn check_maintenance_block(&self, project_id: &str, components: &[String]) -> Result<()> {
+        let mut leases = self.maintenance.lock().unwrap();
+        leases.retain(|_, lease| lease.expires > Instant::now());
+        anyhow::ensure!(
+            !leases.values().any(|lease| lease.project_id == project_id
+                && lease.component_ids.iter().any(|id| components.contains(id))),
+            "Map maintenance is applying; retry after it finishes"
+        );
+        Ok(())
     }
     fn actions_for(&self, project_id: &str) -> Arc<GraphActions> {
         self.actions
@@ -715,6 +740,10 @@ impl Service {
             );
         }
         let _operation = self.operation.lock().unwrap();
+        self.check_maintenance_block(
+            &metadata.project_id,
+            std::slice::from_ref(&metadata.component_id),
+        )?;
         anyhow::ensure!(
             !self.shutdown.load(Ordering::Acquire),
             "Session service is shutting down; no work was started"
@@ -946,7 +975,45 @@ impl Service {
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
             }
+            Request::MaintenanceGuard {
+                project_id,
+                component_ids,
+            } => {
+                let ids: Vec<_> = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|r| {
+                        r.metadata.project_id == project_id
+                            && component_ids.contains(&r.metadata.component_id)
+                    })
+                    .map(|r| r.id.clone())
+                    .collect();
+                // Match graph launch's lock order: action state before service operation.
+                // Keep graph state held until the lease blocks every affected launch.
+                self.actions_for(&project_id).with_maintenance_guard(&ids, &component_ids, || {
+                    let _operation = self.operation.lock().unwrap();
+                    self.check_maintenance_block(&project_id, &component_ids)?;
+                    anyhow::ensure!(!self.records.lock().unwrap().values().any(|r| r.metadata.project_id == project_id && component_ids.contains(&r.metadata.component_id) && self.pty.is_running(&r.id)), "Stop this component's live sessions in every task before changing its folder or removing it");
+                    let token = uuid::Uuid::new_v4().to_string();
+                    self.maintenance.lock().unwrap().insert(token.clone(), MaintenanceLease { project_id, component_ids: component_ids.clone(), expires: Instant::now() + Duration::from_secs(30) });
+                    serde_json::to_value(token)
+                        .map_err(Into::into)
+                })?
+            }
+            Request::MaintenanceRelease { project_id, token } => {
+                let mut leases = self.maintenance.lock().unwrap();
+                if leases
+                    .get(&token)
+                    .is_some_and(|lease| lease.project_id == project_id)
+                {
+                    leases.remove(&token);
+                }
+                serde_json::Value::Null
+            }
             Request::ActionRun { project, plan } => {
+                self.check_maintenance_block(&plan.project_id, &plan.component_ids())?;
                 let actions = self.actions_for(&plan.project_id);
                 let epoch = actions.epoch();
                 let project_id = plan.project_id.clone();
@@ -1275,6 +1342,105 @@ mod tests {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
         assert!(read_frame::<Request>(&mut &[0, 0, 0, 2, b'[', b']'][..]).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn maintenance_lease_blocks_launches_until_frontend_apply_finishes() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
+        let spec = SessionSpec {
+            id: String::new(),
+            command: "cat".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let token: String = serde_json::from_value(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()],
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            service
+                .start("blocked".into(), metadata.clone(), spec.clone())
+                .is_err()
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "other".into(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+        assert!(
+            service
+                .start("still-blocked".into(), metadata.clone(), spec.clone())
+                .is_err()
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "p".into(),
+                    token,
+                },
+            )
+            .unwrap();
+        let id = service.start("allowed".into(), metadata, spec).unwrap();
+        assert!(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()]
+                    }
+                )
+                .is_err()
+        );
+        service.pty.stop(&id);
+        let original_directory = service.records.lock().unwrap()[&id].spec.cwd.clone();
+        let token: String = serde_json::from_value(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()],
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            service.records.lock().unwrap()[&id].spec.cwd,
+            original_directory
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "p".into(),
+                    token,
+                },
+            )
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn idempotent_launch_authority_replay_and_restart() {

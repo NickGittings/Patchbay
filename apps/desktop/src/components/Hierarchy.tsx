@@ -8,10 +8,12 @@ import { useStore } from '../store'
 import { sessionId } from '../types'
 import AttentionPill from './status/AttentionPill'
 import ComponentGroups from './ComponentGroups'
+import { provenanceLabel, useMaintenance } from '../lib/maintenance'
 
 /** Outline of every component, like a game engine's scene hierarchy. */
 export default function Hierarchy() {
   const project = useStore((s) => s.project)
+  const issues = useMaintenance((s) => s.issues[project?.id ?? ''])
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
@@ -60,7 +62,19 @@ export default function Hierarchy() {
             onDoubleClick={() => void openComponentWindow(n.id, n.data.name)}
           >
             <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
-            <span className="hierarchy-name">{n.data.name}</span>
+            <span
+              className="hierarchy-name"
+              title={`Origin: ${provenanceLabel(n.data.detection?.detector)}`}
+            >
+              {n.data.name}
+            </span>
+            {issues
+              ?.filter((i) => i.componentId === n.id)
+              .map((issue) => (
+                <span className="count map-issue" key={issue.kind} title={issue.message}>
+                  {issue.kind}
+                </span>
+              ))}
             <ExtensionBadges componentId={n.id} />
             <AttentionPill status={attention} />
             {running > 0 && (
