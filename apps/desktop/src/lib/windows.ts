@@ -101,7 +101,7 @@ export function openComponentWindow(
     }
     const project = useStore.getState().captureProjects()[projectId]
     if (!project) return
-    const geometry = await invoke<Record<string, number | boolean>>('window_register', {
+    const geometry = await invoke<Record<string, number | boolean | string>>('window_register', {
       label,
       projectId,
       componentId,

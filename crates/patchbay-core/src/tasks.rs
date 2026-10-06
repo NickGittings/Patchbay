@@ -747,6 +747,58 @@ mod tests {
     }
 
     #[test]
+    fn create_validates_its_draft_before_touching_git() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else {
+            return;
+        };
+        let draft = |title: &str, branch: &str, base: Option<&str>| TaskDraft {
+            title: title.into(),
+            branch: branch.into(),
+            base: base.map(Into::into),
+            components: vec![],
+        };
+        assert!(create(&root, draft("  ", "a", None)).is_err());
+        assert!(create(&root, draft("A", "a", Some("-x"))).is_err());
+        assert!(create(&root, draft("A", "a", Some("no-such-branch"))).is_err());
+        assert!(!verifies(&root, "refs/heads/a"));
+
+        // A base names where a new branch starts, never an existing branch.
+        let task = create(&root, draft("A", "a", Some(" main "))).unwrap();
+        assert_eq!(task.base.as_deref(), Some("main"));
+        assert!(f.git("shop", &["branch", "b"]));
+        assert!(create(&root, draft("B", "b", Some("main"))).is_err());
+
+        // An unreadable store fails before a worktree or branch exists.
+        let store = store_file(&root).unwrap();
+        fs::write(&store, "{broken").unwrap();
+        assert!(create(&root, draft("C", "c", None)).is_err());
+        assert!(!f.0.join("shop-c").exists());
+        assert!(!verifies(&root, "refs/heads/c"));
+    }
+
+    #[test]
+    fn new_worktrees_skip_taken_folders() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else {
+            return;
+        };
+        f.write("shop-fix-login/keep.txt", "not a worktree");
+        let task = create(
+            &root,
+            TaskDraft {
+                title: "Fix".into(),
+                branch: "fix/login".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(Path::new(&task.worktree), f.0.join("shop-fix-login-2"));
+        assert!(f.0.join("shop-fix-login/keep.txt").exists());
+    }
+
+    #[test]
     fn checks_out_a_branch_that_only_a_remote_has() {
         let f = Fixture::new();
         if f.repo().is_none() {

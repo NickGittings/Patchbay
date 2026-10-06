@@ -22,6 +22,9 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
             std::process::exit(1);
         }
     };
+    // Don't activate at launch, before `setup` can make the app prohibited.
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(false);
 
     builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
@@ -41,10 +44,22 @@ pub fn project_root(second: bool) -> Option<std::path::PathBuf> {
     .map(std::path::PathBuf::from)
 }
 
+/// Smoke windows run in the background (see [`setup`]), where WebKit would otherwise
+/// throttle or suspend their timers. The main window gets this from `tauri.smoke.conf.json`.
+pub fn window_options(options: &mut serde_json::Value) {
+    if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_some() {
+        options["backgroundThrottling"] = serde_json::json!("disabled");
+    }
+}
+
 pub fn setup(app: &mut tauri::App) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return;
     }
+    // Run in the background: wry activates the app for every new top-level webview, which
+    // would take focus from whatever the user is doing, but a prohibited app can't activate.
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
 
     let handle = app.handle().clone();
     app.listen(REPORT_EVENT, move |event| {

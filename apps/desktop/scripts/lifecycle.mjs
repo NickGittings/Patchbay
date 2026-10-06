@@ -73,10 +73,18 @@ writeFileSync(
 }`,
 )
 const port = Number(process.env.PATCHBAY_SMOKE_PORT || 1432)
+const prebuilt = Boolean(process.env.PATCHBAY_SMOKE_PREBUILT)
+const binary = (name) =>
+  join(
+    resolve(root, process.env.CARGO_TARGET_DIR || 'target'),
+    'debug',
+    name + (process.platform === 'win32' ? '.exe' : ''),
+  )
 const config = join(fixture, 'tauri.json')
 writeFileSync(
   config,
   JSON.stringify({
+    ...JSON.parse(readFileSync(join(desktop, 'src-tauri/tauri.smoke.conf.json'), 'utf8')),
     build: {
       devUrl: `http://localhost:${port}`,
       beforeDevCommand: `npm run prepare:sessiond && npm run dev -- --port ${port}`,
@@ -93,11 +101,18 @@ const env = {
 }
 const run = () =>
   new Promise((resolveRun, reject) => {
-    const child = spawn(
-      process.execPath,
-      [require.resolve('@tauri-apps/cli/tauri.js'), 'dev', '--config', config],
-      { cwd: desktop, env, stdio: 'inherit' },
-    )
+    // Under smoke-all.mjs, its prebuilt binary and Vite server (port 1420) replace `tauri dev`.
+    const child = prebuilt
+      ? spawn(binary('patchbay-desktop'), [], {
+          cwd: join(desktop, 'src-tauri'),
+          env,
+          stdio: 'inherit',
+        })
+      : spawn(
+          process.execPath,
+          [require.resolve('@tauri-apps/cli/tauri.js'), 'dev', '--config', config],
+          { cwd: desktop, env, stdio: 'inherit' },
+        )
     child.on('error', reject)
     child.on('exit', (code) =>
       code === 0 ? resolveRun() : reject(new Error(`Desktop exited ${code}`)),
@@ -110,7 +125,13 @@ try {
   if (!before?.snapshot.running) throw new Error('Quit stopped the counter')
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 1500))
   await run()
-  const after = Object.values(sessions()).find((r) => r.metadata.terminalId === 'counter')
+  // The service writes output progress every 5s (SAVE_OUTPUT), so give it one interval.
+  const counter = () => Object.values(sessions()).find((r) => r.metadata.terminalId === 'counter')
+  let after = counter()
+  for (let waited = 0; after?.snapshot.end <= before.snapshot.end && waited < 8000; waited += 250) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250))
+    after = counter()
+  }
   if (
     !after?.snapshot.running ||
     after.snapshot.generation !== before.snapshot.generation ||
@@ -156,9 +177,12 @@ try {
   )
 } finally {
   // Stop only this harness's work, retaining artifacts for inspection.
-  execFileSync(
-    'cargo',
-    ['run', '-p', 'patchbay-cli', '--', 'sessions', 'shutdown', '--stop-running'],
-    { cwd: root, env, stdio: 'inherit' },
-  )
+  const shutdown = ['sessions', 'shutdown', '--stop-running']
+  if (prebuilt) execFileSync(binary('patchbay'), shutdown, { cwd: root, env, stdio: 'inherit' })
+  else
+    execFileSync('cargo', ['run', '-p', 'patchbay-cli', '--', ...shutdown], {
+      cwd: root,
+      env,
+      stdio: 'inherit',
+    })
 }

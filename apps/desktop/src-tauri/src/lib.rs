@@ -2313,7 +2313,10 @@ fn window_register(
         .or_insert_with(|| serde_json::json!({}));
     entry["projectId"] = serde_json::json!(project_id);
     entry["componentId"] = serde_json::json!(component_id);
-    let geometry = layout::clamp(&window, entry, false)?;
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut geometry = layout::clamp(&window, entry, false)?;
+    #[cfg(debug_assertions)]
+    smoke::window_options(&mut geometry);
     state
         .layout_dirty
         .store(true, std::sync::atomic::Ordering::Release);
@@ -2599,4 +2602,20 @@ async fn extension_url_open(
         tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
     })
     .await
+}
+
+#[cfg(test)]
+mod window_label_tests {
+    /// Pinned in `src/lib/windows.test.ts` too: pop-out events are routed by this label.
+    #[test]
+    fn component_window_labels_match_the_frontend() {
+        assert_eq!(
+            super::component_window_label("p-1", "web"),
+            "component-5b-22-70-2d-31-22-2c-22-77-65-62-22-5d"
+        );
+        assert_eq!(
+            super::component_window_label("p", "a\"/ü😀"),
+            "component-5b-22-70-22-2c-22-61-5c-22-2f-fc-1f600-22-5d"
+        );
+    }
 }

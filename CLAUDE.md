@@ -19,19 +19,21 @@ cargo run -p patchbay-cli -- plan crates-patchbay-core --dir . # planner briefin
 # Checks (run all before considering work done)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-(cd apps/desktop && npm run check)                     # tsc -b + oxlint src + prettier --check
-(cd apps/desktop && npm run smoke)                     # opens the app, drives a pop-out window, exits 0/1
+cargo nextest run --workspace                          # or `cargo test --workspace` (install: cargo install cargo-nextest --locked)
+(cd apps/desktop && npm run check)                     # tsc -b + oxlint src + prettier --check + vitest run
+(cd apps/desktop && npm run smoke:all)                 # every smoke script against one build, then a pass/fail summary
+(cd apps/desktop && npm run smoke)                     # one script: opens the app, drives a pop-out window, exits 0/1
 (cd apps/desktop && npm run smoke:views)               # view switching, local planner lifecycle, changes and review
 (cd apps/desktop && npm run smoke:git)                 # watcher signals and idle Git refresh behavior
 (cd apps/desktop && npm run smoke:tasks)               # task worktrees on a scratch repo (smoke/tasks-fixture.sh)
+(cd apps/desktop && node scripts/smoke-all.mjs views git --bail)  # a subset, stopping at the first failure
 
 # Single test
 cargo test -p patchbay-core context::tests::claude_gets_neighbour_dirs_and_context
 cargo test -p patchbay-core detect                     # all tests matching "detect"
 ```
 
-There is no frontend unit test suite; Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module. `npm run smoke` is the one end-to-end check: in debug builds only, `src-tauri/src/smoke.rs` evaluates `$PATCHBAY_SMOKE_SCRIPT` in every window and exits 0/1 when the script emits `PASS…`/`FAIL…` on `patchbay://smoke-report`; `src/lib/smoke.ts` exposes the store and helpers as `window.__patchbaySmoke` (dev bundles only). The smoke scripts run through `scripts/smoke.mjs`, which gives each run a fresh temporary `PATCHBAY_STATE_DIR` (so no saved workspace or session service leaks between runs or into `~/.patchbay`) and shuts that run's service down afterwards. Never add test hooks that run in release builds.
+Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module (`.config/nextest.toml` caps the process-spawning ones). Frontend unit tests (Vitest, node environment) sit beside pure modules as `src/**/*.test.ts` and run in `npm run check`; mock `../store` and Tauri APIs rather than testing components. Values hashed or encoded on both sides (`sessionId`, `componentLabel`) are pinned to the same golden strings in a Rust and a TS test, so change both together. The smoke scripts are the end-to-end checks: in debug builds only, `src-tauri/src/smoke.rs` evaluates `$PATCHBAY_SMOKE_SCRIPT` in every window and exits 0/1 when the script emits `PASS…`/`FAIL…` on `patchbay://smoke-report`; `src/lib/smoke.ts` exposes the store and helpers as `window.__patchbaySmoke` (dev bundles only). Every `smoke:*` entry runs through `scripts/smoke-all.mjs`, which owns the per-script table (fixtures, roots, extension folders): it builds sessiond, the desktop app (with `src-tauri/tauri.smoke.conf.json` as `TAURI_CONFIG`) and the CLI once, serves one Vite on 1420 (so stop `tauri dev` first), and runs scripts one at a time with `PATCHBAY_SMOKE_PREBUILT`, which makes `smoke.mjs`/`lifecycle.mjs` launch `target/debug/patchbay-desktop` instead of `tauri dev`. Smoke runs stay in the background on macOS: `smoke.rs` makes the app `ActivationPolicy::Prohibited` (wry activates the app for every new webview), and smoke windows disable WebKit's background throttling (main window via the smoke config, pop-outs via `smoke::window_options`), without which long waits in `git.js`/`status.js` stall. Each script runs through `scripts/smoke.mjs`, which gives each run a fresh temporary `PATCHBAY_STATE_DIR` (so no saved workspace or session service leaks between runs or into `~/.patchbay`) and shuts that run's service down afterwards. Never add test hooks that run in release builds.
 
 ## Lints and style
 

@@ -10,20 +10,22 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "format": "prettier --write .",
-    "check": "tsc -b && oxlint src && prettier --check .",
-    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
-    "smoke:views": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/views.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
-    "smoke:git": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/git.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
-    "smoke:actions": "sh smoke/actions-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/actions.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-actions/project\" node scripts/smoke.mjs",
-    "smoke:extensions": "PATCHBAY_EXTENSIONS_DIR=\"$PWD/../../examples/extensions\" PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/extensions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../../examples/extensions/docker/fixture\" node scripts/smoke.mjs",
-    "smoke:tasks": "sh smoke/tasks-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/tasks.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-tasks/shop\" node scripts/smoke.mjs",
+    "check": "tsc -b && oxlint src && prettier --check . && vitest run",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke-all.mjs popout",
+    "smoke:all": "node scripts/smoke-all.mjs",
+    "smoke:views": "node scripts/smoke-all.mjs views",
+    "smoke:git": "node scripts/smoke-all.mjs git",
+    "smoke:actions": "node scripts/smoke-all.mjs actions",
+    "smoke:extensions": "node scripts/smoke-all.mjs extensions",
+    "smoke:tasks": "node scripts/smoke-all.mjs tasks",
     "prepare:sessiond": "node scripts/sessiond.mjs",
-    "smoke:workspace": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/workspace.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" PATCHBAY_SMOKE_ROOT_2=\"$PWD/../../examples/extensions/docker/fixture\" node scripts/smoke.mjs",
-    "smoke:status": "node scripts/status.mjs",
-    "smoke:lifecycle": "node scripts/lifecycle.mjs",
-    "smoke:navigation": "node scripts/navigation-smoke.mjs",
-    "smoke:maintenance": "sh smoke/maintenance-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/maintenance.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-maintenance/project\" PATCHBAY_SMOKE_ROOT_2=\"${TMPDIR:-/tmp}/patchbay-smoke-maintenance/second\" node scripts/smoke.mjs",
-    "smoke:integrations": "sh smoke/integrations-fixture.sh && PATCHBAY_EXTENSIONS_DIR=\"$PWD/../../extensions\" PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/integrations.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-integrations/shop/web folder\" node scripts/smoke.mjs"
+    "smoke:workspace": "node scripts/smoke-all.mjs workspace",
+    "smoke:status": "node scripts/smoke-all.mjs status",
+    "smoke:lifecycle": "node scripts/smoke-all.mjs lifecycle",
+    "smoke:navigation": "node scripts/smoke-all.mjs navigation",
+    "smoke:maintenance": "node scripts/smoke-all.mjs maintenance",
+    "smoke:integrations": "node scripts/smoke-all.mjs integrations"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -46,6 +48,7 @@
     "oxlint": "^1.81.0",
     "prettier": "^3.9.9",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
   }
 }

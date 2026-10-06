@@ -160,6 +160,31 @@ mod tests {
     }
 
     #[test]
+    fn user_folder_skips_other_and_malformed_files() {
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-device-skips-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        write("notes.json", r#"{"id":"notes","name":"Not a device"}"#);
+        write("broken.device.json", "{");
+        write("nameless.device.json", r#"{"id":"nameless"}"#);
+        write("deploy.device.json", r#"{"id":"deploy","name":"Deploy"}"#);
+        let registry = crate::extensions::Registry::default();
+        let devices = super::load_from(&registry, Some(&dir));
+        let user: Vec<_> = devices.iter().filter(|d| d.source == "user").collect();
+        assert_eq!(user.len(), 1);
+        assert_eq!(user[0].id, "deploy");
+        // Unset fields take their defaults.
+        assert_eq!(user[0].category, "Custom");
+        assert!(user[0].command.is_empty() && user[0].ready_when.is_empty());
+        assert_eq!(
+            devices.iter().filter(|d| d.source == "builtin").count(),
+            super::BUILTIN.len()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn builtins_parse() {
         for s in super::BUILTIN {
             serde_json::from_str::<super::DeviceManifest>(s).expect(s);
