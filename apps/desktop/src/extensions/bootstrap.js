@@ -39,6 +39,9 @@
       executeCommand: (id, ...args) => call('commands.execute', id, args),
     },
     project: { get: () => call('project.get'), onDidChange: (fn) => on('project', fn) },
+    workspace: { get: () => call('workspace.get') },
+    sessions: { list: (componentId) => call('sessions.list', componentId) },
+    urls: { open: (url) => call('urls.open', url) },
     selection: { component: null, onDidChangeSelection: (fn) => on('selection', fn) },
     terminals: {
       start: (cid, tid) => call('terminals.start', cid, tid),

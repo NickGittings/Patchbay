@@ -103,7 +103,7 @@ expressions hide the contribution.
 For code, set `main` to an ES module exporting `activate(patchbay)` and optionally
 `deactivate()`. Activation events are `onStartup`, `onProjectOpen`, `onCommand:<id>`,
 `onView:<id>`, and `workspaceContains:<file>`; first command/view use also activates its owner.
-Each project retains its own host when tabs change. Disabling an extension and Reload dispose its hosts. Code runs only in the
+Each project/task retains its own host when tabs or tasks change. Disabling an extension and Reload dispose its hosts. Code runs only in the
 main window, in opaque-origin `sandbox="allow-scripts"` frames. The broker binds each request
 to its sending frame, checks permissions, bounds messages and concurrent calls, and stops
 hosts that stop answering (three timeouts in a row) or send excessive traffic; a single slow
@@ -112,7 +112,10 @@ network/IPC connections; asset requests are canonicalized inside their extension
 
 The API declarations are in [`packages/extension-api/index.d.ts`](packages/extension-api/index.d.ts).
 Use `project:read` for project/selection snapshots, Git status, and badge/context providers;
-`terminals` for terminal launches; and `files:read` for bounded project file reads. Storage is
+`terminals` for terminal launches; `files:read` for bounded project file reads;
+`sessions:read` for component task-terminal URL summaries; and the separate `urls:open`
+permission for native-validated HTTP/HTTPS browser opening. `workspace.get` reports the
+host’s stable project/task identity. Commands and file reads use that task’s worktree. Storage is
 per extension under `~/.patchbay/extension-data/` (alongside an overridden registry). No raw
 filesystem or network API is exposed. `terminals.run` returns captured output and exit status,
 or `running: true` after eight seconds for a longer task; its session remains in the dock
@@ -125,11 +128,14 @@ with the extension's handler. HTML may use inline styles and scripts, with no ne
 
 [`examples/extensions/docker`](examples/extensions/docker) demonstrates every declarative
 contribution plus container counts from a terminal task, agent context, and an Inspector view.
-Its fixture uses Compose; Docker is optional for smoke verification (missing Docker displays
-zero containers). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions`
+Its fixture uses Compose; Docker is optional for smoke verification (missing or failing
+Docker displays an error and preserves the last successful result). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions`
 or `... -- detect examples/extensions/docker/fixture` to inspect it. `npm run smoke:extensions`
 checks the example inside the desktop app, including the iframe IPC sandbox. Project-local
 extensions, marketplace/URL installs, and extension views in pop-out windows are future work.
+
+Supported first-party Docker and browser preview folders are in [`extensions`](extensions/README.md).
+They remain sandboxed and locally installed, with explicit refresh and task-scoped state.
 
 ## Workspace continuity
 

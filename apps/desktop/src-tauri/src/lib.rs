@@ -1724,6 +1724,8 @@ pub fn run() {
                 extension_storage_get,
                 extension_storage_set,
                 extension_file_read,
+                extension_sessions_list,
+                extension_url_open,
             ];
             handler(invoke)
         })
@@ -1814,6 +1816,7 @@ async fn reveal_extensions_dir(window: WebviewWindow) -> CmdResult<()> {
 
 /// Run a declarative (`run`) command as an ad-hoc terminal of the component.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Named IPC fields preserve the existing command contract.
 async fn command_run(
     project_id: String,
     request_id: String,
@@ -1822,6 +1825,7 @@ async fn command_run(
     project: Project,
     component_id: String,
     command_id: String,
+    task: Option<String>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     launch_extension_terminal(
@@ -1830,6 +1834,7 @@ async fn command_run(
         &state,
         project,
         component_id,
+        task,
         move |registry| {
             let owner = registry
                 .extensions
@@ -1862,6 +1867,7 @@ async fn launch_extension_terminal(
     state: &AppState,
     project: Project,
     component_id: String,
+    task: Option<String>,
     terminal: impl FnOnce(
         &Registry,
     ) -> CmdResult<(TerminalSpec, String, Option<String>, Option<String>)>
@@ -1880,8 +1886,10 @@ async fn launch_extension_terminal(
             .restrict(project, std::slice::from_ref(&component_id))
             .map_err(err)?;
         let ids = std::slice::from_ref(&component_id);
-        let sections = registry.sections(&project, ids, &roots, vec![]);
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
+        let sections = registry.sections(&project, ids, &roots, with_task_section(section, None));
         let mut metadata = service::metadata(&project_id, &project, &component_id, &terminal);
+        metadata.task.clone_from(&task);
         metadata.extension_id = Some(extension_id);
         metadata.command_id = command_id;
         metadata.key = key;
@@ -1913,6 +1921,7 @@ async fn extension_terminal_run(
     state: State<'_, AppState>,
     project: Project,
     request: ExtensionTerminalRequest,
+    task: Option<String>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let ExtensionTerminalRequest {
@@ -1927,6 +1936,7 @@ async fn extension_terminal_run(
         &state,
         project,
         component_id,
+        task,
         move |registry| {
             registry
                 .allowed(&extension_id, Some("terminals"))
@@ -1980,16 +1990,28 @@ async fn extension_file_read(
     state: State<'_, AppState>,
     extension_id: String,
     path: String,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     main_only(&window)?;
     let extensions = state.extensions.clone();
-    let roots = scoped.roots();
+    let mut roots = scoped.roots();
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("Project unavailable")?;
     blocking(move || {
         extensions
             .get()
             .allowed(&extension_id, Some("files:read"))
             .map_err(err)?;
+        if let Some(task) = task {
+            let task = tasks::stored(&root, &task).map_err(err)?;
+            let (mapped_root, _) =
+                git::in_worktree(&root, vec![], Some(&task.worktree)).map_err(err)?;
+            roots = vec![mapped_root];
+        }
         extensions::read_file(&roots, Path::new(&path)).map_err(err)
     })
     .await
@@ -2439,4 +2461,76 @@ mod maintenance_tests {
         assert!(pending.check(&project, &access.snapshot(), &[]).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+/// Extension summaries are permission checked natively and narrowed to one component/task.
+#[tauri::command]
+async fn extension_sessions_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    project: Project,
+    component_id: String,
+    task: Option<String>,
+) -> CmdResult<Vec<extensions::ComponentSessionSummary>> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let roots = scoped.roots();
+    let registry = state.extensions.get();
+    registry
+        .allowed(&extension_id, Some("sessions:read"))
+        .map_err(err)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let project = access
+            .restrict(project, std::slice::from_ref(&component_id))
+            .map_err(err)?;
+        let (_, roots, _) = for_task(
+            project,
+            task.as_deref(),
+            std::slice::from_ref(&component_id),
+            roots,
+        )?;
+        // List intentionally omits output. Filter before fetching at most 32 snapshots;
+        // the helper caps each backlog at 512 KiB and extensions receive URLs only.
+        let mut summaries = extensions::session_summaries(
+            &bridge.list()?,
+            &project_id,
+            task.as_deref(),
+            &component_id,
+            &roots,
+        );
+        for summary in &mut summaries {
+            let snapshot: Option<Snapshot> = bridge.call(Request::Snapshot {
+                id: summary.session_id.clone(),
+            })?;
+            if let Some(snapshot) = snapshot.filter(|s| s.generation == summary.generation) {
+                summary.urls = extensions::preview_urls(&snapshot.data);
+                summary.running = snapshot.running;
+            }
+        }
+        Ok(summaries)
+    })
+    .await
+}
+/// Only the native broker can open preview URLs, under a separate permission.
+#[tauri::command]
+async fn extension_url_open(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    url: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    state.project(&project_id)?;
+    state
+        .extensions
+        .get()
+        .allowed(&extension_id, Some("urls:open"))
+        .map_err(err)?;
+    let url = extensions::preview_url(&url).map_err(err)?;
+    blocking(move || tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)).await
 }

@@ -15,6 +15,7 @@ toml_edit = "0.25"
 base64 = "0.22"
 notify = "8"
 semver = "1"
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 

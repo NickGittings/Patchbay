@@ -503,6 +503,7 @@ export interface ExtensionBadge {
   tooltip?: string
 }
 export interface RuntimeTerminal {
+  taskId?: string | null
   projectId?: string
   componentId: string
   terminal: TerminalSpec
@@ -543,4 +544,13 @@ export interface EditorLauncher {
 export interface FileSearchResult {
   path: string
   name: string
+}
+
+export interface ComponentSessionSummary {
+  sessionId: string
+  terminalId: string
+  name: string
+  running: boolean
+  generation: number
+  urls: string[]
 }
