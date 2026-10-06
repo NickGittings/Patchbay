@@ -154,7 +154,7 @@ struct Backlog {
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
 /// runs can be compared with edits.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
@@ -278,7 +278,13 @@ impl Default for StatusDir {
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
             match builder.create(&dir) {
-                Ok(()) => return Self(Some(dir)),
+                Ok(()) => {
+                    if crate::workspace::private_dir(&dir).is_ok() {
+                        return Self(Some(dir));
+                    }
+                    let _ = std::fs::remove_dir_all(dir);
+                    break;
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => break,
             }
@@ -450,7 +456,8 @@ impl PtyManager {
             generation,
             running: true,
             started_ms,
-            tracker: Tracker::new(&spec.ready_when, spec.service),
+            tracker: Tracker::new(&spec.ready_when, spec.service)
+                .with_identity(&spec.id, generation),
             notice: spec.notice.clone(),
             launch: Some(spec.clone()),
             ..Backlog::default()
@@ -580,6 +587,12 @@ impl PtyManager {
             if let Some((stamp, text)) = last_report {
                 backlog.tracker.on_report(&text, stamp, exited_ms);
             }
+            if let Some(dir) = manager.report_dir(generation) {
+                for event in crate::agent_hooks::drain(&dir) {
+                    backlog.tracker.on_hook(event, exited_ms);
+                }
+                let _ = std::fs::remove_dir_all(dir);
+            }
             backlog.running = false;
             backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
@@ -608,6 +621,15 @@ impl PtyManager {
     /// generation, so an earlier run of the same session can't write to it.
     fn status_file(&self, generation: u64) -> Option<PathBuf> {
         Some(self.status_dir.0.as_ref()?.join(generation.to_string()))
+    }
+
+    fn report_dir(&self, generation: u64) -> Option<PathBuf> {
+        Some(
+            self.status_dir
+                .0
+                .as_ref()?
+                .join(format!("{generation}.reports")),
+        )
     }
 
     fn next_generation(&self) -> u64 {
@@ -663,6 +685,11 @@ impl PtyManager {
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
             }
+            if let Some(dir) = self.report_dir(generation) {
+                for event in crate::agent_hooks::drain(&dir) {
+                    guard.tracker.on_hook(event, now);
+                }
+            }
             // Once exited, the waiter has sent the last status.
             if !guard.running {
                 continue;
@@ -712,16 +739,53 @@ impl PtyManager {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // User launch options cannot redirect the private reporter transport.
+        for (k, v) in spec.env.iter().filter(|(k, _)| {
+            !k.eq_ignore_ascii_case(COMMAND_ENV)
+                && ![
+                    STATUS_ENV,
+                    crate::agent_hooks::SESSION_ENV,
+                    crate::agent_hooks::GENERATION_ENV,
+                    crate::agent_hooks::PROVIDER_ENV,
+                    crate::agent_hooks::JOURNAL_ENV,
+                ]
+                .iter()
+                .any(|name| k.eq_ignore_ascii_case(name))
+        }) {
+            cmd.env(k, v);
+        }
+        // A helper launched from another Patchbay terminal can inherit its transport.
+        // Clear it even when allocating this session's private status directory failed.
+        for key in [
+            STATUS_ENV,
+            crate::agent_hooks::SESSION_ENV,
+            crate::agent_hooks::GENERATION_ENV,
+            crate::agent_hooks::PROVIDER_ENV,
+            crate::agent_hooks::JOURNAL_ENV,
+        ] {
+            cmd.env(key, "");
+        }
         if let Some(status) = self.status_file(generation) {
             cmd.env(STATUS_ENV, status);
         }
-        // A spec must not replace the private command transport variable.
-        for (k, v) in spec
-            .env
-            .iter()
-            .filter(|(k, _)| !k.eq_ignore_ascii_case(COMMAND_ENV))
+        if let Some(dir) = self.report_dir(generation)
+            && crate::workspace::private_dir(&dir).is_ok()
         {
-            cmd.env(k, v);
+            cmd.env(crate::agent_hooks::JOURNAL_ENV, dir);
+            cmd.env(crate::agent_hooks::SESSION_ENV, &spec.id);
+            cmd.env(crate::agent_hooks::GENERATION_ENV, generation.to_string());
+            let provider = spec
+                .env
+                .get(crate::agent_hooks::PROVIDER_ENV)
+                .cloned()
+                .or_else(|| {
+                    crate::adapters::Adapter::default_for(&spec.command).map(|a| match a {
+                        crate::adapters::Adapter::Claude => "claude".into(),
+                        crate::adapters::Adapter::Codex => "codex".into(),
+                    })
+                })
+                .unwrap_or_default();
+            cmd.env(crate::agent_hooks::PROVIDER_ENV, provider);
         }
 
         let child = pair.slave.spawn_command(cmd)?;

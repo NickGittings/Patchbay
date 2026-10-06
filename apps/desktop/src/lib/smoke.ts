@@ -1,4 +1,4 @@
-import { extensionStorageGet, reloadExtensions } from './ipc'
+import { extensionStorageGet, reloadExtensions, agentHooksCheck, agentHooksConfigure } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
 import { executeExtensionCommand } from '../extensions/host'
@@ -19,6 +19,8 @@ import { createTask, refreshTasks, removeTask } from './tasks'
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
 const hooks = {
+  agentHooksCheck,
+  agentHooksConfigure,
   sessionId,
   flushWorkspace,
   windowLabels: () =>

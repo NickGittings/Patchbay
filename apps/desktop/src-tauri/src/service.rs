@@ -269,7 +269,7 @@ impl Bridge {
         });
     }
 }
-fn helper() -> PathBuf {
+pub(crate) fn helper() -> PathBuf {
     std::env::current_exe()
         .unwrap_or_default()
         .with_file_name(if cfg!(windows) {

@@ -1,6 +1,7 @@
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
@@ -22,6 +23,7 @@ const mod = mac ? '⌘' : 'Ctrl+'
 const shiftMod = mac ? '⇧⌘' : 'Ctrl+Shift+'
 
 export default function Toolbar() {
+  const [integrationsOpen, setIntegrationsOpen] = useState(false)
   const project = useStore((s) => s.project)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
@@ -56,76 +58,80 @@ export default function Toolbar() {
   }, [])
 
   return (
-    <div className="toolbar">
-      <div className="toolbar-group">
-        <Menu label="Project">
-          <MenuItem onClick={() => void openFolder()}>Open folder…</MenuItem>
+    <>
+      {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
+      <div className="toolbar">
+        <div className="toolbar-group">
+          <Menu label="Project">
+            <MenuItem onClick={() => void openFolder()}>Open folder…</MenuItem>
+            {project && (
+              <>
+                <MenuSeparator />
+                <MenuItem onClick={() => void rescan()} title="Add components for new folders">
+                  Rescan
+                </MenuItem>
+                <MenuItem
+                  onClick={() => void addRepo()}
+                  title="Add a repo beside this project, or a folder Rescan missed"
+                >
+                  Add repo…
+                </MenuItem>
+                {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
+              </>
+            )}
+          </Menu>
+          <Menu label="Tools" keepMounted>
+            <MenuItem
+              onClick={() => useStore.getState().setPaletteOpen(true)}
+              shortcut={`${shiftMod}P`}
+            >
+              Commands…
+            </MenuItem>
+            <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
+              Extensions…
+            </MenuItem>
+            <MenuItem onClick={() => setIntegrationsOpen(true)}>Agent status integration…</MenuItem>
+            <ExtensionMenu slot="toolbar" asMenuItems />
+          </Menu>
+        </div>
+        {project ? (
+          <div className="view-switcher" role="group" aria-label="Workspace view">
+            {views.map((v, i) => (
+              <button
+                key={v.id}
+                aria-pressed={view === v.id}
+                className={view === v.id ? 'active' : ''}
+                title={`${v.label} (${mod}${i + 1})`}
+                onClick={() => setView(v.id)}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span />
+        )}
+        <div className="toolbar-group end">
           {project && (
             <>
-              <MenuSeparator />
-              <MenuItem onClick={() => void rescan()} title="Add components for new folders">
-                Rescan
-              </MenuItem>
-              <MenuItem
-                onClick={() => void addRepo()}
-                title="Add a repo beside this project, or a folder Rescan missed"
+              <TaskMenu />
+              <AttentionMenu />
+              <span className="file" title={project.root}>
+                <span className="file-name">{project.name}</span>
+                {dirty && <span className="dirty" title="Unsaved changes" />}
+              </span>
+              <button
+                className="primary"
+                title={`Save patchbay.json (${mod}S)`}
+                onClick={() => void saveCurrentProject()}
               >
-                Add repo…
-              </MenuItem>
-              {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
+                Save
+              </button>
             </>
           )}
-        </Menu>
-        <Menu label="Tools" keepMounted>
-          <MenuItem
-            onClick={() => useStore.getState().setPaletteOpen(true)}
-            shortcut={`${shiftMod}P`}
-          >
-            Commands…
-          </MenuItem>
-          <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
-            Extensions…
-          </MenuItem>
-          <ExtensionMenu slot="toolbar" asMenuItems />
-        </Menu>
-      </div>
-      {project ? (
-        <div className="view-switcher" role="group" aria-label="Workspace view">
-          {views.map((v, i) => (
-            <button
-              key={v.id}
-              aria-pressed={view === v.id}
-              className={view === v.id ? 'active' : ''}
-              title={`${v.label} (${mod}${i + 1})`}
-              onClick={() => setView(v.id)}
-            >
-              {v.label}
-            </button>
-          ))}
         </div>
-      ) : (
-        <span />
-      )}
-      <div className="toolbar-group end">
-        {project && (
-          <>
-            <TaskMenu />
-            <AttentionMenu />
-            <span className="file" title={project.root}>
-              <span className="file-name">{project.name}</span>
-              {dirty && <span className="dirty" title="Unsaved changes" />}
-            </span>
-            <button
-              className="primary"
-              title={`Save patchbay.json (${mod}S)`}
-              onClick={() => void saveCurrentProject()}
-            >
-              Save
-            </button>
-          </>
-        )}
+        <Toast />
       </div>
-      <Toast />
-    </div>
+    </>
   )
 }
