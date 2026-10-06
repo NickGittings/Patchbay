@@ -299,3 +299,141 @@ fn uuid_fixture() -> u128 {
         .unwrap()
         .as_nanos()
 }
+
+/// Graph environments are owned by project, task and group even after all viewers disconnect.
+#[cfg(unix)]
+#[test]
+fn detached_task_environments_preserve_other_projects_and_shared_owners() {
+    use patchbay_core::Project;
+    use patchbay_core::actions::{ActionPlan, ActionReport, ActionRequest, TaskOutcome};
+    use patchbay_core::pty::Snapshot;
+    use patchbay_core::session::{Client, Record, Request};
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Ok(mut client) = Client::connect(&self.0.join("service")) {
+                let _ = client.call::<()>(Request::Shutdown { stop_running: true });
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.0.join("service/endpoint.json").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("patchbay-environments-{}", uuid_fixture())));
+    let service = fixture.0.join("service");
+    let helper = std::path::Path::new(env!("CARGO_BIN_EXE_patchbay-sessiond"));
+    let mut client = Client::ensure(&service, helper).unwrap();
+    let instance = client.instance.clone();
+    let project = |folder: &str| {
+        let root = fixture.0.join(folder);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("patchbay.json"),
+            r#"{
+          "name":"Fixture","components":[{
+            "id":"shared","name":"Shared","path":".","terminals":[{
+              "id":"dev","name":"Dev","kind":"task","action":"development",
+              "command":"printf 'READY\\n'; sleep 120","readyWhen":"READY"
+            }]
+          }],"links":[],"groups":[
+            {"id":"first","name":"First","componentIds":["shared"]},
+            {"id":"second","name":"Second","componentIds":["shared"]}
+          ]
+        }"#,
+        )
+        .unwrap();
+        Project::load(&root).unwrap().unwrap()
+    };
+    let scopes = [
+        ("one", None, project("one")),
+        ("one", Some("same-task"), project("one-task")),
+        ("two", None, project("two")),
+        ("two", Some("same-task"), project("two-task")),
+    ];
+    let mut ids = Vec::new();
+    for (project_id, task, project) in &scopes {
+        let plan = ActionPlan::build(
+            project,
+            project_id,
+            ActionRequest::StartGroup {
+                group_id: "first".into(),
+            },
+            *task,
+        )
+        .unwrap();
+        let report: ActionReport = client
+            .call(Request::ActionRun {
+                project: Box::new(project.clone()),
+                plan: Box::new(plan),
+            })
+            .unwrap();
+        assert!(matches!(report.results[0].outcome, TaskOutcome::Started));
+        ids.push(report.results[0].session_id.clone());
+    }
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        4
+    );
+    let plan = ActionPlan::build(
+        &scopes[1].2,
+        "one",
+        ActionRequest::StartGroup {
+            group_id: "second".into(),
+        },
+        Some("same-task"),
+    )
+    .unwrap();
+    let report: ActionReport = client
+        .call(Request::ActionRun {
+            project: Box::new(scopes[1].2.clone()),
+            plan: Box::new(plan),
+        })
+        .unwrap();
+    assert!(matches!(report.results[0].outcome, TaskOutcome::Reused));
+    drop(client);
+    let mut client = Client::connect(&service).unwrap();
+    assert_eq!(client.instance, instance);
+    let records: Vec<Record> = client.call(Request::List).unwrap();
+    for ((project_id, task, project), id) in scopes.iter().zip(&ids) {
+        let record = records.iter().find(|r| &r.id == id).unwrap();
+        assert_eq!(&record.metadata.project_id, project_id);
+        assert_eq!(record.metadata.task.as_deref(), *task);
+        assert_eq!(record.spec.cwd, PathBuf::from(&project.root));
+        assert!(record.snapshot.as_ref().unwrap().running);
+    }
+    client
+        .call::<()>(Request::ActionStopGroup {
+            project_id: "one".into(),
+            group_id: "first".into(),
+            task: Some("same-task".into()),
+        })
+        .unwrap();
+    for id in &ids {
+        let snapshot: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
+        assert!(
+            snapshot.unwrap().running,
+            "Removing one shared owner stopped {id}"
+        );
+    }
+    client
+        .call::<()>(Request::ActionStopGroup {
+            project_id: "one".into(),
+            group_id: "second".into(),
+            task: Some("same-task".into()),
+        })
+        .unwrap();
+    for (index, id) in ids.iter().enumerate() {
+        let snapshot: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
+        assert_eq!(
+            snapshot.unwrap().running,
+            index != 1,
+            "Stop leaked into another scope: {id}"
+        );
+    }
+}
