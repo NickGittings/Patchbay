@@ -207,17 +207,21 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
             assert!(Instant::now() < deadline, "Fixture did not exit");
             std::thread::sleep(Duration::from_millis(25));
         };
-        let records: Vec<Record> = client.call(Request::List).unwrap();
-        assert_eq!(
-            records
-                .iter()
+        // The serve loop captures the resume hint on its next tick after the exit.
+        let captured = loop {
+            let records: Vec<Record> = client.call(Request::List).unwrap();
+            let captured = records
+                .into_iter()
                 .find(|r| r.id == id)
                 .unwrap()
                 .metadata
-                .conversation_id
-                .as_deref(),
-            Some(conversation)
-        );
+                .conversation_id;
+            if captured.is_some() || Instant::now() >= deadline {
+                break captured;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert_eq!(captured.as_deref(), Some(conversation));
         client
             .call::<String>(Request::Resume {
                 id: id.clone(),

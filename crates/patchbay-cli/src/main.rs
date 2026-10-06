@@ -369,11 +369,20 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
                 _ => String::new(),
             };
             if !data.is_empty() {
-                client.call::<()>(Request::Write {
+                let write = |data: String| Request::Write {
                     id: id.into(),
                     viewer: viewer.clone(),
                     data,
-                })?;
+                };
+                // A desktop window may have taken input; typing here takes it back.
+                if client.call::<()>(write(data.clone())).is_err() {
+                    client.call::<()>(Request::Claim {
+                        id: id.into(),
+                        viewer: viewer.clone(),
+                        claim: true,
+                    })?;
+                    client.call::<()>(write(data))?;
+                }
             }
         }
     }

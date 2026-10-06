@@ -9,6 +9,8 @@ import {
   PLAN_SCOPE,
   type Project,
   type RuntimeTerminal,
+  type SessionRecord,
+  type SessionState,
   sessionMetadata,
   sessionId,
   type TerminalEvent,
@@ -375,6 +377,21 @@ function behind(sid: string, snapshot: TerminalSnapshot | null) {
   return cursor.generation !== snapshot.generation || cursor.end < snapshot.end
 }
 
+function sameSession(a: SessionState | undefined, b: SessionState) {
+  return (
+    !!a &&
+    a.running === b.running &&
+    a.exitCode === b.exitCode &&
+    a.startedMs === b.startedMs &&
+    a.exitedMs === b.exitedMs &&
+    a.notice === b.notice &&
+    a.interrupted === b.interrupted &&
+    a.truncated === b.truncated &&
+    a.disconnected === undefined &&
+    JSON.stringify(a.status) === JSON.stringify(b.status)
+  )
+}
+
 const launchRequests = new Map<string, string>()
 let reconciling: Promise<void> | undefined
 export function reconcileSessions(force = true): Promise<void> {
@@ -395,11 +412,20 @@ export function reconcileSessions(force = true): Promise<void> {
         serviceInstance: status.instanceId,
         sessionRecords: records,
       })
+      // Apply every record before awaiting anything, so events that arrive while
+      // sessions hydrate aren't overwritten by this (by then older) list.
+      const projects = useStore.getState().captureProjects()
+      const onMap = (r: SessionRecord) =>
+        projects[r.metadata.projectId]?.state?.nodes.some(
+          (n) =>
+            n.id === r.metadata.componentId &&
+            n.data.terminals.some((t) => t.id === r.metadata.terminalId),
+        ) ?? false
       for (const r of records) {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
-        if (snapshot)
-          current.setSession(r.id, {
+        if (snapshot) {
+          const next: SessionState = {
             running: snapshot.running,
             exitCode: snapshot.exitCode ?? undefined,
             startedMs: snapshot.startedMs,
@@ -408,15 +434,14 @@ export function reconcileSessions(force = true): Promise<void> {
             notice: snapshot.notice ?? undefined,
             interrupted: r.interrupted,
             truncated: snapshot.truncated,
-          })
-        const mapped = useStore
-          .getState()
-          .captureProjects()
-          [r.metadata.projectId]?.state?.nodes.some(
-            (n) =>
-              n.id === r.metadata.componentId &&
-              n.data.terminals.some((t) => t.id === r.metadata.terminalId),
-          )
+          }
+          const prev = useStore.getState().sessions[r.id]
+          // An exit already seen for this run is newer than a list saying it runs.
+          const staleRun =
+            prev && !prev.running && next.running && prev.startedMs === next.startedMs
+          if (!staleRun && !sameSession(prev, next)) current.setSession(r.id, next)
+        }
+        const mapped = onMap(r)
         if (mapped && useStore.getState().runtimeTerminals[r.id])
           useStore.setState((s) => {
             const runtimeTerminals = { ...s.runtimeTerminals }
@@ -425,13 +450,8 @@ export function reconcileSessions(force = true): Promise<void> {
           })
         if (
           r.metadata.componentId !== PLAN_SCOPE &&
-          !current
-            .captureProjects()
-            [r.metadata.projectId]?.state?.nodes.some(
-              (n) =>
-                n.id === r.metadata.componentId &&
-                n.data.terminals.some((t) => t.id === r.metadata.terminalId),
-            )
+          !mapped &&
+          !useStore.getState().runtimeTerminals[r.id]
         )
           current.addRuntimeTerminal(r.id, {
             projectId: r.metadata.projectId,
@@ -446,8 +466,10 @@ export function reconcileSessions(force = true): Promise<void> {
               command: r.spec.command,
             },
           })
+      }
+      for (const r of records) {
         // Only sessions this window shows, and after lost events only those that fell behind.
-        if (showsSession(r.metadata) && (reconnecting || (force && behind(r.id, snapshot)))) {
+        if (showsSession(r.metadata) && (reconnecting || (force && behind(r.id, r.snapshot)))) {
           hydration.delete(r.id)
           await hydrateSession(r.id)
         }

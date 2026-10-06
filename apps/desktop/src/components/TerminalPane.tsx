@@ -55,29 +55,41 @@ export default function TerminalPane({
     observer.observe(host)
     // Fires when this or another window gains focus, which can move PTY sizing here.
     window.addEventListener(ACTIVE_CHANGED, refit)
-    window.addEventListener('patchbay:reconnected', refit)
     document.addEventListener('visibilitychange', refit)
-    void hydrateSession(sid)
-      .then((snapshot) => {
-        if (disposed) return
-        setReady(true)
-        if (
-          !existingSessionId &&
-          useStore.getState().serviceConnected &&
-          !snapshot &&
-          terminal.kind === 'shell' &&
-          !useStore.getState().sessions[sid]
-        ) {
-          void startTerminal(componentId, terminal.id, task)
-        }
-        refit()
-      })
-      .catch((e) => useStore.getState().setMessage(String(e)))
+    // Hydration fails while the service is disconnected; reconnecting retries it.
+    let hydrated = false
+    const load = () =>
+      hydrateSession(sid)
+        .then((snapshot) => {
+          if (disposed || hydrated) return
+          hydrated = true
+          setReady(true)
+          if (
+            !existingSessionId &&
+            useStore.getState().serviceConnected &&
+            !snapshot &&
+            terminal.kind === 'shell' &&
+            !useStore.getState().sessions[sid]
+          ) {
+            void startTerminal(componentId, terminal.id, task)
+          }
+          refit()
+        })
+        .catch((e) => {
+          if (!disposed && useStore.getState().serviceConnected)
+            useStore.getState().setMessage(String(e))
+        })
+    const reconnected = () => {
+      if (hydrated) refit()
+      else void load()
+    }
+    window.addEventListener('patchbay:reconnected', reconnected)
+    void load()
     return () => {
       disposed = true
       observer.disconnect()
       if (!detachHost(sid, host)) void terminalDetach(sid).catch(() => {})
-      window.removeEventListener('patchbay:reconnected', refit)
+      window.removeEventListener('patchbay:reconnected', reconnected)
       document.removeEventListener('visibilitychange', refit)
       window.removeEventListener(ACTIVE_CHANGED, refit)
     }

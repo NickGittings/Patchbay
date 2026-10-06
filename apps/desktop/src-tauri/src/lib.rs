@@ -1161,13 +1161,34 @@ async fn reveal_path(
     tauri_plugin_opener::reveal_item_in_dir(scoped.resolve(&path)?).map_err(err)
 }
 
-/// Compatibility for debug smoke callers: reset is an explicit destructive action.
+/// Debug smoke helper: stops every session and returns the highest generation
+/// seen, so late events from the stopped sessions can be ignored. Refused in
+/// release builds, where it would end all running work.
 #[tauri::command]
-fn terminal_reset(state: State<AppState>) -> CmdResult<u64> {
-    for r in state.service.call::<Vec<Record>>(Request::List)? {
-        state.service.call::<()>(Request::Stop { id: r.id })?;
+async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = state;
+        Err("terminal_reset is only available in debug builds".into())
     }
-    Ok(0)
+    #[cfg(debug_assertions)]
+    {
+        let bridge = state.service.clone();
+        blocking(move || {
+            let mut floor = 0;
+            for r in bridge.call::<Vec<Record>>(Request::List)? {
+                floor = r
+                    .snapshot
+                    .iter()
+                    .chain(&r.history)
+                    .map(|s| s.generation)
+                    .fold(floor, u64::max);
+                bridge.call::<()>(Request::Stop { id: r.id })?;
+            }
+            Ok(floor)
+        })
+        .await
+    }
 }
 
 /// # Panics
@@ -1720,6 +1741,9 @@ async fn project_relink(
     {
         return Err("Unknown unavailable project".into());
     }
+    // Folders already registered (another open tab) must survive a failed relink.
+    let registered: std::collections::HashSet<String> =
+        state.projects.read().unwrap().keys().cloned().collect();
     let Some(mut opened) = open_project(app.clone(), window, state, None).await? else {
         return Ok(None);
     };
@@ -1735,6 +1759,7 @@ async fn project_relink(
     if let Err(e) = workspace::relink_project(&document, &project_id, &chosen) {
         // `open_project` registered the folder under its own identity; undo that.
         if opened.id != project_id
+            && !registered.contains(&opened.id)
             && let Some(scoped) = state.projects.write().unwrap().remove(&opened.id)
         {
             scoped.watcher.stop();
@@ -1848,13 +1873,14 @@ fn window_panels(window: WebviewWindow, state: State<AppState>, panels: serde_js
 }
 
 #[tauri::command]
-fn session_history(
-    state: State<AppState>,
+async fn session_history(
+    state: State<'_, AppState>,
     session_id: String,
     incarnation: usize,
 ) -> CmdResult<Option<Snapshot>> {
-    state.service.call(Request::History {
+    let request = Request::History {
         id: session_id,
         incarnation,
-    })
+    };
+    service(&state, request).await
 }

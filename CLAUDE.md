@@ -31,7 +31,7 @@ cargo test -p patchbay-core context::tests::claude_gets_neighbour_dirs_and_conte
 cargo test -p patchbay-core detect                     # all tests matching "detect"
 ```
 
-There is no frontend unit test suite; Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module. `npm run smoke` is the one end-to-end check: in debug builds only, `src-tauri/src/smoke.rs` evaluates `$PATCHBAY_SMOKE_SCRIPT` in every window and exits 0/1 when the script emits `PASS…`/`FAIL…` on `patchbay://smoke-report`; `src/lib/smoke.ts` exposes the store and helpers as `window.__patchbaySmoke` (dev bundles only). Never add test hooks that run in release builds.
+There is no frontend unit test suite; Rust unit tests live in `#[cfg(test)] mod tests` at the bottom of each core module. `npm run smoke` is the one end-to-end check: in debug builds only, `src-tauri/src/smoke.rs` evaluates `$PATCHBAY_SMOKE_SCRIPT` in every window and exits 0/1 when the script emits `PASS…`/`FAIL…` on `patchbay://smoke-report`; `src/lib/smoke.ts` exposes the store and helpers as `window.__patchbaySmoke` (dev bundles only). The smoke scripts run through `scripts/smoke.mjs`, which gives each run a fresh temporary `PATCHBAY_STATE_DIR` (so no saved workspace or session service leaks between runs or into `~/.patchbay`) and shuts that run's service down afterwards. Never add test hooks that run in release builds.
 
 ## Lints and style
 

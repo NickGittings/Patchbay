@@ -100,8 +100,28 @@ export function restoredLayout(layout: Record<string, unknown>): Partial<Project
 }
 export function initializeWorkspace() {
   initialized ??= (async () => {
+    // Listen before restoring: the backend defers every quit to this listener, so a slow
+    // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
+    await listen('patchbay://quit-request', async () => {
+      await flushWorkspace()
+      await quitPatchbay(false)
+    })
+    await getCurrentWindow().onCloseRequested(async (event) => {
+      event.preventDefault()
+      await flushWorkspace()
+      await getCurrentWindow().destroy()
+    })
+    let loaded: Awaited<ReturnType<typeof workspaceLoad>> | undefined
     try {
-      const { document, opened, errors } = await workspaceLoad()
+      loaded = await workspaceLoad()
+    } catch (e) {
+      // Keep an invalid document on disk for explicit recovery instead of autosaving over it.
+      recoveryBlocked = true
+      useStore.getState().setMessage(String(e))
+    }
+    try {
+      if (!loaded) return
+      const { document, opened, errors } = loaded
       for (const entry of document.projects) {
         const project = opened.find((p) => p.id === entry.id)
         if (!project) {
@@ -146,17 +166,19 @@ export function initializeWorkspace() {
       }
       if (document.activeProject && useStore.getState().projects[document.activeProject])
         useStore.getState().activateProject(document.activeProject)
-      await reconcileSessions()
+      // The service may still be starting; the periodic reconcile catches up later.
+      await reconcileSessions().catch(() => {})
       useStore.setState({ restoring: false })
       for (const saved of Object.values(document.windows ?? {})) {
         if (!saved.projectId || !saved.componentId) continue
         const entry = useStore.getState().captureProjects()[saved.projectId]
         const component = entry?.state?.nodes.find((n) => n.id === saved.componentId)
-        if (component) await openComponentWindow(component.id, component.data.name, saved.projectId)
+        if (component)
+          await openComponentWindow(component.id, component.data.name, saved.projectId).catch((e) =>
+            useStore.getState().setMessage(String(e)),
+          )
       }
     } catch (e) {
-      // Keep an invalid document on disk for explicit recovery instead of autosaving over it.
-      recoveryBlocked = true
       useStore.getState().setMessage(String(e))
     } finally {
       useStore.setState({ restoring: false })
@@ -184,15 +206,6 @@ export function initializeWorkspace() {
         return
       clearTimeout(timer)
       timer = setTimeout(() => void flushWorkspace(), 500)
-    })
-    await listen('patchbay://quit-request', async () => {
-      await flushWorkspace()
-      await quitPatchbay(false)
-    })
-    await getCurrentWindow().onCloseRequested(async (event) => {
-      event.preventDefault()
-      await flushWorkspace()
-      await getCurrentWindow().destroy()
     })
   })()
   return initialized
