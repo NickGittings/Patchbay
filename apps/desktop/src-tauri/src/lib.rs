@@ -8,6 +8,9 @@ use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::extensions::{self, Registry};
 use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
+use patchbay_core::navigation::{
+    self, EditorLauncher, EditorPreferences, EditorTarget, FileSearchResult,
+};
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
 use patchbay_core::session::{self, Record, Request};
@@ -166,10 +169,6 @@ fn confirm_external(window: &WebviewWindow, root: &Path, dirs: &[PathBuf]) -> bo
 impl ProjectAccess {
     fn roots(&self) -> Vec<PathBuf> {
         self.access.roots()
-    }
-
-    fn resolve(&self, path: &str) -> CmdResult<PathBuf> {
-        files::resolve(&self.roots(), Path::new(path)).map_err(err)
     }
 }
 
@@ -1139,26 +1138,163 @@ async fn quit_patchbay(
     Ok(())
 }
 
-/// Lists `path`, relative to the open project's root (`../…` for a sibling repo).
+/// Navigation roots are derived from backend grants and registered task/worktree identity.
+fn navigation_roots(
+    scoped: &ProjectAccess,
+    task: Option<&str>,
+    worktree: Option<&str>,
+) -> CmdResult<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let roots = scoped.roots();
+    let root = roots.first().ok_or("No project is open")?.clone();
+    let scan = scoped.access.watch_roots();
+    let task = task
+        .map(|id| tasks::stored(&root, id).map_err(err))
+        .transpose()?;
+    let worktree = worktree.or_else(|| task.as_ref().map(|t| t.worktree.as_str()));
+    let Some(worktree) = worktree else {
+        return Ok((roots, scan));
+    };
+    let components = scan
+        .into_iter()
+        .enumerate()
+        .map(|(i, dir)| (i.to_string(), dir))
+        .collect();
+    let (root, mapped) = git::in_worktree(&root, components, Some(worktree)).map_err(err)?;
+    let mut roots = vec![root];
+    for (_, dir) in mapped {
+        if !roots.contains(&dir) {
+            roots.push(dir);
+        }
+    }
+    Ok((roots.clone(), roots))
+}
+
+/// Lists the active task's folder, preserving relative project paths.
 #[tauri::command]
 async fn list_dir(
     project_id: String,
     state: State<'_, AppState>,
     path: String,
+    task: Option<String>,
 ) -> CmdResult<Vec<DirEntry>> {
     let scoped = state.project(&project_id)?;
-    files::list_dir(&scoped.roots(), Path::new(&path)).map_err(err)
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), None)?;
+        files::list_dir(&roots, Path::new(&path)).map_err(err)
+    })
+    .await
 }
 
-/// Reveals `path`, relative to the open project's root, in the file manager.
+/// Reveal remains a separate, worktree-aware file-manager action.
 #[tauri::command]
 async fn reveal_path(
     project_id: String,
     state: State<'_, AppState>,
     path: String,
+    task: Option<String>,
+    worktree: Option<String>,
 ) -> CmdResult<()> {
     let scoped = state.project(&project_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(scoped.resolve(&path)?).map_err(err)
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        tauri_plugin_opener::reveal_item_in_dir(
+            files::resolve(&roots, Path::new(&path)).map_err(err)?,
+        )
+        .map_err(err)
+    })
+    .await
+}
+#[tauri::command]
+async fn editor_preferences() -> CmdResult<EditorPreferences> {
+    blocking(|| navigation::preferences().map_err(err)).await
+}
+#[tauri::command]
+async fn editor_save_preferences(preferences: EditorPreferences) -> CmdResult<()> {
+    blocking(move || navigation::save_preferences(&preferences).map_err(err)).await
+}
+#[tauri::command]
+async fn editor_discover() -> CmdResult<Vec<EditorLauncher>> {
+    blocking(|| Ok(navigation::discover())).await
+}
+#[tauri::command]
+async fn editor_open(
+    project_id: String,
+    state: State<'_, AppState>,
+    target: EditorTarget,
+    task: Option<String>,
+    worktree: Option<String>,
+) -> CmdResult<()> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let prefs = navigation::preferences().map_err(err)?;
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        navigation::open(&prefs, &roots, &target).map_err(err)
+    })
+    .await
+}
+#[tauri::command]
+async fn file_search(
+    project_id: String,
+    state: State<'_, AppState>,
+    query: String,
+    task: Option<String>,
+) -> CmdResult<Vec<FileSearchResult>> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let (roots, scan) = navigation_roots(&scoped, task.as_deref(), None)?;
+        navigation::search(&roots, &scan, &query).map_err(err)
+    })
+    .await
+}
+/// A terminal link uses its recorded launch directory and process generation,
+/// never the current tab or a search for similarly named files.
+#[tauri::command]
+async fn terminal_open_reference(
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+    reference: String,
+) -> CmdResult<()> {
+    let bridge = state.service.clone();
+    let projects = state.projects.read().unwrap().clone();
+    blocking(move || {
+        let records = bridge.list()?;
+        let record = records
+            .iter()
+            .find(|r| r.id == session_id)
+            .ok_or("Unknown terminal session")?;
+        let snapshot = record
+            .snapshot
+            .iter()
+            .chain(record.history.iter())
+            .find(|s| s.generation == generation)
+            .ok_or(
+                "This file reference belongs to an earlier process whose history is unavailable",
+            )?;
+        let launch_directory = snapshot
+            .launch_directory
+            .as_ref()
+            .or_else(|| {
+                (record.snapshot.as_ref().map(|s| s.generation) == Some(generation))
+                    .then_some(&record.spec.cwd)
+            })
+            .ok_or("The original launch folder of this historical process is unknown")?;
+        let scoped = projects
+            .get(&record.metadata.project_id)
+            .ok_or("Originating project is unavailable")?;
+        let (roots, _) = navigation_roots(scoped, record.metadata.task.as_deref(), None)?;
+        let mut target = navigation::reference(&reference).map_err(err)?;
+        let resolved =
+            files::resolve(&roots, &launch_directory.join(&target.path)).map_err(|e| {
+                format!(
+                    "Cannot resolve {reference} from recorded launch folder {}: {e}",
+                    launch_directory.display()
+                )
+            })?;
+        target.path = resolved.to_string_lossy().into_owned();
+        navigation::open(&navigation::preferences().map_err(err)?, &roots, &target).map_err(err)
+    })
+    .await
 }
 
 /// Debug smoke helper: stops every session and returns the highest generation
@@ -1307,6 +1443,12 @@ pub fn run() {
                 terminal_snapshot,
                 list_dir,
                 reveal_path,
+                editor_preferences,
+                editor_save_preferences,
+                editor_discover,
+                editor_open,
+                file_search,
+                terminal_open_reference,
                 list_extensions,
                 set_extension_enabled,
                 reload_extensions,
@@ -1883,4 +2025,106 @@ async fn session_history(
         incarnation,
     };
     service(&state, request).await
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use std::process::Command;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn navigation_maps_nested_project_targets_to_registered_task_and_review_worktrees() {
+        let dir = std::env::temp_dir().join(format!(
+            "patchbay-navigation-native-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let fixture = Fixture(dir);
+        let repo = fixture.0.join("repo");
+        let project_root = repo.join("apps/project");
+        let sibling = fixture.0.join("sibling");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(project_root.join("target.txt"), "target").unwrap();
+        std::fs::write(sibling.join("external.txt"), "external").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=smoke",
+            "-c",
+            "user.email=smoke@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        let worktree = fixture.0.join("task");
+        git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "navigation-task",
+            worktree.to_str().unwrap(),
+        ]);
+        let worktree = worktree.canonicalize().unwrap();
+        let mut project = detect::detect(&project_root.canonicalize().unwrap()).unwrap();
+        project.components.push(patchbay_core::Component {
+            id: "sibling".into(),
+            name: "Sibling".into(),
+            kind: patchbay_core::ComponentKind::Other,
+            path: model::relative_path(Path::new(&project.root), &sibling.canonicalize().unwrap()),
+            notes: String::new(),
+            terminals: vec![],
+            position: model::Position::default(),
+        });
+        let scoped = ProjectAccess::default();
+        scoped.access.open(&project).unwrap();
+        let denied = navigation_roots(&scoped, None, None).unwrap().0;
+        assert!(files::resolve(&denied, &sibling.join("external.txt")).is_err());
+        scoped.access.grant(&sibling).unwrap();
+        let allowed = navigation_roots(&scoped, None, None).unwrap().0;
+        assert!(files::resolve(&allowed, &sibling.join("external.txt")).is_ok());
+        let task = tasks::attach(
+            Path::new(&project.root),
+            worktree.to_str().unwrap(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        let mapped = navigation_roots(&scoped, Some(&task.id), None).unwrap().0;
+        assert_eq!(
+            files::resolve(&mapped, Path::new("target.txt")).unwrap(),
+            worktree.join("apps/project/target.txt")
+        );
+        assert!(files::resolve(&mapped, &sibling.join("external.txt")).is_err());
+        let explicit = navigation_roots(&scoped, None, worktree.to_str())
+            .unwrap()
+            .0;
+        assert_eq!(mapped, explicit);
+        assert!(navigation_roots(&scoped, None, sibling.to_str()).is_err());
+    }
 }

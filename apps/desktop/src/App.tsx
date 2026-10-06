@@ -2,6 +2,7 @@ import PersistedGroup from './components/PersistedGroup'
 import WorkspaceTabs from './components/WorkspaceTabs'
 import SessionsPanel from './components/SessionsPanel'
 import { initializeWorkspace } from './lib/workspace'
+import NavigationDialogs from './components/NavigationDialogs'
 import CommandPalette from './components/CommandPalette'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
@@ -100,6 +101,7 @@ export default function App() {
         <WorkspaceTabs />
         <SessionsPanel />
         <CommandPalette />
+        <NavigationDialogs />
         <ExtensionsPanel />
         <NewTaskDialog />
         {restoring ? (

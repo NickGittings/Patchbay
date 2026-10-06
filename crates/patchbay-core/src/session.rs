@@ -481,6 +481,13 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
+            // Only the latest snapshot is known to belong to Record.spec. Older legacy
+            // history has no folder metadata, so preserve None instead of guessing.
+            if let Some(snapshot) = &mut record.snapshot
+                && snapshot.launch_directory.is_none()
+            {
+                snapshot.launch_directory = Some(record.spec.cwd.clone());
+            }
             if let Some(s) = &mut record.snapshot
                 && s.running
             {
@@ -546,6 +553,7 @@ impl Service {
     /// Never copies a backlog.
     fn summaries(&self) -> Vec<Record> {
         let bare = |s: &Snapshot| Snapshot {
+            launch_directory: s.launch_directory.clone(),
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
@@ -702,7 +710,10 @@ impl Service {
         let mut history = previous
             .as_ref()
             .map_or_else(Vec::new, |r| r.history.clone());
-        if let Some(snapshot) = self.snapshot(&id) {
+        if let Some(mut snapshot) = self.snapshot(&id) {
+            if snapshot.launch_directory.is_none() {
+                snapshot.launch_directory = previous.as_ref().map(|r| r.spec.cwd.clone());
+            }
             history.push(snapshot);
         }
         trim_history(&mut history);
@@ -1384,9 +1395,99 @@ mod tests {
         assert_eq!(batch.instance_id, service.instance);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn stopped_then_repaired_launch_keeps_history_folder_and_legacy_unknowns() {
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-history-cwd-{}", uuid::Uuid::new_v4()));
+        private_dir(&dir).unwrap();
+        let old = dir.join("old-component");
+        let repaired = dir.join("repaired-component");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&repaired).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "component", "terminalId": "shell", "name": "Shell",
+            "kind": "shell", "adapter": null, "conversationId": null
+        }))
+        .unwrap();
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "exec cat".into(),
+            cwd: old.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let id = service
+            .start("old-run".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let first = service.snapshot(&id).unwrap();
+        assert_eq!(first.launch_directory, Some(old.clone()));
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while service.snapshot(&id).unwrap().running {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut next = spec;
+        next.cwd.clone_from(&repaired);
+        service
+            .start("repaired-run".into(), metadata, next)
+            .unwrap();
+        let record = service.summaries().pop().unwrap();
+        assert_eq!(record.spec.cwd, repaired);
+        assert_eq!(
+            record.snapshot.as_ref().unwrap().launch_directory.as_ref(),
+            Some(&repaired)
+        );
+        assert_eq!(record.history[0].generation, first.generation);
+        assert_eq!(record.history[0].launch_directory.as_ref(), Some(&old));
+        let history: Option<Snapshot> = serde_json::from_value(
+            service
+                .handle(
+                    "1",
+                    Request::History {
+                        id: id.clone(),
+                        incarnation: 0,
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history.unwrap().launch_directory, Some(old));
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
+        service.persist().unwrap();
+        let path = dir.join("sessions.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy[&id]["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("launchDirectory");
+        legacy[&id]["history"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("launchDirectory");
+        atomic_write(&path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let recovered = Service::load(&dir).unwrap();
+        let record = recovered.summaries().pop().unwrap();
+        assert_eq!(record.snapshot.unwrap().launch_directory, Some(repaired));
+        assert_eq!(record.history[0].launch_directory, None);
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn history_is_bounded() {
         let snapshot = |generation| Snapshot {
+            launch_directory: None,
             truncated: false,
             data: vec![b'x'; 16],
             end: 16,

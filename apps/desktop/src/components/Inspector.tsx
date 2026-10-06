@@ -1,3 +1,5 @@
+import { openInEditor, revealLabel } from '../lib/navigation'
+import { revealPath } from '../lib/ipc'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
@@ -57,6 +59,14 @@ function ComponentInspector({ node }: { node: FlowNode }) {
         ⧉ Open in window
       </button>
       <div className="row">
+        <button onClick={() => void openInEditor({ path: data.path })}>Open in editor</button>
+        <button
+          onClick={() =>
+            void revealPath(data.path).catch((e) => useStore.getState().setMessage(String(e)))
+          }
+        >
+          {revealLabel}
+        </button>
         <ExtensionMenu slot="component/actions" componentId={id} />
         {validating ? (
           <button

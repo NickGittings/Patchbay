@@ -19,7 +19,8 @@
     "smoke:tasks": "sh smoke/tasks-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/tasks.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-tasks/shop\" node scripts/smoke.mjs",
     "prepare:sessiond": "node scripts/sessiond.mjs",
     "smoke:workspace": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/workspace.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" PATCHBAY_SMOKE_ROOT_2=\"$PWD/../../examples/extensions/docker/fixture\" node scripts/smoke.mjs",
-    "smoke:lifecycle": "node scripts/lifecycle.mjs"
+    "smoke:lifecycle": "node scripts/lifecycle.mjs",
+    "smoke:navigation": "node scripts/navigation-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

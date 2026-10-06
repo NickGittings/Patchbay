@@ -178,6 +178,9 @@ impl Backlog {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Original launch directory of this process incarnation. Legacy history may be unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_directory: Option<PathBuf>,
     #[serde(default)]
     pub truncated: bool,
     /// Base64 on the wire: a JSON number array is ~4x larger.
@@ -752,6 +755,7 @@ impl PtyManager {
         let status = backlog.tracker.status(now_ms());
         let skip = backlog.data.len().saturating_sub(limit);
         Some(Snapshot {
+            launch_directory: backlog.launch.as_ref().map(|spec| spec.cwd.clone()),
             truncated: backlog.end > backlog.data.len() as u64,
             data: backlog.data.iter().skip(skip).copied().collect(),
             end: backlog.end,
