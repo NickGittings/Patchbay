@@ -204,6 +204,57 @@ async fn blocking<T: Send + 'static>(
         .map_err(err)?
 }
 
+#[tauri::command]
+async fn agent_hooks_check(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    provider: patchbay_core::adapters::Adapter,
+    source_override: Option<PathBuf>,
+) -> CmdResult<patchbay_core::agent_hooks::Integration> {
+    main_only(&window)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let mut result = patchbay_core::agent_hooks::inspect(provider, source_override.as_deref())
+            .map_err(err)?;
+        result.reporting_sessions = bridge
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| {
+                r.snapshot.as_ref().is_some_and(|s| {
+                    s.running
+                        && s.status
+                            .agent
+                            .as_ref()
+                            .is_some_and(|a| a.authoritative && a.provider == Some(provider))
+                })
+            })
+            .count();
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn agent_hooks_configure(
+    window: WebviewWindow,
+    provider: patchbay_core::adapters::Adapter,
+    source_override: Option<PathBuf>,
+    install: bool,
+) -> CmdResult<patchbay_core::agent_hooks::Integration> {
+    main_only(&window)?;
+    blocking(move || {
+        patchbay_core::agent_hooks::configure(
+            provider,
+            source_override.as_deref(),
+            &service::helper(),
+            install,
+        )
+        .map_err(err)
+    })
+    .await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Opened {
@@ -1253,6 +1304,8 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                agent_hooks_check,
+                agent_hooks_configure,
                 open_project,
                 rescan_project,
                 add_folder,

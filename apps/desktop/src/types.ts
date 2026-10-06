@@ -175,7 +175,7 @@ export type TerminalEvent = (
 ) & { instanceId?: string }
 
 /** `status::AgentState`. */
-export type AgentState = 'working' | 'needsInput' | 'review' | 'idle'
+export type AgentState = 'working' | 'needsInput' | 'review' | 'idle' | 'ended'
 
 /** `status::AgentReport`: what an agent last reported through `PATCHBAY_STATUS_FILE`. */
 export interface AgentReport {
@@ -184,6 +184,10 @@ export interface AgentReport {
   sinceMs: number
   message: string | null
   prompt: string | null
+  provider?: 'claude' | 'codex' | null
+  conversationId?: string | null
+  turnId?: string | null
+  authoritative?: boolean
 }
 
 /** `status::SessionStatus`: what a running session is doing. */
@@ -469,4 +473,16 @@ export interface RuntimeTerminal {
   extensionId?: string
   /** Names a `terminals.run` session, so repeating the command reuses it. */
   key?: string
+}
+
+/** Machine-local status-hook setup; installed does not mean provider trust or live reporting. */
+export interface AgentIntegration {
+  provider: 'claude' | 'codex'
+  source: string
+  reporter: string
+  installed: boolean
+  disabled: boolean
+  reporterAvailable: boolean
+  reportingSessions: number
+  guidance: string[]
 }

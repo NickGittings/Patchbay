@@ -688,21 +688,8 @@ fn decorate_agent(
                 " --append-system-prompt-file {}",
                 quote_path(shell, briefing.file, env)
             );
-            // Hooks that report working / needs input / done to Patchbay. They
-            // are POSIX shell, and claude takes one `--settings`, so never
-            // replace one the user passes.
-            let own_settings = command_tokens(command, shell).is_none_or(|tokens| {
-                tokens
-                    .iter()
-                    .any(|a| a == "--settings" || a.starts_with("--settings="))
-            });
-            if shell == Shell::Unix && !own_settings {
-                let _ = write!(
-                    command,
-                    " --settings {}",
-                    shell.quote(&crate::status::claude_hooks_settings())
-                );
-            }
+            // Status integration is opt-in in the effective user hook source.
+            // Preserve all launch settings, including disabled-hook policy.
         }
         Agent::Codex => {
             let argument = |text: &str| {
@@ -1119,9 +1106,7 @@ mod tests {
         assert!(spec.env.contains_key(CONTEXT_ENV));
         assert!(spec.notice.is_none());
         assert!(!spec.service);
-        if cfg!(unix) {
-            assert!(spec.command.contains(" --settings '{\"hooks\""));
-        }
+        assert!(!spec.command.contains("--settings"));
     }
 
     #[test]

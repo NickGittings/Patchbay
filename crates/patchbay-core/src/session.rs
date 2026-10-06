@@ -457,6 +457,7 @@ pub struct Service {
     connections: Mutex<HashMap<String, usize>>,
     /// Sessions that exited since the serve loop last looked for resume hints.
     exited: Mutex<Vec<String>>,
+    confirmed: Mutex<Vec<(String, u64, Adapter, String)>>,
     operation: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
@@ -508,6 +509,7 @@ impl Service {
             viewers: Mutex::default(),
             connections: Mutex::default(),
             exited: Mutex::default(),
+            confirmed: Mutex::default(),
             operation: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
@@ -629,6 +631,25 @@ impl Service {
     /// Read the resume hints providers print as they exit, from the tail of each
     /// finished run. Runs outside the event path, which holds the backlog lock.
     fn capture_conversations(&self) {
+        let confirmed = std::mem::take(&mut *self.confirmed.lock().unwrap());
+        for (id, generation, adapter, conversation) in confirmed {
+            if self
+                .pty
+                .snapshot(&id)
+                .is_none_or(|s| s.generation != generation)
+            {
+                continue;
+            }
+            let mut records = self.records.lock().unwrap();
+            if let Some(record) = records.get_mut(&id)
+                && !record.metadata.conversation_pinned
+                && record.metadata.adapter == Some(adapter)
+                && record.metadata.conversation_id.as_ref() != Some(&conversation)
+            {
+                record.metadata.conversation_id = Some(conversation);
+                self.dirty.store(true, Ordering::Release);
+            }
+        }
         let exited = std::mem::take(&mut *self.exited.lock().unwrap());
         for id in exited {
             let Some(tail) = self.pty.snapshot_with(&id, CAPTURE_TAIL) else {
@@ -638,7 +659,9 @@ impl Service {
             let Some(record) = records.get_mut(&id) else {
                 continue;
             };
-            if record.metadata.conversation_pinned {
+            if record.metadata.conversation_pinned
+                || tail.status.agent.as_ref().is_some_and(|a| a.authoritative)
+            {
                 continue;
             }
             if let Some(adapter) = record.metadata.adapter
@@ -673,6 +696,16 @@ impl Service {
             metadata.task.as_deref(),
         );
         spec.id.clone_from(&id);
+        if let Some(adapter) = metadata.adapter {
+            spec.env.insert(
+                crate::agent_hooks::PROVIDER_ENV.into(),
+                match adapter {
+                    Adapter::Claude => "claude",
+                    Adapter::Codex => "codex",
+                }
+                .into(),
+            );
+        }
         let _operation = self.operation.lock().unwrap();
         anyhow::ensure!(
             !self.shutdown.load(Ordering::Acquire),
@@ -1040,6 +1073,22 @@ impl EventSink for Service {
     fn emit(&self, event: TerminalEvent) {
         // Called by the PTY threads, sometimes under a backlog lock: never read
         // backlogs here.
+        if let TerminalEvent::Status {
+            session_id,
+            generation,
+            status,
+        } = &event
+            && let Some(agent) = &status.agent
+            && agent.authoritative
+            && let (Some(adapter), Some(conversation)) = (agent.provider, &agent.conversation_id)
+        {
+            self.confirmed.lock().unwrap().push((
+                session_id.clone(),
+                *generation,
+                adapter,
+                conversation.clone(),
+            ));
+        }
         let output = matches!(event, TerminalEvent::Output { .. });
         if let TerminalEvent::Exited { session_id, .. } = &event {
             self.exited.lock().unwrap().push(session_id.clone());

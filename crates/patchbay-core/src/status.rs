@@ -43,6 +43,8 @@ pub enum AgentState {
     Review,
     /// Waiting for a prompt.
     Idle,
+    /// Provider conversation ended; the PTY may still be alive.
+    Ended,
 }
 
 /// The agent's latest self-reported state.
@@ -56,6 +58,12 @@ pub struct AgentReport {
     pub message: Option<String>,
     /// The prompt it is working on, or last worked on.
     pub prompt: Option<String>,
+    /// Confirmed by a native provider hook; absent for legacy reports.
+    pub provider: Option<crate::adapters::Adapter>,
+    pub conversation_id: Option<String>,
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub authoritative: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +334,13 @@ pub struct Tracker {
     next_probe_ms: u64,
     failures: u32,
     report: Option<AgentReport>,
+    session_identity: Option<(String, u64)>,
+    hook_sequence: u64,
+    hook_conversation: Option<String>,
+    hook_turn: Option<String>,
+    retired_turns: std::collections::HashSet<String>,
+    retired_conversations: std::collections::HashSet<String>,
+    turn_closed: bool,
     /// The status file write `report` came from.
     report_stamp: Option<Stamp>,
     /// When the agent last reported or was resumed, in Unix milliseconds.
@@ -346,6 +361,127 @@ impl Tracker {
         }
     }
 
+    /// Bind authoritative hooks to this process incarnation.
+    #[must_use]
+    pub fn with_identity(mut self, session: &str, generation: u64) -> Self {
+        self.session_identity = Some((session.into(), generation));
+        self
+    }
+
+    /// Consume a native provider event. Unknown sessions, retired conversations/turns,
+    /// late sequence numbers, and progress after completion cannot change status.
+    pub fn on_hook(&mut self, event: crate::agent_hooks::HookEvent, now: u64) {
+        if self
+            .session_identity
+            .as_ref()
+            .is_none_or(|(session, generation)| {
+                session != &event.session || *generation != event.generation
+            })
+            || event.sequence <= self.hook_sequence
+            || self.retired_conversations.contains(&event.conversation)
+        {
+            return;
+        }
+        self.hook_sequence = event.sequence;
+        if self.hook_conversation.as_ref() != Some(&event.conversation) {
+            if event.event != "SessionStart" && self.hook_conversation.is_some() {
+                return;
+            }
+            if let Some(previous) = self.hook_conversation.replace(event.conversation.clone()) {
+                self.retired_conversations.insert(previous);
+            }
+            self.hook_turn = None;
+            self.retired_turns.clear();
+            self.turn_closed = false;
+        }
+        // A provider that reports prompts without turn identity cannot establish
+        // reliable progress. Retain Active/Quiet instead of its startup Idle state.
+        if event.event == "UserPromptSubmit" && event.turn.is_none() {
+            self.report = None;
+            if let Some(turn) = self.hook_turn.take() {
+                self.retired_turns.insert(turn);
+            }
+            return;
+        }
+        if let Some(turn) = &event.turn
+            && !matches!(event.event.as_str(), "SessionStart" | "SessionEnd")
+        {
+            if self.retired_turns.contains(turn) {
+                return;
+            }
+            if event.event == "UserPromptSubmit" {
+                if self.hook_turn.as_ref() == Some(turn) {
+                    return;
+                }
+                if let Some(previous) = self.hook_turn.replace(turn.clone())
+                    && previous != *turn
+                {
+                    self.retired_turns.insert(previous);
+                }
+                self.turn_closed = false;
+            } else if self.hook_turn.as_ref() != Some(turn) || self.turn_closed {
+                return;
+            }
+        }
+        let state = match event.event.as_str() {
+            "SessionStart"
+                if self
+                    .report
+                    .as_ref()
+                    .is_some_and(|r| r.state == AgentState::Working)
+                    && self.hook_turn.is_some() =>
+            {
+                return;
+            } // Compaction does not end an active turn.
+            "SessionStart" | "Interrupt" | "StopFailure" => AgentState::Idle,
+            "SessionEnd" => AgentState::Ended,
+            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+                AgentState::Working
+            }
+            "PermissionRequest" | "Notification" => AgentState::NeedsInput,
+            "Stop" => AgentState::Review,
+            _ => return,
+        };
+        if matches!(
+            state,
+            AgentState::Review | AgentState::Ended | AgentState::Idle
+        ) && event.event != "SessionStart"
+        {
+            self.turn_closed = true;
+        }
+        // Input that interrupted after a hook started takes precedence over its delayed report.
+        let state = if self
+            .resolved
+            .is_some_and(|(at, effect)| at >= event.at_ms && effect == AgentState::Idle)
+            && matches!(
+                state,
+                AgentState::Working | AgentState::NeedsInput | AgentState::Review
+            ) {
+            self.turn_closed = true;
+            AgentState::Idle
+        } else {
+            state
+        };
+        let previous = self.report.take();
+        let since_ms = previous
+            .as_ref()
+            .filter(|r| r.state == state && r.turn_id == event.turn)
+            .map_or(now, |r| r.since_ms);
+        self.report = Some(AgentReport {
+            state,
+            since_ms,
+            message: (state == AgentState::NeedsInput)
+                .then_some(event.message)
+                .flatten(),
+            prompt: event.prompt.or_else(|| previous.and_then(|r| r.prompt)),
+            provider: Some(event.provider),
+            conversation_id: Some(event.conversation),
+            turn_id: event.turn.or_else(|| self.hook_turn.clone()),
+            authoritative: true,
+        });
+        self.heard_ms = now;
+    }
+
     /// Answering a prompt that needs input resumes the agent (it reports again
     /// only once the approved step finishes); Esc or Ctrl+C stops it, which it
     /// never reports.
@@ -354,6 +490,13 @@ impl Tracker {
         let Some(effect) = input_effect(data) else {
             return;
         };
+        if self.report.as_ref().is_some_and(|r| r.authoritative) {
+            // Provider UI escape and answer keystrokes do not establish a state change.
+            if !data.contains(&0x03) {
+                return;
+            }
+            self.turn_closed = true;
+        }
         self.resolved = Some((now, effect));
         if let Some(report) = &mut self.report
             && resolve(&mut report.state, &mut report.message, effect)
@@ -425,6 +568,9 @@ impl Tracker {
             return;
         }
         self.report_stamp = Some(stamp);
+        if self.report.as_ref().is_some_and(|r| r.authoritative) {
+            return;
+        }
         let Some(mut report) = parse_report(text) else {
             return;
         };
@@ -455,6 +601,10 @@ impl Tracker {
             since_ms,
             message,
             prompt,
+            provider: None,
+            conversation_id: None,
+            turn_id: None,
+            authoritative: false,
         });
     }
 
@@ -502,7 +652,7 @@ impl Tracker {
         let stale = self.quiet_ms(now) > STALE_WORKING_MS;
         let last_heard = self.last_heard();
         self.status.agent = self.report.clone().map(|mut r| {
-            if r.state == AgentState::Working && stale {
+            if r.state == AgentState::Working && stale && !r.authoritative {
                 r.state = AgentState::Idle;
                 r.since_ms = last_heard;
             }
@@ -526,33 +676,6 @@ impl Tracker {
         self.emitted = self.status.clone();
         Some(self.status.clone())
     }
-}
-
-/// Settings for `claude --settings` whose hooks report its state to
-/// `$PATCHBAY_STATUS_FILE`. Each hook passes its stdin along as the report's
-/// JSON, and always succeeds so it never blocks the agent.
-#[must_use]
-pub fn claude_hooks_settings() -> String {
-    let hook = |word: &str| {
-        serde_json::json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!(
-                    "f=\"${STATUS_ENV}\"; [ -n \"$f\" ] && {{ printf '{word}\\n'; cat; }} > \"$f.$$\" && mv -f \"$f.$$\" \"$f\"; true"
-                ),
-            }]
-        }])
-    };
-    serde_json::json!({
-        "hooks": {
-            "SessionStart": hook("idle"),
-            "UserPromptSubmit": hook("working"),
-            "PostToolUse": hook("working"),
-            "Notification": hook("notify"),
-            "Stop": hook("review"),
-        }
-    })
-    .to_string()
 }
 
 #[cfg(test)]
@@ -844,44 +967,111 @@ mod tests {
         assert_eq!(tracker.status(0).healthy, Some(true));
     }
 
-    #[test]
-    fn hooks_settings_are_valid_json() {
-        let settings: serde_json::Value = serde_json::from_str(&claude_hooks_settings()).unwrap();
-        let command = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        assert!(command.contains("printf 'review\\n'"), "{command}");
-        assert!(command.contains("$PATCHBAY_STATUS_FILE"), "{command}");
+    fn hook(event: &str, turn: Option<&str>, sequence: u64) -> crate::agent_hooks::HookEvent {
+        crate::agent_hooks::HookEvent {
+            session: "session".into(),
+            generation: 42,
+            provider: crate::adapters::Adapter::Codex,
+            sequence,
+            at_ms: sequence * 100,
+            event: event.into(),
+            conversation: "12345678-conversation".into(),
+            turn: turn.map(str::to_string),
+            prompt: (event == "UserPromptSubmit").then(|| "build it".into()),
+            message: (event == "PermissionRequest").then(|| "Allow Bash?".into()),
+        }
     }
-
-    #[cfg(unix)]
     #[test]
-    fn hook_command_writes_the_status_file() {
-        let settings: serde_json::Value = serde_json::from_str(&claude_hooks_settings()).unwrap();
-        let command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        let file = std::env::temp_dir().join(format!("patchbay-hook-{}", std::process::id()));
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", command])
-            .env(STATUS_ENV, &file)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(child.stdin.as_mut().unwrap(), b"{\"prompt\":\"hi\"}").unwrap();
-        assert!(child.wait().unwrap().success());
-        let text = std::fs::read_to_string(&file).unwrap();
-        let _ = std::fs::remove_file(&file);
-        let report = parse_report(&text).unwrap();
-        assert_eq!(report.state, AgentState::Working);
-        assert_eq!(report.prompt.as_deref(), Some("hi"));
-        // Without the env var it does nothing and still succeeds.
-        let status = std::process::Command::new("sh")
-            .args(["-c", command])
-            .env_remove(STATUS_ENV)
-            .stdin(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        assert!(status.success());
+    fn native_hooks_preserve_quiet_work_and_correlate_turns_and_generations() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn-one"), 2), 200);
+        assert_eq!(
+            tracker.status(1_000_000).agent.unwrap().state,
+            AgentState::Working
+        );
+        tracker.on_hook(hook("PermissionRequest", Some("turn-one"), 3), 300);
+        tracker.on_input(b"y", 350);
+        let mut duplicate = hook("UserPromptSubmit", Some("turn-one"), 4);
+        duplicate.prompt = Some("duplicate prompt".into());
+        tracker.on_hook(duplicate, 350);
+        assert_eq!(
+            tracker.status(400).agent.unwrap().state,
+            AgentState::NeedsInput
+        );
+        assert_eq!(
+            tracker.status(400).agent.unwrap().prompt.as_deref(),
+            Some("build it")
+        );
+        tracker.on_hook(hook("PostToolUse", Some("turn-one"), 5), 400);
+        tracker.on_hook(hook("Stop", Some("turn-one"), 6), 500);
+        assert_eq!(tracker.status(500).agent.unwrap().state, AgentState::Review);
+        tracker.on_hook(hook("PostToolUse", Some("turn-one"), 7), 600);
+        assert_eq!(tracker.status(600).agent.unwrap().state, AgentState::Review);
+        // Duplicate hook definitions or a late prompt cannot reopen the finished turn.
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn-one"), 8), 650);
+        assert_eq!(tracker.status(650).agent.unwrap().state, AgentState::Review);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn-two"), 9), 700);
+        tracker.on_hook(hook("Stop", Some("turn-one"), 10), 800);
+        let mut old_generation = hook("Stop", Some("turn-two"), 11);
+        old_generation.generation = 41;
+        tracker.on_hook(old_generation, 900);
+        assert_eq!(
+            tracker.status(900).agent.unwrap().state,
+            AgentState::Working
+        );
+        tracker.on_hook(hook("Interrupt", Some("turn-two"), 12), 1000);
+        assert_eq!(tracker.status(1000).agent.unwrap().state, AgentState::Idle);
+        tracker.on_hook(hook("SessionEnd", Some("turn-two"), 13), 1100);
+        assert_eq!(tracker.status(1100).agent.unwrap().state, AgentState::Ended);
+    }
+    #[test]
+    fn compaction_and_subagent_events_do_not_complete_the_parent_turn() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("UserPromptSubmit", Some("parent-turn"), 1), 100);
+        tracker.on_hook(hook("SessionStart", None, 2), 200);
+        tracker.on_hook(hook("SubagentStop", Some("parent-turn"), 3), 300);
+        tracker.on_hook(hook("Stop", Some("child-turn"), 4), 400);
+        assert_eq!(
+            tracker.status(100_000).agent.unwrap().state,
+            AgentState::Working
+        );
+        tracker.on_input(b"\x03", 500);
+        tracker.on_hook(hook("PostToolUse", Some("parent-turn"), 6), 600);
+        assert_eq!(tracker.status(600).agent.unwrap().state, AgentState::Idle);
+    }
+    #[test]
+    fn retired_conversations_and_legacy_reports_cannot_override_native_status() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("UserPromptSubmit", Some("first-turn"), 1), 100);
+        let mut start = hook("SessionStart", None, 2);
+        start.conversation = "second-conversation".into();
+        tracker.on_hook(start, 200);
+        tracker.on_hook(hook("SessionStart", None, 3), 300);
+        report(&mut tracker, "review", 400);
+        let agent = tracker.status(400).agent.unwrap();
+        assert_eq!(
+            agent.conversation_id.as_deref(),
+            Some("second-conversation")
+        );
+        assert_eq!(agent.state, AgentState::Idle);
+    }
+    #[test]
+    fn legacy_status_history_deserializes_without_hook_metadata() {
+        let report: AgentReport = serde_json::from_str(
+            r#"{"state":"working","sinceMs":100,"message":null,"prompt":null}"#,
+        )
+        .unwrap();
+        assert!(!report.authoritative);
+    }
+    #[test]
+    fn a_prompt_without_turn_identity_returns_to_output_fallback() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        tracker.on_hook(hook("UserPromptSubmit", None, 2), 200);
+        assert!(tracker.status(200).agent.is_none());
+        tracker.on_output(b"working animation", 210);
+        assert!(tracker.status(210).active);
+        assert!(!tracker.status(10_000).active);
     }
 }

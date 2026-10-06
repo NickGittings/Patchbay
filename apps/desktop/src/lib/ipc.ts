@@ -272,3 +272,16 @@ export const projectRelink = (projectId: string) =>
 
 export const sessionHistory = (sessionId: string, incarnation: number) =>
   invoke<TerminalSnapshot | null>('session_history', { sessionId, incarnation })
+
+export const agentHooksCheck = (provider: 'claude' | 'codex', sourceOverride?: string) =>
+  invoke<import('../types').AgentIntegration>('agent_hooks_check', { provider, sourceOverride })
+export const agentHooksConfigure = (
+  provider: 'claude' | 'codex',
+  install: boolean,
+  sourceOverride?: string,
+) =>
+  invoke<import('../types').AgentIntegration>('agent_hooks_configure', {
+    provider,
+    install,
+    sourceOverride,
+  })

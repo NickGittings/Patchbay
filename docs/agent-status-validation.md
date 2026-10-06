@@ -1,0 +1,100 @@
+# Agent status integration
+
+Open **Tools → Agent status integration…**, select Claude Code or Codex, and inspect the
+**User hook source**. **Install status hooks** is opt-in. **Check integration** separates
+configuration installation from reporting confirmed in a running Patchbay session.
+**Remove status hooks** removes only the exact entries this installation owns.
+
+Claude defaults to `CLAUDE_CONFIG_DIR/settings.json`, or `~/.claude/settings.json` when the
+variable is absent. Codex uses `CODEX_HOME`, or `~/.codex`: existing inline hooks in
+`config.toml` remain the source; otherwise installation appends to `hooks.json`. Both TOML
+array tables and inline arrays are supported. If the login shell defines a different
+provider directory than the desktop inherited, select the corresponding absolute user
+source in the setup dialog.
+
+Codex requires review and trust of the current hook definitions through `/hooks`. Patchbay
+never adds a trust bypass or changes approvals. Hook-disabled settings, profiles, managed
+policy, project settings, existing `--settings`, and `--setting-sources` remain under the
+provider's control. Inspection detects Claude's user `disableAllHooks` and Codex's user
+`features.hooks`/deprecated `features.codex_hooks`; it cannot establish effective runtime
+trust or every higher-precedence policy. Reporting remains unconfirmed until a native hook
+arrives from a running process.
+
+Supported parent-turn events map to these states:
+
+| Events | State |
+| --- | --- |
+| UserPromptSubmit, PreToolUse, PostToolUse, Claude PostToolUseFailure | Working |
+| PermissionRequest, Claude permission notification | Needs input |
+| Stop | Ready for review |
+| SessionStart, Codex Interrupt, Claude StopFailure | Idle |
+| SessionEnd | Ended |
+
+Compaction SessionStart preserves an active turn. Native Working survives quiet terminal
+output. Answer keystrokes and escape sequences do not guess provider progress; an explicit
+Ctrl+C records interruption, and subsequent provider events resume authoritative reporting.
+Without provider reports the existing Active/Quiet output fallback remains. Providers must
+supply Codex `turn_id` or Claude `prompt_id` for turn events; an uncorrelated prompt restores Active/Quiet, and uncorrelated tool events are ignored.
+Subagent identifiers and SubagentStop never complete the parent turn. Claude's main
+`--agent` selection remains supported because `agent_type` alone is not a subagent identity.
+
+Installation copies the packaged `patchbay-sessiond` executable to a stable, machine-local
+`~/.patchbay/reporters/patchbay-status-v1` path (`.exe` on Windows). It installs no shell
+scripts or language-runtime dependencies. Claude executes the binary and argument array
+directly. Codex uses a safely quoted native command on Unix and an encoded PowerShell
+command on Windows. Reporter commands exit successfully without stdout, stderr, provider
+decisions, or changes outside a Patchbay reporting environment.
+
+The PTY service supplies a private journal, opaque session ID, process generation, and
+provider identity. Launch settings cannot redirect these transport fields. Individual,
+atomically committed report files prevent rapid prompt/completion writes from overwriting
+each other. The tracker rejects other process generations, retired conversations/turns,
+reordered sequence numbers, duplicate prompts, and progress after completion. Confirmed provider conversation
+IDs update continuity records without replacing a user-pinned ID. Retained history keeps
+its launch directory and accepts old status records without native-hook fields.
+
+Setup preserves unrelated user configuration and handlers, writes atomically, checks for
+concurrent changes, and refuses malformed JSON/TOML and symlink/non-file replacement.
+Unrelated TOML text and comments are retained; affected hook event tables may be reformatted.
+Ownership requires the exact provider command, arguments, type, and Patchbay marker. Edited
+or similarly named user entries are preserved. Repeated installation/removal is idempotent.
+The native configuration broker is available only to the main application window.
+
+## Validation recorded on October 6, 2026
+
+Read-only provider inventory found Claude Code 2.1.290 and codex-cli 0.160.0; Codex reports
+its canonical `hooks` feature as stable and enabled. No real provider hooks or conversations
+were changed for these inventory checks.
+
+On macOS arm64:
+
+- Rust formatting, workspace Clippy with warnings denied, frontend checks/build.
+- Native workspace tests, including 197 core regressions, 3 CLI tests, existing 2 helper
+  lifecycle tests, and 3 new packaged reporter process tests.
+- New regressions cover existing JSON/TOML hooks, inline TOML, disabled features, exact
+  ownership, argument punctuation, malformed sources, atomic replacement permissions,
+  quiet Working, generation/turn/conversation guards, main custom agents, subagents,
+  interruption, older-provider fallback, concurrent reporters, and legacy history compatibility.
+- `npm run smoke:status` uses isolated provider sources and local state. It exercises native
+  repeated installation/removal, a real packaged reporter in an interactive fixture PTY,
+  permission/progress/completion/end events, quiet Working beyond the previous timeout,
+  subagent/late-progress rejection, and the actual setup dialog. The harness checks that
+  unrelated Claude settings and Codex configuration survived.
+
+Sandboxed macOS watcher tests can time out; native workspace tests require real FSEvents
+and loopback socket access. The native suite passed with those permissions.
+
+## Release gates still open
+
+The fixture reporter validates Patchbay's transport and UI, not provider trust behavior.
+Real interactive Claude and Codex sessions still need prompt, approval, completion,
+interruption, compaction, exact resumed conversations, disabled/trust settings, custom
+launch settings, and subagent validation. Do not infer release readiness from synthetic
+provider payloads. Windows/Linux native tests and packaged reporter execution remain
+outstanding. On Windows specifically, validate Claude exec-form hooks and Codex's encoded
+PowerShell launcher with spaces/punctuation in the installation path and existing settings.
+Installed reporter copies should be reinstalled after updates that change the reporter.
+
+Contracts were checked against the [official OpenAI hooks documentation](https://learn.chatgpt.com/docs/hooks?site_variant=chatgpt&translationFallback=zh-Hans)
+and [Claude hooks reference](https://code.claude.com/docs/en/hooks). Claude user-directory
+behavior follows its [settings documentation](https://code.claude.com/docs/en/settings).

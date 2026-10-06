@@ -142,6 +142,13 @@ Patchbay context. Unsupported compound/wrapper commands report an error when the
 cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
 and [Codex CLI documentation](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
 
+**Tools → Agent status integration…** provides opt-in Claude/Codex status hooks. Install,
+check, or remove Patchbay-owned entries in the active user hook source while preserving
+existing settings. Codex definitions require review/trust through `/hooks`; Patchbay retains
+output-based Active/Quiet until native reporting is confirmed. Confirmed hooks report Working,
+Needs input, Ready for review, Idle, and Ended, including quiet working turns. See
+[setup details and remaining platform/provider release gates](docs/agent-status-validation.md).
+
 ```sh
 cargo build -p patchbay-cli -p patchbay-sessiond
 ./target/debug/patchbay sessions list
