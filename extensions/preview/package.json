@@ -1,0 +1,43 @@
+{
+  "name": "preview",
+  "publisher": "patchbay",
+  "version": "0.1.0",
+  "displayName": "Browser previews",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onProjectOpen",
+    "onView:patchbay.preview.panel",
+    "onCommand:patchbay.preview.refresh"
+  ],
+  "permissions": [
+    "project:read",
+    "sessions:read",
+    "urls:open"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "patchbay.preview.refresh",
+        "title": "Preview: Refresh URLs"
+      }
+    ],
+    "menus": {
+      "component/actions": [
+        {
+          "command": "patchbay.preview.refresh"
+        }
+      ]
+    },
+    "views": [
+      {
+        "id": "patchbay.preview.panel",
+        "title": "Browser previews",
+        "location": "inspector"
+      }
+    ]
+  },
+  "type": "module"
+}

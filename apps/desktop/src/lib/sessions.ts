@@ -110,8 +110,7 @@ function captureLaunch(
     task: scope,
     project,
     highlighted: [...(state?.highlighted ?? [])],
-    // Extension terminals only run in the project's own worktree.
-    runtime: scope ? undefined : s.runtimeTerminals[sid],
+    runtime: s.runtimeTerminals[sid],
   }
 }
 
@@ -150,7 +149,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
       if (runtime?.commandId)
-        await executeExtensionCommand(runtime.commandId, [], componentId, project)
+        await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
           project,
@@ -158,6 +157,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           componentId,
           runtime.terminal.command,
           runtime.key,
+          task,
         )
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
@@ -455,6 +455,7 @@ export function reconcileSessions(force = true): Promise<void> {
         )
           current.addRuntimeTerminal(r.id, {
             projectId: r.metadata.projectId,
+            taskId: r.metadata.task ?? null,
             commandId: r.metadata.commandId ?? undefined,
             extensionId: r.metadata.extensionId ?? undefined,
             key: r.metadata.key ?? undefined,

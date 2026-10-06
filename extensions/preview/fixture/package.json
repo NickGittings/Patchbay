@@ -1,0 +1,7 @@
+{
+  "name": "patchbay-preview-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "node server.mjs"
+  }
+}

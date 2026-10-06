@@ -1,0 +1,76 @@
+{
+  "name": "docker",
+  "publisher": "patchbay",
+  "version": "0.1.0",
+  "displayName": "Docker Compose",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onProjectOpen",
+    "onCommand:patchbay.docker.refresh",
+    "onView:patchbay.docker.panel"
+  ],
+  "permissions": [
+    "terminals",
+    "project:read",
+    "files:read"
+  ],
+  "contributes": {
+    "detectors": [
+      {
+        "id": "compose",
+        "files": [
+          "compose.yaml",
+          "compose.yml",
+          "docker-compose.yaml",
+          "docker-compose.yml"
+        ],
+        "kind": "service"
+      }
+    ],
+    "commands": [
+      {
+        "id": "patchbay.docker.refresh",
+        "title": "Docker: Refresh containers"
+      },
+      {
+        "id": "patchbay.docker.up",
+        "title": "Docker: Up"
+      },
+      {
+        "id": "patchbay.docker.down",
+        "title": "Docker: Down"
+      },
+      {
+        "id": "patchbay.docker.logs",
+        "title": "Docker: Logs"
+      }
+    ],
+    "menus": {
+      "component/actions": [
+        {
+          "command": "patchbay.docker.refresh"
+        },
+        {
+          "command": "patchbay.docker.up"
+        },
+        {
+          "command": "patchbay.docker.down"
+        },
+        {
+          "command": "patchbay.docker.logs"
+        }
+      ]
+    },
+    "views": [
+      {
+        "id": "patchbay.docker.panel",
+        "title": "Docker Compose",
+        "location": "inspector"
+      }
+    ]
+  },
+  "type": "module"
+}

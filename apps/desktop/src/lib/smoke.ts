@@ -1,4 +1,12 @@
-import { extensionStorageGet, reloadExtensions } from './ipc'
+import {
+  extensionStorageGet,
+  reloadExtensions,
+  extensionSessionsList,
+  extensionUrlOpen,
+  extensionTerminalRun,
+  extensionFileRead,
+  sessionsList,
+} from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
 import { executeExtensionCommand } from '../extensions/host'
@@ -38,6 +46,11 @@ const hooks = {
   evaluateWhen,
   reloadExtensions,
   extensionStorageGet,
+  extensionSessionsList,
+  extensionUrlOpen,
+  extensionTerminalRun,
+  extensionFileRead,
+  sessionsList,
   refreshExtensions,
   componentContext,
   executeExtensionCommand,

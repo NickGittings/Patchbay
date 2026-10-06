@@ -219,8 +219,14 @@ export const setExtensionEnabled = (id: string, enabled: boolean) =>
   invoke<ExtensionRegistry>('set_extension_enabled', { id, enabled })
 export const installExtension = () => invoke<ExtensionRegistry | null>('install_extension')
 export const revealExtensionsDir = () => invoke<void>('reveal_extensions_dir')
-export const commandRun = (project: Project, componentId: string, commandId: string) =>
+export const commandRun = (
+  project: Project,
+  componentId: string,
+  commandId: string,
+  task?: string,
+) =>
   invoke<string>('command_run', {
+    task,
     project,
     projectId: project.projectId,
     componentId,
@@ -233,8 +239,10 @@ export const extensionTerminalRun = (
   componentId: string,
   command: string,
   key: string,
+  task?: string,
 ) =>
   invoke<string>('extension_terminal_run', {
+    task,
     project,
     projectId: project.projectId,
     requestId: crypto.randomUUID(),
@@ -248,7 +256,8 @@ export const extensionFileRead = (
   extensionId: string,
   path: string,
   projectId = useStore.getState().project?.id,
-) => invoke<string>('extension_file_read', { extensionId, path, projectId })
+  task?: string,
+) => invoke<string>('extension_file_read', { extensionId, path, projectId, task })
 
 /** Register as a viewer; `claim` makes this window the one that types and sizes the PTY. */
 export const terminalAttach = (sessionId: string, claim = false) =>
@@ -272,3 +281,19 @@ export const projectRelink = (projectId: string) =>
 
 export const sessionHistory = (sessionId: string, incarnation: number) =>
   invoke<TerminalSnapshot | null>('session_history', { sessionId, incarnation })
+
+export const extensionSessionsList = (
+  extensionId: string,
+  project: Project,
+  componentId: string,
+  task?: string,
+) =>
+  invoke<import('../types').ComponentSessionSummary[]>('extension_sessions_list', {
+    extensionId,
+    project,
+    projectId: project.projectId,
+    componentId,
+    task,
+  })
+export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
+  invoke<void>('extension_url_open', { extensionId, projectId, url })

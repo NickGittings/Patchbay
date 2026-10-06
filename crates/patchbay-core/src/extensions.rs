@@ -179,7 +179,15 @@ pub fn validate(dir: &Path) -> Result<ExtensionManifest> {
         resolve_asset(dir, main)?;
     }
     for permission in &manifest.permissions {
-        if !["terminals", "project:read", "files:read"].contains(&permission.as_str()) {
+        if ![
+            "terminals",
+            "project:read",
+            "files:read",
+            "sessions:read",
+            "urls:open",
+        ]
+        .contains(&permission.as_str())
+        {
             bail!("unknown permission {permission}");
         }
     }
@@ -601,6 +609,116 @@ pub fn run_terminal(extension_id: &str, command: String, key: &str) -> Result<Te
     })
 }
 
+/// Validate a browser preview URL. Native callers use this before opening it.
+/// # Errors
+/// Fails for non-HTTP(S), credentials, controls, whitespace, or an oversized URL.
+pub fn preview_url(value: &str) -> Result<String> {
+    if value.len() > 2048 || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("preview URL contains whitespace/controls or exceeds 2048 bytes");
+    }
+    let url = url::Url::parse(value)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        bail!("only HTTP/HTTPS URLs without credentials may be opened");
+    }
+    Ok(url.into())
+}
+
+/// Extract a bounded set of browser URLs from terminal output, without exposing
+/// terminal content to extensions. ANSI colour and OSC hyperlinks are removed.
+#[must_use]
+pub fn preview_urls(output: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(output);
+    let mut chars = text.chars().peekable();
+    let mut plain = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || (c == '\u{1b}' && chars.next() == Some('\\')) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    let mut urls = Vec::new();
+    for token in plain.split_whitespace() {
+        let Some(start) = token.find("http://").or_else(|| token.find("https://")) else {
+            continue;
+        };
+        let candidate = token[start..].trim_end_matches(['.', ',', ';', ')', '}', '\'', '"']);
+        if let Ok(url) = preview_url(candidate) {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+            if urls.len() == 32 {
+                break;
+            }
+        }
+    }
+    urls
+}
+
+/// A task terminal's current lifecycle and reported browser URLs. Output, provider
+/// prompts, environment variables and earlier process generations are omitted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentSessionSummary {
+    pub session_id: String,
+    pub terminal_id: String,
+    pub name: String,
+    pub running: bool,
+    pub generation: u64,
+    pub urls: Vec<String>,
+}
+/// Filter summaries to the caller's project, task, component and allowed folders.
+#[must_use]
+pub fn session_summaries(
+    records: &[crate::session::Record],
+    project_id: &str,
+    task: Option<&str>,
+    component_id: &str,
+    roots: &[PathBuf],
+) -> Vec<ComponentSessionSummary> {
+    records
+        .iter()
+        .filter(|r| {
+            r.metadata.project_id == project_id
+                && r.metadata.task.as_deref() == task
+                && r.metadata.component_id == component_id
+                && r.metadata.kind == TerminalKind::Task
+                && files::resolve(roots, &r.spec.cwd).is_ok()
+        })
+        .filter_map(|r| {
+            r.snapshot.as_ref().map(|snapshot| ComponentSessionSummary {
+                session_id: r.id.clone(),
+                terminal_id: r.metadata.terminal_id.clone(),
+                name: r.metadata.name.clone(),
+                running: snapshot.running,
+                generation: snapshot.generation,
+                urls: preview_urls(&snapshot.data),
+            })
+        })
+        .take(32)
+        .collect()
+}
+
 const STORAGE_LIMIT: usize = 1024 * 1024;
 fn storage_path(dir: &Path, id: &str) -> Result<PathBuf> {
     if !valid_id(id) {
@@ -784,6 +902,158 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn preview_validation_denies_non_browser_urls_and_credentials() {
+        for value in [
+            "file:///tmp/private",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "http://user:secret@localhost/",
+            "http://localhost/\n",
+            "http://local host/",
+            "https://",
+            "http://localhost/\u{0}",
+        ] {
+            assert!(preview_url(value).is_err(), "{value:?}");
+        }
+        assert_eq!(
+            preview_url("http://127.0.0.1:3037").unwrap(),
+            "http://127.0.0.1:3037/"
+        );
+        assert!(preview_url("https://[::1]:3000/?x=y").is_ok());
+        assert!(preview_url(&format!("https://localhost/{}", "x".repeat(2048))).is_err());
+        assert_eq!(preview_urls(b"Preview: \x1b[32mhttp://localhost:3000\x1b[0m\nhttp://localhost:3000\nfile:///secret https://u:p@localhost/"), vec!["http://localhost:3000/"]);
+        assert_eq!(
+            preview_urls(b"\x1b]8;;https://hidden.example\x07http://localhost:3000\x1b]8;;\x1b\\"),
+            vec!["http://localhost:3000/"]
+        );
+        assert_eq!(
+            preview_urls(
+                (0..100)
+                    .map(|i| format!("http://localhost:{}/ ", 3000 + i))
+                    .collect::<String>()
+                    .as_bytes()
+            )
+            .len(),
+            32
+        );
+    }
+
+    #[test]
+    fn summaries_exclude_other_projects_tasks_agents_denied_roots_and_history() {
+        use crate::{
+            pty::{SessionSpec, Snapshot},
+            session::{Metadata, Record},
+        };
+        let f = Fixture::new();
+        let allowed = f.0.join("allowed");
+        let denied = f.0.join("denied");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&denied).unwrap();
+        let mut record = Record {
+            id: "session".into(),
+            metadata: Metadata {
+                project_id: "p".into(),
+                project_name: "P".into(),
+                project_root: allowed.display().to_string(),
+                component_id: "web".into(),
+                terminal_id: "dev".into(),
+                task: Some("t".into()),
+                name: "Dev".into(),
+                kind: TerminalKind::Task,
+                adapter: None,
+                conversation_id: None,
+                conversation_pinned: false,
+                extension_id: None,
+                command_id: None,
+                key: None,
+                command: String::new(),
+            },
+            spec: SessionSpec {
+                id: "s".into(),
+                command: String::new(),
+                cwd: allowed.clone(),
+                env: Default::default(),
+                ready_when: String::new(),
+                service: true,
+                notice: None,
+                dirs: vec![],
+            },
+            snapshot: Some(Snapshot {
+                truncated: false,
+                data: b"http://localhost:3037".to_vec(),
+                end: 21,
+                generation: 8,
+                running: true,
+                exit_code: None,
+                started_ms: 1,
+                exited_ms: None,
+                status: Default::default(),
+                notice: None,
+            }),
+            history: vec![],
+            launch_command: String::new(),
+            interrupted: false,
+            request_ids: vec![],
+        };
+        let mut historic = record.snapshot.clone().unwrap();
+        historic.data = b"http://localhost:9999".to_vec();
+        record.history.push(historic);
+        let roots = std::slice::from_ref(&allowed);
+        let list = session_summaries(std::slice::from_ref(&record), "p", Some("t"), "web", roots);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].generation, 8);
+        assert_eq!(list[0].urls, vec!["http://localhost:3037/"]);
+        for (project, task, component) in [
+            ("q", Some("t"), "web"),
+            ("p", None, "web"),
+            ("p", Some("other"), "web"),
+            ("p", Some("t"), "other"),
+        ] {
+            assert!(
+                session_summaries(
+                    std::slice::from_ref(&record),
+                    project,
+                    task,
+                    component,
+                    roots
+                )
+                .is_empty()
+            );
+        }
+        record.metadata.kind = TerminalKind::Agent;
+        assert!(
+            session_summaries(std::slice::from_ref(&record), "p", Some("t"), "web", roots)
+                .is_empty()
+        );
+        record.metadata.kind = TerminalKind::Task;
+        record.spec.cwd = denied;
+        assert!(session_summaries(&[record], "p", Some("t"), "web", roots).is_empty());
+    }
+
+    #[test]
+    fn first_party_manifests_load_with_separate_permissions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
+        let registry = load_from(&root, &HashSet::new());
+        assert_eq!(registry.active().count(), 2);
+        assert!(
+            registry
+                .allowed("patchbay.preview", Some("sessions:read"))
+                .is_ok()
+        );
+        assert!(
+            registry
+                .allowed("patchbay.preview", Some("urls:open"))
+                .is_ok()
+        );
+        assert!(
+            registry
+                .allowed("patchbay.docker", Some("urls:open"))
+                .is_err()
+        );
+        assert_eq!(registry.detectors()[0].files.len(), 4);
+    }
+
     #[test]
     fn parses_contributions_and_isolates_bad_extensions() {
         let f = Fixture::new();

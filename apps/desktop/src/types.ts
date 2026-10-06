@@ -462,6 +462,7 @@ export interface ExtensionBadge {
   tooltip?: string
 }
 export interface RuntimeTerminal {
+  taskId?: string | null
   projectId?: string
   componentId: string
   terminal: TerminalSpec
@@ -469,4 +470,13 @@ export interface RuntimeTerminal {
   extensionId?: string
   /** Names a `terminals.run` session, so repeating the command reuses it. */
   key?: string
+}
+
+export interface ComponentSessionSummary {
+  sessionId: string
+  terminalId: string
+  name: string
+  running: boolean
+  generation: number
+  urls: string[]
 }
