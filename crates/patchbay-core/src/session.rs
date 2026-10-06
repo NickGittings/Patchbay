@@ -139,10 +139,26 @@ pub struct Batch {
     pub gap: bool,
     pub events: Vec<Envelope>,
 }
+/// Answer to `Request::PreviewUrls`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewScan {
+    pub generation: u64,
+    pub running: bool,
+    pub urls: Vec<String>,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
     List,
+    MaintenanceGuard {
+        project_id: String,
+        component_ids: Vec<String>,
+    },
+    MaintenanceRelease {
+        project_id: String,
+        token: String,
+    },
     Start {
         request_id: String,
         metadata: Box<Metadata>,
@@ -184,6 +200,10 @@ pub enum Request {
         id: String,
     },
     Snapshot {
+        id: String,
+    },
+    /// The local URLs a session printed, scanned here so its output never crosses the wire.
+    PreviewUrls {
         id: String,
     },
     History {
@@ -457,6 +477,8 @@ pub struct Service {
     connections: Mutex<HashMap<String, usize>>,
     /// Sessions that exited since the serve loop last looked for resume hints.
     exited: Mutex<Vec<String>>,
+    confirmed: Mutex<Vec<(String, u64, Adapter, String)>>,
+    maintenance: Mutex<HashMap<String, MaintenanceLease>>,
     operation: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
@@ -468,6 +490,11 @@ pub struct Service {
     shutdown: AtomicBool,
     clients: AtomicUsize,
     authority: AtomicUsize,
+}
+struct MaintenanceLease {
+    project_id: String,
+    component_ids: Vec<String>,
+    expires: Instant,
 }
 const SAVE_DIRTY: Duration = Duration::from_millis(500);
 const SAVE_OUTPUT: Duration = Duration::from_secs(5);
@@ -481,6 +508,13 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
+            // Only the latest snapshot is known to belong to Record.spec. Older legacy
+            // history has no folder metadata, so preserve None instead of guessing.
+            if let Some(snapshot) = &mut record.snapshot
+                && snapshot.launch_directory.is_none()
+            {
+                snapshot.launch_directory = Some(record.spec.cwd.clone());
+            }
             if let Some(s) = &mut record.snapshot
                 && s.running
             {
@@ -508,6 +542,8 @@ impl Service {
             viewers: Mutex::default(),
             connections: Mutex::default(),
             exited: Mutex::default(),
+            confirmed: Mutex::default(),
+            maintenance: Mutex::default(),
             operation: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
@@ -518,6 +554,16 @@ impl Service {
             clients: AtomicUsize::new(0),
             authority: AtomicUsize::new(0),
         }))
+    }
+    fn check_maintenance_block(&self, project_id: &str, components: &[String]) -> Result<()> {
+        let mut leases = self.maintenance.lock().unwrap();
+        leases.retain(|_, lease| lease.expires > Instant::now());
+        anyhow::ensure!(
+            !leases.values().any(|lease| lease.project_id == project_id
+                && lease.component_ids.iter().any(|id| components.contains(id))),
+            "Map maintenance is applying; retry after it finishes"
+        );
+        Ok(())
     }
     fn actions_for(&self, project_id: &str) -> Arc<GraphActions> {
         self.actions
@@ -546,6 +592,7 @@ impl Service {
     /// Never copies a backlog.
     fn summaries(&self) -> Vec<Record> {
         let bare = |s: &Snapshot| Snapshot {
+            launch_directory: s.launch_directory.clone(),
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
@@ -629,6 +676,28 @@ impl Service {
     /// Read the resume hints providers print as they exit, from the tail of each
     /// finished run. Runs outside the event path, which holds the backlog lock.
     fn capture_conversations(&self) {
+        let confirmed = std::mem::take(&mut *self.confirmed.lock().unwrap());
+        // Only the latest confirmation per session matters; each status event queues one.
+        let mut handled = std::collections::HashSet::new();
+        for (id, generation, adapter, conversation) in confirmed.into_iter().rev() {
+            if !handled.insert(id.clone())
+                || self
+                    .pty
+                    .snapshot_with(&id, 0)
+                    .is_none_or(|s| s.generation != generation)
+            {
+                continue;
+            }
+            let mut records = self.records.lock().unwrap();
+            if let Some(record) = records.get_mut(&id)
+                && !record.metadata.conversation_pinned
+                && record.metadata.adapter == Some(adapter)
+                && record.metadata.conversation_id.as_ref() != Some(&conversation)
+            {
+                record.metadata.conversation_id = Some(conversation);
+                self.dirty.store(true, Ordering::Release);
+            }
+        }
         let exited = std::mem::take(&mut *self.exited.lock().unwrap());
         for id in exited {
             let Some(tail) = self.pty.snapshot_with(&id, CAPTURE_TAIL) else {
@@ -638,7 +707,9 @@ impl Service {
             let Some(record) = records.get_mut(&id) else {
                 continue;
             };
-            if record.metadata.conversation_pinned {
+            if record.metadata.conversation_pinned
+                || tail.status.agent.as_ref().is_some_and(|a| a.authoritative)
+            {
                 continue;
             }
             if let Some(adapter) = record.metadata.adapter
@@ -673,7 +744,21 @@ impl Service {
             metadata.task.as_deref(),
         );
         spec.id.clone_from(&id);
+        if let Some(adapter) = metadata.adapter {
+            spec.env.insert(
+                crate::agent_hooks::PROVIDER_ENV.into(),
+                match adapter {
+                    Adapter::Claude => "claude",
+                    Adapter::Codex => "codex",
+                }
+                .into(),
+            );
+        }
         let _operation = self.operation.lock().unwrap();
+        self.check_maintenance_block(
+            &metadata.project_id,
+            std::slice::from_ref(&metadata.component_id),
+        )?;
         anyhow::ensure!(
             !self.shutdown.load(Ordering::Acquire),
             "Session service is shutting down; no work was started"
@@ -702,7 +787,10 @@ impl Service {
         let mut history = previous
             .as_ref()
             .map_or_else(Vec::new, |r| r.history.clone());
-        if let Some(snapshot) = self.snapshot(&id) {
+        if let Some(mut snapshot) = self.snapshot(&id) {
+            if snapshot.launch_directory.is_none() {
+                snapshot.launch_directory = previous.as_ref().map(|r| r.spec.cwd.clone());
+            }
             history.push(snapshot);
         }
         trim_history(&mut history);
@@ -799,6 +887,13 @@ impl Service {
                 spec,
             } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
             Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
+            Request::PreviewUrls { id } => {
+                serde_json::to_value(self.snapshot(&id).map(|s| PreviewScan {
+                    generation: s.generation,
+                    running: s.running,
+                    urls: crate::extensions::preview_urls(&s.data),
+                }))?
+            }
             Request::Attach { id, viewer, claim } => {
                 self.claim(client, id.clone(), viewer, claim);
                 serde_json::to_value(self.snapshot(&id))?
@@ -902,7 +997,45 @@ impl Service {
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
             }
+            Request::MaintenanceGuard {
+                project_id,
+                component_ids,
+            } => {
+                let ids: Vec<_> = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|r| {
+                        r.metadata.project_id == project_id
+                            && component_ids.contains(&r.metadata.component_id)
+                    })
+                    .map(|r| r.id.clone())
+                    .collect();
+                // Match graph launch's lock order: action state before service operation.
+                // Keep graph state held until the lease blocks every affected launch.
+                self.actions_for(&project_id).with_maintenance_guard(&ids, &component_ids, || {
+                    let _operation = self.operation.lock().unwrap();
+                    self.check_maintenance_block(&project_id, &component_ids)?;
+                    anyhow::ensure!(!self.records.lock().unwrap().values().any(|r| r.metadata.project_id == project_id && component_ids.contains(&r.metadata.component_id) && self.pty.is_running(&r.id)), "Stop this component's live sessions in every task before changing its folder or removing it");
+                    let token = uuid::Uuid::new_v4().to_string();
+                    self.maintenance.lock().unwrap().insert(token.clone(), MaintenanceLease { project_id, component_ids: component_ids.clone(), expires: Instant::now() + Duration::from_secs(30) });
+                    serde_json::to_value(token)
+                        .map_err(Into::into)
+                })?
+            }
+            Request::MaintenanceRelease { project_id, token } => {
+                let mut leases = self.maintenance.lock().unwrap();
+                if leases
+                    .get(&token)
+                    .is_some_and(|lease| lease.project_id == project_id)
+                {
+                    leases.remove(&token);
+                }
+                serde_json::Value::Null
+            }
             Request::ActionRun { project, plan } => {
+                self.check_maintenance_block(&plan.project_id, &plan.component_ids())?;
                 let actions = self.actions_for(&plan.project_id);
                 let epoch = actions.epoch();
                 let project_id = plan.project_id.clone();
@@ -1040,6 +1173,22 @@ impl EventSink for Service {
     fn emit(&self, event: TerminalEvent) {
         // Called by the PTY threads, sometimes under a backlog lock: never read
         // backlogs here.
+        if let TerminalEvent::Status {
+            session_id,
+            generation,
+            status,
+        } = &event
+            && let Some(agent) = &status.agent
+            && agent.authoritative
+            && let (Some(adapter), Some(conversation)) = (agent.provider, &agent.conversation_id)
+        {
+            self.confirmed.lock().unwrap().push((
+                session_id.clone(),
+                *generation,
+                adapter,
+                conversation.clone(),
+            ));
+        }
         let output = matches!(event, TerminalEvent::Output { .. });
         if let TerminalEvent::Exited { session_id, .. } = &event {
             self.exited.lock().unwrap().push(session_id.clone());
@@ -1217,6 +1366,105 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
+    fn maintenance_lease_blocks_launches_until_frontend_apply_finishes() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
+        let spec = SessionSpec {
+            id: String::new(),
+            command: "cat".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let token: String = serde_json::from_value(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()],
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            service
+                .start("blocked".into(), metadata.clone(), spec.clone())
+                .is_err()
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "other".into(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+        assert!(
+            service
+                .start("still-blocked".into(), metadata.clone(), spec.clone())
+                .is_err()
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "p".into(),
+                    token,
+                },
+            )
+            .unwrap();
+        let id = service.start("allowed".into(), metadata, spec).unwrap();
+        assert!(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()]
+                    }
+                )
+                .is_err()
+        );
+        service.pty.stop(&id);
+        let original_directory = service.records.lock().unwrap()[&id].spec.cwd.clone();
+        let token: String = serde_json::from_value(
+            service
+                .handle(
+                    "desktop",
+                    Request::MaintenanceGuard {
+                        project_id: "p".into(),
+                        component_ids: vec!["web".into()],
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            service.records.lock().unwrap()[&id].spec.cwd,
+            original_directory
+        );
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "p".into(),
+                    token,
+                },
+            )
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn idempotent_launch_authority_replay_and_restart() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
@@ -1384,9 +1632,99 @@ mod tests {
         assert_eq!(batch.instance_id, service.instance);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn stopped_then_repaired_launch_keeps_history_folder_and_legacy_unknowns() {
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-history-cwd-{}", uuid::Uuid::new_v4()));
+        private_dir(&dir).unwrap();
+        let old = dir.join("old-component");
+        let repaired = dir.join("repaired-component");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&repaired).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "component", "terminalId": "shell", "name": "Shell",
+            "kind": "shell", "adapter": null, "conversationId": null
+        }))
+        .unwrap();
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "exec cat".into(),
+            cwd: old.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let id = service
+            .start("old-run".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let first = service.snapshot(&id).unwrap();
+        assert_eq!(first.launch_directory, Some(old.clone()));
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while service.snapshot(&id).unwrap().running {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut next = spec;
+        next.cwd.clone_from(&repaired);
+        service
+            .start("repaired-run".into(), metadata, next)
+            .unwrap();
+        let record = service.summaries().pop().unwrap();
+        assert_eq!(record.spec.cwd, repaired);
+        assert_eq!(
+            record.snapshot.as_ref().unwrap().launch_directory.as_ref(),
+            Some(&repaired)
+        );
+        assert_eq!(record.history[0].generation, first.generation);
+        assert_eq!(record.history[0].launch_directory.as_ref(), Some(&old));
+        let history: Option<Snapshot> = serde_json::from_value(
+            service
+                .handle(
+                    "1",
+                    Request::History {
+                        id: id.clone(),
+                        incarnation: 0,
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history.unwrap().launch_directory, Some(old));
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
+        service.persist().unwrap();
+        let path = dir.join("sessions.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy[&id]["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("launchDirectory");
+        legacy[&id]["history"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("launchDirectory");
+        atomic_write(&path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let recovered = Service::load(&dir).unwrap();
+        let record = recovered.summaries().pop().unwrap();
+        assert_eq!(record.snapshot.unwrap().launch_directory, Some(repaired));
+        assert_eq!(record.history[0].launch_directory, None);
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn history_is_bounded() {
         let snapshot = |generation| Snapshot {
+            launch_directory: None,
             truncated: false,
             data: vec![b'x'; 16],
             end: 16,

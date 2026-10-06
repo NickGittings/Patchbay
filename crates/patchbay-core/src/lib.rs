@@ -11,7 +11,9 @@ pub mod events;
 pub mod extensions;
 pub mod files;
 pub mod git;
+pub mod maintenance;
 pub mod model;
+pub mod navigation;
 pub mod policy;
 pub mod pty;
 pub mod status;
@@ -22,5 +24,6 @@ pub use events::{EventSink, TerminalEvent};
 pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalSpec};
 
 pub mod adapters;
+pub mod agent_hooks;
 pub mod session;
 pub mod workspace;

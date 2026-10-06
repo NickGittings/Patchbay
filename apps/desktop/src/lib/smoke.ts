@@ -1,4 +1,14 @@
-import { extensionStorageGet, reloadExtensions } from './ipc'
+import {
+  agentHooksCheck,
+  agentHooksConfigure,
+  extensionStorageGet,
+  reloadExtensions,
+  extensionSessionsList,
+  extensionUrlOpen,
+  extensionTerminalRun,
+  extensionFileRead,
+  sessionsList,
+} from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
 import { executeExtensionCommand } from '../extensions/host'
@@ -7,7 +17,16 @@ import { emit } from '@tauri-apps/api/event'
 import { useStore } from '../store'
 import { componentContext, openProject, terminalReset, terminalWrite, terminalAttach } from './ipc'
 import { resetSessions, startTerminal, stopTerminal, reconcileSessions } from './sessions'
-import { terminalText } from './terminals'
+import {
+  editorOpen,
+  editorPreferences,
+  editorSavePreferences,
+  fileSearch,
+  terminalOpenReference,
+} from './ipc'
+import { terminalReferences } from './navigation'
+import { sessionGeneration } from './sessions'
+import { terminalNavigationState, terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { requestGitRefresh } from './git'
@@ -18,8 +37,44 @@ import { createTask, refreshTasks, removeTask } from './tasks'
 
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
+import {
+  reviewRescan,
+  applyMapReview,
+  useMaintenance,
+  removeComponents,
+  repairComponentPath,
+} from './maintenance'
+import {
+  rescanProject,
+  applyReconciliation,
+  mapIssues,
+  editMapComponents,
+  releaseMapEdit,
+  syncRoots,
+} from './ipc'
 const hooks = {
+  agentHooksCheck,
+  agentHooksConfigure,
+  reviewRescan,
+  applyMapReview,
+  maintenance: useMaintenance,
+  removeComponents,
+  repairComponentPath,
+  rescanProject,
+  applyReconciliation,
+  mapIssues,
+  editMapComponents,
+  releaseMapEdit,
+  syncRoots,
   sessionId,
+  editorOpen,
+  editorPreferences,
+  editorSavePreferences,
+  fileSearch,
+  terminalOpenReference,
+  terminalReferences,
+  sessionGeneration,
+  terminalNavigationState,
   flushWorkspace,
   windowLabels: () =>
     import('@tauri-apps/api/webviewWindow').then(async ({ getAllWebviewWindows }) =>
@@ -38,6 +93,11 @@ const hooks = {
   evaluateWhen,
   reloadExtensions,
   extensionStorageGet,
+  extensionSessionsList,
+  extensionUrlOpen,
+  extensionTerminalRun,
+  extensionFileRead,
+  sessionsList,
   refreshExtensions,
   componentContext,
   executeExtensionCommand,

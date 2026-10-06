@@ -2752,6 +2752,8 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "url",
  "uuid",
 ]
 
@@ -2775,6 +2777,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "patchbay-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -4351,6 +4354,7 @@ dependencies = [
  "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

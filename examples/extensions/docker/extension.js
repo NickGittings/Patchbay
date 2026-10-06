@@ -1,13 +1,15 @@
 let disposables = [];
 let counts = new Map();
+let failures = new Map();
+let active = false;
 export async function activate(patchbay) {
-  const project = await patchbay.project.get();
+  active = true;
   const isCompose = (component) =>
     component?.terminals.some((t) => t.id === "up");
   let panel;
   const render = () =>
     panel?.render(
-      `<style>body{font:14px system-ui;color:#eee;background:#20232a;padding:16px}button{padding:8px}</style><h2>Containers</h2><p>${[...counts.values()].reduce((sum, n) => sum + n, 0)} running containers</p><button onclick="patchbayView.postMessage('refresh')">Refresh</button>`,
+      `<style>body{font:14px system-ui;color:#eee;background:#20232a;padding:16px}button{padding:8px}</style><h2>Containers</h2><p>${counts.size ? [...counts.values()].reduce((sum, n) => sum + n.count, 0) + " running containers (last successful refresh)" : "Not refreshed"}${failures.size ? " — Docker query failed; previous results are stale" : ""}</p><button onclick="patchbayView.postMessage('refresh')">Refresh</button>`,
     );
   const refresh = async (component) => {
     if (!isCompose(component)) return;
@@ -15,12 +17,19 @@ export async function activate(patchbay) {
       component.id,
       "docker compose ps --status running -q",
     );
-    counts.set(
-      component.id,
-      result.exitCode === 0
-        ? result.output.trim().split("\n").filter(Boolean).length
-        : 0,
-    );
+    if (!active) return result;
+    if (result.exitCode === 0 && !result.running) {
+      counts.set(component.id, {
+        count: result.output.trim().split("\n").filter(Boolean).length,
+        at: Date.now(),
+      });
+      failures.delete(component.id);
+    } else {
+      failures.set(
+        component.id,
+        result.output.trim() || "Docker unavailable or command still running",
+      );
+    }
     await render();
     return result;
   };
@@ -56,10 +65,17 @@ export async function activate(patchbay) {
     patchbay.badges.registerProvider((component) =>
       isCompose(component)
         ? {
-            text: `${counts.get(component.id) ?? 0} containers`,
-            tone: "info",
+            text: failures.has(component.id)
+              ? "Docker unavailable/error"
+              : counts.has(component.id)
+                ? `${counts.get(component.id).count} containers`
+                : "Not refreshed",
+            tone: failures.has(component.id) ? "warning" : "info",
             tooltip:
-              "Running Docker Compose containers; use Refresh to update.",
+              failures.get(component.id) ||
+              (counts.has(component.id)
+                ? `Last successful refresh: ${new Date(counts.get(component.id).at).toLocaleString()}`
+                : "Use Refresh to query Docker."),
           }
         : null,
     ),
@@ -67,7 +83,11 @@ export async function activate(patchbay) {
   disposables.push(
     patchbay.context.registerProvider((component) =>
       isCompose(component)
-        ? `Docker Compose has ${counts.get(component.id) ?? 0} running containers (last refresh).`
+        ? failures.has(component.id)
+          ? `Docker query failed: ${failures.get(component.id)}. Previous results may be stale.`
+          : counts.has(component.id)
+            ? `Docker Compose has ${counts.get(component.id).count} running containers; last successful refresh ${new Date(counts.get(component.id).at).toISOString()}.`
+            : "Docker Compose has not been refreshed."
         : "",
     ),
   );
@@ -135,15 +155,11 @@ export async function activate(patchbay) {
     }),
   );
   await Promise.all(disposables.map((d) => d.ready));
-  // A short task result provides the count; installations without Docker display zero.
-  // Refresh in the background: each run may wait several seconds, longer than activation may take.
-  void (async () => {
-    for (const component of project?.components ?? [])
-      await refresh(component).catch(() => {});
-  })();
 }
 export function deactivate() {
+  active = false;
   for (const disposable of disposables) disposable.dispose();
   disposables = [];
   counts = new Map();
+  failures = new Map();
 }

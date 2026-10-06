@@ -688,21 +688,8 @@ fn decorate_agent(
                 " --append-system-prompt-file {}",
                 quote_path(shell, briefing.file, env)
             );
-            // Hooks that report working / needs input / done to Patchbay. They
-            // are POSIX shell, and claude takes one `--settings`, so never
-            // replace one the user passes.
-            let own_settings = command_tokens(command, shell).is_none_or(|tokens| {
-                tokens
-                    .iter()
-                    .any(|a| a == "--settings" || a.starts_with("--settings="))
-            });
-            if shell == Shell::Unix && !own_settings {
-                let _ = write!(
-                    command,
-                    " --settings {}",
-                    shell.quote(&crate::status::claude_hooks_settings())
-                );
-            }
+            // Status integration is opt-in in the effective user hook source.
+            // Preserve all launch settings, including disabled-hook policy.
         }
         Agent::Codex => {
             let argument = |text: &str| {
@@ -1008,6 +995,7 @@ mod tests {
 
     fn component(id: &str, path: &str, terminals: Vec<TerminalSpec>) -> Component {
         Component {
+            detection: None,
             id: id.into(),
             name: id.to_uppercase(),
             kind: ComponentKind::Backend,
@@ -1040,6 +1028,7 @@ mod tests {
                 component("db", "db", vec![]),
             ],
             links: vec![Link {
+                detection: None,
                 id: "l1".into(),
                 source: "api".into(),
                 target: "db".into(),
@@ -1119,9 +1108,7 @@ mod tests {
         assert!(spec.env.contains_key(CONTEXT_ENV));
         assert!(spec.notice.is_none());
         assert!(!spec.service);
-        if cfg!(unix) {
-            assert!(spec.command.contains(" --settings '{\"hooks\""));
-        }
+        assert!(!spec.command.contains("--settings"));
     }
 
     #[test]
@@ -1169,12 +1156,14 @@ mod tests {
             .push(component("unrelated", "elsewhere", vec![]));
         p.links[0].label = Some("queries".into());
         p.links.push(Link {
+            detection: None,
             id: "l2".into(),
             source: "web".into(),
             target: "api".into(),
             label: Some("calls".into()),
         });
         p.links.push(Link {
+            detection: None,
             id: "l3".into(),
             source: "web".into(),
             target: "db".into(),

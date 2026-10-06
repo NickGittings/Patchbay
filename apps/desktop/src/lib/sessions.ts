@@ -19,7 +19,14 @@ import {
 import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
 import { planTerminals } from './plan'
 import { requestGitRefresh } from './git'
-import { disposeAll, replayOutput, restoreOutput, writeNote, writeOutput } from './terminals'
+import {
+  disposeAll,
+  markOutputGeneration,
+  replayOutput,
+  restoreOutput,
+  writeNote,
+  writeOutput,
+} from './terminals'
 
 /**
  * How far this window's xterm has got through a session's current run. `complete`
@@ -32,6 +39,9 @@ interface Cursor {
 }
 
 const lastSeq = new Map<string, Cursor>()
+
+/** The process generation whose output this window currently displays. */
+export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
 const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
 const starting = new Map<string, Promise<void>>()
@@ -110,8 +120,7 @@ function captureLaunch(
     task: scope,
     project,
     highlighted: [...(state?.highlighted ?? [])],
-    // Extension terminals only run in the project's own worktree.
-    runtime: scope ? undefined : s.runtimeTerminals[sid],
+    runtime: s.runtimeTerminals[sid],
   }
 }
 
@@ -150,7 +159,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
       if (runtime?.commandId)
-        await executeExtensionCommand(runtime.commandId, [], componentId, project)
+        await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
           project,
@@ -158,6 +167,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           componentId,
           runtime.terminal.command,
           runtime.key,
+          task,
         )
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
@@ -255,6 +265,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
     // Only a `started` event guarantees this window sees the run from its first byte.
     cursor = { generation: e.generation, end: 0, complete: e.type === 'started' }
     lastSeq.set(e.sessionId, cursor)
+    markOutputGeneration(e.sessionId, e.generation, e.type === 'started' ? 1 : 0)
   }
   switch (e.type) {
     case 'started':
@@ -366,7 +377,7 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
   }
   // A truncated backlog can begin mid escape sequence or character; start at a line.
   if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
-  await restoreOutput(sid, bytes)
+  await restoreOutput(sid, bytes, snapshot.generation)
   lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
 }
 
@@ -455,6 +466,7 @@ export function reconcileSessions(force = true): Promise<void> {
         )
           current.addRuntimeTerminal(r.id, {
             projectId: r.metadata.projectId,
+            taskId: r.metadata.task ?? null,
             commandId: r.metadata.commandId ?? undefined,
             extensionId: r.metadata.extensionId ?? undefined,
             key: r.metadata.key ?? undefined,

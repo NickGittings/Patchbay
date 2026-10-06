@@ -2,7 +2,12 @@ import { emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type { ContextSection, Project } from '../types'
 
-type Collector = (project: Project, ids: string[], caller?: string) => Promise<ContextSection[]>
+type Collector = (
+  project: Project,
+  ids: string[],
+  caller?: string,
+  task?: string,
+) => Promise<ContextSection[]>
 const REQUEST_EVENT = 'patchbay://context-request'
 const REPLY_EVENT = 'patchbay://context-reply'
 /** Covers eager activation plus the providers' 2s budget, with room to spare. */
@@ -17,19 +22,25 @@ export function setContextCollector(fn: Collector | undefined) {
 /**
  * Extension sections for a briefing. Extension hosts run only in the main window,
  * so a pop-out asks it, and the same agent gets the same briefing everywhere.
- * `caller` is the extension starting the terminal, if any.
+ * `caller` is the extension starting the terminal, if any; `task` is the task it runs in.
  */
 export function extraContext(
   project: Project,
   ids: string[],
   caller?: string,
+  task?: string,
 ): Promise<ContextSection[]> {
-  if (collector) return collector(project, ids, caller)
+  if (collector) return collector(project, ids, caller, task)
   const { label } = getCurrentWebviewWindow()
-  return label === 'main' ? Promise.resolve([]) : askMain(label, project.projectId ?? '', ids)
+  return label === 'main' ? Promise.resolve([]) : askMain(label, project.projectId ?? '', ids, task)
 }
 
-function askMain(label: string, projectId: string, ids: string[]): Promise<ContextSection[]> {
+function askMain(
+  label: string,
+  projectId: string,
+  ids: string[],
+  task?: string,
+): Promise<ContextSection[]> {
   const id = `${label}:${++next}`
   return new Promise((resolve) => {
     let settled = false
@@ -48,7 +59,7 @@ function askMain(label: string, projectId: string, ids: string[]): Promise<Conte
       .then((stop) => {
         unlisten = stop
         if (settled) stop()
-        else return emitTo('main', REQUEST_EVENT, { id, label, projectId, ids })
+        else return emitTo('main', REQUEST_EVENT, { id, label, projectId, ids, task })
       })
       .catch(() => done([]))
   })
@@ -56,17 +67,24 @@ function askMain(label: string, projectId: string, ids: string[]): Promise<Conte
 
 /** Main window: answer pop-outs' context requests with `collect`. Returns the unsubscribe. */
 export function serveContextRequests(
-  collect: (projectId: string, ids: string[]) => Promise<ContextSection[]>,
+  collect: (projectId: string, ids: string[], task?: string) => Promise<ContextSection[]>,
 ) {
-  const stop = listen<{ id: string; label: string; projectId: string; ids: string[] }>(
-    REQUEST_EVENT,
-    (e) => {
-      const { id, label, projectId, ids } = e.payload
-      void collect(projectId, Array.isArray(ids) ? ids.filter((i) => typeof i === 'string') : [])
-        .catch(() => [])
-        .then((sections) => emitTo(label, REPLY_EVENT, { id, sections }))
-        .catch(() => {})
-    },
-  )
+  const stop = listen<{
+    id: string
+    label: string
+    projectId: string
+    ids: string[]
+    task?: string
+  }>(REQUEST_EVENT, (e) => {
+    const { id, label, projectId, ids, task } = e.payload
+    void collect(
+      projectId,
+      Array.isArray(ids) ? ids.filter((i) => typeof i === 'string') : [],
+      typeof task === 'string' ? task : undefined,
+    )
+      .catch(() => [])
+      .then((sections) => emitTo(label, REPLY_EVENT, { id, sections }))
+      .catch(() => {})
+  })
   return () => void stop.then((unlisten) => unlisten())
 }

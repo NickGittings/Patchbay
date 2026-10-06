@@ -10,12 +10,19 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  MapIssue,
+  MapEdit,
+  ReconciliationPreview,
   ActionPlan,
   ActionReport,
   ActionRequest,
   ChangedFile,
   DeviceManifest,
   DirEntry,
+  EditorPreferences,
+  EditorTarget,
+  EditorLauncher,
+  FileSearchResult,
   FileDiff,
   GitStatus,
   Project,
@@ -39,7 +46,33 @@ export const openProject = () =>
     (opened) => opened && { ...opened, project: { ...opened.project, projectId: opened.id } },
   )
 export const rescanProject = (project: Project) =>
-  invoke<Added>('rescan_project', { project, projectId: project.projectId })
+  invoke<ReconciliationPreview>('rescan_project', { project, projectId: project.projectId })
+export const mapIssues = (project: Project) =>
+  invoke<MapIssue[]>('map_issues', { project, projectId: project.projectId })
+export const applyReconciliation = (project: Project, previewId: string, selected: string[]) =>
+  invoke<MapEdit>('apply_reconciliation', {
+    project,
+    projectId: project.projectId,
+    previewId,
+    selected,
+  })
+export const editMapComponents = (
+  project: Project,
+  remove: string[],
+  componentId?: string,
+  path?: string,
+) =>
+  invoke<MapEdit>('edit_map_components', {
+    project,
+    projectId: project.projectId,
+    remove,
+    componentId,
+    path,
+  })
+export const cleanupComponentScopes = (project: Project, removed: string[]) =>
+  invoke<void>('cleanup_component_scopes', { project, projectId: project.projectId, removed })
+export const releaseMapEdit = (projectId: string, token: string) =>
+  invoke<void>('release_map_edit', { projectId, token })
 export const saveProject = (project: Project) =>
   invoke<string>('save_project', { project, projectId: project.projectId })
 export const graphActionPlan = (project: Project, request: ActionRequest, task?: string) =>
@@ -70,7 +103,7 @@ export const componentContext = async (project: Project, componentId: string, ta
     project,
     projectId: project.projectId,
     componentId,
-    extraContext: await extraContext(project, [componentId]),
+    extraContext: await extraContext(project, [componentId], undefined, task),
     task,
   })
 /** Opens a folder picker; `null` if cancelled. */
@@ -79,7 +112,8 @@ export const addFolder = (project: Project) =>
 /** Opens a folder picker for a component's folder; the path relative to the root, or `null`. */
 export const pickComponentFolder = () => invoke<string | null>('pick_component_folder')
 /** Tell the backend which component folders are on the map; it can only narrow file access. */
-export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
+export const syncRoots = (paths: string[], projectId = useStore.getState().project?.id) =>
+  invoke<void>('sync_roots', { paths, projectId })
 export const onFileAccessChanged = (handler: () => void) =>
   listen('patchbay://file-access', handler)
 /** `task` reads the task's worktree instead of the project's own. */
@@ -114,7 +148,7 @@ export const planContext = async (project: Project, componentIds: string[], task
     project,
     projectId: project.projectId,
     componentIds,
-    extraContext: await extraContext(project, componentIds),
+    extraContext: await extraContext(project, componentIds, undefined, task),
     task,
   })
 export const planStart = async (
@@ -130,7 +164,7 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
-    extraContext: await extraContext(project, componentIds),
+    extraContext: await extraContext(project, componentIds, undefined, task),
     task,
   })
 
@@ -183,7 +217,7 @@ export const terminalStart = async (
     terminalId,
     requestId,
     extraContext:
-      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller) : [],
+      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
   })
 }
@@ -209,9 +243,31 @@ export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<Un
 export const terminalSnapshot = (sessionId: string) =>
   invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId })
 /** `path` is relative to the open project's root; the backend refuses anything outside it. */
-export const listDir = (path: string, projectId = useStore.getState().project?.id) =>
-  invoke<DirEntry[]>('list_dir', { path, projectId })
-export const revealPath = (path: string) => invoke<void>('reveal_path', { path })
+export const listDir = (
+  path: string,
+  projectId = useStore.getState().project?.id,
+  task: string | null = null,
+) => invoke<DirEntry[]>('list_dir', { path, projectId, task })
+export const revealPath = (
+  path: string,
+  worktree?: string,
+  projectId = useStore.getState().project?.id,
+  task: string | null = useStore.getState().activeTask,
+) => invoke<void>('reveal_path', { path, projectId, task, worktree })
+export const editorPreferences = () => invoke<EditorPreferences>('editor_preferences')
+export const editorSavePreferences = (preferences: EditorPreferences) =>
+  invoke<void>('editor_save_preferences', { preferences })
+export const editorDiscover = () => invoke<EditorLauncher[]>('editor_discover')
+export const editorOpen = (
+  target: EditorTarget,
+  projectId: string,
+  task: string | null,
+  worktree?: string,
+) => invoke<void>('editor_open', { target, projectId, task, worktree })
+export const fileSearch = (query: string, projectId: string, task: string | null) =>
+  invoke<FileSearchResult[]>('file_search', { query, projectId, task })
+export const terminalOpenReference = (sessionId: string, generation: number, reference: string) =>
+  invoke<void>('terminal_open_reference', { sessionId, generation, reference })
 
 export const listExtensions = () => invoke<ExtensionRegistry>('list_extensions')
 export const reloadExtensions = () => invoke<ExtensionRegistry>('reload_extensions')
@@ -219,8 +275,14 @@ export const setExtensionEnabled = (id: string, enabled: boolean) =>
   invoke<ExtensionRegistry>('set_extension_enabled', { id, enabled })
 export const installExtension = () => invoke<ExtensionRegistry | null>('install_extension')
 export const revealExtensionsDir = () => invoke<void>('reveal_extensions_dir')
-export const commandRun = (project: Project, componentId: string, commandId: string) =>
+export const commandRun = (
+  project: Project,
+  componentId: string,
+  commandId: string,
+  task?: string,
+) =>
   invoke<string>('command_run', {
+    task,
     project,
     projectId: project.projectId,
     componentId,
@@ -233,8 +295,10 @@ export const extensionTerminalRun = (
   componentId: string,
   command: string,
   key: string,
+  task?: string,
 ) =>
   invoke<string>('extension_terminal_run', {
+    task,
     project,
     projectId: project.projectId,
     requestId: crypto.randomUUID(),
@@ -248,7 +312,8 @@ export const extensionFileRead = (
   extensionId: string,
   path: string,
   projectId = useStore.getState().project?.id,
-) => invoke<string>('extension_file_read', { extensionId, path, projectId })
+  task?: string,
+) => invoke<string>('extension_file_read', { extensionId, path, projectId, task })
 
 /** Register as a viewer; `claim` makes this window the one that types and sizes the PTY. */
 export const terminalAttach = (sessionId: string, claim = false) =>
@@ -272,3 +337,32 @@ export const projectRelink = (projectId: string) =>
 
 export const sessionHistory = (sessionId: string, incarnation: number) =>
   invoke<TerminalSnapshot | null>('session_history', { sessionId, incarnation })
+
+export const agentHooksCheck = (provider: 'claude' | 'codex', sourceOverride?: string) =>
+  invoke<import('../types').AgentIntegration>('agent_hooks_check', { provider, sourceOverride })
+export const agentHooksConfigure = (
+  provider: 'claude' | 'codex',
+  install: boolean,
+  sourceOverride?: string,
+) =>
+  invoke<import('../types').AgentIntegration>('agent_hooks_configure', {
+    provider,
+    install,
+    sourceOverride,
+  })
+
+export const extensionSessionsList = (
+  extensionId: string,
+  project: Project,
+  componentId: string,
+  task?: string,
+) =>
+  invoke<import('../types').ComponentSessionSummary[]>('extension_sessions_list', {
+    extensionId,
+    project,
+    projectId: project.projectId,
+    componentId,
+    task,
+  })
+export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
+  invoke<void>('extension_url_open', { extensionId, projectId, url })

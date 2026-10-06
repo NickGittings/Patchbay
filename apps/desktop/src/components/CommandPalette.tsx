@@ -1,3 +1,4 @@
+import { configureEditor, showFileSearch } from '../lib/navigation'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
@@ -35,6 +36,8 @@ export default function CommandPalette() {
   }, [])
   const builtin = [
     { id: 'open', title: 'Open folder…', run: openFolder },
+    { id: 'editor', title: 'Preferred editor…', run: () => configureEditor() },
+    { id: 'files', title: 'Search files…', run: showFileSearch },
     {
       id: 'extensions',
       title: 'Extensions',

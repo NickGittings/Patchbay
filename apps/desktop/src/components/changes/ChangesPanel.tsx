@@ -18,19 +18,22 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
   // also reloads when an edit leaves the change count as it was.
   const revision = useStore((s) => s.gitChanges)
   const base = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.path ?? '.')
-  const [files, setFiles] = useState<ChangedFile[] | null>(null)
+  const [loaded, setLoaded] = useState<{ scope: string; files: ChangedFile[] }>()
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<string>()
   const [refresh, setRefresh] = useState(0)
   const task = useStore((s) => s.activeTask)
   const worktree = useStore(activeWorktree)
+  const projectId = useStore((s) => s.project?.id)
+  const scope = JSON.stringify([projectId, componentId, base, task])
+  const files = loaded?.scope === scope ? loaded.files : null
 
   useEffect(() => {
     let disposed = false
     void gitChanges(componentPaths(), componentId, task ?? undefined)
       .then((list) => {
         if (!disposed) {
-          setFiles(list)
+          setLoaded({ scope, files: list })
           setError('')
         }
       })
@@ -40,7 +43,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
     return () => {
       disposed = true
     }
-  }, [componentId, base, revision, refresh, task])
+  }, [componentId, base, revision, refresh, task, scope])
 
   const file = files?.find((f) => f.path === selected) ?? files?.[0] ?? null
   return (
@@ -69,7 +72,8 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
               base={base}
               selected={file?.path}
               onSelect={setSelected}
-              reveal={!worktree}
+              task={task}
+              worktree={worktree}
             />
           </Panel>
           <Separator className="separator horizontal" />

@@ -33,7 +33,41 @@ export interface TerminalSpec {
   action?: TerminalAction
 }
 
+export interface DetectionProvenance {
+  detector: string
+  packageIdentity?: string
+}
+export type MapIssueKind = 'missing' | 'locked' | 'unreadable'
+export interface MapIssue {
+  componentId: string
+  kind: MapIssueKind
+  message: string
+}
+export type ReconciliationChange =
+  | { kind: 'addComponent'; component: Component }
+  | { kind: 'addLink'; link: Link }
+  | { kind: 'removeLink'; linkId: string }
+  | { kind: 'removeComponent'; componentId: string }
+  | { kind: 'moveComponent'; componentId: string; path: string }
+export interface ReconciliationProposal {
+  id: string
+  selected: boolean
+  description: string
+  change: ReconciliationChange
+}
+export interface ReconciliationPreview {
+  id: string
+  accessRevision: number
+  issues: MapIssue[]
+  proposals: ReconciliationProposal[]
+}
+export interface MapEdit {
+  project: Project
+  lease: string | null
+}
+
 export interface Component {
+  detection?: DetectionProvenance
   id: string
   name: string
   kind: ComponentKind
@@ -46,6 +80,7 @@ export interface Component {
 
 /** `source` depends on `target`. */
 export interface Link {
+  detection?: DetectionProvenance
   id: string
   source: string
   target: string
@@ -175,7 +210,7 @@ export type TerminalEvent = (
 ) & { instanceId?: string }
 
 /** `status::AgentState`. */
-export type AgentState = 'working' | 'needsInput' | 'review' | 'idle'
+export type AgentState = 'working' | 'needsInput' | 'review' | 'idle' | 'ended'
 
 /** `status::AgentReport`: what an agent last reported through `PATCHBAY_STATUS_FILE`. */
 export interface AgentReport {
@@ -184,6 +219,10 @@ export interface AgentReport {
   sinceMs: number
   message: string | null
   prompt: string | null
+  provider?: 'claude' | 'codex' | null
+  conversationId?: string | null
+  turnId?: string | null
+  authoritative?: boolean
 }
 
 /** `status::SessionStatus`: what a running session is doing. */
@@ -201,6 +240,8 @@ export interface SessionStatus {
 }
 
 export interface TerminalSnapshot {
+  /** Original launch folder for this incarnation; absent in legacy history. */
+  launchDirectory?: string | null
   truncated: boolean
   /** Base64. */
   data: string
@@ -462,6 +503,7 @@ export interface ExtensionBadge {
   tooltip?: string
 }
 export interface RuntimeTerminal {
+  taskId?: string | null
   projectId?: string
   componentId: string
   terminal: TerminalSpec
@@ -469,4 +511,46 @@ export interface RuntimeTerminal {
   extensionId?: string
   /** Names a `terminals.run` session, so repeating the command reuses it. */
   key?: string
+}
+
+/** Machine-local status-hook setup; installed does not mean provider trust or live reporting. */
+export interface AgentIntegration {
+  provider: 'claude' | 'codex'
+  source: string
+  reporter: string
+  installed: boolean
+  disabled: boolean
+  reporterAvailable: boolean
+  reportingSessions: number
+  guidance: string[]
+}
+
+/** Machine-local editor preference; never serialized into patchbay.json. */
+export type EditorKind = 'vsCode' | 'cursor' | 'zed' | 'custom'
+export interface EditorPreferences {
+  editor: EditorKind
+  executable: string
+  arguments: string[]
+}
+export interface EditorTarget {
+  path: string
+  line?: number
+  column?: number
+}
+export interface EditorLauncher {
+  editor: EditorKind
+  executable: string | null
+}
+export interface FileSearchResult {
+  path: string
+  name: string
+}
+
+export interface ComponentSessionSummary {
+  sessionId: string
+  terminalId: string
+  name: string
+  running: boolean
+  generation: number
+  urls: string[]
 }

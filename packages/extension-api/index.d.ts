@@ -3,7 +3,12 @@ export interface Disposable {
   dispose(): void
   readonly ready: Promise<unknown>
 }
+export interface DetectionProvenance {
+  detector: string
+  packageIdentity?: string
+}
 export interface Component {
+  detection?: DetectionProvenance
   id: string
   name: string
   kind: string
@@ -26,6 +31,7 @@ export interface Project {
   root: string
   components: Component[]
   links: {
+    detection?: DetectionProvenance
     id: string
     source: string
     target: string
@@ -36,7 +42,25 @@ export interface WebviewView {
   render(html: string): Promise<void>
   postMessage(message: unknown): Promise<void>
 }
+export interface ComponentSessionSummary {
+  sessionId: string
+  terminalId: string
+  name: string
+  running: boolean
+  generation: number
+  urls: string[]
+}
 export interface Patchbay {
+  /** Requires project:read. Stable originating scope for this extension host. */
+  workspace: {
+    get(): Promise<{ projectId: string; taskId: string | null } | null>
+  }
+  /** Requires sessions:read. Task terminals in this component and originating task only;
+   * at most 32 summaries and 32 HTTP(S) URLs per summary, without raw output/history. */
+  sessions: { list(componentId: string): Promise<ComponentSessionSummary[]> }
+  /** Requires urls:open. Native HTTP(S) validation; no credentials, whitespace, or controls. */
+  urls: { open(url: string): Promise<void> }
+
   commands: {
     registerCommand(id: string, fn: (...args: unknown[]) => unknown | Promise<unknown>): Disposable
     executeCommand(id: string, ...args: unknown[]): Promise<unknown>

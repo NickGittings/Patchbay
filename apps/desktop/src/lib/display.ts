@@ -83,6 +83,20 @@ export function terminalStatus(
   if (agent) {
     const since = `for ${age(agent.sinceMs, now)}`
     switch (agent.state) {
+      case 'ended':
+        return {
+          health: 'idle',
+          label: 'Ended',
+          detail: 'Provider conversation ended',
+          attention: 0,
+        }
+      case 'idle':
+        return {
+          health: 'waiting',
+          label: 'Idle',
+          detail: join('Waiting for a prompt', since),
+          attention: 0,
+        }
       case 'needsInput':
         return {
           health: 'input',

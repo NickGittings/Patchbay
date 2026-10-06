@@ -3,9 +3,10 @@ import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
 import type { Added } from '../types'
-import { addFolder, openProject, rescanProject, saveProject } from './ipc'
+import { addFolder, openProject, saveProject } from './ipc'
 import { acceptOpened, projectFromState } from './workspace'
 import { syncCurrentRoots } from './access'
+import { reviewRescan } from './maintenance'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -99,19 +100,9 @@ export function applyAdded(
   return components.length
 }
 
-/** Add components for folders that appeared since the map was made, here or in added repos. */
+/** Review structural proposals; application and saving remain explicit. */
 export function useRescanProject() {
-  const { fitView } = useReactFlow()
-  return useCallback(async () => {
-    const s = useStore.getState()
-    if (!s.project) return
-    try {
-      const added = await rescanProject(s.toProject())
-      if (applyAdded(added, 'No new components found', s.project.id)) fitSoon(fitView)
-    } catch (e) {
-      s.setMessage(String(e))
-    }
-  }, [fitView])
+  return useCallback(() => reviewRescan(), [])
 }
 
 /** Pick a repo beside the project (or a subfolder detection missed) and add its components. */

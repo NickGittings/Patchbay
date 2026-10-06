@@ -38,13 +38,42 @@ cargo test --workspace
 
 ## Concepts
 
-- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then Save to write `patchbay.json` (commit it to share the map). **Rescan** adds components for new folders without touching your edits.
+- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then Save to write `patchbay.json` (commit it to share the map). **Rescan** opens a selectable preview of detected additions, dependencies, stale links, missing folders, and unique package moves. **Apply selected** changes the draft; **Save** persists it. Existing configuration and manual relationships survive. Inspector and hierarchy show origin and Missing, Locked, or Unreadable folders. Stop live sessions and managed environments before deleting components or repairing paths. See [map maintenance and validation](docs/map-maintenance.md).
 - **Repos**: a project can span several git repos. Open a parent folder that holds them, or use **Add repo…** to add a repo that lives beside the project; it is stored as a relative path such as `../billing`, so keep the same folder layout on other machines. Any nested repo becomes a component even without a recognised manifest, and git status is tracked per repo.
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
-- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders, double-click a file to reveal it in Finder (files are never opened directly, so a double-click can't run an executable from the repo), or use **Reveal in Finder** for the component folder. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
+- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders and double-click entries to open them in your preferred editor. **Open in editor** is also available in the Inspector, file tree, and review files; **Reveal in Finder/Explorer** remains a separate action. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
 - **Terminal**: a real PTY that opens in the component's folder. Kinds are `shell` (interactive, starts when first viewed), `task` (dev server, tests…) and `agent`.
 - **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
+
+## Editor navigation
+
+Choose **Tools → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom
+executable. Patchbay checks your login-shell PATH and standard installation locations. If a
+launcher is unavailable, editor actions open settings with setup guidance. Preferences live in
+`~/.patchbay/editor.json` (or `PATCHBAY_STATE_DIR`), outside the saved component map.
+
+Custom configuration takes an executable path/name and a JSON argument array, for example
+`["--goto", "{file}:{line}:{column}"]`. Each argument stays literal, including spaces and shell
+punctuation. `{folder}` is the target directory or a file's parent; `{file}` is the full target
+path. Missing line/column values default to 1. Windows custom launchers must be `.exe` files.
+
+**Cmd/Ctrl+P** searches filenames and relative paths in approved project/component folders,
+with at most 100 ranked results. Git ignores hide untracked files; tracked files remain searchable.
+Components in separately approved sibling repositories are included. Searches and file-tree/editor
+navigation follow the active task's worktree. Review actions follow the worktree explicitly selected
+for that review, including when another task is active. Changing projects/tasks discards stale
+search responses. **Cmd/Ctrl+Shift+P** continues to open the command palette.
+
+Terminal references such as `src/main.rs:12:4` and `src/main.rs(12,4)` open in the editor with
+**Cmd/Ctrl-click**. Ordinary dragging still selects terminal text. Quoted filenames may contain
+spaces. Relative references resolve only against that session's recorded launch directory;
+missing or inaccessible targets show an explanation. Retained terminal links keep their original
+process generation and launch folder across restarts and path repairs. Legacy history with an
+unknown folder shows an explanation. Canonical access checks reject denied folders and symlink escapes.
+
+Run `npm run smoke:navigation` for the Unix desktop fixture. See
+[editor navigation validation](docs/editor-navigation-validation.md) for release checks.
 
 ## Extensions
 
@@ -74,7 +103,7 @@ expressions hide the contribution.
 For code, set `main` to an ES module exporting `activate(patchbay)` and optionally
 `deactivate()`. Activation events are `onStartup`, `onProjectOpen`, `onCommand:<id>`,
 `onView:<id>`, and `workspaceContains:<file>`; first command/view use also activates its owner.
-Each project retains its own host when tabs change. Disabling an extension and Reload dispose its hosts. Code runs only in the
+Each project/task retains its own host when tabs or tasks change. Disabling an extension and Reload dispose its hosts. Code runs only in the
 main window, in opaque-origin `sandbox="allow-scripts"` frames. The broker binds each request
 to its sending frame, checks permissions, bounds messages and concurrent calls, and stops
 hosts that stop answering (three timeouts in a row) or send excessive traffic; a single slow
@@ -83,7 +112,10 @@ network/IPC connections; asset requests are canonicalized inside their extension
 
 The API declarations are in [`packages/extension-api/index.d.ts`](packages/extension-api/index.d.ts).
 Use `project:read` for project/selection snapshots, Git status, and badge/context providers;
-`terminals` for terminal launches; and `files:read` for bounded project file reads. Storage is
+`terminals` for terminal launches; `files:read` for bounded project file reads;
+`sessions:read` for component task-terminal URL summaries; and the separate `urls:open`
+permission for native-validated HTTP/HTTPS browser opening. `workspace.get` reports the
+host’s stable project/task identity. Commands and file reads use that task’s worktree. Storage is
 per extension under `~/.patchbay/extension-data/` (alongside an overridden registry). No raw
 filesystem or network API is exposed. `terminals.run` returns captured output and exit status,
 or `running: true` after eight seconds for a longer task; its session remains in the dock
@@ -96,11 +128,14 @@ with the extension's handler. HTML may use inline styles and scripts, with no ne
 
 [`examples/extensions/docker`](examples/extensions/docker) demonstrates every declarative
 contribution plus container counts from a terminal task, agent context, and an Inspector view.
-Its fixture uses Compose; Docker is optional for smoke verification (missing Docker displays
-zero containers). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions`
+Its fixture uses Compose; Docker is optional for smoke verification (missing or failing
+Docker displays an error and preserves the last successful result). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions`
 or `... -- detect examples/extensions/docker/fixture` to inspect it. `npm run smoke:extensions`
 checks the example inside the desktop app, including the iframe IPC sandbox. Project-local
 extensions, marketplace/URL installs, and extension views in pop-out windows are future work.
+
+Supported first-party Docker and browser preview folders are in [`extensions`](extensions/README.md).
+They remain sandboxed and locally installed, with explicit refresh and task-scoped state.
 
 ## Workspace continuity
 
@@ -141,6 +176,13 @@ never selects the newest conversation in a directory. Resume preserves launch op
 Patchbay context. Unsupported compound/wrapper commands report an error when their options
 cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
 and [Codex CLI documentation](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+**Tools → Agent status integration…** provides opt-in Claude/Codex status hooks. Install,
+check, or remove Patchbay-owned entries in the active user hook source while preserving
+existing settings. Codex definitions require review/trust through `/hooks`; Patchbay retains
+output-based Active/Quiet until native reporting is confirmed. Confirmed hooks report Working,
+Needs input, Ready for review, Idle, and Ended, including quiet working turns. See
+[setup details and remaining platform/provider release gates](docs/agent-status-validation.md).
 
 ```sh
 cargo build -p patchbay-cli -p patchbay-sessiond

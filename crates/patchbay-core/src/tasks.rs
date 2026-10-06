@@ -180,6 +180,28 @@ pub fn list(root: &Path) -> Result<Vec<Task>> {
     Ok(tasks)
 }
 
+/// Remove deleted map components from every task scope in one store transaction.
+/// # Errors
+/// Fails if the task store cannot be read or written. Projects without git have no task store.
+pub fn prune_components(root: &Path, removed: &[String]) -> Result<()> {
+    if removed.is_empty() || nearest_repo(root).is_none() {
+        return Ok(());
+    }
+    let file = store_file(root)?;
+    let _guard = lock();
+    let mut store = load(&file)?;
+    let mut changed = false;
+    for task in &mut store.tasks {
+        let count = task.components.len();
+        task.components.retain(|id| !removed.contains(id));
+        changed |= count != task.components.len();
+    }
+    if changed {
+        save(&file, &mut store)?;
+    }
+    Ok(())
+}
+
 /// A task as stored, without asking git about its worktree. For callers that
 /// validate the worktree themselves ([`git::in_worktree`] does).
 ///
@@ -636,6 +658,30 @@ mod tests {
             "links": [{ "id": "l", "source": "web", "target": "billing" }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn pruning_removed_components_preserves_task_identity_and_worktree() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else {
+            return;
+        };
+        let original = create(
+            &root,
+            TaskDraft {
+                title: "Work".into(),
+                branch: "work".into(),
+                base: None,
+                components: vec!["web".into(), "billing".into()],
+            },
+        )
+        .unwrap();
+        prune_components(&root, &["web".into()]).unwrap();
+        let tasks = list(&root).unwrap();
+        assert_eq!(tasks[0].id, original.id);
+        assert_eq!(tasks[0].worktree, original.worktree);
+        assert_eq!(tasks[0].components, ["billing"]);
+        assert!(Path::new(&tasks[0].worktree).exists());
     }
 
     #[test]

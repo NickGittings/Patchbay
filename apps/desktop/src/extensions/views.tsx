@@ -4,11 +4,12 @@ import { activateView, bindViewFrame } from './host'
 export function ExtensionView({ id }: { id: string }) {
   const registry = useStore((s) => s.extensions)
   const project = useStore((s) => s.project)
+  const task = useStore((s) => s.activeTask)
   const html = useStore((s) => s.extensionViews[id])
   useEffect(() => {
     void activateView(id).catch((e) => useStore.getState().setMessage(String(e)))
     return () => bindViewFrame(id, null)
-  }, [id, registry, project])
+  }, [id, registry, project, task])
   if (!html)
     return (
       <div className="hint" data-extension-view={id}>

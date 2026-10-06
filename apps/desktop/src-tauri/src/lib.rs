@@ -8,15 +8,18 @@ use patchbay_core::devices::{self, DeviceManifest};
 use patchbay_core::extensions::{self, Registry};
 use patchbay_core::files::{self, DirEntry};
 use patchbay_core::model;
+use patchbay_core::navigation::{
+    self, EditorLauncher, EditorPreferences, EditorTarget, FileSearchResult,
+};
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
-use patchbay_core::session::{self, Record, Request};
+use patchbay_core::session::{self, PreviewScan, Record, Request};
 use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 mod layout;
 mod service;
-use patchbay_core::{Project, context, detect, git, watch};
+use patchbay_core::{Project, context, detect, git, maintenance, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -54,11 +57,93 @@ struct AppState {
 }
 #[derive(Default)]
 struct ProjectAccess {
+    maintenance: Mutex<Option<PendingPreview>>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
     /// The active task's worktree, watched besides the project's roots.
     task_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Recent `navigation_roots` worktree mappings, which otherwise run `git worktree list`.
+    worktree_roots: Mutex<Option<Cached<WorktreeKey, Vec<PathBuf>>>>,
+    /// The last file search's candidates, reused while the user types.
+    search_paths: Mutex<Option<Cached<SearchKey, Arc<Vec<PathBuf>>>>>,
 }
+/// Project root, worktree and the scanned folders mapped into it.
+type WorktreeKey = (PathBuf, String, Vec<PathBuf>);
+/// Allowed roots and scanned folders.
+type SearchKey = (Vec<PathBuf>, Vec<PathBuf>);
+/// A value computed for `key`, reused until it is `ttl` old.
+struct Cached<K, V> {
+    key: K,
+    at: std::time::Instant,
+    value: V,
+}
+impl<K: PartialEq, V: Clone> Cached<K, V> {
+    fn get_or<E>(
+        slot: &Mutex<Option<Self>>,
+        key: K,
+        ttl: std::time::Duration,
+        compute: impl FnOnce(&K) -> Result<V, E>,
+    ) -> Result<V, E> {
+        let lock = || {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some(c) = lock().as_ref()
+            && c.key == key
+            && c.at.elapsed() < ttl
+        {
+            return Ok(c.value.clone());
+        }
+        // Computed without the lock, so one slow enumeration doesn't block other calls.
+        let value = compute(&key)?;
+        *lock() = Some(Self {
+            key,
+            at: std::time::Instant::now(),
+            value: value.clone(),
+        });
+        Ok(value)
+    }
+}
+const WORKTREE_ROOTS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+const SEARCH_PATHS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapEdit {
+    project: Project,
+    lease: Option<String>,
+}
+
+#[derive(Clone)]
+struct PendingPreview {
+    draft: String,
+    detectors: String,
+    preview: maintenance::ReconciliationPreview,
+}
+impl PendingPreview {
+    fn check(
+        &self,
+        project: &Project,
+        access: &AccessSnapshot,
+        detectors: &[extensions::DetectorContribution],
+    ) -> CmdResult<()> {
+        if self.draft != serde_json::to_string(project).map_err(err)?
+            || self.preview.access_revision != access.revision()
+            || self.detectors != serde_json::to_string(detectors).map_err(err)?
+        {
+            return Err("The draft or folder access changed; refresh the preview".into());
+        }
+        Ok(())
+    }
+}
+/// The pending preview; a panic elsewhere can't poison it, since it is only ever replaced whole.
+fn pending_preview(scoped: &ProjectAccess) -> std::sync::MutexGuard<'_, Option<PendingPreview>> {
+    scoped
+        .maintenance
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+static PREVIEW_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl AppState {
     fn project(&self, id: &str) -> CmdResult<Arc<ProjectAccess>> {
         self.projects
@@ -167,10 +252,6 @@ impl ProjectAccess {
     fn roots(&self) -> Vec<PathBuf> {
         self.access.roots()
     }
-
-    fn resolve(&self, path: &str) -> CmdResult<PathBuf> {
-        files::resolve(&self.roots(), Path::new(path)).map_err(err)
-    }
 }
 
 /// Run the backend's folder picker, starting in `start`, as a sheet of the
@@ -202,6 +283,57 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(err)?
+}
+
+#[tauri::command]
+async fn agent_hooks_check(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    provider: patchbay_core::adapters::Adapter,
+    source_override: Option<PathBuf>,
+) -> CmdResult<patchbay_core::agent_hooks::Integration> {
+    main_only(&window)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let mut result = patchbay_core::agent_hooks::inspect(provider, source_override.as_deref())
+            .map_err(err)?;
+        result.reporting_sessions = bridge
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| {
+                r.snapshot.as_ref().is_some_and(|s| {
+                    s.running
+                        && s.status
+                            .agent
+                            .as_ref()
+                            .is_some_and(|a| a.authoritative && a.provider == Some(provider))
+                })
+            })
+            .count();
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn agent_hooks_configure(
+    window: WebviewWindow,
+    provider: patchbay_core::adapters::Adapter,
+    source_override: Option<PathBuf>,
+    install: bool,
+) -> CmdResult<patchbay_core::agent_hooks::Integration> {
+    main_only(&window)?;
+    blocking(move || {
+        patchbay_core::agent_hooks::configure(
+            provider,
+            source_override.as_deref(),
+            &service::helper(),
+            install,
+        )
+        .map_err(err)
+    })
+    .await
 }
 
 #[derive(Serialize)]
@@ -308,28 +440,184 @@ impl Added {
     }
 }
 
-/// Rescan the open root plus the external folders on the map the user allowed.
-/// The webview's `sync_roots` picks up the new components' folders.
+/// Rescan proposes changes; only Apply selected changes the in-memory draft.
 #[tauri::command]
 async fn rescan_project(
     project_id: String,
     state: State<'_, AppState>,
     mut project: Project,
-) -> CmdResult<Added> {
+) -> CmdResult<maintenance::ReconciliationPreview> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
     let extensions = state.extensions.clone();
     blocking(move || {
         let detectors = extensions.get().detectors();
         access.trust(&mut project).map_err(err)?;
-        let externals: Vec<_> = project
-            .external_dirs()
-            .into_iter()
-            .filter(|d| access.is_granted(d))
-            .collect();
-        let (components, links) = (project.components.len(), project.links.len());
-        detect::rescan_with(&mut project, &externals, &detectors).map_err(err)?;
-        Ok(Added::since(project, components, links))
+        let mut preview = maintenance::preview(&project, &access, &detectors).map_err(err)?;
+        preview.id = format!(
+            "{}-{}",
+            std::process::id(),
+            PREVIEW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        if scoped.access.snapshot().revision() != access.revision() {
+            return Err("Folder access changed; refresh the preview".into());
+        }
+        *pending_preview(&scoped) = Some(PendingPreview {
+            draft: serde_json::to_string(&project).map_err(err)?,
+            detectors: serde_json::to_string(&detectors).map_err(err)?,
+            preview: preview.clone(),
+        });
+        Ok(preview)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn map_issues(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+) -> CmdResult<Vec<maintenance::MapIssue>> {
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        Ok(maintenance::issues(&project, &access))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply_reconciliation(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    preview_id: String,
+    selected: Vec<String>,
+) -> CmdResult<MapEdit> {
+    let scoped = state.project(&project_id)?;
+    let bridge = state.service.clone();
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let access = scoped.access.snapshot();
+        access.trust(&mut project).map_err(err)?;
+        // Not held across the service call below, which may block until its timeout.
+        let pending = pending_preview(&scoped)
+            .clone()
+            .filter(|p| p.preview.id == preview_id)
+            .ok_or("Preview expired; refresh it")?;
+        pending.check(&project, &access, &extensions.get().detectors())?;
+        let affected = maintenance::affected(&pending.preview, &selected);
+        let draft = maintenance::apply(&project, &pending.preview, &selected).map_err(err)?;
+        for id in &affected {
+            if let Some(component) = draft.component(id)
+                && access.readable(&component.path).is_none()
+            {
+                return Err(
+                    "The repaired folder is unavailable or locked; refresh the preview".into(),
+                );
+            }
+        }
+        let lease = if affected.is_empty() {
+            None
+        } else {
+            Some(bridge.call::<String>(Request::MaintenanceGuard {
+                project_id: project_id.clone(),
+                component_ids: affected,
+            })?)
+        };
+        // A newer preview replaced this one while the work was checked.
+        let replaced = pending_preview(&scoped)
+            .as_ref()
+            .is_none_or(|p| p.preview.id != preview_id);
+        let recheck = if replaced {
+            Err("Preview expired; refresh it".into())
+        } else {
+            pending.check(
+                &project,
+                &scoped.access.snapshot(),
+                &extensions.get().detectors(),
+            )
+        };
+        if let Err(error) = recheck {
+            if let Some(token) = lease {
+                let _ = bridge
+                    .call::<serde_json::Value>(Request::MaintenanceRelease { project_id, token });
+            }
+            return Err(error);
+        }
+        Ok(MapEdit {
+            project: draft,
+            lease,
+        })
+    })
+    .await
+}
+
+/// Direct path edits/deletes use the same stopped-work guard as reconciliation.
+#[tauri::command]
+async fn edit_map_components(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    remove: Vec<String>,
+    component_id: Option<String>,
+    path: Option<String>,
+) -> CmdResult<MapEdit> {
+    let scoped = state.project(&project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let access = scoped.access.snapshot();
+        access.trust(&mut project).map_err(err)?;
+        let moved = component_id.as_deref().zip(path.as_deref());
+        let (draft, affected) =
+            maintenance::edit(&project, &access, &remove, moved).map_err(err)?;
+        let lease = if affected.is_empty() {
+            None
+        } else {
+            Some(bridge.call::<String>(Request::MaintenanceGuard {
+                project_id: project_id.clone(),
+                component_ids: affected,
+            })?)
+        };
+        if scoped.access.snapshot().revision() != access.revision() {
+            if let Some(token) = lease {
+                let _ = bridge
+                    .call::<serde_json::Value>(Request::MaintenanceRelease { project_id, token });
+            }
+            return Err("Folder access changed; retry the edit".into());
+        }
+        Ok(MapEdit {
+            project: draft,
+            lease,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn release_map_edit(
+    project_id: String,
+    state: State<'_, AppState>,
+    token: String,
+) -> CmdResult<()> {
+    service(&state, Request::MaintenanceRelease { project_id, token }).await
+}
+
+/// Complete scope cleanup only after the frontend accepted the resulting draft.
+#[tauri::command]
+async fn cleanup_component_scopes(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    removed: Vec<String>,
+) -> CmdResult<()> {
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        let root = access.trust(&mut project).map_err(err)?;
+        if removed.iter().any(|id| project.component(id).is_some()) {
+            return Err("A removed component is still present in the draft".into());
+        }
+        tasks::prune_components(&root, &removed).map_err(err)
     })
     .await
 }
@@ -1139,26 +1427,183 @@ async fn quit_patchbay(
     Ok(())
 }
 
-/// Lists `path`, relative to the open project's root (`../…` for a sibling repo).
+/// Navigation roots are derived from backend grants and registered task/worktree identity.
+fn navigation_roots(
+    scoped: &ProjectAccess,
+    task: Option<&str>,
+    worktree: Option<&str>,
+) -> CmdResult<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let roots = scoped.roots();
+    let root = roots.first().ok_or("No project is open")?.clone();
+    let scan = scoped.access.watch_roots();
+    let task = task
+        .map(|id| tasks::stored(&root, id).map_err(err))
+        .transpose()?;
+    let worktree = worktree.or_else(|| task.as_ref().map(|t| t.worktree.as_str()));
+    let Some(worktree) = worktree else {
+        return Ok((roots, scan));
+    };
+    let roots = Cached::get_or(
+        &scoped.worktree_roots,
+        (root, worktree.to_string(), scan),
+        WORKTREE_ROOTS_TTL,
+        |(root, worktree, scan)| {
+            let components = scan
+                .iter()
+                .enumerate()
+                .map(|(i, dir)| (i.to_string(), dir.clone()))
+                .collect();
+            let (task_root, mapped) =
+                git::in_worktree(root, components, Some(worktree)).map_err(err)?;
+            let mut roots = vec![task_root];
+            // Folders in other repos (granted siblings, nested repos) aren't part of the task's
+            // worktree, so they stay as they are; in-repo folders the worktree lacks are dropped.
+            let repo = git::repo_root(root);
+            let external = scan.iter().filter(|dir| git::repo_root(dir) != repo);
+            for dir in mapped.into_iter().map(|(_, d)| d).chain(external.cloned()) {
+                if !roots.contains(&dir) {
+                    roots.push(dir);
+                }
+            }
+            CmdResult::Ok(roots)
+        },
+    )?;
+    Ok((roots.clone(), roots))
+}
+
+/// Lists the active task's folder, preserving relative project paths.
 #[tauri::command]
 async fn list_dir(
     project_id: String,
     state: State<'_, AppState>,
     path: String,
+    task: Option<String>,
 ) -> CmdResult<Vec<DirEntry>> {
     let scoped = state.project(&project_id)?;
-    files::list_dir(&scoped.roots(), Path::new(&path)).map_err(err)
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), None)?;
+        files::list_dir(&roots, Path::new(&path)).map_err(err)
+    })
+    .await
 }
 
-/// Reveals `path`, relative to the open project's root, in the file manager.
+/// Reveal remains a separate, worktree-aware file-manager action.
 #[tauri::command]
 async fn reveal_path(
     project_id: String,
     state: State<'_, AppState>,
     path: String,
+    task: Option<String>,
+    worktree: Option<String>,
 ) -> CmdResult<()> {
     let scoped = state.project(&project_id)?;
-    tauri_plugin_opener::reveal_item_in_dir(scoped.resolve(&path)?).map_err(err)
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        tauri_plugin_opener::reveal_item_in_dir(
+            files::resolve(&roots, Path::new(&path)).map_err(err)?,
+        )
+        .map_err(err)
+    })
+    .await
+}
+#[tauri::command]
+async fn editor_preferences() -> CmdResult<EditorPreferences> {
+    blocking(|| navigation::preferences().map_err(err)).await
+}
+#[tauri::command]
+async fn editor_save_preferences(preferences: EditorPreferences) -> CmdResult<()> {
+    blocking(move || navigation::save_preferences(&preferences).map_err(err)).await
+}
+#[tauri::command]
+async fn editor_discover() -> CmdResult<Vec<EditorLauncher>> {
+    blocking(|| Ok(navigation::discover())).await
+}
+#[tauri::command]
+async fn editor_open(
+    project_id: String,
+    state: State<'_, AppState>,
+    target: EditorTarget,
+    task: Option<String>,
+    worktree: Option<String>,
+) -> CmdResult<()> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let prefs = navigation::preferences().map_err(err)?;
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        navigation::open(&prefs, &roots, &target).map_err(err)
+    })
+    .await
+}
+#[tauri::command]
+async fn file_search(
+    project_id: String,
+    state: State<'_, AppState>,
+    query: String,
+    task: Option<String>,
+) -> CmdResult<Vec<FileSearchResult>> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let (roots, scan) = navigation_roots(&scoped, task.as_deref(), None)?;
+        let paths = Cached::get_or(
+            &scoped.search_paths,
+            (roots.clone(), scan),
+            SEARCH_PATHS_TTL,
+            |(roots, scan)| navigation::candidates(roots, scan).map(Arc::new),
+        )
+        .map_err(err)?;
+        navigation::rank_candidates(&roots, &paths, &query).map_err(err)
+    })
+    .await
+}
+/// A terminal link uses its recorded launch directory and process generation,
+/// never the current tab or a search for similarly named files.
+#[tauri::command]
+async fn terminal_open_reference(
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+    reference: String,
+) -> CmdResult<()> {
+    let bridge = state.service.clone();
+    let projects = state.projects.read().unwrap().clone();
+    blocking(move || {
+        let records = bridge.list()?;
+        let record = records
+            .iter()
+            .find(|r| r.id == session_id)
+            .ok_or("Unknown terminal session")?;
+        let snapshot = record
+            .snapshot
+            .iter()
+            .chain(record.history.iter())
+            .find(|s| s.generation == generation)
+            .ok_or(
+                "This file reference belongs to an earlier process whose history is unavailable",
+            )?;
+        let launch_directory = snapshot
+            .launch_directory
+            .as_ref()
+            .or_else(|| {
+                (record.snapshot.as_ref().map(|s| s.generation) == Some(generation))
+                    .then_some(&record.spec.cwd)
+            })
+            .ok_or("The original launch folder of this historical process is unknown")?;
+        let scoped = projects
+            .get(&record.metadata.project_id)
+            .ok_or("Originating project is unavailable")?;
+        let (roots, _) = navigation_roots(scoped, record.metadata.task.as_deref(), None)?;
+        let mut target = navigation::reference(&reference).map_err(err)?;
+        let resolved =
+            files::resolve(&roots, &launch_directory.join(&target.path)).map_err(|e| {
+                format!(
+                    "Cannot resolve {reference} from recorded launch folder {}: {e}",
+                    launch_directory.display()
+                )
+            })?;
+        target.path = resolved.to_string_lossy().into_owned();
+        navigation::open(&navigation::preferences().map_err(err)?, &roots, &target).map_err(err)
+    })
+    .await
 }
 
 /// Debug smoke helper: stops every session and returns the highest generation
@@ -1253,8 +1698,15 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                agent_hooks_check,
+                agent_hooks_configure,
                 open_project,
                 rescan_project,
+                map_issues,
+                apply_reconciliation,
+                edit_map_components,
+                cleanup_component_scopes,
+                release_map_edit,
                 add_folder,
                 pick_component_folder,
                 sync_roots,
@@ -1307,6 +1759,12 @@ pub fn run() {
                 terminal_snapshot,
                 list_dir,
                 reveal_path,
+                editor_preferences,
+                editor_save_preferences,
+                editor_discover,
+                editor_open,
+                file_search,
+                terminal_open_reference,
                 list_extensions,
                 set_extension_enabled,
                 reload_extensions,
@@ -1317,6 +1775,8 @@ pub fn run() {
                 extension_storage_get,
                 extension_storage_set,
                 extension_file_read,
+                extension_sessions_list,
+                extension_url_open,
             ];
             handler(invoke)
         })
@@ -1407,6 +1867,7 @@ async fn reveal_extensions_dir(window: WebviewWindow) -> CmdResult<()> {
 
 /// Run a declarative (`run`) command as an ad-hoc terminal of the component.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Named IPC fields preserve the existing command contract.
 async fn command_run(
     project_id: String,
     request_id: String,
@@ -1415,6 +1876,7 @@ async fn command_run(
     project: Project,
     component_id: String,
     command_id: String,
+    task: Option<String>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     launch_extension_terminal(
@@ -1423,6 +1885,7 @@ async fn command_run(
         &state,
         project,
         component_id,
+        task,
         move |registry| {
             let owner = registry
                 .extensions
@@ -1455,6 +1918,7 @@ async fn launch_extension_terminal(
     state: &AppState,
     project: Project,
     component_id: String,
+    task: Option<String>,
     terminal: impl FnOnce(
         &Registry,
     ) -> CmdResult<(TerminalSpec, String, Option<String>, Option<String>)>
@@ -1473,8 +1937,10 @@ async fn launch_extension_terminal(
             .restrict(project, std::slice::from_ref(&component_id))
             .map_err(err)?;
         let ids = std::slice::from_ref(&component_id);
-        let sections = registry.sections(&project, ids, &roots, vec![]);
+        let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
+        let sections = registry.sections(&project, ids, &roots, with_task_section(section, None));
         let mut metadata = service::metadata(&project_id, &project, &component_id, &terminal);
+        metadata.task.clone_from(&task);
         metadata.extension_id = Some(extension_id);
         metadata.command_id = command_id;
         metadata.key = key;
@@ -1506,6 +1972,7 @@ async fn extension_terminal_run(
     state: State<'_, AppState>,
     project: Project,
     request: ExtensionTerminalRequest,
+    task: Option<String>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let ExtensionTerminalRequest {
@@ -1520,6 +1987,7 @@ async fn extension_terminal_run(
         &state,
         project,
         component_id,
+        task,
         move |registry| {
             registry
                 .allowed(&extension_id, Some("terminals"))
@@ -1573,16 +2041,28 @@ async fn extension_file_read(
     state: State<'_, AppState>,
     extension_id: String,
     path: String,
+    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     main_only(&window)?;
     let extensions = state.extensions.clone();
-    let roots = scoped.roots();
+    let mut roots = scoped.roots();
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("Project unavailable")?;
     blocking(move || {
         extensions
             .get()
             .allowed(&extension_id, Some("files:read"))
             .map_err(err)?;
+        if let Some(task) = task {
+            let task = tasks::stored(&root, &task).map_err(err)?;
+            let (mapped_root, _) =
+                git::in_worktree(&root, vec![], Some(&task.worktree)).map_err(err)?;
+            roots = vec![mapped_root];
+        }
         extensions::read_file(&roots, Path::new(&path)).map_err(err)
     })
     .await
@@ -1775,9 +2255,12 @@ async fn project_relink(
         .ok_or("Chosen project unavailable")?;
     scoped.watcher.stop();
     let relinked = Arc::new(ProjectAccess {
+        maintenance: Mutex::default(),
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),
         task_root: scoped.task_root.clone(),
+        worktree_roots: Mutex::default(),
+        search_paths: Mutex::default(),
     });
     state
         .projects
@@ -1883,4 +2366,237 @@ async fn session_history(
         incarnation,
     };
     service(&state, request).await
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use std::process::Command;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn navigation_maps_nested_project_targets_to_registered_task_and_review_worktrees() {
+        let dir = std::env::temp_dir().join(format!(
+            "patchbay-navigation-native-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let fixture = Fixture(dir);
+        let repo = fixture.0.join("repo");
+        let project_root = repo.join("apps/project");
+        let sibling = fixture.0.join("sibling");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(project_root.join("target.txt"), "target").unwrap();
+        std::fs::write(sibling.join("external.txt"), "external").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=smoke",
+            "-c",
+            "user.email=smoke@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        let worktree = fixture.0.join("task");
+        git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "navigation-task",
+            worktree.to_str().unwrap(),
+        ]);
+        let worktree = worktree.canonicalize().unwrap();
+        let mut project = detect::detect(&project_root.canonicalize().unwrap()).unwrap();
+        project.components.push(patchbay_core::Component {
+            id: "sibling".into(),
+            detection: None,
+            name: "Sibling".into(),
+            kind: patchbay_core::ComponentKind::Other,
+            path: model::relative_path(Path::new(&project.root), &sibling.canonicalize().unwrap()),
+            notes: String::new(),
+            terminals: vec![],
+            position: model::Position::default(),
+        });
+        let scoped = ProjectAccess::default();
+        scoped.access.open(&project).unwrap();
+        let denied = navigation_roots(&scoped, None, None).unwrap().0;
+        assert!(files::resolve(&denied, &sibling.join("external.txt")).is_err());
+        scoped.access.grant(&sibling).unwrap();
+        let allowed = navigation_roots(&scoped, None, None).unwrap().0;
+        assert!(files::resolve(&allowed, &sibling.join("external.txt")).is_ok());
+        let task = tasks::attach(
+            Path::new(&project.root),
+            worktree.to_str().unwrap(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        let mapped = navigation_roots(&scoped, Some(&task.id), None).unwrap().0;
+        assert_eq!(
+            files::resolve(&mapped, Path::new("target.txt")).unwrap(),
+            worktree.join("apps/project/target.txt")
+        );
+        // A granted sibling isn't part of the task's worktree and stays reachable as it is.
+        assert_eq!(
+            files::resolve(&mapped, &sibling.join("external.txt")).unwrap(),
+            sibling.canonicalize().unwrap().join("external.txt")
+        );
+        assert!(
+            !mapped
+                .iter()
+                .any(|r| r.starts_with(repo.canonicalize().unwrap()))
+        );
+        let explicit = navigation_roots(&scoped, None, worktree.to_str())
+            .unwrap()
+            .0;
+        assert_eq!(mapped, explicit);
+        assert!(navigation_roots(&scoped, None, sibling.to_str()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    #[test]
+    fn preview_rechecks_draft_access_and_detector_availability() {
+        let root = std::env::temp_dir().join(format!(
+            "patchbay-preview-token-{}",
+            PREVIEW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project: Project = serde_json::from_value(serde_json::json!({"name":"P","root":root.display().to_string(),"components":[{"id":"web","name":"Web","path":"."}]})).unwrap();
+        let access = Access::default();
+        access.open(&project).unwrap();
+        let preview = maintenance::ReconciliationPreview {
+            id: "token".into(),
+            access_revision: access.snapshot().revision(),
+            issues: vec![],
+            proposals: vec![],
+        };
+        let pending = PendingPreview {
+            draft: serde_json::to_string(&project).unwrap(),
+            detectors: "[]".into(),
+            preview,
+        };
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_ok());
+        project.components[0].notes = "changed during scan".into();
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_err());
+        project.components[0].notes.clear();
+        let detector = extensions::DetectorContribution {
+            id: "extension:new:detector".into(),
+            files: vec!["manifest".into()],
+            kind: model::ComponentKind::Other,
+            terminals: vec![],
+        };
+        assert!(
+            pending
+                .check(&project, &access.snapshot(), &[detector])
+                .is_err()
+        );
+        access.sync(vec!["other".into()]);
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Extension summaries are permission checked natively and narrowed to one component/task.
+#[tauri::command]
+async fn extension_sessions_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    project: Project,
+    component_id: String,
+    task: Option<String>,
+) -> CmdResult<Vec<extensions::ComponentSessionSummary>> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let roots = scoped.roots();
+    let extensions = state.extensions.clone();
+    let bridge = state.service.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("sessions:read"))
+            .map_err(err)?;
+        let project = access
+            .restrict(project, std::slice::from_ref(&component_id))
+            .map_err(err)?;
+        let (_, roots, _) = for_task(
+            project,
+            task.as_deref(),
+            std::slice::from_ref(&component_id),
+            roots,
+        )?;
+        // List intentionally omits output. Filter first, then let the service scan each
+        // (at most 32) backlog for URLs, so no output crosses the bridge.
+        let mut summaries = extensions::session_summaries(
+            &bridge.list()?,
+            &project_id,
+            task.as_deref(),
+            &component_id,
+            &roots,
+        );
+        for summary in &mut summaries {
+            let scan: Option<PreviewScan> = bridge.call(Request::PreviewUrls {
+                id: summary.session_id.clone(),
+            })?;
+            if let Some(scan) = scan.filter(|s| s.generation == summary.generation) {
+                summary.urls = scan.urls;
+                summary.running = scan.running;
+            }
+        }
+        Ok(summaries)
+    })
+    .await
+}
+/// Only the native broker can open preview URLs, under a separate permission.
+#[tauri::command]
+async fn extension_url_open(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    url: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    state.project(&project_id)?;
+    let url = extensions::preview_url(&url).map_err(err)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("urls:open"))
+            .map_err(err)?;
+        tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
+    })
+    .await
 }

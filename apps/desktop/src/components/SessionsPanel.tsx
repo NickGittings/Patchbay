@@ -218,6 +218,12 @@ export default function SessionsPanel() {
               ))}
               <button onClick={() => setSelected(undefined)}>Hide</button>
             </div>
+            <p className="hint">
+              Launch folder:{' '}
+              {history === null
+                ? (selected.snapshot?.launchDirectory ?? selected.spec.cwd)
+                : (selected.history[history]?.launchDirectory ?? 'Unknown (legacy history)')}
+            </p>
             {history === null ? (
               <TerminalPane
                 key={selected.id}

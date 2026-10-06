@@ -1,5 +1,5 @@
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { useStore } from '../store'
+import { projectOf, useStore } from '../store'
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import {
@@ -44,6 +44,14 @@ export async function refreshTasks(projectId = useStore.getState().project?.id) 
 
 /** Set a project's tasks, whether or not its tab is active, dropping a vanished active task. */
 function applyTasks(projectId: string, tasks: Task[]) {
+  const map = projectOf(projectId)
+  if (map) {
+    const ids = new Set(map.components.map((c) => c.id))
+    tasks = tasks.map((task) => ({
+      ...task,
+      components: task.components.filter((id) => ids.has(id)),
+    }))
+  }
   const s = useStore.getState()
   if (s.project?.id === projectId) {
     s.setTasks(tasks)

@@ -13,7 +13,7 @@ interface Tab {
   componentId: string
   terminal: TerminalSpec
   label: string
-  /** `null` for the open worktree and for extension terminals. */
+  /** `null` for the open worktree. */
   task: string | null
 }
 
@@ -37,14 +37,16 @@ function useTabs(): Tab[] {
   )
   all.push(
     ...Object.entries(runtime)
-      .filter(([, t]) => t.projectId === useStore.getState().project?.id)
+      .filter(
+        ([, t]) => t.projectId === useStore.getState().project?.id && (t.taskId ?? null) === task,
+      )
       .filter(([sid]) => !all.some((t) => t.sid === sid))
       .map(([sid, t]) => ({
         sid,
         componentId: t.componentId,
         terminal: t.terminal,
         label: t.terminal.name,
-        task: null,
+        task: t.taskId ?? null,
       })),
   )
   return selectedId

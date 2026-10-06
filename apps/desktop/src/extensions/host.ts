@@ -21,6 +21,8 @@ interface Pending {
 }
 interface Runtime {
   projectId: string
+  taskId: string | null
+  renderedViews: Map<string, string>
   project: Project | null
   extension: Extension
   frame: HTMLIFrameElement
@@ -37,6 +39,12 @@ interface Runtime {
   calls: number
   period: number
   disposed: boolean
+}
+const runtimeKey = (projectId: string, taskId: string | null, id: string) =>
+  JSON.stringify([projectId, taskId, id])
+const isCurrent = (runtime: Runtime) => {
+  const s = useStore.getState()
+  return s.activeProjectId === runtime.projectId && s.activeTask === runtime.taskId
 }
 const runtimes = new Map<string, Runtime>()
 const quarantined = new Set<string>()
@@ -96,48 +104,70 @@ function shutdown(runtime: Runtime, failed = true) {
   if (failed) quarantined.add(runtime.extension.id)
   runtime.rejectReady(new Error('Extension stopped'))
   runtime.frame.remove()
-  runtimes.delete(`${runtime.projectId}:${runtime.extension.id}`)
+  const key = runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id)
+  // A retired runtime may already have been replaced under its key.
+  if (runtimes.get(key) === runtime) runtimes.delete(key)
   for (const pending of runtime.pending.values()) {
     clearTimeout(pending.timer)
     pending.reject(new Error('Extension stopped'))
   }
   runtime.pending.clear()
-  const s = useStore.getState()
   for (const view of runtime.views) {
     setRuntimeView(runtime, view, '')
-    if (s.project?.id === runtime.projectId) viewFrames.delete(view)
+    if (isCurrent(runtime)) viewFrames.delete(view)
   }
   scheduleBadges()
+}
+/** Give deactivate a bounded chance to finish before removing the runtime's frame. */
+async function deactivate(runtime: Runtime) {
+  const id = ++next
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 500)
+    runtime.pending.set(id, {
+      resolve: () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      reject: () => resolve(),
+      timer,
+    })
+    send(runtime, { method: 'deactivate', id })
+  })
+  shutdown(runtime, false)
 }
 async function deactivateAll() {
   epoch++
   clearTimeout(badgeTimer)
   useStore.getState().setExtensionBadges({})
-  await Promise.all(
-    [...runtimes.values()].map(async (runtime) => {
-      const id = ++next
-      // Give deactivate a bounded chance to finish before removing its frame.
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 500)
-        runtime.pending.set(id, {
-          resolve: () => {
-            clearTimeout(timer)
-            resolve()
-          },
-          reject: () => resolve(),
-          timer,
-        })
-        send(runtime, { method: 'deactivate', id })
-      })
-      shutdown(runtime, false)
-    }),
-  )
+  await Promise.all([...runtimes.values()].map(deactivate))
   quarantined.clear()
+}
+/**
+ * Project/task pairs a context collection is briefing an agent for, with how many collections
+ * hold each. Their runtimes stay up even for a task that isn't active.
+ */
+const collecting = new Map<string, number>()
+const collectingKey = (projectId: string, taskId: string | null) =>
+  JSON.stringify([projectId, taskId])
+/** Stop runtimes for a task their project has switched away from, or a project now closed. */
+function retireStale() {
+  if (!runtimes.size) return
+  const projects = useStore.getState().captureProjects()
+  for (const runtime of runtimes.values()) {
+    const entry = projects[runtime.projectId]
+    // Startup activations belong to no project.
+    if (!runtime.projectId || runtime.disposed) continue
+    if (entry && (!entry.state || entry.state.activeTask === runtime.taskId)) continue
+    if (entry && collecting.has(collectingKey(runtime.projectId, runtime.taskId))) continue
+    // Mark it gone now, so a reactivation for the same key starts a fresh frame.
+    runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
+    void deactivate(runtime)
+  }
 }
 function notify(runtime: Runtime, events = { project: true, selection: true }) {
   if (!runtime.extension.manifest.permissions.includes('project:read')) return
   const s = useStore.getState()
-  if ((s.project?.id ?? '') !== runtime.projectId) return
+  if (!isCurrent(runtime)) return
   const project = s.project ? s.toProject() : null
   runtime.project = project
   if (events.project) send(runtime, { method: 'event', event: 'project', value: project })
@@ -163,7 +193,7 @@ function scheduleNotify() {
   notifyTimer = setTimeout(() => {
     const s = useStore.getState()
     const project = s.project ? s.toProject() : null
-    const key = projectKey(project)
+    const key = JSON.stringify([projectKey(project), s.activeTask])
     const selected = project?.components.find((c) => c.id === s.selectedId)
     const selection = JSON.stringify(selected ? withoutPosition(selected) : null)
     const events = { project: key !== lastProjectKey, selection: selection !== lastSelection }
@@ -177,16 +207,20 @@ function scheduleNotify() {
 export async function activateExtension(
   extension: Extension,
   project = useStore.getState().project ? useStore.getState().toProject() : null,
+  taskId = useStore.getState().captureProjects()[project?.projectId ?? '']?.state?.activeTask ??
+    null,
 ): Promise<Runtime | undefined> {
   if (!extension.manifest.main || !installed) return undefined
   await stopping
   if (quarantined.has(extension.id))
     throw new Error(`${extension.id} stopped; reload extensions to retry`)
   const projectId = project?.projectId ?? ''
-  const runtimeKey = `${projectId}:${extension.id}`
-  const existing = runtimes.get(runtimeKey)
+  const key = runtimeKey(projectId, taskId, extension.id)
+  const existing = runtimes.get(key)
   if (existing) {
     await existing.ready
+    notify(existing)
+    for (const [view, html] of existing.renderedViews) setRuntimeView(existing, view, html)
     return existing
   }
   if (!active().some((e) => e === extension)) return undefined
@@ -203,6 +237,8 @@ export async function activateExtension(
   })
   const runtime: Runtime = {
     projectId,
+    taskId,
+    renderedViews: new Map(),
     project,
     extension,
     frame,
@@ -220,7 +256,7 @@ export async function activateExtension(
     period: Date.now(),
     disposed: false,
   }
-  runtimes.set(runtimeKey, runtime)
+  runtimes.set(key, runtime)
   // The frame loads its bootstrap once; another load means it navigated away, and the page
   // it now shows must not inherit this extension's API access.
   let loads = 0
@@ -285,6 +321,8 @@ export async function executeExtensionCommand(
   args: unknown[] = [],
   componentId = useStore.getState().selectedId,
   project = useStore.getState().project ? useStore.getState().toProject() : null,
+  taskId = useStore.getState().captureProjects()[project?.projectId ?? '']?.state?.activeTask ??
+    null,
 ): Promise<unknown> {
   const extension = ownerOfCommand(id)
   const command = extension?.manifest.contributes.commands.find((c) => c.id === id)
@@ -292,11 +330,12 @@ export async function executeExtensionCommand(
   const s = useStore.getState()
   if (command.run) {
     if (!componentId || !project) throw new Error('Select a component first')
-    const sid = await ipc.commandRun(project, componentId, id)
+    const sid = await ipc.commandRun(project, componentId, id, taskId ?? undefined)
     s.addRuntimeTerminal(
       sid,
       {
         projectId: project.projectId,
+        taskId,
         componentId,
         terminal: { id: `ext-${id}`, name: command.title, ...command.run },
         commandId: id,
@@ -305,7 +344,7 @@ export async function executeExtensionCommand(
     )
     return sid
   }
-  const runtime = await activateExtension(extension, project)
+  const runtime = await activateExtension(extension, project, taskId)
   if (!runtime?.commands.has(id)) throw new Error(`Command ${id} was not registered`)
   return request(runtime, 'command', id, args, COMMAND_TIMEOUT)
 }
@@ -323,7 +362,10 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
   const own = Object.entries(s.runtimeTerminals).filter(
     ([, t]) => t.projectId === runtime.projectId && t.extensionId === runtime.extension.id,
   )
-  const existing = own.find(([, t]) => t.componentId === componentId && t.key === key)
+  const existing = own.find(
+    ([, t]) =>
+      t.componentId === componentId && t.key === key && (t.taskId ?? null) === runtime.taskId,
+  )
   if (existing && s.sessions[existing[0]]?.running)
     throw new Error('That command is still running in this component')
   if (!existing && own.length >= MAX_RUN_TERMINALS)
@@ -334,9 +376,11 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
     componentId,
     command,
     key,
+    runtime.taskId ?? undefined,
   )
   s.addRuntimeTerminal(sid, {
     projectId: runtime.projectId,
+    taskId: runtime.taskId,
     componentId,
     terminal: {
       // The id `extensions::run_terminal` gives it, from which `sid` was derived.
@@ -350,10 +394,14 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
   })
   const deadline = Date.now() + 8000
   let snapshot = await ipc.terminalSnapshot(sid)
+  const generation = snapshot?.generation
   while (snapshot?.running && Date.now() < deadline && !runtime.disposed) {
     await new Promise((resolve) => setTimeout(resolve, 100))
     snapshot = await ipc.terminalSnapshot(sid)
   }
+  if (runtime.disposed) throw new Error('Extension stopped')
+  if (snapshot?.generation !== generation)
+    throw new Error('Command restarted while reading its result; Refresh again')
   return {
     sessionId: sid,
     output: snapshot
@@ -397,8 +445,18 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
         commandArgs,
         s.selectedId,
         s.project ? s.toProject() : null,
+        runtime.taskId,
       )
     }
+    case 'workspace.get':
+      permission(runtime, 'project:read')
+      return s.project ? { projectId: runtime.projectId, taskId: runtime.taskId } : null
+    case 'sessions.list':
+      permission(runtime, 'sessions:read')
+      return ipc.extensionSessionsList(id, s.toProject(), text(0), runtime.taskId ?? undefined)
+    case 'urls.open':
+      permission(runtime, 'urls:open')
+      return ipc.extensionUrlOpen(id, runtime.projectId, text(0, 2048))
     case 'project.get':
       permission(runtime, 'project:read')
       return s.project ? s.toProject() : null
@@ -415,7 +473,7 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       return runTerminal(runtime, text(0), text(1))
     case 'files.read':
       permission(runtime, 'files:read')
-      return ipc.extensionFileRead(id, text(0), runtime.projectId)
+      return ipc.extensionFileRead(id, text(0), runtime.projectId, runtime.taskId ?? undefined)
     case 'context.register':
     case 'badges.register':
       permission(runtime, 'project:read')
@@ -438,12 +496,12 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
     case 'views.postMessage': {
       const view = text(0)
       if (!runtime.views.has(view)) throw new Error('View is not registered')
-      if (runtime.projectId !== useStore.getState().activeProjectId) return null
+      if (!isCurrent(runtime)) return null
       viewFrames.get(view)?.contentWindow?.postMessage({ patchbay: 1, value: args[1] }, '*')
       return null
     }
     case 'window.showMessage':
-      s.setMessage(text(0, 2048))
+      if (isCurrent(runtime)) s.setMessage(text(0, 2048))
       return null
     case 'storage.get': {
       await storageQueues.get(id)
@@ -496,9 +554,7 @@ async function onMessage(event: MessageEvent) {
   if (!runtime) {
     for (const [viewId, frame] of viewFrames)
       if (frame.contentWindow === event.source) {
-        const owner = [...runtimes.values()].find(
-          (r) => r.projectId === useStore.getState().activeProjectId && r.views.has(viewId),
-        )
+        const owner = [...runtimes.values()].find((r) => isCurrent(r) && r.views.has(viewId))
         if (owner && encoded.length <= 512 * 1024)
           send(owner, { method: 'viewMessage', viewId, value: event.data.value })
       }
@@ -568,30 +624,57 @@ async function onMessage(event: MessageEvent) {
   }
 }
 /** Start the extensions that activate eagerly, except `caller`, which may still be activating. */
-async function activateProviders(caller?: string, project?: Project) {
+async function activateProviders(caller?: string, project?: Project, taskId?: string | null) {
   if (!useStore.getState().project) return
   await Promise.all(
     active()
       .filter(
         (e) => !e.manifest.activationEvents.length && !quarantined.has(e.id) && e.id !== caller,
       )
-      .map((e) => activateExtension(e, project).catch(error)),
+      .map((e) => activateExtension(e, project, taskId).catch(error)),
   )
 }
 /**
  * Ask every ready context provider about each component, all in parallel. A provider's
  * timeouts in one collection count as a single strike, so a slow one isn't stopped at once.
+ * Providers answer for `task`, the task the agent runs in (none for the open worktree).
  */
 async function collectContext(
   project: Project,
   ids: string[],
   caller?: string,
+  task?: string,
 ): Promise<ContextSection[]> {
-  await activateProviders(caller, project)
+  const taskId = task ?? null
+  const hold = collectingKey(project.projectId ?? '', taskId)
+  collecting.set(hold, (collecting.get(hold) ?? 0) + 1)
+  try {
+    return await collectFor(project, ids, taskId, caller)
+  } finally {
+    const left = (collecting.get(hold) ?? 1) - 1
+    if (left) collecting.set(hold, left)
+    else collecting.delete(hold)
+    // A non-active task's runtimes were only kept for this briefing.
+    retireStale()
+  }
+}
+async function collectFor(
+  project: Project,
+  ids: string[],
+  taskId: string | null,
+  caller?: string,
+): Promise<ContextSection[]> {
+  await activateProviders(caller, project, taskId)
   const current = epoch
   const components = project.components.filter((c) => !ids.length || ids.includes(c.id))
   const asks = [...runtimes.values()]
-    .filter((r) => r.projectId === project.projectId && r.isReady && r.providers.has('context'))
+    .filter(
+      (r) =>
+        r.projectId === project.projectId &&
+        r.taskId === taskId &&
+        r.isReady &&
+        r.providers.has('context'),
+    )
     .map(async (runtime) => {
       let timedOut = false
       const answers = await Promise.all(
@@ -627,10 +710,11 @@ async function refreshBadges() {
   const current = epoch
   const result: Record<string, ExtensionBadge[]> = {}
   const projectId = useStore.getState().project?.id
+  const taskId = useStore.getState().activeTask
   const components = useStore.getState().toProject().components
   await Promise.all(
     [...runtimes.values()]
-      .filter((r) => r.projectId === projectId && r.providers.has('badges'))
+      .filter((r) => isCurrent(r) && r.providers.has('badges'))
       .map(async (runtime) => {
         for (const component of components) {
           if (current !== epoch || runtime.disposed) return
@@ -661,7 +745,8 @@ async function refreshBadges() {
   if (
     current === epoch &&
     generation === badgeEpoch &&
-    useStore.getState().project?.id === projectId
+    useStore.getState().project?.id === projectId &&
+    useStore.getState().activeTask === taskId
   )
     useStore.getState().setExtensionBadges(result)
 }
@@ -679,14 +764,20 @@ export function startExtensionHost() {
   window.addEventListener('message', onMessage)
   setContextCollector(collectContext)
   const project = useStore.getState().project ? useStore.getState().toProject() : null
-  lastProjectKey = projectKey(project)
+  lastProjectKey = JSON.stringify([projectKey(project), useStore.getState().activeTask])
   // Pop-outs send only ids; answer from the main window's own map.
-  const unsubscribeContext = serveContextRequests((projectId, ids) => {
+  const unsubscribeContext = serveContextRequests((projectId, ids, task) => {
     const entry = useStore.getState().captureProjects()[projectId]
     if (!entry?.state?.project) return Promise.resolve([])
-    return collectContext(projectFromState(entry.state), ids)
+    return collectContext(projectFromState(entry.state), ids, undefined, task)
   })
   const unsubscribe = useStore.subscribe((s, previous) => {
+    if (
+      s.project !== previous.project ||
+      s.activeTask !== previous.activeTask ||
+      s.projects !== previous.projects
+    )
+      retireStale()
     if (s.extensions !== previous.extensions) {
       stopping = stopping.then(deactivateAll)
       void stopping
@@ -700,10 +791,14 @@ export function startExtensionHost() {
       s.project !== previous.project ||
       s.nodes !== previous.nodes ||
       s.edges !== previous.edges ||
-      s.selectedId !== previous.selectedId
+      s.selectedId !== previous.selectedId ||
+      s.activeTask !== previous.activeTask
     ) {
       scheduleNotify()
-      if (s.project?.id !== previous.project?.id) void projectActivation().catch(error)
+      if (s.project?.id !== previous.project?.id || s.activeTask !== previous.activeTask) {
+        useStore.setState({ extensionViews: {}, extensionBadges: {} })
+        void projectActivation().catch(error)
+      }
     } else if (s.sessions !== previous.sessions || s.gitChanges !== previous.gitChanges)
       scheduleBadges()
   })
@@ -745,18 +840,20 @@ function stateForRuntime(runtime: Runtime) {
       (runtime.project
         ? { id: runtime.projectId, name: runtime.project.name, root: runtime.project.root }
         : null),
+    activeTask: runtime.taskId,
     toProject: () => (scoped ? projectFromState(scoped) : runtime.project!),
   }
 }
 
 function setRuntimeView(runtime: Runtime, view: string, html: string) {
   const s = useStore.getState()
-  if (s.activeProjectId === runtime.projectId) {
+  runtime.renderedViews.set(view, html)
+  if (isCurrent(runtime)) {
     s.setExtensionView(view, html)
     return
   }
   const entry = s.projects[runtime.projectId]
-  if (!entry?.state) return
+  if (!entry?.state || entry.state.activeTask !== runtime.taskId) return
   useStore.setState({
     projects: {
       ...s.projects,

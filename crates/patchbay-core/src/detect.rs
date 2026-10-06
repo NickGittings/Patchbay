@@ -33,6 +33,7 @@ const COLUMN_WIDTH: f64 = 340.0;
 const ROW_HEIGHT: f64 = 230.0;
 
 struct Candidate {
+    detector: String,
     rel: String,
     name: String,
     kind: ComponentKind,
@@ -170,6 +171,7 @@ fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
     }
 
     Some(Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name: v["name"]
             .as_str()
@@ -211,6 +213,7 @@ fn from_cargo_toml(dir: &Path, text: &str) -> Option<Candidate> {
     tasks.push(task("test", "Tests", "cargo test".into()));
 
     Some(Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name,
         kind,
@@ -251,6 +254,7 @@ fn python_candidate(dir: &Path, name: String, deps: HashSet<String>) -> Candidat
         tasks.push(task("test", "Tests", "python -m pytest".into()));
     }
     Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name,
         kind,
@@ -323,6 +327,7 @@ fn from_go_mod(dir: &Path, text: &str) -> Candidate {
     }
     tasks.push(task("test", "Tests", "go test ./...".into()));
     Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name,
         kind,
@@ -331,23 +336,36 @@ fn from_go_mod(dir: &Path, text: &str) -> Candidate {
     }
 }
 
-fn read(dir: &Path, file: &str) -> Option<String> {
-    std::fs::read_to_string(dir.join(file)).ok()
+fn read(dir: &Path, file: &str, root: &Path) -> Option<String> {
+    let path = dir.join(file).canonicalize().ok()?;
+    if !path.starts_with(root) {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 fn has_gradle_settings(dir: &Path) -> bool {
     ["settings.gradle", "settings.gradle.kts"]
         .iter()
-        .any(|file| dir.join(file).is_file())
+        .any(|file| {
+            dir.join(file)
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(dir) && path.is_file())
+        })
 }
 
 fn is_android_module(dir: &Path) -> bool {
-    ["build.gradle", "build.gradle.kts"]
+    ["build.gradle", "build.gradle.kts"].iter().any(|file| {
+        dir.join(file)
+            .canonicalize()
+            .is_ok_and(|path| path.starts_with(dir) && path.is_file())
+    }) && ["src/main/AndroidManifest.xml", "src/AndroidManifest.xml"]
         .iter()
-        .any(|file| dir.join(file).is_file())
-        && ["src/main/AndroidManifest.xml", "src/AndroidManifest.xml"]
-            .iter()
-            .any(|file| dir.join(file).is_file())
+        .any(|file| {
+            dir.join(file)
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(dir) && path.is_file())
+        })
 }
 
 fn is_android_project(dir: &Path) -> bool {
@@ -366,8 +384,14 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
         entries.flatten().any(|entry| {
             let path = entry.path();
             match path.extension().and_then(|ext| ext.to_str()) {
-                Some("xcodeproj") => path.join("project.pbxproj").is_file(),
-                Some("xcworkspace") => path.join("contents.xcworkspacedata").is_file(),
+                Some("xcodeproj") => path
+                    .join("project.pbxproj")
+                    .canonicalize()
+                    .is_ok_and(|p| p.starts_with(root) && p.is_file()),
+                Some("xcworkspace") => path
+                    .join("contents.xcworkspacedata")
+                    .canonicalize()
+                    .is_ok_and(|p| p.starts_with(root) && p.is_file()),
                 _ => false,
             }
         })
@@ -391,6 +415,7 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
         }
     }
     Some(Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name: dir_name(dir),
         kind: ComponentKind::App,
@@ -399,28 +424,75 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
     })
 }
 
+/// Identify the detector and stable package identity before user display-name edits.
+fn provenance(dir: &Path, root: &Path, detector: &str) -> crate::model::DetectionProvenance {
+    if detector != "builtin" {
+        return crate::model::DetectionProvenance {
+            detector: detector.into(),
+            package_identity: None,
+        };
+    }
+    let declared = if let Some(text) = read(dir, "package.json", root) {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["name"].as_str().map(|name| format!("npm:{name}")))
+    } else if let Some(text) = read(dir, "Cargo.toml", root) {
+        toml::from_str::<toml::Value>(&text).ok().and_then(|v| {
+            v.get("package")?
+                .get("name")?
+                .as_str()
+                .map(|name| format!("cargo:{name}"))
+        })
+    } else if let Some(text) = read(dir, "pyproject.toml", root) {
+        toml::from_str::<toml::Value>(&text).ok().and_then(|v| {
+            v.get("project")
+                .or_else(|| v.get("tool")?.get("poetry"))?
+                .get("name")?
+                .as_str()
+                .map(|name| format!("python:{name}"))
+        })
+    } else if let Some(text) = read(dir, "go.mod", root) {
+        text.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("module ")
+                .map(|name| format!("go:{}", name.trim()))
+        })
+    } else {
+        None
+    };
+    crate::model::DetectionProvenance {
+        detector: "builtin".into(),
+        package_identity: declared,
+    }
+}
+
 fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) -> Option<Candidate> {
-    if let Some(text) = read(dir, "package.json") {
+    if let Some(text) = read(dir, "package.json", root) {
         return from_package_json(dir, root, &text);
     }
-    if let Some(text) = read(dir, "Cargo.toml") {
+    if let Some(text) = read(dir, "Cargo.toml", root) {
         return from_cargo_toml(dir, &text);
     }
-    if let Some(text) = read(dir, "pyproject.toml") {
+    if let Some(text) = read(dir, "pyproject.toml", root) {
         return from_pyproject(dir, &text);
     }
-    if let Some(text) = read(dir, "requirements.txt") {
+    if let Some(text) = read(dir, "requirements.txt", root) {
         return Some(from_requirements(dir, &text));
     }
-    if let Some(text) = read(dir, "go.mod") {
+    if let Some(text) = read(dir, "go.mod", root) {
         return Some(from_go_mod(dir, &text));
     }
     if let Some(candidate) = from_native_project(dir, root) {
         return Some(candidate);
     }
     for detector in detectors {
-        if detector.files.iter().any(|file| dir.join(file).is_file()) {
+        if detector.files.iter().any(|file| {
+            dir.join(file)
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(root) && path.is_file())
+        }) {
             return Some(Candidate {
+                detector: detector.id.clone(),
                 rel: String::new(),
                 name: dir_name(dir),
                 kind: detector.kind,
@@ -441,6 +513,7 @@ fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) ->
 /// A git repo with no manifest we recognise still deserves a node.
 fn repo_candidate(dir: &Path) -> Candidate {
     Candidate {
+        detector: "builtin".into(),
         rel: String::new(),
         name: dir_name(dir),
         kind: ComponentKind::Other,
@@ -577,6 +650,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
     walk(root, root, 0, &mut found, detectors);
     if found.is_empty() {
         found.push(Candidate {
+            detector: "builtin".into(),
             rel: ".".into(),
             name: dir_name(root),
             kind: ComponentKind::Other,
@@ -616,6 +690,10 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         targets.sort_unstable();
         for t in targets {
             links.push(Link {
+                detection: Some(crate::model::DetectionProvenance {
+                    detector: "builtin".into(),
+                    package_identity: None,
+                }),
                 id: format!("{id}->{t}"),
                 source: id.clone(),
                 target: t.to_string(),
@@ -636,6 +714,10 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         };
         if let Some((_, pid)) = found.iter().zip(&ids).find(|(p, _)| p.rel == parent) {
             links.push(Link {
+                detection: Some(crate::model::DetectionProvenance {
+                    detector: "builtin".into(),
+                    package_identity: None,
+                }),
                 id: format!("{pid}->{id}"),
                 source: pid.clone(),
                 target: id.clone(),
@@ -654,6 +736,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         .into_iter()
         .zip(ids)
         .map(|(c, id)| {
+            let detection = provenance(&root.join(&c.rel), root, &c.detector);
             let name = if name_counts[&c.name] > 1 {
                 let folder = c.rel.rsplit('/').next().unwrap_or(&c.rel);
                 format!("{} ({folder})", c.name)
@@ -663,6 +746,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
             let mut terminals = default_terminals();
             terminals.splice(1..1, c.tasks);
             Component {
+                detection: Some(detection),
                 id,
                 name,
                 kind: c.kind,
@@ -755,6 +839,7 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
         }
         if let (Some(s), Some(t)) = (resolve(&l.source), resolve(&l.target)) {
             existing.links.push(Link {
+                detection: l.detection,
                 id: format!("{s}->{t}"),
                 source: s,
                 target: t,

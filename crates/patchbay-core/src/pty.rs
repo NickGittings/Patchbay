@@ -154,7 +154,7 @@ struct Backlog {
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
 /// runs can be compared with edits.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
@@ -178,6 +178,9 @@ impl Backlog {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Original launch directory of this process incarnation. Legacy history may be unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_directory: Option<PathBuf>,
     #[serde(default)]
     pub truncated: bool,
     /// Base64 on the wire: a JSON number array is ~4x larger.
@@ -241,6 +244,8 @@ struct Watched {
     backlog: Arc<Mutex<Backlog>>,
     sink: Arc<dyn EventSink>,
     status_file: Option<PathBuf>,
+    /// The agent's hook journal, if it has one.
+    journal: Option<PathBuf>,
     /// The status file write last read.
     seen: Option<Stamp>,
 }
@@ -278,7 +283,13 @@ impl Default for StatusDir {
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
             match builder.create(&dir) {
-                Ok(()) => return Self(Some(dir)),
+                Ok(()) => {
+                    if crate::workspace::private_dir(&dir).is_ok() {
+                        return Self(Some(dir));
+                    }
+                    let _ = std::fs::remove_dir_all(dir);
+                    break;
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => break,
             }
@@ -450,7 +461,8 @@ impl PtyManager {
             generation,
             running: true,
             started_ms,
-            tracker: Tracker::new(&spec.ready_when, spec.service),
+            tracker: Tracker::new(&spec.ready_when, spec.service)
+                .with_identity(&spec.id, generation),
             notice: spec.notice.clone(),
             launch: Some(spec.clone()),
             ..Backlog::default()
@@ -467,6 +479,7 @@ impl PtyManager {
                     backlog: backlog.clone(),
                     sink: sink.clone(),
                     status_file: self.status_file(generation),
+                    journal: self.report_dir(generation).filter(|d| d.is_dir()),
                     seen: None,
                 },
             );
@@ -580,6 +593,12 @@ impl PtyManager {
             if let Some((stamp, text)) = last_report {
                 backlog.tracker.on_report(&text, stamp, exited_ms);
             }
+            if let Some(dir) = manager.report_dir(generation) {
+                for event in crate::agent_hooks::drain(&dir) {
+                    backlog.tracker.on_hook(event, exited_ms);
+                }
+                let _ = std::fs::remove_dir_all(dir);
+            }
             backlog.running = false;
             backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
@@ -608,6 +627,15 @@ impl PtyManager {
     /// generation, so an earlier run of the same session can't write to it.
     fn status_file(&self, generation: u64) -> Option<PathBuf> {
         Some(self.status_dir.0.as_ref()?.join(generation.to_string()))
+    }
+
+    fn report_dir(&self, generation: u64) -> Option<PathBuf> {
+        Some(
+            self.status_dir
+                .0
+                .as_ref()?
+                .join(format!("{generation}.reports")),
+        )
     }
 
     fn next_generation(&self) -> u64 {
@@ -647,11 +675,12 @@ impl PtyManager {
                     w.backlog.clone(),
                     w.sink.clone(),
                     w.status_file.clone(),
+                    w.journal.clone(),
                     w.seen,
                 )
             })
             .collect();
-        for (generation, id, backlog, sink, file, seen) in watched {
+        for (generation, id, backlog, sink, file, journal, seen) in watched {
             // Read a changed status file without holding any lock.
             let report = file.as_deref().and_then(|f| read_status_file(f, seen));
             if let Some((stamp, _)) = &report
@@ -659,9 +688,17 @@ impl PtyManager {
             {
                 w.seen = Some(*stamp);
             }
+            // Drain the hook journal outside the lock too: it is directory I/O, and the
+            // reader thread needs the backlog lock for every chunk of output.
+            let hooks = journal
+                .map(|dir| crate::agent_hooks::drain(&dir))
+                .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
+            }
+            for event in hooks {
+                guard.tracker.on_hook(event, now);
             }
             // Once exited, the waiter has sent the last status.
             if !guard.running {
@@ -712,16 +749,56 @@ impl PtyManager {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // User launch options cannot redirect the private reporter transport.
+        for (k, v) in spec.env.iter().filter(|(k, _)| {
+            !k.eq_ignore_ascii_case(COMMAND_ENV)
+                && ![
+                    STATUS_ENV,
+                    crate::agent_hooks::SESSION_ENV,
+                    crate::agent_hooks::GENERATION_ENV,
+                    crate::agent_hooks::PROVIDER_ENV,
+                    crate::agent_hooks::JOURNAL_ENV,
+                ]
+                .iter()
+                .any(|name| k.eq_ignore_ascii_case(name))
+        }) {
+            cmd.env(k, v);
+        }
+        // A helper launched from another Patchbay terminal can inherit its transport.
+        // Clear it even when allocating this session's private status directory failed.
+        for key in [
+            STATUS_ENV,
+            crate::agent_hooks::SESSION_ENV,
+            crate::agent_hooks::GENERATION_ENV,
+            crate::agent_hooks::PROVIDER_ENV,
+            crate::agent_hooks::JOURNAL_ENV,
+        ] {
+            cmd.env(key, "");
+        }
         if let Some(status) = self.status_file(generation) {
             cmd.env(STATUS_ENV, status);
         }
-        // A spec must not replace the private command transport variable.
-        for (k, v) in spec
+        let provider = spec
             .env
-            .iter()
-            .filter(|(k, _)| !k.eq_ignore_ascii_case(COMMAND_ENV))
+            .get(crate::agent_hooks::PROVIDER_ENV)
+            .cloned()
+            .or_else(|| {
+                crate::adapters::Adapter::default_for(&spec.command).map(|a| match a {
+                    crate::adapters::Adapter::Claude => "claude".into(),
+                    crate::adapters::Adapter::Codex => "codex".into(),
+                })
+            })
+            .unwrap_or_default();
+        // Only agents report, so only they get a journal. It lives in the private status
+        // folder, whose permissions it inherits.
+        if !provider.is_empty()
+            && let Some(dir) = self.report_dir(generation)
+            && std::fs::create_dir(&dir).is_ok()
         {
-            cmd.env(k, v);
+            cmd.env(crate::agent_hooks::JOURNAL_ENV, dir);
+            cmd.env(crate::agent_hooks::SESSION_ENV, &spec.id);
+            cmd.env(crate::agent_hooks::GENERATION_ENV, generation.to_string());
+            cmd.env(crate::agent_hooks::PROVIDER_ENV, provider);
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -752,6 +829,7 @@ impl PtyManager {
         let status = backlog.tracker.status(now_ms());
         let skip = backlog.data.len().saturating_sub(limit);
         Some(Snapshot {
+            launch_directory: backlog.launch.as_ref().map(|spec| spec.cwd.clone()),
             truncated: backlog.end > backlog.data.len() as u64,
             data: backlog.data.iter().skip(skip).copied().collect(),
             end: backlog.end,
