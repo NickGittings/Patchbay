@@ -1677,6 +1677,13 @@ pub fn run() {
         .setup(|app| {
             #[cfg(debug_assertions)]
             smoke::setup(app);
+            // Built here rather than by Tauri (`create: false`) so smoke runs can adjust it.
+            let config = app.config().app.windows.first().cloned();
+            let config = config.ok_or("tauri.conf.json defines no main window")?;
+            let main = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+            #[cfg(debug_assertions)]
+            let main = smoke::main_window(main);
+            main.build()?;
             app.state::<AppState>().service.run(app.handle().clone());
             Ok(())
         })
@@ -2313,10 +2320,7 @@ fn window_register(
         .or_insert_with(|| serde_json::json!({}));
     entry["projectId"] = serde_json::json!(project_id);
     entry["componentId"] = serde_json::json!(component_id);
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
-    let mut geometry = layout::clamp(&window, entry, false)?;
-    #[cfg(debug_assertions)]
-    smoke::window_options(&mut geometry);
+    let geometry = layout::clamp(&window, entry, false)?;
     state
         .layout_dirty
         .store(true, std::sync::atomic::Ordering::Release);

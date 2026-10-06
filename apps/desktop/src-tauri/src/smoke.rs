@@ -26,7 +26,11 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     #[cfg(target_os = "macos")]
     let builder = builder.activate_ignoring_other_apps(false);
 
-    builder.on_page_load(move |webview, payload| {
+    let flag = tauri::plugin::Builder::<Wry>::new("patchbay-smoke")
+        .js_init_script("window.__PATCHBAY_SMOKE__ = true")
+        .build();
+
+    builder.plugin(flag).on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
             let _ = webview.eval(&script);
         }
@@ -44,12 +48,15 @@ pub fn project_root(second: bool) -> Option<std::path::PathBuf> {
     .map(std::path::PathBuf::from)
 }
 
-/// Smoke windows run in the background (see [`setup`]), where WebKit would otherwise
-/// throttle or suspend their timers. The main window gets this from `tauri.smoke.conf.json`.
-pub fn window_options(options: &mut serde_json::Value) {
-    if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_some() {
-        options["backgroundThrottling"] = serde_json::json!("disabled");
+/// Smoke windows run in the background (see [`setup`]), where WebKit would otherwise throttle
+/// or suspend their timers. Pop-outs read `__PATCHBAY_SMOKE__` (set by [`install`]) to do the same.
+pub fn main_window<'a>(
+    builder: tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle>,
+) -> tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle> {
+    if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
+        return builder;
     }
+    builder.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
 }
 
 pub fn setup(app: &mut tauri::App) {

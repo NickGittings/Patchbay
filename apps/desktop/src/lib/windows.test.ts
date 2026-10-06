@@ -1,5 +1,7 @@
 import { expect, test, vi } from 'vitest'
 
+// windows.ts reads a smoke flag from `window` at load; node has none.
+vi.stubGlobal('window', {})
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   getCurrentWebviewWindow: () => ({ label: 'main' }),
   WebviewWindow: class {},

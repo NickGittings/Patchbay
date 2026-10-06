@@ -10,5 +10,5 @@ fail-fast = false
 slow-timeout = { period = "30s" }
 
 [[profile.default.overrides]]
-filter = "package(patchbay-sessiond) | test(/^pty::/) | test(/^session::/)"
+filter = "package(patchbay-sessiond) | test(/^(pty|session|actions|context)::/)"
 test-group = "processes"

@@ -17,9 +17,10 @@ const file = (path: string, modifiedMs?: number, added?: number, removed?: numbe
   ({ path, kind: 'modified', modifiedMs, added, removed }) satisfies ChangedFile
 
 describe('latestChange', () => {
-  test('is the newest modification time, ignoring deletions', () => {
-    expect(latestChange([file('a', 5), file('b'), file('c', 9)])).toBe(9)
-    expect(latestChange([file('deleted')])).toBeUndefined()
+  test('is the newest modification time; deletions have none', () => {
+    const deleted: ChangedFile = { path: 'gone.ts', kind: 'deleted' }
+    expect(latestChange([file('a', 5), deleted, file('c', 9)])).toBe(9)
+    expect(latestChange([deleted])).toBeUndefined()
     expect(latestChange(undefined)).toBeUndefined()
   })
 

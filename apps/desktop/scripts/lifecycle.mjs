@@ -1,12 +1,8 @@
 // Independent process harness: app quit/relaunch must leave the service and counter alive.
-import { spawn, execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { resolve, join } from 'node:path'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
-const desktop = resolve(import.meta.dirname, '..')
-const root = resolve(desktop, '../..')
+import { join } from 'node:path'
+import { deferSignals, desktop, launchApp, prebuilt, stopService } from './smoke-lib.mjs'
 const fixture = mkdtempSync(join(tmpdir(), 'patchbay-desktop-lifecycle-'))
 const localState = join(fixture, 'state')
 const counter =
@@ -72,25 +68,22 @@ writeFileSync(
   }).ready
 }`,
 )
-const port = Number(process.env.PATCHBAY_SMOKE_PORT || 1432)
-const prebuilt = Boolean(process.env.PATCHBAY_SMOKE_PREBUILT)
-const binary = (name) =>
-  join(
-    resolve(root, process.env.CARGO_TARGET_DIR || 'target'),
-    'debug',
-    name + (process.platform === 'win32' ? '.exe' : ''),
+// Run on its own, `tauri dev` gets a Vite port that can't clash with a running dev server;
+// under smoke-all.mjs the prebuilt app uses that runner's Vite on 1420.
+let config
+if (!prebuilt) {
+  const port = Number(process.env.PATCHBAY_SMOKE_PORT || 1432)
+  config = join(fixture, 'tauri.json')
+  writeFileSync(
+    config,
+    JSON.stringify({
+      build: {
+        devUrl: `http://localhost:${port}`,
+        beforeDevCommand: `npm run prepare:sessiond && npm run dev -- --port ${port}`,
+      },
+    }),
   )
-const config = join(fixture, 'tauri.json')
-writeFileSync(
-  config,
-  JSON.stringify({
-    ...JSON.parse(readFileSync(join(desktop, 'src-tauri/tauri.smoke.conf.json'), 'utf8')),
-    build: {
-      devUrl: `http://localhost:${port}`,
-      beforeDevCommand: `npm run prepare:sessiond && npm run dev -- --port ${port}`,
-    },
-  }),
-)
+}
 const env = {
   ...process.env,
   PATCHBAY_STATE_DIR: localState,
@@ -99,20 +92,11 @@ const env = {
   PATCHBAY_SMOKE_ROOT: join(fixture, 'one'),
   PATCHBAY_SMOKE_ROOT_2: join(fixture, 'two'),
 }
+const interrupted = deferSignals()
 const run = () =>
   new Promise((resolveRun, reject) => {
-    // Under smoke-all.mjs, its prebuilt binary and Vite server (port 1420) replace `tauri dev`.
-    const child = prebuilt
-      ? spawn(binary('patchbay-desktop'), [], {
-          cwd: join(desktop, 'src-tauri'),
-          env,
-          stdio: 'inherit',
-        })
-      : spawn(
-          process.execPath,
-          [require.resolve('@tauri-apps/cli/tauri.js'), 'dev', '--config', config],
-          { cwd: desktop, env, stdio: 'inherit' },
-        )
+    if (interrupted()) return reject(new Error('Interrupted'))
+    const child = launchApp(env, config)
     child.on('error', reject)
     child.on('exit', (code) =>
       code === 0 ? resolveRun() : reject(new Error(`Desktop exited ${code}`)),
@@ -177,12 +161,5 @@ try {
   )
 } finally {
   // Stop only this harness's work, retaining artifacts for inspection.
-  const shutdown = ['sessions', 'shutdown', '--stop-running']
-  if (prebuilt) execFileSync(binary('patchbay'), shutdown, { cwd: root, env, stdio: 'inherit' })
-  else
-    execFileSync('cargo', ['run', '-p', 'patchbay-cli', '--', ...shutdown], {
-      cwd: root,
-      env,
-      stdio: 'inherit',
-    })
+  stopService(env)
 }

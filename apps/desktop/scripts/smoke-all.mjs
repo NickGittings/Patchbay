@@ -4,14 +4,13 @@
 //   node scripts/smoke-all.mjs --bail           stop at the first failure
 // Scripts run one at a time: fixtures use fixed temp paths and the checks are timing-sensitive.
 import { spawn, execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
+import { desktop, root } from './smoke-lib.mjs'
 const require = createRequire(import.meta.url)
-const desktop = resolve(import.meta.dirname, '..')
-const root = resolve(desktop, '../..')
-const temp = process.env.TMPDIR || '/tmp'
+// Where the `smoke/*-fixture.sh` scripts put their repos (`${TMPDIR:-/tmp}`).
+const temp = tmpdir()
 const at = (...parts) => resolve(desktop, ...parts)
 const smoke = (script, env = {}, fixture) => ({
   fixture,
@@ -70,17 +69,25 @@ if (unknown.length) {
 }
 const selected = names.length ? names : Object.keys(SCRIPTS)
 
-// One build with the smoke window config compiled in (`smoke.mjs` runs this binary).
-const config = readFileSync(at('src-tauri/tauri.smoke.conf.json'), 'utf8')
+// One build, the same `tauri dev` makes, so switching between them doesn't recompile.
 execFileSync(process.execPath, [at('scripts/sessiond.mjs')], { cwd: desktop, stdio: 'inherit' })
 execFileSync('cargo', ['build', '-p', 'patchbay-desktop', '-p', 'patchbay-cli'], {
   cwd: root,
-  env: { ...process.env, TAURI_CONFIG: config },
   stdio: 'inherit',
 })
 
-// The debug binary loads `devUrl`, so one Vite server serves every run.
+// The debug binary loads `devUrl`, so one Vite server serves every run. Something else answering
+// there (a running `tauri dev`) would serve the wrong frontend, so refuse to start.
 const port = 1420
+const answers = () =>
+  fetch(`http://localhost:${port}/`).then(
+    (r) => r.ok,
+    () => false,
+  )
+if (await answers()) {
+  console.error(`Port ${port} is in use; stop \`tauri dev\` before running smoke scripts.`)
+  process.exit(1)
+}
 const vite = spawn(
   process.execPath,
   [
@@ -91,36 +98,43 @@ const vite = spawn(
   ],
   { cwd: desktop, stdio: ['ignore', 'ignore', 'inherit'] },
 )
-const stopVite = () => vite.exitCode === null && vite.kill()
-process.on('exit', stopVite)
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(130))
+process.on('exit', () => vite.exitCode === null && vite.kill())
 let viteExited = false
 vite.on('exit', () => (viteExited = true))
 const deadline = Date.now() + 30000
-for (;;) {
+while (!(await answers()) || viteExited) {
   if (viteExited) {
-    console.error(`Vite could not start on port ${port}; is \`tauri dev\` already running?`)
+    console.error(`Vite could not start on port ${port}`)
     process.exit(1)
   }
   if (Date.now() > deadline) {
     console.error(`Vite did not answer on port ${port}`)
     process.exit(1)
   }
-  if (
-    await fetch(`http://localhost:${port}/`).then(
-      (r) => r.ok,
-      () => false,
-    )
-  )
-    break
   await new Promise((done) => setTimeout(done, 200))
 }
 
+// Each script runs in its own process group, so an interrupt reaches its app too; the launchers
+// then stop their session service before exiting.
+let current
+let stopping = false
+for (const signal of ['SIGINT', 'SIGTERM'])
+  process.on(signal, () => {
+    stopping = true
+    if (!current || current.exitCode !== null) process.exit(130)
+    if (process.platform === 'win32') current.kill()
+    else process.kill(-current.pid, 'SIGTERM')
+  })
 const run = (command, argv, env) =>
   new Promise((done) => {
-    const child = spawn(command, argv, { cwd: desktop, env, stdio: 'inherit' })
-    child.on('error', () => done(1))
-    child.on('exit', (code) => done(code ?? 1))
+    current = spawn(command, argv, {
+      cwd: desktop,
+      env,
+      stdio: 'inherit',
+      detached: process.platform !== 'win32',
+    })
+    current.on('error', () => done(1))
+    current.on('exit', (code) => done(code ?? 1))
   })
 const results = []
 for (const name of selected) {
@@ -136,6 +150,7 @@ for (const name of selected) {
       env,
     )
   results.push({ name, code, seconds: (Date.now() - started) / 1000 })
+  if (stopping) process.exit(130)
   if (code !== 0 && bail) break
 }
 
