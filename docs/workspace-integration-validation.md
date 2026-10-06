@@ -23,6 +23,9 @@ Verified against the merged baseline:
   dirty-task removal refusal, and task removal preserving open-worktree processes.
 - `npm run smoke:actions`: ordered startup/readiness, explicit stop, affected validation,
   result navigation, saved group configuration and membership cleanup.
+- `npm run smoke:git`, `npm run smoke:extensions`, `npm run smoke:views`, and `npm run smoke`:
+  live Git updates, sandboxed extension IPC/context/view/session reuse, review/context/shortcut
+  flows, and pop-out backlog/live input/file-tree/tile behavior.
 
 Added native helper regression `detached_task_environments_preserve_other_projects_and_shared_owners`
 passed: four simultaneous project/task scopes with identical component/terminal/task IDs
