@@ -74,8 +74,8 @@
     )
 
     // The same terminal, in both worktrees at once.
-    const mainSid = 'web/where'
-    const taskSid = `web/where@task-${task.id}`
+    const mainSid = smoke.sessionId('web', 'where', null)
+    const taskSid = smoke.sessionId('web', 'where', task.id)
     await smoke.startTerminal('web', 'where', null)
     await smoke.startTerminal('web', 'where', task.id)
     await until('main cwd', () => textOf(mainSid).includes('cwd:'))
@@ -91,7 +91,7 @@
     assert(state().sessions[mainSid]?.running && state().sessions[taskSid]?.running, 'not both')
 
     // An edit in the task's worktree shows on the map only while the task is active.
-    const shellSid = `web/shell@task-${task.id}`
+    const shellSid = smoke.sessionId('web', 'shell', task.id)
     await smoke.startTerminal('web', 'shell', task.id)
     await until('task shell', () => state().sessions[shellSid]?.running)
     await sleep(1500)

@@ -20,7 +20,7 @@ const MONITOR_TICK: Duration = Duration::from_millis(250);
 const COMMAND_ENV: &str = "PATCHBAY_LAUNCH_COMMAND";
 
 /// What to launch in a terminal session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionSpec {
     pub id: String,
     /// Empty for an interactive shell.
@@ -33,6 +33,10 @@ pub struct SessionSpec {
     pub service: bool,
     /// A dim line retained and emitted before the process's output.
     pub notice: Option<String>,
+    /// Folders outside `cwd` an agent was given (`--add-dir`), checked again
+    /// against the user's grants before a recorded launch is resumed.
+    #[serde(default)]
+    pub dirs: Vec<PathBuf>,
 }
 
 struct Session {
@@ -171,11 +175,16 @@ impl Backlog {
 }
 
 /// Retained output and lifecycle state for one session incarnation.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    #[serde(default)]
+    pub truncated: bool,
     /// Base64 on the wire: a JSON number array is ~4x larger.
-    #[serde(serialize_with = "serialize_base64")]
+    #[serde(
+        serialize_with = "serialize_base64",
+        deserialize_with = "deserialize_base64"
+    )]
     pub data: Vec<u8>,
     pub end: u64,
     pub generation: u64,
@@ -194,6 +203,14 @@ pub struct Snapshot {
 fn serialize_base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
     use base64::Engine;
     s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+fn deserialize_base64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    use base64::Engine;
+    let text = <String as serde::Deserialize>::deserialize(d)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(serde::de::Error::custom)
 }
 
 /// Long-lived PTY sessions keyed by session id. Output and exit are reported
@@ -350,6 +367,15 @@ impl PtyManager {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Continue incarnation numbering above persisted output from an earlier service instance.
+    #[must_use]
+    pub fn with_generation_floor(floor: u64) -> Self {
+        Self {
+            generation: Mutex::new(floor),
+            ..Self::default()
+        }
     }
 
     /// Start a session. Returns once the process is spawned.
@@ -711,11 +737,23 @@ impl PtyManager {
     /// Panics if an internal lock is poisoned.
     #[must_use]
     pub fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        self.snapshot_with(id, usize::MAX)
+    }
+
+    /// Like `snapshot`, but keeping at most the last `limit` bytes of output
+    /// (`0` for lifecycle state only), so listings don't copy whole backlogs.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
         let backlogs = self.backlogs.lock().unwrap();
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
+        let skip = backlog.data.len().saturating_sub(limit);
         Some(Snapshot {
-            data: backlog.data.iter().copied().collect(),
+            truncated: backlog.end > backlog.data.len() as u64,
+            data: backlog.data.iter().skip(skip).copied().collect(),
             end: backlog.end,
             generation: backlog.generation,
             running: backlog.running,
@@ -736,7 +774,8 @@ impl PtyManager {
 
     /// Readiness belongs to the launched configuration, so graph actions must
     /// not reuse it after a command, folder or readiness gate has changed.
-    pub(crate) fn launch_matches(&self, spec: &SessionSpec) -> bool {
+    #[must_use]
+    pub fn launch_matches(&self, spec: &SessionSpec) -> bool {
         let backlogs = self.backlogs.lock().unwrap();
         let Some(backlog) = backlogs.get(&spec.id) else {
             return false;
@@ -901,9 +940,62 @@ impl PtyManager {
         })
     }
 
-    /// Kill every session and forget all retained output, e.g. when another
-    /// project is opened or the app exits. Session ids are not project-scoped,
-    /// so history must not carry over. Blocks for up to about twice
+    /// Explicitly stop work, retaining snapshots for reconnect and recovery.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn stop(&self, id: &str) {
+        let generation = self.sessions.lock().unwrap().get(id).map(|s| s.generation);
+        self.kill(id);
+        let deadline = Instant::now() + RESET_GRACE;
+        while self.is_running(id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(session) = self.sessions.lock().unwrap().get_mut(id)
+            && Some(session.generation) == generation
+        {
+            session.process.force_kill();
+        }
+    }
+    /// Whether any session is running or starting.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn has_running(&self) -> bool {
+        !self.sessions.lock().unwrap().is_empty() || !self.starting.lock().unwrap().is_empty()
+    }
+
+    /// Stop every session, waiting up to the reset grace for them to exit.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn stop_all(&self) {
+        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
+        for id in &ids {
+            self.kill(id);
+        }
+        std::thread::sleep(RESET_GRACE);
+        for session in self.sessions.lock().unwrap().values_mut() {
+            session.process.force_kill();
+        }
+        let deadline = Instant::now() + RESET_GRACE;
+        while !self.sessions.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    /// Drop a stopped session's retained output.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn forget(&self, id: &str) {
+        if !self.is_running(id) {
+            self.backlogs.lock().unwrap().remove(id);
+        }
+    }
+
+    /// Explicit test/reset operation: kill every session and forget retained output.
+    /// Normal project switching and desktop quit never use this. Blocks for up to about twice
     /// [`RESET_GRACE`]: processes still alive after the grace period are
     /// force-killed with their process group, so they can't keep ports or files
     /// the next project needs. Returns the last generation issued: every event
@@ -1007,6 +1099,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::new(),
                 notice: Some("Briefing is in $PATCHBAY_CONTEXT_FILE.".into()),
+                dirs: Vec::new(),
                 ready_when: String::new(),
                 service: false,
             },
@@ -1054,6 +1147,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1097,6 +1191,7 @@ mod tests {
                 ready_when: "ALL SET".into(),
                 service: true,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1145,6 +1240,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1183,6 +1279,7 @@ mod tests {
             ready_when: String::new(),
             service: false,
             notice: None,
+            dirs: Vec::new(),
         };
         let old = Arc::new(Collect::default());
         pty.spawn(spec("sleep 5"), old.clone()).unwrap();
@@ -1213,6 +1310,7 @@ mod tests {
                 ready_when: String::new(),
                 service: false,
                 notice: None,
+                dirs: Vec::new(),
             },
             sink.clone(),
         )
@@ -1245,6 +1343,7 @@ mod tests {
                     ready_when: String::new(),
                     service: false,
                     notice: None,
+                    dirs: Vec::new(),
                 },
                 sink.clone(),
             )
@@ -1282,6 +1381,7 @@ mod tests {
                             ready_when: String::new(),
                             service: false,
                             notice: None,
+                            dirs: Vec::new(),
                         },
                         sink,
                     )

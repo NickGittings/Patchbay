@@ -176,6 +176,7 @@ export default function ComponentGroups() {
             <button
               className="action-result"
               key={result.sessionId}
+              data-session={result.sessionId}
               onClick={() => {
                 // Stay in Navigation, where these results and the dock live.
                 const { componentId, task } = parseSessionId(result.sessionId)
@@ -186,7 +187,7 @@ export default function ComponentGroups() {
                 s.setView('navigation')
               }}
             >
-              <span>{result.sessionId}</span>
+              <span>{resultLabel(result.sessionId)}</span>
               <strong
                 className={
                   result.outcome === 'failed' || result.outcome === 'stopped' ? result.outcome : ''
@@ -206,4 +207,12 @@ export default function ComponentGroups() {
       )}
     </section>
   )
+}
+
+/** "Component › Terminal" for a session id, which is opaque. */
+function resultLabel(sid: string) {
+  const { componentId, terminalId } = parseSessionId(sid)
+  const node = useStore.getState().nodes.find((n) => n.id === componentId)
+  const terminal = node?.data.terminals.find((t) => t.id === terminalId)
+  return `${node?.data.name ?? componentId} › ${terminal?.name ?? terminalId}`
 }

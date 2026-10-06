@@ -28,6 +28,7 @@ export interface TerminalSpec {
   command: string
   kind: TerminalKind
   /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
+  adapter?: 'claude' | 'codex'
   readyWhen?: string
   action?: TerminalAction
 }
@@ -58,6 +59,7 @@ export interface Added {
 }
 
 export interface Project {
+  projectId?: string
   schemaVersion: number
   name: string
   root: string
@@ -154,11 +156,12 @@ export interface DeviceManifest {
   description?: string | null
   command: string
   kind: TerminalKind
+  adapter?: 'claude' | 'codex'
   readyWhen?: string
   source: string
 }
 
-export type TerminalEvent =
+export type TerminalEvent = (
   | {
       type: 'started'
       sessionId: string
@@ -169,6 +172,7 @@ export type TerminalEvent =
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
   | { type: 'status'; sessionId: string; generation: number; status: SessionStatus }
+) & { instanceId?: string }
 
 /** `status::AgentState`. */
 export type AgentState = 'working' | 'needsInput' | 'review' | 'idle'
@@ -197,6 +201,7 @@ export interface SessionStatus {
 }
 
 export interface TerminalSnapshot {
+  truncated: boolean
   /** Base64. */
   data: string
   end: number
@@ -218,6 +223,9 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  disconnected?: boolean
+  interrupted?: boolean
+  truncated?: boolean
   running: boolean
   exitCode?: number
   /** When the current or last run started and ended, in Unix milliseconds. */
@@ -231,37 +239,133 @@ export interface SessionState {
 /** Data carried on each React Flow node. */
 export type ComponentData = Omit<Component, 'id' | 'position'> & Record<string, unknown>
 
-/** `model::TASK_SEPARATOR`; task ids are ASCII letters and digits, so the last one marks it. */
+let activeProjectId = ''
+export const setProjectIdentity = (id: string) => {
+  activeProjectId = id
+}
+/** `model::TASK_SEPARATOR`; task ids are ASCII letters and digits. */
 const TASK_SEPARATOR = '@task-'
 
-/**
- * Mirrors `model::task_session_id`: a task's terminals end in `@task-<task>`, so the same terminal
- * can run in several worktrees at once. The component id stays before the last `/`.
- */
-export const sessionId = (componentId: string, terminalId: string, task?: string | null) =>
-  task ? `${componentId}/${terminalId}${TASK_SEPARATOR}${task}` : `${componentId}/${terminalId}`
+export interface SessionIdentity {
+  projectId: string
+  componentId: string
+  terminalId: string
+  /** The task whose worktree the terminal runs in; `null` for the project's own. */
+  task: string | null
+}
+/** What each opaque session id stands for; ids are never parsed. */
+export const sessionMetadata = new Map<string, SessionIdentity>()
 
-/** A session id's component, terminal and task (`null` for the open worktree). */
-export function parseSessionId(sid: string) {
-  const slash = sid.lastIndexOf('/')
-  const last = sid.slice(slash + 1)
-  const at = last.lastIndexOf(TASK_SEPARATOR)
-  const task = at >= 0 ? last.slice(at + TASK_SEPARATOR.length) : ''
-  const scoped = /^[0-9a-z]+$/i.test(task)
-  return {
-    componentId: sid.slice(0, slash),
-    terminalId: scoped ? last.slice(0, at) : last,
-    task: scoped ? task : null,
+/**
+ * Mirrors `model::task_session_id`: the opaque id of a terminal of a project's component, run
+ * for `task` when given, so the same terminal can run in several worktrees and projects at once.
+ */
+export function sessionId(
+  componentId: string,
+  terminalId: string,
+  task?: string | null,
+  projectId = activeProjectId,
+) {
+  const terminal = task ? `${terminalId}${TASK_SEPARATOR}${task}` : terminalId
+  const key = JSON.stringify([projectId, componentId, terminal])
+  const known = hashed.get(key)
+  if (known) return known
+  let a = 0xcbf29ce484222325n
+  let b = 0x84222325cbf29ce4n
+  for (const value of [projectId, componentId, terminal]) {
+    const bytes = new TextEncoder().encode(value)
+    const length = new Uint8Array(8)
+    new DataView(length.buffer).setBigUint64(0, BigInt(bytes.length), true)
+    for (const byte of [...length, ...bytes]) {
+      a = BigInt.asUintN(64, (a ^ BigInt(byte)) * 0x100000001b3n)
+      b = BigInt.asUintN(64, (b ^ BigInt(byte)) * 0x100000001b3n)
+    }
   }
+  const id = `s-${a.toString(16).padStart(16, '0')}${b.toString(16).padStart(16, '0')}`
+  sessionMetadata.set(id, { projectId, componentId, terminalId, task: task ?? null })
+  hashed.set(key, id)
+  return id
+}
+/** Ids already hashed: selectors compute them for every terminal on every store change. */
+const hashed = new Map<string, string>()
+
+/** A session's project, component, terminal and task, from its recorded metadata. */
+export function parseSessionId(sid: string): SessionIdentity {
+  return (
+    sessionMetadata.get(sid) ?? {
+      projectId: activeProjectId,
+      componentId: '',
+      terminalId: '',
+      task: null,
+    }
+  )
 }
 
-/** The task a session id belongs to (`null` for the open worktree). */
+/** The task a session belongs to (`null` for the project's own worktree). */
 export const sessionTask = (sid: string) => parseSessionId(sid).task
 
-/** `sid` moved to `task`'s scope (or the open worktree's). */
+/** `sid` moved to `task`'s scope (or the project's own worktree). */
 export function retask(sid: string, task: string | null): string {
-  const { componentId, terminalId } = parseSessionId(sid)
-  return sessionId(componentId, terminalId, task)
+  const { projectId, componentId, terminalId } = parseSessionId(sid)
+  return sessionId(componentId, terminalId, task, projectId)
+}
+
+export interface SessionRecord {
+  id: string
+  metadata: {
+    projectId: string
+    projectRoot: string
+    projectName: string
+    componentId: string
+    terminalId: string
+    task?: string | null
+    name: string
+    kind: TerminalKind
+    adapter: 'claude' | 'codex' | null
+    commandId?: string | null
+    extensionId?: string | null
+    key?: string | null
+    conversationId: string | null
+    /** Set by the user, so captured resume hints don't replace it. */
+    conversationPinned?: boolean
+  }
+  snapshot: TerminalSnapshot | null
+  history: TerminalSnapshot[]
+  interrupted: boolean
+  /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
+  spec: { cwd: string; command: string; dirs?: string[] }
+}
+export interface WorkspaceProject {
+  id: string
+  root: string
+  name: string
+  savedFingerprint: string
+  draft: Project | null
+  layout: Record<string, unknown>
+}
+export interface WorkspaceDocument {
+  version: number
+  projects: WorkspaceProject[]
+  activeProject: string | null
+  windows: Record<
+    string,
+    {
+      projectId?: string
+      componentId?: string
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      maximized?: boolean
+    }
+  >
+}
+export interface OpenedProject {
+  id: string
+  fingerprint: string
+  project: Project
+  detected: boolean
+  locked: string[]
 }
 
 /** A named piece of work on its own branch and worktree (`tasks::Task`). */
@@ -358,6 +462,7 @@ export interface ExtensionBadge {
   tooltip?: string
 }
 export interface RuntimeTerminal {
+  projectId?: string
   componentId: string
   terminal: TerminalSpec
   commandId?: string

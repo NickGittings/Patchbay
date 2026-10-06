@@ -26,10 +26,10 @@ export function extraContext(
 ): Promise<ContextSection[]> {
   if (collector) return collector(project, ids, caller)
   const { label } = getCurrentWebviewWindow()
-  return label === 'main' ? Promise.resolve([]) : askMain(label, ids)
+  return label === 'main' ? Promise.resolve([]) : askMain(label, project.projectId ?? '', ids)
 }
 
-function askMain(label: string, ids: string[]): Promise<ContextSection[]> {
+function askMain(label: string, projectId: string, ids: string[]): Promise<ContextSection[]> {
   const id = `${label}:${++next}`
   return new Promise((resolve) => {
     let settled = false
@@ -48,20 +48,25 @@ function askMain(label: string, ids: string[]): Promise<ContextSection[]> {
       .then((stop) => {
         unlisten = stop
         if (settled) stop()
-        else return emitTo('main', REQUEST_EVENT, { id, label, ids })
+        else return emitTo('main', REQUEST_EVENT, { id, label, projectId, ids })
       })
       .catch(() => done([]))
   })
 }
 
 /** Main window: answer pop-outs' context requests with `collect`. Returns the unsubscribe. */
-export function serveContextRequests(collect: (ids: string[]) => Promise<ContextSection[]>) {
-  const stop = listen<{ id: string; label: string; ids: string[] }>(REQUEST_EVENT, (e) => {
-    const { id, label, ids } = e.payload
-    void collect(Array.isArray(ids) ? ids.filter((i) => typeof i === 'string') : [])
-      .catch(() => [])
-      .then((sections) => emitTo(label, REPLY_EVENT, { id, sections }))
-      .catch(() => {})
-  })
+export function serveContextRequests(
+  collect: (projectId: string, ids: string[]) => Promise<ContextSection[]>,
+) {
+  const stop = listen<{ id: string; label: string; projectId: string; ids: string[] }>(
+    REQUEST_EVENT,
+    (e) => {
+      const { id, label, projectId, ids } = e.payload
+      void collect(projectId, Array.isArray(ids) ? ids.filter((i) => typeof i === 'string') : [])
+        .catch(() => [])
+        .then((sections) => emitTo(label, REPLY_EVENT, { id, sections }))
+        .catch(() => {})
+    },
+  )
   return () => void stop.then((unlisten) => unlisten())
 }

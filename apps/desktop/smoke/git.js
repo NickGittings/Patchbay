@@ -15,7 +15,7 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   const state = () => smoke.store.getState()
   const id = 'git-smoke'
-  const sid = `${id}/shell`
+  let sid
   // The shell starts in the component folder; the file goes at the project root.
   const scratch = `../.patchbay-smoke-git-${Date.now()}`
   let started = false
@@ -23,7 +23,8 @@
   try {
     const opened = await smoke.openProject()
     if (!opened) throw new Error('project was not opened')
-    state().loadProject({
+    smoke.acceptOpened(opened)
+    state().syncProject({
       ...opened.project,
       components: [
         {
@@ -39,6 +40,7 @@
       ],
       links: [],
     })
+    sid = smoke.sessionId(id, 'shell')
     await smoke.syncCurrentRoots()
     await smoke.startTerminal(id, 'shell')
     started = true

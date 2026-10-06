@@ -617,9 +617,17 @@ fn describe_component(out: &mut String, project: &Project, c: &Component) {
     out.push('\n');
 }
 
-fn task_suffix(task: Option<&str>) -> String {
-    task.map(|t| format!("{}{t}", crate::model::TASK_SEPARATOR))
-        .unwrap_or_default()
+/// A briefing file name unique to the project's root, so two open projects (or
+/// worktrees of one repo, which share a map and name) never overwrite each other's.
+fn briefing_name(project: &Project, scope: &str, task: Option<&str>) -> String {
+    let root = crate::workspace::session_id(&project.root, "", "");
+    let task = task.map(|t| format!("{}{t}", crate::model::TASK_SEPARATOR));
+    format!(
+        "{}-{}-{scope}{}",
+        project.name,
+        &root[2..10],
+        task.unwrap_or_default()
+    )
 }
 
 fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
@@ -811,20 +819,16 @@ pub fn plan_session_spec_for(
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), "plan".into())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut context_dirs: Vec<PathBuf> = Vec::new();
     if terminal.kind == TerminalKind::Agent {
         let briefing = plan_context(project, component_ids, sections);
         let file = context_file(
-            &format!(
-                "{}-{PLAN_SCOPE}-{}{}",
-                project.name,
-                terminal.id,
-                task_suffix(task)
-            ),
+            &briefing_name(project, &format!("{PLAN_SCOPE}-{}", terminal.id), task),
             &briefing,
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         // cwd is the root; components in other repos must be added explicitly.
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        let dirs = &mut context_dirs;
         for c in &components {
             let reach =
                 std::iter::once(*c).chain(project.neighbours(&c.id).into_iter().map(|(n, _)| n));
@@ -838,7 +842,7 @@ pub fn plan_session_spec_for(
         let briefing = Briefing {
             file: &file,
             text: &briefing,
-            dirs: &dirs,
+            dirs,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -846,13 +850,14 @@ pub fn plan_session_spec_for(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        id: task_session_id(PLAN_SCOPE, &terminal.id, task),
+        id: task_session_id(&project.root, PLAN_SCOPE, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
         env,
         ready_when: terminal.ready_when.clone(),
         service: terminal.kind == TerminalKind::Task,
         notice,
+        dirs: context_dirs,
     })
 }
 
@@ -899,15 +904,13 @@ pub fn session_spec_for(
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), component.name.clone())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut context_dirs = Vec::new();
 
     if terminal.kind == TerminalKind::Agent {
         let briefing = component_context(project, component_id, sections);
-        let file = context_file(
-            &format!("{}-{component_id}{}", project.name, task_suffix(task)),
-            &briefing,
-        )?;
+        let file = context_file(&briefing_name(project, component_id, task), &briefing)?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
-        let dirs: Vec<_> = project
+        context_dirs = project
             .neighbours(component_id)
             .iter()
             .map(|(n, _)| project.component_dir(n))
@@ -915,7 +918,7 @@ pub fn session_spec_for(
         let briefing = Briefing {
             file: &file,
             text: &briefing,
-            dirs: &dirs,
+            dirs: &context_dirs,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -925,13 +928,14 @@ pub fn session_spec_for(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
-        id: task_session_id(component_id, terminal_id, task),
+        id: task_session_id(&project.root, component_id, terminal_id, task),
         command,
         cwd: project.component_dir(component),
         env,
         ready_when: terminal.ready_when.clone(),
         service: terminal.kind == TerminalKind::Task,
         notice,
+        dirs: context_dirs,
     })
 }
 
@@ -958,6 +962,13 @@ pub fn extra_session_spec(
     session_spec(&project, component_id, &terminal_id, policy, sections)
 }
 
+pub(crate) fn launch_words(command: &str) -> Option<Vec<String>> {
+    command_tokens(command, Shell::current())
+}
+pub(crate) fn quote_argument(value: &str) -> String {
+    Shell::current().quote(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,6 +978,7 @@ mod tests {
     #[test]
     fn extra_terminals_launch_in_the_component_and_replace_same_ids() {
         let terminal = TerminalSpec {
+            adapter: None,
             id: "agent".into(),
             name: "Ad hoc".into(),
             command: "echo hi".into(),
@@ -975,11 +987,15 @@ mod tests {
             action: None,
         };
         let spec = extra_session_spec(project(), "api", terminal, &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "api/agent");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id("/repo", "api", "agent")
+        );
         assert_eq!(spec.command, "echo hi");
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         assert!(!spec.env.contains_key(CONTEXT_ENV));
         let missing = TerminalSpec {
+            adapter: None,
             id: "x".into(),
             name: "X".into(),
             command: "true".into(),
@@ -1012,6 +1028,7 @@ mod tests {
                     "api",
                     "services/api",
                     vec![TerminalSpec {
+                        adapter: None,
                         id: "agent".into(),
                         name: "Claude".into(),
                         command: "claude".into(),
@@ -1037,11 +1054,18 @@ mod tests {
         let p = project();
         let main = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
         let task = session_spec_for(&p, "api", "agent", Some("t1"), &AllowAll, &[]).unwrap();
-        assert_eq!(main.id, "api/agent");
-        assert_eq!(task.id, "api/agent@task-t1");
+        assert_eq!(main.id, task_session_id(&p.root, "api", "agent", None));
+        assert_eq!(
+            task.id,
+            task_session_id(&p.root, "api", "agent", Some("t1"))
+        );
+        assert_ne!(main.id, task.id);
         assert_ne!(main.env[CONTEXT_ENV], task.env[CONTEXT_ENV]);
         let plan = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
-        assert_eq!(plan.id, format!("{PLAN_SCOPE}/{}@task-t1", planner().id));
+        assert_eq!(
+            plan.id,
+            task_session_id(&p.root, PLAN_SCOPE, &planner().id, Some("t1"))
+        );
     }
 
     #[test]
@@ -1077,7 +1101,10 @@ mod tests {
     fn claude_gets_neighbour_dirs_and_context() {
         let p = project();
         let spec = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "api/agent");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id(&p.root, "api", "agent")
+        );
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         let neighbour = p.component_dir(&p.components[1]);
         assert!(spec.command.starts_with(&format!(
@@ -1124,6 +1151,7 @@ mod tests {
 
     fn planner() -> TerminalSpec {
         TerminalSpec {
+            adapter: None,
             id: "claude".into(),
             name: "Claude".into(),
             command: "claude".into(),
@@ -1188,7 +1216,10 @@ mod tests {
         let mut p = project();
         p.name = "root-scope-demo".into();
         let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
-        assert_eq!(spec.id, "@plan/claude");
+        assert_eq!(
+            spec.id,
+            crate::workspace::session_id(&p.root, PLAN_SCOPE, "claude")
+        );
         assert_eq!(spec.cwd, PathBuf::from("/repo"));
         assert_eq!(spec.env[COMPONENT_ENV], "plan");
         assert!(spec.env.contains_key(CONTEXT_ENV));
@@ -1883,6 +1914,7 @@ mod tests {
                 cwd: fixture.0.clone(),
                 env,
                 notice: None,
+                dirs: Vec::new(),
             });
             assert!(
                 output

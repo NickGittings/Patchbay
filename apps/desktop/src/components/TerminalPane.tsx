@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { describeTerminal, terminalStatus } from '../lib/display'
-import { terminalSeen } from '../lib/ipc'
+import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, startTerminal } from '../lib/sessions'
-import { attach, fit } from '../lib/terminals'
+import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
@@ -16,15 +16,20 @@ export default function TerminalPane({
   terminal,
   focus = true,
   task: taskProp,
+  existingSessionId,
 }: {
   componentId: string
   terminal: TerminalSpec
   focus?: boolean
+  /** The task whose worktree it runs in; defaults to the active task (`null`: the project's). */
   task?: string | null
+  /** Show this exact session (e.g. from the Sessions panel) instead of deriving its id. */
+  existingSessionId?: string
 }) {
   const activeTask = useStore((s) => s.activeTask)
   const task = taskProp === undefined ? activeTask : taskProp
-  const sid = sessionId(componentId, terminal.id, task)
+  const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)
+  const connected = useStore((s) => s.serviceConnected)
   const session = useStore((s) => s.sessions[sid])
   const unseen = terminalStatus(terminal.kind, session).unseenSince
   const hostRef = useRef<HTMLDivElement>(null)
@@ -37,27 +42,58 @@ export default function TerminalPane({
     if (!host) return
     let disposed = false
     attach(sid, host, { focus })
-    const refit = () => fit(sid)
-    const observer = new ResizeObserver(refit)
+    // Becoming visible or active (re)claims the PTY; resizing only refits.
+    const refit = () => {
+      attach(sid, host, { focus: false })
+      if (document.visibilityState === 'visible')
+        void terminalAttach(sid, document.hasFocus())
+          .then(() => fit(sid))
+          .catch(() => {})
+      else void terminalDetach(sid).catch(() => {})
+    }
+    const observer = new ResizeObserver(() => attach(sid, host, { focus: false }))
     observer.observe(host)
     // Fires when this or another window gains focus, which can move PTY sizing here.
     window.addEventListener(ACTIVE_CHANGED, refit)
-    void hydrateSession(sid)
-      .then((snapshot) => {
-        if (disposed) return
-        setReady(true)
-        if (!snapshot && terminal.kind === 'shell' && !useStore.getState().sessions[sid]) {
-          void startTerminal(componentId, terminal.id, task)
-        }
-        refit()
-      })
-      .catch((e) => useStore.getState().setMessage(String(e)))
+    document.addEventListener('visibilitychange', refit)
+    // Hydration fails while the service is disconnected; reconnecting retries it.
+    let hydrated = false
+    const load = () =>
+      hydrateSession(sid)
+        .then((snapshot) => {
+          if (disposed || hydrated) return
+          hydrated = true
+          setReady(true)
+          if (
+            !existingSessionId &&
+            useStore.getState().serviceConnected &&
+            !snapshot &&
+            terminal.kind === 'shell' &&
+            !useStore.getState().sessions[sid]
+          ) {
+            void startTerminal(componentId, terminal.id, task)
+          }
+          refit()
+        })
+        .catch((e) => {
+          if (!disposed && useStore.getState().serviceConnected)
+            useStore.getState().setMessage(String(e))
+        })
+    const reconnected = () => {
+      if (hydrated) refit()
+      else void load()
+    }
+    window.addEventListener('patchbay:reconnected', reconnected)
+    void load()
     return () => {
       disposed = true
       observer.disconnect()
+      if (!detachHost(sid, host)) void terminalDetach(sid).catch(() => {})
+      window.removeEventListener('patchbay:reconnected', reconnected)
+      document.removeEventListener('visibilitychange', refit)
       window.removeEventListener(ACTIVE_CHANGED, refit)
     }
-  }, [sid, componentId, terminal.id, terminal.kind, focus, task])
+  }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId, task])
 
   // Showing a session in a focused window acknowledges it in every window.
   useEffect(() => {
@@ -72,6 +108,19 @@ export default function TerminalPane({
 
   return (
     <div className="terminal-area">
+      {!connected && (
+        <div className="terminal-notice" role="status">
+          Disconnected · reconnecting to session service…
+        </div>
+      )}
+      {session?.truncated && (
+        <div className="terminal-notice">Earlier output was truncated (512 KiB history limit).</div>
+      )}
+      {session?.interrupted && (
+        <div className="terminal-notice">
+          Interrupted · the service restarted. Recovery is explicit.
+        </div>
+      )}
       {session?.notice && dismissed !== session.startedMs && (
         <div className="terminal-notice" role="status">
           <span>{session.notice}</span>
@@ -81,7 +130,7 @@ export default function TerminalPane({
         </div>
       )}
       <div className="terminal-host" ref={hostRef} />
-      {ready && !session && terminal.kind !== 'shell' && (
+      {connected && ready && !session && terminal.kind !== 'shell' && (
         <div className="terminal-overlay">
           <button
             className="primary"

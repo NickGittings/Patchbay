@@ -7,13 +7,14 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 | Path | What |
 |---|---|
 | `crates/patchbay-core` | Headless engine: project model, repo detection, PTY sessions, agent context, git status, device presets, policy hook |
-| `crates/patchbay-cli` | `patchbay detect [dir]` and `patchbay context <component>` without the UI |
+| `crates/patchbay-cli` | Project inspection and session lifecycle commands without the UI |
+| `crates/patchbay-sessiond` | Independent local PTY service shared by desktop and CLI |
 | `apps/desktop` | Tauri 2 + React app (React Flow canvas, xterm.js terminals) |
 | `devices/` | Built-in terminal presets (same format as user devices) |
 
 ## Develop
 
-Prerequisites: Rust (rustup), Node 20+.
+Prerequisites: Rust 1.89+ (rustup), Node 20+.
 
 ```sh
 cd apps/desktop
@@ -40,7 +41,7 @@ cargo test --workspace
 - **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then Save to write `patchbay.json` (commit it to share the map). **Rescan** adds components for new folders without touching your edits.
 - **Repos**: a project can span several git repos. Open a parent folder that holds them, or use **Add repo…** to add a repo that lives beside the project; it is stored as a relative path such as `../billing`, so keep the same folder layout on other machines. Any nested repo becomes a component even without a recognised manifest, and git status is tracked per repo.
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
-- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders, double-click a file to reveal it in Finder (files are never opened directly, so a double-click can't run an executable from the repo), or use **Reveal in Finder** for the component folder. Closing the main window also closes component windows and stops their terminals.
+- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders, double-click a file to reveal it in Finder (files are never opened directly, so a double-click can't run an executable from the repo), or use **Reveal in Finder** for the component folder. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
 - **Terminal**: a real PTY that opens in the component's folder. Kinds are `shell` (interactive, starts when first viewed), `task` (dev server, tests…) and `agent`.
 - **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
@@ -73,7 +74,7 @@ expressions hide the contribution.
 For code, set `main` to an ES module exporting `activate(patchbay)` and optionally
 `deactivate()`. Activation events are `onStartup`, `onProjectOpen`, `onCommand:<id>`,
 `onView:<id>`, and `workspaceContains:<file>`; first command/view use also activates its owner.
-Project changes, disabling an extension, and Reload dispose old hosts. Code runs only in the
+Each project retains its own host when tabs change. Disabling an extension and Reload dispose its hosts. Code runs only in the
 main window, in opaque-origin `sandbox="allow-scripts"` frames. The broker binds each request
 to its sending frame, checks permissions, bounds messages and concurrent calls, and stops
 hosts that stop answering (three timeouts in a row) or send excessive traffic; a single slow
@@ -101,6 +102,64 @@ or `... -- detect examples/extensions/docker/fixture` to inspect it. `npm run sm
 checks the example inside the desktop app, including the iframe IPC sandbox. Project-local
 extensions, marketplace/URL installs, and extension views in pop-out windows are future work.
 
+## Workspace continuity
+
+Projects open in separate tabs. Each canonical folder has a persistent local identity;
+Git worktrees and copied folders remain separate projects even when their component IDs
+match. Switching tabs keeps drafts, selection, planner scope, view, panel sizes, viewport,
+terminals and component windows. Closing a tab detaches its work; **Sessions** continues to
+show it, grouped by project.
+
+**Quit Patchbay** and normal window closure leave shells, tasks and agents running in the
+independent `patchbay-sessiond` helper. **Stop** terminates a session. **Stop all work and
+quit** explicitly terminates all work. Sessions show **Disconnected** while the desktop
+reconnects; losing a connection never starts replacement processes. The helper exits after
+60 seconds without clients or running processes.
+
+Local recovery lives in `~/.patchbay/workspaces/default.json`; identities live beside it.
+Drafts are written atomically after 500 ms of inactivity and flushed on orderly main-window
+closure. Autosave does **not** save `patchbay.json` or clear its unsaved indicator. When the
+saved map changed, choose **Recover draft** or **Use saved map**. Missing folders remain
+visible with **Locate folder…** and **Remove**. Restored external folders remain locked until
+their grants are revalidated through Browse or Add repo.
+
+The private `~/.patchbay/sessiond/` directory contains the versioned loopback endpoint,
+credentials and session history. Only the native host connects; credentials are never
+sent to webviews. Each process incarnation retains at most 512 KiB of output. Older
+incarnations remain accessible in Sessions until **Forget** removes an ended session.
+Replay is bounded scrollback, not an exact reconstruction of every full-screen application.
+Service crashes and machine reboots mark prior work **Interrupted**; recovery is explicit.
+Moved folders must be relinked, and a resumed conversation still needs its recorded working
+directory and provider history.
+
+Agent terminals/devices accept `"adapter": "claude"` or `"adapter": "codex"`. Recognized direct
+provider commands get defaults; select an adapter for a custom command. **Reconnect**
+attaches to a live process. **Resume conversation** explicitly resumes an ended conversation
+by its stored provider ID, separately from its PTY ID and process generation. Recognized
+resume instructions capture an exact ID; otherwise use **Set conversation ID**. Patchbay
+never selects the newest conversation in a directory. Resume preserves launch options and
+Patchbay context. Unsupported compound/wrapper commands report an error when their options
+cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
+and [Codex CLI documentation](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+```sh
+cargo build -p patchbay-cli -p patchbay-sessiond
+./target/debug/patchbay sessions list
+./target/debug/patchbay sessions attach SESSION_ID   # Ctrl+] detaches
+./target/debug/patchbay sessions stop SESSION_ID
+./target/debug/patchbay sessions set-conversation SESSION_ID PROVIDER_ID
+./target/debug/patchbay sessions resume SESSION_ID
+./target/debug/patchbay sessions forget SESSION_ID
+./target/debug/patchbay sessions shutdown            # refuses if work is running
+./target/debug/patchbay sessions shutdown --stop-running
+```
+
+Development and Tauri packaging build and copy the helper automatically. Standalone CLI
+installations need `patchbay-sessiond` beside `patchbay`. `PATCHBAY_STATE_DIR` selects isolated
+local state for tests; it must be an absolute path. `npm run smoke:workspace` accepts a second
+fixture through `PATCHBAY_SMOKE_ROOT_2`. `npm run smoke:lifecycle` creates isolated fixtures,
+quits and relaunches the desktop, and verifies the same process and recovered workspace.
+`PATCHBAY_SMOKE_PORT` can select a free port for that harness.
 ## Graph actions
 
 Use **Groups** beneath the component hierarchy to save reusable component sets in

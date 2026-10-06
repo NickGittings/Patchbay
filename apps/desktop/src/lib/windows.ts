@@ -1,11 +1,12 @@
+import { invoke } from '@tauri-apps/api/core'
 import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   getAllWebviewWindows,
   getCurrentWebviewWindow,
   WebviewWindow,
 } from '@tauri-apps/api/webviewWindow'
-import { useStore } from '../store'
-import type { Project, Task } from '../types'
+import { projectFrom, useStore } from '../store'
+import type { Task } from '../types'
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -42,8 +43,8 @@ export const ACTIVE_CHANGED = 'patchbay:active-changed'
 
 // Encoding code points avoids collisions between ids with different punctuation.
 // Must match `component_window_label` in src-tauri/src/lib.rs.
-const componentLabel = (id: string) =>
-  `component-${Array.from(id, (c) => c.codePointAt(0)!.toString(16)).join('-')}`
+export const componentLabel = (id: string, projectId: string) =>
+  `component-${Array.from(JSON.stringify([projectId, id]), (c) => c.codePointAt(0)!.toString(16)).join('-')}`
 
 const ownLabel = getCurrentWebviewWindow().label
 /** The window that most recently had focus, as last heard by this webview. */
@@ -57,8 +58,7 @@ const setActive = (label: string) => {
 
 /**
  * Track which window was focused last, across webviews. Call once per webview at startup.
- * The focused window always answers its own input; `ownsSession` decides who answers when
- * nothing is focused.
+ * Panes claim terminal authority when their window becomes active (`ACTIVE_CHANGED`).
  */
 export function trackActiveWindow() {
   const activate = () => {
@@ -75,27 +75,22 @@ export function trackActiveWindow() {
 }
 
 /**
- * Exactly one window owns each session: it answers the terminal's automatic queries
- * (cursor position, device attributes…) and sizes its PTY. That's the active window when
- * it shows the session (main shows them all, a pop-out only its component's), otherwise main.
+ * Whether this window shows a session: main shows all of them, a pop-out only its
+ * component's. The backend routes terminal events the same way (`Bridge::route`).
  */
-export function ownsSession(sid: string) {
-  const activeShows =
-    activeLabel === 'main' || labelsShowing(sid).some((label) => label === activeLabel)
-  return activeShows ? activeLabel === ownLabel : ownLabel === 'main'
-}
-
-/** Labels of the pop-outs that could show `sid`; component ids may themselves contain `/`. */
-function labelsShowing(sid: string) {
-  const labels: string[] = []
-  for (let i = sid.indexOf('/'); i >= 0; i = sid.indexOf('/', i + 1))
-    labels.push(componentLabel(sid.slice(0, i)))
-  return labels
+export function showsSession(metadata: { projectId: string; componentId: string }) {
+  return (
+    ownLabel === 'main' || componentLabel(metadata.componentId, metadata.projectId) === ownLabel
+  )
 }
 const opening = new Map<string, Promise<void>>()
 
-export function openComponentWindow(componentId: string, name: string): Promise<void> {
-  const label = componentLabel(componentId)
+export function openComponentWindow(
+  componentId: string,
+  name: string,
+  projectId = useStore.getState().project?.id ?? '',
+): Promise<void> {
+  const label = componentLabel(componentId, projectId)
   const existing = opening.get(label)
   if (existing) return existing
   const request = (async () => {
@@ -104,15 +99,21 @@ export function openComponentWindow(componentId: string, name: string): Promise<
       await window.setFocus()
       return
     }
-    const project = useStore.getState().project
+    const project = useStore.getState().captureProjects()[projectId]
     if (!project) return
+    const geometry = await invoke<Record<string, number | boolean>>('window_register', {
+      label,
+      projectId,
+      componentId,
+    })
     const popout = new WebviewWindow(label, {
-      url: `index.html?component=${encodeURIComponent(componentId)}`,
+      url: `index.html?component=${encodeURIComponent(componentId)}&project=${encodeURIComponent(projectId)}`,
       title: `${project.name} · ${name}`,
       width: 1100,
       height: 700,
       minWidth: 600,
       minHeight: 400,
+      ...geometry,
     })
     await new Promise<void>((resolve, reject) => {
       void popout.once('tauri://created', () => resolve())
@@ -125,10 +126,21 @@ export function openComponentWindow(componentId: string, name: string): Promise<
   return request
 }
 
-/** Close every pop-out, e.g. before switching projects so none shows stale sessions. */
-export async function closeComponentWindows() {
+/** Close a detached project's pop-outs, or all component windows on main-window closure. */
+export async function closeComponentWindows(projectId?: string) {
   const windows = await getAllWebviewWindows()
-  await Promise.all(windows.filter((w) => w.label.startsWith('component-')).map((w) => w.close()))
+  await Promise.all(
+    windows
+      .filter(
+        (w) =>
+          w.label.startsWith('component-') &&
+          (!projectId ||
+            Object.values(
+              useStore.getState().captureProjects()[projectId]?.state?.nodes ?? [],
+            ).some((n) => componentLabel(n.id, projectId) === w.label)),
+      )
+      .map((w) => w.close()),
+  )
 }
 
 /** Main window owns project edits; pop-outs receive models without losing session state. */
@@ -136,52 +148,52 @@ export function syncComponentWindows(): () => void {
   let disposed = false
   let unlisten: UnlistenFn | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  // Last payloads broadcast, so selection and drags don't re-send the project. Git status is
-  // re-sent on every refresh (a new object), even with equal counts: pop-out change lists and
-  // diffs reload on it, since editing an already-changed file leaves the counts as they were.
-  let sentProject = ''
-  let sentGit: unknown = null
-  let sentTasks = ''
-  const tasksPayload = (): TasksPayload => {
-    const { tasks, activeTask } = useStore.getState()
-    return { tasks, activeTask }
-  }
+  // What each pop-out was last sent, so selection and drags don't re-send the project. Git
+  // status is re-sent on every refresh (a new object), even with equal counts: pop-out change
+  // lists and diffs reload on it, since editing an already-changed file leaves the counts as
+  // they were. A ready pop-out starts over.
+  const sent = new Map<string, { model: string; git: unknown; tasks: string }>()
   const report = (e: unknown) => useStore.getState().setMessage(String(e))
+  const payload = (projectId: string) => {
+    const entry = useStore.getState().captureProjects()[projectId]
+    const state = entry?.state
+    if (!state?.project) return null
+    return {
+      project: projectFrom(state),
+      git: state.gitChanges,
+      tasks: { tasks: state.tasks, activeTask: state.activeTask } as TasksPayload,
+    }
+  }
   const broadcast = async () => {
     const windows = await getAllWebviewWindows()
     if (disposed) return
-    if (!windows.some((w) => w.label.startsWith('component-'))) {
-      // Nobody received the changes, so the next pop-out's READY reply is its baseline.
-      sentProject = ''
-      sentGit = null
-      sentTasks = ''
-      return
-    }
-    const s = useStore.getState()
-    if (!s.project) return
-    const project = s.toProject()
-    const projectJson = JSON.stringify(project)
-    if (projectJson !== sentProject) {
-      sentProject = projectJson
-      await emit<Project>(PROJECT_EVENT, project)
-    }
-    const tasks = tasksPayload()
-    const tasksJson = JSON.stringify(tasks)
-    if (tasksJson !== sentTasks) {
-      sentTasks = tasksJson
-      await emit<TasksPayload>(TASKS_EVENT, tasks)
-    }
-    if (s.gitChanges !== sentGit) {
-      sentGit = s.gitChanges
-      await emit(GIT_EVENT, s.gitChanges)
+    for (const [projectId, entry] of Object.entries(useStore.getState().captureProjects())) {
+      const data = payload(projectId)
+      if (!data) continue
+      // Positions don't matter to pop-outs, so drags don't resend anything.
+      const model = JSON.stringify({
+        ...data.project,
+        components: data.project.components.map((c) => ({ ...c, position: undefined })),
+      })
+      const tasks = JSON.stringify(data.tasks)
+      for (const node of entry.state?.nodes ?? []) {
+        const label = componentLabel(node.id, projectId)
+        if (!windows.some((w) => w.label === label)) continue
+        const last = sent.get(label)
+        if (last?.model !== model) await emitTo(label, PROJECT_EVENT, data.project)
+        if (last?.tasks !== tasks) await emitTo<TasksPayload>(label, TASKS_EVENT, data.tasks)
+        if (last?.git !== data.git) await emitTo(label, GIT_EVENT, data.git)
+        sent.set(label, { model, git: data.git, tasks })
+      }
     }
   }
-  void listen<{ label: string }>(READY_EVENT, (e) => {
-    const s = useStore.getState()
-    if (!s.project || !e.payload.label.startsWith('component-')) return
-    void emitTo(e.payload.label, PROJECT_EVENT, s.toProject()).catch(report)
-    void emitTo(e.payload.label, TASKS_EVENT, tasksPayload()).catch(report)
-    void emitTo(e.payload.label, GIT_EVENT, s.gitChanges).catch(report)
+  void listen<{ label: string; projectId: string }>(READY_EVENT, (e) => {
+    const data = payload(e.payload.projectId)
+    if (!data || !e.payload.label.startsWith('component-')) return
+    sent.delete(e.payload.label)
+    void emitTo(e.payload.label, PROJECT_EVENT, data.project).catch(report)
+    void emitTo<TasksPayload>(e.payload.label, TASKS_EVENT, data.tasks).catch(report)
+    void emitTo(e.payload.label, GIT_EVENT, data.git).catch(report)
   })
     .then((f) => {
       if (disposed) f()
@@ -193,6 +205,7 @@ export function syncComponentWindows(): () => void {
       s.nodes === prev.nodes &&
       s.edges === prev.edges &&
       s.project === prev.project &&
+      s.projects === prev.projects &&
       s.gitChanges === prev.gitChanges &&
       s.tasks === prev.tasks &&
       s.activeTask === prev.activeTask

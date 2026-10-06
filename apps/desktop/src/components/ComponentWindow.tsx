@@ -1,8 +1,11 @@
+import PersistedGroup from './PersistedGroup'
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useState, type CSSProperties } from 'react'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
+import { invoke } from '@tauri-apps/api/core'
+import { reconcileSessions } from '../lib/sessions'
 import { revealPath } from '../lib/ipc'
 import { listenForTerminals } from '../lib/sessions'
 import {
@@ -18,6 +21,9 @@ import { type Project } from '../types'
 import ChangesPanel from './changes/ChangesPanel'
 import FileTree from './FileTree'
 import TerminalGrid from './TerminalGrid'
+
+/** Panel sizes saved for this window, applied once the project model has loaded. */
+let savedPanels: Record<string, Record<string, number>> | undefined
 
 export default function ComponentWindow({ id }: { id: string }) {
   const project = useStore((s) => s.project)
@@ -37,9 +43,14 @@ export default function ComponentWindow({ id }: { id: string }) {
     }
     void (async () => {
       await listenForTerminals()
+      await reconcileSessions().catch(() => {})
       await register(
         listen<Project>(PROJECT_EVENT, (e) => {
-          useStore.getState().syncProject(e.payload)
+          if (!useStore.getState().project) {
+            useStore.getState().loadProject(e.payload)
+            // Loading resets panel sizes; put back the ones saved for this window.
+            if (savedPanels) useStore.setState({ panels: savedPanels })
+          } else useStore.getState().syncProject(e.payload)
           setReceived(true)
         }),
       )
@@ -56,7 +67,10 @@ export default function ComponentWindow({ id }: { id: string }) {
         }),
       )
       if (!disposed) {
-        await emitTo('main', READY_EVENT, { label: getCurrentWebviewWindow().label })
+        await emitTo('main', READY_EVENT, {
+          label: getCurrentWebviewWindow().label,
+          projectId: new URLSearchParams(location.search).get('project'),
+        })
       }
     })().catch((e) => useStore.getState().setMessage(String(e)))
     return () => {
@@ -65,6 +79,22 @@ export default function ComponentWindow({ id }: { id: string }) {
     }
   }, [])
 
+  useEffect(() => {
+    void invoke<{ tab?: 'files' | 'changes'; panels?: Record<string, Record<string, number>> }>(
+      'window_layout',
+    ).then((layout) => {
+      if (layout?.tab === 'files' || layout?.tab === 'changes') setTab(layout.tab)
+      if (layout?.panels) {
+        savedPanels = layout.panels
+        // Before the model arrives, the PROJECT_EVENT handler applies them instead.
+        if (useStore.getState().project) useStore.setState({ panels: layout.panels })
+      }
+    })
+  }, [])
+  const changeTab = (value: 'files' | 'changes') => {
+    setTab(value)
+    void invoke('window_tab', { tab: value })
+  }
   const name = component?.data.name
   useEffect(() => {
     if (project && name) {
@@ -110,15 +140,15 @@ export default function ComponentWindow({ id }: { id: string }) {
           {message}
         </div>
       )}
-      <Group orientation="horizontal" className="workspace">
-        <Panel defaultSize="28" minSize="15">
+      <PersistedGroup layoutId="ComponentWindow-1" orientation="horizontal" className="workspace">
+        <Panel id="ComponentWindow-pane-1" defaultSize="28" minSize="15">
           <div className="side-tabs-panel">
             <div className="side-tabs" role="tablist">
               <button
                 role="tab"
                 aria-selected={tab === 'files'}
                 className={tab === 'files' ? 'active' : ''}
-                onClick={() => setTab('files')}
+                onClick={() => changeTab('files')}
               >
                 Files
               </button>
@@ -126,7 +156,7 @@ export default function ComponentWindow({ id }: { id: string }) {
                 role="tab"
                 aria-selected={tab === 'changes'}
                 className={tab === 'changes' ? 'active' : ''}
-                onClick={() => setTab('changes')}
+                onClick={() => changeTab('changes')}
               >
                 Changes{changes > 0 && <span className="git-badge">±{changes}</span>}
               </button>
@@ -145,10 +175,10 @@ export default function ComponentWindow({ id }: { id: string }) {
           </div>
         </Panel>
         <Separator className="separator" />
-        <Panel defaultSize="72" minSize="30">
+        <Panel id="ComponentWindow-pane-2" defaultSize="72" minSize="30">
           <TerminalGrid componentId={id} terminals={data.terminals} />
         </Panel>
-      </Group>
+      </PersistedGroup>
     </div>
   )
 }

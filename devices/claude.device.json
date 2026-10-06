@@ -4,5 +4,6 @@
   "category": "Agents",
   "description": "Claude Code scoped to this component, with related components as context.",
   "command": "claude",
-  "kind": "agent"
+  "kind": "agent",
+  "adapter": "claude"
 }

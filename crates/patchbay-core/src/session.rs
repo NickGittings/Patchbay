@@ -1,0 +1,1471 @@
+//! Versioned, authenticated loopback session service shared by desktop and CLI.
+//! Webviews never receive endpoint credentials. Disconnect is not a stop operation.
+use crate::actions::{ActionPlan, GraphActions, Launch, Terminals};
+use crate::adapters::Adapter;
+use crate::pty::{PtyManager, SessionSpec, Snapshot};
+use crate::workspace::{atomic_write, home, lock, private_dir};
+use crate::{EventSink, TerminalEvent, TerminalKind};
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use std::time::{Duration, Instant};
+
+pub const PROTOCOL: u32 = 1;
+const MAX_FRAME: usize = 16 * 1024 * 1024;
+/// Estimated wire size of the retained event ring (output travels as a JSON number array).
+const EVENT_CAP: usize = 8 * 1024 * 1024;
+/// Events returned by one `Poll`; a full batch tells the poller to come straight back.
+pub const POLL_LIMIT: usize = 512;
+/// Earlier incarnations kept per session, oldest dropped first.
+const MAX_HISTORY: usize = 3;
+/// How much of a finished run's output is searched for a provider's resume hint.
+const CAPTURE_TAIL: usize = 4096;
+/// Reply timeout for quick requests; slow ones (spawning, stopping, resuming) get `SLOW_TIMEOUT`.
+const TIMEOUT: Duration = Duration::from_secs(10);
+const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub protocol: u32,
+    pub port: u16,
+    pub token: String,
+    pub instance: String,
+}
+/// Where the session service keeps its endpoint, locks and records.
+///
+/// # Errors
+/// Fails if there is no home directory.
+pub fn runtime_dir() -> Result<PathBuf> {
+    Ok(home()?.join("sessiond"))
+}
+
+/// Read one length-prefixed JSON frame.
+///
+/// # Errors
+/// Fails on I/O errors, an invalid length or invalid JSON.
+pub fn read_frame<T: DeserializeOwned>(stream: &mut impl Read) -> Result<T> {
+    let mut size = [0; 4];
+    stream.read_exact(&mut size)?;
+    let size = usize::try_from(u32::from_be_bytes(size))?;
+    anyhow::ensure!(
+        size > 0 && size <= MAX_FRAME,
+        "Invalid session protocol frame length"
+    );
+    let mut bytes = vec![0; size];
+    stream.read_exact(&mut bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+/// Write one length-prefixed JSON frame.
+///
+/// # Errors
+/// Fails on I/O errors or a frame larger than the protocol allows.
+pub fn write_frame(stream: &mut impl Write, value: &impl Serialize) -> Result<()> {
+    let bytes = serde_json::to_vec(value)?;
+    anyhow::ensure!(bytes.len() <= MAX_FRAME, "Session protocol frame too large");
+    stream.write_all(&u32::try_from(bytes.len())?.to_be_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()?;
+    Ok(())
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct Hello {
+    protocol: u32,
+    token: String,
+    /// Connections sharing a client name share terminal authority, so one
+    /// process can use several connections in parallel. Unnamed ones stand alone.
+    #[serde(default)]
+    client: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Metadata {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_root: String,
+    pub component_id: String,
+    pub terminal_id: String,
+    /// The task whose worktree this terminal runs in; `None` for the project's own.
+    #[serde(default)]
+    pub task: Option<String>,
+    pub name: String,
+    pub kind: TerminalKind,
+    #[serde(default)]
+    pub adapter: Option<Adapter>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// Set explicitly by the user, so captured resume hints never replace it.
+    #[serde(default)]
+    pub conversation_pinned: bool,
+    #[serde(default)]
+    pub extension_id: Option<String>,
+    #[serde(default)]
+    pub command_id: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub command: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Record {
+    pub id: String,
+    pub metadata: Metadata,
+    pub spec: SessionSpec,
+    pub snapshot: Option<Snapshot>,
+    pub history: Vec<Snapshot>,
+    #[serde(default)]
+    pub launch_command: String,
+    pub interrupted: bool,
+    pub request_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Envelope {
+    pub instance_id: String,
+    pub sequence: u64,
+    pub event: TerminalEvent,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Batch {
+    pub instance_id: String,
+    pub end: u64,
+    pub gap: bool,
+    pub events: Vec<Envelope>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum Request {
+    List,
+    Start {
+        request_id: String,
+        metadata: Box<Metadata>,
+        spec: SessionSpec,
+    },
+    Attach {
+        id: String,
+        viewer: String,
+        claim: bool,
+    },
+    /// `Attach` without the snapshot, for viewers that already hold the output.
+    Claim {
+        id: String,
+        viewer: String,
+        claim: bool,
+    },
+    Detach {
+        id: String,
+        viewer: String,
+    },
+    DetachViewer {
+        viewer: String,
+    },
+    Write {
+        id: String,
+        viewer: String,
+        data: String,
+    },
+    Resize {
+        id: String,
+        viewer: String,
+        cols: u16,
+        rows: u16,
+    },
+    Stop {
+        id: String,
+    },
+    Seen {
+        id: String,
+    },
+    Snapshot {
+        id: String,
+    },
+    History {
+        id: String,
+        incarnation: usize,
+    },
+    Poll {
+        after: u64,
+    },
+    Resume {
+        id: String,
+        request_id: String,
+    },
+    Conversation {
+        id: String,
+        conversation_id: String,
+    },
+    Forget {
+        id: String,
+    },
+    Shutdown {
+        stop_running: bool,
+    },
+    /// Run a graph action `plan` (built by the caller, which also scoped it).
+    /// `project` is already trusted, restricted and, for a task, moved into its
+    /// worktree. Blocks until it finishes.
+    ActionRun {
+        project: Box<crate::Project>,
+        plan: Box<ActionPlan>,
+    },
+    ActionStopGroup {
+        project_id: String,
+        group_id: String,
+        task: Option<String>,
+    },
+    /// Stop the project's running validation; returns whether one was running.
+    ActionCancel {
+        project_id: String,
+    },
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct Response {
+    result: serde_json::Value,
+    error: Option<String>,
+}
+impl Response {
+    fn result(result: Result<serde_json::Value>) -> Self {
+        match result {
+            Ok(result) => Self {
+                result,
+                error: None,
+            },
+            Err(e) => Self {
+                result: serde_json::Value::Null,
+                error: Some(e.to_string()),
+            },
+        }
+    }
+}
+pub struct Client {
+    stream: TcpStream,
+    pub instance: String,
+    /// Set after a transport error or timeout: the stream may still hold the
+    /// reply to an abandoned request, so it must never be read again.
+    broken: bool,
+}
+impl Client {
+    /// Connect to the running service as a standalone client.
+    ///
+    /// # Errors
+    /// Fails if no service is running, its protocol differs, or authentication fails.
+    pub fn connect(dir: &Path) -> Result<Self> {
+        Self::connect_as(dir, None)
+    }
+    /// Connect as `client`: every connection with the same name shares terminal
+    /// authority, and loses it only when the last one closes.
+    ///
+    /// # Errors
+    /// Fails if no service is running, its protocol differs, or authentication fails.
+    pub fn connect_as(dir: &Path, client: Option<&str>) -> Result<Self> {
+        let endpoint: Endpoint =
+            serde_json::from_slice(&std::fs::read(dir.join("endpoint.json"))?)?;
+        anyhow::ensure!(
+            endpoint.protocol == PROTOCOL,
+            "Session service protocol mismatch. Running work was preserved. Install a matching Patchbay version, or explicitly stop work with the matching CLI before upgrading."
+        );
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+        stream.set_read_timeout(Some(TIMEOUT))?;
+        stream.set_write_timeout(Some(TIMEOUT))?;
+        stream.set_nodelay(true)?;
+        write_frame(
+            &mut stream,
+            &Hello {
+                protocol: PROTOCOL,
+                token: endpoint.token,
+                client: client.map(Into::into),
+            },
+        )?;
+        let response: Response = read_frame(&mut stream)?;
+        if let Some(error) = response.error {
+            bail!("{error}");
+        }
+        Ok(Self {
+            stream,
+            instance: endpoint.instance,
+            broken: false,
+        })
+    }
+    /// Connect, starting the helper first if no service is running.
+    ///
+    /// # Errors
+    /// Fails if a service of another protocol is running, the helper is missing,
+    /// or no service answers within 10 seconds.
+    pub fn ensure(dir: &Path, helper: &Path) -> Result<Self> {
+        Self::ensure_as(dir, helper, None)
+    }
+    /// `ensure` with a client name, as for `connect_as`.
+    ///
+    /// # Errors
+    /// As for `ensure`.
+    pub fn ensure_as(dir: &Path, helper: &Path, client: Option<&str>) -> Result<Self> {
+        if let Ok(client) = Self::connect_as(dir, client) {
+            return Ok(client);
+        }
+        private_dir(dir)?;
+        // A separate OS lock serializes launcher clients. Service lifetime uses service.lock.
+        let startup = lock(&dir.join("startup.lock"))?;
+        startup.lock()?;
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut spawned: Option<Instant> = None;
+        loop {
+            let error = match Self::connect_as(dir, client) {
+                Ok(client) => return Ok(client),
+                Err(e) => e,
+            };
+            if Instant::now() >= until {
+                return Err(error.context("Session service unavailable; no work was restarted"));
+            }
+            // No live service holds the lifetime lock: whatever endpoint.json says is
+            // stale (an older version's, or one that exited while we connected).
+            // Start one, again if the last one we started has since gone idle.
+            if service_stopped(dir)?
+                && spawned.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
+            {
+                spawn_helper(dir, helper)?;
+                spawned = Some(Instant::now());
+            } else if spawned.is_none()
+                && let Ok(bytes) = std::fs::read(dir.join("endpoint.json"))
+                && serde_json::from_slice::<Endpoint>(&bytes).is_ok_and(|e| e.protocol != PROTOCOL)
+            {
+                bail!(
+                    "Session service protocol mismatch; running work was preserved. Use the matching Patchbay version."
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    /// Whether a transport error or timeout made this connection unusable.
+    #[must_use]
+    pub fn is_broken(&self) -> bool {
+        self.broken
+    }
+    /// Send one request and wait for its reply.
+    ///
+    /// # Errors
+    /// Fails if the service reports an error, or on transport errors and timeouts,
+    /// after which the client is broken and every later call fails.
+    pub fn call<T: DeserializeOwned>(&mut self, request: Request) -> Result<T> {
+        anyhow::ensure!(!self.broken, "Session service connection was lost");
+        let timeout = match request {
+            // Validators and readiness gates take as long as they take.
+            Request::ActionRun { .. } => None,
+            Request::Start { .. }
+            | Request::Resume { .. }
+            | Request::Stop { .. }
+            | Request::Forget { .. }
+            | Request::Shutdown { .. }
+            | Request::ActionStopGroup { .. } => Some(SLOW_TIMEOUT),
+            _ => Some(TIMEOUT),
+        };
+        let response = (|| -> Result<Response> {
+            self.stream.set_read_timeout(timeout)?;
+            write_frame(&mut self.stream, &request)?;
+            read_frame(&mut self.stream)
+        })();
+        let response = match response {
+            Ok(response) => response,
+            Err(e) => {
+                self.broken = true;
+                return Err(e);
+            }
+        };
+        if let Some(error) = response.error {
+            bail!("{error}");
+        }
+        Ok(serde_json::from_value(response.result)?)
+    }
+}
+
+/// True when no service process holds the lifetime lock.
+fn service_stopped(dir: &Path) -> Result<bool> {
+    let service_lock = lock(&dir.join("service.lock"))?;
+    if service_lock.try_lock().is_ok() {
+        service_lock.unlock()?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn spawn_helper(dir: &Path, helper: &Path) -> Result<()> {
+    anyhow::ensure!(
+        helper.is_file(),
+        "Session helper missing at {}. Build/install patchbay-sessiond alongside Patchbay.",
+        helper.display()
+    );
+    let mut command = std::process::Command::new(helper);
+    command.arg(dir);
+    let log_path = dir.join("service.log");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > 128 * 1024) {
+        atomic_write(&log_path, b"")?;
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(options.open(log_path)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0008 | 0x0800_0000);
+    }
+    let mut child = command.spawn().context("Starting session helper")?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+#[derive(Default)]
+struct Events {
+    end: u64,
+    bytes: usize,
+    ring: VecDeque<(usize, Envelope)>,
+}
+#[derive(Clone)]
+struct Viewer {
+    client: String,
+    viewer: String,
+    order: u64,
+}
+pub struct Service {
+    pty: Arc<PtyManager>,
+    /// Graph actions per project: each runs one operation at a time, and
+    /// projects never wait on or cancel each other.
+    actions: Mutex<HashMap<String, Arc<GraphActions>>>,
+    records: Mutex<BTreeMap<String, Record>>,
+    events: Mutex<Events>,
+    viewers: Mutex<BTreeMap<String, Vec<Viewer>>>,
+    /// Open connections per client name; viewers are dropped with the last one.
+    connections: Mutex<HashMap<String, usize>>,
+    /// Sessions that exited since the serve loop last looked for resume hints.
+    exited: Mutex<Vec<String>>,
+    operation: Mutex<()>,
+    persistence: Mutex<()>,
+    instance: String,
+    dir: PathBuf,
+    /// Records or lifecycle changed: persisted within `SAVE_DIRTY`.
+    dirty: AtomicBool,
+    /// Only output arrived: persisted within `SAVE_OUTPUT`.
+    output_dirty: AtomicBool,
+    shutdown: AtomicBool,
+    clients: AtomicUsize,
+    authority: AtomicUsize,
+}
+const SAVE_DIRTY: Duration = Duration::from_millis(500);
+const SAVE_OUTPUT: Duration = Duration::from_secs(5);
+impl Service {
+    fn load(dir: &Path) -> Result<Arc<Self>> {
+        let path = dir.join("sessions.json");
+        let mut records: BTreeMap<String, Record> = if path.exists() {
+            serde_json::from_slice(&std::fs::read(path)?)
+                .context("Session history is invalid; retained for recovery")?
+        } else {
+            BTreeMap::new()
+        };
+        for record in records.values_mut() {
+            if let Some(s) = &mut record.snapshot
+                && s.running
+            {
+                s.running = false;
+                record.interrupted = true;
+            }
+            record.history.iter_mut().for_each(|s| s.running = false);
+            trim_history(&mut record.history);
+        }
+        let generation = records
+            .values()
+            .flat_map(|r| r.snapshot.iter().chain(r.history.iter()))
+            .map(|s| s.generation)
+            .max()
+            .unwrap_or(0);
+        anyhow::ensure!(
+            generation < u64::MAX,
+            "Invalid persisted process generation"
+        );
+        Ok(Arc::new(Self {
+            pty: Arc::new(PtyManager::with_generation_floor(generation)),
+            actions: Mutex::default(),
+            records: Mutex::new(records),
+            events: Mutex::default(),
+            viewers: Mutex::default(),
+            connections: Mutex::default(),
+            exited: Mutex::default(),
+            operation: Mutex::new(()),
+            persistence: Mutex::new(()),
+            instance: uuid::Uuid::new_v4().to_string(),
+            dir: dir.into(),
+            dirty: AtomicBool::new(true),
+            output_dirty: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            clients: AtomicUsize::new(0),
+            authority: AtomicUsize::new(0),
+        }))
+    }
+    fn actions_for(&self, project_id: &str) -> Arc<GraphActions> {
+        self.actions
+            .lock()
+            .unwrap()
+            .entry(project_id.into())
+            .or_default()
+            .clone()
+    }
+    fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        self.pty
+            .snapshot(id)
+            .or_else(|| self.records.lock().unwrap().get(id)?.snapshot.clone())
+    }
+    /// Every record with its live snapshot, output included, for persistence.
+    fn list(&self) -> Vec<Record> {
+        let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
+        for r in &mut records {
+            if let Some(s) = self.pty.snapshot(&r.id) {
+                r.snapshot = Some(s);
+            }
+        }
+        records
+    }
+    /// Records without output, environment or launch internals, for clients.
+    /// Never copies a backlog.
+    fn summaries(&self) -> Vec<Record> {
+        let bare = |s: &Snapshot| Snapshot {
+            data: Vec::new(),
+            notice: s.notice.clone(),
+            status: s.status.clone(),
+            ..*s
+        };
+        let records = self.records.lock().unwrap();
+        records
+            .values()
+            .map(|r| {
+                let mut spec = r.spec.clone();
+                spec.env.clear();
+                spec.command.clone_from(&r.metadata.command);
+                Record {
+                    id: r.id.clone(),
+                    metadata: r.metadata.clone(),
+                    spec,
+                    snapshot: self
+                        .pty
+                        .snapshot_with(&r.id, 0)
+                        .or_else(|| r.snapshot.as_ref().map(bare)),
+                    history: r.history.iter().map(bare).collect(),
+                    launch_command: String::new(),
+                    interrupted: r.interrupted,
+                    request_ids: Vec::new(),
+                }
+            })
+            .collect()
+    }
+    fn persist(&self) -> Result<()> {
+        let _persistence = self.persistence.lock().unwrap();
+        let records: BTreeMap<_, _> = self.list().into_iter().map(|r| (r.id.clone(), r)).collect();
+        atomic_write(
+            &self.dir.join("sessions.json"),
+            &serde_json::to_vec(&records)?,
+        )
+    }
+    fn owns(&self, client: &str, id: &str, viewer: &str) -> bool {
+        self.viewers
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|v| v.iter().max_by_key(|v| v.order))
+            .is_some_and(|v| v.client == client && v.viewer == viewer)
+    }
+    fn claim(&self, client: &str, id: String, viewer: String, claim: bool) {
+        let mut viewers = self.viewers.lock().unwrap();
+        let own = viewers.entry(id).or_default();
+        let order = self.authority.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+        match own
+            .iter_mut()
+            .find(|v| v.client == client && v.viewer == viewer)
+        {
+            Some(v) if claim => v.order = order,
+            Some(_) => {}
+            None => own.push(Viewer {
+                client: client.into(),
+                viewer,
+                order: if claim || own.is_empty() { order } else { 0 },
+            }),
+        }
+    }
+    fn connected(&self, client: &str) {
+        *self
+            .connections
+            .lock()
+            .unwrap()
+            .entry(client.into())
+            .or_default() += 1;
+    }
+    fn disconnected(&self, client: &str) {
+        let mut connections = self.connections.lock().unwrap();
+        let count = connections.entry(client.into()).or_default();
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            connections.remove(client);
+            for viewers in self.viewers.lock().unwrap().values_mut() {
+                viewers.retain(|v| v.client != client);
+            }
+        }
+    }
+    /// Read the resume hints providers print as they exit, from the tail of each
+    /// finished run. Runs outside the event path, which holds the backlog lock.
+    fn capture_conversations(&self) {
+        let exited = std::mem::take(&mut *self.exited.lock().unwrap());
+        for id in exited {
+            let Some(tail) = self.pty.snapshot_with(&id, CAPTURE_TAIL) else {
+                continue;
+            };
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(&id) else {
+                continue;
+            };
+            if record.metadata.conversation_pinned {
+                continue;
+            }
+            if let Some(adapter) = record.metadata.adapter
+                && let Some(conversation) = adapter.capture(&String::from_utf8_lossy(&tail.data))
+            {
+                record.metadata.conversation_id = Some(conversation);
+                self.dirty.store(true, Ordering::Release);
+            }
+        }
+    }
+    fn start(
+        self: &Arc<Self>,
+        request: String,
+        metadata: Metadata,
+        spec: SessionSpec,
+    ) -> Result<String> {
+        self.start_with_command(request, metadata, spec, None, false)
+    }
+    fn start_with_command(
+        self: &Arc<Self>,
+        request: String,
+        metadata: Metadata,
+        mut spec: SessionSpec,
+        original_command: Option<String>,
+        managed: bool,
+    ) -> Result<String> {
+        anyhow::ensure!(!request.is_empty(), "Launch request ID required");
+        let id = crate::model::task_session_id(
+            &metadata.project_id,
+            &metadata.component_id,
+            &metadata.terminal_id,
+            metadata.task.as_deref(),
+        );
+        spec.id.clone_from(&id);
+        let _operation = self.operation.lock().unwrap();
+        anyhow::ensure!(
+            !self.shutdown.load(Ordering::Acquire),
+            "Session service is shutting down; no work was started"
+        );
+        if let Some(r) = self.records.lock().unwrap().get(&id)
+            && r.request_ids.contains(&request)
+        {
+            return Ok(id);
+        }
+        anyhow::ensure!(
+            !self.pty.is_running(&id),
+            "Terminal is already running; reconnect instead"
+        );
+        if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
+            let running = self.records.lock().unwrap().values().any(|r| {
+                r.metadata.adapter == Some(adapter)
+                    && r.metadata.conversation_id.as_ref() == Some(conversation)
+                    && self.pty.is_running(&r.id)
+            });
+            anyhow::ensure!(
+                !running,
+                "Conversation is already running; reconnect instead"
+            );
+        }
+        let previous = self.records.lock().unwrap().get(&id).cloned();
+        let mut history = previous
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.history.clone());
+        if let Some(snapshot) = self.snapshot(&id) {
+            history.push(snapshot);
+        }
+        trim_history(&mut history);
+        let mut requests = previous
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.request_ids.clone());
+        requests.push(request);
+        // Only recent launches can be retried; older request ids are useless.
+        requests.drain(..requests.len().saturating_sub(16));
+        self.records.lock().unwrap().insert(
+            id.clone(),
+            Record {
+                id: id.clone(),
+                metadata,
+                spec: spec.clone(),
+                snapshot: None,
+                history,
+                launch_command: original_command.unwrap_or_else(|| spec.command.clone()),
+                interrupted: false,
+                request_ids: requests,
+            },
+        );
+        let spawned = if managed {
+            self.pty.spawn_managed(spec, self.clone())
+        } else {
+            self.pty.spawn(spec, self.clone())
+        };
+        if let Err(e) = spawned {
+            let mut records = self.records.lock().unwrap();
+            if let Some(r) = previous {
+                records.insert(id, r);
+            } else {
+                records.remove(&id);
+            }
+            return Err(e);
+        }
+        // The serve loop persists shortly; a launch never waits on a full rewrite.
+        self.dirty.store(true, Ordering::Release);
+        Ok(id)
+    }
+    fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
+        let mut r = self
+            .records
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .context("Unknown session")?;
+        if r.request_ids.contains(&request_id) {
+            return Ok(id.into());
+        }
+        let adapter = r
+            .metadata
+            .adapter
+            .context("Select an adapter to resume this conversation")?;
+        let conversation = r
+            .metadata
+            .conversation_id
+            .as_ref()
+            .context("Set conversation ID before resuming")?;
+        // The recorded command points at its briefing; never resume without it.
+        if let Some(file) = r.spec.env.get(crate::context::CONTEXT_ENV) {
+            anyhow::ensure!(
+                Path::new(file).is_file(),
+                "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
+            );
+        }
+        let original = if r.launch_command.is_empty() {
+            r.spec.command.clone()
+        } else {
+            r.launch_command.clone()
+        };
+        r.spec.command = adapter.resume(&original, conversation, &r.spec.cwd)?;
+        crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
+        // Keep the original launch command for later resumes; context environment persists.
+        self.start_with_command(request_id, r.metadata, r.spec, Some(original), false)
+    }
+    fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
+        let result = match request {
+            Request::List => serde_json::to_value(self.summaries())?,
+            Request::History { id, incarnation } => {
+                let snapshot = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .and_then(|r| r.history.get(incarnation))
+                    .cloned();
+                serde_json::to_value(snapshot)?
+            }
+            Request::Start {
+                request_id,
+                metadata,
+                spec,
+            } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
+            Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
+            Request::Attach { id, viewer, claim } => {
+                self.claim(client, id.clone(), viewer, claim);
+                serde_json::to_value(self.snapshot(&id))?
+            }
+            Request::Claim { id, viewer, claim } => {
+                self.claim(client, id, viewer, claim);
+                serde_json::Value::Null
+            }
+            Request::Detach { id, viewer } => {
+                if let Some(v) = self.viewers.lock().unwrap().get_mut(&id) {
+                    v.retain(|v| v.client != client || v.viewer != viewer);
+                }
+                serde_json::Value::Null
+            }
+            Request::DetachViewer { viewer } => {
+                for v in self.viewers.lock().unwrap().values_mut() {
+                    v.retain(|v| v.client != client || v.viewer != viewer);
+                }
+                serde_json::Value::Null
+            }
+            Request::Write { id, viewer, data } => {
+                anyhow::ensure!(
+                    self.owns(client, &id, &viewer),
+                    "Viewer does not have terminal authority"
+                );
+                self.pty.write(&id, data.as_bytes())?;
+                serde_json::Value::Null
+            }
+            Request::Resize {
+                id,
+                viewer,
+                cols,
+                rows,
+            } => {
+                anyhow::ensure!(cols > 0 && rows > 0, "Invalid terminal size");
+                if self.owns(client, &id, &viewer) {
+                    self.pty.resize(&id, cols, rows)?;
+                }
+                serde_json::Value::Null
+            }
+            Request::Stop { id } => {
+                let _operation = self.operation.lock().unwrap();
+                self.pty.stop(&id);
+                serde_json::Value::Null
+            }
+            Request::Seen { id } => {
+                if let Some(event) = self.pty.mark_seen(&id) {
+                    self.emit(event);
+                }
+                serde_json::Value::Null
+            }
+            Request::Poll { after } => {
+                let events = self.events.lock().unwrap();
+                let gap = events
+                    .ring
+                    .front()
+                    .is_some_and(|(_, e)| after + 1 < e.sequence);
+                serde_json::to_value(Batch {
+                    instance_id: self.instance.clone(),
+                    end: events.end,
+                    gap,
+                    events: events
+                        .ring
+                        .iter()
+                        .filter(|(_, e)| e.sequence > after)
+                        .take(POLL_LIMIT)
+                        .map(|(_, e)| e.clone())
+                        .collect(),
+                })?
+            }
+            Request::Conversation {
+                id,
+                conversation_id,
+            } => {
+                anyhow::ensure!(
+                    crate::adapters::valid_id(&conversation_id),
+                    "Invalid conversation ID"
+                );
+                let mut records = self.records.lock().unwrap();
+                let record = records.get_mut(&id).context("Unknown session")?;
+                anyhow::ensure!(
+                    record.metadata.adapter.is_some(),
+                    "Select an agent adapter before setting a conversation ID"
+                );
+                record.metadata.conversation_id = Some(conversation_id);
+                record.metadata.conversation_pinned = true;
+                self.dirty.store(true, Ordering::Release);
+                serde_json::Value::Null
+            }
+            Request::Resume { id, request_id } => {
+                serde_json::to_value(self.resume(&id, request_id)?)?
+            }
+            Request::Forget { id } => {
+                let _operation = self.operation.lock().unwrap();
+                anyhow::ensure!(
+                    !self.pty.is_running(&id),
+                    "Stop running work before forgetting it"
+                );
+                self.records.lock().unwrap().remove(&id);
+                self.pty.forget(&id);
+                self.dirty.store(true, Ordering::Release);
+                serde_json::Value::Null
+            }
+            Request::ActionRun { project, plan } => {
+                let actions = self.actions_for(&plan.project_id);
+                let epoch = actions.epoch();
+                let project_id = plan.project_id.clone();
+                let terminals = ServiceTerminals {
+                    service: self.clone(),
+                    project_id: &project_id,
+                    project: Some(&project),
+                };
+                // `execute` rebuilds the plan against `project`, as restricted.
+                serde_json::to_value(actions.execute(&project, *plan, epoch, &terminals)?)?
+            }
+            Request::ActionStopGroup {
+                project_id,
+                group_id,
+                task,
+            } => {
+                let terminals = ServiceTerminals {
+                    service: self.clone(),
+                    project_id: &project_id,
+                    project: None,
+                };
+                let actions = self.actions_for(&project_id);
+                let epoch = actions.epoch();
+                actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
+                serde_json::Value::Null
+            }
+            Request::ActionCancel { project_id } => {
+                serde_json::to_value(self.actions_for(&project_id).cancel_validation())?
+            }
+            Request::Shutdown { stop_running } => {
+                let _operation = self.operation.lock().unwrap();
+                anyhow::ensure!(
+                    !self.pty.has_running() || stop_running,
+                    "Work is running; shutdown requires --stop-running"
+                );
+                // Only once shutting down for certain: a refused shutdown keeps
+                // running actions and environment ownership intact.
+                for actions in self.actions.lock().unwrap().values() {
+                    actions.reset();
+                }
+                if stop_running {
+                    self.pty.stop_all();
+                }
+                self.persist()?;
+                self.shutdown.store(true, Ordering::Release);
+                serde_json::Value::Null
+            }
+        };
+        Ok(result)
+    }
+}
+/// Check that resuming `record` stays within the folders the user has granted
+/// now (`roots`): its working directory and every folder its recorded launch
+/// added for the agent. Restoring a workspace doesn't restore grants, so a
+/// resume must not quietly bring back access to a folder that is locked again.
+///
+/// # Errors
+/// Fails naming the first folder that is no longer readable.
+pub fn check_resume(record: &Record, roots: &[PathBuf]) -> Result<()> {
+    for dir in std::iter::once(&record.spec.cwd).chain(&record.spec.dirs) {
+        crate::files::resolve(roots, dir).with_context(|| {
+            format!(
+                "{} is locked. Allow it (Browse… or Add repo…) before resuming, or start a fresh session.",
+                dir.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Graph actions' view of the service's terminals: launches are recorded like
+/// any other start, under the project's identity.
+struct ServiceTerminals<'a> {
+    service: Arc<Service>,
+    project_id: &'a str,
+    /// The project launches belong to; `None` where nothing is launched.
+    project: Option<&'a crate::Project>,
+}
+impl Terminals for ServiceTerminals<'_> {
+    fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        self.service.pty.snapshot_with(id, 0)
+    }
+    fn is_running(&self, id: &str) -> bool {
+        self.service.pty.is_running(id)
+    }
+    fn launch_matches(&self, spec: &SessionSpec) -> bool {
+        self.service.pty.launch_matches(spec)
+    }
+    fn launch(&self, launch: Launch) -> Result<()> {
+        let Launch {
+            spec,
+            component_id,
+            terminal,
+            task,
+        } = launch;
+        let id = spec.id.clone();
+        let project = self.project.context("Nothing may be launched here")?;
+        let metadata = Metadata {
+            project_id: self.project_id.into(),
+            project_name: project.name.clone(),
+            project_root: project.root.clone(),
+            component_id,
+            terminal_id: terminal.id.clone(),
+            task,
+            name: terminal.name.clone(),
+            kind: terminal.kind,
+            adapter: None,
+            conversation_id: None,
+            conversation_pinned: false,
+            extension_id: None,
+            command_id: None,
+            key: None,
+            command: terminal.command.clone(),
+        };
+        let started = self.service.start_with_command(
+            uuid::Uuid::new_v4().to_string(),
+            metadata,
+            spec,
+            None,
+            true,
+        )?;
+        anyhow::ensure!(started == id, "Graph action session id mismatch for {id}");
+        Ok(())
+    }
+    fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
+        self.service.pty.stop_generation(id, generation)
+    }
+}
+
+/// Keep the newest `MAX_HISTORY` incarnations.
+fn trim_history(history: &mut Vec<Snapshot>) {
+    history.drain(..history.len().saturating_sub(MAX_HISTORY));
+}
+impl EventSink for Service {
+    fn emit(&self, event: TerminalEvent) {
+        // Called by the PTY threads, sometimes under a backlog lock: never read
+        // backlogs here.
+        let output = matches!(event, TerminalEvent::Output { .. });
+        if let TerminalEvent::Exited { session_id, .. } = &event {
+            self.exited.lock().unwrap().push(session_id.clone());
+        }
+        let size = match &event {
+            TerminalEvent::Output { data, .. } => data.len() * 4 + 512,
+            _ => 1024,
+        };
+        let mut events = self.events.lock().unwrap();
+        events.end += 1;
+        let envelope = Envelope {
+            instance_id: self.instance.clone(),
+            sequence: events.end,
+            event,
+        };
+        events.ring.push_back((size, envelope));
+        events.bytes += size;
+        while events.bytes > EVENT_CAP {
+            if let Some((size, _)) = events.ring.pop_front() {
+                events.bytes -= size;
+            }
+        }
+        if output {
+            self.output_dirty.store(true, Ordering::Release);
+        } else {
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Run the session service in this process until it is shut down, or has had
+/// no clients and no running work for a minute.
+///
+/// # Errors
+/// Fails if the runtime directory, lock, listener or records can't be set up.
+pub fn serve(dir: &Path) -> Result<()> {
+    private_dir(dir)?;
+    let lifetime = lock(&dir.join("service.lock"))?;
+    if lifetime.try_lock().is_err() {
+        return Ok(());
+    }
+    let service = Service::load(dir)?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let endpoint = Endpoint {
+        protocol: PROTOCOL,
+        port: listener.local_addr()?.port(),
+        token: uuid::Uuid::new_v4().to_string(),
+        instance: service.instance.clone(),
+    };
+    atomic_write(&dir.join("endpoint.json"), &serde_json::to_vec(&endpoint)?)?;
+    let token = Arc::new(endpoint.token);
+    let mut idle = Instant::now();
+    let mut saved = Instant::now();
+    let mut saved_output = Instant::now();
+    let next = AtomicUsize::new(1);
+    while !service.shutdown.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let service = service.clone();
+                let token = token.clone();
+                let connection = next.fetch_add(1, Ordering::Relaxed);
+                // Counted before the handshake, so the idle check below can't
+                // shut down under a client that is still connecting.
+                service.clients.fetch_add(1, Ordering::AcqRel);
+                std::thread::spawn(move || {
+                    serve_connection(&service, &mut stream, &token, connection);
+                    service.clients.fetch_sub(1, Ordering::AcqRel);
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+        service.capture_conversations();
+        let metadata = saved.elapsed() >= SAVE_DIRTY && service.dirty.swap(false, Ordering::AcqRel);
+        let output = saved_output.elapsed() >= SAVE_OUTPUT
+            && service.output_dirty.swap(false, Ordering::AcqRel);
+        if metadata || output {
+            if let Err(e) = service.persist() {
+                eprintln!("Session persistence failed: {e}");
+                service.dirty.store(true, Ordering::Release);
+            } else {
+                // A full write covers pending output too.
+                service.output_dirty.store(false, Ordering::Release);
+                saved_output = Instant::now();
+            }
+            saved = Instant::now();
+        }
+        if service.clients.load(Ordering::Acquire) > 0 || service.pty.has_running() {
+            idle = Instant::now();
+        }
+        if idle.elapsed() >= Duration::from_secs(60) {
+            // Withdraw the endpoint before the last idle check, so a client either
+            // connected already (and is counted) or finds no endpoint and starts
+            // a new service once this one releases its lock.
+            let _ = std::fs::remove_file(dir.join("endpoint.json"));
+            std::thread::sleep(Duration::from_millis(50));
+            if let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+            if service.clients.load(Ordering::Acquire) == 0 && !service.pty.has_running() {
+                break;
+            }
+            atomic_write(
+                &dir.join("endpoint.json"),
+                &serde_json::to_vec(&Endpoint {
+                    protocol: PROTOCOL,
+                    port: endpoint.port,
+                    token: token.to_string(),
+                    instance: service.instance.clone(),
+                })?,
+            )?;
+            idle = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    service.capture_conversations();
+    service.persist()?;
+    match std::fs::remove_file(dir.join("endpoint.json")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    drop(lifetime);
+    Ok(())
+}
+
+fn serve_connection(
+    service: &Arc<Service>,
+    stream: &mut TcpStream,
+    token: &str,
+    connection: usize,
+) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(TIMEOUT));
+    let _ = stream.set_write_timeout(Some(TIMEOUT));
+    let Ok(hello) = read_frame::<Hello>(stream) else {
+        return;
+    };
+    let valid = hello.protocol == PROTOCOL && hello.token == token;
+    let reply = if valid {
+        Response::result(Ok(serde_json::Value::Null))
+    } else {
+        Response::result(Err(anyhow::anyhow!(
+            "Session service authentication/protocol mismatch"
+        )))
+    };
+    if write_frame(stream, &reply).is_err() || !valid {
+        return;
+    }
+    // Clients poll regularly, so an idle read means the client is gone; long
+    // requests are timed on the client side.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
+    let client = hello.client.map_or_else(
+        || format!("connection-{connection}"),
+        |c| format!("client-{c}"),
+    );
+    service.connected(&client);
+    while let Ok(request) = read_frame::<Request>(stream) {
+        let reply = Response::result(service.handle(&client, request));
+        if write_frame(stream, &reply).is_err() {
+            break;
+        }
+    }
+    service.disconnected(&client);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_unbounded_or_malformed_protocol_frames() {
+        assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
+        assert!(read_frame::<Request>(&mut &[0, 0, 0, 2, b'[', b']'][..]).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn idempotent_launch_authority_replay_and_restart() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata = Metadata {
+            project_id: "p".into(),
+            project_name: "P".into(),
+            project_root: dir.display().to_string(),
+            component_id: "same/id".into(),
+            terminal_id: "shell".into(),
+            task: None,
+            name: "Counter".into(),
+            kind: TerminalKind::Task,
+            adapter: None,
+            conversation_id: None,
+            conversation_pinned: false,
+            extension_id: None,
+            command_id: None,
+            key: None,
+            command: String::new(),
+        };
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "i=0; while :; do printf 'number:%s\\n' \"$i\"; i=$((i+1)); sleep 0.05; done"
+                .into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: Vec::new(),
+        };
+        let starts: Vec<_> = (0..4)
+            .map(|_| {
+                let service = service.clone();
+                let metadata = metadata.clone();
+                let spec = spec.clone();
+                std::thread::spawn(move || service.start("request".into(), metadata, spec).unwrap())
+            })
+            .collect();
+        let ids: Vec<_> = starts.into_iter().map(|s| s.join().unwrap()).collect();
+        assert!(ids.iter().all(|id| id == &ids[0]));
+        let id = &ids[0];
+        let first = service.snapshot(id).unwrap().generation;
+        assert_eq!(service.list().len(), 1);
+        assert!(service.start("different".into(), metadata, spec).is_err());
+        service
+            .handle(
+                "1",
+                Request::Attach {
+                    id: id.clone(),
+                    viewer: "a".into(),
+                    claim: true,
+                },
+            )
+            .unwrap();
+        service
+            .handle(
+                "2",
+                Request::Attach {
+                    id: id.clone(),
+                    viewer: "b".into(),
+                    claim: true,
+                },
+            )
+            .unwrap();
+        assert!(!service.owns("1", id, "a"));
+        assert!(service.owns("2", id, "b"));
+        service
+            .handle(
+                "2",
+                Request::Detach {
+                    id: id.clone(),
+                    viewer: "b".into(),
+                },
+            )
+            .unwrap();
+        assert!(service.owns("1", id, "a"));
+        assert!(
+            service
+                .handle(
+                    "1",
+                    Request::Write {
+                        id: id.clone(),
+                        viewer: "b".into(),
+                        data: "bad".into()
+                    }
+                )
+                .is_err()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        let snapshot = service.snapshot(id).unwrap();
+        let baseline = service.events.lock().unwrap().end;
+        std::thread::sleep(Duration::from_millis(150));
+        let batch: Batch = serde_json::from_value(
+            service
+                .handle("1", Request::Poll { after: baseline })
+                .unwrap(),
+        )
+        .unwrap();
+        let mut bytes = snapshot.data.clone();
+        let mut end = snapshot.end;
+        for envelope in batch.events {
+            if let TerminalEvent::Output { seq, data, .. } = envelope.event {
+                let covered = usize::try_from(end.saturating_sub(seq))
+                    .unwrap()
+                    .min(data.len());
+                bytes.extend_from_slice(&data[covered..]);
+                end = end.max(seq + data.len() as u64);
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let mut seen = std::collections::HashSet::new();
+        for line in text.lines().filter(|s| s.starts_with("number:")) {
+            assert!(seen.insert(line));
+        }
+        assert_eq!(service.snapshot(id).unwrap().generation, first);
+        assert!(
+            service
+                .handle(
+                    "1",
+                    Request::Shutdown {
+                        stop_running: false
+                    }
+                )
+                .is_err()
+        );
+        service.persist().unwrap();
+        let recovered = Service::load(&dir).unwrap();
+        assert_ne!(service.instance, recovered.instance);
+        assert!(recovered.list()[0].interrupted);
+        assert!(!recovered.snapshot(id).unwrap().running);
+        service
+            .handle("1", Request::Stop { id: id.clone() })
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while service.snapshot(id).unwrap().running && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!service.snapshot(id).unwrap().running);
+        service
+            .handle("1", Request::Forget { id: id.clone() })
+            .unwrap();
+        assert!(service.list().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn event_buffer_is_bounded_and_detects_gaps() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        for seq in 0..400 {
+            service.emit(TerminalEvent::Output {
+                session_id: "unknown".into(),
+                generation: 1,
+                seq,
+                data: vec![b'x'; 8192],
+            });
+        }
+        assert!(service.events.lock().unwrap().bytes <= EVENT_CAP);
+        let batch: Batch =
+            serde_json::from_value(service.handle("1", Request::Poll { after: 0 }).unwrap())
+                .unwrap();
+        assert!(batch.gap);
+        assert_eq!(batch.instance_id, service.instance);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn history_is_bounded() {
+        let snapshot = |generation| Snapshot {
+            truncated: false,
+            data: vec![b'x'; 16],
+            end: 16,
+            generation,
+            running: false,
+            exit_code: Some(0),
+            started_ms: 0,
+            exited_ms: None,
+            status: crate::status::SessionStatus::default(),
+            notice: None,
+        };
+        let mut history: Vec<_> = (0..10).map(snapshot).collect();
+        trim_history(&mut history);
+        assert_eq!(
+            history.iter().map(|s| s.generation).collect::<Vec<_>>(),
+            [7, 8, 9]
+        );
+    }
+    #[test]
+    fn connections_of_one_client_share_authority_until_the_last_closes() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        service.connected("client-a");
+        service.connected("client-a");
+        service.claim("client-a", "s".into(), "main".into(), true);
+        assert!(service.owns("client-a", "s", "main"));
+        service.disconnected("client-a");
+        assert!(service.owns("client-a", "s", "main"));
+        service.disconnected("client-a");
+        assert!(!service.owns("client-a", "s", "main"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn resume_rechecks_recorded_folders() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let project = dir.join("project");
+        let external = dir.join("billing");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let record = Record {
+            id: "s".into(),
+            metadata: Metadata {
+                project_id: "p".into(),
+                project_name: "P".into(),
+                project_root: project.display().to_string(),
+                component_id: "api".into(),
+                terminal_id: "agent".into(),
+                task: None,
+                name: "Agent".into(),
+                kind: TerminalKind::Agent,
+                adapter: None,
+                conversation_id: None,
+                conversation_pinned: false,
+                extension_id: None,
+                command_id: None,
+                key: None,
+                command: String::new(),
+            },
+            spec: SessionSpec {
+                id: "s".into(),
+                command: String::new(),
+                cwd: project.clone(),
+                env: BTreeMap::new(),
+                ready_when: String::new(),
+                service: false,
+                notice: None,
+                dirs: vec![external.clone()],
+            },
+            snapshot: None,
+            history: vec![],
+            launch_command: String::new(),
+            interrupted: false,
+            request_ids: vec![],
+        };
+        assert!(check_resume(&record, std::slice::from_ref(&project)).is_err());
+        assert!(check_resume(&record, &[project, external]).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

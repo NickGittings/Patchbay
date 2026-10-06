@@ -109,6 +109,8 @@ pub enum TerminalKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<crate::adapters::Adapter>,
     pub id: String,
     pub name: String,
     /// Empty for an interactive shell.
@@ -410,24 +412,32 @@ fn plain_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// Session ids identify one terminal of one component.
-pub fn session_id(component_id: &str, terminal_id: &str) -> String {
-    format!("{component_id}/{terminal_id}")
-}
-
-/// Separates a task id at the end of a session id. Task ids are ASCII letters
-/// and digits, so the last occurrence marks it.
+/// Separates a task id from the terminal id it runs for. Task ids are ASCII
+/// letters and digits, so the last occurrence marks it.
 pub const TASK_SEPARATOR: &str = "@task-";
 
-/// [`session_id`] of a terminal run for a task (`{component}/{terminal}@task-{task}`),
-/// so the same terminal can run in several worktrees at once. The component id
-/// stays before the last `/`, which event routing relies on.
+/// The terminal key a run is stored under: the terminal id, plus
+/// `@task-{task}` for a task's run, so the same terminal can run in several
+/// worktrees at once.
 #[must_use]
-pub fn task_session_id(component_id: &str, terminal_id: &str, task: Option<&str>) -> String {
+pub fn task_terminal(terminal_id: &str, task: Option<&str>) -> String {
     match task {
-        Some(task) => format!("{component_id}/{terminal_id}{TASK_SEPARATOR}{task}"),
-        None => session_id(component_id, terminal_id),
+        Some(task) => format!("{terminal_id}{TASK_SEPARATOR}{task}"),
+        None => terminal_id.to_string(),
     }
+}
+
+/// The opaque session id of a terminal of `project`'s component, run for
+/// `task` when given (`workspace::session_id`). Metadata is stored beside it;
+/// never parse an id.
+#[must_use]
+pub fn task_session_id(
+    project: &str,
+    component_id: &str,
+    terminal_id: &str,
+    task: Option<&str>,
+) -> String {
+    crate::workspace::session_id(project, component_id, &task_terminal(terminal_id, task))
 }
 
 #[cfg(test)]

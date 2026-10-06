@@ -6,16 +6,12 @@ import {
   ReactFlow,
   type Connection,
   type Edge,
-  type Viewport,
 } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import { KIND_COLOR } from '../lib/display'
 import { useStore, type FlowNode } from '../store'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
-
-// Shared by Navigation and Plan; re-mounting the canvas must not reset its viewport.
-const viewports = new Map<string, Viewport>()
 
 const nodeTypes = { component: ComponentNode }
 
@@ -92,9 +88,9 @@ export default function Canvas() {
           selectEdge(null)
         }}
         colorMode="dark"
-        defaultViewport={viewports.get(project.root)}
-        onMoveEnd={(_, viewport) => viewports.set(project.root, viewport)}
-        fitView={!viewports.has(project.root)}
+        defaultViewport={useStore.getState().viewport}
+        onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
+        fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         nodesConnectable={!planning}
         nodesDraggable={!planning}

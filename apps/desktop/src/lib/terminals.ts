@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { terminalResize, terminalWrite } from './ipc'
-import { ownsSession } from './windows'
+import { useStore } from '../store'
 
 interface Entry {
   term: Terminal
@@ -9,6 +9,7 @@ interface Entry {
   el: HTMLDivElement
   opened: boolean
   replaying: boolean
+  hosts: HTMLElement[]
 }
 
 /** One long-lived xterm per session so scrollback survives tab switches and restarts. */
@@ -35,12 +36,17 @@ function entry(sessionId: string): Entry {
     term.loadAddon(fit)
     const el = document.createElement('div')
     el.className = 'xterm-host'
-    const created = { term, fit, el, opened: false, replaying: false }
-    // onData carries both typing and xterm's automatic replies to terminal queries. Every
-    // window showing the session parses its output, so only one may reply: the focused
-    // window (which is where typing happens) or, failing that, the session's owner.
+    const created = { term, fit, el, opened: false, replaying: false, hosts: [] as HTMLElement[] }
+    // Both typing and automatic replies go through the service's single-viewer authority.
+    // Hidden, detached terminals retain output without replying to live queries.
     term.onData((d) => {
-      if (created.replaying || !(document.hasFocus() || ownsSession(sessionId))) return
+      if (
+        !useStore.getState().serviceConnected ||
+        created.replaying ||
+        document.visibilityState !== 'visible' ||
+        !created.hosts.some((host) => host.isConnected)
+      )
+        return
       void terminalWrite(sessionId, d).catch(() => {})
     })
     e = created
@@ -84,6 +90,8 @@ export function writeNote(sessionId: string, text: string) {
 /** Move the session's terminal into `container` and size it to fit. */
 export function attach(sessionId: string, container: HTMLElement, options?: { focus?: boolean }) {
   const e = entry(sessionId)
+  if (!e.hosts.includes(container)) e.hosts.push(container)
+  if (e.hosts.at(-1) !== container) return
   if (e.el.parentElement !== container) container.replaceChildren(e.el)
   if (!e.opened) {
     e.term.open(e.el)
@@ -111,20 +119,29 @@ export function focusTerminal(sessionId: string) {
   requestAnimationFrame(attempt)
 }
 
-/**
- * Fit the xterm to its container. Only the session's owner (see `ownsSession`) resizes the
- * shared PTY, so a session shown in the dock and in a pop-out doesn't flip between sizes.
- */
+/** Fit locally; the service accepts PTY sizes only from its authoritative viewer. */
 export function fit(sessionId: string) {
   const e = registry.get(sessionId)
   if (!e?.opened) return
   try {
     e.fit.fit()
-    if (!ownsSession(sessionId)) return
     void terminalResize(sessionId, e.term.cols, e.term.rows).catch(() => {})
   } catch {
     // container not laid out yet
   }
+}
+
+/** Return the shared terminal to its previous pane when a Sessions preview closes. */
+export function detachHost(sessionId: string, host: HTMLElement): boolean {
+  const e = registry.get(sessionId)
+  if (!e) return false
+  e.hosts = e.hosts.filter((h) => h !== host && h.isConnected)
+  const previous = e.hosts.at(-1)
+  if (previous && e.el.parentElement === host) {
+    previous.replaceChildren(e.el)
+    fit(sessionId)
+  }
+  return e.hosts.length > 0
 }
 
 export function disposeAll() {

@@ -64,13 +64,21 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal,
       })),
     ]),
-    ...Object.entries(s.runtimeTerminals).map(([sid, r]) => ({
-      sid,
-      componentId: r.componentId,
-      owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
-      task: null,
-      terminal: r.terminal,
-    })),
+    ...Object.entries(s.runtimeTerminals)
+      .filter(([, r]) => r.projectId === useStore.getState().project?.id)
+      .filter(
+        ([sid, r]) =>
+          !s.nodes
+            .find((n) => n.id === r.componentId)
+            ?.data.terminals.some((t) => sessionId(r.componentId, t.id) === sid),
+      )
+      .map(([sid, r]) => ({
+        sid,
+        componentId: r.componentId,
+        owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
+        task: null,
+        terminal: r.terminal,
+      })),
   ]
   return terminals
     .map((t) => {
@@ -111,7 +119,9 @@ export function componentTerminals(
   return [
     ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id, task), t]),
     ...Object.entries(runtimeTerminals)
+      .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(([, r]) => r.componentId === componentId)
+      .filter(([sid]) => !terminals.some((t) => sessionId(componentId, t.id) === sid))
       .map(([sid, r]): [string, TerminalSpec] => [sid, r.terminal]),
   ]
 }
@@ -147,7 +157,9 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   const s = useStore.getState()
   if (!s.runtimeTerminals[item.sid]) s.setActiveTask(sessionTask(item.sid))
   if (item.componentId === PLAN_SCOPE) {
-    s.setPlanActive(parseSessionId(item.sid).terminalId)
+    const { terminalId } = parseSessionId(item.sid)
+    if (!terminalId) return
+    s.setPlanActive(terminalId)
     s.setView('plan')
     return
   }

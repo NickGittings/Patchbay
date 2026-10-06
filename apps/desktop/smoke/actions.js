@@ -120,17 +120,24 @@
       'environment startup',
       () => !state().graphActionBusy && state().graphActionReport?.results.length === 2,
     )
-    assert(state().sessions['api/dev']?.status?.ready, 'API readiness was not observed')
-    assert(state().sessions['web/dev']?.running, 'web did not start')
     assert(
-      state().sessions['web/dev'].startedMs - state().sessions['api/dev'].startedMs >= 200,
+      state().sessions[smoke.sessionId('api', 'dev')]?.status?.ready,
+      'API readiness was not observed',
+    )
+    assert(state().sessions[smoke.sessionId('web', 'dev')]?.running, 'web did not start')
+    assert(
+      state().sessions[smoke.sessionId('web', 'dev')].startedMs -
+        state().sessions[smoke.sessionId('api', 'dev')].startedMs >=
+        200,
       'consumer started before readiness',
     )
     assert(document.querySelector('.action-results'), 'results did not render')
     button(editor, 'Stop').click()
     await until(
       'environment stopped',
-      () => !state().sessions['api/dev']?.running && !state().sessions['web/dev']?.running,
+      () =>
+        !state().sessions[smoke.sessionId('api', 'dev')]?.running &&
+        !state().sessions[smoke.sessionId('web', 'dev')]?.running,
     )
     state().select('lib')
     await until(
@@ -147,17 +154,18 @@
     const report = state().graphActionReport
     assert(
       report.results.map((r) => `${r.sessionId}:${r.outcome}`).join(',') ===
-        'api/check:failed,web/check:passed',
+        `${smoke.sessionId('api', 'check')}:failed,${smoke.sessionId('web', 'check')}:passed`,
       'validation scope or outcomes incorrect',
     )
     assert(report.plan.skipped.join(',') === 'lib', 'unconfigured validator was not reported')
     await until('failed result rendered', () => document.querySelector('.action-result .failed'))
     Array.from(document.querySelectorAll('.action-result'))
-      .find((el) => el.textContent.includes('web/check'))
+      .find((el) => el.dataset.session === smoke.sessionId('web', 'check'))
       .click()
     await until(
       'result terminal selected',
-      () => state().activeSession === 'web/check' && state().selectedId === 'web',
+      () =>
+        state().activeSession === smoke.sessionId('web', 'check') && state().selectedId === 'web',
     )
     button(editor, 'Plan').click()
     await until(
@@ -169,6 +177,8 @@
     assert(!state().groups[0].componentIds.includes('lib'), 'removed member remained in group')
     await smoke.graphActionPlan(state().toProject(), { kind: 'startGroup', groupId })
     smoke.resetSessions(await smoke.terminalReset())
+    // Reopening a closed project starts from its saved map.
+    state().closeProject(project.projectId)
     state().loadProject(project)
     assert(
       state().groups.length === 0 && state().graphActionReport === null,

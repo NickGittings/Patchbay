@@ -4,7 +4,13 @@ import type { DeviceManifest, TerminalSpec } from '../types'
 export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
   const agents = devices.filter((d) => d.kind === 'agent')
   return agents.length
-    ? agents.map(({ id, name, command }) => ({ id, name, command, kind: 'agent' }))
+    ? agents.map(({ id, name, command, adapter }) => ({
+        id,
+        name,
+        command,
+        adapter,
+        kind: 'agent',
+      }))
     : [{ id: 'claude', name: 'Claude', command: 'claude', kind: 'agent' }]
 }
 

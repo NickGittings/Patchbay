@@ -11,12 +11,15 @@
     "tauri": "tauri",
     "format": "prettier --write .",
     "check": "tsc -b && oxlint src && prettier --check .",
-    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
-    "smoke:views": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/views.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
-    "smoke:git": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/git.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
-    "smoke:actions": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/actions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" tauri dev",
-    "smoke:extensions": "PATCHBAY_EXTENSIONS_DIR=\"$PWD/../../examples/extensions\" PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/extensions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../../examples/extensions/docker/fixture\" tauri dev",
-    "smoke:tasks": "sh smoke/tasks-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/tasks.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-tasks/shop\" tauri dev"
+    "smoke": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/popout.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
+    "smoke:views": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/views.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
+    "smoke:git": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/git.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
+    "smoke:actions": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/actions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" node scripts/smoke.mjs",
+    "smoke:extensions": "PATCHBAY_EXTENSIONS_DIR=\"$PWD/../../examples/extensions\" PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/extensions.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../../examples/extensions/docker/fixture\" node scripts/smoke.mjs",
+    "smoke:tasks": "sh smoke/tasks-fixture.sh && PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/tasks.js\" PATCHBAY_SMOKE_ROOT=\"${TMPDIR:-/tmp}/patchbay-smoke-tasks/shop\" node scripts/smoke.mjs",
+    "prepare:sessiond": "node scripts/sessiond.mjs",
+    "smoke:workspace": "PATCHBAY_SMOKE_SCRIPT=\"$PWD/smoke/workspace.js\" PATCHBAY_SMOKE_ROOT=\"$PWD/../..\" PATCHBAY_SMOKE_ROOT_2=\"$PWD/../../examples/extensions/docker/fixture\" node scripts/smoke.mjs",
+    "smoke:lifecycle": "node scripts/lifecycle.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

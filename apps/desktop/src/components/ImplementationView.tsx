@@ -1,5 +1,6 @@
+import PersistedGroup from './PersistedGroup'
 import { useState } from 'react'
-import { Group, Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
@@ -95,15 +96,15 @@ export default function ImplementationView() {
       </header>
       <div className="implementation-terminals">
         {target && showChanges ? (
-          <Group orientation="horizontal">
-            <Panel defaultSize="62" minSize="30">
+          <PersistedGroup layoutId="ImplementationView-1" orientation="horizontal">
+            <Panel id="ImplementationView-pane-1" defaultSize="62" minSize="30">
               <TerminalGrid componentId={target.id} terminals={target.data.terminals} />
             </Panel>
             <Separator className="separator" />
-            <Panel defaultSize="38" minSize="20">
+            <Panel id="ImplementationView-pane-2" defaultSize="38" minSize="20">
               <ChangesPanel key={`${target.id}/${task ?? ''}`} componentId={target.id} />
             </Panel>
-          </Group>
+          </PersistedGroup>
         ) : target ? (
           <TerminalGrid componentId={target.id} terminals={target.data.terminals} />
         ) : (

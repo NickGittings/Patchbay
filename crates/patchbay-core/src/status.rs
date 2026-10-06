@@ -8,7 +8,7 @@
 //! can write it. Services are recognised from their output: the first local URL
 //! they print, or the terminal's `readyWhen` text.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, SystemTime};
 
@@ -32,7 +32,7 @@ const LINE_LIMIT: usize = 2048;
 /// Longest prompt or message kept from a report.
 const DETAIL_LIMIT: usize = 200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentState {
     /// Busy with a prompt.
@@ -46,7 +46,7 @@ pub enum AgentState {
 }
 
 /// The agent's latest self-reported state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentReport {
     pub state: AgentState,
@@ -58,7 +58,7 @@ pub struct AgentReport {
     pub prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatus {
     /// Last output that wasn't an echo of input, in Unix milliseconds.
