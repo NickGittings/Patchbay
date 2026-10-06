@@ -93,8 +93,10 @@ impl Access {
     pub fn sync(&self, paths: Vec<String>) {
         {
             let mut state = self.state.lock().unwrap();
-            state.paths = paths;
-            state.revision += 1;
+            if state.paths != paths {
+                state.paths = paths;
+                state.revision += 1;
+            }
         }
         self.refresh();
     }
@@ -129,6 +131,40 @@ impl Access {
 }
 
 impl AccessSnapshot {
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Permission check without requiring the folder to exist. Never grants access.
+    #[must_use]
+    pub fn allows_path(&self, path: &str) -> bool {
+        let Some(root) = &self.root else {
+            return false;
+        };
+        let mut ancestor = root.join(path);
+        let mut suffix = Vec::new();
+        loop {
+            if let Ok(canonical) = ancestor.canonicalize() {
+                let tail: PathBuf = suffix.iter().rev().collect();
+                let dir = model::normalize(&canonical.join(tail));
+                return dir.starts_with(root) || self.is_granted(&dir);
+            }
+            // An unresolved symlink cannot establish permission for its target.
+            if std::fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
+                return false;
+            }
+            let Some(last) = ancestor.components().next_back() else {
+                return false;
+            };
+            suffix.push(last.as_os_str().to_os_string());
+            let Some(parent) = ancestor.parent() else {
+                return false;
+            };
+            ancestor = parent.to_path_buf();
+        }
+    }
+
     #[must_use]
     pub fn root(&self) -> Option<PathBuf> {
         self.root.clone()
@@ -246,6 +282,7 @@ mod tests {
                     component("billing", "../billing/api"),
                 ],
                 links: vec![Link {
+                    detection: None,
                     id: "link".into(),
                     source: "shop".into(),
                     target: "billing".into(),
@@ -264,6 +301,7 @@ mod tests {
 
     fn component(id: &str, path: &str) -> Component {
         Component {
+            detection: None,
             id: id.into(),
             name: id.into(),
             kind: ComponentKind::Other,

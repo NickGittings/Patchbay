@@ -16,7 +16,7 @@ use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 mod layout;
 mod service;
-use patchbay_core::{Project, context, detect, git, watch};
+use patchbay_core::{Project, context, detect, git, maintenance, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -54,11 +54,42 @@ struct AppState {
 }
 #[derive(Default)]
 struct ProjectAccess {
+    maintenance: Mutex<Option<PendingPreview>>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
     /// The active task's worktree, watched besides the project's roots.
     task_root: Arc<Mutex<Option<PathBuf>>>,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapEdit {
+    project: Project,
+    lease: Option<String>,
+}
+
+struct PendingPreview {
+    draft: String,
+    detectors: String,
+    preview: maintenance::ReconciliationPreview,
+}
+impl PendingPreview {
+    fn check(
+        &self,
+        project: &Project,
+        access: &AccessSnapshot,
+        detectors: &[extensions::DetectorContribution],
+    ) -> CmdResult<()> {
+        if self.draft != serde_json::to_string(project).map_err(err)?
+            || self.preview.access_revision != access.revision()
+            || self.detectors != serde_json::to_string(detectors).map_err(err)?
+        {
+            return Err("The draft or folder access changed; refresh the preview".into());
+        }
+        Ok(())
+    }
+}
+static PREVIEW_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl AppState {
     fn project(&self, id: &str) -> CmdResult<Arc<ProjectAccess>> {
         self.projects
@@ -308,28 +339,204 @@ impl Added {
     }
 }
 
-/// Rescan the open root plus the external folders on the map the user allowed.
-/// The webview's `sync_roots` picks up the new components' folders.
+/// Rescan proposes changes; only Apply selected changes the in-memory draft.
 #[tauri::command]
 async fn rescan_project(
     project_id: String,
     state: State<'_, AppState>,
     mut project: Project,
-) -> CmdResult<Added> {
+) -> CmdResult<maintenance::ReconciliationPreview> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
     let extensions = state.extensions.clone();
     blocking(move || {
         let detectors = extensions.get().detectors();
         access.trust(&mut project).map_err(err)?;
-        let externals: Vec<_> = project
-            .external_dirs()
-            .into_iter()
-            .filter(|d| access.is_granted(d))
-            .collect();
-        let (components, links) = (project.components.len(), project.links.len());
-        detect::rescan_with(&mut project, &externals, &detectors).map_err(err)?;
-        Ok(Added::since(project, components, links))
+        let mut preview = maintenance::preview(&project, &access, &detectors).map_err(err)?;
+        preview.id = format!(
+            "{}-{}",
+            std::process::id(),
+            PREVIEW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        if scoped.access.snapshot().revision() != access.revision() {
+            return Err("Folder access changed; refresh the preview".into());
+        }
+        *scoped.maintenance.lock().unwrap() = Some(PendingPreview {
+            draft: serde_json::to_string(&project).map_err(err)?,
+            detectors: serde_json::to_string(&detectors).map_err(err)?,
+            preview: preview.clone(),
+        });
+        Ok(preview)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn map_issues(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+) -> CmdResult<Vec<maintenance::MapIssue>> {
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        Ok(maintenance::issues(&project, &access))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply_reconciliation(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    preview_id: String,
+    selected: Vec<String>,
+) -> CmdResult<MapEdit> {
+    let scoped = state.project(&project_id)?;
+    let bridge = state.service.clone();
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let access = scoped.access.snapshot();
+        access.trust(&mut project).map_err(err)?;
+        let pending = scoped.maintenance.lock().unwrap();
+        let pending = pending
+            .as_ref()
+            .filter(|p| p.preview.id == preview_id)
+            .ok_or("Preview expired; refresh it")?;
+        pending.check(&project, &access, &extensions.get().detectors())?;
+        let affected = maintenance::affected(&pending.preview, &selected);
+        let draft = maintenance::apply(&project, &pending.preview, &selected).map_err(err)?;
+        for id in &affected {
+            if let Some(component) = draft.component(id)
+                && access.readable(&component.path).is_none()
+            {
+                return Err(
+                    "The repaired folder is unavailable or locked; refresh the preview".into(),
+                );
+            }
+        }
+        let lease = if affected.is_empty() {
+            None
+        } else {
+            Some(bridge.call::<String>(Request::MaintenanceGuard {
+                project_id: project_id.clone(),
+                component_ids: affected,
+            })?)
+        };
+        if let Err(error) = pending.check(
+            &project,
+            &scoped.access.snapshot(),
+            &extensions.get().detectors(),
+        ) {
+            if let Some(token) = lease {
+                let _ = bridge
+                    .call::<serde_json::Value>(Request::MaintenanceRelease { project_id, token });
+            }
+            return Err(error);
+        }
+        Ok(MapEdit {
+            project: draft,
+            lease,
+        })
+    })
+    .await
+}
+
+/// Direct path edits/deletes use the same stopped-work guard as reconciliation.
+#[tauri::command]
+async fn edit_map_components(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    remove: Vec<String>,
+    component_id: Option<String>,
+    path: Option<String>,
+) -> CmdResult<MapEdit> {
+    let scoped = state.project(&project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let access = scoped.access.snapshot();
+        access.trust(&mut project).map_err(err)?;
+        let mut affected = remove.clone();
+        if let Some(id) = &component_id {
+            affected.push(id.clone());
+        }
+        if affected.iter().any(|id| project.component(id).is_none()) {
+            return Err("Component no longer exists".into());
+        }
+        let mut draft = project;
+        if let (Some(id), Some(path)) = (&component_id, path) {
+            let folder = access
+                .readable(&path)
+                .ok_or("Folder is missing or not allowed; choose Browse… first")?;
+            if !folder.is_dir() || std::fs::read_dir(&folder).is_err() {
+                return Err("Choose a readable component folder".into());
+            }
+            model::check_component_dir(Path::new(&draft.root), &folder).map_err(err)?;
+            draft
+                .components
+                .iter_mut()
+                .find(|c| c.id == *id)
+                .ok_or("Component no longer exists")?
+                .path = path;
+        }
+        draft.components.retain(|c| !remove.contains(&c.id));
+        draft
+            .links
+            .retain(|l| !remove.contains(&l.source) && !remove.contains(&l.target));
+        for group in &mut draft.groups {
+            group.component_ids.retain(|id| !remove.contains(id));
+        }
+        draft.schema_version = model::SCHEMA_VERSION;
+        draft.validate().map_err(err)?;
+        let lease = if affected.is_empty() {
+            None
+        } else {
+            Some(bridge.call::<String>(Request::MaintenanceGuard {
+                project_id: project_id.clone(),
+                component_ids: affected,
+            })?)
+        };
+        if scoped.access.snapshot().revision() != access.revision() {
+            if let Some(token) = lease {
+                let _ = bridge
+                    .call::<serde_json::Value>(Request::MaintenanceRelease { project_id, token });
+            }
+            return Err("Folder access changed; retry the edit".into());
+        }
+        Ok(MapEdit {
+            project: draft,
+            lease,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn release_map_edit(
+    project_id: String,
+    state: State<'_, AppState>,
+    token: String,
+) -> CmdResult<()> {
+    service(&state, Request::MaintenanceRelease { project_id, token }).await
+}
+
+/// Complete scope cleanup only after the frontend accepted the resulting draft.
+#[tauri::command]
+async fn cleanup_component_scopes(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+    removed: Vec<String>,
+) -> CmdResult<()> {
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        let root = access.trust(&mut project).map_err(err)?;
+        if removed.iter().any(|id| project.component(id).is_some()) {
+            return Err("A removed component is still present in the draft".into());
+        }
+        tasks::prune_components(&root, &removed).map_err(err)
     })
     .await
 }
@@ -1255,6 +1462,11 @@ pub fn run() {
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 open_project,
                 rescan_project,
+                map_issues,
+                apply_reconciliation,
+                edit_map_components,
+                cleanup_component_scopes,
+                release_map_edit,
                 add_folder,
                 pick_component_folder,
                 sync_roots,
@@ -1775,6 +1987,7 @@ async fn project_relink(
         .ok_or("Chosen project unavailable")?;
     scoped.watcher.stop();
     let relinked = Arc::new(ProjectAccess {
+        maintenance: Mutex::default(),
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),
         task_root: scoped.task_root.clone(),
@@ -1883,4 +2096,49 @@ async fn session_history(
         incarnation,
     };
     service(&state, request).await
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    #[test]
+    fn preview_rechecks_draft_access_and_detector_availability() {
+        let root = std::env::temp_dir().join(format!(
+            "patchbay-preview-token-{}",
+            PREVIEW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project: Project = serde_json::from_value(serde_json::json!({"name":"P","root":root.display().to_string(),"components":[{"id":"web","name":"Web","path":"."}]})).unwrap();
+        let access = Access::default();
+        access.open(&project).unwrap();
+        let preview = maintenance::ReconciliationPreview {
+            id: "token".into(),
+            access_revision: access.snapshot().revision(),
+            issues: vec![],
+            proposals: vec![],
+        };
+        let pending = PendingPreview {
+            draft: serde_json::to_string(&project).unwrap(),
+            detectors: "[]".into(),
+            preview,
+        };
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_ok());
+        project.components[0].notes = "changed during scan".into();
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_err());
+        project.components[0].notes.clear();
+        let detector = extensions::DetectorContribution {
+            id: "extension:new:detector".into(),
+            files: vec!["manifest".into()],
+            kind: model::ComponentKind::Other,
+            terminals: vec![],
+        };
+        assert!(
+            pending
+                .check(&project, &access.snapshot(), &[detector])
+                .is_err()
+        );
+        access.sync(vec!["other".into()]);
+        assert!(pending.check(&project, &access.snapshot(), &[]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

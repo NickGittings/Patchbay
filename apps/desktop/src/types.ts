@@ -33,7 +33,41 @@ export interface TerminalSpec {
   action?: TerminalAction
 }
 
+export interface DetectionProvenance {
+  detector: string
+  packageIdentity?: string
+}
+export type MapIssueKind = 'missing' | 'locked' | 'unreadable'
+export interface MapIssue {
+  componentId: string
+  kind: MapIssueKind
+  message: string
+}
+export type ReconciliationChange =
+  | { kind: 'addComponent'; component: Component }
+  | { kind: 'addLink'; link: Link }
+  | { kind: 'removeLink'; linkId: string }
+  | { kind: 'removeComponent'; componentId: string }
+  | { kind: 'moveComponent'; componentId: string; path: string }
+export interface ReconciliationProposal {
+  id: string
+  selected: boolean
+  description: string
+  change: ReconciliationChange
+}
+export interface ReconciliationPreview {
+  id: string
+  accessRevision: number
+  issues: MapIssue[]
+  proposals: ReconciliationProposal[]
+}
+export interface MapEdit {
+  project: Project
+  lease: string | null
+}
+
 export interface Component {
+  detection?: DetectionProvenance
   id: string
   name: string
   kind: ComponentKind
@@ -46,6 +80,7 @@ export interface Component {
 
 /** `source` depends on `target`. */
 export interface Link {
+  detection?: DetectionProvenance
   id: string
   source: string
   target: string

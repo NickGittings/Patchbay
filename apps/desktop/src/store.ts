@@ -10,6 +10,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { create } from 'zustand'
+import { removeComponents } from './lib/maintenance'
 import type {
   ExtensionRegistry,
   CommandContribution,
@@ -24,6 +25,7 @@ import type {
   DeviceManifest,
   GitStatus,
   Link,
+  DetectionProvenance,
   Project,
   SessionState,
   Task,
@@ -33,7 +35,7 @@ import type {
 import { retask, sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
-export type FlowEdge = Edge<{ label?: string | null }>
+export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
 export interface ProjectState {
   project: { id: string; name: string; root: string } | null
@@ -180,7 +182,7 @@ const linkToEdge = (l: Link): FlowEdge => ({
   source: l.source,
   target: l.target,
   label: l.label ?? undefined,
-  data: { label: l.label },
+  data: { label: l.label, detection: l.detection },
   markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
 })
 
@@ -413,7 +415,13 @@ export const useStore = create<State>((set, get) => ({
   toProject: () => projectFrom(get()),
 
   onNodesChange: (changes) => {
-    const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id)
+    let removed = changes.filter((c) => c.type === 'remove').map((c) => c.id)
+    if (removed.length) {
+      const requested = removed
+      void removeComponents(requested)
+      removed = []
+      changes = changes.filter((c) => c.type !== 'remove')
+    }
     const edits = changes.some((c) => c.type === 'remove' || (c.type === 'position' && !c.dragging))
     set((s) => ({
       nodes: applyNodeChanges(changes, s.nodes),
@@ -438,7 +446,12 @@ export const useStore = create<State>((set, get) => ({
   onConnect: (c) =>
     set((s) => ({
       edges: addEdge<FlowEdge>(
-        linkToEdge({ id: newId('link'), source: c.source, target: c.target }),
+        linkToEdge({
+          id: newId('link'),
+          source: c.source,
+          target: c.target,
+          detection: { detector: 'manual' },
+        }),
         s.edges,
       ),
       dirty: true,
@@ -452,6 +465,7 @@ export const useStore = create<State>((set, get) => ({
       position,
       data: {
         name: 'New component',
+        detection: { detector: 'manual' },
         kind: 'other',
         path: '.',
         notes: '',
@@ -561,12 +575,13 @@ export function projectFrom({
 }: Pick<ProjectState, 'project' | 'nodes' | 'edges' | 'groups'>): Project {
   return {
     projectId: project?.id,
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: project?.name ?? 'project',
     root: project?.root ?? '',
     components: nodes.map((n) => ({
       id: n.id,
       position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+      detection: n.data.detection,
       name: n.data.name,
       kind: n.data.kind,
       path: n.data.path,
@@ -578,6 +593,7 @@ export function projectFrom({
       source: e.source,
       target: e.target,
       label: e.data?.label || null,
+      detection: e.data?.detection,
     })),
     groups,
   }

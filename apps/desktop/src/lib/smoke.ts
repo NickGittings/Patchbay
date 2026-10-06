@@ -18,7 +18,33 @@ import { createTask, refreshTasks, removeTask } from './tasks'
 
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
+import {
+  reviewRescan,
+  applyMapReview,
+  useMaintenance,
+  removeComponents,
+  repairComponentPath,
+} from './maintenance'
+import {
+  rescanProject,
+  applyReconciliation,
+  mapIssues,
+  editMapComponents,
+  releaseMapEdit,
+  syncRoots,
+} from './ipc'
 const hooks = {
+  reviewRescan,
+  applyMapReview,
+  maintenance: useMaintenance,
+  removeComponents,
+  repairComponentPath,
+  rescanProject,
+  applyReconciliation,
+  mapIssues,
+  editMapComponents,
+  releaseMapEdit,
+  syncRoots,
   sessionId,
   flushWorkspace,
   windowLabels: () =>
