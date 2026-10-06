@@ -44,7 +44,7 @@ export default function ReviewView() {
   const pathsKey = useStore((s) => s.nodes.map((n) => `${n.id}\0${n.data.path}`).join('\n'))
   const linksKey = useStore((s) => s.edges.map((e) => `${e.source}>${e.target}`).join('\n'))
   const select = useStore((s) => s.select)
-  const [review, setReview] = useState<Review | null>(null)
+  const [loaded, setLoaded] = useState<{ scope: string; review: Review }>()
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<{ componentId: string; path: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -61,6 +61,9 @@ export default function ReviewView() {
   const other = worktrees.find((w) => w.path === worktree && !w.current)
   // `undefined` reviews the open worktree, which the watcher keeps current.
   const target = other?.path
+  const projectId = useStore((s) => s.project?.id)
+  const reviewScope = JSON.stringify([projectId, target])
+  const review = loaded?.scope === reviewScope ? loaded.review : null
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
   // The open worktree's sessions belong to the active task when the project is open in its
@@ -98,7 +101,7 @@ export default function ReviewView() {
     void gitReview(useStore.getState().toProject(), target)
       .then((r) => {
         if (!disposed) {
-          setReview(r)
+          setLoaded({ scope: reviewScope, review: r })
           setError('')
         }
       })
@@ -108,7 +111,7 @@ export default function ReviewView() {
     return () => {
       disposed = true
     }
-  }, [revision, pathsKey, linksKey, refresh, target])
+  }, [revision, pathsKey, linksKey, refresh, reviewScope, target])
 
   const groups: ChangeGroup[] = []
   if (review) {
@@ -171,7 +174,7 @@ export default function ReviewView() {
                     onChange={(e) => {
                       setPicked({ task: activeTask, path: e.target.value || undefined })
                       setSelected(null)
-                      setReview(null)
+                      setLoaded(undefined)
                     }}
                   >
                     {worktrees.map((w) => {
@@ -287,7 +290,8 @@ export default function ReviewView() {
                       base={g.base}
                       selected={current?.componentId === g.id ? current.path : undefined}
                       onSelect={(path) => setSelected({ componentId: g.id, path })}
-                      reveal={!other}
+                      task={null}
+                      worktree={target}
                     />
                   )}
                 </section>

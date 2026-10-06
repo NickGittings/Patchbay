@@ -205,6 +205,8 @@ export interface SessionStatus {
 }
 
 export interface TerminalSnapshot {
+  /** Original launch folder for this incarnation; absent in legacy history. */
+  launchDirectory?: string | null
   truncated: boolean
   /** Base64. */
   data: string
@@ -485,4 +487,25 @@ export interface AgentIntegration {
   reporterAvailable: boolean
   reportingSessions: number
   guidance: string[]
+}
+
+/** Machine-local editor preference; never serialized into patchbay.json. */
+export type EditorKind = 'vsCode' | 'cursor' | 'zed' | 'custom'
+export interface EditorPreferences {
+  editor: EditorKind
+  executable: string
+  arguments: string[]
+}
+export interface EditorTarget {
+  path: string
+  line?: number
+  column?: number
+}
+export interface EditorLauncher {
+  editor: EditorKind
+  executable: string | null
+}
+export interface FileSearchResult {
+  path: string
+  name: string
 }

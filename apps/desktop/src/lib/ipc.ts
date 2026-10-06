@@ -16,6 +16,10 @@ import type {
   ChangedFile,
   DeviceManifest,
   DirEntry,
+  EditorPreferences,
+  EditorTarget,
+  EditorLauncher,
+  FileSearchResult,
   FileDiff,
   GitStatus,
   Project,
@@ -209,9 +213,31 @@ export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<Un
 export const terminalSnapshot = (sessionId: string) =>
   invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId })
 /** `path` is relative to the open project's root; the backend refuses anything outside it. */
-export const listDir = (path: string, projectId = useStore.getState().project?.id) =>
-  invoke<DirEntry[]>('list_dir', { path, projectId })
-export const revealPath = (path: string) => invoke<void>('reveal_path', { path })
+export const listDir = (
+  path: string,
+  projectId = useStore.getState().project?.id,
+  task: string | null = null,
+) => invoke<DirEntry[]>('list_dir', { path, projectId, task })
+export const revealPath = (
+  path: string,
+  worktree?: string,
+  projectId = useStore.getState().project?.id,
+  task: string | null = useStore.getState().activeTask,
+) => invoke<void>('reveal_path', { path, projectId, task, worktree })
+export const editorPreferences = () => invoke<EditorPreferences>('editor_preferences')
+export const editorSavePreferences = (preferences: EditorPreferences) =>
+  invoke<void>('editor_save_preferences', { preferences })
+export const editorDiscover = () => invoke<EditorLauncher[]>('editor_discover')
+export const editorOpen = (
+  target: EditorTarget,
+  projectId: string,
+  task: string | null,
+  worktree?: string,
+) => invoke<void>('editor_open', { target, projectId, task, worktree })
+export const fileSearch = (query: string, projectId: string, task: string | null) =>
+  invoke<FileSearchResult[]>('file_search', { query, projectId, task })
+export const terminalOpenReference = (sessionId: string, generation: number, reference: string) =>
+  invoke<void>('terminal_open_reference', { sessionId, generation, reference })
 
 export const listExtensions = () => invoke<ExtensionRegistry>('list_extensions')
 export const reloadExtensions = () => invoke<ExtensionRegistry>('reload_extensions')

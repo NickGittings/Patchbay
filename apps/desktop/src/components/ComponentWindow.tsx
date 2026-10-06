@@ -1,3 +1,5 @@
+import NavigationDialogs from './NavigationDialogs'
+import { openInEditor, revealLabel } from '../lib/navigation'
 import PersistedGroup from './PersistedGroup'
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -116,6 +118,7 @@ export default function ComponentWindow({ id }: { id: string }) {
   const path = absolutePath(project.root, data.path)
   return (
     <div className="component-window" style={{ '--kind': KIND_COLOR[data.kind] } as CSSProperties}>
+      <NavigationDialogs />
       <header className="window-header">
         <span className="kind-badge">{data.kind}</span>
         <strong>{data.name}</strong>
@@ -127,12 +130,13 @@ export default function ComponentWindow({ id }: { id: string }) {
             ±{changes}
           </span>
         )}
+        <button onClick={() => void openInEditor({ path: data.path })}>Open in editor</button>
         <button
           onClick={() =>
             void revealPath(data.path).catch((e) => useStore.getState().setMessage(String(e)))
           }
         >
-          Reveal in Finder
+          {revealLabel}
         </button>
       </header>
       {message && (

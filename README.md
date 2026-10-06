@@ -41,10 +41,39 @@ cargo test --workspace
 - **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then Save to write `patchbay.json` (commit it to share the map). **Rescan** adds components for new folders without touching your edits.
 - **Repos**: a project can span several git repos. Open a parent folder that holds them, or use **Add repo…** to add a repo that lives beside the project; it is stored as a relative path such as `../billing`, so keep the same folder layout on other machines. Any nested repo becomes a component even without a recognised manifest, and git status is tracked per repo.
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
-- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders, double-click a file to reveal it in Finder (files are never opened directly, so a double-click can't run an executable from the repo), or use **Reveal in Finder** for the component folder. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
+- **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders and double-click entries to open them in your preferred editor. **Open in editor** is also available in the Inspector, file tree, and review files; **Reveal in Finder/Explorer** remains a separate action. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
 - **Terminal**: a real PTY that opens in the component's folder. Kinds are `shell` (interactive, starts when first viewed), `task` (dev server, tests…) and `agent`.
 - **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
+
+## Editor navigation
+
+Choose **Tools → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom
+executable. Patchbay checks your login-shell PATH and standard installation locations. If a
+launcher is unavailable, editor actions open settings with setup guidance. Preferences live in
+`~/.patchbay/editor.json` (or `PATCHBAY_STATE_DIR`), outside the saved component map.
+
+Custom configuration takes an executable path/name and a JSON argument array, for example
+`["--goto", "{file}:{line}:{column}"]`. Each argument stays literal, including spaces and shell
+punctuation. `{folder}` is the target directory or a file's parent; `{file}` is the full target
+path. Missing line/column values default to 1. Windows custom launchers must be `.exe` files.
+
+**Cmd/Ctrl+P** searches filenames and relative paths in approved project/component folders,
+with at most 100 ranked results. Git ignores hide untracked files; tracked files remain searchable.
+Components in separately approved sibling repositories are included. Searches and file-tree/editor
+navigation follow the active task's worktree. Review actions follow the worktree explicitly selected
+for that review, including when another task is active. Changing projects/tasks discards stale
+search responses. **Cmd/Ctrl+Shift+P** continues to open the command palette.
+
+Terminal references such as `src/main.rs:12:4` and `src/main.rs(12,4)` open in the editor with
+**Cmd/Ctrl-click**. Ordinary dragging still selects terminal text. Quoted filenames may contain
+spaces. Relative references resolve only against that session's recorded launch directory;
+missing or inaccessible targets show an explanation. Retained terminal links keep their original
+process generation and launch folder across restarts and path repairs. Legacy history with an
+unknown folder shows an explanation. Canonical access checks reject denied folders and symlink escapes.
+
+Run `npm run smoke:navigation` for the Unix desktop fixture. See
+[editor navigation validation](docs/editor-navigation-validation.md) for release checks.
 
 ## Extensions
 

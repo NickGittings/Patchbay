@@ -1,5 +1,6 @@
+import { openTerminalReference, terminalReferences } from './navigation'
 import { FitAddon } from '@xterm/addon-fit'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type IBufferLine, type ILink, type IMarker } from '@xterm/xterm'
 import { terminalResize, terminalWrite } from './ipc'
 import { useStore } from '../store'
 
@@ -10,6 +11,8 @@ interface Entry {
   opened: boolean
   replaying: boolean
   hosts: HTMLElement[]
+  generations: { generation: number; marker: IMarker }[]
+  generation?: number
 }
 
 /** One long-lived xterm per session so scrollback survives tab switches and restarts. */
@@ -22,6 +25,73 @@ const theme = {
   selectionBackground: '#3a3f4b',
 }
 
+/** Map UTF-16 string offsets onto xterm cell columns (wide and combining characters). */
+function cellColumn(line: IBufferLine, offset: number): number {
+  let chars = 0
+  for (let column = 0; column < line.length; column++) {
+    const cell = line.getCell(column)
+    if (!cell || cell.getWidth() === 0) continue
+    const length = (cell.getChars() || ' ').length
+    if (chars + length > offset) return column
+    chars += length
+  }
+  return line.length
+}
+
+/** Reassemble soft-wrapped output before parsing; ranges stay in terminal cell coordinates. */
+function terminalFileLinks(
+  term: Terminal,
+  sid: string,
+  line: number,
+): (ILink & { generation?: number })[] {
+  const buffer = term.buffer.active
+  let first = line - 1
+  while (first > 0 && buffer.getLine(first)?.isWrapped) first--
+  const segments: { line: IBufferLine; row: number; offset: number; text: string }[] = []
+  let text = ''
+  for (let row = first; row < buffer.length; row++) {
+    const current = buffer.getLine(row)
+    if (!current) break
+    const continues = buffer.getLine(row + 1)?.isWrapped ?? false
+    const value = current.translateToString(!continues)
+    segments.push({ line: current, row: row + 1, offset: text.length, text: value })
+    text += value
+    if (!continues) break
+  }
+  const locate = (offset: number, end = false) => {
+    const segment = [...segments].reverse().find((s) => s.offset <= offset)
+    if (!segment) return { x: 1, y: line }
+    const column = cellColumn(segment.line, offset - segment.offset)
+    const width = end ? (segment.line.getCell(column)?.getWidth() ?? 1) : 1
+    return { x: column + width, y: segment.row }
+  }
+  return terminalReferences(text)
+    .map((match) => {
+      const start = locate(match.index ?? 0)
+      const generation =
+        buffer.type === 'alternate'
+          ? registry.get(sid)?.generation
+          : registry
+              .get(sid)
+              ?.generations.filter((g) => !g.marker.isDisposed && g.marker.line <= start.y - 1)
+              .at(-1)?.generation
+      return {
+        text: match[0],
+        generation,
+        range: {
+          start,
+          end: locate((match.index ?? 0) + match[0].length - 1, true),
+        },
+        decorations: { pointerCursor: false, underline: true },
+        activate(event: MouseEvent, reference: string) {
+          if ((event.metaKey || event.ctrlKey) && !term.hasSelection())
+            void openTerminalReference(sid, reference, generation)
+        },
+      }
+    })
+    .filter((link) => link.range.start.y <= line && link.range.end.y >= line)
+}
+
 function entry(sessionId: string): Entry {
   let e = registry.get(sessionId)
   if (!e) {
@@ -32,11 +102,24 @@ function entry(sessionId: string): Entry {
       scrollback: 10000,
       theme,
     })
+    term.registerLinkProvider({
+      provideLinks(line, callback) {
+        callback(terminalFileLinks(term, sessionId, line))
+      },
+    })
     const fit = new FitAddon()
     term.loadAddon(fit)
     const el = document.createElement('div')
     el.className = 'xterm-host'
-    const created = { term, fit, el, opened: false, replaying: false, hosts: [] as HTMLElement[] }
+    const created: Entry = {
+      term,
+      fit,
+      el,
+      opened: false,
+      replaying: false,
+      hosts: [],
+      generations: [],
+    }
     // Both typing and automatic replies go through the service's single-viewer authority.
     // Hidden, detached terminals retain output without replying to live queries.
     term.onData((d) => {
@@ -55,6 +138,17 @@ function entry(sessionId: string): Entry {
   return e
 }
 
+/** Scrollback retains earlier runs; markers keep links bound to the output's generation. */
+export function markOutputGeneration(sid: string, generation: number, offset = 0) {
+  const e = entry(sid)
+  e.term.write('', () => {
+    e.generation = generation
+    e.generations = e.generations.filter((g) => !g.marker.isDisposed)
+    const marker = e.term.registerMarker(offset)
+    if (marker) e.generations.push({ generation, marker })
+  })
+}
+
 export function writeOutput(sessionId: string, data: number[] | Uint8Array) {
   entry(sessionId).term.write(data instanceof Uint8Array ? data : new Uint8Array(data))
 }
@@ -67,7 +161,11 @@ export function replayOutput(sessionId: string, data: Uint8Array) {
 }
 
 /** Drain previously queued writes before replacing them with retained backend output. */
-export function restoreOutput(sessionId: string, data: Uint8Array): Promise<void> {
+export function restoreOutput(
+  sessionId: string,
+  data: Uint8Array,
+  generation: number,
+): Promise<void> {
   const e = entry(sessionId)
   const { term } = e
   return new Promise((resolve) => {
@@ -75,6 +173,10 @@ export function restoreOutput(sessionId: string, data: Uint8Array): Promise<void
       // Parsing historical terminal queries must not send replies to the live PTY.
       e.replaying = true
       term.reset()
+      e.generation = generation
+      e.generations = []
+      const marker = term.registerMarker()
+      if (marker) e.generations.push({ generation, marker })
       term.write(data, () => {
         e.replaying = false
         resolve()
@@ -158,4 +260,28 @@ export function terminalText(sessionId: string) {
   for (let i = 0; i < buffer.length; i++)
     lines.push(buffer.getLine(i)?.translateToString(true) ?? '')
   return { text: lines.join('\n'), cols: e.term.cols, rows: e.term.rows }
+}
+
+/** Dev smoke observations use the real xterm buffer and selection machinery. */
+export function terminalNavigationState(sid: string, reference: string) {
+  const e = registry.get(sid)
+  const screen = e?.el.querySelector('.xterm-screen')
+  if (!e || !screen) return undefined
+  const rect = screen.getBoundingClientRect()
+  const buffer = e.term.buffer.active
+  for (let y = buffer.viewportY; y < buffer.viewportY + e.term.rows; y++) {
+    const link = terminalFileLinks(e.term, sid, y + 1).find((l) => l.text === reference)
+    if (!link) continue
+    const column = link.range.start.y === y + 1 ? link.range.start.x - 1 : 0
+    const width = rect.width / e.term.cols
+    return {
+      x: rect.left + (column + 0.5) * width,
+      y: rect.top + ((y - buffer.viewportY + 0.5) * rect.height) / e.term.rows,
+      width,
+      selection: e.term.getSelection(),
+      reference,
+      generation: link.generation,
+    }
+  }
+  return undefined
 }

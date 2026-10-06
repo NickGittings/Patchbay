@@ -1,3 +1,4 @@
+import { configureEditor, showFileSearch } from '../lib/navigation'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect, useState } from 'react'
@@ -81,6 +82,10 @@ export default function Toolbar() {
             )}
           </Menu>
           <Menu label="Tools" keepMounted>
+            <MenuItem onClick={showFileSearch} shortcut={`${mod}P`}>
+              Search files…
+            </MenuItem>
+            <MenuItem onClick={() => configureEditor()}>Preferred editor…</MenuItem>
             <MenuItem
               onClick={() => useStore.getState().setPaletteOpen(true)}
               shortcut={`${shiftMod}P`}

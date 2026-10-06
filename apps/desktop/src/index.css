@@ -1908,3 +1908,39 @@ button.review-name:hover:not(:disabled) {
 .muted {
   color: var(--muted);
 }
+
+/* Editor handoff keeps the file manager action distinct from file selection. */
+.file-tree-row,
+.change-file-row {
+  display: flex;
+  align-items: center;
+}
+.file-tree-row > .file-tree-entry,
+.change-file-row > .change-row {
+  flex: 1;
+  min-width: 0;
+}
+.file-tree-action,
+.change-file-action {
+  flex: none;
+  padding: 3px 6px;
+  opacity: 0.55;
+}
+.file-tree-row:hover .file-tree-action,
+.change-file-row:hover .change-file-action,
+.file-tree-action:focus-visible,
+.change-file-action:focus-visible {
+  opacity: 1;
+}
+.editor-settings {
+  padding: 16px;
+}
+.editor-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0;
+}
+.editor-settings textarea {
+  width: 100%;
+}
