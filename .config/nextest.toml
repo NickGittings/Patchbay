@@ -1,0 +1,14 @@
+# `cargo nextest run --workspace` runs each test in its own process, in parallel.
+# Doctests aren't covered: run `cargo test --doc --workspace` too.
+
+[test-groups]
+# Tests that spawn shells and session services; too many at once makes their timing flaky.
+processes = { max-threads = 4 }
+
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "30s" }
+
+[[profile.default.overrides]]
+filter = "package(patchbay-sessiond) | test(/^(pty|session|actions|context)::/)"
+test-group = "processes"

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
@@ -10,4 +11,6 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
   },
+  // Unit tests for pure modules sit beside them; the app itself is covered by `npm run smoke*`.
+  test: { include: ['src/**/*.test.ts'], environment: 'node' },
 })

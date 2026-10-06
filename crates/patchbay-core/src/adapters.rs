@@ -233,6 +233,71 @@ mod tests {
         assert!(!valid_id("id; rm -rf"));
     }
     #[test]
+    fn recognises_providers_and_their_resume_hints() {
+        assert_eq!(Adapter::default_for("claude"), Some(Adapter::Claude));
+        assert_eq!(
+            Adapter::default_for("/usr/local/bin/codex --model x"),
+            Some(Adapter::Codex)
+        );
+        assert_eq!(Adapter::default_for("claude-dev"), None);
+        assert_eq!(Adapter::default_for(""), None);
+
+        let first = "11111111-2222-3333-4444-555555555555";
+        let last = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+        // The last hint wins, lowercased, and trailing punctuation isn't part of it.
+        let output = format!("claude --resume {first}\n...\nclaude --resume {last}.\n");
+        assert_eq!(
+            Adapter::Claude.capture(&output),
+            Some(last.to_ascii_lowercase())
+        );
+        // Each provider reads only its own hint.
+        assert!(Adapter::Codex.capture(&output).is_none());
+    }
+
+    #[test]
+    fn ids_are_bounded_and_command_line_safe() {
+        assert!(valid_id("abcdef12"));
+        assert!(valid_id(&"a".repeat(128)));
+        assert!(!valid_id("abc1234"));
+        assert!(!valid_id(&"a".repeat(129)));
+        assert!(!valid_id("abcdef12 --print"));
+        assert!(is_uuid("12345678-abcd-4321-aaaa-123456789abc"));
+        assert!(!is_uuid("12345678-abcd-4321-aaaa-123456789ab"));
+        assert!(!is_uuid("1234567g-abcd-4321-aaaa-123456789abc"));
+    }
+
+    #[test]
+    fn resume_needs_the_matching_provider_and_nearby_history() {
+        let fixture = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let id = "12345678-abcd-4321-aaaa-123456789abc";
+        // Deeper than the lookup goes, so it isn't found.
+        let deep = fixture.join("1/2/3/4/5/6");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join(format!("{id}.jsonl")), "{}").unwrap();
+        assert!(!Adapter::has_history(&fixture, id));
+        std::fs::write(fixture.join("1").join(format!("{id}.jsonl")), "{}").unwrap();
+        assert!(Adapter::has_history(&fixture, id));
+        assert!(!Adapter::has_history(&fixture, "12345678"));
+
+        assert!(
+            Adapter::Claude
+                .resume_with_history("codex", id, &fixture, &fixture)
+                .is_err()
+        );
+        assert!(
+            Adapter::Claude
+                .resume_with_history("claude", "bad id", &fixture, &fixture)
+                .is_err()
+        );
+        assert!(
+            Adapter::Claude
+                .resume_with_history("claude", id, &fixture, &fixture)
+                .is_ok()
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
     fn resume_preserves_context_and_requires_exact_history() {
         let fixture = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let history = fixture.join("sessions/2026/10/04");

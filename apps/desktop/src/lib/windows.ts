@@ -7,6 +7,13 @@ import {
 } from '@tauri-apps/api/webviewWindow'
 import { projectFrom, useStore } from '../store'
 import type { Task } from '../types'
+import type { BackgroundThrottlingPolicy } from '@tauri-apps/api/window'
+
+/** Debug smoke runs keep windows unfocused, where WebKit would throttle them (`smoke.rs`). */
+const smokeOptions =
+  import.meta.env.DEV && '__PATCHBAY_SMOKE__' in window
+    ? { backgroundThrottling: 'disabled' as BackgroundThrottlingPolicy }
+    : {}
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -114,6 +121,7 @@ export function openComponentWindow(
       minWidth: 600,
       minHeight: 400,
       ...geometry,
+      ...smokeOptions,
     })
     await new Promise<void>((resolve, reject) => {
       void popout.once('tauri://created', () => resolve())

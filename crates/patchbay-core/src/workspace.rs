@@ -340,6 +340,98 @@ mod tests {
             "s-0e178a53a901740b2d3a424757a0e01c"
         );
     }
+    /// Pinned in `apps/desktop/src/types.test.ts` too: the frontend hashes the same ids.
+    #[test]
+    fn session_ids_match_the_frontend() {
+        assert_eq!(
+            session_id("p-1", "web", "dev"),
+            "s-d17ed5ac1fb0a47bcad00e0ba048bc44"
+        );
+        assert_eq!(
+            crate::model::task_session_id("p-1", "web", "dev", Some("abc123")),
+            "s-1fd83100e66d2b3b3496518fcb3a11f0"
+        );
+        assert_eq!(session_id("", "", ""), "s-81d23fd7003c2305f25b4ea0b7d9da64");
+        assert_eq!(
+            session_id("p-1", "ünï", "dev"),
+            "s-63e96d0c28b3d68802aa56d2aaa35d63"
+        );
+    }
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn identities_follow_folders_and_relinking() {
+        let dir = scratch();
+        let state = dir.join("state");
+        let (one, two, moved) = (dir.join("one"), dir.join("two"), dir.join("moved"));
+        for folder in [&one, &two, &moved] {
+            std::fs::create_dir(folder).unwrap();
+        }
+        let first = project_id(&state, &one).unwrap();
+        assert_ne!(first, project_id(&state, &two).unwrap());
+        // The same folder through a non-canonical path keeps its identity.
+        assert_eq!(first, project_id(&state, &one.join("../one")).unwrap());
+        relink(&state, &first, &moved).unwrap();
+        assert_eq!(first, project_id(&state, &moved).unwrap());
+        assert_ne!(first, project_id(&state, &one).unwrap());
+        assert!(project_id(&state, &dir.join("missing")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn workspaces_round_trip_and_reject_invalid_entries() {
+        let dir = scratch();
+        let path = dir.join("workspace.json");
+        let entry = |id: &str, root: &str| WorkspaceProject {
+            id: id.into(),
+            root: root.into(),
+            name: "Shop".into(),
+            saved_fingerprint: "absent".into(),
+            draft: None,
+            layout: serde_json::json!({ "zoom": 2 }),
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let doc = Workspace {
+            projects: vec![entry("a", &root), entry("b", &root)],
+            active_project: Some("b".into()),
+            ..Workspace::default()
+        };
+        doc.save(&path).unwrap();
+        let loaded = Workspace::load(&path).unwrap();
+        assert_eq!(loaded.active_project.as_deref(), Some("b"));
+        assert_eq!(loaded.projects[0].layout["zoom"], 2);
+
+        for projects in [
+            vec![entry("a", &root), entry("a", &root)],
+            vec![entry("", &root)],
+            vec![entry("a", "relative/root")],
+        ] {
+            let bad = Workspace {
+                projects,
+                ..Workspace::default()
+            };
+            assert!(bad.save(&path).is_err());
+        }
+        // A rejected save leaves the previous document in place.
+        assert_eq!(Workspace::load(&path).unwrap().projects.len(), 2);
+        // A missing file is an empty workspace; an unreadable one is an error, kept on disk.
+        assert!(
+            Workspace::load(&dir.join("none.json"))
+                .unwrap()
+                .projects
+                .is_empty()
+        );
+        atomic_write(&path, b"{not json").unwrap();
+        assert!(Workspace::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{not json");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn atomic_recovery_and_conflicts() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
