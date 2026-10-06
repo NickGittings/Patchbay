@@ -1,9 +1,9 @@
 //! Suggest a component map from a repository's structure.
 //!
 //! Every folder with a recognised manifest (`package.json`, `Cargo.toml`,
-//! `pyproject.toml`, `requirements.txt`, `go.mod`) becomes a component, as does
-//! any nested git repo without one. Dependencies between detected packages
-//! become links.
+//! `pyproject.toml`, `requirements.txt`, `go.mod`) or native app project (Xcode
+//! or Android Gradle) becomes a component, as does any nested git repo without
+//! one. Dependencies between detected packages become links.
 
 use crate::extensions::DetectorContribution;
 use crate::model::{
@@ -26,6 +26,8 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     "__pycache__",
     "coverage",
     "gen",
+    "Pods",
+    "Carthage",
 ];
 const COLUMN_WIDTH: f64 = 340.0;
 const ROW_HEIGHT: f64 = 230.0;
@@ -128,6 +130,8 @@ fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
         ],
     ) {
         ComponentKind::Backend
+    } else if any_dep(&deps, &["electron", "react-native", "expo"]) {
+        ComponentKind::App
     } else if any_dep(
         &deps,
         &[
@@ -143,8 +147,6 @@ fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
         ],
     ) {
         ComponentKind::Frontend
-    } else if any_dep(&deps, &["electron", "react-native", "expo"]) {
-        ComponentKind::App
     } else if any_dep(&deps, &["prisma", "drizzle-kit", "knex"]) {
         ComponentKind::Database
     } else if scripts.contains("dev") || scripts.contains("start") {
@@ -330,6 +332,70 @@ fn read(dir: &Path, file: &str) -> Option<String> {
     std::fs::read_to_string(dir.join(file)).ok()
 }
 
+fn has_gradle_settings(dir: &Path) -> bool {
+    ["settings.gradle", "settings.gradle.kts"]
+        .iter()
+        .any(|file| dir.join(file).is_file())
+}
+
+fn is_android_module(dir: &Path) -> bool {
+    ["build.gradle", "build.gradle.kts"]
+        .iter()
+        .any(|file| dir.join(file).is_file())
+        && ["src/main/AndroidManifest.xml", "src/AndroidManifest.xml"]
+            .iter()
+            .any(|file| dir.join(file).is_file())
+}
+
+fn is_android_project(dir: &Path) -> bool {
+    is_android_module(dir)
+        || (has_gradle_settings(dir)
+            && std::fs::read_dir(dir).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.file_type().is_ok_and(|kind| kind.is_dir())
+                        && is_android_module(&entry.path())
+                })
+            }))
+}
+
+fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
+    let xcode = std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some("xcodeproj") => path.join("project.pbxproj").is_file(),
+                Some("xcworkspace") => path.join("contents.xcworkspacedata").is_file(),
+                _ => false,
+            }
+        })
+    });
+    if !xcode {
+        if !is_android_project(dir) {
+            return None;
+        }
+        // Keep Android modules on their owning project's node, with terminals
+        // rooted beside settings.gradle and the Gradle wrapper. An independent
+        // nested build with its own settings still gets its own component.
+        if !has_gradle_settings(dir) && dir != root {
+            for parent in dir.ancestors().skip(1) {
+                if has_gradle_settings(parent) && is_android_project(parent) {
+                    return None;
+                }
+                if parent == root {
+                    break;
+                }
+            }
+        }
+    }
+    Some(Candidate {
+        rel: String::new(),
+        name: dir_name(dir),
+        kind: ComponentKind::App,
+        tasks: Vec::new(),
+        deps: HashSet::new(),
+    })
+}
+
 fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) -> Option<Candidate> {
     if let Some(text) = read(dir, "package.json") {
         return from_package_json(dir, root, &text);
@@ -345,6 +411,9 @@ fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) ->
     }
     if let Some(text) = read(dir, "go.mod") {
         return Some(from_go_mod(dir, &text));
+    }
+    if let Some(candidate) = from_native_project(dir, root) {
+        return Some(candidate);
     }
     for detector in detectors {
         if detector.files.iter().any(|file| dir.join(file).is_file()) {
@@ -407,7 +476,10 @@ fn walk(
         .map(|e| e.path())
         .filter(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy();
-            !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref())
+            !name.starts_with('.')
+                && !SKIP_DIRS.contains(&name.as_ref())
+                && !name.ends_with(".xcodeproj")
+                && !name.ends_with(".xcworkspace")
         })
         .collect();
     dirs.sort();
@@ -886,6 +958,157 @@ mod tests {
         assert_eq!(p.links[0].target, "packages-api-client");
         assert!(web.position.x < p.components[1].position.x);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rescan_adds_native_apps_without_duplicate_modules_or_changing_existing_components() {
+        let root = env::temp_dir().join(format!("patchbay-native-rescan-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write(&root, "KriloBackend/requirements.txt", "fastapi\n");
+        write(&root, "KriloCronJobs/requirements.txt", "requests\n");
+        let mut project = detect(&root).unwrap();
+        project.components[0].name = "My backend".into();
+        project.components[0].notes = "Keep these notes".into();
+        project.components[0].position.x = 123.0;
+        project.components[0].terminals[0].command = "custom shell".into();
+        let existing = serde_json::to_value(&project.components).unwrap();
+
+        write(&root, "Krilo/Krilo.xcodeproj/project.pbxproj", "{}");
+        write(
+            &root,
+            "Krilo/Krilo.xcworkspace/contents.xcworkspacedata",
+            "<Workspace/>",
+        );
+        write(
+            &root,
+            "Krilo/Pods/Dependency/Dependency.xcodeproj/project.pbxproj",
+            "{}",
+        );
+        write(
+            &root,
+            "Krilo/build/Generated/Generated.xcodeproj/project.pbxproj",
+            "{}",
+        );
+        write(
+            &root,
+            "KriloAndroid/settings.gradle.kts",
+            "include(\":app\", \":shared\")",
+        );
+        write(&root, "KriloAndroid/build.gradle.kts", "plugins {}");
+        write(&root, "KriloAndroid/gradlew", "");
+        for module in ["app", "shared"] {
+            write(
+                &root,
+                &format!("KriloAndroid/{module}/build.gradle.kts"),
+                "plugins {}",
+            );
+            write(
+                &root,
+                &format!("KriloAndroid/{module}/src/main/AndroidManifest.xml"),
+                "<manifest/>",
+            );
+        }
+
+        assert_eq!(rescan(&mut project, &[]).unwrap(), 2);
+        assert_eq!(
+            serde_json::to_value(&project.components[..2]).unwrap(),
+            existing
+        );
+        for (id, path) in [("krilo", "Krilo"), ("kriloandroid", "KriloAndroid")] {
+            let app = project.component(id).unwrap();
+            assert_eq!(app.name, path);
+            assert_eq!(app.path, path);
+            assert_eq!(app.kind, ComponentKind::App);
+            let kinds: Vec<_> = app.terminals.iter().map(|terminal| terminal.kind).collect();
+            assert_eq!(kinds, [TerminalKind::Shell, TerminalKind::Agent]);
+        }
+        assert_eq!(rescan(&mut project, &[]).unwrap(), 0);
+        assert_eq!(detect(&root).unwrap().components.len(), 4);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detects_android_roots_custom_modules_and_standalone_builds() {
+        let root = env::temp_dir().join(format!("patchbay-android-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // A settings-only root and a module name other than "app".
+        write(&root, "android/settings.gradle", "include ':mobile'");
+        write(&root, "android/mobile/build.gradle", "plugins {}");
+        write(
+            &root,
+            "android/mobile/src/main/AndroidManifest.xml",
+            "<manifest/>",
+        );
+        write(&root, "standalone/build.gradle.kts", "plugins {}");
+        write(
+            &root,
+            "standalone/src/main/AndroidManifest.xml",
+            "<manifest/>",
+        );
+        write(&root, "jvm/settings.gradle.kts", "include(\":app\")");
+        write(&root, "jvm/app/build.gradle.kts", "plugins { java }");
+        write(&root, "android/independent/settings.gradle.kts", "");
+        write(&root, "android/independent/build.gradle.kts", "plugins {}");
+        write(
+            &root,
+            "android/independent/src/main/AndroidManifest.xml",
+            "<manifest/>",
+        );
+        let project = detect(&root).unwrap();
+        let paths: Vec<_> = project.components.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["android", "android/independent", "standalone"]);
+        assert!(
+            project
+                .components
+                .iter()
+                .all(|c| c.kind == ComponentKind::App)
+        );
+        // Opening a module itself must still detect that root, even if its
+        // owning Gradle project lies outside the selected folder.
+        let module = detect(&root.join("android/mobile")).unwrap();
+        assert_eq!(module.components[0].path, ".");
+        assert_eq!(module.components[0].kind, ComponentKind::App);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detects_xcode_workspaces_and_ignores_incomplete_project_bundles() {
+        let root = env::temp_dir().join(format!("patchbay-xcode-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write(
+            &root,
+            "ios/App.xcworkspace/contents.xcworkspacedata",
+            "<Workspace/>",
+        );
+        write(
+            &root,
+            "ios/App.xcworkspace/package.json",
+            r#"{"name":"bundle-internal"}"#,
+        );
+        write(
+            &root,
+            "incomplete/App.xcodeproj/README.md",
+            "Not a project yet",
+        );
+        let project = detect(&root).unwrap();
+        assert_eq!(project.components.len(), 1);
+        assert_eq!(project.components[0].path, "ios");
+        assert_eq!(project.components[0].kind, ComponentKind::App);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn react_native_and_expo_with_react_are_classified_as_apps() {
+        for dependency in ["react-native", "expo"] {
+            let text = serde_json::json!({
+                "name": "mobile",
+                "dependencies": { "react": "*", dependency: "*" },
+            })
+            .to_string();
+            let candidate =
+                from_package_json(Path::new("mobile"), Path::new("mobile"), &text).unwrap();
+            assert_eq!(candidate.kind, ComponentKind::App);
+        }
     }
 
     #[test]
