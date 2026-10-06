@@ -108,7 +108,8 @@ export const addFolder = (project: Project) =>
 /** Opens a folder picker for a component's folder; the path relative to the root, or `null`. */
 export const pickComponentFolder = () => invoke<string | null>('pick_component_folder')
 /** Tell the backend which component folders are on the map; it can only narrow file access. */
-export const syncRoots = (paths: string[]) => invoke<void>('sync_roots', { paths })
+export const syncRoots = (paths: string[], projectId = useStore.getState().project?.id) =>
+  invoke<void>('sync_roots', { paths, projectId })
 export const onFileAccessChanged = (handler: () => void) =>
   listen('patchbay://file-access', handler)
 /** `task` reads the task's worktree instead of the project's own. */

@@ -515,7 +515,7 @@ export const useStore = create<State>((set, get) => ({
   setEdgeLabel: (id, label) =>
     set((s) => ({
       edges: s.edges.map((e) =>
-        e.id === id ? { ...e, label: label || undefined, data: { label } } : e,
+        e.id === id ? { ...e, label: label || undefined, data: { ...e.data, label } } : e,
       ),
       dirty: true,
     })),
