@@ -10,7 +10,7 @@ import {
   releaseMapEdit,
   rescanProject,
 } from './ipc'
-import { syncCurrentRoots } from './access'
+import { syncProjectRoots } from './access'
 
 interface ReviewState {
   projectId: string
@@ -99,7 +99,7 @@ async function acceptEdit(before: Project, edit: MapEdit) {
         : {}),
     })
     if (removed.length) await cleanupComponentScopes(draft, removed)
-    if (useStore.getState().project?.id === id) await syncCurrentRoots()
+    await syncProjectRoots(id)
     await refreshMapIssues(id)
   } finally {
     if (edit.lease) await releaseMapEdit(id, edit.lease)

@@ -201,6 +201,8 @@
     const second = await smoke.openSecondProject()
     smoke.acceptOpened(second)
     state().activateProject(original.projectId)
+    const beforeRepair = state().toProject()
+    const originAccessPreview = await smoke.rescanProject(beforeRepair)
     const repair = smoke.repairComponentPath('api', '.')
     state().activateProject(second.id)
     assert(await repair, 'originating workspace path repair failed')
@@ -213,6 +215,10 @@
         .captureProjects()
         [original.projectId].state.nodes.find((n) => n.id === 'api').data.path === '.',
       'delayed repair did not update its originating workspace',
+    )
+    await rejects(
+      () => smoke.applyReconciliation(beforeRepair, originAccessPreview.id, []),
+      'inactive repair must update its native roots and invalidate old access previews',
     )
     await smoke.report(
       'PASS maintenance: reviewed additions/dependencies/removals/moves, legacy preservation, issue distinctions, access/draft revisions, stopped-session guards and scope cleanup',
