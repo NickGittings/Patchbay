@@ -13,7 +13,7 @@ use patchbay_core::navigation::{
 };
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
-use patchbay_core::session::{self, Record, Request};
+use patchbay_core::session::{self, PreviewScan, Record, Request};
 use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
@@ -2478,12 +2478,13 @@ async fn extension_sessions_list(
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
     let roots = scoped.roots();
-    let registry = state.extensions.get();
-    registry
-        .allowed(&extension_id, Some("sessions:read"))
-        .map_err(err)?;
+    let extensions = state.extensions.clone();
     let bridge = state.service.clone();
     blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("sessions:read"))
+            .map_err(err)?;
         let project = access
             .restrict(project, std::slice::from_ref(&component_id))
             .map_err(err)?;
@@ -2493,8 +2494,8 @@ async fn extension_sessions_list(
             std::slice::from_ref(&component_id),
             roots,
         )?;
-        // List intentionally omits output. Filter before fetching at most 32 snapshots;
-        // the helper caps each backlog at 512 KiB and extensions receive URLs only.
+        // List intentionally omits output. Filter first, then let the service scan each
+        // (at most 32) backlog for URLs, so no output crosses the bridge.
         let mut summaries = extensions::session_summaries(
             &bridge.list()?,
             &project_id,
@@ -2503,12 +2504,12 @@ async fn extension_sessions_list(
             &roots,
         );
         for summary in &mut summaries {
-            let snapshot: Option<Snapshot> = bridge.call(Request::Snapshot {
+            let scan: Option<PreviewScan> = bridge.call(Request::PreviewUrls {
                 id: summary.session_id.clone(),
             })?;
-            if let Some(snapshot) = snapshot.filter(|s| s.generation == summary.generation) {
-                summary.urls = extensions::preview_urls(&snapshot.data);
-                summary.running = snapshot.running;
+            if let Some(scan) = scan.filter(|s| s.generation == summary.generation) {
+                summary.urls = scan.urls;
+                summary.running = scan.running;
             }
         }
         Ok(summaries)
@@ -2526,11 +2527,14 @@ async fn extension_url_open(
 ) -> CmdResult<()> {
     main_only(&window)?;
     state.project(&project_id)?;
-    state
-        .extensions
-        .get()
-        .allowed(&extension_id, Some("urls:open"))
-        .map_err(err)?;
     let url = extensions::preview_url(&url).map_err(err)?;
-    blocking(move || tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)).await
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("urls:open"))
+            .map_err(err)?;
+        tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
+    })
+    .await
 }

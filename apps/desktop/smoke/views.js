@@ -259,7 +259,13 @@
         state().selectedId === 'beta',
       'adding an existing folder changes selection',
     )
+    // Canvas deletion is a reviewed map edit; a raw remove change must not apply directly.
     state().onNodesChange([{ type: 'remove', id: 'alpha' }])
+    assert(
+      state().nodes.some((n) => n.id === 'alpha'),
+      'raw node removal bypassed review',
+    )
+    assert(await smoke.removeComponents(['alpha']), 'component removal was refused')
     assert(state().highlighted.length === 0, 'removed highlight was not pruned')
 
     // Status: an agent reporting through its status file, and a task printing a local URL.

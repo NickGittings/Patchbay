@@ -159,6 +159,35 @@ fn responsible_scan(
     true
 }
 
+/// Append one folder's scan to the combined result. Every scan numbers its ids on its own,
+/// and the later id-keyed maps would conflate two components sharing one, so colliding ids
+/// are renamed (and that scan's links rewritten) first.
+fn append_scan(into: &mut Project, found: Project) {
+    let mut taken: HashSet<String> = into.components.iter().map(|c| c.id.clone()).collect();
+    let mut renamed = HashMap::new();
+    for mut c in found.components {
+        let mut id = c.id.clone();
+        let mut n = 2;
+        while !taken.insert(id.clone()) {
+            id = format!("{}-{n}", c.id);
+            n += 1;
+        }
+        if id != c.id {
+            renamed.insert(std::mem::replace(&mut c.id, id.clone()), id);
+        }
+        into.components.push(c);
+    }
+    for mut link in found.links {
+        for end in [&mut link.source, &mut link.target] {
+            if let Some(id) = renamed.get(end.as_str()) {
+                end.clone_from(id);
+            }
+        }
+        link.id = format!("{}->{}", link.source, link.target);
+        into.links.push(link);
+    }
+}
+
 /// Build proposals using only canonical allowed roots. Existing records are never rewritten.
 /// # Errors
 /// Fails if the project or its root cannot be scanned.
@@ -183,8 +212,7 @@ pub fn preview(
         }
         if let Ok(found) = detect::detect_folder_with(project, dir, detectors) {
             // Collect every scanned dependency, including links between pre-existing nodes.
-            detected.components.extend(found.components);
-            detected.links.extend(found.links);
+            append_scan(&mut detected, found);
         }
     }
     let mut scanned_folders = HashSet::new();
@@ -667,6 +695,31 @@ mod tests {
         assert_eq!(
             removals(&preview(&project, &access.snapshot(), &[]).unwrap()),
             0
+        );
+    }
+
+    #[test]
+    fn external_scans_sharing_an_id_keep_each_components_relationships() {
+        let f = Fixture::new();
+        f.package("proj/api", "api", &["lib"]);
+        f.package("proj/lib", "lib", &[]);
+        f.package("api", "api", &[]);
+        let root = f.0.join("proj");
+        let mut project = detect::detect(&root).unwrap();
+        let access = Access::default();
+        access.open(&project).unwrap();
+        access.grant(&f.0.join("api")).unwrap();
+        let external = detect::detect_folder(&project, &f.0.join("api")).unwrap();
+        assert!(detect::merge_new(&mut project, external) > 0);
+        let review = preview(&project, &access.snapshot(), &[]).unwrap();
+        assert!(
+            review.proposals.is_empty(),
+            "{:?}",
+            review
+                .proposals
+                .iter()
+                .map(|p| &p.description)
+                .collect::<Vec<_>>()
         );
     }
 

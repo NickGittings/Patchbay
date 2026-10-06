@@ -181,7 +181,7 @@
       () => state().view === 'plan' && state().highlighted.length === 3,
     )
     state().setView('navigation')
-    state().onNodesChange([{ type: 'remove', id: 'lib' }])
+    assert(await smoke.removeComponents(['lib']), 'guarded component removal was refused')
     await until('guarded component removal', () => !state().nodes.some((n) => n.id === 'lib'))
     assert(!state().groups[0].componentIds.includes('lib'), 'removed member remained in group')
     await smoke.graphActionPlan(state().toProject(), { kind: 'startGroup', groupId })

@@ -684,14 +684,18 @@ impl PtyManager {
             {
                 w.seen = Some(*stamp);
             }
+            // Drain the hook journal outside the lock too: it is directory I/O, and the
+            // reader thread needs the backlog lock for every chunk of output.
+            let hooks = self
+                .report_dir(generation)
+                .map(|dir| crate::agent_hooks::drain(&dir))
+                .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
             }
-            if let Some(dir) = self.report_dir(generation) {
-                for event in crate::agent_hooks::drain(&dir) {
-                    guard.tracker.on_hook(event, now);
-                }
+            for event in hooks {
+                guard.tracker.on_hook(event, now);
             }
             // Once exited, the waiter has sent the last status.
             if !guard.running {

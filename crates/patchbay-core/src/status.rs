@@ -490,9 +490,20 @@ impl Tracker {
         let Some(effect) = input_effect(data) else {
             return;
         };
-        if self.report.as_ref().is_some_and(|r| r.authoritative) {
-            // Provider UI escape and answer keystrokes do not establish a state change.
+        if let Some(report) = self.report.as_mut().filter(|r| r.authoritative) {
             if !data.contains(&0x03) {
+                // Answering a permission prompt resumes the agent, but the provider only
+                // confirms that with its next hook (and a denial may never send one). Until
+                // then the state is a guess, so it decays to idle like any unconfirmed one.
+                if effect == AgentState::Working
+                    && resolve(&mut report.state, &mut report.message, effect)
+                {
+                    report.since_ms = now;
+                    report.authoritative = false;
+                    self.heard_ms = now;
+                    self.resolved = Some((now, effect));
+                }
+                // Provider UI escape keystrokes do not establish a state change.
                 return;
             }
             self.turn_closed = true;
@@ -991,13 +1002,22 @@ mod tests {
             AgentState::Working
         );
         tracker.on_hook(hook("PermissionRequest", Some("turn-one"), 3), 300);
+        tracker.on_input(b"\x1b[B", 320);
+        assert_eq!(
+            tracker.status(320).agent.unwrap().state,
+            AgentState::NeedsInput
+        );
+        // Answering resumes the turn, unconfirmed until the provider's next hook.
         tracker.on_input(b"y", 350);
+        let answered = tracker.status(350).agent.unwrap();
+        assert_eq!(answered.state, AgentState::Working);
+        assert!(!answered.authoritative);
         let mut duplicate = hook("UserPromptSubmit", Some("turn-one"), 4);
         duplicate.prompt = Some("duplicate prompt".into());
         tracker.on_hook(duplicate, 350);
         assert_eq!(
             tracker.status(400).agent.unwrap().state,
-            AgentState::NeedsInput
+            AgentState::Working
         );
         assert_eq!(
             tracker.status(400).agent.unwrap().prompt.as_deref(),

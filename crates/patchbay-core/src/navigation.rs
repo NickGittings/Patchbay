@@ -160,15 +160,20 @@ fn probe_login_path(
     result
 }
 /// Only fixed shell code probes PATH; neither project paths nor custom strings enter it.
+/// Probed once per process, since starting a login shell can take seconds.
 fn login_path() -> std::ffi::OsString {
-    #[cfg(unix)]
-    {
-        let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-        if let Some(path) = probe_login_path(&shell, std::time::Duration::from_secs(2)) {
-            return path;
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        #[cfg(unix)]
+        {
+            let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+            if let Some(path) = probe_login_path(&shell, std::time::Duration::from_secs(2)) {
+                return path;
+            }
         }
-    }
-    std::env::var_os("PATH").unwrap_or_default()
+        std::env::var_os("PATH").unwrap_or_default()
+    })
+    .clone()
 }
 fn find_program(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let p = Path::new(program);
@@ -387,15 +392,25 @@ pub fn reference(text: &str) -> Result<EditorTarget> {
     })
 }
 
-fn walk(dir: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
+/// Bounds the walk of folders outside Git, which have no ignore rules to prune them.
+const WALK_DEPTH: usize = 16;
+const WALK_LIMIT: usize = 200_000;
+fn walk(dir: &Path, depth: usize, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if entry.file_name() == ".git" {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".git" || crate::detect::SKIP_DIRS.contains(&name.as_ref()) {
             continue;
+        }
+        if paths.len() >= WALK_LIMIT {
+            break;
         }
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            walk(&entry.path(), paths)?;
+            if depth < WALK_DEPTH {
+                walk(&entry.path(), depth + 1, paths)?;
+            }
         } else if kind.is_file() || kind.is_symlink() {
             paths.insert(entry.path());
         }
@@ -439,16 +454,19 @@ pub fn search(
 ) -> Result<Vec<FileSearchResult>> {
     let root = roots.first().context("No project is open")?;
     let mut paths = BTreeSet::new();
-    for dir in scan_roots {
-        if !dir.exists() {
+    // A root inside another scanned root (a component folder in the project) adds nothing.
+    let mut scanned: Vec<&PathBuf> = Vec::new();
+    let mut ordered: Vec<&PathBuf> = scan_roots.iter().collect();
+    ordered.sort_by_key(|d| d.components().count());
+    for dir in ordered {
+        if !dir.exists() || scanned.iter().any(|s| dir.starts_with(s)) {
             continue;
         }
         files::resolve(roots, dir)?;
+        scanned.push(dir);
         let repo = crate::git::repo_root(dir);
         if repo.is_some() {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(dir)
+            let output = crate::git::git(dir)
                 .args([
                     "ls-files",
                     "--cached",
@@ -475,26 +493,29 @@ pub fn search(
                 paths.insert(dir.join(name));
             }
         } else {
-            walk(dir, &mut paths)?;
+            walk(dir, 0, &mut paths)?;
         }
     }
     let query = query.trim().replace('\\', "/").to_lowercase();
+    // Rank the cheap relative names first; only the best candidates touch the filesystem.
     let mut ranked: Vec<_> = paths
         .into_iter()
-        .filter_map(|path| {
-            let resolved = files::resolve(roots, &path).ok()?;
-            if !resolved.is_file() {
-                return None;
-            }
-            let path = model::relative_path(root, &path);
+        .filter_map(|full| {
+            let path = model::relative_path(root, &full);
             let score = rank(&path.to_lowercase(), &query)?;
-            let name = path.rsplit('/').next()?.to_string();
-            Some((score, FileSearchResult { path, name }))
+            Some((score, path, full))
         })
         .collect();
-    ranked.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.path.cmp(&y.path)));
-    ranked.truncate(100);
-    Ok(ranked.into_iter().map(|(_, result)| result).collect())
+    ranked.sort_by(|(a, x, _), (b, y, _)| a.cmp(b).then_with(|| x.cmp(y)));
+    Ok(ranked
+        .into_iter()
+        .filter(|(_, _, full)| files::resolve(roots, full).is_ok_and(|r| r.is_file()))
+        .take(100)
+        .map(|(_, path, _)| {
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            FileSearchResult { path, name }
+        })
+        .collect())
 }
 
 #[cfg(test)]

@@ -73,7 +73,8 @@ function terminalFileLinks(
           ? registry.get(sid)?.generation
           : registry
               .get(sid)
-              ?.generations.filter((g) => !g.marker.isDisposed && g.marker.line <= start.y - 1)
+              // A disposed marker scrolled out of the top, so its run covers the oldest lines.
+              ?.generations.filter((g) => g.marker.isDisposed || g.marker.line <= start.y - 1)
               .at(-1)?.generation
       return {
         text: match[0],
@@ -143,7 +144,11 @@ export function markOutputGeneration(sid: string, generation: number, offset = 0
   const e = entry(sid)
   e.term.write('', () => {
     e.generation = generation
-    e.generations = e.generations.filter((g) => !g.marker.isDisposed)
+    // Markers are in output order, so the disposed ones lead; keep the newest, whose run
+    // still owns the lines above the first live marker.
+    e.generations = e.generations.filter(
+      (g, i, all) => !g.marker.isDisposed || !all[i + 1]?.marker.isDisposed,
+    )
     const marker = e.term.registerMarker(offset)
     if (marker) e.generations.push({ generation, marker })
   })

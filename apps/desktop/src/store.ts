@@ -10,7 +10,6 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { create } from 'zustand'
-import { removeComponents } from './lib/maintenance'
 import type {
   ExtensionRegistry,
   CommandContribution,
@@ -415,26 +414,12 @@ export const useStore = create<State>((set, get) => ({
   toProject: () => projectFrom(get()),
 
   onNodesChange: (changes) => {
-    let removed = changes.filter((c) => c.type === 'remove').map((c) => c.id)
-    if (removed.length) {
-      const requested = removed
-      void removeComponents(requested)
-      removed = []
-      changes = changes.filter((c) => c.type !== 'remove')
-    }
-    const edits = changes.some((c) => c.type === 'remove' || (c.type === 'position' && !c.dragging))
+    // Removal is a reviewed map edit: Canvas.onBeforeDelete runs removeComponents and
+    // cancels React Flow's own removal, so a remove change never applies directly.
+    changes = changes.filter((c) => c.type !== 'remove')
+    const edits = changes.some((c) => c.type === 'position' && !c.dragging)
     set((s) => ({
       nodes: applyNodeChanges(changes, s.nodes),
-      groups: removed.length
-        ? s.groups.map((g) => ({
-            ...g,
-            componentIds: g.componentIds.filter((id) => !removed.includes(id)),
-          }))
-        : s.groups,
-      highlighted: removed.length
-        ? s.highlighted.filter((id) => !removed.includes(id))
-        : s.highlighted,
-      selectedId: removed.includes(s.selectedId ?? '') ? null : s.selectedId,
       dirty: s.dirty || edits,
     }))
   },

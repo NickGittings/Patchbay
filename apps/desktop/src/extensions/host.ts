@@ -104,7 +104,9 @@ function shutdown(runtime: Runtime, failed = true) {
   if (failed) quarantined.add(runtime.extension.id)
   runtime.rejectReady(new Error('Extension stopped'))
   runtime.frame.remove()
-  runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
+  const key = runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id)
+  // A retired runtime may already have been replaced under its key.
+  if (runtimes.get(key) === runtime) runtimes.delete(key)
   for (const pending of runtime.pending.values()) {
     clearTimeout(pending.timer)
     pending.reject(new Error('Extension stopped'))
@@ -116,30 +118,43 @@ function shutdown(runtime: Runtime, failed = true) {
   }
   scheduleBadges()
 }
+/** Give deactivate a bounded chance to finish before removing the runtime's frame. */
+async function deactivate(runtime: Runtime) {
+  const id = ++next
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 500)
+    runtime.pending.set(id, {
+      resolve: () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      reject: () => resolve(),
+      timer,
+    })
+    send(runtime, { method: 'deactivate', id })
+  })
+  shutdown(runtime, false)
+}
 async function deactivateAll() {
   epoch++
   clearTimeout(badgeTimer)
   useStore.getState().setExtensionBadges({})
-  await Promise.all(
-    [...runtimes.values()].map(async (runtime) => {
-      const id = ++next
-      // Give deactivate a bounded chance to finish before removing its frame.
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 500)
-        runtime.pending.set(id, {
-          resolve: () => {
-            clearTimeout(timer)
-            resolve()
-          },
-          reject: () => resolve(),
-          timer,
-        })
-        send(runtime, { method: 'deactivate', id })
-      })
-      shutdown(runtime, false)
-    }),
-  )
+  await Promise.all([...runtimes.values()].map(deactivate))
   quarantined.clear()
+}
+/** Stop runtimes for a task their project has switched away from, or a project now closed. */
+function retireStale() {
+  if (!runtimes.size) return
+  const projects = useStore.getState().captureProjects()
+  for (const runtime of runtimes.values()) {
+    const entry = projects[runtime.projectId]
+    // Startup activations belong to no project.
+    if (!runtime.projectId || runtime.disposed) continue
+    if (entry && (!entry.state || entry.state.activeTask === runtime.taskId)) continue
+    // Mark it gone now, so a reactivation for the same key starts a fresh frame.
+    runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
+    void deactivate(runtime)
+  }
 }
 function notify(runtime: Runtime, events = { project: true, selection: true }) {
   if (!runtime.extension.manifest.permissions.includes('project:read')) return
@@ -730,6 +745,12 @@ export function startExtensionHost() {
     return collectContext(projectFromState(entry.state), ids)
   })
   const unsubscribe = useStore.subscribe((s, previous) => {
+    if (
+      s.project !== previous.project ||
+      s.activeTask !== previous.activeTask ||
+      s.projects !== previous.projects
+    )
+      retireStale()
     if (s.extensions !== previous.extensions) {
       stopping = stopping.then(deactivateAll)
       void stopping

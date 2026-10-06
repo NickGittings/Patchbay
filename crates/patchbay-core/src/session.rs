@@ -139,6 +139,14 @@ pub struct Batch {
     pub gap: bool,
     pub events: Vec<Envelope>,
 }
+/// Answer to `Request::PreviewUrls`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewScan {
+    pub generation: u64,
+    pub running: bool,
+    pub urls: Vec<String>,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
@@ -192,6 +200,10 @@ pub enum Request {
         id: String,
     },
     Snapshot {
+        id: String,
+    },
+    /// The local URLs a session printed, scanned here so its output never crosses the wire.
+    PreviewUrls {
         id: String,
     },
     History {
@@ -665,11 +677,14 @@ impl Service {
     /// finished run. Runs outside the event path, which holds the backlog lock.
     fn capture_conversations(&self) {
         let confirmed = std::mem::take(&mut *self.confirmed.lock().unwrap());
-        for (id, generation, adapter, conversation) in confirmed {
-            if self
-                .pty
-                .snapshot(&id)
-                .is_none_or(|s| s.generation != generation)
+        // Only the latest confirmation per session matters; each status event queues one.
+        let mut handled = std::collections::HashSet::new();
+        for (id, generation, adapter, conversation) in confirmed.into_iter().rev() {
+            if !handled.insert(id.clone())
+                || self
+                    .pty
+                    .snapshot_with(&id, 0)
+                    .is_none_or(|s| s.generation != generation)
             {
                 continue;
             }
@@ -872,6 +887,13 @@ impl Service {
                 spec,
             } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
             Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
+            Request::PreviewUrls { id } => {
+                serde_json::to_value(self.snapshot(&id).map(|s| PreviewScan {
+                    generation: s.generation,
+                    running: s.running,
+                    urls: crate::extensions::preview_urls(&s.data),
+                }))?
+            }
             Request::Attach { id, viewer, claim } => {
                 self.claim(client, id.clone(), viewer, claim);
                 serde_json::to_value(self.snapshot(&id))?
