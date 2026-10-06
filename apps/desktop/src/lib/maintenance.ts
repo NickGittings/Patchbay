@@ -72,16 +72,27 @@ export function closeMapReview() {
   useMaintenance.setState({ review: null })
 }
 
+/**
+ * Apply a checked edit. Everything that can fail runs before the map changes, so an edit either
+ * fails untouched or succeeds; follow-up refreshes only report their errors.
+ */
 async function acceptEdit(before: Project, edit: MapEdit) {
   const id = before.projectId!
   try {
-    const current = projectOf(id)
-    if (!current || signature(current) !== signature(before))
-      throw new Error('The draft changed while checking work; retry the edit')
+    const unchanged = () => {
+      const current = projectOf(id)
+      if (!current || signature(current) !== signature(before))
+        throw new Error('The draft changed while checking work; retry the edit')
+    }
+    unchanged()
     const draft = { ...edit.project, projectId: id }
     const removed = before.components
       .filter((c) => !draft.components.some((n) => n.id === c.id))
       .map((c) => c.id)
+    if (removed.length) {
+      await cleanupComponentScopes(draft, removed)
+      unchanged()
+    }
     const s = useStore.getState()
     const state = s.captureProjects()[id]?.state
     s.syncProject(draft)
@@ -98,9 +109,9 @@ async function acceptEdit(before: Project, edit: MapEdit) {
           }
         : {}),
     })
-    if (removed.length) await cleanupComponentScopes(draft, removed)
     await syncProjectRoots(id)
-    await refreshMapIssues(id)
+      .then(() => refreshMapIssues(id))
+      .catch((e) => messageFor(id, String(e)))
   } finally {
     if (edit.lease) await releaseMapEdit(id, edit.lease)
   }

@@ -491,15 +491,7 @@ pub fn apply(
                 draft.links.push(link);
             }
             Change::RemoveLink { link_id } => draft.links.retain(|l| l.id != *link_id),
-            Change::RemoveComponent { component_id } => {
-                draft.components.retain(|c| c.id != *component_id);
-                draft
-                    .links
-                    .retain(|l| l.source != *component_id && l.target != *component_id);
-                for group in &mut draft.groups {
-                    group.component_ids.retain(|id| id != component_id);
-                }
-            }
+            Change::RemoveComponent { component_id } => remove_component(&mut draft, component_id),
             _ => {}
         }
     }
@@ -524,6 +516,58 @@ pub fn apply(
     draft.schema_version = SCHEMA_VERSION;
     draft.validate()?;
     Ok(draft)
+}
+
+/// Drop a component with its links and group memberships.
+fn remove_component(draft: &mut Project, component_id: &str) {
+    draft.components.retain(|c| c.id != component_id);
+    draft
+        .links
+        .retain(|l| l.source != component_id && l.target != component_id);
+    for group in &mut draft.groups {
+        group.component_ids.retain(|id| id != component_id);
+    }
+}
+
+/// A direct edit: move `moved` to a new folder and drop the `remove`d components. Returns the
+/// draft and the ids whose work must be stopped first.
+/// # Errors
+/// Fails for unknown components, a folder that is missing, unreadable or not allowed, or a
+/// draft that no longer validates.
+pub fn edit(
+    project: &Project,
+    access: &AccessSnapshot,
+    remove: &[String],
+    moved: Option<(&str, &str)>,
+) -> Result<(Project, Vec<String>)> {
+    let mut affected = remove.to_vec();
+    if let Some((id, _)) = moved {
+        affected.push(id.to_string());
+    }
+    ensure!(
+        affected.iter().all(|id| project.component(id).is_some()),
+        "Component no longer exists"
+    );
+    let mut draft = project.clone();
+    if let Some((id, path)) = moved {
+        let folder = access.readable(path).ok_or_else(|| {
+            anyhow::anyhow!("Folder is missing or not allowed; choose Browse… first")
+        })?;
+        ensure!(
+            folder.is_dir() && std::fs::read_dir(&folder).is_ok(),
+            "Choose a readable component folder"
+        );
+        model::check_component_dir(Path::new(&draft.root), &folder)?;
+        if let Some(c) = draft.components.iter_mut().find(|c| c.id == id) {
+            c.path = path.to_string();
+        }
+    }
+    for id in remove {
+        remove_component(&mut draft, id);
+    }
+    draft.schema_version = SCHEMA_VERSION;
+    draft.validate()?;
+    Ok((draft, affected))
 }
 
 /// An explicit user classification; rescanning never infers ownership for legacy records.

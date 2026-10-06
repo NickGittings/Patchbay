@@ -62,7 +62,50 @@ struct ProjectAccess {
     watcher: watch::GitWatcher,
     /// The active task's worktree, watched besides the project's roots.
     task_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Recent `navigation_roots` worktree mappings, which otherwise run `git worktree list`.
+    worktree_roots: Mutex<Option<Cached<WorktreeKey, Vec<PathBuf>>>>,
+    /// The last file search's candidates, reused while the user types.
+    search_paths: Mutex<Option<Cached<SearchKey, Arc<Vec<PathBuf>>>>>,
 }
+/// Project root, worktree and the scanned folders mapped into it.
+type WorktreeKey = (PathBuf, String, Vec<PathBuf>);
+/// Allowed roots and scanned folders.
+type SearchKey = (Vec<PathBuf>, Vec<PathBuf>);
+/// A value computed for `key`, reused until it is `ttl` old.
+struct Cached<K, V> {
+    key: K,
+    at: std::time::Instant,
+    value: V,
+}
+impl<K: PartialEq, V: Clone> Cached<K, V> {
+    fn get_or<E>(
+        slot: &Mutex<Option<Self>>,
+        key: K,
+        ttl: std::time::Duration,
+        compute: impl FnOnce(&K) -> Result<V, E>,
+    ) -> Result<V, E> {
+        let lock = || {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some(c) = lock().as_ref()
+            && c.key == key
+            && c.at.elapsed() < ttl
+        {
+            return Ok(c.value.clone());
+        }
+        // Computed without the lock, so one slow enumeration doesn't block other calls.
+        let value = compute(&key)?;
+        *lock() = Some(Self {
+            key,
+            at: std::time::Instant::now(),
+            value: value.clone(),
+        });
+        Ok(value)
+    }
+}
+const WORKTREE_ROOTS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+const SEARCH_PATHS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MapEdit {
@@ -70,6 +113,7 @@ struct MapEdit {
     lease: Option<String>,
 }
 
+#[derive(Clone)]
 struct PendingPreview {
     draft: String,
     detectors: String,
@@ -90,6 +134,13 @@ impl PendingPreview {
         }
         Ok(())
     }
+}
+/// The pending preview; a panic elsewhere can't poison it, since it is only ever replaced whole.
+fn pending_preview(scoped: &ProjectAccess) -> std::sync::MutexGuard<'_, Option<PendingPreview>> {
+    scoped
+        .maintenance
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 static PREVIEW_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -411,7 +462,7 @@ async fn rescan_project(
         if scoped.access.snapshot().revision() != access.revision() {
             return Err("Folder access changed; refresh the preview".into());
         }
-        *scoped.maintenance.lock().unwrap() = Some(PendingPreview {
+        *pending_preview(&scoped) = Some(PendingPreview {
             draft: serde_json::to_string(&project).map_err(err)?,
             detectors: serde_json::to_string(&detectors).map_err(err)?,
             preview: preview.clone(),
@@ -449,9 +500,9 @@ async fn apply_reconciliation(
     blocking(move || {
         let access = scoped.access.snapshot();
         access.trust(&mut project).map_err(err)?;
-        let pending = scoped.maintenance.lock().unwrap();
-        let pending = pending
-            .as_ref()
+        // Not held across the service call below, which may block until its timeout.
+        let pending = pending_preview(&scoped)
+            .clone()
             .filter(|p| p.preview.id == preview_id)
             .ok_or("Preview expired; refresh it")?;
         pending.check(&project, &access, &extensions.get().detectors())?;
@@ -474,11 +525,20 @@ async fn apply_reconciliation(
                 component_ids: affected,
             })?)
         };
-        if let Err(error) = pending.check(
-            &project,
-            &scoped.access.snapshot(),
-            &extensions.get().detectors(),
-        ) {
+        // A newer preview replaced this one while the work was checked.
+        let replaced = pending_preview(&scoped)
+            .as_ref()
+            .is_none_or(|p| p.preview.id != preview_id);
+        let recheck = if replaced {
+            Err("Preview expired; refresh it".into())
+        } else {
+            pending.check(
+                &project,
+                &scoped.access.snapshot(),
+                &extensions.get().detectors(),
+            )
+        };
+        if let Err(error) = recheck {
             if let Some(token) = lease {
                 let _ = bridge
                     .call::<serde_json::Value>(Request::MaintenanceRelease { project_id, token });
@@ -508,38 +568,9 @@ async fn edit_map_components(
     blocking(move || {
         let access = scoped.access.snapshot();
         access.trust(&mut project).map_err(err)?;
-        let mut affected = remove.clone();
-        if let Some(id) = &component_id {
-            affected.push(id.clone());
-        }
-        if affected.iter().any(|id| project.component(id).is_none()) {
-            return Err("Component no longer exists".into());
-        }
-        let mut draft = project;
-        if let (Some(id), Some(path)) = (&component_id, path) {
-            let folder = access
-                .readable(&path)
-                .ok_or("Folder is missing or not allowed; choose Browse… first")?;
-            if !folder.is_dir() || std::fs::read_dir(&folder).is_err() {
-                return Err("Choose a readable component folder".into());
-            }
-            model::check_component_dir(Path::new(&draft.root), &folder).map_err(err)?;
-            draft
-                .components
-                .iter_mut()
-                .find(|c| c.id == *id)
-                .ok_or("Component no longer exists")?
-                .path = path;
-        }
-        draft.components.retain(|c| !remove.contains(&c.id));
-        draft
-            .links
-            .retain(|l| !remove.contains(&l.source) && !remove.contains(&l.target));
-        for group in &mut draft.groups {
-            group.component_ids.retain(|id| !remove.contains(id));
-        }
-        draft.schema_version = model::SCHEMA_VERSION;
-        draft.validate().map_err(err)?;
+        let moved = component_id.as_deref().zip(path.as_deref());
+        let (draft, affected) =
+            maintenance::edit(&project, &access, &remove, moved).map_err(err)?;
         let lease = if affected.is_empty() {
             None
         } else {
@@ -1412,18 +1443,26 @@ fn navigation_roots(
     let Some(worktree) = worktree else {
         return Ok((roots, scan));
     };
-    let components = scan
-        .into_iter()
-        .enumerate()
-        .map(|(i, dir)| (i.to_string(), dir))
-        .collect();
-    let (root, mapped) = git::in_worktree(&root, components, Some(worktree)).map_err(err)?;
-    let mut roots = vec![root];
-    for (_, dir) in mapped {
-        if !roots.contains(&dir) {
-            roots.push(dir);
-        }
-    }
+    let roots = Cached::get_or(
+        &scoped.worktree_roots,
+        (root, worktree.to_string(), scan),
+        WORKTREE_ROOTS_TTL,
+        |(root, worktree, scan)| {
+            let components = scan
+                .iter()
+                .enumerate()
+                .map(|(i, dir)| (i.to_string(), dir.clone()))
+                .collect();
+            let (root, mapped) = git::in_worktree(root, components, Some(worktree)).map_err(err)?;
+            let mut roots = vec![root];
+            for (_, dir) in mapped {
+                if !roots.contains(&dir) {
+                    roots.push(dir);
+                }
+            }
+            CmdResult::Ok(roots)
+        },
+    )?;
     Ok((roots.clone(), roots))
 }
 
@@ -1500,7 +1539,14 @@ async fn file_search(
     let scoped = state.project(&project_id)?;
     blocking(move || {
         let (roots, scan) = navigation_roots(&scoped, task.as_deref(), None)?;
-        navigation::search(&roots, &scan, &query).map_err(err)
+        let paths = Cached::get_or(
+            &scoped.search_paths,
+            (roots.clone(), scan),
+            SEARCH_PATHS_TTL,
+            |(roots, scan)| navigation::candidates(roots, scan).map(Arc::new),
+        )
+        .map_err(err)?;
+        navigation::rank_candidates(&roots, &paths, &query).map_err(err)
     })
     .await
 }
@@ -2208,6 +2254,8 @@ async fn project_relink(
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),
         task_root: scoped.task_root.clone(),
+        worktree_roots: Mutex::default(),
+        search_paths: Mutex::default(),
     });
     state
         .projects

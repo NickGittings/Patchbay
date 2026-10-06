@@ -395,9 +395,9 @@ pub fn reference(text: &str) -> Result<EditorTarget> {
 /// Bounds the walk of folders outside Git, which have no ignore rules to prune them.
 const WALK_DEPTH: usize = 16;
 const WALK_LIMIT: usize = 200_000;
-fn walk(dir: &Path, depth: usize, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
+/// Only `dir` itself must be readable; unreadable entries and subfolders are skipped.
+fn walk(dir: &Path, depth: usize, paths: &mut BTreeSet<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name == ".git" || crate::detect::SKIP_DIRS.contains(&name.as_ref()) {
@@ -406,10 +406,12 @@ fn walk(dir: &Path, depth: usize, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
         if paths.len() >= WALK_LIMIT {
             break;
         }
-        let kind = entry.file_type()?;
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         if kind.is_dir() {
             if depth < WALK_DEPTH {
-                walk(&entry.path(), depth + 1, paths)?;
+                let _ = walk(&entry.path(), depth + 1, paths);
             }
         } else if kind.is_file() || kind.is_symlink() {
             paths.insert(entry.path());
@@ -452,20 +454,34 @@ pub fn search(
     scan_roots: &[PathBuf],
     query: &str,
 ) -> Result<Vec<FileSearchResult>> {
-    let root = roots.first().context("No project is open")?;
+    rank_candidates(roots, &candidates(roots, scan_roots)?, query)
+}
+
+/// Every path [`search`] may rank, enumerated once so repeated queries can reuse it.
+/// # Errors
+/// Fails if an available root cannot be read or a Git enumeration fails.
+pub fn candidates(roots: &[PathBuf], scan_roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
-    // A root inside another scanned root (a component folder in the project) adds nothing.
-    let mut scanned: Vec<&PathBuf> = Vec::new();
+    // A root inside another scanned root (a component folder in the project) adds nothing,
+    // unless it is a nested repo, which the outer repo's Git lists only as a folder.
+    let mut scanned: Vec<(&PathBuf, Option<PathBuf>)> = Vec::new();
     let mut ordered: Vec<&PathBuf> = scan_roots.iter().collect();
     ordered.sort_by_key(|d| d.components().count());
     for dir in ordered {
-        if !dir.exists() || scanned.iter().any(|s| dir.starts_with(s)) {
+        if !dir.exists() {
+            continue;
+        }
+        let repo = crate::git::repo_root(dir);
+        if scanned
+            .iter()
+            .any(|(s, r)| dir.starts_with(s) && (r.is_none() || *r == repo))
+        {
             continue;
         }
         files::resolve(roots, dir)?;
-        scanned.push(dir);
-        let repo = crate::git::repo_root(dir);
-        if repo.is_some() {
+        let in_git = repo.is_some();
+        scanned.push((dir, repo));
+        if in_git {
             let output = crate::git::git(dir)
                 .args([
                     "ls-files",
@@ -496,12 +512,24 @@ pub fn search(
             walk(dir, 0, &mut paths)?;
         }
     }
+    Ok(paths.into_iter().collect())
+}
+
+/// Rank [`candidates`] for `query`, keeping the best 100 that are still files within `roots`.
+/// # Errors
+/// Fails if no project is open.
+pub fn rank_candidates(
+    roots: &[PathBuf],
+    paths: &[PathBuf],
+    query: &str,
+) -> Result<Vec<FileSearchResult>> {
+    let root = roots.first().context("No project is open")?;
     let query = query.trim().replace('\\', "/").to_lowercase();
     // Rank the cheap relative names first; only the best candidates touch the filesystem.
     let mut ranked: Vec<_> = paths
-        .into_iter()
+        .iter()
         .filter_map(|full| {
-            let path = model::relative_path(root, &full);
+            let path = model::relative_path(root, full);
             let score = rank(&path.to_lowercase(), &query)?;
             Some((score, path, full))
         })
@@ -710,6 +738,45 @@ mod tests {
         assert!(found.iter().any(|r| r.path == "tracked.log"));
         assert!(!found.iter().any(|r| r.path == "ignored.log"));
         assert!(found.iter().any(|r| r.path == "visible.txt"));
+    }
+    #[test]
+    fn nested_repo_components_are_searched_with_their_own_git() {
+        let f = Fixture::new();
+        let git = |dir: &Path, args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&f.0, &["init", "-q"]);
+        std::fs::create_dir(f.0.join("tools")).unwrap();
+        git(&f.0.join("tools"), &["init", "-q"]);
+        std::fs::write(f.0.join("tools/main.go"), "").unwrap();
+        std::fs::write(f.0.join("root.txt"), "").unwrap();
+        let scan = [f.0.clone(), f.0.join("tools")];
+        let found = search(f.roots(), &scan, "").unwrap();
+        assert!(found.iter().any(|r| r.path == "tools/main.go"));
+        assert!(found.iter().any(|r| r.path == "root.txt"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_folders_outside_git_are_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        std::fs::create_dir(f.0.join("locked")).unwrap();
+        std::fs::write(f.0.join("locked/hidden.txt"), "").unwrap();
+        std::fs::write(f.0.join("visible.txt"), "").unwrap();
+        let locked = f.0.join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let found = search(f.roots(), f.roots(), "");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(found.unwrap().iter().any(|r| r.path == "visible.txt"));
     }
     #[test]
     fn ranks_filenames_before_paths_and_caps_results() {

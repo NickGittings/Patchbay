@@ -616,29 +616,30 @@ async function onMessage(event: MessageEvent) {
   }
 }
 /** Start the extensions that activate eagerly, except `caller`, which may still be activating. */
-async function activateProviders(caller?: string, project?: Project) {
+async function activateProviders(caller?: string, project?: Project, taskId?: string | null) {
   if (!useStore.getState().project) return
   await Promise.all(
     active()
       .filter(
         (e) => !e.manifest.activationEvents.length && !quarantined.has(e.id) && e.id !== caller,
       )
-      .map((e) => activateExtension(e, project).catch(error)),
+      .map((e) => activateExtension(e, project, taskId).catch(error)),
   )
 }
 /**
  * Ask every ready context provider about each component, all in parallel. A provider's
  * timeouts in one collection count as a single strike, so a slow one isn't stopped at once.
+ * Providers answer for `task`, the task the agent runs in (none for the open worktree).
  */
 async function collectContext(
   project: Project,
   ids: string[],
   caller?: string,
+  task?: string,
 ): Promise<ContextSection[]> {
-  await activateProviders(caller, project)
+  const taskId = task ?? null
+  await activateProviders(caller, project, taskId)
   const current = epoch
-  const taskId =
-    useStore.getState().captureProjects()[project.projectId ?? '']?.state?.activeTask ?? null
   const components = project.components.filter((c) => !ids.length || ids.includes(c.id))
   const asks = [...runtimes.values()]
     .filter(
@@ -739,10 +740,10 @@ export function startExtensionHost() {
   const project = useStore.getState().project ? useStore.getState().toProject() : null
   lastProjectKey = JSON.stringify([projectKey(project), useStore.getState().activeTask])
   // Pop-outs send only ids; answer from the main window's own map.
-  const unsubscribeContext = serveContextRequests((projectId, ids) => {
+  const unsubscribeContext = serveContextRequests((projectId, ids, task) => {
     const entry = useStore.getState().captureProjects()[projectId]
     if (!entry?.state?.project) return Promise.resolve([])
-    return collectContext(projectFromState(entry.state), ids)
+    return collectContext(projectFromState(entry.state), ids, undefined, task)
   })
   const unsubscribe = useStore.subscribe((s, previous) => {
     if (

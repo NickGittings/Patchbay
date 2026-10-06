@@ -103,7 +103,7 @@ export const componentContext = async (project: Project, componentId: string, ta
     project,
     projectId: project.projectId,
     componentId,
-    extraContext: await extraContext(project, [componentId]),
+    extraContext: await extraContext(project, [componentId], undefined, task),
     task,
   })
 /** Opens a folder picker; `null` if cancelled. */
@@ -148,7 +148,7 @@ export const planContext = async (project: Project, componentIds: string[], task
     project,
     projectId: project.projectId,
     componentIds,
-    extraContext: await extraContext(project, componentIds),
+    extraContext: await extraContext(project, componentIds, undefined, task),
     task,
   })
 export const planStart = async (
@@ -164,7 +164,7 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
-    extraContext: await extraContext(project, componentIds),
+    extraContext: await extraContext(project, componentIds, undefined, task),
     task,
   })
 
@@ -217,7 +217,7 @@ export const terminalStart = async (
     terminalId,
     requestId,
     extraContext:
-      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller) : [],
+      terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
   })
 }

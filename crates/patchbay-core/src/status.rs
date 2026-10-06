@@ -378,7 +378,9 @@ impl Tracker {
                 session != &event.session || *generation != event.generation
             })
             || event.sequence <= self.hook_sequence
-            || self.retired_conversations.contains(&event.conversation)
+            // Resuming an earlier conversation starts it again.
+            || (event.event != "SessionStart"
+                && self.retired_conversations.contains(&event.conversation))
         {
             return;
         }
@@ -387,6 +389,7 @@ impl Tracker {
             if event.event != "SessionStart" && self.hook_conversation.is_some() {
                 return;
             }
+            self.retired_conversations.remove(&event.conversation);
             if let Some(previous) = self.hook_conversation.replace(event.conversation.clone()) {
                 self.retired_conversations.insert(previous);
             }
@@ -503,7 +506,20 @@ impl Tracker {
                     self.heard_ms = now;
                     self.resolved = Some((now, effect));
                 }
-                // Provider UI escape keystrokes do not establish a state change.
+                // Esc interrupts a turn or denies a prompt, and providers send no hook for
+                // either. It may also just close provider UI, so it only makes the state a
+                // guess: a denied prompt turns idle, and work decays to idle once quiet.
+                if effect == AgentState::Idle
+                    && matches!(report.state, AgentState::Working | AgentState::NeedsInput)
+                {
+                    if report.state == AgentState::NeedsInput {
+                        report.state = AgentState::Idle;
+                        report.message = None;
+                        report.since_ms = now;
+                    }
+                    report.authoritative = false;
+                    self.heard_ms = now;
+                }
                 return;
             }
             self.turn_closed = true;
@@ -1067,7 +1083,7 @@ mod tests {
         let mut start = hook("SessionStart", None, 2);
         start.conversation = "second-conversation".into();
         tracker.on_hook(start, 200);
-        tracker.on_hook(hook("SessionStart", None, 3), 300);
+        tracker.on_hook(hook("Stop", Some("first-turn"), 3), 300);
         report(&mut tracker, "review", 400);
         let agent = tracker.status(400).agent.unwrap();
         assert_eq!(
@@ -1075,6 +1091,46 @@ mod tests {
             Some("second-conversation")
         );
         assert_eq!(agent.state, AgentState::Idle);
+        // Resuming the first conversation makes it current again.
+        tracker.on_hook(hook("SessionStart", None, 4), 500);
+        tracker.on_hook(hook("UserPromptSubmit", Some("resumed-turn"), 5), 600);
+        let agent = tracker.status(600).agent.unwrap();
+        assert_eq!(
+            agent.conversation_id.as_deref(),
+            Some("12345678-conversation")
+        );
+        assert_eq!(agent.state, AgentState::Working);
+        let mut late = hook("Stop", Some("second-turn"), 6);
+        late.conversation = "second-conversation".into();
+        tracker.on_hook(late, 700);
+        assert_eq!(
+            tracker.status(700).agent.unwrap().state,
+            AgentState::Working
+        );
+    }
+    #[test]
+    fn esc_makes_native_work_and_prompts_unconfirmed() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
+        tracker.on_input(b"\x1b", 200);
+        let agent = tracker.status(200).agent.unwrap();
+        assert_eq!(agent.state, AgentState::Working);
+        assert!(!agent.authoritative);
+        assert_eq!(
+            tracker
+                .status(200 + STALE_WORKING_MS + 1)
+                .agent
+                .unwrap()
+                .state,
+            AgentState::Idle
+        );
+        // The provider's next hook confirms the turn went on.
+        tracker.on_hook(hook("PermissionRequest", Some("turn"), 3), 300);
+        assert!(tracker.status(300).agent.unwrap().authoritative);
+        tracker.on_input(b"\x1b", 400);
+        let agent = tracker.status(400).agent.unwrap();
+        assert_eq!((agent.state, agent.since_ms), (AgentState::Idle, 400));
+        assert_eq!(agent.message, None);
     }
     #[test]
     fn legacy_status_history_deserializes_without_hook_metadata() {

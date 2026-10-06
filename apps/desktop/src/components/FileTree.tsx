@@ -71,7 +71,10 @@ function TreeEntry({
           onClick={() => {
             if (entry.isDir) setExpanded(!expanded)
           }}
-          onDoubleClick={() => void openInEditor({ path: entry.path })}
+          // Folders toggle on click; only files open on a double-click.
+          onDoubleClick={() => {
+            if (!entry.isDir) void openInEditor({ path: entry.path })
+          }}
         >
           <span className="file-tree-chevron">{entry.isDir ? (expanded ? '▾' : '▸') : '·'}</span>
           <span className="file-tree-name">{entry.name}</span>
