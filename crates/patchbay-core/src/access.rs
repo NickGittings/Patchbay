@@ -23,6 +23,8 @@ pub struct AccessSnapshot {
     watch_roots: Vec<PathBuf>,
     paths: Vec<String>,
     revision: u64,
+    /// Bumped by every refresh, so the latest scan wins even when nothing changed.
+    scan: u64,
 }
 
 impl Access {
@@ -101,31 +103,34 @@ impl Access {
         self.refresh();
     }
 
+    /// Every change calls this after it, so an older scan can leave the result to a newer one.
     fn refresh(&self) {
-        loop {
-            let snapshot = self.snapshot();
-            let Some(root) = snapshot.root.clone() else {
-                return;
-            };
-            let mut roots = vec![root.clone()];
-            let mut watch_roots = roots.clone();
-            for path in &snapshot.paths {
-                if let Some(dir) = snapshot.readable(path) {
-                    if !dir.starts_with(&root) && !roots.contains(&dir) {
-                        roots.push(dir.clone());
-                    }
-                    if !watch_roots.contains(&dir) {
-                        watch_roots.push(dir);
-                    }
+        let snapshot = {
+            let mut state = self.state.lock().unwrap();
+            state.scan += 1;
+            state.clone()
+        };
+        let Some(root) = snapshot.root.clone() else {
+            return;
+        };
+        let mut roots = vec![root.clone()];
+        let mut watch_roots = roots.clone();
+        for path in &snapshot.paths {
+            if let Some(dir) = snapshot.readable(path) {
+                if !dir.starts_with(&root) && !roots.contains(&dir) {
+                    roots.push(dir.clone());
+                }
+                if !watch_roots.contains(&dir) {
+                    watch_roots.push(dir);
                 }
             }
-            let mut state = self.state.lock().unwrap();
-            // A newer map, grant, or opened project wins over an in-flight scan.
-            if state.revision == snapshot.revision {
-                state.roots = roots;
-                state.watch_roots = watch_roots;
-                return;
-            }
+        }
+        let mut state = self.state.lock().unwrap();
+        // A newer refresh (map, grant, opened project, or a repeat of the same paths)
+        // wins over an in-flight scan.
+        if state.scan == snapshot.scan {
+            state.roots = roots;
+            state.watch_roots = watch_roots;
         }
     }
 }

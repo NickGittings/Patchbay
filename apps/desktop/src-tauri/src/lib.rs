@@ -1453,9 +1453,14 @@ fn navigation_roots(
                 .enumerate()
                 .map(|(i, dir)| (i.to_string(), dir.clone()))
                 .collect();
-            let (root, mapped) = git::in_worktree(root, components, Some(worktree)).map_err(err)?;
-            let mut roots = vec![root];
-            for (_, dir) in mapped {
+            let (task_root, mapped) =
+                git::in_worktree(root, components, Some(worktree)).map_err(err)?;
+            let mut roots = vec![task_root];
+            // Folders in other repos (granted siblings, nested repos) aren't part of the task's
+            // worktree, so they stay as they are; in-repo folders the worktree lacks are dropped.
+            let repo = git::repo_root(root);
+            let external = scan.iter().filter(|dir| git::repo_root(dir) != repo);
+            for dir in mapped.into_iter().map(|(_, d)| d).chain(external.cloned()) {
                 if !roots.contains(&dir) {
                     roots.push(dir);
                 }
@@ -2457,7 +2462,16 @@ mod navigation_tests {
             files::resolve(&mapped, Path::new("target.txt")).unwrap(),
             worktree.join("apps/project/target.txt")
         );
-        assert!(files::resolve(&mapped, &sibling.join("external.txt")).is_err());
+        // A granted sibling isn't part of the task's worktree and stays reachable as it is.
+        assert_eq!(
+            files::resolve(&mapped, &sibling.join("external.txt")).unwrap(),
+            sibling.canonicalize().unwrap().join("external.txt")
+        );
+        assert!(
+            !mapped
+                .iter()
+                .any(|r| r.starts_with(repo.canonicalize().unwrap()))
+        );
         let explicit = navigation_roots(&scoped, None, worktree.to_str())
             .unwrap()
             .0;

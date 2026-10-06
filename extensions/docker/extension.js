@@ -114,6 +114,8 @@ async function render() {
 }
 async function run(action, expectedKey) {
   let origin
+  // Whether this call marked the component busy, so only it may clear that.
+  let started = false
   try {
     origin = await capture()
     if (expectedKey && origin.key !== expectedKey) return
@@ -125,6 +127,7 @@ async function run(action, expectedKey) {
       error: '',
       stale: !!previous.last,
     })
+    started = true
     await render()
     const base = `docker compose --project-name ${composeProjectName(origin.scope, origin.component.id)} --file ${origin.file}`
     const suffix = {
@@ -161,7 +164,10 @@ async function run(action, expectedKey) {
     await render()
     return result
   } catch (error) {
-    if (origin && (await current(origin))) {
+    if (origin && !started) {
+      // Another command is still running here; leave its state alone.
+      if (active) await pb.window.showMessage(String(error))
+    } else if (origin && (await current(origin))) {
       const previous = state.get(origin.key) ?? {}
       state.set(origin.key, {
         ...previous,

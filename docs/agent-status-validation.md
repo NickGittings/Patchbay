@@ -31,8 +31,13 @@ Supported parent-turn events map to these states:
 | SessionEnd | Ended |
 
 Compaction SessionStart preserves an active turn. Native Working survives quiet terminal
-output. Answer keystrokes and escape sequences do not guess provider progress; an explicit
-Ctrl+C records interruption, and subsequent provider events resume authoritative reporting.
+output. Answer keystrokes and escape sequences only make the state a guess: an answer turns
+Needs input into unconfirmed Working, and Esc (which interrupts or denies without a provider
+hook) turns Needs input into Idle and Working into unconfirmed Working that goes idle after 15s
+of quiet. An explicit Ctrl+C records interruption, and subsequent provider events resume
+authoritative reporting. A `resume` or `clear` SessionStart switches to that conversation, even
+one seen before; a `startup` SessionStart in another conversation comes from a nested run
+(`claude -p`, `codex exec`) inheriting the terminal's environment and is ignored.
 Without provider reports the existing Active/Quiet output fallback remains. Providers must
 supply Codex `turn_id` or Claude `prompt_id` for turn events; an uncorrelated prompt restores Active/Quiet, and uncorrelated tool events are ignored.
 Subagent identifiers and SubagentStop never complete the parent turn. Claude's main

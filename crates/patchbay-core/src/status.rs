@@ -386,7 +386,11 @@ impl Tracker {
         }
         self.hook_sequence = event.sequence;
         if self.hook_conversation.as_ref() != Some(&event.conversation) {
-            if event.event != "SessionStart" && self.hook_conversation.is_some() {
+            // A fresh start in another conversation is a nested run (`claude -p`, `codex exec`
+            // started from this terminal), which inherits the reporting environment.
+            if self.hook_conversation.is_some()
+                && (event.event != "SessionStart" || event.source.as_deref() == Some("startup"))
+            {
                 return;
             }
             self.retired_conversations.remove(&event.conversation);
@@ -1006,6 +1010,7 @@ mod tests {
             turn: turn.map(str::to_string),
             prompt: (event == "UserPromptSubmit").then(|| "build it".into()),
             message: (event == "PermissionRequest").then(|| "Allow Bash?".into()),
+            source: None,
         }
     }
     #[test]
@@ -1106,6 +1111,36 @@ mod tests {
         assert_eq!(
             tracker.status(700).agent.unwrap().state,
             AgentState::Working
+        );
+    }
+    #[test]
+    fn nested_runs_cannot_take_over_the_terminals_conversation() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 2), 200);
+        let mut nested = hook("SessionStart", None, 3);
+        nested.conversation = "nested-conversation".into();
+        nested.source = Some("startup".into());
+        tracker.on_hook(nested, 300);
+        let mut nested_stop = hook("Stop", Some("nested-turn"), 4);
+        nested_stop.conversation = "nested-conversation".into();
+        tracker.on_hook(nested_stop, 400);
+        tracker.on_hook(hook("PermissionRequest", Some("turn"), 5), 500);
+        let agent = tracker.status(500).agent.unwrap();
+        assert_eq!(agent.state, AgentState::NeedsInput);
+        assert_eq!(
+            agent.conversation_id.as_deref(),
+            Some("12345678-conversation")
+        );
+        // `/clear` starts the terminal's next conversation.
+        let mut cleared = hook("SessionStart", None, 6);
+        cleared.conversation = "cleared-conversation".into();
+        cleared.source = Some("clear".into());
+        tracker.on_hook(cleared, 600);
+        let agent = tracker.status(600).agent.unwrap();
+        assert_eq!(
+            agent.conversation_id.as_deref(),
+            Some("cleared-conversation")
         );
     }
     #[test]

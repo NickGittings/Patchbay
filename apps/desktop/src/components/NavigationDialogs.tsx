@@ -170,7 +170,9 @@ function FileSearchDialog() {
       setOpen(true)
     }
     const key = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'p') {
+      // In a terminal, Ctrl+P belongs to the shell (previous history) or the program running.
+      const inTerminal = e.target instanceof Element && !!e.target.closest('.xterm')
+      if ((e.metaKey || (e.ctrlKey && !inTerminal)) && !e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault()
         show()
       }

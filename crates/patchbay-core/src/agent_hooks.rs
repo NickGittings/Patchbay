@@ -35,6 +35,9 @@ pub struct HookEvent {
     pub turn: Option<String>,
     pub prompt: Option<String>,
     pub message: Option<String>,
+    /// Why a session started (`startup`, `resume`, `clear`, `compact`).
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Isolate and bound provider payloads. Ignore subagents and unrelated notifications.
@@ -89,6 +92,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         conversation: conversation.into(),
         turn,
         prompt: field("prompt"),
+        source: field("source"),
         message: field("message").or_else(|| {
             input
                 .get("tool_input")

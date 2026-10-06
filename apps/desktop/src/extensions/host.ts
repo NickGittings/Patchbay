@@ -142,6 +142,13 @@ async function deactivateAll() {
   await Promise.all([...runtimes.values()].map(deactivate))
   quarantined.clear()
 }
+/**
+ * Project/task pairs a context collection is briefing an agent for, with how many collections
+ * hold each. Their runtimes stay up even for a task that isn't active.
+ */
+const collecting = new Map<string, number>()
+const collectingKey = (projectId: string, taskId: string | null) =>
+  JSON.stringify([projectId, taskId])
 /** Stop runtimes for a task their project has switched away from, or a project now closed. */
 function retireStale() {
   if (!runtimes.size) return
@@ -151,6 +158,7 @@ function retireStale() {
     // Startup activations belong to no project.
     if (!runtime.projectId || runtime.disposed) continue
     if (entry && (!entry.state || entry.state.activeTask === runtime.taskId)) continue
+    if (entry && collecting.has(collectingKey(runtime.projectId, runtime.taskId))) continue
     // Mark it gone now, so a reactivation for the same key starts a fresh frame.
     runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
     void deactivate(runtime)
@@ -638,6 +646,24 @@ async function collectContext(
   task?: string,
 ): Promise<ContextSection[]> {
   const taskId = task ?? null
+  const hold = collectingKey(project.projectId ?? '', taskId)
+  collecting.set(hold, (collecting.get(hold) ?? 0) + 1)
+  try {
+    return await collectFor(project, ids, taskId, caller)
+  } finally {
+    const left = (collecting.get(hold) ?? 1) - 1
+    if (left) collecting.set(hold, left)
+    else collecting.delete(hold)
+    // A non-active task's runtimes were only kept for this briefing.
+    retireStale()
+  }
+}
+async function collectFor(
+  project: Project,
+  ids: string[],
+  taskId: string | null,
+  caller?: string,
+): Promise<ContextSection[]> {
   await activateProviders(caller, project, taskId)
   const current = epoch
   const components = project.components.filter((c) => !ids.length || ids.includes(c.id))

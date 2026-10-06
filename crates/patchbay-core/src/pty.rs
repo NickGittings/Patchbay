@@ -244,6 +244,8 @@ struct Watched {
     backlog: Arc<Mutex<Backlog>>,
     sink: Arc<dyn EventSink>,
     status_file: Option<PathBuf>,
+    /// The agent's hook journal, if it has one.
+    journal: Option<PathBuf>,
     /// The status file write last read.
     seen: Option<Stamp>,
 }
@@ -477,6 +479,7 @@ impl PtyManager {
                     backlog: backlog.clone(),
                     sink: sink.clone(),
                     status_file: self.status_file(generation),
+                    journal: self.report_dir(generation).filter(|d| d.is_dir()),
                     seen: None,
                 },
             );
@@ -672,11 +675,12 @@ impl PtyManager {
                     w.backlog.clone(),
                     w.sink.clone(),
                     w.status_file.clone(),
+                    w.journal.clone(),
                     w.seen,
                 )
             })
             .collect();
-        for (generation, id, backlog, sink, file, seen) in watched {
+        for (generation, id, backlog, sink, file, journal, seen) in watched {
             // Read a changed status file without holding any lock.
             let report = file.as_deref().and_then(|f| read_status_file(f, seen));
             if let Some((stamp, _)) = &report
@@ -686,8 +690,7 @@ impl PtyManager {
             }
             // Drain the hook journal outside the lock too: it is directory I/O, and the
             // reader thread needs the backlog lock for every chunk of output.
-            let hooks = self
-                .report_dir(generation)
+            let hooks = journal
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
@@ -775,23 +778,26 @@ impl PtyManager {
         if let Some(status) = self.status_file(generation) {
             cmd.env(STATUS_ENV, status);
         }
-        if let Some(dir) = self.report_dir(generation)
-            && crate::workspace::private_dir(&dir).is_ok()
+        let provider = spec
+            .env
+            .get(crate::agent_hooks::PROVIDER_ENV)
+            .cloned()
+            .or_else(|| {
+                crate::adapters::Adapter::default_for(&spec.command).map(|a| match a {
+                    crate::adapters::Adapter::Claude => "claude".into(),
+                    crate::adapters::Adapter::Codex => "codex".into(),
+                })
+            })
+            .unwrap_or_default();
+        // Only agents report, so only they get a journal. It lives in the private status
+        // folder, whose permissions it inherits.
+        if !provider.is_empty()
+            && let Some(dir) = self.report_dir(generation)
+            && std::fs::create_dir(&dir).is_ok()
         {
             cmd.env(crate::agent_hooks::JOURNAL_ENV, dir);
             cmd.env(crate::agent_hooks::SESSION_ENV, &spec.id);
             cmd.env(crate::agent_hooks::GENERATION_ENV, generation.to_string());
-            let provider = spec
-                .env
-                .get(crate::agent_hooks::PROVIDER_ENV)
-                .cloned()
-                .or_else(|| {
-                    crate::adapters::Adapter::default_for(&spec.command).map(|a| match a {
-                        crate::adapters::Adapter::Claude => "claude".into(),
-                        crate::adapters::Adapter::Codex => "codex".into(),
-                    })
-                })
-                .unwrap_or_default();
             cmd.env(crate::agent_hooks::PROVIDER_ENV, provider);
         }
 
