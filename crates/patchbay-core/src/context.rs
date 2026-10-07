@@ -861,10 +861,10 @@ pub fn plan_session_spec_for(
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
         let dirs = &mut context_dirs;
         // Without a repo there is nowhere to keep the plan; the briefing still works.
-        if let Ok(plan) = crate::plans::plan_file(&PathBuf::from(&project.root), task) {
-            if let Some(dir) = plan.parent()
-                && !dir.starts_with(&project.root)
-            {
+        // The folder is always added: it sits under `.git`, which agents' sandboxes
+        // (Codex's workspace-write) keep read-only unless it is a writable root itself.
+        if let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), task) {
+            if let Some(dir) = plan.parent() {
                 dirs.push(dir.to_path_buf());
             }
             env.insert(
@@ -1316,11 +1316,13 @@ mod tests {
         let mut p = project();
         p.root = root.canonicalize().unwrap().display().to_string();
         let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
-        let plan = crate::plans::plan_file(Path::new(&p.root), None).unwrap();
+        let plans = crate::plans::dir(Path::new(&p.root)).unwrap();
         assert_eq!(
             spec.env[crate::plans::PLAN_FILE_ENV],
-            plan.display().to_string()
+            plans.join("main.md").display().to_string()
         );
+        // The folder exists before the first plan and is handed to the agent.
+        assert!(spec.dirs.contains(&plans));
         let task = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
         assert!(task.env[crate::plans::PLAN_FILE_ENV].ends_with("t1.md"));
         assert!(plan_context(&p, &[], &[]).contains("$PATCHBAY_PLAN_FILE"));

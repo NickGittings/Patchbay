@@ -520,7 +520,9 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     modify(root, |tasks| {
         tasks.retain(|t| t.id != id);
         Ok(())
-    })
+    })?;
+    // The plan was for this task only; a stale one would brief a later task reusing the id.
+    crate::plans::remove(root, Some(id))
 }
 
 /// `project` (already trusted and restricted) as it is in `task`'s worktree:

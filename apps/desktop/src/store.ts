@@ -158,8 +158,8 @@ interface State {
   onConnect: (c: Connection) => void
   addComponent: (position: { x: number; y: number }) => void
   updateComponent: (id: string, patch: Partial<ComponentData>) => void
-  /** Adds a saved terminal to the component and returns its id. */
-  addTerminal: (componentId: string, device: DeviceManifest | null) => string
+  /** Adds a saved terminal to the component and returns its id; `focus` makes it the active session. */
+  addTerminal: (componentId: string, device: DeviceManifest | null, focus?: boolean) => string
   updateTerminal: (componentId: string, terminalId: string, patch: Partial<TerminalSpec>) => void
   removeTerminal: (componentId: string, terminalId: string) => void
   setEdgeLabel: (id: string, label: string) => void
@@ -463,7 +463,7 @@ export const useStore = create<State>((set, get) => ({
   updateComponent: (id, patch) =>
     set((s) => ({ nodes: mapNode(s.nodes, id, (d) => ({ ...d, ...patch })), dirty: true })),
 
-  addTerminal: (componentId, device) => {
+  addTerminal: (componentId, device, focus = true) => {
     const terminal: TerminalSpec = {
       id: newId(device?.id ?? 'task'),
       name: device?.name ?? 'Task',
@@ -477,7 +477,7 @@ export const useStore = create<State>((set, get) => ({
         ...d,
         terminals: [...d.terminals, terminal],
       })),
-      activeSession: sessionId(componentId, terminal.id, s.activeTask),
+      activeSession: focus ? sessionId(componentId, terminal.id, s.activeTask) : s.activeSession,
       dirty: true,
     }))
     return terminal.id

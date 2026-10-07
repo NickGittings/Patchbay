@@ -10,6 +10,10 @@ const terminal = (id: string, command: string, kind: TerminalSpec['kind']): Term
 const nodes = [
   { id: 'web', data: { terminals: [terminal('agent-1', ' claude ', 'agent')] } },
   { id: 'api', data: { terminals: [terminal('dev', 'claude', 'task')] } },
+  {
+    id: 'db',
+    data: { terminals: [{ ...terminal('agent-2', 'claude', 'agent'), adapter: 'codex' }] },
+  },
 ]
 const addTerminal = vi.fn(() => 'claude-new')
 const startTerminal = vi.fn(() => Promise.resolve())
@@ -27,12 +31,17 @@ const claude: DeviceManifest = {
 }
 
 test('reuses a matching agent terminal and adds one where missing', async () => {
-  await startAgentsIn(['web', 'api', 'gone'], claude, 't1')
-  // A task terminal running the same command isn't an agent, so api gets a new one.
-  expect(addTerminal).toHaveBeenCalledExactlyOnceWith('api', claude)
+  await startAgentsIn(['web', 'api', 'db', 'gone'], claude, 't1')
+  // A task terminal running the same command isn't an agent, and an agent with another adapter
+  // isn't this preset, so api and db get new ones, added without taking the dock's focus.
+  expect(addTerminal.mock.calls).toEqual([
+    ['api', claude, false],
+    ['db', claude, false],
+  ])
   expect(startTerminal.mock.calls).toEqual([
     ['web', 'agent-1', 't1'],
     ['api', 'claude-new', 't1'],
+    ['db', 'claude-new', 't1'],
   ])
 })
 

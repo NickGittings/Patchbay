@@ -1,17 +1,35 @@
 import type { DeviceManifest, TerminalSpec } from '../types'
 
+/** The planner when no agent preset is installed. */
+const FALLBACK_AGENT: DeviceManifest = {
+  id: 'claude',
+  name: 'Claude',
+  category: 'agent',
+  command: 'claude',
+  kind: 'agent',
+  source: 'builtin',
+}
+
+const agentsOf = (devices: DeviceManifest[]) => {
+  const agents = devices.filter((d) => d.kind === 'agent')
+  return agents.length ? agents : [FALLBACK_AGENT]
+}
+
 /** Planner terminals are session UI state, never persisted on a component. */
 export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
-  const agents = devices.filter((d) => d.kind === 'agent')
-  return agents.length
-    ? agents.map(({ id, name, command, adapter }) => ({
-        id,
-        name,
-        command,
-        adapter,
-        kind: 'agent',
-      }))
-    : [{ id: 'claude', name: 'Claude', command: 'claude', kind: 'agent' }]
+  return agentsOf(devices).map(({ id, name, command, adapter }) => ({
+    id,
+    name,
+    command,
+    adapter,
+    kind: 'agent',
+  }))
+}
+
+/** The agent preset behind planner terminal `id`, so components get the planner's own agent. */
+export function plannerDevice(devices: DeviceManifest[], id: string): DeviceManifest {
+  const agents = agentsOf(devices)
+  return agents.find((d) => d.id === id) ?? agents[0]
 }
 
 /**

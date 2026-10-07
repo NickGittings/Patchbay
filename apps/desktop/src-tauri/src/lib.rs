@@ -728,20 +728,14 @@ async fn component_context(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let mut own = section.into_iter().collect::<Vec<_>>();
-        own.extend(handoff_sections(
-            &project,
-            &component_id,
-            task.as_deref(),
-            peers,
-        ));
-        let sections = extensions.get().sections(
+        let handoff = handoff_sections(&project, &component_id, task.as_deref(), peers);
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             ids,
             &roots,
-            own.into_iter()
-                .chain(extra_context.unwrap_or_default())
-                .collect(),
+            section.into_iter().chain(handoff),
+            extra_context,
         );
         Ok(context::component_context(
             &project,
@@ -769,11 +763,13 @@ async fn plan_context(
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
-        let sections = extensions.get().sections(
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            with_task_section(section, extra_context),
+            section,
+            extra_context,
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
     })
@@ -801,11 +797,13 @@ async fn plan_start(
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
-        let sections = extensions.get().sections(
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            with_task_section(section, extra_context),
+            section,
+            extra_context,
         );
         let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
         metadata.task.clone_from(&task);
@@ -863,15 +861,20 @@ fn for_task(
     Ok((moved, roots, Some(section)))
 }
 
-/// Extension context with the task's section first.
-fn with_task_section(
-    section: Option<ContextSection>,
+/// A briefing's sections: the backend's own (`own`: the task, plan and peers),
+/// whole and first, since core caps them itself, then the extension context
+/// (component files and providers' `extra`) within the registry's budget.
+fn briefing_sections(
+    registry: &Registry,
+    project: &Project,
+    ids: &[String],
+    roots: &[PathBuf],
+    own: impl IntoIterator<Item = ContextSection>,
     extra: Option<Vec<ContextSection>>,
 ) -> Vec<ContextSection> {
-    section
-        .into_iter()
-        .chain(extra.unwrap_or_default())
-        .collect()
+    let mut sections: Vec<_> = own.into_iter().collect();
+    sections.extend(registry.sections(project, ids, roots, extra.unwrap_or_default()));
+    sections
 }
 
 /// What a component agent gets from planning: the saved plan and the other
@@ -1214,23 +1217,19 @@ async fn terminal_start(
             .component(&component_id)
             .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
             .ok_or("Unknown terminal")?;
-        let mut own = section.into_iter().collect::<Vec<_>>();
         // Only agents read a briefing, so skip the plan lookup for the rest.
-        if terminal.kind == model::TerminalKind::Agent {
-            own.extend(handoff_sections(
-                &project,
-                &component_id,
-                task.as_deref(),
-                peers,
-            ));
-        }
-        let sections = extensions.get().sections(
+        let handoff = if terminal.kind == model::TerminalKind::Agent {
+            handoff_sections(&project, &component_id, task.as_deref(), peers)
+        } else {
+            Vec::new()
+        };
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             ids,
             &roots,
-            own.into_iter()
-                .chain(extra_context.unwrap_or_default())
-                .collect(),
+            section.into_iter().chain(handoff),
+            extra_context,
         );
         let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
         metadata.task.clone_from(&task);
@@ -1435,18 +1434,21 @@ async fn session_resume(
             .get(&record.metadata.project_id)
             .ok_or("Project unavailable; locate its folder first")?;
         // A task's terminal may only reach the task's worktree, as when it started.
-        let roots = match &record.metadata.task {
+        let root = scoped.access.snapshot().root();
+        let mut roots = match &record.metadata.task {
             Some(task) => {
-                let root = scoped
-                    .access
-                    .snapshot()
-                    .root()
-                    .ok_or("No project is open")?;
-                let worktree = tasks::stored(&root, task).map_err(err)?.worktree;
+                let root = root.as_deref().ok_or("No project is open")?;
+                let worktree = tasks::stored(root, task).map_err(err)?.worktree;
                 vec![Path::new(&worktree).canonicalize().map_err(err)?]
             }
             None => scoped.roots(),
         };
+        // Planners were handed the repo's plans folder, which lies under `.git`.
+        if record.metadata.component_id == model::PLAN_SCOPE
+            && let Some(plans) = root.and_then(|r| patchbay_core::plans::dir(&r).ok())
+        {
+            roots.push(plans);
+        }
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
@@ -2011,7 +2013,7 @@ async fn launch_extension_terminal(
             .map_err(err)?;
         let ids = std::slice::from_ref(&component_id);
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let sections = registry.sections(&project, ids, &roots, with_task_section(section, None));
+        let sections = briefing_sections(&registry, &project, ids, &roots, section, None);
         let mut metadata = service::metadata(&project_id, &project, &component_id, &terminal);
         metadata.task.clone_from(&task);
         metadata.extension_id = Some(extension_id);

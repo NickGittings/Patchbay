@@ -1,14 +1,14 @@
 import PersistedGroup from './PersistedGroup'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { startAgentsIn } from '../lib/implement'
 import { planContext, planRead, planWrite } from '../lib/ipc'
-import { nearbyIds, planTerminals } from '../lib/plan'
+import { nearbyIds, plannerDevice, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId, type DeviceManifest } from '../types'
+import { PLAN_SCOPE, sessionId } from '../types'
 import Canvas from './Canvas'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
@@ -34,9 +34,13 @@ export default function PlanView() {
   const [restarting, setRestarting] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   const [plan, setPlan] = useState('')
-  const [planState, setPlanState] = useState<'loading' | 'saved' | 'edited' | 'saving' | string>(
+  // The file as last read or written, to tell edits apart and notice the planner rewriting it.
+  const [planBase, setPlanBase] = useState('')
+  const [planState, setPlanState] = useState<'loading' | 'ready' | 'saving' | 'conflict' | string>(
     'loading',
   )
+  // Unsaved edits per project and task, so switching task doesn't discard them.
+  const drafts = useRef(new Map<string, { text: string; base: string }>())
   const terminals = planTerminals(devices)
   const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
   const sid = sessionId(PLAN_SCOPE, active.id, task)
@@ -60,15 +64,30 @@ export default function PlanView() {
   }, [contextOpen, project, nodes, edges, highlighted, task])
 
   const projectId = project?.id
+  const planKey = projectId ? `${projectId}\n${task ?? ''}` : null
+  // Which plan a finished save belongs to, so a task switch mid-save doesn't show its result.
+  const currentKey = useRef(planKey)
+  useEffect(() => {
+    currentKey.current = planKey
+  }, [planKey])
   const [planLoads, setPlanLoads] = useState(0)
   useEffect(() => {
-    if (!planOpen || !projectId) return
+    if (!planOpen || !projectId || !planKey) return
+    const draft = drafts.current.get(planKey)
+    if (draft) {
+      setPlan(draft.text)
+      setPlanBase(draft.base)
+      setPlanState('ready')
+      return
+    }
     let disposed = false
+    setPlanState('loading')
     planRead(projectId, task ?? undefined)
       .then((text) => {
         if (disposed) return
         setPlan(text)
-        setPlanState('saved')
+        setPlanBase(text)
+        setPlanState('ready')
       })
       .catch((e) => {
         if (!disposed) setPlanState(String(e))
@@ -76,38 +95,52 @@ export default function PlanView() {
     return () => {
       disposed = true
     }
-  }, [planOpen, projectId, task, planLoads])
+  }, [planOpen, projectId, planKey, task, planLoads])
+  const editPlan = (text: string) => {
+    if (!planKey) return
+    setPlan(text)
+    if (text === planBase) drafts.current.delete(planKey)
+    else drafts.current.set(planKey, { text, base: planBase })
+    if (planState === 'conflict') setPlanState('ready')
+  }
   const loadPlan = () => {
-    setPlanState('loading')
+    if (planKey) drafts.current.delete(planKey)
     setPlanLoads((n) => n + 1)
   }
 
   const savePlan = async () => {
-    if (!projectId) return
+    if (!projectId || !planKey) return
+    const key = planKey
+    const text = plan
+    // A second Save after a conflict replaces the planner's version.
+    const overwrite = planState === 'conflict'
     setPlanState('saving')
     try {
-      await planWrite(projectId, task ?? undefined, plan)
-      setPlanState('saved')
+      if (!overwrite) {
+        const current = await planRead(projectId, task ?? undefined)
+        if (current !== planBase && current !== text) {
+          if (currentKey.current === key) setPlanState('conflict')
+          return
+        }
+      }
+      await planWrite(projectId, task ?? undefined, text)
+      drafts.current.delete(key)
+      if (currentKey.current !== key) return
+      setPlanBase(text)
+      setPlanState('ready')
     } catch (e) {
-      setPlanState(String(e))
+      if (currentKey.current === key) setPlanState(String(e))
     }
   }
+  const planBusy = planState === 'loading' || planState === 'saving'
+  const planEdited = plan !== planBase
 
   /** Implementation over the highlights, optionally starting the active planner's agent in each. */
   const implement = (withAgents: boolean) => {
     const ids = [...highlighted]
     setView('implementation')
     if (!withAgents) return
-    const device: DeviceManifest = devices.find((d) => d.id === active.id) ?? {
-      id: active.id,
-      name: active.name,
-      command: active.command,
-      kind: 'agent',
-      category: 'agent',
-      source: 'builtin',
-      ...(active.adapter ? { adapter: active.adapter } : {}),
-    }
-    void startAgentsIn(ids, device, task)
+    void startAgentsIn(ids, plannerDevice(devices, active.id), task)
   }
 
   const restart = async () => {
@@ -191,10 +224,7 @@ export default function PlanView() {
             <details
               className="context plan-file"
               open={planOpen}
-              onToggle={(e) => {
-                if (e.currentTarget.open && !planOpen) setPlanState('loading')
-                setPlanOpen(e.currentTarget.open)
-              }}
+              onToggle={(e) => setPlanOpen(e.currentTarget.open)}
             >
               <summary>Saved plan</summary>
               <div className="hint flush">
@@ -207,25 +237,31 @@ export default function PlanView() {
                 rows={10}
                 placeholder="No plan saved yet. Ask the planner to write it, or paste one here."
                 value={plan}
-                disabled={planState === 'loading'}
-                onChange={(e) => {
-                  setPlan(e.target.value)
-                  setPlanState('edited')
-                }}
+                disabled={planBusy}
+                onChange={(e) => editPlan(e.target.value)}
               />
               <div className="row">
                 <span className="hint flush">
-                  {planState === 'edited'
-                    ? 'Unsaved changes'
-                    : planState === 'saved' || planState === 'loading' || planState === 'saving'
-                      ? ''
-                      : planState}
+                  {planState === 'conflict'
+                    ? 'The planner rewrote the plan since it was loaded. Reload to see it, or Save again to replace it.'
+                    : planState !== 'ready' && !planBusy
+                      ? planState
+                      : planEdited
+                        ? 'Unsaved changes'
+                        : ''}
                 </span>
                 <span className="spacer" />
-                <button disabled={planState === 'loading'} onClick={() => loadPlan()}>
+                <button
+                  disabled={planBusy || !plan}
+                  title="Empty the plan, so agents started afterwards get none"
+                  onClick={() => editPlan('')}
+                >
+                  Clear
+                </button>
+                <button disabled={planBusy} onClick={() => loadPlan()}>
                   Reload
                 </button>
-                <button disabled={planState !== 'edited'} onClick={() => void savePlan()}>
+                <button disabled={planBusy || !planEdited} onClick={() => void savePlan()}>
                   Save
                 </button>
               </div>

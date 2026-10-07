@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Environment variable naming the plan file a planner should write.
 pub const PLAN_FILE_ENV: &str = "PATCHBAY_PLAN_FILE";
@@ -14,11 +15,7 @@ pub const PLAN_FILE_ENV: &str = "PATCHBAY_PLAN_FILE";
 /// Longest plan passed on to agents; the rest is cut.
 pub const PLAN_LIMIT: usize = 64 * 1024;
 
-/// The plan file for `task` (`main` without one) of the repo containing `root`.
-///
-/// # Errors
-/// Fails when `root` isn't in a git repo or the task id isn't a plain id.
-pub fn plan_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
+fn file_name(task: Option<&str>) -> Result<String> {
     let name = task.unwrap_or("main");
     if name.is_empty()
         || !name
@@ -27,9 +24,78 @@ pub fn plan_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
     {
         bail!("invalid task id");
     }
-    Ok(crate::tasks::store_dir(root)?
-        .join("plans")
-        .join(format!("{name}.md")))
+    Ok(format!("{name}.md"))
+}
+
+/// The plan file for `task` (`main` without one) of the repo containing `root`.
+///
+/// # Errors
+/// Fails when `root` isn't in a git repo or the task id isn't a plain id.
+pub fn plan_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
+    let name = file_name(task)?;
+    Ok(crate::tasks::store_dir(root)?.join("plans").join(name))
+}
+
+/// The plans folder of the repo containing `root`, created if needed and
+/// canonical, so it can be handed to an agent (`--add-dir`) and checked as a
+/// root before the first plan is written.
+///
+/// # Errors
+/// Fails when `root` isn't in a git repo or the folder can't be created.
+pub fn dir(root: &Path) -> Result<PathBuf> {
+    let dir = crate::tasks::store_dir(root)?.join("plans");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.canonicalize()?)
+}
+
+/// `task`'s plan file in the created, canonical [`dir`].
+///
+/// # Errors
+/// Fails as [`dir`] and [`plan_file`].
+pub fn prepared_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
+    let name = file_name(task)?;
+    Ok(dir(root)?.join(name))
+}
+
+/// Delete `task`'s plan, when it has one.
+///
+/// # Errors
+/// Fails as [`plan_file`], or when the file exists but can't be removed.
+pub fn remove(root: &Path, task: Option<&str>) -> Result<()> {
+    match std::fs::remove_file(plan_file(root, task)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// A saved plan as read: its text (at most [`PLAN_LIMIT`] bytes), whether the
+/// file was longer, and when it was last written.
+struct Saved {
+    text: String,
+    cut: bool,
+    modified: Option<SystemTime>,
+}
+
+fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
+    let file = plan_file(root, task)?;
+    let handle = match std::fs::File::open(&file) {
+        Ok(handle) => handle,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let modified = handle.metadata().and_then(|m| m.modified()).ok();
+    let mut bytes = Vec::new();
+    // One byte past the limit tells a cut plan from one exactly at it.
+    handle
+        .take(u64::try_from(PLAN_LIMIT + 1).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    let cut = bytes.len() > PLAN_LIMIT;
+    bytes.truncate(PLAN_LIMIT);
+    Ok(Some(Saved {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        cut,
+        modified,
+    }))
 }
 
 /// The saved plan, or `None` when there is none yet. Cut at [`PLAN_LIMIT`].
@@ -37,17 +103,7 @@ pub fn plan_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
 /// # Errors
 /// Fails as [`plan_file`], or when the file exists but can't be read.
 pub fn read(root: &Path, task: Option<&str>) -> Result<Option<String>> {
-    let file = plan_file(root, task)?;
-    let handle = match std::fs::File::open(&file) {
-        Ok(handle) => handle,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let mut bytes = Vec::new();
-    handle
-        .take(u64::try_from(PLAN_LIMIT).unwrap_or(u64::MAX))
-        .read_to_end(&mut bytes)?;
-    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    Ok(load(root, task)?.map(|saved| saved.text))
 }
 
 /// Save the plan atomically, so an agent never reads half of it.
@@ -75,16 +131,51 @@ pub fn write(root: &Path, task: Option<&str>, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// How long ago `then` was, roughly ("3 hours ago").
+fn ago(then: SystemTime) -> String {
+    let secs = SystemTime::now()
+        .duration_since(then)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    let (n, unit) = match secs {
+        0..60 => return "just now".into(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86_400 => (secs / 3600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
 /// The briefing section carrying a saved plan; `None` for a missing or blank one.
+/// It says when the plan was saved, so an agent can tell an old one from the
+/// change it was started for, and whether the plan was cut.
 #[must_use]
 pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
-    let text = read(root, task).ok()??;
-    let text = text.trim();
-    (!text.is_empty()).then(|| ContextSection {
+    let saved = load(root, task).ok()??;
+    let text = saved.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let when = saved
+        .modified
+        .map(|t| format!(" (saved {})", ago(t)))
+        .unwrap_or_default();
+    let cut = if saved.cut {
+        format!(
+            "\n\n[The plan continues past {} KiB; read the rest in {}.]",
+            PLAN_LIMIT / 1024,
+            plan_file(root, task)
+                .map_or_else(|_| "the plan file".into(), |f| f.display().to_string())
+        )
+    } else {
+        String::new()
+    };
+    Some(ContextSection {
         title: "Shared plan".into(),
         body: format!(
-            "The planner agreed this plan for the change; your component's part of it is \
-             yours to implement.\n\n{text}"
+            "The planner agreed this plan for the change{when}; your component's part of it \
+             is yours to implement. If it doesn't match the change you were started for, \
+             ask before acting on it.\n\n{text}{cut}"
         ),
     })
 }
@@ -128,9 +219,50 @@ mod tests {
         let file = plan_file(&root, None).unwrap();
         assert!(file.starts_with(root.join(".git")));
         assert!(section(&root, None).unwrap().body.contains("1. do it"));
+        assert!(
+            section(&root, None)
+                .unwrap()
+                .body
+                .contains("(saved just now)")
+        );
         write(&root, None, "  \n").unwrap();
         assert!(section(&root, None).is_none());
+        remove(&root, Some("t1")).unwrap();
+        assert_eq!(read(&root, Some("t1")).unwrap(), None);
+        remove(&root, Some("t1")).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn long_plans_are_cut_with_a_notice() {
+        let Some(root) = repo() else { return };
+        let file = prepared_file(&root, None).unwrap();
+        assert_eq!(file.parent().unwrap(), dir(&root).unwrap());
+        write(&root, None, &"x".repeat(PLAN_LIMIT)).unwrap();
+        assert!(
+            !section(&root, None)
+                .unwrap()
+                .body
+                .contains("continues past")
+        );
+        fs::write(&file, "y".repeat(PLAN_LIMIT + 10)).unwrap();
+        assert_eq!(read(&root, None).unwrap().unwrap().len(), PLAN_LIMIT);
+        assert!(
+            section(&root, None)
+                .unwrap()
+                .body
+                .contains("continues past 64 KiB")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ages_read_naturally() {
+        let now = SystemTime::now();
+        assert_eq!(ago(now), "just now");
+        assert_eq!(ago(now - Duration::from_secs(60)), "1 minute ago");
+        assert_eq!(ago(now - Duration::from_secs(3 * 3600)), "3 hours ago");
+        assert_eq!(ago(now - Duration::from_secs(2 * 86_400 + 5)), "2 days ago");
     }
 
     #[test]
