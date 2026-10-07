@@ -14,6 +14,7 @@ import AddTerminalSelect from './AddTerminalSelect'
 import ChangesPanel from './changes/ChangesPanel'
 import AttentionPill from './status/AttentionPill'
 import TerminalGrid from './TerminalGrid'
+import WorktreePicker from './tasks/WorktreePicker'
 
 /**
  * The highlighted components side by side (the same scope Plan uses), or the
@@ -210,6 +211,7 @@ export default function ImplementationView() {
             </button>
           </>
         )}
+        <WorktreePicker align="right" />
       </header>
       <div className="implementation-terminals">
         {focused && showChanges ? (

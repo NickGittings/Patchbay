@@ -162,6 +162,12 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   }
 }
 
+/** Open the new-worktree dialog for the highlighted components, else the selected one. */
+export function seedNewTask() {
+  const s = useStore.getState()
+  s.setNewTask(s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [])
+}
+
 /** A branch name from a title: `Fix login bug` → `fix-login-bug`. */
 export function branchFor(title: string) {
   return title

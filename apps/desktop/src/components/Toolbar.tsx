@@ -8,7 +8,7 @@ import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
 import AttentionMenu from './status/AttentionMenu'
-import TaskMenu from './tasks/TaskMenu'
+import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
 
 const views: { id: View; label: string }[] = [
@@ -16,7 +16,6 @@ const views: { id: View; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Implementation' },
   { id: 'review', label: 'Review' },
-  { id: 'tasks', label: 'Tasks' },
 ]
 
 const mac = /mac/i.test(navigator.userAgent)
@@ -122,7 +121,8 @@ export default function Toolbar() {
         <div className="toolbar-group end">
           {project && (
             <>
-              <TaskMenu />
+              {/* Plan and Implementation carry the picker in their own headers. */}
+              {(view === 'navigation' || view === 'review') && <WorktreePicker align="right" />}
               <AttentionMenu />
               <span className="file" title={project.root}>
                 <span className="file-name">{project.name}</span>

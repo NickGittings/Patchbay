@@ -1,58 +1,107 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
-import { attentionCounts, revealTerminal } from '../../lib/attention'
-import { useClockTick } from '../../lib/clock'
+import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
+import { attentionCounts, componentTerminals, revealTerminal } from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
-import { gitReview, taskUpdate } from '../../lib/ipc'
-import { ago } from '../../lib/review'
-import { refreshTasks, removeTask } from '../../lib/tasks'
+import { gitReview, gitWorktrees, taskUpdate } from '../../lib/ipc'
+import { planTerminals } from '../../lib/plan'
+import { refreshTasks, removeTask, seedNewTask } from '../../lib/tasks'
 import { useStore } from '../../store'
-import { PROJECT_SCOPE, sessionId, type Review, type Task } from '../../types'
+import { PLAN_SCOPE, PROJECT_SCOPE, sessionId, type Review, type Task } from '../../types'
 
-/**
- * Every task with its branch, worktree, the components it is about and those its changes touch
- * or may affect, and its terminals: one place to organize parallel work.
- */
-export default function TasksView() {
-  const tasks = useStore((s) => s.tasks)
-  const setNewTask = useStore((s) => s.setNewTask)
+import Popover from '../Popover'
+import { CloseMenu } from '../menuContext'
+
+/** Pick the worktree where planning and implementation terminals run. */
+export default function WorktreePicker({ align = 'left' }: { align?: 'left' | 'right' }) {
+  const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
+  const projectId = useStore((s) => s.project?.id)
+  const [branch, setBranch] = useState('')
   const counts = JSON.parse(useStore(attentionCounts)) as Record<string, number>
-  const [reload, setReload] = useState(0)
-  useEffect(() => void refreshTasks(), [])
+  // The Project folder's branch, read when the project opens and whenever the picker opens
+  // rather than on every Git refresh, since it only changes on a checkout.
+  const latestRequest = useRef(0)
+  const refreshBranch = useCallback(() => {
+    const request = ++latestRequest.current
+    void gitWorktrees()
+      .then((list) => {
+        const current = list.find((w) => w.current)
+        if (request === latestRequest.current)
+          setBranch(current?.branch ?? (current ? `detached ${current.head.slice(0, 7)}` : ''))
+      })
+      .catch(() => {})
+  }, [])
+  useEffect(() => {
+    refreshBranch()
+    // Drops the answer for a project that is no longer open.
+    const requests = latestRequest
+    return () => {
+      requests.current++
+    }
+  }, [projectId, refreshBranch])
+  const label = task?.title ?? 'Project folder'
+  const currentBranch = task ? task.branch : branch
+  const attention = counts[task?.id ?? ''] ?? 0
+  const elsewhere = Object.values(counts).reduce((sum, n) => sum + n, 0) - attention
 
   return (
-    <div className="workspace tasks-view">
-      <div className="tasks-header">
-        <span className="review-title">Tasks</span>
-        <span className="hint flush">
-          Each task has its own branch and worktree; terminals started while it is active run there.
-        </span>
-        <span className="spacer" />
-        <button
-          onClick={() => {
-            setReload((n) => n + 1)
-            void refreshTasks()
-          }}
-          title="Reload tasks"
-        >
-          ↻
-        </button>
-        <button className="primary" onClick={() => setNewTask([])}>
-          + New task
-        </button>
-      </div>
-      <div className="tasks-list">
-        <TaskCard task={null} attention={counts[''] ?? 0} reload={reload} />
-        {tasks.map((t) => (
-          <TaskCard key={t.id} task={t} attention={counts[t.id] ?? 0} reload={reload} />
+    <Popover
+      label={
+        <>
+          <span className="worktree-picker-label">
+            {label}
+            {currentBranch ? ` · ${currentBranch}` : ''}
+          </span>
+          {attention > 0 && (
+            <span className="worktree-attention-dot" title={`${attention} terminals need you`}>
+              ●
+            </span>
+          )}
+          {elsewhere > 0 && (
+            <span
+              className="worktree-attention-dot elsewhere"
+              title={`${elsewhere} terminals in other worktrees need you`}
+            >
+              ○ {elsewhere}
+            </span>
+          )}
+        </>
+      }
+      title="Choose a worktree"
+      className="worktree-picker"
+      listClassName="worktree-popover"
+      align={align}
+      portal
+    >
+      <WorktreeOverview branch={branch} onOpen={refreshBranch} />
+    </Popover>
+  )
+}
+
+function WorktreeOverview({ branch, onOpen }: { branch: string; onOpen: () => void }) {
+  const tasks = useStore((s) => s.tasks)
+  const counts = JSON.parse(useStore(attentionCounts)) as Record<string, number>
+  const close = useContext(CloseMenu)
+  useEffect(() => {
+    void refreshTasks()
+    onOpen()
+  }, [onOpen])
+  return (
+    <>
+      <div className="worktree-list">
+        <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+        {tasks.map((task) => (
+          <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
         ))}
-        {!tasks.length && (
-          <div className="hint">
-            No tasks yet. Start one to work on a branch in its own worktree, with the same map and
-            terminals.
-          </div>
-        )}
       </div>
-    </div>
+      <button
+        className="worktree-new"
+        onClick={() => {
+          close()
+          seedNewTask()
+        }}
+      >
+        + New worktree…
+      </button>
+    </>
   )
 }
 
@@ -66,18 +115,26 @@ function saveNotes(pending: RefObject<{ id: string; notes: string } | null>) {
     .catch((e) => useStore.getState().setMessage(String(e)))
 }
 
-function TaskCard({
+function WorktreeRow({
   task,
   attention,
-  reload,
+  branch,
 }: {
   task: Task | null
   attention: number
-  reload: number
+  branch?: string
 }) {
+  const close = useContext(CloseMenu)
   const id = task?.id ?? null
+  const switchTo = () => {
+    if (task?.missing) return
+    close()
+    useStore.getState().setActiveTask(id)
+  }
   const nodes = useStore((s) => s.nodes)
   const sessions = useStore((s) => s.sessions)
+  const runtimeTerminals = useStore((s) => s.runtimeTerminals)
+  const devices = useStore((s) => s.devices)
   const activeTask = useStore((s) => s.activeTask)
   const revision = useStore((s) => s.gitChanges)
   const pathsKey = useStore((s) => s.nodes.map((n) => `${n.id}\0${n.data.path}`).join('\n'))
@@ -99,11 +156,10 @@ function TaskCard({
   }, [taskId, notes, savedNotes])
   useEffect(() => () => saveNotes(pendingNotes), [])
   const [confirming, setConfirming] = useState(false)
-  useClockTick()
   const active = activeTask === id
   const worktree = task && !task.current ? task.worktree : undefined
   // Git refreshes follow the watched worktrees (the open one and the active task's); other
-  // tasks reload on mount and on ↻.
+  // tasks reload on mount when the picker opens.
   const watched = active || !worktree
   const changes = watched ? revision : null
 
@@ -123,18 +179,29 @@ function TaskCard({
     return () => {
       disposed = true
     }
-  }, [worktree, task?.missing, changes, pathsKey, reload])
+  }, [worktree, task?.missing, changes, pathsKey])
 
   const nameOf = (cid: string) => nodes.find((n) => n.id === cid)?.data.name ?? cid
   const changed = Object.entries(review?.changes ?? {})
     .filter(([cid, files]) => files.length && cid !== PROJECT_SCOPE)
     .map(([cid, files]) => ({ id: cid, files: files.length }))
   const projectFiles = review?.changes[PROJECT_SCOPE]?.length ?? 0
-  const running = nodes.flatMap((n) =>
-    n.data.terminals
-      .map((t) => ({ n, t, sid: sessionId(n.id, t.id, id) }))
-      .filter(({ sid }) => sessions[sid]?.running),
-  )
+  const changedCount = new Set(
+    Object.values(review?.changes ?? {}).flatMap((files) => files.map((f) => f.path)),
+  ).size
+  const running = [
+    ...nodes.flatMap((n) =>
+      componentTerminals(n.id, n.data.terminals, id ? {} : runtimeTerminals, id).map(
+        ([sid, t]) => ({ componentId: n.id, name: n.data.name, t, sid }),
+      ),
+    ),
+    ...planTerminals(devices).map((t) => ({
+      componentId: PLAN_SCOPE,
+      name: 'Planner',
+      t,
+      sid: sessionId(PLAN_SCOPE, t.id, id),
+    })),
+  ].filter(({ sid }) => sessions[sid]?.running)
 
   const chip = (cid: string, extra?: string) => {
     const node = nodes.find((n) => n.id === cid)
@@ -146,6 +213,7 @@ function TaskCard({
         title="Show in Implementation"
         onClick={() => {
           const s = useStore.getState()
+          close()
           s.setActiveTask(id)
           s.select(cid)
           s.setView('implementation')
@@ -169,29 +237,35 @@ function TaskCard({
   }
 
   return (
-    <section className={`task-card ${active ? 'active' : ''} ${task?.missing ? 'missing' : ''}`}>
-      <header className="task-card-header">
-        <strong>{task ? task.title : 'Open worktree'}</strong>
-        {task?.branch && <code>{task.branch}</code>}
-        {task?.current && <span className="task-tag">open here</span>}
-        {task?.missing && <span className="task-tag bad">worktree missing</span>}
+    <section className={`worktree-row ${active ? 'active' : ''} ${task?.missing ? 'missing' : ''}`}>
+      <header className="worktree-row-header">
+        <button
+          className="worktree-row-switch"
+          disabled={!!task?.missing}
+          aria-pressed={active}
+          onClick={switchTo}
+        >
+          <strong>{task ? task.title : 'Project folder'}</strong>
+          {(task?.branch ?? branch) && <code>{task?.branch ?? branch}</code>}
+        </button>
+        {task?.current && <span className="worktree-tag">project folder</span>}
+        {task?.missing && <span className="worktree-tag bad">worktree missing</span>}
         {attention > 0 && (
-          <span className="task-tag attention" title="Terminals that need you">
+          <span className="worktree-tag attention" title="Terminals that need you">
             ● {attention}
           </span>
         )}
-        <span className="spacer" />
-        {task && <small className="muted">{ago(task.createdMs)}</small>}
-        <button
-          disabled={active || !!task?.missing}
-          onClick={() => useStore.getState().setActiveTask(id)}
-        >
-          {active ? 'Active' : 'Switch to'}
-        </button>
+        {review && (
+          <span className="worktree-tag" title="Uncommitted files">
+            ±{changedCount}
+          </span>
+        )}
+        <span className="worktree-tag">{running.length} running</span>
         <button
           disabled={!!task?.missing}
           onClick={() => {
             const s = useStore.getState()
+            close()
             s.setActiveTask(id)
             s.setView('review')
           }}
@@ -205,12 +279,12 @@ function TaskCard({
         )}
       </header>
       {task && (
-        <div className="task-path mono" title={task.worktree}>
+        <div className="worktree-path mono" title={task.worktree}>
           {task.worktree}
         </div>
       )}
       {task && confirming && (
-        <div className="task-confirm row">
+        <div className="worktree-confirm row">
           <span className="grow">
             Remove the worktree too? git refuses if it has uncommitted changes. The branch{' '}
             {task.branch ? <code>{task.branch}</code> : null} is kept.
@@ -231,13 +305,13 @@ function TaskCard({
               )
             }
           >
-            Forget task only
+            Forget only
           </button>
           <button onClick={() => setConfirming(false)}>Cancel</button>
         </div>
       )}
       {task && (
-        <div className="task-row">
+        <div className="worktree-detail">
           <span className="section-title">About</span>
           <div className="scope-chips">
             {nodes.map((n) => (
@@ -245,7 +319,7 @@ function TaskCard({
                 key={n.id}
                 className={`chip ${task.components.includes(n.id) ? 'active' : 'off'}`}
                 aria-pressed={task.components.includes(n.id)}
-                title={task.components.includes(n.id) ? 'Remove from task' : 'Add to task'}
+                title={task.components.includes(n.id) ? 'Remove from worktree' : 'Add to worktree'}
                 onClick={() => toggleComponent(n.id)}
               >
                 <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
@@ -255,7 +329,7 @@ function TaskCard({
           </div>
         </div>
       )}
-      <div className="task-row">
+      <div className="worktree-detail">
         <span className="section-title">Changed</span>
         <div className="scope-chips">
           {error ? (
@@ -273,24 +347,27 @@ function TaskCard({
         </div>
       </div>
       {review && review.affected.length > 0 && (
-        <div className="task-row">
+        <div className="worktree-detail">
           <span className="section-title">May affect</span>
           <div className="scope-chips">
             {review.affected.map((a) => chip(a.id, `via ${a.via.map(nameOf).join(', ')}`))}
           </div>
         </div>
       )}
-      <div className="task-row">
+      <div className="worktree-detail">
         <span className="section-title">Running</span>
         <div className="scope-chips">
           {running.length ? (
-            running.map(({ n, t, sid }) => (
+            running.map(({ componentId, name, t, sid }) => (
               <button
                 key={sid}
                 className="chip"
-                onClick={() => revealTerminal({ sid, componentId: n.id })}
+                onClick={() => {
+                  close()
+                  revealTerminal({ sid, componentId })
+                }}
               >
-                {n.data.name} · {t.name}
+                {name} · {t.name}
               </button>
             ))
           ) : (
@@ -299,13 +376,17 @@ function TaskCard({
         </div>
       </div>
       {task && (
-        <textarea
-          className="task-notes"
-          rows={2}
-          placeholder="Notes for this task (shared with its agents)"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-        />
+        <details className="worktree-notes-detail">
+          <summary>Notes{notes ? ` · ${notes.split('\n')[0]}` : ''}</summary>
+          <textarea
+            aria-label={`Notes for ${task.title}`}
+            className="worktree-notes"
+            rows={2}
+            placeholder="Notes for this worktree (shared with its agents)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </details>
       )}
     </section>
   )
