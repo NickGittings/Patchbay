@@ -73,7 +73,7 @@ export function flushWorkspace() {
 }
 export function restoredLayout(layout: Record<string, unknown>): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
-  if (['navigation', 'plan', 'tasks', 'implementation', 'review'].includes(String(layout.view)))
+  if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
   // The active session belongs to the active task's scope, so both are restored together;
   // loading the task list drops a task that no longer exists.

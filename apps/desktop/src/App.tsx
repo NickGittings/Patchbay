@@ -25,7 +25,6 @@ import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
 import ReviewView from './components/ReviewView'
 import NewTaskDialog from './components/tasks/NewTaskDialog'
-import TasksView from './components/tasks/TasksView'
 import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
@@ -197,8 +196,6 @@ export default function App() {
           <div className="hint">Restoring workspace…</div>
         ) : view === 'plan' ? (
           <PlanView key={projectId} />
-        ) : view === 'tasks' ? (
-          <TasksView key={projectId} />
         ) : view === 'implementation' ? (
           <ImplementationView key={projectId} />
         ) : view === 'review' ? (

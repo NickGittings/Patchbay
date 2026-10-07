@@ -28,7 +28,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 function worktreeLabel(w: Worktree) {
   const name = w.path.split(/[\\/]/).pop() ?? w.path
   const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
-  return `${branch} · ${name}${w.current ? ' (open)' : ''}`
+  return `${branch} · ${name}${w.current ? ' (project folder)' : ''}`
 }
 
 /**
@@ -233,10 +233,11 @@ export default function ReviewView() {
             </div>
             {other && (
               <div className="review-banner">
-                Viewing {reviewTask ? <>task “{reviewTask.title}” on </> : 'worktree '}
+                Viewing worktree {reviewTask && <>“{reviewTask.title}” on </>}
                 <code>{other.branch ?? other.head.slice(0, 7)}</code> at{' '}
                 <code title={other.path}>{other.path}</code>.
-                {!reviewTask && ' Task status is hidden; it has no task to run terminals in.'}
+                {!reviewTask &&
+                  " Terminal status is hidden; it isn't tracked, so no terminals ran there."}
               </div>
             )}
             {error && <div className="hint file-tree-error">{error}</div>}

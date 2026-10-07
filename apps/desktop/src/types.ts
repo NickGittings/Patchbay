@@ -3,7 +3,7 @@
 export const PLAN_SCOPE = '@plan'
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
-export type View = 'navigation' | 'plan' | 'implementation' | 'review' | 'tasks'
+export type View = 'navigation' | 'plan' | 'implementation' | 'review'
 
 export type ComponentKind =
   'frontend' | 'backend' | 'service' | 'library' | 'database' | 'app' | 'other'

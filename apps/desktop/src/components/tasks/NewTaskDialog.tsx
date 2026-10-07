@@ -75,7 +75,7 @@ function Dialog({ seed }: { seed: string[] }) {
         className="extensions-panel panel task-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="New task"
+        aria-label="New worktree"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === 'Escape') close()
@@ -86,7 +86,7 @@ function Dialog({ seed }: { seed: string[] }) {
         }}
       >
         <div className="row">
-          <h2>New task</h2>
+          <h2>New worktree</h2>
           <span className="spacer" />
           <div className="view-switcher" role="group" aria-label="Worktree">
             <button
@@ -102,7 +102,7 @@ function Dialog({ seed }: { seed: string[] }) {
               className={mode === 'attach' ? 'active' : ''}
               aria-pressed={mode === 'attach'}
               disabled={!free.length}
-              title={free.length ? '' : 'Every other worktree already has a task'}
+              title={free.length ? '' : 'Every other worktree is already listed'}
               onClick={() => {
                 setMode('attach')
                 setWorktree(worktree || free[0]?.path || '')
@@ -115,7 +115,7 @@ function Dialog({ seed }: { seed: string[] }) {
         {mode === 'new' ? (
           <>
             <label>
-              Title
+              What's it for
               <input
                 autoFocus
                 value={title}
@@ -180,7 +180,7 @@ function Dialog({ seed }: { seed: string[] }) {
             Cancel
           </button>
           <button type="submit" className="primary" disabled={!ready || busy}>
-            {busy ? 'Creating…' : mode === 'new' ? 'Create task' : 'Attach task'}
+            {busy ? 'Creating…' : mode === 'new' ? 'Create worktree' : 'Use worktree'}
           </button>
         </div>
       </form>

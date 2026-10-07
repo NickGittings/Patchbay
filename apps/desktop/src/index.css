@@ -489,11 +489,6 @@ input[type='radio'] {
 .toolbar select {
   height: 28px;
 }
-.toolbar .task-menu,
-.toolbar .task-select {
-  flex: 0 1 auto;
-  min-width: 0;
-}
 .toast-region {
   position: absolute;
   top: calc(100% + 8px);
@@ -2027,20 +2022,52 @@ button.review-name:hover:not(:disabled) {
 .action-result .stopped {
   color: var(--muted);
 }
-/* Tasks */
-.task-menu {
+/* Worktrees */
+.worktree-picker {
+  min-width: 0;
+  flex: none;
+}
+.worktree-picker .menu-trigger {
+  max-width: 240px;
+}
+.worktree-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-attention-dot {
+  color: var(--input);
+}
+.worktree-attention-dot.elsewhere {
+  color: var(--muted);
+  font-size: 11px;
+}
+.worktree-popover {
+  width: min(640px, calc(100vw - 16px));
+  min-width: 0;
+  max-height: min(70vh, calc(100vh - 16px));
+  padding: 8px;
+  gap: 8px;
+}
+.worktree-list {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  gap: 8px;
 }
-.task-select {
-  max-width: 220px;
-  font-size: 12px;
-  padding: 3px 6px;
+.worktree-new {
+  flex: none;
+  text-align: left;
 }
-.task-select.in-task {
-  border-color: var(--task);
-  color: var(--task);
+.plan-scope-header {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.plan-scope-header .worktree-picker {
+  flex-basis: 100%;
+}
+.plan-scope-header .worktree-picker .menu-trigger {
+  max-width: 100%;
+  width: 100%;
 }
 .component-node.in-task:not(.selected):not(.highlighted) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
@@ -2067,90 +2094,100 @@ button.review-name:hover:not(:disabled) {
 .task-dialog .row {
   gap: 8px;
 }
-.tasks-view {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--bg);
-}
-.tasks-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.tasks-list {
-  flex: 1;
-  overflow: auto;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.task-card {
+.worktree-row {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.task-card.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+.worktree-row.active {
+  border-color: var(--task);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--task) 50%, transparent);
 }
-.task-card.missing {
+.worktree-row.missing {
   opacity: 0.6;
 }
-.task-card-header {
+.worktree-row-switch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 1 180px;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+}
+.worktree-row-switch strong {
+  overflow-wrap: anywhere;
+}
+.worktree-row-switch code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-row-header {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-.task-tag {
+.worktree-tag {
   font-size: 11px;
   padding: 1px 7px;
   border-radius: 9px;
   border: 1px solid var(--border-strong);
   color: var(--muted);
 }
-.task-tag.bad {
+.worktree-tag.bad {
   color: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 50%, transparent);
 }
-.task-tag.attention {
+.worktree-tag.attention {
   color: var(--input);
   border-color: color-mix(in srgb, var(--input) 50%, transparent);
 }
-.task-path {
+.worktree-path {
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.task-confirm {
+.worktree-confirm {
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px;
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
   font-size: 12px;
 }
-.task-row {
+.worktree-detail {
   display: grid;
   grid-template-columns: 90px 1fr;
   align-items: start;
   gap: 8px;
 }
-.task-row .section-title {
+.worktree-detail .section-title {
   margin: 4px 0 0;
 }
 .chip.off {
   opacity: 0.45;
 }
-.task-notes {
+.worktree-detail .scope-chips {
+  margin-top: 0;
+}
+.worktree-notes-detail summary {
+  cursor: pointer;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-notes {
   width: 100%;
 }
 .muted {

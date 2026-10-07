@@ -8,7 +8,7 @@ import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
 import AttentionMenu from './status/AttentionMenu'
-import TaskMenu from './tasks/TaskMenu'
+import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
 import { mod, shiftMod } from '../lib/platform'
 
@@ -17,7 +17,6 @@ const views: { id: View; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Implementation' },
   { id: 'review', label: 'Review' },
-  { id: 'tasks', label: 'Tasks' },
 ]
 
 export default function Toolbar() {
@@ -119,7 +118,8 @@ export default function Toolbar() {
         <div className="toolbar-group end">
           {project && (
             <>
-              <TaskMenu />
+              {/* Plan and Implementation carry the picker in their own headers. */}
+              {(view === 'navigation' || view === 'review') && <WorktreePicker align="right" />}
               <AttentionMenu />
               <button
                 className={dirty ? 'primary' : undefined}

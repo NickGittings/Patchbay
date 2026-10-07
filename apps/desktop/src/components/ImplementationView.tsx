@@ -13,6 +13,7 @@ import AddTerminalSelect from './AddTerminalSelect'
 import AttentionPill from './status/AttentionPill'
 import TerminalGrid from './TerminalGrid'
 import EmptyState from './EmptyState'
+import WorktreePicker from './tasks/WorktreePicker'
 
 /**
  * The highlighted components side by side (the same scope Plan uses), or the
@@ -195,6 +196,7 @@ export default function ImplementationView() {
             </button>
           </>
         )}
+        <WorktreePicker align="right" />
       </header>
       <div className="implementation-terminals">
         {shown.length ? (

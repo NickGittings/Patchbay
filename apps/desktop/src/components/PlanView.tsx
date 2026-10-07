@@ -7,11 +7,13 @@ import { startAgentsIn } from '../lib/implement'
 import { planContext, planRead, planWrite } from '../lib/ipc'
 import { nearbyIds, plannerDevice, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
+import { seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
 import { PLAN_SCOPE, sessionId } from '../types'
 import Canvas from './Canvas'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import WorktreePicker from './tasks/WorktreePicker'
 
 /**
  * Unsaved Saved-plan edits per project and task, kept outside the component so leaving the view or
@@ -29,7 +31,6 @@ export default function PlanView() {
   const startedWith = useStore((s) => s.planStartedWith)
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
-  const setNewTask = useStore((s) => s.setNewTask)
   const setView = useStore((s) => s.setView)
   useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
@@ -187,18 +188,18 @@ export default function PlanView() {
       <Panel id="PlanView-pane-2" defaultSize="55" minSize="20">
         <div className="plan-dock">
           <aside className="plan-scope">
-            <div className="row">
+            <div className="row plan-scope-header">
               <span className="section-title">Planner scope</span>
               <span className="spacer" />
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
               </button>
+              <WorktreePicker />
               <button
-                disabled={highlighted.length === 0}
-                title="Create a branch and worktree for the highlighted components"
-                onClick={() => setNewTask([...highlighted])}
+                title="Create a branch and worktree for the highlighted components, or the selected one"
+                onClick={seedNewTask}
               >
-                Start task…
+                New worktree…
               </button>
             </div>
             <div className="row plan-implement">
