@@ -332,6 +332,10 @@ select:focus {
 .separator[data-separator='active'] {
   background: var(--accent);
 }
+/* Beside a collapsed panel (Navigation's Inspector and dock). */
+.separator.hidden {
+  display: none;
+}
 
 .toolbar {
   position: relative;
@@ -541,6 +545,23 @@ select:focus {
 .inspector .panel-title {
   padding-left: 0;
   padding-right: 0;
+}
+.inspector-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.inspector-close {
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.inspector-close:hover {
+  color: inherit;
+  border-color: var(--border);
 }
 .inspector label {
   display: flex;

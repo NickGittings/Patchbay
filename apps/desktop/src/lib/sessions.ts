@@ -303,6 +303,12 @@ export function handleTerminalEvent(e: TerminalEvent) {
         exitedMs: e.exitedMs,
       })
       writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
+      // A failure, or the run being watched, stays in Navigation's dock so its output can be read.
+      if (
+        e.sessionId === s.activeSession ||
+        (e.exitCode !== 0 && !s.sessions[e.sessionId]?.status?.stopped)
+      )
+        s.keepInDock(e.sessionId)
       break
     case 'status': {
       const prev = s.sessions[e.sessionId]

@@ -1,4 +1,5 @@
 import { openInEditor, revealLabel } from '../lib/navigation'
+import { closeInspector } from '../lib/panels'
 import { revealPath } from '../lib/ipc'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import { ExtensionView } from '../extensions/views'
@@ -375,7 +376,17 @@ export default function Inspector() {
 
   return (
     <div className="panel inspector">
-      <div className="panel-title">{node ? 'Component' : edgeId ? 'Link' : 'Inspector'}</div>
+      <div className="panel-title inspector-title">
+        {node ? 'Component' : edgeId ? 'Link' : 'Inspector'}
+        <button
+          className="inspector-close"
+          title="Close the Inspector"
+          aria-label="Close the Inspector"
+          onClick={closeInspector}
+        >
+          ×
+        </button>
+      </div>
       {extensionViews.views.length > 0 && (
         <div className="tabs">
           <button

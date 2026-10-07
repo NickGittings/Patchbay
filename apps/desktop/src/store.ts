@@ -43,6 +43,8 @@ export interface ProjectState {
   selectedId: string | null
   selectedEdgeId: string | null
   activeSession: string | null
+  /** Navigation's Inspector: `null` follows the selection, else opened or closed (UI only). */
+  inspector: boolean | null
   view: View
   highlighted: string[]
   planStartedWith: Record<string, string>
@@ -81,6 +83,13 @@ interface State {
   serviceInstance: string
   serviceConnected: boolean
   sessionsPanelOpen: boolean
+  /**
+   * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
+   * failed, or exited while active (UI only).
+   */
+  dockKept: string[]
+  keepInDock: (id: string) => void
+  dropFromDock: (id: string) => void
   restoring: boolean
   viewport?: { x: number; y: number; zoom: number }
   panels: Record<string, Record<string, number>>
@@ -124,6 +133,7 @@ interface State {
   selectedId: string | null
   selectedEdgeId: string | null
   activeSession: string | null
+  inspector: boolean | null
   view: View
   highlighted: string[]
   planStartedWith: Record<string, string>
@@ -222,6 +232,10 @@ export const useStore = create<State>((set, get) => ({
   serviceInstance: '',
   serviceConnected: false,
   sessionsPanelOpen: false,
+  dockKept: [],
+  keepInDock: (id) =>
+    set((s) => (s.dockKept.includes(id) ? {} : { dockKept: [...s.dockKept, id] })),
+  dropFromDock: (id) => set((s) => ({ dockKept: s.dockKept.filter((k) => k !== id) })),
   restoring: true,
   panels: {},
   setViewport: (viewport) => set({ viewport }),
@@ -343,6 +357,7 @@ export const useStore = create<State>((set, get) => ({
   selectedId: null,
   selectedEdgeId: null,
   activeSession: null,
+  inspector: null,
   dirty: false,
   message: '',
   messageId: 0,
@@ -436,6 +451,9 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({
       edges: applyEdgeChanges(changes, s.edges),
       dirty: s.dirty || changes.some((c) => c.type === 'remove'),
+      selectedEdgeId: changes.some((c) => c.type === 'remove' && c.id === s.selectedEdgeId)
+        ? null
+        : s.selectedEdgeId,
     })),
   onConnect: (c) =>
     set((s) => ({
@@ -466,7 +484,13 @@ export const useStore = create<State>((set, get) => ({
         terminals: [{ id: 'shell', name: 'Shell', command: '', kind: 'shell' }],
       },
     }
-    set((s) => ({ nodes: [...s.nodes, node], selectedId: id, selectedEdgeId: null, dirty: true }))
+    set((s) => ({
+      nodes: [...s.nodes, node],
+      selectedId: id,
+      selectedEdgeId: null,
+      inspector: null,
+      dirty: true,
+    }))
   },
   updateComponent: (id, patch) =>
     set((s) => ({ nodes: mapNode(s.nodes, id, (d) => ({ ...d, ...patch })), dirty: true })),
@@ -540,11 +564,25 @@ export const useStore = create<State>((set, get) => ({
     set({
       selectedId: id,
       selectedEdgeId: null,
+      inspector: id === get().selectedId ? get().inspector : null,
       activeSession: keep ? current : first ? sessionId(id, first.id, get().activeTask) : null,
     })
   },
-  selectEdge: (selectedEdgeId) => set({ selectedEdgeId, selectedId: null }),
-  setActiveSession: (activeSession) => set({ activeSession }),
+  selectEdge: (selectedEdgeId) =>
+    set(
+      selectedEdgeId && selectedEdgeId !== get().selectedEdgeId
+        ? { selectedEdgeId, selectedId: null, inspector: null }
+        : { selectedEdgeId, selectedId: null },
+    ),
+  // Revealing a session keeps it in the dock, even once it has exited.
+  setActiveSession: (activeSession) =>
+    set((s) => ({
+      activeSession,
+      dockKept:
+        activeSession && !s.dockKept.includes(activeSession)
+          ? [...s.dockKept, activeSession]
+          : s.dockKept,
+    })),
   setSession: (id, st) => set((s) => ({ sessions: { ...s.sessions, [id]: st } })),
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
@@ -605,6 +643,7 @@ function emptyProjectState(): ProjectState {
     selectedId: null,
     selectedEdgeId: null,
     activeSession: null,
+    inspector: null,
     view: 'navigation',
     highlighted: [],
     planStartedWith: {},
@@ -631,6 +670,7 @@ function projectState(s: State): ProjectState {
     selectedId,
     selectedEdgeId,
     activeSession,
+    inspector,
     view,
     highlighted,
     planStartedWith,
@@ -656,6 +696,7 @@ function projectState(s: State): ProjectState {
     selectedId,
     selectedEdgeId,
     activeSession,
+    inspector,
     view,
     highlighted,
     planStartedWith,
