@@ -9,9 +9,15 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { Panel, Separator } from 'react-resizable-panels'
+import {
+  Panel,
+  Separator,
+  usePanelRef,
+  type PanelImperativeHandle,
+  type PanelSize,
+} from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
@@ -21,6 +27,8 @@ import ReviewView from './components/ReviewView'
 import NewTaskDialog from './components/tasks/NewTaskDialog'
 import TasksView from './components/tasks/TasksView'
 import TerminalDock from './components/TerminalDock'
+import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
+import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
 import { GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
@@ -72,6 +80,85 @@ function useRootSync() {
   }, [])
 }
 
+/** Where Navigation's collapsible panels remember their open sizes, in the project's `panels`. */
+const OPEN_SIZES = 'App-open'
+
+function openPanel(p: PanelImperativeHandle, id: string) {
+  p.expand()
+  const size = useStore.getState().panels[OPEN_SIZES]?.[id]
+  if (size) p.resize(`${size}%`)
+}
+
+/**
+ * Collapse panel `id` while it has nothing to show and expand it, at the size it had when it was
+ * last collapsed, once it does. `onDragShut` runs when the user drags it shut while it is shown.
+ */
+function useCollapsed(
+  id: string,
+  shown: boolean,
+  onDragShut: (panel: PanelImperativeHandle) => void,
+) {
+  const panelRef = usePanelRef()
+  const shownRef = useRef(shown)
+  useLayoutEffect(() => {
+    shownRef.current = shown
+    const p = panelRef.current
+    if (!p) return
+    if (shown && p.isCollapsed()) openPanel(p, id)
+    else if (!shown && !p.isCollapsed()) {
+      const size = p.getSize().asPercentage
+      const s = useStore.getState()
+      if (size > 0) s.setPanelLayout(OPEN_SIZES, { ...s.panels[OPEN_SIZES], [id]: size })
+      p.collapse()
+    }
+  }, [panelRef, id, shown])
+  const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
+    if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current && panelRef.current)
+      onDragShut(panelRef.current)
+  }
+  return { panelRef, onResize, collapsible: true }
+}
+
+/**
+ * Hierarchy and canvas, with the Inspector while something is selected (or it is opened) and the
+ * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put.
+ */
+function NavigationView() {
+  const inspector = useStore(showsInspector)
+  const dockViews = useExtensionViews('dock').views.length > 0
+  const dock = useStore(hasDockTabs) || dockViews
+  // Dragged shut: close it, so the canvas's Inspector button comes back.
+  const inspectorPanel = useCollapsed('App-pane-5', inspector, closeInspector)
+  // The dock can't be dismissed while terminals run, and a zero-height terminal would resize its
+  // PTY to one row: open it again.
+  const dockPanel = useCollapsed('App-pane-4', dock, (p) =>
+    requestAnimationFrame(() => p.isCollapsed() && openPanel(p, 'App-pane-4')),
+  )
+  return (
+    <PersistedGroup layoutId="App-1" orientation="horizontal" className="workspace">
+      <Panel id="App-pane-1" defaultSize="14" minSize="10">
+        <Hierarchy />
+      </Panel>
+      <Separator className="separator" />
+      <Panel id="App-pane-2" defaultSize="62">
+        <PersistedGroup layoutId="App-2" orientation="vertical">
+          <Panel id="App-pane-3" defaultSize="58" minSize="20">
+            <Canvas />
+          </Panel>
+          <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
+          <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel}>
+            {dock && <TerminalDock />}
+          </Panel>
+        </PersistedGroup>
+      </Panel>
+      <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
+      <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel}>
+        {inspector && <Inspector />}
+      </Panel>
+    </PersistedGroup>
+  )
+}
+
 export default function App() {
   const view = useStore((s) => s.view)
   const projectId = useStore((s) => s.project?.id)
@@ -120,32 +207,7 @@ export default function App() {
         ) : view === 'review' ? (
           <ReviewView key={projectId} />
         ) : (
-          <PersistedGroup
-            layoutId="App-1"
-            orientation="horizontal"
-            className="workspace"
-            key={projectId}
-          >
-            <Panel id="App-pane-1" defaultSize="14" minSize="10">
-              <Hierarchy />
-            </Panel>
-            <Separator className="separator" />
-            <Panel id="App-pane-2" defaultSize="62">
-              <PersistedGroup layoutId="App-2" orientation="vertical">
-                <Panel id="App-pane-3" defaultSize="58" minSize="20">
-                  <Canvas />
-                </Panel>
-                <Separator className="separator horizontal" />
-                <Panel id="App-pane-4" defaultSize="42" minSize="10">
-                  <TerminalDock />
-                </Panel>
-              </PersistedGroup>
-            </Panel>
-            <Separator className="separator" />
-            <Panel id="App-pane-5" defaultSize="24" minSize="16">
-              <Inspector />
-            </Panel>
-          </PersistedGroup>
+          <NavigationView key={projectId} />
         )}
       </div>
     </ReactFlowProvider>

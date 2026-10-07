@@ -3,12 +3,14 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
+  Panel,
   ReactFlow,
   type Connection,
   type Edge,
 } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import { KIND_COLOR } from '../lib/display'
+import { showsInspector } from '../lib/panels'
 import { useStore, type FlowNode } from '../store'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
@@ -56,6 +58,7 @@ export default function Canvas() {
       selectEdge: s.selectEdge,
     })),
   )
+  const inspectorShown = useStore(showsInspector)
 
   if (!project) return <Welcome />
 
@@ -128,6 +131,16 @@ export default function Canvas() {
           maskColor="rgba(0,0,0,0.5)"
           style={{ width: 140, height: 90 }}
         />
+        {!planning && !inspectorShown && (
+          <Panel position="top-right">
+            <button
+              className="inspector-toggle"
+              onClick={() => useStore.setState({ inspector: true })}
+            >
+              Inspector
+            </button>
+          </Panel>
+        )}
       </ReactFlow>
     </div>
   )

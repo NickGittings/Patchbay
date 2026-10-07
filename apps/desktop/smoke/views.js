@@ -70,6 +70,37 @@
       'navigation layout',
       () => document.querySelector('.hierarchy') && nodeElement('alpha'),
     )
+    // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
+    assert(
+      !document.querySelector('.inspector') && !document.querySelector('.terminal-dock'),
+      'navigation opened with the inspector or dock',
+    )
+    click(nodeElement('unrelated'))
+    await until('inspector on selection', () => document.querySelector('.inspector'))
+    assert(!document.querySelector('.terminal-dock'), 'dock shown with nothing running')
+    const unrelatedTask = smoke.sessionId('unrelated', 'task')
+    await smoke.startTerminal('unrelated', 'task')
+    await until('dock for a running terminal', () =>
+      document.querySelector('.terminal-dock .tabs .tab.active'),
+    )
+    smoke.stopTerminal(unrelatedTask)
+    await until('stopped', () => state().sessions[unrelatedTask]?.running === false)
+    assert(
+      document.querySelector('.terminal-dock .tabs .tab.active'),
+      'dock dropped the exited terminal it showed',
+    )
+    click(document.querySelector('.inspector-close'))
+    await until(
+      'inspector closed',
+      () => !document.querySelector('.inspector') && document.querySelector('.inspector-toggle'),
+    )
+    assert(state().selectedId === 'unrelated', 'closing the inspector cleared the selection')
+    click(document.querySelector('.terminal-dock .dock-close'))
+    await until('dock hidden once nothing runs', () => !document.querySelector('.terminal-dock'))
+    click(document.querySelector('.inspector-toggle'))
+    await until('inspector toggled open', () => document.querySelector('.inspector'))
+    state().select(null)
+    smoke.store.setState({ inspector: null })
     const viewport = () => document.querySelector('.react-flow__viewport')?.style.transform
     await until(
       'canvas dimensions',
