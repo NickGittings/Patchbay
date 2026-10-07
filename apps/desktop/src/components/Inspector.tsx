@@ -368,6 +368,64 @@ function LinkInspector({ edgeId }: { edgeId: string }) {
   )
 }
 
+/** Project at a glance, and how to use the canvas, while nothing is selected. */
+function NothingSelected({ hasProject }: { hasProject: boolean }) {
+  const components = useStore((s) => s.nodes.length)
+  const links = useStore((s) => s.edges.length)
+  const changed = useStore((s) => Object.values(s.gitChanges).reduce((a, b) => a + b, 0))
+  if (!hasProject) return <div className="hint flush">Open a project folder to begin.</div>
+  return (
+    <>
+      <div className="inspector-summary">
+        <div className="inspector-stat">
+          <strong>{components}</strong>
+          <span>components</span>
+        </div>
+        <div className="inspector-stat">
+          <strong>{links}</strong>
+          <span>links</span>
+        </div>
+        <div className="inspector-stat">
+          <strong>{changed}</strong>
+          <span>changed files</span>
+        </div>
+      </div>
+      <div className="hint flush">Select a component to edit it and manage its terminals.</div>
+      <div className="section-title">Tips</div>
+      <ul className="tips">
+        <li>
+          <span>●</span>
+          <span>
+            <strong>Click a node</strong> to inspect it; click a terminal chip on it to open that
+            terminal.
+          </span>
+        </li>
+        <li>
+          <span>→</span>
+          <span>
+            <strong>Drag from a node's right edge</strong> to another to say it depends on it. Links
+            mean “depends on”.
+          </span>
+        </li>
+        <li>
+          <span>✦</span>
+          <span>
+            <strong>Agent terminals</strong> (like Claude) get the component's notes and its related
+            components as context.
+          </span>
+        </li>
+        <li>
+          <span>⌘</span>
+          <span>
+            <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>P</kbd> opens the command palette, <kbd>⌘</kbd>{' '}
+            <kbd>P</kbd> finds a file.
+          </span>
+        </li>
+      </ul>
+    </>
+  )
+}
+
 export default function Inspector() {
   const extensionViews = useExtensionViews('inspector')
   const node = useStore((s) => s.nodes.find((n) => n.id === s.selectedId))
@@ -414,19 +472,7 @@ export default function Inspector() {
       ) : edgeId ? (
         <LinkInspector edgeId={edgeId} />
       ) : (
-        <div className="hint flush">
-          {project ? (
-            <>
-              Select a component to edit it and manage its terminals.
-              <br />
-              <br />
-              Links mean “depends on”. Agent terminals (like Claude) get the component's notes and
-              its related components as context.
-            </>
-          ) : (
-            'Open a project folder to begin.'
-          )}
-        </div>
+        <NothingSelected hasProject={!!project} />
       )}
     </div>
   )

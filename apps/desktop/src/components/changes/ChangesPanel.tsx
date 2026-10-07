@@ -11,6 +11,7 @@ import ChangeList from './ChangeList'
 import DiffStat from './DiffStat'
 import DiffView from './DiffView'
 import ValidationChips from './ValidationChips'
+import EmptyState from '../EmptyState'
 
 /** One component's uncommitted changes, its validation status, and the selected file's diff. */
 export default function ChangesPanel({ componentId }: { componentId: string }) {
@@ -63,7 +64,9 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       ) : !files ? (
         <div className="hint">Loading…</div>
       ) : !files.length ? (
-        <div className="hint">No uncommitted changes.</div>
+        <EmptyState icon="✓" title="Working tree clean">
+          No uncommitted changes.
+        </EmptyState>
       ) : (
         <PersistedGroup layoutId="ChangesPanel-1" orientation="vertical" className="changes-split">
           <Panel id="ChangesPanel-pane-1" defaultSize="35" minSize="15">

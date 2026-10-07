@@ -262,17 +262,10 @@
       state().sessions[smoke.sessionId('beta', 'task')].startedMs > 0,
       'session has no start time',
     )
-    click(
-      Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
-        b.textContent.includes('Changes'),
-      ),
-    )
-    await until('implementation changes panel', () =>
-      changesSettled('.implementation-view .changes-panel'),
-    )
     assert(
-      document.querySelector('.implementation-view .terminal-tile'),
-      'changes panel hides the terminals',
+      document.querySelectorAll('.implementation-group-header .group-popout').length ===
+        document.querySelectorAll('.implementation-group-header').length,
+      'a component group has no pop-out button',
     )
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '4', metaKey: true, bubbles: true }))
     await until('review shortcut', () => document.querySelector('.review-view'))

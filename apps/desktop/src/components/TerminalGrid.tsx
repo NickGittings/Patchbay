@@ -6,6 +6,7 @@ import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import EmptyState from './EmptyState'
 
 /**
  * Shared tiled sessions for the implementation view and component pop-outs.
@@ -69,7 +70,10 @@ export default function TerminalGrid({
         )
       })}
       {terminals.length === 0 && (
-        <div className="hint">No terminals configured for this component.</div>
+        <EmptyState icon="›_" title="No terminals">
+          No terminals configured for this component. Add a dev server, test runner or agent from
+          the Inspector or the “+ Add terminal…” menu.
+        </EmptyState>
       )}
     </div>
   )

@@ -7,6 +7,7 @@ import { ago } from '../../lib/review'
 import { refreshTasks, removeTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import { PROJECT_SCOPE, sessionId, type Review, type Task } from '../../types'
+import EmptyState from '../EmptyState'
 
 /**
  * Every task with its branch, worktree, the components it is about and those its changes touch
@@ -46,10 +47,19 @@ export default function TasksView() {
           <TaskCard key={t.id} task={t} attention={counts[t.id] ?? 0} reload={reload} />
         ))}
         {!tasks.length && (
-          <div className="hint">
+          <EmptyState
+            compact
+            icon="⑂"
+            title="No tasks yet"
+            actions={
+              <button className="primary" onClick={() => setNewTask([])}>
+                + New task
+              </button>
+            }
+          >
             No tasks yet. Start one to work on a branch in its own worktree, with the same map and
             terminals.
-          </div>
+          </EmptyState>
         )}
       </div>
     </div>

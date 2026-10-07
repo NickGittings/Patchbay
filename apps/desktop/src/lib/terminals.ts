@@ -19,10 +19,27 @@ interface Entry {
 const registry = new Map<string, Entry>()
 
 const theme = {
-  background: '#0e0f13',
-  foreground: '#d8d8de',
-  cursor: '#f5a524',
-  selectionBackground: '#3a3f4b',
+  background: '#121215',
+  foreground: '#ededef',
+  cursor: '#3d7bff',
+  cursorAccent: '#121215',
+  selectionBackground: '#1e3a7a',
+  black: '#25252a',
+  red: '#ff5c5c',
+  green: '#3ecf8e',
+  yellow: '#f5c451',
+  blue: '#5b8cff',
+  magenta: '#c084fc',
+  cyan: '#22d3ee',
+  white: '#d4d4d8',
+  brightBlack: '#52525b',
+  brightRed: '#ff8080',
+  brightGreen: '#6ee7b7',
+  brightYellow: '#fcd679',
+  brightBlue: '#8fb0ff',
+  brightMagenta: '#d8b4fe',
+  brightCyan: '#67e8f9',
+  brightWhite: '#fafafa',
 }
 
 /** Map UTF-16 string offsets onto xterm cell columns (wide and combining characters). */

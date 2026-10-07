@@ -138,6 +138,11 @@ export default function TerminalPane({
           >
             ▶ Start {describeTerminal(terminal)}
           </button>
+          {terminal.command && (
+            <code className="terminal-overlay-command" title={terminal.command}>
+              {terminal.command}
+            </code>
+          )}
         </div>
       )}
     </div>

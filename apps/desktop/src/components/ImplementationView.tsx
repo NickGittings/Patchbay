@@ -1,6 +1,4 @@
-import PersistedGroup from './PersistedGroup'
 import { useState } from 'react'
-import { Panel, Separator } from 'react-resizable-panels'
 import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
@@ -11,9 +9,9 @@ import { openComponentWindow } from '../lib/windows'
 import { useStore, type FlowNode } from '../store'
 import { sessionId } from '../types'
 import AddTerminalSelect from './AddTerminalSelect'
-import ChangesPanel from './changes/ChangesPanel'
 import AttentionPill from './status/AttentionPill'
 import TerminalGrid from './TerminalGrid'
+import EmptyState from './EmptyState'
 
 /**
  * The highlighted components side by side (the same scope Plan uses), or the
@@ -33,7 +31,7 @@ export default function ImplementationView() {
   const select = useStore((s) => s.select)
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
-  const [showChanges, setShowChanges] = useState(false)
+  const setView = useStore((s) => s.setView)
   const [maximized, setMaximized] = useState<string | null>(null)
   useClockTick()
   const fallback =
@@ -54,8 +52,6 @@ export default function ImplementationView() {
     if (revealed && maximized !== revealed.sid) setMaximized(null)
   }
   const shownIds = new Set(shown.map((n) => n.id))
-  // Changes and pop-out act on one component: the selected one when shown.
-  const focused = shown.find((n) => n.id === selectedId) ?? shown[0]
   const stopped = shown.flatMap((n) =>
     n.data.terminals
       .filter((t) => t.kind !== 'shell' && !sessions[sessionId(n.id, t.id, task)]?.running)
@@ -99,6 +95,14 @@ export default function ImplementationView() {
               />
               <span className="spacer" />
               <AddTerminalSelect componentId={n.id} className="add-terminal compact" />
+              <button
+                className="group-popout"
+                title={`Open ${n.data.name} in its own window`}
+                aria-label={`Open ${n.data.name} in its own window`}
+                onClick={() => void openComponentWindow(n.id, n.data.name)}
+              >
+                ⧉
+              </button>
             </header>
           )}
           <TerminalGrid
@@ -158,25 +162,12 @@ export default function ImplementationView() {
             )
           })}
         </div>
-        {focused && (
+        {shown.length > 0 && (
           <>
-            <button
-              title={`Open ${focused.data.name} in its own window`}
-              onClick={() => void openComponentWindow(focused.id, focused.data.name)}
-            >
-              ⧉ Pop out
-            </button>
-            <button
-              aria-pressed={showChanges}
-              className={showChanges ? 'active' : ''}
-              title={`Show ${focused.data.name}'s uncommitted changes`}
-              onClick={() => setShowChanges(!showChanges)}
-            >
-              ± Changes
-            </button>
+            <span className="header-divider" aria-hidden />
             {agents.length > 0 && (
               <select
-                className="agent-in-each"
+                className="header-action agent-in-each"
                 value=""
                 aria-label="Start an agent in each shown component"
                 title="Start this agent in each shown component, adding it where missing"
@@ -201,6 +192,7 @@ export default function ImplementationView() {
               </select>
             )}
             <button
+              className="header-action start-all"
               disabled={stopped.length === 0}
               onClick={() => {
                 for (const [c, t] of stopped) void startTerminal(c, t, task)
@@ -212,20 +204,17 @@ export default function ImplementationView() {
         )}
       </header>
       <div className="implementation-terminals">
-        {focused && showChanges ? (
-          <PersistedGroup layoutId="ImplementationView-1" orientation="horizontal">
-            <Panel id="ImplementationView-pane-1" defaultSize="62" minSize="30">
-              {grids}
-            </Panel>
-            <Separator className="separator" />
-            <Panel id="ImplementationView-pane-2" defaultSize="38" minSize="20">
-              <ChangesPanel key={`${focused.id}/${task ?? ''}`} componentId={focused.id} />
-            </Panel>
-          </PersistedGroup>
-        ) : focused ? (
+        {shown.length ? (
           grids
         ) : (
-          <div className="hint">Add a component in Navigation to configure terminals.</div>
+          <EmptyState
+            icon="▦"
+            title="Nothing to implement yet"
+            actions={<button onClick={() => setView('navigation')}>Go to Navigation</button>}
+          >
+            Add a component in Navigation to configure terminals. Highlighted components open here
+            side by side, each with its own terminals and agent.
+          </EmptyState>
         )}
       </div>
     </div>

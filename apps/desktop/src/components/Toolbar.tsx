@@ -124,13 +124,9 @@ export default function Toolbar() {
             <>
               <TaskMenu />
               <AttentionMenu />
-              <span className="file" title={project.root}>
-                <span className="file-name">{project.name}</span>
-                {dirty && <span className="dirty" title="Unsaved changes" />}
-              </span>
               <button
-                className="primary"
-                title={`Save patchbay.json (${mod}S)`}
+                className={dirty ? 'primary' : undefined}
+                title={`${dirty ? 'Unsaved changes. ' : ''}Save patchbay.json (${mod}S)`}
                 onClick={() => void saveCurrentProject()}
               >
                 Save
