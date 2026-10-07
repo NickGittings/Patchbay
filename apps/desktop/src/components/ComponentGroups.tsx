@@ -164,7 +164,8 @@ export default function ComponentGroups() {
         </button>
       </form>
       <p className="hint flush">
-        Assign task roles in the component inspector. Save to keep groups.
+        Assign task roles in the component inspector. Groups save automatically once the map
+        configuration exists.
       </p>
       {groups.map((group) => (
         <GroupEditor key={group.id} group={group} />

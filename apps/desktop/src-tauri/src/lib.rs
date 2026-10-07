@@ -703,10 +703,24 @@ fn save_project(
     project_id: String,
     state: State<AppState>,
     mut project: Project,
-) -> CmdResult<String> {
+    expected_fingerprint: Option<String>,
+) -> CmdResult<model::ProjectSave> {
     let scoped = state.project(&project_id)?;
     scoped.access.snapshot().trust(&mut project).map_err(err)?;
-    project.save().map(|p| p.display().to_string()).map_err(err)
+    project
+        .save_checked(expected_fingerprint.as_deref())
+        .map_err(err)
+}
+
+/// Reload the registered root without a folder picker or new access grants.
+#[tauri::command]
+fn reload_project(state: State<AppState>, project_id: String) -> CmdResult<Opened> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let root = access.root().ok_or("Project unavailable")?;
+    let detectors = state.extensions.get().detectors();
+    let loaded = workspace::load_project(&root, &detectors).map_err(err)?;
+    Ok(to_opened(loaded, &access))
 }
 
 /// The briefing an agent terminal of this component would get.
@@ -1796,6 +1810,7 @@ pub fn run() {
                 pick_component_folder,
                 sync_roots,
                 save_project,
+                reload_project,
                 component_context,
                 git_status,
                 task_list,

@@ -38,6 +38,7 @@
         if (!state().dirty || state().nodes[0].data.notes !== 'recovery draft')
           throw new Error('Explicit recovery did not restore the dirty draft')
       }
+      await smoke.flushMapSaves()
       await smoke.flushWorkspace()
       await smoke.report(
         `PASS draft conflict phase ${window.__patchbayRecoveryPhase}: conflict retained across quit, explicit recovery`,
@@ -89,6 +90,7 @@
         throw new Error('Tab switching cancelled or redirected an extension launch')
       state().setView('review')
       state().activateProject(first.id)
+      await smoke.flushMapSaves()
       await smoke.flushWorkspace()
       await smoke.report(
         'PASS lifecycle phase 1: two tabs, draft, viewport, pop-out and running counter saved',
@@ -97,8 +99,8 @@
       if (state().projectOrder.length !== 2) throw new Error('Tabs were not restored')
       const id = state().projectOrder[0]
       state().activateProject(id)
-      if (state().nodes[0].data.notes !== 'recovery draft' || !state().dirty)
-        throw new Error('Recovery draft was lost or marked saved')
+      if (state().nodes[0].data.notes !== 'recovery draft' || state().dirty)
+        throw new Error('Autosaved map was lost or restored as an unsaved draft')
       if (
         state().view !== 'plan' ||
         state().viewport.x !== 77 ||
@@ -147,7 +149,7 @@
       state().activateProject(secondId)
       if (state().view !== 'review') throw new Error('Independent second layout was lost')
       await smoke.report(
-        'PASS lifecycle phase 2: restored tabs, dirty draft, independent layouts, viewport, planner scope, pop-out and same live counter',
+        'PASS lifecycle phase 2: restored tabs, autosaved map, independent layouts, viewport, planner scope, pop-out and same live counter',
       )
     }
   } catch (e) {

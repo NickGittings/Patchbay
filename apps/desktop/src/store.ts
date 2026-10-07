@@ -63,7 +63,12 @@ export interface ProjectState {
   tasks: Task[]
   activeTask: string | null
 }
+export interface MapSaveState {
+  status: 'pending' | 'saving' | 'error' | 'conflict'
+  error?: string
+}
 export interface ProjectEntry {
+  mapSave?: MapSaveState
   id: string
   name: string
   root: string

@@ -3,11 +3,21 @@ import { useStore } from '../store'
 import { closeComponentWindows } from '../lib/windows'
 import { acceptOpened, flushWorkspace, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
+import { flushMapSaves, reloadSavedMap } from '../lib/mapSave'
 
 export default function WorkspaceTabs() {
   const s = useStore()
   const active = s.projects[s.activeProjectId ?? '']
   const close = async (id: string) => {
+    if (!(await flushMapSaves(id))) {
+      await flushWorkspace()
+      useStore
+        .getState()
+        .setMessage(
+          'Map could not be saved. Retry or resolve the map conflict before closing this project.',
+        )
+      return
+    }
     await closeComponentWindows(id)
     s.closeProject(id)
     await invoke('project_close', { projectId: id })
@@ -107,18 +117,7 @@ export default function WorkspaceTabs() {
           >
             Recover draft
           </button>
-          <button
-            onClick={() =>
-              useStore.setState({
-                projects: {
-                  ...s.projects,
-                  [active.id]: { ...active, conflict: undefined, draftFingerprint: undefined },
-                },
-              })
-            }
-          >
-            Use saved map
-          </button>
+          <button onClick={() => void reloadSavedMap(active.id)}>Use saved map</button>
         </div>
       )}
     </>

@@ -123,7 +123,13 @@ try {
   )
     throw new Error('Process incarnation changed or output did not continue')
   const saved = JSON.parse(readFileSync(join(fixture, 'one/patchbay.json'), 'utf8'))
-  if (saved.components[0].notes) throw new Error('Autosave overwrote patchbay.json')
+  if (saved.components[0].notes !== 'recovery draft')
+    throw new Error('Map autosave did not persist edits')
+  // Simulate a retained unsaved draft followed by an external edit while the app is closed.
+  const workspacePath = join(localState, 'workspaces/default.json')
+  const workspace = JSON.parse(readFileSync(workspacePath, 'utf8'))
+  workspace.projects[0].draft = saved
+  writeFileSync(workspacePath, JSON.stringify(workspace))
   saved.components[0].notes = 'external edit'
   writeFileSync(join(fixture, 'one/patchbay.json'), JSON.stringify(saved))
   for (const phase of [3, 4]) {
@@ -137,13 +143,13 @@ try {
     await run()
   }
   const recovered = JSON.parse(readFileSync(join(localState, 'workspaces/default.json'), 'utf8'))
-  if (recovered.projects[0].draft?.components[0].notes !== 'recovery draft')
-    throw new Error('Explicitly recovered draft was not autosaved')
+  if (recovered.projects[0].draft)
+    throw new Error('Successfully autosaved recovery still has a dirty draft')
   if (
     JSON.parse(readFileSync(join(fixture, 'one/patchbay.json'), 'utf8')).components[0].notes !==
-    'external edit'
+    'recovery draft'
   )
-    throw new Error('Recovering overwrote the saved map')
+    throw new Error('Explicit recovery did not autosave the selected draft')
   const invalid = '{invalid workspace'
   writeFileSync(join(localState, 'workspaces/default.json'), invalid)
   const malformedScript = join(fixture, 'malformed.js')

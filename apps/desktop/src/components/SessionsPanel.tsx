@@ -10,6 +10,7 @@ import {
 } from '../lib/ipc'
 import { hydrateSession, reconcileSessions, startTerminal } from '../lib/sessions'
 import { flushWorkspace } from '../lib/workspace'
+import { flushMapSaves } from '../lib/mapSave'
 import { ago } from '../lib/review'
 import { useClockTick } from '../lib/clock'
 import {
@@ -315,6 +316,7 @@ export default function SessionsPanel() {
           <button
             onClick={() =>
               void perform(async () => {
+                await flushMapSaves()
                 await flushWorkspace()
                 await quitPatchbay()
               })
@@ -326,6 +328,7 @@ export default function SessionsPanel() {
             disabled={!connected || busy}
             onClick={() =>
               void perform(async () => {
+                await flushMapSaves()
                 await flushWorkspace()
                 await quitPatchbay(true)
               })

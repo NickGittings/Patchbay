@@ -2461,3 +2461,18 @@ kbd {
   color: var(--faint);
   font-size: 11.5px;
 }
+
+.map-save-description {
+  max-width: 320px;
+  padding: 4px 12px;
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.map-save-error {
+  color: var(--bad);
+}

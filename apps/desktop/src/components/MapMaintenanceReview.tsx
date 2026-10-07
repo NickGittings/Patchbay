@@ -31,7 +31,7 @@ function ReviewDialog({
         <h2>Review map changes</h2>
         <p className="hint flush">
           Safe additions start selected. Review removals and path repairs. Apply changes the draft;
-          Save persists the map.
+          Existing map configurations save automatically after Apply.
         </p>
         {review.preview.issues.map((issue) => (
           <div className="map-issue" key={issue.componentId}>

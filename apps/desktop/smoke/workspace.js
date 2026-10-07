@@ -52,6 +52,7 @@
       ],
       links: [],
     })
+    smoke.store.setState({ dirty: true })
     s().select(first.id)
     await smoke.startTerminal(first.id, 'counter')
     const sidTwo = smoke.sessionId(first.id, 'counter')
@@ -65,6 +66,11 @@
     s().activateProject(two.id)
     if (s().view !== 'navigation' || s().highlighted.length)
       throw new Error('Layouts leaked across projects')
+    if (!(await smoke.flushMapSaves())) throw new Error('Disposable map saves failed')
+    for (const opened of [await smoke.openProject(), await smoke.openSecondProject()]) {
+      if (!opened.project.components.some((c) => c.terminals.some((t) => t.id === 'counter')))
+        throw new Error('Synthetic counter preset was not persisted to its disposable map')
+    }
     s().closeProject(one.id)
     await smoke.reconcileSessions()
     if (!s().sessionRecords.some((r) => r.id === sidOne && r.snapshot.running))

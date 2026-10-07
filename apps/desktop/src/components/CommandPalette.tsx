@@ -9,6 +9,7 @@ export default function CommandPalette() {
   const open = useStore((s) => s.paletteOpen)
   const commands = useStore((s) => s.commands)
   const project = useStore((s) => s.project)
+  const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   // Start clean however it was opened (shortcut, Tools menu).
@@ -45,7 +46,14 @@ export default function CommandPalette() {
     },
     ...(project
       ? [
-          { id: 'save', title: 'Save project', run: saveCurrentProject },
+          {
+            id: 'save',
+            title:
+              entry?.fingerprint === 'absent'
+                ? 'Create map configuration'
+                : 'Save map configuration now',
+            run: saveCurrentProject,
+          },
           { id: 'rescan', title: 'Rescan project', run: rescan },
           { id: 'add-folder', title: 'Add repo…', run: addFolder },
           ...(['navigation', 'plan', 'implementation'] as const).map((view) => ({

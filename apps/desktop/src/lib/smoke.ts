@@ -29,6 +29,8 @@ import { sessionGeneration } from './sessions'
 import { terminalNavigationState, terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
+import { saveMap, flushMapSaves } from './mapSave'
+import { saveProject } from './ipc'
 import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
 import { runGraphAction, stopGroup } from './actions'
@@ -53,6 +55,9 @@ import {
   syncRoots,
 } from './ipc'
 const hooks = {
+  saveMap,
+  flushMapSaves,
+  saveProject,
   agentHooksCheck,
   agentHooksConfigure,
   reviewRescan,
