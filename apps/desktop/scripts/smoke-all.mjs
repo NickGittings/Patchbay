@@ -38,6 +38,9 @@ const SCRIPTS = {
   workspace: smoke('workspace.js', {
     PATCHBAY_SMOKE_ROOT_2: join(root, 'examples/extensions/docker/fixture'),
   }),
+  sessions: smoke('sessions.js', {
+    PATCHBAY_SMOKE_ROOT_2: join(root, 'examples/extensions/docker/fixture'),
+  }),
   status: { run: ['scripts/status.mjs'] },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
   navigation: { run: ['scripts/navigation-smoke.mjs'] },
