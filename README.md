@@ -48,18 +48,21 @@ cargo test --workspace
 
 ## Task workspaces
 
-Implementation uses goal tabs such as **Add button** or **Fix login**. **＋ New task** requires
-a title and creates a new branch/worktree immediately by default; choose **Current checkout**
-or **Existing worktree** to attach instead. A checkout can belong to only one task. Assigning
-the open checkout replaces its unnamed **Project folder** tab; older checkout sessions remain
-accessible in **Sessions**. Non-Git projects retain the Project folder workspace.
+Implementation uses goal tabs such as **Main worktree**, **Add button** or **Fix login**, and
+each tab owns its terminals. **＋ New task** requires a title and creates a new branch/worktree
+immediately by default; choose **Existing worktree** to attach one instead. A checkout can belong
+to only one task. Non-Git projects keep the Main worktree tab only.
 
-Plan and Implementation share the task's checkout and component scope. Switching tasks restores
-scope, terminal visibility, focus, maximization and splits while other processes continue running.
-New tasks have a stopped root shell for manual setup. **Add terminal** defaults to the task root
-and can target a component. **Start implementation agent** launches one coordinating agent at
-the root; **Start agents per component** is an explicit option. The task menu offers rename,
-forget and worktree removal. Removal checks for changes and cannot delete the open checkout.
+Plan and Implementation share the task's checkout and component scope; the scope decides what
+agents are briefed on, not which terminals the tab shows. A tab lists its own terminals (a new
+task starts with a stopped root shell for manual setup), the saved component terminals you add
+to it with **+ Add terminal…** (a dev server, tests), and anything else running in its worktree,
+such as an environment or an agent's checks. **Start agent…** launches one coordinating agent at
+the worktree root; **Run…** appears once the map has groups or validation terminals. × removes a
+terminal from the tab (asking first while it runs); component terminals stay on the map.
+Switching tasks restores each tab's terminals, focus and maximization while other processes keep
+running. The tab's ⋯ menu offers rename, notes, review, forget and worktree removal. Removal
+checks for changes and cannot delete the open checkout.
 
 Planners can submit an agreed Markdown plan and ordered component assignments:
 

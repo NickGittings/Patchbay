@@ -3,9 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
-import { startTaskAgent } from '../lib/implement'
 import { planContext, planRead, planWrite, proposalRead, proposalApply } from '../lib/ipc'
-import { nearbyIds, plannerDevice, planTerminals } from '../lib/plan'
+import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
@@ -212,27 +211,6 @@ export default function PlanView() {
   const planBusy = planState === 'loading' || planState === 'saving' || loadedKey !== planKey
   const planEdited = plan !== planBase
 
-  /**
-   * Implementation over the highlights, optionally starting the active planner's agent in each.
-   * Unsaved plan edits are saved first, since the agents' briefings read the file.
-   */
-  const implement = async (withAgents: boolean) => {
-    const targetProject = projectId
-    const targetTask = task
-    if (withAgents && planEdited && !(await savePlan())) {
-      setPlanOpen(true)
-      return
-    }
-    if (
-      useStore.getState().project?.id !== targetProject ||
-      useStore.getState().activeTask !== targetTask
-    )
-      return
-    setView('implementation')
-    if (!withAgents) return
-    void startTaskAgent(plannerDevice(devices, active.id), task)
-  }
-
   const restart = async () => {
     setRestarting(true)
     try {
@@ -269,16 +247,9 @@ export default function PlanView() {
               <button
                 disabled={highlighted.length === 0}
                 title="Work on the highlighted components side by side"
-                onClick={() => void implement(false)}
+                onClick={() => setView('implementation')}
               >
                 Implement →
-              </button>
-              <button
-                disabled={highlighted.length === 0}
-                title={`Start one ${active.name} agent at the task root with the complete selected scope and saved plan`}
-                onClick={() => void implement(true)}
-              >
-                + start {active.name}
               </button>
             </div>
             <div className="hint flush">

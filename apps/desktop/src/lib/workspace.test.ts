@@ -64,6 +64,12 @@ test('workspace round-trip preserves hidden entries, removal, order and visibili
   )
 })
 test('legacy layouts retain fallback and malformed entries are ignored', () => {
+  expect(restoredLayout({}).closedTaskIds).toEqual([])
+  expect(restoredLayout({ closedTaskIds: ['one', null, 4, 'one', 'two'] }).closedTaskIds).toEqual([
+    'one',
+    'two',
+  ])
+  expect(restoredLayout({ closedTaskIds: 'one' }).closedTaskIds).toEqual([])
   expect(restoredLayout({ highlighted: ['a'] }).implementationComponents).toBeUndefined()
   expect(
     restoredLayout({

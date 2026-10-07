@@ -57,9 +57,10 @@ export function workspaceDocument(): WorkspaceDocument {
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
+              closedTaskIds: state.closedTaskIds,
               taskWorkspaces: state.taskWorkspaces,
               rootTerminals: state.rootTerminals,
-              visibleTerminals: state.visibleTerminals,
+              componentTerminals: state.componentTerminals,
               maximizedTerminal: state.maximizedTerminal,
               graphActionReport: state.graphActionReport,
             }
@@ -83,6 +84,10 @@ export function restoredLayout(
   nested = false,
 ): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
+  if (!nested)
+    out.closedTaskIds = Array.isArray(layout.closedTaskIds)
+      ? [...new Set(layout.closedTaskIds.filter((id): id is string => typeof id === 'string'))]
+      : []
   if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
   // The active session belongs to the active task's scope, so both are restored together;
@@ -139,9 +144,14 @@ export function restoredLayout(
         typeof t.command === 'string' &&
         ['shell', 'task', 'agent'].includes(t.kind),
     )
-  if (layout.visibleTerminals === null) out.visibleTerminals = null
-  else if (Array.isArray(layout.visibleTerminals))
-    out.visibleTerminals = layout.visibleTerminals.filter((id) => typeof id === 'string')
+  if (Array.isArray(layout.componentTerminals))
+    out.componentTerminals = layout.componentTerminals.filter(
+      (t) =>
+        t &&
+        typeof t === 'object' &&
+        typeof t.componentId === 'string' &&
+        typeof t.terminalId === 'string',
+    )
   if (typeof layout.maximizedTerminal === 'string' || layout.maximizedTerminal === null)
     out.maximizedTerminal = layout.maximizedTerminal
   if (!nested && layout.taskWorkspaces && typeof layout.taskWorkspaces === 'object') {
@@ -165,6 +175,7 @@ export function restoredLayout(
                 'taskWorkspaces',
                 'view',
                 'activeTask',
+                'closedTaskIds',
                 'selectedId',
                 'selectedEdgeId',
                 'viewport',
@@ -284,9 +295,10 @@ export function initializeWorkspace() {
           s.panels === prev.panels &&
           s.groups === prev.groups &&
           s.activeTask === prev.activeTask &&
+          s.closedTaskIds === prev.closedTaskIds &&
           s.taskWorkspaces === prev.taskWorkspaces &&
           s.rootTerminals === prev.rootTerminals &&
-          s.visibleTerminals === prev.visibleTerminals &&
+          s.componentTerminals === prev.componentTerminals &&
           s.maximizedTerminal === prev.maximizedTerminal)
       )
         return

@@ -28,7 +28,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 function worktreeLabel(w: Worktree) {
   const name = w.path.split(/[\\/]/).pop() ?? w.path
   const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
-  return `${branch} · ${name}${w.current ? ' (project folder)' : ''}`
+  return `${branch} · ${name}${w.current ? ' (main worktree)' : ''}`
 }
 
 /**

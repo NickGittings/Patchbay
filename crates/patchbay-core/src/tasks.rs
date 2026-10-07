@@ -588,6 +588,11 @@ pub fn context_section(project: &Project, task: &Task, dropped: &[String]) -> Co
         .collect();
     if !names.is_empty() {
         let _ = writeln!(body, "\nThe task is about: {}.", names.join(", "));
+    } else {
+        let _ = writeln!(
+            body,
+            "\nNo components are scoped yet: work out which ones the task touches from the map."
+        );
     }
     if !task.notes.trim().is_empty() {
         let _ = writeln!(body, "\nNotes:\n\n{}", task.notes.trim());
@@ -735,6 +740,15 @@ mod tests {
         assert!(project_in(&p, &task, &["billing".into()]).is_err());
         let section = context_section(&p, &task, &dropped);
         assert!(section.body.contains("fix/login") && section.body.contains("Web"));
+        let unscoped = Task {
+            components: Vec::new(),
+            ..task.clone()
+        };
+        assert!(
+            context_section(&p, &unscoped, &dropped)
+                .body
+                .contains("No components are scoped yet")
+        );
 
         let edited = update(
             &root,

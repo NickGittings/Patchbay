@@ -1,6 +1,7 @@
 import PersistedGroup from './components/PersistedGroup'
 import WorkspaceTabs from './components/WorkspaceTabs'
 import SessionsPanel from './components/SessionsPanel'
+import TaskActivityPanel from './components/tasks/TaskActivityPanel'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
 import CommandPalette from './components/CommandPalette'
@@ -215,6 +216,7 @@ export default function App() {
         <Toolbar />
         <WorkspaceTabs />
         <SessionsPanel />
+        <TaskActivityPanel />
         <CommandPalette />
         <NavigationDialogs />
         <MapMaintenanceReview />

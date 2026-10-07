@@ -14,7 +14,7 @@ function Dialog({ seed }: { seed: string[] }) {
   const tasks = useStore((s) => s.tasks)
   const projectId = useStore((s) => s.project?.id)
   const close = () => useStore.getState().setNewTask(null)
-  const [mode, setMode] = useState<'new' | 'current' | 'attach'>('new')
+  const [mode, setMode] = useState<'new' | 'attach'>('new')
   const [title, setTitle] = useState('')
   const [branch, setBranch] = useState('')
   const [branchEdited, setBranchEdited] = useState(false)
@@ -39,7 +39,7 @@ function Dialog({ seed }: { seed: string[] }) {
   }, [projectId])
   const current = worktrees.find((w) => w.current)
   const others = worktrees.filter((w) => !w.current)
-  const chosen = mode === 'current' ? current?.path : worktree
+  const chosen = mode === 'attach' ? worktree : undefined
   const assigned = tasks.find((t) => t.worktree === chosen)
   const ready = !!title.trim() && (mode === 'new' ? !!branch.trim() && !!current : !!chosen)
   const submit = async () => {
@@ -103,14 +103,6 @@ function Dialog({ seed }: { seed: string[] }) {
           </button>
           <button
             type="button"
-            className={mode === 'current' ? 'active' : ''}
-            disabled={!current}
-            onClick={() => setMode('current')}
-          >
-            Current checkout
-          </button>
-          <button
-            type="button"
             className={mode === 'attach' ? 'active' : ''}
             disabled={!others.length}
             onClick={() => {
@@ -148,7 +140,7 @@ function Dialog({ seed }: { seed: string[] }) {
               worktree.
             </p>
           </>
-        ) : mode === 'attach' ? (
+        ) : (
           <label>
             Worktree
             <select value={worktree} onChange={(e) => setWorktree(e.target.value)}>
@@ -160,15 +152,16 @@ function Dialog({ seed }: { seed: string[] }) {
               ))}
             </select>
           </label>
-        ) : (
-          <code>{current?.path}</code>
         )}
         {assigned && (
           <p className="hint flush">
             This checkout belongs to “{assigned.title}”. Creating activates that task.
           </p>
         )}
-        <div className="section-title">Components in scope</div>
+        <div className="section-title">Components in scope (optional)</div>
+        <p className="hint flush">
+          Leave empty to let the planner decide; the whole map stays in scope.
+        </p>
         <div className="scope-chips">
           {nodes.map((n) => (
             <button

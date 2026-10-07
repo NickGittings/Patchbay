@@ -31,13 +31,17 @@
   }
   const button = (root, name) =>
     Array.from(root?.querySelectorAll('button') ?? []).find((b) => b.textContent.trim() === name)
-  // Plan and Implementation carry the picker in their headers, Navigation and Review in the toolbar.
-  const pickerHost = () =>
-    ({ implementation: '.implementation-header', plan: '.plan-scope' })[state().view] ?? '.toolbar'
+  // Implementation has a task menu on its tabs; Plan carries the picker in its header,
+  // Navigation and Review in the toolbar.
+  const pickerTrigger = () =>
+    ({
+      implementation: '.implementation-header .task-menu',
+      plan: '.plan-scope .worktree-picker',
+    })[state().view] ?? '.toolbar .worktree-picker'
   // Retries while closed: a view that just mounted may take focus, which closes the popover.
   const openPicker = () =>
     until(`worktree overview in ${state().view}`, () => {
-      const trigger = document.querySelector(`${pickerHost()} .worktree-picker .menu-trigger`)
+      const trigger = document.querySelector(`${pickerTrigger()} .menu-trigger`)
       if (trigger?.getAttribute('aria-expanded') === 'true')
         return document.querySelector('.worktree-popover')
       if (trigger) click(trigger)
@@ -176,7 +180,7 @@
       document.querySelector('.review-view .validation-chip.running'),
     )
 
-    // Navigation's toolbar picker returns to the project folder; switching never stops sessions.
+    // Navigation's toolbar picker returns to the main worktree; switching never stops sessions.
     click(viewButton('Navigation'))
     const navOverview = await openPicker()
     const taskRow = await until('Navigation task row', () =>
@@ -191,16 +195,16 @@
     )
     click(navOverview.querySelector('.worktree-row:not(.active) .worktree-row-switch'))
     await until(
-      'project folder active',
+      'main worktree active',
       () => state().activeTask === null && !document.querySelector('.worktree-popover'),
     )
     click(viewButton('Plan'))
     const overview = await openPicker()
-    const projectRow = await until('Project folder branch', () => {
+    const projectRow = await until('Main worktree branch', () => {
       const row = overview.querySelector('.worktree-row.active')
       return row?.textContent.includes('main') && row
     })
-    assert(projectRow.textContent.includes('Project folder'), 'project folder label missing')
+    assert(projectRow.textContent.includes('Main worktree'), 'main worktree label missing')
     click(overview.querySelector('.worktree-row:not(.active) .worktree-row-switch'))
     await until(
       'worktree selected',
@@ -312,6 +316,54 @@
         document.querySelectorAll('[role="tablist"][aria-label="Task workspaces"] [role="tab"]')
           .length === 3,
     )
+
+    // Closing tabs keeps task data, terminals and layouts; the task menu reopens them.
+    const taskTab = (title) =>
+      Array.from(document.querySelectorAll('.task-tab')).find((tab) =>
+        tab.querySelector('[role="tab"]')?.textContent.startsWith(title),
+      )
+    assert(!taskTab('Main worktree').querySelector('.task-tab-close'), 'main tab is closable')
+    const closeTask = taskTab(task.title).querySelector('.task-tab-close')
+    closeTask.focus()
+    assert(document.activeElement === closeTask, 'close button could not take keyboard focus')
+    click(closeTask)
+    await until('active task tab closed', () => !taskTab(task.title))
+    assert(state().activeTask === secondTask.id, 'closing did not select the next task')
+    await until(
+      'close restores keyboard focus',
+      () => document.activeElement === taskTab(secondTask.title).querySelector('[role="tab"]'),
+    )
+    assert(
+      state().tasks.some((t) => t.id === task.id),
+      'closing forgot the task',
+    )
+    assert(state().sessions[taskSid]?.running, 'closing stopped the task terminal')
+    await smoke.refreshTasks()
+    assert(state().closedTaskIds.includes(task.id), 'refresh reopened the closed tab')
+    await openPicker()
+    const closedRow = await until('closed task in menu', () =>
+      Array.from(document.querySelectorAll('.worktree-row')).find(
+        (row) => row.querySelector('strong')?.textContent === task.title,
+      ),
+    )
+    assert(closedRow.textContent.includes('tab closed'), 'closed task has no marker')
+    click(button(closedRow, 'Remove…'))
+    await until('closed task removal options', () => closedRow.querySelector('.worktree-confirm'))
+    assert(button(closedRow, 'Forget only'), 'closed task cannot be forgotten')
+    assert(button(closedRow, 'Remove worktree'), 'closed worktree cannot be removed')
+    click(button(closedRow, 'Cancel'))
+    click(closedRow.querySelector('.worktree-row-switch'))
+    await until('task tab reopened from menu', () => taskTab(task.title))
+    assert(state().activeTask === task.id, 'reopened task not selected')
+    assert(!state().panels['task-split'], 'reopening changed the first task layout')
+    click(taskTab(secondTask.title).querySelector('.task-tab-close'))
+    await until('inactive tab closed', () => !taskTab(secondTask.title))
+    assert(state().activeTask === task.id, 'inactive close changed selection')
+    assert(state().sessions[secondShell]?.running, 'inactive close stopped the shell')
+    state().setActiveTask(secondTask.id)
+    await until('activation reopens tab', () => taskTab(secondTask.title))
+    assert(state().panels['task-split'].orientation === 2, 'closed task lost its split layout')
+    state().setActiveTask(task.id)
 
     const proposal = {
       version: 1,
@@ -440,9 +492,11 @@
       'tab switch stopped processes',
     )
     state().setActiveTask(task.id)
+    smoke.store.setState({ activityPanelOpen: true })
     await until('initiating task activity visible', () =>
       document.querySelector('.task-activity')?.textContent.includes('Smoke worker'),
     )
+    smoke.store.setState({ activityPanelOpen: false })
     const activities = Object.values(state().taskActivities).filter(
       (a) => a.task === task.id && a.initiator === rootAgentSid,
     )
@@ -451,6 +505,31 @@
         activities.some((a) => a.previewUrls.includes('http://localhost:19991/')),
       'agent activity or preview URL missing',
     )
+    // Required inaccessible consumers and environment members must never disappear from plans.
+    const originalDocsPath = state().nodes.find((n) => n.id === 'docs').data.path
+    state().updateComponent('docs', { path: 'missing-required-folder' })
+    state().onConnect({ source: 'docs', target: 'web', sourceHandle: null, targetHandle: null })
+    state().updateGroup(group.id, { componentIds: ['web', 'docs'] })
+    // Sync the edited map before asking the already-running agent to use it.
+    await smoke.syncAgentProject(state().toProject())
+    await smoke.terminalWrite(
+      rootAgentSid,
+      `"$PATCHBAY_CLI" agent validate web; "$PATCHBAY_CLI" agent environment start ${group.id}; printf "inaccessible-finished\\n"\r`,
+    )
+    await until(
+      'inaccessible actions rejected',
+      () =>
+        textOf(rootAgentSid).includes('inaccessible-finished') &&
+        Object.values(state().taskActivities).filter(
+          (a) =>
+            a.task === task.id &&
+            a.initiator === rootAgentSid &&
+            a.error?.includes('missing or not allowed'),
+        ).length >= 2,
+    )
+    state().updateComponent('docs', { path: originalDocsPath })
+    state().onEdgesChange(state().edges.map((e) => ({ id: e.id, type: 'remove' })))
+    state().updateGroup(group.id, { componentIds: ['web'] })
     // Existing agents use current configured commands, while their launch task remains fixed.
     state().updateTerminal('web', 'check', { command: 'printf live-validator; exit 7' })
     await smoke.terminalWrite(
@@ -544,64 +623,19 @@
     assert(state().tasks.length === 0 && state().activeTask === null, 'task not removed')
     task = undefined
 
-    // Naming the current checkout replaces Project folder, preserving its legacy processes.
-    const attachCurrent = async (title) => {
-      click(
-        await until('new task control', () =>
-          button(document.querySelector('.task-tabs'), '＋ New task'),
-        ),
-      )
-      const dialog = await until('current checkout dialog', () =>
-        document.querySelector('[aria-label="New task"]'),
-      )
-      edit(dialog.querySelector('input'), title)
-      click(
-        await until('current checkout choice', () => {
-          const control = button(dialog, 'Current checkout')
-          return control && !control.disabled && control
-        }),
-      )
-      click(
-        await until('attach current checkout', () => {
-          const control = button(dialog, 'Create task') ?? button(dialog, 'Activate task')
-          return control && !control.disabled && control
-        }),
-      )
-      await until(
-        'current checkout dialog closed',
-        () => !document.querySelector('[aria-label="New task"]'),
-      )
-    }
-    await attachCurrent('Project goal')
-    task = state().tasks.find((t) => t.current)
-    assert(task && state().activeTask === task.id, 'current checkout was not attached')
-    await until(
-      'single checkout tab',
-      () => document.querySelectorAll('.task-tabs [role="tab"]').length === 1,
+    // The Main worktree tab stands for the open checkout, so the dialog doesn't offer it again.
+    click(
+      await until('new task control', () =>
+        button(document.querySelector('.task-tabs'), '＋ New task'),
+      ),
     )
-    assert(
-      !document.querySelector('.task-tabs').textContent.includes('Project folder'),
-      'duplicate project checkout tab',
+    const newTaskDialog = await until('new task dialog', () =>
+      document.querySelector('[aria-label="New task"]'),
     )
-    await attachCurrent('Another title')
-    assert(
-      state().tasks.length === 1 && state().tasks[0].id === task.id,
-      'checkout attachment created another task',
-    )
-    assert(state().tasks[0].title === 'Project goal', 'reactivating changed the existing task')
-    await openPicker()
-    click(button(document.querySelector('.worktree-row.active'), 'Remove…'))
-    await until(
-      'open checkout cannot be deleted',
-      () => button(document.querySelector('.worktree-confirm'), 'Remove worktree')?.disabled,
-    )
-    assert(state().sessions[mainSid]?.running, 'attaching stopped the legacy checkout session')
-    await smoke.removeTask(task.id, false)
-    assert(
-      state().sessions[mainSid]?.running,
-      'forgetting a named checkout stopped its legacy session',
-    )
-    task = undefined
+    assert(!button(newTaskDialog, 'Current checkout'), 'dialog still offers the current checkout')
+    click(button(newTaskDialog, 'Cancel'))
+    await until('new task dialog closed', () => !document.querySelector('[aria-label="New task"]'))
+    assert(state().sessions[mainSid]?.running, 'the dialog stopped the open checkout session')
     await smoke.report(
       'PASS tasks: isolated workspaces, planner proposal, root agent CLI, environment/checks, retained processes, remove',
     )

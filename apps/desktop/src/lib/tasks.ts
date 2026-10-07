@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { projectOf, switchTaskWorkspace, useStore } from '../store'
+import { projectOf, reconcileTaskList, switchTaskWorkspace, useStore } from '../store'
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
@@ -63,11 +63,7 @@ function applyTasks(projectId: string, tasks: Task[]) {
   }
   const state = s.projects[projectId]?.state
   if (!state) return
-  const keep = tasks.some((t) => t.id === state.activeTask && !t.missing)
-  s.patchProject(projectId, {
-    tasks,
-    ...switchTaskWorkspace({ ...state, tasks }, keep ? state.activeTask : null),
-  })
+  s.patchProject(projectId, reconcileTaskList(state, tasks))
 }
 
 /** Switch a project's task, whether or not its tab is active. */

@@ -24,10 +24,6 @@
       (b) => b.textContent === name,
     )
   const textOf = (sid) => smoke.terminalText(sid).text
-  const scopeButton = (id) => {
-    const name = state().nodes.find((n) => n.id === id)?.data.name
-    return [...document.querySelectorAll('.task-scope button')].find((b) => b.textContent === name)
-  }
   const tiles = (id) => [...document.querySelectorAll(`.terminal-tile[data-component="${id}"]`)]
   // React reads a form control's value through the native setter.
   const choose = (el, value) => {
@@ -40,12 +36,6 @@
   }
   const assertScope = (ids) => {
     assert(state().highlighted.join() === ids.join(), 'incorrect task component scope')
-    for (const node of state().nodes) {
-      assert(
-        scopeButton(node.id)?.getAttribute('aria-pressed') === String(ids.includes(node.id)),
-        `incorrect filter for ${node.id}`,
-      )
-    }
   }
   // A changes list (or its empty state) has loaded under `selector`; errors fail the run.
   const changesSettled = (selector) => {
@@ -235,9 +225,31 @@
       'implementation terminal has no height',
     )
     assert(!document.querySelector('.file-tree'), 'implementation has a file tree')
-    assert(tiles('alpha').length === 1, 'implementation does not show the selected component')
     assert(tiles('@task').length === 1, 'task root shell is missing')
+    assert(!tiles('alpha').length, 'highlighting a component added its terminals to the task')
     assertScope(['alpha'])
+    // A component's saved terminal joins the task through the Add terminal dialog, stopped.
+    const openAddTerminal = async () => {
+      click(document.querySelector('button.add-task-terminal-button'))
+      return until('add terminal dialog', () =>
+        document.querySelector('form[aria-label="Add terminal"]'),
+      )
+    }
+    const addTerminal = async (target, key) => {
+      const dialog = await openAddTerminal()
+      choose(dialog.querySelector('select[aria-label="Where"]'), target)
+      const terminal = dialog.querySelector('select[aria-label="Terminal"]')
+      await until(`terminal choice ${key}`, () =>
+        [...terminal.options].some((o) => o.value === key),
+      )
+      choose(terminal, key)
+      await until('choice picked', () => terminal.value === key)
+      click(document.querySelector('form[aria-label="Add terminal"] button[type=submit]'))
+      await until('dialog closed', () => !document.querySelector('form[aria-label="Add terminal"]'))
+    }
+    await addTerminal('alpha', 'saved\ntask')
+    await until('alpha terminal added', () => tiles('alpha').length === 1)
+    // Anything running in the worktree shows too, so nothing it runs is out of sight.
     await smoke.startTerminal('unrelated', 'task')
     await until('background terminal visible', () => tiles('unrelated').length === 1)
     assertScope(['alpha'])
@@ -250,24 +262,27 @@
     )
     click(tiles('alpha')[0].querySelector('button[aria-label="Maximize Task"]'))
     await until('focused alpha', () => document.querySelector('.terminal-tile.maximized'))
-    click(document.querySelector('button[aria-label="Hide Task"]'))
+    click(document.querySelector('.terminal-tile.maximized button[aria-label="Remove Task"]'))
     await until(
-      'hidden alpha restores others',
+      'removed alpha restores others',
       () => !tiles('alpha').length && tiles('@task').length,
     )
-    assert(!state().maximizedTerminal, 'hiding left another terminal maximized')
-    assert(state().sessions[unrelatedTask]?.running, 'hiding stopped another process')
-    state().setVisibleTerminals(null)
-    click(scopeButton('beta'))
-    await until('beta selected', () => tiles('beta').length)
+    assert(!state().maximizedTerminal, 'removing left another terminal maximized')
+    assert(state().sessions[unrelatedTask]?.running, 'removing stopped another process')
+    assert(
+      state()
+        .nodes.find((n) => n.id === 'alpha')
+        .data.terminals.some((t) => t.id === 'task'),
+      'removing from the task removed the saved terminal',
+    )
+    // Highlights set what agents are briefed on, not which terminals the tab shows.
+    state().toggleHighlight('beta')
     assertScope(['alpha', 'beta'])
-    click(scopeButton('alpha'))
-    await until('alpha scope removed', () => !tiles('alpha').length)
+    state().toggleHighlight('alpha')
     assertScope(['beta'])
-    choose(document.querySelector('select[aria-label="Terminal layout"]'), '1')
-    await until('terminal splits', () => document.querySelector('.task-terminal-splits'))
-    choose(document.querySelector('select[aria-label="Terminal layout"]'), '0')
-    await until('terminal tiles restored', () => document.querySelector('.task-terminal-grid'))
+    assert(!tiles('beta').length, 'highlighting added terminals')
+    addTerminal('component\nbeta\ntask')
+    await until('beta added', () => tiles('beta').length)
     click(viewButton('Plan'))
     await until('shared Plan scope', () => nodeElement('beta')?.querySelector('.highlighted'))
     assert(!nodeElement('alpha').querySelector('.highlighted'), 'filters lost shared Plan scope')
@@ -369,21 +384,42 @@
     )
     assert(!state().highlighted.includes('alpha'), 'removed highlight was not pruned')
 
-    // Terminals added in Implementation are saved; agents there are told about their peers.
+    // Terminals added to a component are saved; agents there are told about their peers.
     state().setView('implementation')
     state().clearHighlights()
     state().toggleHighlight('beta')
     state().toggleHighlight('nearby')
-    await until('beta and nearby', () => tiles('beta').length && tiles('nearby').length)
+    const dialog = await openAddTerminal()
+    assert(
+      dialog.querySelector('select[aria-label="Where"]').options[0].textContent === 'Project root',
+      'Project root is not first in Add terminal',
+    )
+    assert(
+      dialog.querySelector('button[type=submit]').textContent === 'Start agent',
+      'Add terminal does not offer agents first',
+    )
+    click(dialog.querySelector('.row button[type=button]'))
+    await until(
+      'dialog cancelled',
+      () => !document.querySelector('form[aria-label="Add terminal"]'),
+    )
+    assert(
+      !document.querySelector('select[aria-label="Start agent"]'),
+      'Start agent select is still shown',
+    )
+    const rootsBefore = state().rootTerminals.length
+    await addTerminal('@task', 'custom')
+    await until('root terminal added', () => state().rootTerminals.length === rootsBefore + 1)
+    assert(state().rootTerminals.at(-1).kind === 'task', 'custom terminal has the wrong kind')
     const terminalsBefore = state().nodes.find((n) => n.id === 'beta').data.terminals.length
-    choose(document.querySelector('select[aria-label="Terminal location"]'), 'beta')
-    choose(document.querySelector('select.add-terminal'), 'custom')
+    state().addTerminal('beta', null)
     await until(
       'added terminal',
       () =>
         state().nodes.find((n) => n.id === 'beta').data.terminals.length === terminalsBefore + 1,
     )
     assert(state().dirty, 'an added terminal is not a map edit')
+
     state().updateTerminal(
       'beta',
       state()
@@ -407,19 +443,30 @@
     )
     smoke.stopTerminal(briefSid)
     await until('briefing terminal stopped', () => !state().sessions[briefSid]?.running)
-    // Hiding a running component terminal retains its process and saved configuration.
+    // Removing a running terminal asks first, then stops it; the map keeps its configuration.
     await smoke.startTerminal('nearby', 'task')
     const nearbySid = smoke.sessionId('nearby', 'task')
     await until('nearby task running', () => state().sessions[nearbySid]?.running)
-    click(tiles('nearby')[0].querySelector('button[aria-label="Maximize Task"]'))
-    await until('nearby maximized', () => document.querySelector('.terminal-tile.maximized'))
-    click(document.querySelector('button[aria-label="Hide Task"]'))
-    await until('nearby hidden', () => !tiles('nearby').length)
-    assert(state().sessions[nearbySid]?.running, 'hiding a terminal stopped its process')
-    assert(!state().maximizedTerminal, 'hiding a maximized terminal left the layout maximized')
-    state().setVisibleTerminals(null)
-    smoke.stopTerminal(nearbySid)
-    await until('nearby stopped', () => !state().sessions[nearbySid]?.running)
+    await until('running nearby listed', () => tiles('nearby').length)
+    const confirm = window.confirm
+    const asked = []
+    window.confirm = (message) => (asked.push(message), true)
+    try {
+      click(tiles('nearby')[0].querySelector('button[aria-label="Remove Task"]'))
+    } finally {
+      window.confirm = confirm
+    }
+    assert(asked.length === 1, 'removing a running terminal did not ask first')
+    await until(
+      'nearby stopped and gone',
+      () => !state().sessions[nearbySid]?.running && !tiles('nearby').length,
+    )
+    assert(
+      state()
+        .nodes.find((n) => n.id === 'nearby')
+        .data.terminals.some((t) => t.id === 'task'),
+      'removing a terminal dropped its saved configuration',
+    )
     state().clearHighlights()
 
     // Status: an agent reporting through its status file, and a task printing a local URL.

@@ -48,6 +48,11 @@ export interface ImplementationComponent {
   visible: boolean
 }
 
+export interface TaskComponentTerminal {
+  componentId: string
+  terminalId: string
+}
+
 /** Saved per task. Processes and output remain service-owned. */
 export interface TaskWorkspace {
   highlighted: string[]
@@ -56,7 +61,8 @@ export interface TaskWorkspace {
   planActive: string | null
   panels: Record<string, Record<string, number>>
   rootTerminals: TerminalSpec[]
-  visibleTerminals: string[] | null
+  /** Saved component terminals the user added to this task, in order. */
+  componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
   graphActionBusy: boolean
   graphAction: ActionRequest | null
@@ -70,7 +76,7 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
     planActive: null,
     panels: {},
     rootTerminals: [{ id: 'shell', name: 'Shell', command: '', kind: 'shell' }],
-    visibleTerminals: null,
+    componentTerminals: [],
     maximizedTerminal: null,
     graphActionBusy: false,
     graphAction: null,
@@ -85,7 +91,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     planActive,
     panels,
     rootTerminals,
-    visibleTerminals,
+    componentTerminals,
     maximizedTerminal,
     graphActionBusy,
     graphAction,
@@ -98,7 +104,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     planActive,
     panels,
     rootTerminals,
-    visibleTerminals,
+    componentTerminals,
     maximizedTerminal,
     graphActionBusy,
     graphAction,
@@ -109,7 +115,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
 export interface ProjectState {
   taskWorkspaces: Record<string, TaskWorkspace>
   rootTerminals: TerminalSpec[]
-  visibleTerminals: string[] | null
+  componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
   project: { id: string; name: string; root: string } | null
@@ -139,6 +145,7 @@ export interface ProjectState {
   graphActionReport: ActionReport | null
   tasks: Task[]
   activeTask: string | null
+  closedTaskIds: string[]
 }
 export interface MapSaveState {
   status: 'pending' | 'saving' | 'error' | 'conflict'
@@ -159,7 +166,7 @@ export interface ProjectEntry {
 interface State {
   taskWorkspaces: Record<string, TaskWorkspace>
   rootTerminals: TerminalSpec[]
-  visibleTerminals: string[] | null
+  componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
   project: { id: string; name: string; root: string } | null
@@ -172,6 +179,7 @@ interface State {
   serviceInstance: string
   serviceConnected: boolean
   sessionsPanelOpen: boolean
+  activityPanelOpen: boolean
   /**
    * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
    * failed, or exited while active (UI only).
@@ -191,7 +199,9 @@ interface State {
   patchProject: (id: string, patch: Partial<ProjectState>) => void
   patchTask: (projectId: string, task: string | null, patch: Partial<TaskWorkspace>) => void
   addRootTerminal: (device: DeviceManifest | null) => string
-  setVisibleTerminals: (ids: string[] | null) => void
+  addTaskComponentTerminal: (componentId: string, terminalId: string) => void
+  /** Drops a terminal from the active task's list; component terminals stay on the map. */
+  removeTaskTerminal: (componentId: string, terminalId: string) => void
   setMaximizedTerminal: (id: string | null) => void
   nodes: FlowNode[]
   edges: FlowEdge[]
@@ -249,8 +259,11 @@ interface State {
   tasks: Task[]
   /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
   activeTask: string | null
+  /** Task tabs hidden by the user; their workspaces and processes are retained. */
+  closedTaskIds: string[]
   setTasks: (tasks: Task[]) => void
   setActiveTask: (id: string | null) => void
+  closeTaskTab: (id: string) => void
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
@@ -307,30 +320,67 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
-/** Restore layout without stopping or retargeting processes. */
+type TaskState = Pick<
+  State,
+  keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces' | 'closedTaskIds'
+>
+
+/** Restore layout and reopen its tab without stopping or retargeting processes. */
 export function switchTaskWorkspace(
-  s: Pick<State, keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces'>,
+  s: TaskState,
   requested: string | null,
 ): Partial<ProjectState> & { revealed?: null } {
   const activeTask = requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null
-  if (s.activeTask === activeTask) return {}
   const task = s.tasks.find((t) => t.id === activeTask)
   if (activeTask && (!task || task.missing)) return {}
+  const reopened =
+    activeTask && s.closedTaskIds.includes(activeTask)
+      ? { closedTaskIds: s.closedTaskIds.filter((id) => id !== activeTask) }
+      : {}
+  if (s.activeTask === activeTask) return reopened
   const taskWorkspaces = { ...s.taskWorkspaces, [s.activeTask ?? '']: taskWorkspace(s) }
   const restored = taskWorkspaces[activeTask ?? ''] ?? emptyTaskWorkspace(task?.components)
-  return { activeTask, taskWorkspaces, ...restored, revealed: null }
+  return { activeTask, taskWorkspaces, ...restored, ...reopened, revealed: null }
+}
+
+/** Refresh task metadata while retaining closed tabs and dropping vanished or pinned ids. */
+export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectState> {
+  const closable = new Set(tasks.filter((t) => !t.current).map((t) => t.id))
+  const closedTaskIds = s.closedTaskIds.filter((id) => closable.has(id))
+  const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
+  return {
+    tasks,
+    closedTaskIds,
+    ...switchTaskWorkspace({ ...s, tasks, closedTaskIds }, keep ? s.activeTask : null),
+  }
 }
 
 export const useStore = create<State>((set, get) => ({
   taskWorkspaces: {},
   rootTerminals: emptyTaskWorkspace().rootTerminals,
-  visibleTerminals: null,
+  componentTerminals: [],
   maximizedTerminal: null,
-  setVisibleTerminals: (visibleTerminals) =>
+  addTaskComponentTerminal: (componentId, terminalId) =>
     set((s) => ({
-      visibleTerminals,
+      componentTerminals: s.componentTerminals.some(
+        (t) => t.componentId === componentId && t.terminalId === terminalId,
+      )
+        ? s.componentTerminals
+        : [...s.componentTerminals, { componentId, terminalId }],
+      activeSession: sessionId(componentId, terminalId, s.activeTask),
+      maximizedTerminal: null,
+    })),
+  removeTaskTerminal: (componentId, terminalId) =>
+    set((s) => ({
+      rootTerminals:
+        componentId === TASK_ROOT_SCOPE
+          ? s.rootTerminals.filter((t) => t.id !== terminalId)
+          : s.rootTerminals,
+      componentTerminals: s.componentTerminals.filter(
+        (t) => t.componentId !== componentId || t.terminalId !== terminalId,
+      ),
       maximizedTerminal:
-        visibleTerminals && s.maximizedTerminal && !visibleTerminals.includes(s.maximizedTerminal)
+        s.maximizedTerminal === sessionId(componentId, terminalId, s.activeTask)
           ? null
           : s.maximizedTerminal,
     })),
@@ -346,9 +396,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({
       rootTerminals: [...s.rootTerminals, terminal],
       activeSession: sessionId(TASK_ROOT_SCOPE, terminal.id, s.activeTask),
-      visibleTerminals: s.visibleTerminals
-        ? [...s.visibleTerminals, sessionId(TASK_ROOT_SCOPE, terminal.id, s.activeTask)]
-        : null,
+      maximizedTerminal: null,
     }))
     return terminal.id
   },
@@ -379,6 +427,7 @@ export const useStore = create<State>((set, get) => ({
   serviceInstance: '',
   serviceConnected: false,
   sessionsPanelOpen: false,
+  activityPanelOpen: false,
   dockKept: [],
   keepInDock: (id) =>
     set((s) => (s.dockKept.includes(id) ? {} : { dockKept: [...s.dockKept, id] })),
@@ -525,15 +574,20 @@ export const useStore = create<State>((set, get) => ({
   setRevealed: (revealed) => set({ revealed }),
   tasks: [],
   activeTask: null,
-  setTasks: (tasks) =>
-    set((s) => {
-      const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
-      const current = tasks.find((t) => t.current && !t.missing)
-      return active
-        ? { tasks }
-        : { tasks, ...switchTaskWorkspace({ ...s, tasks }, current?.id ?? null) }
-    }),
+  closedTaskIds: [],
+  setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
   setActiveTask: (id) => set((s) => switchTaskWorkspace(s, id)),
+  closeTaskTab: (id) =>
+    set((s) => {
+      const task = s.tasks.find((t) => t.id === id)
+      if (!task || task.current || s.closedTaskIds.includes(id)) return {}
+      const closedTaskIds = [...s.closedTaskIds, id]
+      if (s.activeTask !== id) return { closedTaskIds }
+      const visible = s.tasks.filter((t) => !t.missing && !s.closedTaskIds.includes(t.id))
+      const index = visible.findIndex((t) => t.id === id)
+      const next = visible[index + 1] ?? visible[index - 1]
+      return { closedTaskIds, ...switchTaskWorkspace(s, next?.id ?? null) }
+    }),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
 
@@ -667,6 +721,7 @@ export const useStore = create<State>((set, get) => ({
         terminals: [...d.terminals, terminal],
       })),
       activeSession: focus ? sessionId(componentId, terminal.id, s.activeTask) : s.activeSession,
+      maximizedTerminal: focus ? null : s.maximizedTerminal,
       dirty: true,
     }))
     return terminal.id
@@ -830,7 +885,7 @@ function emptyProjectState(): ProjectState {
   return {
     taskWorkspaces: {},
     rootTerminals: emptyTaskWorkspace().rootTerminals,
-    visibleTerminals: null,
+    componentTerminals: [],
     maximizedTerminal: null,
     project: null,
     // Explicit, so loading a project without one doesn't keep the previous viewport.
@@ -858,6 +913,7 @@ function emptyProjectState(): ProjectState {
     graphActionReport: null,
     tasks: [],
     activeTask: null,
+    closedTaskIds: [],
   }
 }
 function projectState(s: State): ProjectState {
@@ -887,9 +943,10 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    closedTaskIds,
     taskWorkspaces,
     rootTerminals,
-    visibleTerminals,
+    componentTerminals,
     maximizedTerminal,
   } = s
   return {
@@ -918,9 +975,10 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    closedTaskIds,
     taskWorkspaces: { ...taskWorkspaces, [activeTask ?? '']: taskWorkspace(s) },
     rootTerminals,
-    visibleTerminals,
+    componentTerminals,
     maximizedTerminal,
   }
 }

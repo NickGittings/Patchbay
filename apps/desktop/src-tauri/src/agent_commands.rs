@@ -139,19 +139,23 @@ pub fn run_action(
     })();
     match &result {
         Ok(report) => {
-            activity.state = if report.results.iter().any(|r| {
-                !matches!(
-                    r.outcome,
-                    patchbay_core::actions::TaskOutcome::Passed
-                        | patchbay_core::actions::TaskOutcome::Started
-                        | patchbay_core::actions::TaskOutcome::Reused
-                )
-            }) {
-                "failed"
-            } else {
-                "finished"
-            }
-            .into();
+            activity.state =
+                if (matches!(report.plan.request, ActionRequest::ValidateAffected { .. })
+                    && !report.plan.skipped.is_empty())
+                    || report.results.iter().any(|r| {
+                        !matches!(
+                            r.outcome,
+                            patchbay_core::actions::TaskOutcome::Passed
+                                | patchbay_core::actions::TaskOutcome::Started
+                                | patchbay_core::actions::TaskOutcome::Reused
+                        )
+                    })
+                {
+                    "failed"
+                } else {
+                    "finished"
+                }
+                .into();
             activity.report = Some(report.clone());
             activity.preview_urls =
                 previews(&state, report.results.iter().map(|r| r.session_id.clone()))
@@ -212,20 +216,17 @@ pub fn stop_group(
 fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResult<Value> {
     let state = app.state::<AppState>();
     let scoped = state.project(&launch.project_id)?;
-    let project = scoped
-        .access
-        .snapshot()
-        .restrict(
-            scoped
-                .agent_project
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-                .unwrap_or_else(|| launch.project.clone()),
-            &[],
-        )
-        .map_err(err)?;
-    let (mapped, _, _) = for_task(project.clone(), launch.task.as_deref(), &[], scoped.roots())?;
+    let access = scoped.access.snapshot();
+    let mut project = scoped
+        .agent_project
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(|| launch.project.clone());
+    access.trust(&mut project).map_err(err)?;
+    // Context may omit inaccessible folders, but actions must plan over the full graph.
+    let readable = access.restrict(project.clone(), &[]).map_err(err)?;
+    let (mapped, _, _) = for_task(readable, launch.task.as_deref(), &[], scoped.roots())?;
     match action {
         Action::Context {} => {
             let root = std::path::Path::new(&mapped.root);
@@ -234,16 +235,11 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
                 .as_deref()
                 .map(|id| patchbay_core::tasks::find(root, id).map_err(err))
                 .transpose()?;
-            let scope = task.as_ref().map_or_else(
-                || {
-                    mapped
-                        .components
-                        .iter()
-                        .map(|c| c.id.clone())
-                        .collect::<Vec<_>>()
-                },
-                |t| t.components.clone(),
-            );
+            // A task without components hasn't been scoped yet, so the whole map is in scope.
+            let scope = match &task {
+                Some(t) if !t.components.is_empty() => t.components.clone(),
+                _ => mapped.components.iter().map(|c| c.id.clone()).collect(),
+            };
             let plan = patchbay_core::plans::read(root, launch.task.as_deref()).ok();
             let assignments = patchbay_core::proposals::read(root, launch.task.as_deref(), true)
                 .ok()

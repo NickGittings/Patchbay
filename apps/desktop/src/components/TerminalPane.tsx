@@ -142,7 +142,7 @@ export default function TerminalPane({
             >
               ▶ Start {terminal.name}
             </button>
-            {terminal.command && (
+            {terminal.kind !== 'agent' && terminal.command && (
               <code className="terminal-overlay-command" title={terminal.command}>
                 {terminal.command}
               </code>

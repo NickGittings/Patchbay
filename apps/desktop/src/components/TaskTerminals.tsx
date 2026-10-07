@@ -1,12 +1,10 @@
-import { Fragment, useState } from 'react'
-import { Panel, Separator } from 'react-resizable-panels'
+import { useState } from 'react'
 import { describeTerminal, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
 import { startTerminal, stopTerminal } from '../lib/sessions'
-import { taskTerminals, type TaskTerminal } from '../lib/taskTerminals'
+import type { TaskTerminal } from '../lib/taskTerminals'
 import { TASK_ROOT_SCOPE } from '../types'
 import { useStore } from '../store'
-import PersistedGroup from './PersistedGroup'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 
@@ -14,7 +12,6 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
   const sessions = useStore((s) => s.sessions)
   const maximized = useStore((s) => s.maximizedTerminal)
   const focused = useStore((s) => s.activeSession)
-  const split = useStore((s) => s.panels['task-split']?.orientation ?? 0)
   const [editing, setEditing] = useState<string | null>(null)
   const tile = (entry: TaskTerminal) => {
     const { terminal, sid, componentId, label } = entry
@@ -31,9 +28,8 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
       >
         <div className="terminal-tile-header">
           <span className="status-dot" />
-          <strong>
-            {label} · {terminal.name}
-          </strong>
+          <strong>{terminal.name}</strong>
+          {componentId !== TASK_ROOT_SCOPE && <span className="hint flush">{label}</span>}
           <StatusLabel status={status} />
           <code title={describeTerminal(terminal)}>{describeTerminal(terminal)}</code>
           {session?.running ? (
@@ -50,25 +46,6 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
             onClick={() => s.setMaximizedTerminal(maximized === sid ? null : sid)}
           >
             {maximized === sid ? '⤡' : '⤢'}
-          </button>
-          <button
-            aria-label={`Hide ${terminal.name}`}
-            onClick={() =>
-              s.setVisibleTerminals(
-                (
-                  s.visibleTerminals ??
-                  taskTerminals(
-                    s,
-                    s.nodes,
-                    s.runtimeTerminals,
-                    s.project?.id ?? '',
-                    s.activeTask,
-                  ).map((e) => e.sid)
-                ).filter((id) => id !== sid),
-              )
-            }
-          >
-            ×
           </button>
           {componentId !== TASK_ROOT_SCOPE &&
             useStore.getState().nodes.some((n) => n.id === componentId) && (
@@ -88,6 +65,18 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
               ⚙
             </button>
           )}
+          <button
+            aria-label={`Remove ${terminal.name}`}
+            title="Remove from this task"
+            onClick={() => {
+              if (session?.running && !window.confirm(`Stop ${terminal.name} and remove it?`))
+                return
+              if (session?.running) stopTerminal(sid)
+              s.removeTaskTerminal(componentId, terminal.id)
+            }}
+          >
+            ×
+          </button>
         </div>
         {editing === sid && (
           <div className="row terminal-command-edit">
@@ -118,29 +107,6 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
           existingSessionId={entry.retained ? sid : undefined}
         />
       </section>
-    )
-  }
-  if (split && entries.length > 1 && !entries.some((e) => e.sid === maximized)) {
-    const orientation = split === 1 ? 'horizontal' : 'vertical'
-    return (
-      <PersistedGroup
-        layoutId={`task-terminals-${orientation}`}
-        orientation={orientation}
-        className="task-terminal-splits"
-      >
-        {entries.map((entry, index) => (
-          <Fragment key={entry.sid}>
-            {index > 0 && (
-              <Separator
-                className={`separator ${orientation === 'horizontal' ? 'vertical' : 'horizontal'}`}
-              />
-            )}
-            <Panel id={entry.sid} minSize="10">
-              {tile(entry)}
-            </Panel>
-          </Fragment>
-        ))}
-      </PersistedGroup>
     )
   }
   return (
