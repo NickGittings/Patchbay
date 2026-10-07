@@ -4,7 +4,8 @@ import {
   DEFAULT_SESSION_LIST_OPTIONS,
   groupByProject,
   projectSessions,
-  sessionActivityMs,
+  sessionLive,
+  sessionTimeMs,
   type SessionFilter,
   type SessionListOptions,
   type SessionRow,
@@ -73,68 +74,63 @@ const interrupted = record('interrupted', {
   snapshot: snapshot({ running: false }),
   interrupted: true,
 })
-const retained = record('retained', { snapshot: null })
-const retainedInterrupted = record('retained-interrupted', { snapshot: null, interrupted: true })
-const categories = [running, ended, failed, stopped, interrupted, retained, retainedInterrupted]
+// Recorded, not spawned yet.
+const starting = record('starting', { snapshot: null })
+// Saved mid-launch; the service marks it interrupted on load.
+const retained = record('retained', { snapshot: null, interrupted: true })
+const categories = [running, ended, failed, stopped, interrupted, starting, retained]
 
 describe('projectSessions', () => {
-  test('defaults to all sessions with latest activity first', () => {
+  test('defaults to all sessions, most recently started or exited first', () => {
     expect(DEFAULT_SESSION_LIST_OPTIONS).toEqual({ filter: 'all', sort: 'latest' })
     const newer = record('newer', { snapshot: snapshot({ startedMs: 200 }) })
-    expect(ids(projectSessions([ended, newer, running], 'one', defaults))).toEqual([
+    expect(ids(projectSessions([ended, newer, running], defaults))).toEqual([
       'newer',
       'ended',
       'running',
     ])
-    expect(projectSessions(categories, 'one', defaults)).toHaveLength(categories.length)
+    expect(projectSessions(categories, defaults)).toHaveLength(categories.length)
   })
 
-  test('running depends only on the current snapshot running flag', () => {
+  test('running holds running and still-starting sessions', () => {
     const stopping = record('stopping', {
       snapshot: snapshot({ status: { ...snapshot().status, stopped: true } }),
       interrupted: true,
     })
-    expect(ids(projectSessions([...categories, stopping], 'one', choices('running')))).toEqual([
+    expect(ids(projectSessions([...categories, stopping], choices('running')))).toEqual([
       'running',
       'stopping',
+      'starting',
     ])
   })
 
-  test('closed includes stopped, ended, failed, interrupted and snapshot-less sessions', () => {
-    expect(ids(projectSessions(categories, 'one', choices('closed')))).toEqual([
+  test('closed holds stopped, ended, failed, interrupted and retained sessions', () => {
+    expect(ids(projectSessions(categories, choices('closed')))).toEqual([
       'ended',
       'failed',
       'interrupted',
       'stopped',
       'retained',
-      'retained-interrupted',
     ])
   })
 
-  test('history cannot make a snapshot-less retained session running', () => {
-    const historical = record('historical', { snapshot: null, history: [snapshot()] })
-    expect(projectSessions([historical], 'one', choices('running'))).toEqual([])
-    expect(ids(projectSessions([historical], 'one', choices('closed')))).toEqual(['historical'])
+  test('the current snapshot decides liveness over history and the interrupted flag', () => {
+    expect(sessionLive(record('h', { snapshot: null, history: [snapshot()] }))).toBe(true)
+    expect(
+      sessionLive(record('h', { snapshot: null, interrupted: true, history: [snapshot()] })),
+    ).toBe(false)
+    expect(sessionLive(record('r', { interrupted: true }))).toBe(true)
+    expect(sessionLive(ended)).toBe(false)
   })
 
-  test('each project applies its own filter and sort without affecting defaults', () => {
-    const a = record('a', { snapshot: snapshot({ startedMs: 100 }) })
-    const b = record('b', { snapshot: snapshot({ startedMs: 200 }) })
-    const c = record('c', { metadata: { ...a.metadata, projectId: 'two' }, snapshot: b.snapshot })
-    const d = record('d', { metadata: c.metadata, snapshot: a.snapshot })
-    const closedTwo = record('closed-two', { metadata: c.metadata, snapshot: ended.snapshot })
-    const records = [c, b, closedTwo, a, d, ended]
-    expect(ids(projectSessions(records, 'one', choices('closed', 'oldest')))).toEqual(['ended'])
-    expect(ids(projectSessions(records, 'two', choices('running')))).toEqual(['c', 'd'])
-    expect(ids(projectSessions(records, 'one', choices('running', 'oldest')))).toEqual(['a', 'b'])
-    expect(ids(projectSessions(records, 'two', defaults))).toEqual(['c', 'closed-two', 'd'])
-    expect(projectSessions(records, 'unknown', defaults)).toEqual([])
-    expect([...groupByProject(records).keys()]).toEqual(['two', 'one'])
-    expect(
-      groupByProject(records)
-        .get('two')!
-        .map((r) => r.id),
-    ).toEqual(['c', 'closed-two', 'd'])
+  test('live output neither reorders rows nor changes their shown time', () => {
+    const quiet = record('quiet', { snapshot: snapshot({ startedMs: 200 }) })
+    const chatty = record('chatty', {
+      snapshot: snapshot({ startedMs: 100, status: { ...snapshot().status, lastOutputMs: 900 } }),
+    })
+    const rows = projectSessions([chatty, quiet], defaults)
+    expect(ids(rows)).toEqual(['quiet', 'chatty'])
+    expect(rows.map((r) => r.time)).toEqual([200, 100])
   })
 
   test.each<SessionSort>(['latest', 'oldest'])(
@@ -147,33 +143,16 @@ describe('projectSessions', () => {
       const missingB = record('missing-b', { snapshot: null })
       const records = [missingB, b, newest, missingA, a]
       const timed = sort === 'latest' ? ['newest', 'a', 'b'] : ['a', 'b', 'newest']
-      expect(ids(projectSessions(records, 'one', choices('all', sort)))).toEqual([
-        ...timed,
-        'missing-a',
-        'missing-b',
-      ])
-      expect(ids(projectSessions([...records].reverse(), 'one', choices('all', sort)))).toEqual([
-        ...timed,
-        'missing-a',
-        'missing-b',
-      ])
+      const expected = [...timed, 'missing-a', 'missing-b']
+      expect(ids(projectSessions(records, choices('all', sort)))).toEqual(expected)
+      expect(ids(projectSessions([...records].reverse(), choices('all', sort)))).toEqual(expected)
     },
   )
 
-  test('live output updates the shown activity without reordering rows', () => {
-    const quiet = record('quiet', { snapshot: snapshot({ startedMs: 200 }) })
-    const chatty = record('chatty', {
-      snapshot: snapshot({ startedMs: 100, status: { ...snapshot().status, lastOutputMs: 900 } }),
-    })
-    const rows = projectSessions([chatty, quiet], 'one', defaults)
-    expect(ids(rows)).toEqual(['quiet', 'chatty'])
-    expect(rows.map((r) => r.activity)).toEqual([200, 900])
-  })
-
-  test('does not mutate input arrays, snapshots, histories, records or choices', () => {
+  test('does not mutate input arrays, snapshots, histories, records or options', () => {
     const records = [retained, running, ended]
-    const preferences = choices('closed', 'oldest')
-    const before = structuredClone({ records, preferences })
+    const options = choices('closed', 'oldest')
+    const before = structuredClone({ records, options })
     const freeze = (value: object) => {
       Object.freeze(value)
       for (const child of Object.values(value)) {
@@ -181,50 +160,76 @@ describe('projectSessions', () => {
       }
     }
     freeze(records)
-    freeze(preferences)
-    const result = projectSessions(records, 'one', preferences)
-    expect({ records, preferences }).toEqual(before)
-    expect(result).not.toBe(records)
+    freeze(options)
+    const result = projectSessions(records, options)
+    expect({ records, options }).toEqual(before)
     expect(result[0].record).toBe(ended)
     expect(result[1].record).toBe(retained)
   })
 })
 
-describe('sessionActivityMs', () => {
+describe('groupByProject', () => {
+  test('groups by project id, ordered by name regardless of record order', () => {
+    const inTwo = (id: string, projectName = 'Alpha') =>
+      record(id, { metadata: { ...running.metadata, projectId: 'two', projectName } })
+    const records = [running, inTwo('c'), ended, inTwo('d')]
+    const groups = groupByProject(records)
+    expect(groups.map((g) => [g.projectId, g.projectName])).toEqual([
+      ['two', 'Alpha'],
+      ['one', 'One'],
+    ])
+    expect(groups.map((g) => g.records.map((r) => r.id))).toEqual([
+      ['c', 'd'],
+      ['running', 'ended'],
+    ])
+    expect(groupByProject([...records].reverse()).map((g) => g.projectId)).toEqual(['two', 'one'])
+  })
+
+  test('projects sharing a name keep a stable order by id', () => {
+    const named = (projectId: string) =>
+      record(projectId, { metadata: { ...running.metadata, projectId, projectName: 'Same' } })
+    expect(groupByProject([named('b'), named('a')]).map((g) => g.projectId)).toEqual(['a', 'b'])
+  })
+})
+
+describe('sessionTimeMs', () => {
   test.each([
-    { startedMs: 300, outputMs: 100, exitedMs: 200, expected: 300 },
-    { startedMs: 100, outputMs: 300, exitedMs: 200, expected: 300 },
-    { startedMs: 100, outputMs: 200, exitedMs: 300, expected: 300 },
-    { startedMs: 100, outputMs: null, exitedMs: null, expected: 100 },
-    { startedMs: 0, outputMs: null, exitedMs: null, expected: 0 },
-  ])('selects the latest current start/output/exit time: %j', (times) => {
+    { startedMs: 300, exitedMs: 200, expected: 300 },
+    { startedMs: 100, exitedMs: 300, expected: 300 },
+    { startedMs: 100, exitedMs: null, expected: 100 },
+    { startedMs: 0, exitedMs: null, expected: 0 },
+  ])('selects the latest current start/exit time: %j', ({ startedMs, exitedMs, expected }) => {
     const current = snapshot({
-      startedMs: times.startedMs,
-      exitedMs: times.exitedMs,
-      status: { ...snapshot().status, lastOutputMs: times.outputMs },
+      startedMs,
+      exitedMs,
+      status: { ...snapshot().status, lastOutputMs: 900 },
     })
-    expect(sessionActivityMs(record('current', { snapshot: current }))).toBe(times.expected)
+    expect(sessionTimeMs(record('current', { snapshot: current }))).toBe(expected)
   })
 
-  test('current snapshot takes precedence over newer historical activity', () => {
-    expect(sessionActivityMs(record('current', { history: [snapshot({ exitedMs: 900 })] }))).toBe(
-      100,
-    )
+  test('current snapshot takes precedence over newer historical times', () => {
+    expect(sessionTimeMs(record('current', { history: [snapshot({ exitedMs: 900 })] }))).toBe(100)
   })
 
-  test('snapshot-less history uses the latest timestamp across all runs, regardless of order', () => {
+  test('snapshot-less history uses the latest time across all runs, regardless of order', () => {
     const history = [
       snapshot({ startedMs: 100, exitedMs: 700 }),
-      snapshot({ startedMs: 200, status: { ...snapshot().status, lastOutputMs: 900 } }),
+      snapshot({ startedMs: 200 }),
       snapshot({ startedMs: 800 }),
     ]
-    expect(sessionActivityMs(record('history', { snapshot: null, history }))).toBe(900)
+    expect(sessionTimeMs(record('history', { snapshot: null, history }))).toBe(800)
     expect(
-      sessionActivityMs(record('history', { snapshot: null, history: [...history].reverse() })),
-    ).toBe(900)
+      sessionTimeMs(record('history', { snapshot: null, history: [...history].reverse() })),
+    ).toBe(800)
   })
 
-  test('records without a current snapshot or history have no activity timestamp', () => {
-    expect(sessionActivityMs(retained)).toBeUndefined()
+  test('ignores times a Date cannot hold', () => {
+    expect(
+      sessionTimeMs(record('huge', { snapshot: snapshot({ startedMs: 9e15 }) })),
+    ).toBeUndefined()
+  })
+
+  test('records without a current snapshot or history have no time', () => {
+    expect(sessionTimeMs(retained)).toBeUndefined()
   })
 })

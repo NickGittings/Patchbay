@@ -14,30 +14,31 @@
   const smoke = await until('hooks', () => window.__patchbaySmoke)
   const state = () => smoke.store.getState()
   const panel = () => document.querySelector('.sessions-panel')
+  // Helpers return nothing for missing elements, so `until` keeps polling through re-renders.
   const group = (name) =>
     [...document.querySelectorAll('.session-list > section')].find(
-      (section) => section.querySelector('h3').textContent === name,
+      (section) => section.querySelector('h3')?.textContent === name,
     )
-  const rows = (name) => [...group(name).querySelectorAll('.session-row')]
-  const names = (name) => rows(name).map((row) => row.querySelector('strong').textContent)
+  const rows = (name) => [...(group(name)?.querySelectorAll('.session-row') ?? [])]
+  const names = (name) => rows(name).map((row) => row.querySelector('strong')?.textContent)
   const row = (project, name) =>
-    rows(project).find((element) => element.querySelector('strong').textContent === name)
+    rows(project).find((element) => element.querySelector('strong')?.textContent === name)
   const click = async (scope, label) => {
     const button = await until(`${label} button`, () =>
-      [...scope().querySelectorAll('button')].find(
+      [...(scope()?.querySelectorAll('button') ?? [])].find(
         (element) => element.textContent.trim() === label && !element.disabled,
       ),
     )
     button.click()
   }
+  // Callers wait for the rows they expect; the select's own value proves nothing rendered.
   const choose = async (name, index, value) => {
-    const select = group(name).querySelectorAll('select')[index]
+    const select = await until(`${name} select ${index}`, () => {
+      const element = group(name)?.querySelectorAll('select')[index]
+      return element && !element.disabled && element
+    })
     select.value = value
     select.dispatchEvent(new Event('change', { bubbles: true }))
-    await until(
-      `${name} selection ${value}`,
-      () => group(name).querySelectorAll('select')[index].value === value,
-    )
   }
   const assert = (condition, message) => {
     if (!condition) throw new Error(message)

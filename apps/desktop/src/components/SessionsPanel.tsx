@@ -16,6 +16,7 @@ import {
   DEFAULT_SESSION_LIST_OPTIONS,
   groupByProject,
   projectSessions,
+  sessionLive,
   type ProjectSessionChoices,
   type SessionFilter,
   type SessionListOptions,
@@ -28,6 +29,17 @@ const EMPTY: Record<SessionFilter, string> = {
   all: 'No sessions',
   running: 'No running sessions',
   closed: 'No closed sessions',
+}
+
+/** A relative time that re-renders on the shared clock only while it is on screen. */
+function Ago({ ms }: { ms: number }) {
+  useClockTick()
+  const date = new Date(ms)
+  return (
+    <time dateTime={date.toISOString()} title={date.toLocaleString()}>
+      {ago(ms)}
+    </time>
+  )
 }
 
 export default function SessionsPanel() {
@@ -56,7 +68,6 @@ export default function SessionsPanel() {
       setBusy(false)
     }
   }
-  useClockTick()
   if (!open) return null
   const groups = groupByProject(records)
   return (
@@ -83,12 +94,11 @@ export default function SessionsPanel() {
         </p>
         {!records.length && <p>No retained sessions.</p>}
         <div className="session-list">
-          {[...groups].map(([projectId, group]) => {
-            const projectName = group[0].metadata.projectName
+          {groups.map(({ projectId, projectName, records: group }) => {
             const chosen = choices[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
             // Running state is unknown while disconnected, so the filter shows everything.
             const options = connected ? chosen : { ...chosen, filter: 'all' as const }
-            const visible = projectSessions(group, projectId, options)
+            const visible = projectSessions(group, options)
             return (
               <section key={projectId}>
                 <div className="row session-group-heading">
@@ -122,7 +132,10 @@ export default function SessionsPanel() {
                   </label>
                 </div>
                 {!visible.length && <p className="hint">{EMPTY[options.filter]}</p>}
-                {visible.map(({ record: r, activity }) => {
+                {visible.map(({ record: r, time }) => {
+                  const live = sessionLive(r)
+                  // Recorded but not spawned yet: nothing to reconnect to or stop for a moment.
+                  const starting = live && !r.snapshot
                   return (
                     <div className="session-row" key={r.id}>
                       <div>
@@ -134,24 +147,17 @@ export default function SessionsPanel() {
                       <span>
                         {!connected
                           ? 'Disconnected'
-                          : r.snapshot?.running
-                            ? 'Running'
-                            : r.interrupted
-                              ? 'Interrupted'
-                              : 'Ended'}
+                          : starting
+                            ? 'Starting'
+                            : live
+                              ? 'Running'
+                              : r.interrupted
+                                ? 'Interrupted'
+                                : 'Ended'}
                       </span>
-                      <small>
-                        {activity !== undefined && (
-                          <time
-                            dateTime={new Date(activity).toISOString()}
-                            title={new Date(activity).toLocaleString()}
-                          >
-                            {ago(activity)}
-                          </time>
-                        )}
-                      </small>
+                      <small>{time !== undefined && <Ago ms={time} />}</small>
                       <button
-                        disabled={!connected || busy}
+                        disabled={!connected || busy || starting}
                         onClick={() =>
                           void perform(async () => {
                             await hydrateSession(r.id)
@@ -160,11 +166,11 @@ export default function SessionsPanel() {
                           })
                         }
                       >
-                        {r.snapshot?.running ? 'Reconnect' : 'View output'}
+                        {live ? 'Reconnect' : 'View output'}
                       </button>
-                      {r.snapshot?.running ? (
+                      {live ? (
                         <button
-                          disabled={!connected || busy}
+                          disabled={!connected || busy || starting}
                           onClick={() => void perform(() => terminalStop(r.id))}
                         >
                           Stop
