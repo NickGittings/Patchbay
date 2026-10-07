@@ -1146,6 +1146,7 @@ input[type='radio'] {
 }
 .component-pill {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   border-radius: 16px;
@@ -1221,6 +1222,10 @@ input[type='radio'] {
 .implementation-header .header-action:hover:not(:disabled) {
   background: var(--hover);
   border-color: var(--border-hover);
+}
+.implementation-header .add-component {
+  width: auto;
+  max-width: 180px;
 }
 .implementation-header .header-action.active,
 .implementation-header .header-action.active:hover:not(:disabled) {

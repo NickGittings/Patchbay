@@ -37,6 +37,30 @@
   const assert = (value, message) => {
     if (!value) throw new Error(message)
   }
+  const addComponent = () => document.querySelector('select[aria-label="Add component"]')
+  const assertScope = (ids) => {
+    const pills = [...document.querySelectorAll('.component-pill')]
+    assert(pills.length === ids.length, 'header includes inactive components or omits active ones')
+    for (const [i, id] of ids.entries()) {
+      const name = state().nodes.find((n) => n.id === id).data.name
+      assert(
+        pills[i].textContent.includes(name) && pills[i].getAttribute('aria-pressed') === 'true',
+        `missing active pill for ${id}`,
+      )
+    }
+    const inactive = state().nodes.filter((n) => !ids.includes(n.id))
+    const select = addComponent()
+    if (!inactive.length) {
+      assert(!select, 'add component remains when every component is active')
+      return
+    }
+    assert(select?.value === '', 'add component did not reset to its placeholder')
+    assert(
+      JSON.stringify([...select.options].slice(1).map((o) => [o.value, o.textContent])) ===
+        JSON.stringify(inactive.map((n) => [n.id, n.data.name])),
+      'add component options do not match inactive components in repository order',
+    )
+  }
   // A changes list (or its empty state) has loaded under `selector`; errors fail the run.
   const changesSettled = (selector) => {
     const el = document.querySelector(selector)
@@ -230,6 +254,11 @@
         document.querySelector('.implementation-group')?.textContent.includes('ALPHA'),
       'implementation does not show the highlighted component',
     )
+    await smoke.startTerminal('unrelated', 'task')
+    await until('inactive terminal running', () => state().sessions[unrelatedTask]?.running)
+    assertScope(['alpha'])
+    assert(!pill('UNRELATED'), 'a running terminal makes an inactive component active')
+    assert(!pill('ALPHA').querySelector('.count.running'), 'a stopped terminal has a running badge')
     const startButton = await until('terminal start overlay', () =>
       document.querySelector('.implementation-view .terminal-overlay button'),
     )
@@ -238,13 +267,28 @@
       document.querySelector('.terminal-overlay-command')?.textContent === 'cat',
       'terminal command is missing from the start overlay',
     )
-    // ⌘-click works on several components side by side, sharing the planner's scope.
-    pill('BETA').dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
+    // Adding while maximized keeps the current scope and restores every group.
+    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
+    await until('maximized before adding', () => document.querySelector('.terminal-tile.maximized'))
+    choose(addComponent(), 'beta')
     await until(
       'two components side by side',
       () => document.querySelectorAll('.implementation-group').length === 2,
     )
-    assert(state().highlighted.join() === 'alpha,beta', 'cmd-click did not extend the scope')
+    assert(state().highlighted.join() === 'alpha,beta', 'adding did not extend the shared scope')
+    assertScope(['alpha', 'beta'])
+    assert(!document.querySelector('.terminal-tile.maximized'), 'adding left a terminal maximized')
+    pill('BETA').dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
+    await until(
+      'modifier removes beta',
+      () => document.querySelectorAll('.component-pill').length === 1,
+    )
+    assertScope(['alpha'])
+    choose(addComponent(), 'beta')
+    await until(
+      'beta added again',
+      () => document.querySelectorAll('.implementation-group').length === 2,
+    )
     click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
     await until(
       'maximized tile',
@@ -257,9 +301,101 @@
       'restored tiles',
       () => document.querySelectorAll('.implementation-view .terminal-tile').length === 2,
     )
+    // Constrain the header to the space available in a narrow window. Long active
+    // names scroll with their badges; a long inactive name must not widen the select.
+    const originalNodes = state().nodes
+    const header = document.querySelector('.implementation-header')
+    smoke.store.setState({
+      nodes: originalNodes.map((n) => ({
+        ...n,
+        data: { ...n.data, name: `${n.data.name} ${'long component name '.repeat(8)}` },
+      })),
+    })
+    header.style.width = '820px'
+    header.style.maxWidth = '100%'
+    await until('long component names rendered', () =>
+      pill('ALPHA')?.textContent.includes('long component name'),
+    )
+    const switcher = header.querySelector('.component-switcher')
+    assert(switcher.scrollWidth > switcher.clientWidth, 'long active pills do not scroll')
+    assert(
+      addComponent().getBoundingClientRect().width <= 180,
+      'long option widens the add component control',
+    )
+    const headerRect = header.getBoundingClientRect()
+    for (const control of header.querySelectorAll('select, button.start-all')) {
+      const rect = control.getBoundingClientRect()
+      assert(
+        rect.width > 0 && rect.left >= headerRect.left && rect.right <= headerRect.right,
+        'header action overflows the narrow layout',
+      )
+    }
+    smoke.store.setState({ nodes: originalNodes })
+    header.style.removeProperty('width')
+    header.style.removeProperty('max-width')
+    await until(
+      'component names restored',
+      () => !pill('ALPHA')?.textContent.includes('long component name'),
+    )
+    choose(addComponent(), 'nearby')
+    await until('nearby added', () => document.querySelectorAll('.component-pill').length === 3)
+    assertScope(['alpha', 'beta', 'nearby'])
+    choose(addComponent(), 'unrelated')
+    await until(
+      'all components active',
+      () => document.querySelectorAll('.component-pill').length === 4,
+    )
+    assertScope(['alpha', 'beta', 'nearby', 'unrelated'])
+    assert(
+      pill('UNRELATED').querySelector('.count.running')?.textContent === '1',
+      'running badge missing',
+    )
+    assert(
+      document.querySelectorAll('.implementation-group').length === 4,
+      'adding omitted terminal groups',
+    )
+    click(viewButton('Plan'))
+    await until('added scope in Plan', () =>
+      nodeElement('unrelated')?.querySelector('.highlighted'),
+    )
+    assert(
+      state().highlighted.join() === 'alpha,beta,nearby,unrelated',
+      'adding lost the Plan scope',
+    )
+    click(viewButton('Implementation'))
+    await until('implementation returned', () => pill('UNRELATED'))
+    pill('NEARBY').dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+    await until('ctrl-click removes nearby', () => !pill('NEARBY'))
+    pill('UNRELATED').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    await until('shift-click removes unrelated', () => !pill('UNRELATED'))
+    assertScope(['alpha', 'beta'])
     // A plain click shows one component again.
     click(pill('BETA'))
     await until('implementation selection', () => state().selectedId === 'beta')
+    await until(
+      'selected fallback pill',
+      () => document.querySelectorAll('.component-pill').length === 1,
+    )
+    assertScope(['beta'])
+    choose(addComponent(), 'nearby')
+    await until(
+      'selected fallback preserved',
+      () => document.querySelectorAll('.implementation-group').length === 2,
+    )
+    assert(state().highlighted.join() === 'beta,nearby', 'adding lost the selected fallback')
+    assertScope(['beta', 'nearby'])
+    click(pill('BETA'))
+    state().select(null)
+    await until('first component fallback', () => pill('ALPHA'))
+    assertScope(['alpha'])
+    choose(addComponent(), 'beta')
+    await until('first fallback preserved', () => pill('BETA'))
+    assert(state().highlighted.join() === 'alpha,beta', 'adding lost the first component fallback')
+    click(pill('BETA'))
+    await until(
+      'beta alone again',
+      () => document.querySelectorAll('.implementation-group').length === 1,
+    )
     click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
     await until(
       'single-component maximized pop-out action',
@@ -278,6 +414,13 @@
       state().sessions[smoke.sessionId('beta', 'task')].startedMs > 0,
       'session has no start time',
     )
+    assert(
+      !state().sessions[smoke.sessionId('alpha', 'task')]?.running &&
+        !state().sessions[smoke.sessionId('nearby', 'task')]?.running,
+      'Start all launched an inactive component terminal',
+    )
+    smoke.stopTerminal(unrelatedTask)
+    await until('inactive task stopped', () => !state().sessions[unrelatedTask]?.running)
     assert(
       document.querySelectorAll('.implementation-group-header .group-popout').length ===
         document.querySelectorAll('.implementation-group-header').length,
@@ -425,6 +568,12 @@
         state().sessions[smoke.sessionId('unrelated', 'server')]?.status?.url ===
         'http://localhost:9/',
     )
+    state().toggleHighlight('beta')
+    await until('beta scope before attention reveal', () => pill('BETA'))
+    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
+    await until('maximized before attention reveal', () =>
+      document.querySelector('.terminal-tile.maximized'),
+    )
     const attention = await until('attention menu', () =>
       Array.from(document.querySelectorAll('.attention-button')).find((b) =>
         b.textContent.includes('1 need input'),
@@ -439,6 +588,29 @@
         state().selectedId === 'unrelated' &&
         state().activeSession === smoke.sessionId('unrelated', 'agent') &&
         document.querySelector('.implementation-view .status-label.health-input'),
+    )
+    assertScope(['beta', 'unrelated'])
+    assert(state().highlighted.join() === 'beta', 'attention reveal changed shared highlights')
+    assert(
+      !document.querySelector('.terminal-tile.maximized'),
+      'attention reveal left another tile maximized',
+    )
+    assert(
+      pill('UNRELATED').querySelector('.health-input'),
+      'revealed pill lost its attention badge',
+    )
+    choose(addComponent(), 'nearby')
+    await until('revealed scope preserved when adding', () => pill('NEARBY'))
+    assertScope(['beta', 'unrelated', 'nearby'])
+    assert(
+      state().highlighted.join() === 'beta,unrelated,nearby',
+      'adding lost the temporary reveal',
+    )
+    assert(state().revealed === null, 'adding did not clear the temporary reveal')
+    click(pill('UNRELATED'))
+    await until(
+      'revealed component focused',
+      () => document.querySelectorAll('.implementation-group').length === 1,
     )
     smoke.stopTerminal(smoke.sessionId('unrelated', 'server'))
     await until('stopped server', () => {

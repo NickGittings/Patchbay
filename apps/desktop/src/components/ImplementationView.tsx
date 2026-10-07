@@ -54,6 +54,7 @@ export default function ImplementationView() {
     if (revealed && maximized !== revealed.sid) setMaximized(null)
   }
   const shownIds = new Set(shown.map((n) => n.id))
+  const inactive = nodes.filter((n) => !shownIds.has(n.id))
   const stopped = shown.flatMap((n) =>
     n.data.terminals
       .filter((t) => t.kind !== 'shell' && !sessions[sessionId(n.id, t.id, task)]?.running)
@@ -74,6 +75,17 @@ export default function ImplementationView() {
       clearHighlights()
       select(id)
     }
+    setRevealed(null)
+    setMaximized(null)
+  }
+
+  const addComponent = (id: string) => {
+    if (!inactive.some((n) => n.id === id)) return
+    // Promote the whole visible scope, including a fallback or temporary reveal.
+    for (const n of shown) {
+      if (!highlighted.includes(n.id)) toggleHighlight(n.id)
+    }
+    toggleHighlight(id)
     setRevealed(null)
     setMaximized(null)
   }
@@ -118,7 +130,7 @@ export default function ImplementationView() {
           role="group"
           aria-label={`Components (${modifierKey}-click to work on several)`}
         >
-          {nodes.map((n) => {
+          {shown.map((n) => {
             const running = n.data.terminals.filter(
               (t) => sessions[sessionId(n.id, t.id, task)]?.running,
             ).length
@@ -130,12 +142,11 @@ export default function ImplementationView() {
               runtimeTerminals,
               task,
             )
-            const inScope = shownIds.has(n.id)
             return (
               <button
                 key={n.id}
-                className={`component-pill ${inScope ? 'active' : ''}`}
-                aria-pressed={inScope}
+                className="component-pill active"
+                aria-pressed
                 title={`${modifierKey}-click or Shift-click to work on several components at once`}
                 onClick={(e) => onPill(n.id, e.metaKey || e.ctrlKey || e.shiftKey)}
               >
@@ -156,6 +167,23 @@ export default function ImplementationView() {
             )
           })}
         </div>
+        {inactive.length > 0 && (
+          <select
+            className="header-action add-component"
+            value=""
+            aria-label="Add component"
+            onChange={(e) => addComponent(e.target.value)}
+          >
+            <option value="" disabled>
+              Add component…
+            </option>
+            {inactive.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.data.name}
+              </option>
+            ))}
+          </select>
+        )}
         {shown.length > 0 && (
           <>
             <span className="header-divider" aria-hidden />
