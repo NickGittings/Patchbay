@@ -155,6 +155,11 @@ pub enum Request {
         project_id: String,
         component_ids: Vec<String>,
     },
+    TerminalCloseGuard {
+        project_id: String,
+        component_id: String,
+        terminal_id: String,
+    },
     MaintenanceRelease {
         project_id: String,
         token: String,
@@ -1029,6 +1034,60 @@ impl Service {
                         .map_err(Into::into)
                 })?
             }
+            Request::TerminalCloseGuard {
+                project_id,
+                component_id,
+                terminal_id,
+            } => {
+                let component_ids = vec![component_id.clone()];
+                let ids: Vec<_> = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|r| {
+                        r.metadata.project_id == project_id
+                            && r.metadata.component_id == component_id
+                            && r.metadata.terminal_id == terminal_id
+                    })
+                    .map(|r| r.id.clone())
+                    .collect();
+                self.actions_for(&project_id).with_maintenance_guard(
+                    &ids,
+                    &component_ids,
+                    || {
+                        let _operation = self.operation.lock().unwrap();
+                        self.check_maintenance_block(&project_id, &component_ids)?;
+                        let token = uuid::Uuid::new_v4().to_string();
+                        self.maintenance.lock().unwrap().insert(
+                            token.clone(),
+                            MaintenanceLease {
+                                project_id: project_id.clone(),
+                                component_ids: component_ids.clone(),
+                                expires: Instant::now() + Duration::from_secs(30),
+                            },
+                        );
+                        // Read again under the launch lock: a start may have completed while
+                        // acquiring the graph guard. The lease rejects starts from every window.
+                        let ids: Vec<_> = self
+                            .records
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .filter(|r| {
+                                r.metadata.project_id == project_id
+                                    && r.metadata.component_id == component_id
+                                    && r.metadata.terminal_id == terminal_id
+                            })
+                            .map(|r| r.id.clone())
+                            .collect();
+                        for id in ids {
+                            self.pty.stop(&id);
+                        }
+                        serde_json::to_value(token).map_err(Into::into)
+                    },
+                )?
+            }
             Request::MaintenanceRelease { project_id, token } => {
                 let mut leases = self.maintenance.lock().unwrap();
                 if leases
@@ -1368,6 +1427,72 @@ mod tests {
     fn rejects_unbounded_or_malformed_protocol_frames() {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
         assert!(read_frame::<Request>(&mut &[0, 0, 0, 2, b'[', b']'][..]).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn terminal_close_guard_stops_every_worktree_and_blocks_late_launches() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
+        let spec = SessionSpec {
+            id: String::new(),
+            command: "cat".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let own = service
+            .start("own".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let mut task = metadata.clone();
+        task.task = Some("task".into());
+        let other = service.start("task".into(), task, spec.clone()).unwrap();
+        let mut unrelated = metadata.clone();
+        unrelated.terminal_id = "dev".into();
+        let kept = service
+            .start("kept".into(), unrelated, spec.clone())
+            .unwrap();
+        let token: String = serde_json::from_value(
+            service
+                .handle(
+                    "desktop",
+                    Request::TerminalCloseGuard {
+                        project_id: "p".into(),
+                        component_id: "web".into(),
+                        terminal_id: "shell".into(),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            service
+                .start("late".into(), metadata.clone(), spec.clone())
+                .is_err()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&own) || service.pty.is_running(&other) {
+            assert!(Instant::now() < deadline, "closed terminal still running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(service.pty.is_running(&kept));
+        service
+            .handle(
+                "desktop",
+                Request::MaintenanceRelease {
+                    project_id: "p".into(),
+                    token,
+                },
+            )
+            .unwrap();
+        let restarted = service.start("restored".into(), metadata, spec).unwrap();
+        service.pty.stop(&restarted);
+        service.pty.stop(&kept);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[cfg(unix)]
     #[test]

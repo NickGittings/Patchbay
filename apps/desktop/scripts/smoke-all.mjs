@@ -5,6 +5,7 @@
 // Scripts run one at a time: fixtures use fixed temp paths and the checks are timing-sensitive.
 import { spawn, execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { cpSync, mkdtempSync } from 'node:fs'
 import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
 import { desktop, root } from './smoke-lib.mjs'
@@ -12,10 +13,11 @@ const require = createRequire(import.meta.url)
 // Where the `smoke/*-fixture.sh` scripts put their repos (`${TMPDIR:-/tmp}`).
 const temp = tmpdir()
 const at = (...parts) => resolve(desktop, ...parts)
+const defaultFixture = at('smoke', 'fixtures', 'project')
 const smoke = (script, env = {}, fixture) => ({
   fixture,
   run: ['scripts/smoke.mjs'],
-  env: { PATCHBAY_SMOKE_SCRIPT: at('smoke', script), PATCHBAY_SMOKE_ROOT: root, ...env },
+  env: { PATCHBAY_SMOKE_SCRIPT: at('smoke', script), PATCHBAY_SMOKE_ROOT: defaultFixture, ...env },
 })
 const SCRIPTS = {
   popout: smoke('popout.js'),
@@ -143,6 +145,29 @@ const results = []
 for (const name of selected) {
   const entry = SCRIPTS[name]
   const env = { ...process.env, ...entry.env, PATCHBAY_SMOKE_PREBUILT: '1' }
+  // Copy the tracked map and files so each test gets its own writable Git repository.
+  // Leave temporary fixtures available for inspection, like each run's session state.
+  if (env.PATCHBAY_SMOKE_ROOT === defaultFixture) {
+    const fixture = mkdtempSync(join(temp, 'patchbay-smoke-project-'))
+    cpSync(defaultFixture, fixture, { recursive: true })
+    execFileSync('git', ['init', '--quiet', '-b', 'main', fixture])
+    execFileSync('git', ['-C', fixture, 'add', '.'])
+    execFileSync('git', [
+      '-C',
+      fixture,
+      '-c',
+      'user.name=Patchbay Smoke',
+      '-c',
+      'user.email=smoke@patchbay.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--quiet',
+      '-m',
+      'Initialize smoke fixture',
+    ])
+    env.PATCHBAY_SMOKE_ROOT = fixture
+  }
   const started = Date.now()
   console.log(`\n── smoke ${name} ──`)
   let code = entry.fixture ? await run('sh', [at('smoke', entry.fixture)], env) : 0

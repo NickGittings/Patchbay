@@ -324,6 +324,7 @@ impl Project {
         let file = Path::new(&self.root).join(PROJECT_FILE);
         let mut text = serde_json::to_string_pretty(&Self {
             schema_version: SCHEMA_VERSION,
+            root: String::new(),
             ..self.clone()
         })?;
         text.push('\n');
@@ -467,6 +468,15 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join(PROJECT_FILE)).unwrap()).unwrap();
         assert_eq!(saved["schemaVersion"], SCHEMA_VERSION);
+        assert!(saved.get("root").is_none());
+        assert_eq!(
+            serde_json::to_value(&project).unwrap()["root"],
+            project.root
+        );
+        assert_eq!(
+            PathBuf::from(Project::load(&root).unwrap().unwrap().root),
+            root.canonicalize().unwrap()
+        );
         assert!(saved["components"][0].get("detection").is_none());
         assert_eq!(
             saved["components"][1]["detection"]["packageIdentity"],

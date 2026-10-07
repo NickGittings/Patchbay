@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { sessionsList } from './ipc'
+import { releaseMapEdit, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { projectOf, useStore } from '../store'
@@ -45,6 +45,12 @@ export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
 const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
 const starting = new Map<string, Promise<void>>()
+const restarting = new Map<string, Promise<void>>()
+const closing = new Set<string>()
+const terminalKey = (projectId: string, componentId: string, terminalId: string) =>
+  JSON.stringify([projectId, componentId, terminalId])
+const isClosing = (launch: Launch) =>
+  closing.has(terminalKey(launch.projectId, launch.componentId, launch.terminalId))
 let listening: Promise<void> | undefined
 /** Events at or below this generation belong to a project that has since been closed. */
 let floor = 0
@@ -62,6 +68,8 @@ export function resetSessions(generationFloor: number) {
   pending.clear()
   hydration.clear()
   starting.clear()
+  restarting.clear()
+  closing.clear()
   disposeAll()
 }
 
@@ -146,6 +154,7 @@ export function startTerminal(
 
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
+  if (isClosing(launch)) return Promise.resolve()
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing) return existing
@@ -155,7 +164,15 @@ function launchTerminal(launch: Launch): Promise<void> {
     const requestedEpoch = epoch
     try {
       await listenForTerminals()
-      if (requestedEpoch !== epoch) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (
+        componentId !== PLAN_SCOPE &&
+        !runtime &&
+        !projectOf(launch.projectId)?.components.some(
+          (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
+        )
+      )
+        return
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
       if (runtime?.commandId)
@@ -228,57 +245,99 @@ function markPlanStarted(projectId: string, sid: string, ids: string[]) {
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
 
-/** Stop a tiled terminal before removing its saved command from its originating project. */
-export async function closeTerminal(componentId: string, terminalId: string, task?: string | null) {
+/** Stop every worktree copy, including launches still waiting for a started event. */
+export async function closeTerminal(componentId: string, terminalId: string) {
+  const projectId = useStore.getState().project?.id
+  if (!projectId) return false
+  const key = terminalKey(projectId, componentId, terminalId)
+  if (closing.has(key)) return false
+  closing.add(key)
+  const requestedEpoch = epoch
+  let lease: string | undefined
+  const matches = (sid: string) => {
+    const identity = sessionMetadata.get(sid)
+    return (
+      identity?.projectId === projectId &&
+      identity.componentId === componentId &&
+      identity.terminalId === terminalId
+    )
+  }
   try {
-    const launch = captureLaunch(componentId, terminalId, task)
-    if (useStore.getState().sessions[launch.sid]?.running) await terminalStop(launch.sid)
-    const s = useStore.getState()
-    const origin = s.captureProjects()[launch.projectId]?.state
-    if (!origin) return false
-    s.patchProject(launch.projectId, {
-      nodes: origin.nodes.map((n) =>
-        n.id === componentId
-          ? {
-              ...n,
-              data: { ...n.data, terminals: n.data.terminals.filter((t) => t.id !== terminalId) },
-            }
-          : n,
-      ),
-      dirty: true,
-      activeSession: origin.activeSession === launch.sid ? null : origin.activeSession,
-    })
-    if (s.project?.id === launch.projectId && s.revealed?.sid === launch.sid) s.setRevealed(null)
+    await Promise.all(
+      [...starting, ...restarting].filter(([sid]) => matches(sid)).map(([, request]) => request),
+    )
+    if (requestedEpoch !== epoch) return false
+    lease = await terminalCloseGuard(projectId, componentId, terminalId)
+    if (requestedEpoch !== epoch) return false
+    const records = await sessionsList()
+    const sids = new Set([...sessionMetadata.keys()].filter(matches))
+    for (const record of records) {
+      const m = record.metadata
+      if (m.projectId === projectId && m.componentId === componentId && m.terminalId === terminalId)
+        sids.add(record.id)
+    }
+    await Promise.all([...sids].map((sid) => terminalStop(sid)))
+    const deadline = Date.now() + 10000
+    while (
+      (await Promise.all([...sids].map((sid) => terminalSnapshot(sid)))).some(
+        (snapshot) => snapshot?.running,
+      )
+    ) {
+      if (requestedEpoch !== epoch) return false
+      if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Close again.')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    if (requestedEpoch !== epoch) return false
+    useStore.getState().removeTerminal(componentId, terminalId, projectId)
     return true
   } catch (e) {
-    useStore.getState().setMessage(String(e))
+    if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
     return false
+  } finally {
+    if (lease)
+      await releaseMapEdit(projectId, lease).catch((e) => useStore.getState().setMessage(String(e)))
+    if (requestedEpoch === epoch) closing.delete(key)
   }
 }
 
-/**
- * Restart only after the old process exits, so it cannot race the new spawn. The new run
- * belongs to the project and task the restart was asked in, even if the user has switched since.
- */
-export async function restartTerminal(
+/** Keep restarts tracked across their stop/wait/start gap so removal can join them. */
+export function restartTerminal(
   componentId: string,
   terminalId: string,
   task?: string | null,
-) {
+): Promise<void> {
   const requestedEpoch = epoch
+  let launch: Launch
   try {
-    const launch = captureLaunch(componentId, terminalId, task)
-    await terminalStop(launch.sid)
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(launch.sid))?.running) {
-      if (requestedEpoch !== epoch) return
-      if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Restart again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    if (requestedEpoch === epoch) await launchTerminal(launch)
+    launch = captureLaunch(componentId, terminalId, task)
   } catch (e) {
-    if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+    useStore.getState().setMessage(String(e))
+    return Promise.resolve()
   }
+  if (isClosing(launch)) return Promise.resolve()
+  const existing = restarting.get(launch.sid)
+  if (existing) return existing
+  const request = (async () => {
+    try {
+      await starting.get(launch.sid)
+      if (requestedEpoch !== epoch || isClosing(launch)) return
+      await terminalStop(launch.sid)
+      const deadline = Date.now() + 10000
+      while ((await terminalSnapshot(launch.sid))?.running) {
+        if (requestedEpoch !== epoch || isClosing(launch)) return
+        if (Date.now() >= deadline)
+          throw new Error('Terminal is still stopping. Try Restart again.')
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
+    } catch (e) {
+      if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+    }
+  })().finally(() => {
+    if (restarting.get(launch.sid) === request) restarting.delete(launch.sid)
+  })
+  restarting.set(launch.sid, request)
+  return request
 }
 
 /** Apply a backend terminal event to the store and the session's xterm. */

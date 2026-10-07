@@ -36,6 +36,11 @@ import { retask, sessionId, sessionMetadata, setProjectIdentity, type SessionRec
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
+export interface ImplementationComponent {
+  id: string
+  visible: boolean
+}
+
 export interface ProjectState {
   project: { id: string; name: string; root: string } | null
   nodes: FlowNode[]
@@ -48,7 +53,7 @@ export interface ProjectState {
   view: View
   highlighted: string[]
   /** Components kept in Implementation's header, including hidden ones (UI only). */
-  implementationComponents: string[] | null
+  implementationComponents: ImplementationComponent[] | null
   planStartedWith: Record<string, string>
   planActive: string | null
   dirty: boolean
@@ -138,8 +143,8 @@ interface State {
   inspector: boolean | null
   view: View
   highlighted: string[]
-  implementationComponents: string[] | null
-  setImplementationScope: (components: string[], shown: string[]) => void
+  implementationComponents: ImplementationComponent[] | null
+  setImplementationScope: (components: ImplementationComponent[]) => void
   planStartedWith: Record<string, string>
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
@@ -181,7 +186,7 @@ interface State {
   /** Adds a saved terminal to the component and returns its id; `focus` makes it the active session. */
   addTerminal: (componentId: string, device: DeviceManifest | null, focus?: boolean) => string
   updateTerminal: (componentId: string, terminalId: string, patch: Partial<TerminalSpec>) => void
-  removeTerminal: (componentId: string, terminalId: string) => void
+  removeTerminal: (componentId: string, terminalId: string, projectId?: string) => void
   setEdgeLabel: (id: string, label: string) => void
   select: (id: string | null) => void
   selectEdge: (id: string | null) => void
@@ -369,8 +374,12 @@ export const useStore = create<State>((set, get) => ({
   view: 'navigation',
   highlighted: [],
   implementationComponents: null,
-  setImplementationScope: (implementationComponents, highlighted) =>
-    set({ implementationComponents, highlighted, revealed: null }),
+  setImplementationScope: (implementationComponents) =>
+    set({
+      implementationComponents,
+      highlighted: implementationComponents.filter((c) => c.visible).map((c) => c.id),
+      revealed: null,
+    }),
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
@@ -529,14 +538,29 @@ export const useStore = create<State>((set, get) => ({
       })),
       dirty: true,
     })),
-  removeTerminal: (componentId, terminalId) =>
-    set((s) => ({
-      nodes: mapNode(s.nodes, componentId, (d) => ({
+  removeTerminal: (componentId, terminalId, projectId = get().project?.id) => {
+    if (!projectId) return
+    const s = get()
+    const state = s.captureProjects()[projectId]?.state
+    if (!state) return
+    const matches = (sid: string | null) => {
+      const identity = sid ? sessionMetadata.get(sid) : undefined
+      return (
+        identity?.projectId === projectId &&
+        identity.componentId === componentId &&
+        identity.terminalId === terminalId
+      )
+    }
+    s.patchProject(projectId, {
+      nodes: mapNode(state.nodes, componentId, (d) => ({
         ...d,
         terminals: d.terminals.filter((t) => t.id !== terminalId),
       })),
+      activeSession: matches(state.activeSession) ? null : state.activeSession,
       dirty: true,
-    })),
+    })
+    if (s.project?.id === projectId && matches(s.revealed?.sid ?? null)) s.setRevealed(null)
+  },
 
   setEdgeLabel: (id, label) =>
     set((s) => ({
@@ -546,17 +570,38 @@ export const useStore = create<State>((set, get) => ({
       dirty: true,
     })),
 
-  setView: (view) => set({ view }),
+  setView: (view) =>
+    set((s) => {
+      if (view !== 'implementation' || s.highlighted.length) return { view }
+      const fallback = s.nodes.find((n) => n.id === s.selectedId) ?? s.nodes[0]
+      if (!fallback) return { view }
+      const components = s.implementationComponents ?? []
+      const implementationComponents = components.some((c) => c.id === fallback.id)
+        ? components.map((c) => (c.id === fallback.id ? { ...c, visible: true } : c))
+        : [...components, { id: fallback.id, visible: true }]
+      return { view, implementationComponents, highlighted: [fallback.id] }
+    }),
   toggleHighlight: (id) =>
+    set((s) => {
+      if (!s.nodes.some((n) => n.id === id)) return {}
+      const components =
+        s.implementationComponents ?? s.highlighted.map((id) => ({ id, visible: true }))
+      const implementationComponents = components.some((c) => c.id === id)
+        ? components.map((c) => (c.id === id ? { ...c, visible: !c.visible } : c))
+        : [...components, { id, visible: true }]
+      return {
+        implementationComponents,
+        highlighted: implementationComponents.filter((c) => c.visible).map((c) => c.id),
+        revealed: null,
+      }
+    }),
+  clearHighlights: () =>
     set((s) => ({
-      highlighted: s.highlighted.includes(id)
-        ? s.highlighted.filter((highlightedId) => highlightedId !== id)
-        : s.nodes.some((n) => n.id === id)
-          ? [...s.highlighted, id]
-          : s.highlighted,
+      highlighted: [],
+      implementationComponents:
+        s.implementationComponents?.map((c) => ({ ...c, visible: false })) ?? null,
       revealed: null,
     })),
-  clearHighlights: () => set({ highlighted: [], revealed: null }),
   markPlanStarted: (sid, ids) =>
     set((s) => ({
       planStartedWith: { ...s.planStartedWith, [sid]: [...ids].sort().join(',') },

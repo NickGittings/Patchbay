@@ -6,7 +6,7 @@ import { startAgentsIn } from '../lib/implement'
 import { agentDevices } from '../lib/plan'
 import { closeTerminal, startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
-import { useStore, type FlowNode } from '../store'
+import { useStore, type FlowNode, type ImplementationComponent } from '../store'
 import { sessionId } from '../types'
 import AddTerminalSelect from './AddTerminalSelect'
 import AttentionPill from './status/AttentionPill'
@@ -15,8 +15,8 @@ import EmptyState from './EmptyState'
 import WorktreePicker from './tasks/WorktreePicker'
 
 /**
- * The highlighted components side by side (the same scope Plan uses), or the
- * selected one alone. Pills toggle visibility; their close buttons remove them.
+ * One ordered scope backs both the header pills and the visible terminal groups.
+ * Entering without highlights shows the selection; pills toggle visibility or remove entries.
  */
 export default function ImplementationView() {
   const nodes = useStore((s) => s.nodes)
@@ -35,23 +35,23 @@ export default function ImplementationView() {
   useClockTick()
   const fallback =
     nodes.find((n) => n.id === selectedId) ?? nodes.find((n) => n.id === highlighted[0]) ?? nodes[0]
-  const scoped = highlighted
-    .map((id) => nodes.find((n) => n.id === id))
-    .filter((n): n is FlowNode => !!n)
-  // A revealed terminal's component is shown after the highlighted ones until the scope changes.
+  const scope: ImplementationComponent[] =
+    implementationComponents ??
+    (highlighted.length ? highlighted : fallback ? [fallback.id] : []).map((id) => ({
+      id,
+      visible: true,
+    }))
+  const listedScope = scope.filter((c) => nodes.some((n) => n.id === c.id))
+  // Reveals remain temporary and do not change the Plan scope.
   const extra =
-    revealed && !scoped.some((n) => n.id === revealed.componentId)
+    revealed && !listedScope.some((c) => c.id === revealed.componentId && c.visible)
       ? nodes.find((n) => n.id === revealed.componentId)
       : undefined
-  const shown = scoped.length
-    ? extra
-      ? [...scoped, extra]
-      : scoped
-    : extra
-      ? [extra]
-      : implementationComponents === null && fallback
-        ? [fallback]
-        : []
+  const listed = listedScope.map((c) => nodes.find((n) => n.id === c.id)!)
+  if (extra && !listed.some((n) => n.id === extra.id)) listed.push(extra)
+  const shown = listed.filter(
+    (n) => n.id === extra?.id || listedScope.some((c) => c.id === n.id && c.visible),
+  )
   // A new reveal un-maximizes any other tile, which would hide the revealed one.
   const [seenReveal, setSeenReveal] = useState(revealed)
   if (seenReveal !== revealed) {
@@ -59,11 +59,6 @@ export default function ImplementationView() {
     if (revealed && maximized !== revealed.sid) setMaximized(null)
   }
   const shownIds = new Set(shown.map((n) => n.id))
-  const kept = (implementationComponents ?? [])
-    .map((id) => nodes.find((n) => n.id === id))
-    .filter((n): n is FlowNode => !!n)
-  const keptIds = new Set(kept.map((n) => n.id))
-  const listed = [...kept, ...shown.filter((n) => !keptIds.has(n.id))]
   const listedIds = new Set(listed.map((n) => n.id))
   const inactive = nodes.filter((n) => !listedIds.has(n.id))
   const stopped = shown.flatMap((n) =>
@@ -78,28 +73,19 @@ export default function ImplementationView() {
     : undefined
   const groups = solo ? [solo] : shown
 
-  const updateScope = (components: FlowNode[], visible: FlowNode[]) => {
-    setImplementationScope(
-      components.map((n) => n.id),
-      visible.map((n) => n.id),
-    )
+  const updateScope = (components: ImplementationComponent[]) => {
+    setImplementationScope(components)
     setMaximized(null)
   }
-
+  const editableScope = listed.map((n) => ({ id: n.id, visible: shownIds.has(n.id) }))
   const onPill = (n: FlowNode) => {
-    updateScope(listed, shownIds.has(n.id) ? shown.filter((s) => s.id !== n.id) : [...shown, n])
+    updateScope(editableScope.map((c) => (c.id === n.id ? { ...c, visible: !c.visible } : c)))
   }
-
   const removeComponent = (id: string) => {
-    updateScope(
-      listed.filter((n) => n.id !== id),
-      shown.filter((n) => n.id !== id),
-    )
+    updateScope(editableScope.filter((c) => c.id !== id))
   }
-
   const addComponent = (id: string) => {
-    const n = inactive.find((n) => n.id === id)
-    if (n) updateScope([...listed, n], [...shown, n])
+    if (inactive.some((n) => n.id === id)) updateScope([...editableScope, { id, visible: true }])
   }
 
   const grids = (
@@ -128,7 +114,7 @@ export default function ImplementationView() {
             terminals={n.data.terminals}
             maximized={maximized}
             onMaximize={setMaximized}
-            onClose={(terminalId) => closeTerminal(n.id, terminalId, task)}
+            onClose={(terminalId) => closeTerminal(n.id, terminalId)}
           />
         </section>
       ))}

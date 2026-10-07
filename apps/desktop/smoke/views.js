@@ -42,7 +42,10 @@
     click(document.querySelector(`button[aria-label="Remove ${name} from Implementation"]`))
   const assertScope = (ids, hidden = []) => {
     const pills = [...document.querySelectorAll('.component-pill')]
-    assert(pills.length === ids.length, 'header includes inactive components or omits active ones')
+    assert(
+      pills.length === ids.length,
+      `pills expected ${ids.join()}, got ${pills.map((p) => p.textContent).join()}`,
+    )
     for (const [i, id] of ids.entries()) {
       const name = state().nodes.find((n) => n.id === id).data.name
       assert(
@@ -58,6 +61,19 @@
         getComputedStyle(close).borderLeftWidth === '0px' &&
           getComputedStyle(pills[i]).borderRightWidth === '0px',
         'component close button has a dividing line',
+      )
+    }
+    if (!document.querySelector('.terminal-tile.maximized')) {
+      const names = ids
+        .filter((id) => !hidden.includes(id))
+        .map((id) => state().nodes.find((n) => n.id === id).data.name)
+      assert(
+        JSON.stringify(
+          [...document.querySelectorAll('.implementation-group')].map((g) =>
+            g.getAttribute('aria-label'),
+          ),
+        ) === JSON.stringify(names),
+        'terminal group order differs from pill order',
       )
     }
     const inactive = state().nodes.filter((n) => !ids.includes(n.id))
@@ -268,6 +284,9 @@
     )
     await smoke.startTerminal('unrelated', 'task')
     await until('inactive terminal running', () => state().sessions[unrelatedTask]?.running)
+    assertScope(['alpha', 'beta'], ['beta'])
+    removeComponent('BETA')
+    await until('hidden Plan component explicitly removed', () => !pill('BETA'))
     assertScope(['alpha'])
     assert(!pill('UNRELATED'), 'a running terminal makes an inactive component active')
     assert(!pill('ALPHA').querySelector('.count.running'), 'a stopped terminal has a running badge')
@@ -439,7 +458,8 @@
     // The initial selected fallback can still be promoted into an explicit scope.
     state().clearHighlights()
     state().select('beta')
-    smoke.store.setState({ implementationComponents: null })
+    state().setImplementationScope([])
+    state().setView('implementation')
     await until('selected fallback', () => pill('BETA')?.getAttribute('aria-pressed') === 'true')
     assertScope(['beta'])
     choose(addComponent(), 'nearby')
@@ -451,7 +471,8 @@
     assertScope(['beta', 'nearby'])
     state().clearHighlights()
     state().select(null)
-    smoke.store.setState({ implementationComponents: null })
+    state().setImplementationScope([])
+    state().setView('implementation')
     await until('first component fallback', () => pill('ALPHA'))
     assertScope(['alpha'])
     choose(addComponent(), 'beta')
@@ -561,7 +582,17 @@
       state().nodes.some((n) => n.id === 'alpha'),
       'raw node removal bypassed review',
     )
+    state().setImplementationScope([
+      { id: 'alpha', visible: false },
+      ...state()
+        .highlighted.filter((id) => id !== 'alpha')
+        .map((id) => ({ id, visible: true })),
+    ])
     assert(await smoke.removeComponents(['alpha']), 'component removal was refused')
+    assert(
+      !state().implementationComponents.some((c) => c.id === 'alpha'),
+      'removed hidden pill was not pruned',
+    )
     assert(!state().highlighted.includes('alpha'), 'removed highlight was not pruned')
 
     // Terminals added in Implementation are saved; agents there are told about their peers.
@@ -628,6 +659,23 @@
       document.querySelector('.terminal-tile.maximized'),
     )
     click(nearbyGroup().querySelector('button[aria-label="Close Closable"]'))
+    await until('close confirmation', () => nearbyGroup().querySelector('[role="alertdialog"]'))
+    assert(state().sessions[closeSid]?.running, 'opening confirmation stopped the terminal')
+    const confirmationButton = (label) =>
+      Array.from(nearbyGroup().querySelectorAll('[role="alertdialog"] button')).find(
+        (b) => b.textContent === label,
+      )
+    click(confirmationButton('Cancel'))
+    await until('close cancelled', () => !nearbyGroup().querySelector('[role="alertdialog"]'))
+    assert(
+      state()
+        .nodes.find((n) => n.id === 'nearby')
+        .data.terminals.some((t) => t.id === closeId),
+      'cancelling removed the terminal',
+    )
+    click(nearbyGroup().querySelector('button[aria-label="Close Closable"]'))
+    await until('close confirmation reopened', () => confirmationButton('Remove terminal'))
+    click(confirmationButton('Remove terminal'))
     await until(
       'running terminal closed',
       () =>
@@ -644,6 +692,8 @@
     )
     assert(state().dirty, 'closing a saved terminal did not mark the map edited')
     click(nearbyGroup().querySelector('button[aria-label="Close Task"]'))
+    await until('stopped terminal confirmation', () => confirmationButton('Remove terminal'))
+    click(confirmationButton('Remove terminal'))
     await until(
       'last stopped terminal closed',
       () => nearbyGroup().querySelector('.empty-state-title')?.textContent === 'No terminals',
@@ -706,7 +756,7 @@
         state().activeSession === smoke.sessionId('unrelated', 'agent') &&
         document.querySelector('.implementation-view .status-label.health-input'),
     )
-    assertScope(['beta', 'unrelated'])
+    assertScope(['beta', 'nearby', 'unrelated'], ['nearby'])
     assert(state().highlighted.join() === 'beta', 'attention reveal changed shared highlights')
     assert(
       !document.querySelector('.terminal-tile.maximized'),
@@ -716,6 +766,9 @@
       pill('UNRELATED').querySelector('.health-input'),
       'revealed pill lost its attention badge',
     )
+    removeComponent('NEARBY')
+    await until('hidden nearby removed before readding', () => !pill('NEARBY'))
+    assertScope(['beta', 'unrelated'])
     choose(addComponent(), 'nearby')
     await until('revealed scope preserved when adding', () => pill('NEARBY'))
     assertScope(['beta', 'unrelated', 'nearby'])

@@ -50,6 +50,7 @@ export function workspaceDocument(): WorkspaceDocument {
               activeSession: state.activeSession,
               view: state.view,
               highlighted: state.highlighted,
+              implementationComponents: state.implementationComponents,
               planActive: state.planActive,
               planStartedWith: state.planStartedWith,
               viewport: state.viewport,
@@ -88,6 +89,18 @@ export function restoredLayout(layout: Record<string, unknown>): Partial<Project
       out[key] = layout[key] as string | null
   if (Array.isArray(layout.highlighted))
     out.highlighted = layout.highlighted.filter((i) => typeof i === 'string')
+  if (layout.implementationComponents === null) out.implementationComponents = null
+  else if (Array.isArray(layout.implementationComponents)) {
+    const seen = new Set<string>()
+    out.implementationComponents = layout.implementationComponents.flatMap((value) => {
+      if (!value || typeof value !== 'object') return []
+      const c = value as { id?: unknown; visible?: unknown }
+      if (typeof c.id !== 'string' || typeof c.visible !== 'boolean' || seen.has(c.id)) return []
+      seen.add(c.id)
+      return [{ id: c.id, visible: c.visible }]
+    })
+    out.highlighted = out.implementationComponents.filter((c) => c.visible).map((c) => c.id)
+  }
   if (layout.viewport && typeof layout.viewport === 'object') {
     const v = layout.viewport as ProjectState['viewport']
     if (v && [v.x, v.y, v.zoom].every(Number.isFinite) && v.zoom > 0) out.viewport = v
@@ -196,6 +209,7 @@ export function initializeWorkspace() {
           s.activeSession === prev.activeSession &&
           s.view === prev.view &&
           s.highlighted === prev.highlighted &&
+          s.implementationComponents === prev.implementationComponents &&
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
           s.viewport === prev.viewport &&

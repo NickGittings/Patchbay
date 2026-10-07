@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 4,
+  "name": "Smoke project",
+  "components": [
+    {
+      "id": "app",
+      "name": "Smoke app",
+      "kind": "app",
+      "path": "app",
+      "notes": "A deterministic smoke-test component.",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 0
+      }
+    }
+  ],
+  "links": []
+}

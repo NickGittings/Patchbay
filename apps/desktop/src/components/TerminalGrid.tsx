@@ -32,6 +32,7 @@ export default function TerminalGrid({
   const task = useStore((s) => s.activeTask)
   const [local, setLocal] = useState<string | null>(null)
   const [closing, setClosing] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState<string | null>(null)
   const maximized = onMaximize ? (controlled ?? null) : local
   const setMaximized = onMaximize ?? setLocal
   useClockTick()
@@ -75,19 +76,43 @@ export default function TerminalGrid({
                   title={`Close ${terminal.name}`}
                   aria-label={`Close ${terminal.name}`}
                   disabled={closing !== null}
-                  onClick={async () => {
-                    setClosing(sid)
-                    try {
-                      if ((await onClose(terminal.id)) && maximized === sid) setMaximized(null)
-                    } finally {
-                      setClosing(null)
-                    }
-                  }}
+                  onClick={() => setConfirming(terminal.id)}
                 >
                   ×
                 </button>
               )}
             </div>
+            {onClose && confirming === terminal.id && (
+              <div
+                className="terminal-close-confirm"
+                role="alertdialog"
+                aria-label={`Remove ${terminal.name}?`}
+              >
+                <p>
+                  Remove {terminal.name} from the saved map? This stops its processes in every
+                  worktree.
+                </p>
+                <button disabled={closing !== null} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+                <button
+                  disabled={closing !== null}
+                  onClick={async () => {
+                    setClosing(sid)
+                    try {
+                      if (await onClose(terminal.id)) {
+                        setConfirming(null)
+                        if (maximized === sid) setMaximized(null)
+                      }
+                    } finally {
+                      setClosing(null)
+                    }
+                  }}
+                >
+                  Remove terminal
+                </button>
+              </div>
+            )}
             <TerminalPane componentId={componentId} terminal={terminal} focus={false} />
           </section>
         )

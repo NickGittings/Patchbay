@@ -246,6 +246,8 @@ export const terminalWrite = (sessionId: string, data: string) =>
   invoke<void>('terminal_write', { sessionId, data })
 export const terminalResize = (sessionId: string, cols: number, rows: number) =>
   invoke<void>('terminal_resize', { sessionId, cols, rows })
+export const terminalCloseGuard = (projectId: string, componentId: string, terminalId: string) =>
+  invoke<string>('terminal_close_guard', { projectId, componentId, terminalId })
 export const terminalStop = (sessionId: string) => invoke<void>('terminal_stop', { sessionId })
 /** A window showed the session to the user; every window hears the new status. */
 export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen', { sessionId })

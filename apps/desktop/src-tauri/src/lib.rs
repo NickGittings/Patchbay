@@ -1386,6 +1386,27 @@ fn terminal_resize(
 async fn terminal_stop(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     service(&state, Request::Stop { id: session_id }).await
 }
+/// Block launches from every webview while the saved terminal is being removed.
+#[tauri::command]
+async fn terminal_close_guard(
+    project_id: String,
+    component_id: String,
+    terminal_id: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    state.project(&project_id)?;
+    service(
+        &state,
+        Request::TerminalCloseGuard {
+            project_id,
+            component_id,
+            terminal_id,
+        },
+    )
+    .await
+}
 #[tauri::command]
 async fn terminal_seen(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     service(&state, Request::Seen { id: session_id }).await
@@ -1841,6 +1862,7 @@ pub fn run() {
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
+                terminal_close_guard,
                 terminal_seen,
                 terminal_reset,
                 terminal_snapshot,
