@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { describeTerminal, terminalStatus } from '../lib/display'
+import { terminalStatus } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
@@ -136,8 +136,13 @@ export default function TerminalPane({
             className="primary"
             onClick={() => void startTerminal(componentId, terminal.id, task)}
           >
-            ▶ Start {describeTerminal(terminal)}
+            ▶ Start {terminal.name}
           </button>
+          {terminal.command && (
+            <code className="terminal-overlay-command" title={terminal.command}>
+              {terminal.command}
+            </code>
+          )}
         </div>
       )}
     </div>

@@ -6,6 +6,7 @@ import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import EmptyState from './EmptyState'
 
 /**
  * Shared tiled sessions for the implementation view and component pop-outs.
@@ -17,11 +18,13 @@ export default function TerminalGrid({
   terminals,
   maximized: controlled,
   onMaximize,
+  emptyMessage = 'Add a dev server, test runner or agent using the “+ Add terminal…” menu above.',
 }: {
   componentId: string
   terminals: TerminalSpec[]
   maximized?: string | null
   onMaximize?: (sid: string | null) => void
+  emptyMessage?: string
 }) {
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
@@ -69,7 +72,9 @@ export default function TerminalGrid({
         )
       })}
       {terminals.length === 0 && (
-        <div className="hint">No terminals configured for this component.</div>
+        <EmptyState icon="›_" title="No terminals">
+          {emptyMessage}
+        </EmptyState>
       )}
     </div>
   )

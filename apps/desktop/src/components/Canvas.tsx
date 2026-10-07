@@ -122,13 +122,17 @@ export default function Canvas() {
         deleteKeyCode={planning ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ style: { strokeWidth: 2 } }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2a2d36" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={20}
+          size={1}
+          color="var(--border-strong)"
+        />
         <Controls showInteractive={!planning} />
         <MiniMap
           pannable
           zoomable
           nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]}
-          maskColor="rgba(0,0,0,0.5)"
           style={{ width: 140, height: 90 }}
         />
         {!planning && !inspectorShown && (

@@ -2,13 +2,13 @@ import type { ComponentKind, SessionState, TerminalKind, TerminalSpec } from '..
 import { ago } from './review'
 
 export const KIND_COLOR: Record<ComponentKind, string> = {
-  frontend: '#4cc2ff',
+  frontend: '#38bdf8',
   backend: '#a78bfa',
-  service: '#3ecf8e',
-  library: '#8a8f9c',
-  database: '#f5a524',
-  app: '#ff7ab6',
-  other: '#6b7280',
+  service: '#34d399',
+  library: '#a1a1aa',
+  database: '#fbbf24',
+  app: '#f472b6',
+  other: '#71717a',
 }
 
 export type Health =

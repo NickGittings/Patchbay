@@ -9,6 +9,8 @@ import { sessionId } from '../types'
 import AttentionPill from './status/AttentionPill'
 import ComponentGroups from './ComponentGroups'
 import { provenanceLabel, useMaintenance } from '../lib/maintenance'
+import EmptyState from './EmptyState'
+import { useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 
 /** Outline of every component, like a game engine's scene hierarchy. */
 export default function Hierarchy() {
@@ -22,6 +24,9 @@ export default function Hierarchy() {
   const selectedId = useStore((s) => s.selectedId)
   const select = useStore((s) => s.select)
   const { setCenter } = useReactFlow()
+  const openFolder = useOpenProject()
+  const rescan = useRescanProject()
+  const addRepo = useAddFolder()
   useClockTick()
 
   const focus = (id: string) => {
@@ -90,9 +95,31 @@ export default function Hierarchy() {
           </button>
         )
       })}
-      {nodes.length === 0 && (
-        <div className="hint">{project ? 'No components.' : 'No project open.'}</div>
-      )}
+      {nodes.length === 0 &&
+        (project ? (
+          <EmptyState
+            compact
+            icon="◇"
+            title="No components"
+            actions={
+              <>
+                <button onClick={() => void rescan()}>Rescan</button>
+                <button onClick={() => void addRepo()}>Add repo…</button>
+              </>
+            }
+          >
+            Rescan the project or add a repository to map its parts.
+          </EmptyState>
+        ) : (
+          <EmptyState
+            compact
+            icon="◇"
+            title="No project open"
+            actions={<button onClick={() => void openFolder()}>Open project…</button>}
+          >
+            Components appear here once a project is open.
+          </EmptyState>
+        ))}
       {project && <ComponentGroups />}
     </div>
   )
