@@ -18,17 +18,20 @@ export default function TerminalGrid({
   terminals,
   maximized: controlled,
   onMaximize,
+  onClose,
   emptyMessage = 'Add a dev server, test runner or agent using the “+ Add terminal…” menu above.',
 }: {
   componentId: string
   terminals: TerminalSpec[]
   maximized?: string | null
   onMaximize?: (sid: string | null) => void
+  onClose?: (terminalId: string) => Promise<boolean>
   emptyMessage?: string
 }) {
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
   const [local, setLocal] = useState<string | null>(null)
+  const [closing, setClosing] = useState<string | null>(null)
   const maximized = onMaximize ? (controlled ?? null) : local
   const setMaximized = onMaximize ?? setLocal
   useClockTick()
@@ -66,6 +69,24 @@ export default function TerminalGrid({
               >
                 {solo ? '⤡' : '⤢'}
               </button>
+              {onClose && (
+                <button
+                  className="terminal-close"
+                  title={`Close ${terminal.name}`}
+                  aria-label={`Close ${terminal.name}`}
+                  disabled={closing !== null}
+                  onClick={async () => {
+                    setClosing(sid)
+                    try {
+                      if ((await onClose(terminal.id)) && maximized === sid) setMaximized(null)
+                    } finally {
+                      setClosing(null)
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              )}
             </div>
             <TerminalPane componentId={componentId} terminal={terminal} focus={false} />
           </section>

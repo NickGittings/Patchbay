@@ -2,10 +2,9 @@ import { useState } from 'react'
 import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
-import { modifierKey } from '../lib/platform'
 import { startAgentsIn } from '../lib/implement'
 import { agentDevices } from '../lib/plan'
-import { startTerminal } from '../lib/sessions'
+import { closeTerminal, startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
 import { useStore, type FlowNode } from '../store'
 import { sessionId } from '../types'
@@ -17,22 +16,20 @@ import WorktreePicker from './tasks/WorktreePicker'
 
 /**
  * The highlighted components side by side (the same scope Plan uses), or the
- * selected one alone. ⌘/Shift-click a pill to add or remove it.
+ * selected one alone. Pills toggle visibility; their close buttons remove them.
  */
 export default function ImplementationView() {
   const nodes = useStore((s) => s.nodes)
   const selectedId = useStore((s) => s.selectedId)
   const highlighted = useStore((s) => s.highlighted)
+  const implementationComponents = useStore((s) => s.implementationComponents)
+  const setImplementationScope = useStore((s) => s.setImplementationScope)
   const revealed = useStore((s) => s.revealed)
-  const setRevealed = useStore((s) => s.setRevealed)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const task = useStore((s) => s.activeTask)
   const gitChanges = useStore((s) => s.gitChanges)
   const devices = useStore((s) => s.devices)
-  const select = useStore((s) => s.select)
-  const toggleHighlight = useStore((s) => s.toggleHighlight)
-  const clearHighlights = useStore((s) => s.clearHighlights)
   const setView = useStore((s) => s.setView)
   const [maximized, setMaximized] = useState<string | null>(null)
   useClockTick()
@@ -43,10 +40,18 @@ export default function ImplementationView() {
     .filter((n): n is FlowNode => !!n)
   // A revealed terminal's component is shown after the highlighted ones until the scope changes.
   const extra =
-    revealed && scoped.length && !scoped.some((n) => n.id === revealed.componentId)
+    revealed && !scoped.some((n) => n.id === revealed.componentId)
       ? nodes.find((n) => n.id === revealed.componentId)
       : undefined
-  const shown = scoped.length ? (extra ? [...scoped, extra] : scoped) : fallback ? [fallback] : []
+  const shown = scoped.length
+    ? extra
+      ? [...scoped, extra]
+      : scoped
+    : extra
+      ? [extra]
+      : implementationComponents === null && fallback
+        ? [fallback]
+        : []
   // A new reveal un-maximizes any other tile, which would hide the revealed one.
   const [seenReveal, setSeenReveal] = useState(revealed)
   if (seenReveal !== revealed) {
@@ -54,7 +59,13 @@ export default function ImplementationView() {
     if (revealed && maximized !== revealed.sid) setMaximized(null)
   }
   const shownIds = new Set(shown.map((n) => n.id))
-  const inactive = nodes.filter((n) => !shownIds.has(n.id))
+  const kept = (implementationComponents ?? [])
+    .map((id) => nodes.find((n) => n.id === id))
+    .filter((n): n is FlowNode => !!n)
+  const keptIds = new Set(kept.map((n) => n.id))
+  const listed = [...kept, ...shown.filter((n) => !keptIds.has(n.id))]
+  const listedIds = new Set(listed.map((n) => n.id))
+  const inactive = nodes.filter((n) => !listedIds.has(n.id))
   const stopped = shown.flatMap((n) =>
     n.data.terminals
       .filter((t) => t.kind !== 'shell' && !sessions[sessionId(n.id, t.id, task)]?.running)
@@ -67,27 +78,28 @@ export default function ImplementationView() {
     : undefined
   const groups = solo ? [solo] : shown
 
-  const onPill = (id: string, add: boolean) => {
-    if (add) {
-      if (!highlighted.length && fallback && fallback.id !== id) toggleHighlight(fallback.id)
-      toggleHighlight(id)
-    } else {
-      clearHighlights()
-      select(id)
-    }
-    setRevealed(null)
+  const updateScope = (components: FlowNode[], visible: FlowNode[]) => {
+    setImplementationScope(
+      components.map((n) => n.id),
+      visible.map((n) => n.id),
+    )
     setMaximized(null)
   }
 
+  const onPill = (n: FlowNode) => {
+    updateScope(listed, shownIds.has(n.id) ? shown.filter((s) => s.id !== n.id) : [...shown, n])
+  }
+
+  const removeComponent = (id: string) => {
+    updateScope(
+      listed.filter((n) => n.id !== id),
+      shown.filter((n) => n.id !== id),
+    )
+  }
+
   const addComponent = (id: string) => {
-    if (!inactive.some((n) => n.id === id)) return
-    // Promote the whole visible scope, including a fallback or temporary reveal.
-    for (const n of shown) {
-      if (!highlighted.includes(n.id)) toggleHighlight(n.id)
-    }
-    toggleHighlight(id)
-    setRevealed(null)
-    setMaximized(null)
+    const n = inactive.find((n) => n.id === id)
+    if (n) updateScope([...listed, n], [...shown, n])
   }
 
   const grids = (
@@ -116,6 +128,7 @@ export default function ImplementationView() {
             terminals={n.data.terminals}
             maximized={maximized}
             onMaximize={setMaximized}
+            onClose={(terminalId) => closeTerminal(n.id, terminalId, task)}
           />
         </section>
       ))}
@@ -125,12 +138,8 @@ export default function ImplementationView() {
   return (
     <div className="workspace implementation-view">
       <header className="implementation-header">
-        <div
-          className="component-switcher"
-          role="group"
-          aria-label={`Components (${modifierKey}-click to work on several)`}
-        >
-          {shown.map((n) => {
+        <div className="component-switcher" role="group" aria-label="Implementation components">
+          {listed.map((n) => {
             const running = n.data.terminals.filter(
               (t) => sessions[sessionId(n.id, t.id, task)]?.running,
             ).length
@@ -142,28 +151,38 @@ export default function ImplementationView() {
               runtimeTerminals,
               task,
             )
+            const visible = shownIds.has(n.id)
             return (
-              <button
-                key={n.id}
-                className="component-pill active"
-                aria-pressed
-                title={`${modifierKey}-click or Shift-click to work on several components at once`}
-                onClick={(e) => onPill(n.id, e.metaKey || e.ctrlKey || e.shiftKey)}
-              >
-                <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
-                {n.data.name}
-                {changes > 0 && (
-                  <span className="git-badge" title={`${changes} uncommitted change(s)`}>
-                    ±{changes}
-                  </span>
-                )}
-                <AttentionPill status={attention} />
-                {running > 0 && (
-                  <span className="count running" title={`${running} running`}>
-                    {running}
-                  </span>
-                )}
-              </button>
+              <div key={n.id} className={`component-pill-container${visible ? ' active' : ''}`}>
+                <button
+                  className={`component-pill${visible ? ' active' : ''}`}
+                  aria-pressed={visible}
+                  title={`${visible ? 'Hide' : 'Show'} ${n.data.name}`}
+                  onClick={() => onPill(n)}
+                >
+                  <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
+                  {n.data.name}
+                  {changes > 0 && (
+                    <span className="git-badge" title={`${changes} uncommitted change(s)`}>
+                      ±{changes}
+                    </span>
+                  )}
+                  <AttentionPill status={attention} />
+                  {running > 0 && (
+                    <span className="count running" title={`${running} running`}>
+                      {running}
+                    </span>
+                  )}
+                </button>
+                <button
+                  className="component-remove"
+                  aria-label={`Remove ${n.data.name} from Implementation`}
+                  title={`Remove ${n.data.name} from Implementation`}
+                  onClick={() => removeComponent(n.id)}
+                >
+                  ×
+                </button>
+              </div>
             )
           })}
         </div>
@@ -232,11 +251,16 @@ export default function ImplementationView() {
         ) : (
           <EmptyState
             icon="▦"
-            title="Nothing to implement yet"
-            actions={<button onClick={() => setView('navigation')}>Go to Navigation</button>}
+            title={nodes.length ? 'No components shown' : 'Nothing to implement yet'}
+            actions={
+              !nodes.length && (
+                <button onClick={() => setView('navigation')}>Go to Navigation</button>
+              )
+            }
           >
-            Add a component in Navigation to configure terminals. Highlighted components open here
-            side by side, each with its own terminals and agent.
+            {nodes.length
+              ? 'Click a component above to show it, or choose Add component… to add one.'
+              : 'Add a component in Navigation to configure terminals. Highlighted components open here side by side, each with its own terminals and agent.'}
           </EmptyState>
         )}
       </div>

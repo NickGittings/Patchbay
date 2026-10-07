@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 4,
+  "name": "Patchbay",
+  "root": "/Users/nick/Desktop/GIT/Patchbay",
+  "components": [
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "npm:patchbay-desktop"
+      },
+      "id": "apps-desktop",
+      "name": "patchbay-desktop (desktop)",
+      "kind": "frontend",
+      "path": "apps/desktop",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell-muxk09e02",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "adapter": "claude",
+          "id": "claude-muxk0amo3",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "cargo:patchbay-desktop"
+      },
+      "id": "apps-desktop-src-tauri",
+      "name": "patchbay-desktop (src-tauri)",
+      "kind": "app",
+      "path": "apps/desktop/src-tauri",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "run",
+          "name": "Run",
+          "command": "cargo run",
+          "kind": "task"
+        },
+        {
+          "id": "test",
+          "name": "Tests",
+          "command": "cargo test",
+          "kind": "task"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 340.0,
+        "y": 0.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "cargo:patchbay-cli"
+      },
+      "id": "crates-patchbay-cli",
+      "name": "patchbay-cli",
+      "kind": "app",
+      "path": "crates/patchbay-cli",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell-muxjzt920",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "adapter": "claude",
+          "id": "claude-muxjzv5i1",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 340.0,
+        "y": 230.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "cargo:patchbay-core"
+      },
+      "id": "crates-patchbay-core",
+      "name": "patchbay-core",
+      "kind": "library",
+      "path": "crates/patchbay-core",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "test",
+          "name": "Tests",
+          "command": "cargo test",
+          "kind": "task"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 0.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "cargo:patchbay-sessiond"
+      },
+      "id": "crates-patchbay-sessiond",
+      "name": "patchbay-sessiond",
+      "kind": "app",
+      "path": "crates/patchbay-sessiond",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "run",
+          "name": "Run",
+          "command": "cargo run",
+          "kind": "task"
+        },
+        {
+          "id": "test",
+          "name": "Tests",
+          "command": "cargo test",
+          "kind": "task"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 340.0,
+        "y": 460.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "npm:docker"
+      },
+      "id": "examples-extensions-docker",
+      "name": "docker (docker)",
+      "kind": "library",
+      "path": "examples/extensions/docker",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 230.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "npm:docker"
+      },
+      "id": "extensions-docker",
+      "name": "docker (docker)",
+      "kind": "library",
+      "path": "extensions/docker",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 460.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "npm:preview"
+      },
+      "id": "extensions-preview",
+      "name": "preview",
+      "kind": "library",
+      "path": "extensions/preview",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 690.0
+      }
+    },
+    {
+      "detection": {
+        "detector": "builtin",
+        "packageIdentity": "npm:patchbay-preview-fixture"
+      },
+      "id": "extensions-preview-fixture",
+      "name": "patchbay-preview-fixture",
+      "kind": "service",
+      "path": "extensions/preview/fixture",
+      "notes": "",
+      "terminals": [
+        {
+          "id": "shell",
+          "name": "Shell",
+          "command": "",
+          "kind": "shell"
+        },
+        {
+          "id": "dev",
+          "name": "Dev server",
+          "command": "npm run dev",
+          "kind": "task"
+        },
+        {
+          "id": "claude",
+          "name": "Claude",
+          "command": "claude",
+          "kind": "agent"
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 920.0
+      }
+    }
+  ],
+  "links": [
+    {
+      "detection": {
+        "detector": "builtin"
+      },
+      "id": "apps-desktop-src-tauri->crates-patchbay-core",
+      "source": "apps-desktop-src-tauri",
+      "target": "crates-patchbay-core"
+    },
+    {
+      "detection": {
+        "detector": "builtin"
+      },
+      "id": "crates-patchbay-cli->crates-patchbay-core",
+      "source": "crates-patchbay-cli",
+      "target": "crates-patchbay-core"
+    },
+    {
+      "detection": {
+        "detector": "builtin"
+      },
+      "id": "crates-patchbay-sessiond->crates-patchbay-core",
+      "source": "crates-patchbay-sessiond",
+      "target": "crates-patchbay-core"
+    },
+    {
+      "detection": {
+        "detector": "builtin"
+      },
+      "id": "apps-desktop->apps-desktop-src-tauri",
+      "source": "apps-desktop",
+      "target": "apps-desktop-src-tauri",
+      "label": "Tauri IPC"
+    }
+  ]
+}

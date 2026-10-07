@@ -38,14 +38,26 @@
     if (!value) throw new Error(message)
   }
   const addComponent = () => document.querySelector('select[aria-label="Add component"]')
-  const assertScope = (ids) => {
+  const removeComponent = (name) =>
+    click(document.querySelector(`button[aria-label="Remove ${name} from Implementation"]`))
+  const assertScope = (ids, hidden = []) => {
     const pills = [...document.querySelectorAll('.component-pill')]
     assert(pills.length === ids.length, 'header includes inactive components or omits active ones')
     for (const [i, id] of ids.entries()) {
       const name = state().nodes.find((n) => n.id === id).data.name
       assert(
-        pills[i].textContent.includes(name) && pills[i].getAttribute('aria-pressed') === 'true',
-        `missing active pill for ${id}`,
+        pills[i].textContent.includes(name) &&
+          pills[i].getAttribute('aria-pressed') === String(!hidden.includes(id)) &&
+          pills[i].classList.contains('active') === !hidden.includes(id) &&
+          pills[i].parentElement.classList.contains('active') === !hidden.includes(id),
+        `incorrect visibility or highlight for ${id}`,
+      )
+      const close = pills[i].parentElement.querySelector('.component-remove')
+      assert(close?.textContent.trim() === '×', `missing close button for ${id}`)
+      assert(
+        getComputedStyle(close).borderLeftWidth === '0px' &&
+          getComputedStyle(pills[i]).borderRightWidth === '0px',
+        'component close button has a dividing line',
       )
     }
     const inactive = state().nodes.filter((n) => !ids.includes(n.id))
@@ -278,11 +290,21 @@
     assert(state().highlighted.join() === 'alpha,beta', 'adding did not extend the shared scope')
     assertScope(['alpha', 'beta'])
     assert(!document.querySelector('.terminal-tile.maximized'), 'adding left a terminal maximized')
-    pill('BETA').dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
+    click(pill('BETA'))
     await until(
-      'modifier removes beta',
-      () => document.querySelectorAll('.component-pill').length === 1,
+      'click hides beta',
+      () => document.querySelectorAll('.implementation-group').length === 1,
     )
+    assertScope(['alpha', 'beta'], ['beta'])
+    assert(state().highlighted.join() === 'alpha', 'hiding beta left it in the Plan scope')
+    click(pill('BETA'))
+    await until(
+      'click shows beta',
+      () => document.querySelectorAll('.implementation-group').length === 2,
+    )
+    assertScope(['alpha', 'beta'])
+    removeComponent('BETA')
+    await until('close removes beta', () => !pill('BETA'))
     assertScope(['alpha'])
     choose(addComponent(), 'beta')
     await until(
@@ -354,28 +376,71 @@
       document.querySelectorAll('.implementation-group').length === 4,
       'adding omitted terminal groups',
     )
+    click(pill('BETA'))
+    await until(
+      'beta hidden before Plan',
+      () => pill('BETA').getAttribute('aria-pressed') === 'false',
+    )
     click(viewButton('Plan'))
     await until('added scope in Plan', () =>
       nodeElement('unrelated')?.querySelector('.highlighted'),
     )
     assert(
-      state().highlighted.join() === 'alpha,beta,nearby,unrelated',
+      state().highlighted.join() === 'alpha,nearby,unrelated' &&
+        !nodeElement('beta').querySelector('.highlighted'),
       'adding lost the Plan scope',
     )
     click(viewButton('Implementation'))
     await until('implementation returned', () => pill('UNRELATED'))
-    pill('NEARBY').dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
-    await until('ctrl-click removes nearby', () => !pill('NEARBY'))
-    pill('UNRELATED').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
-    await until('shift-click removes unrelated', () => !pill('UNRELATED'))
-    assertScope(['alpha', 'beta'])
-    // A plain click shows one component again.
+    assertScope(['alpha', 'beta', 'nearby', 'unrelated'], ['beta'])
     click(pill('BETA'))
-    await until('implementation selection', () => state().selectedId === 'beta')
+    await until('beta shown again', () => pill('BETA').getAttribute('aria-pressed') === 'true')
+    removeComponent('NEARBY')
+    await until('close removes nearby', () => !pill('NEARBY'))
+    removeComponent('UNRELATED')
+    await until('close removes unrelated', () => !pill('UNRELATED'))
+    assert(state().sessions[unrelatedTask]?.running, 'removing a component stopped its terminal')
+    assertScope(['alpha', 'beta'])
+    click(pill('ALPHA'))
     await until(
-      'selected fallback pill',
-      () => document.querySelectorAll('.component-pill').length === 1,
+      'alpha hidden',
+      () => document.querySelectorAll('.implementation-group').length === 1,
     )
+    assertScope(['alpha', 'beta'], ['alpha'])
+    click(pill('BETA'))
+    await until('all components hidden', () => !document.querySelector('.implementation-group'))
+    assertScope(['alpha', 'beta'], ['alpha', 'beta'])
+    assert(state().highlighted.length === 0, 'hiding every component retained Plan highlights')
+    assert(
+      document.querySelector('.empty-state')?.textContent.includes('No components shown'),
+      'hiding the last component brought back a fallback',
+    )
+    click(pill('BETA'))
+    await until(
+      'beta restored from hidden',
+      () => document.querySelectorAll('.implementation-group').length === 1,
+    )
+    removeComponent('ALPHA')
+    await until('hidden alpha removed', () => !pill('ALPHA'))
+    assertScope(['beta'])
+    removeComponent('BETA')
+    await until(
+      'last pill removed',
+      () => document.querySelectorAll('.component-pill').length === 0,
+    )
+    assertScope([])
+    assert(
+      !document.querySelector('.implementation-group'),
+      'removing the last component restored a fallback',
+    )
+    choose(addComponent(), 'beta')
+    await until('beta added to empty scope', () => pill('BETA'))
+    assertScope(['beta'])
+    // The initial selected fallback can still be promoted into an explicit scope.
+    state().clearHighlights()
+    state().select('beta')
+    smoke.store.setState({ implementationComponents: null })
+    await until('selected fallback', () => pill('BETA')?.getAttribute('aria-pressed') === 'true')
     assertScope(['beta'])
     choose(addComponent(), 'nearby')
     await until(
@@ -384,14 +449,16 @@
     )
     assert(state().highlighted.join() === 'beta,nearby', 'adding lost the selected fallback')
     assertScope(['beta', 'nearby'])
-    click(pill('BETA'))
+    state().clearHighlights()
     state().select(null)
+    smoke.store.setState({ implementationComponents: null })
     await until('first component fallback', () => pill('ALPHA'))
     assertScope(['alpha'])
     choose(addComponent(), 'beta')
     await until('first fallback preserved', () => pill('BETA'))
     assert(state().highlighted.join() === 'alpha,beta', 'adding lost the first component fallback')
-    click(pill('BETA'))
+    removeComponent('ALPHA')
+    state().select('beta')
     await until(
       'beta alone again',
       () => document.querySelectorAll('.implementation-group').length === 1,
@@ -495,10 +562,11 @@
       'raw node removal bypassed review',
     )
     assert(await smoke.removeComponents(['alpha']), 'component removal was refused')
-    assert(state().highlighted.length === 0, 'removed highlight was not pruned')
+    assert(!state().highlighted.includes('alpha'), 'removed highlight was not pruned')
 
     // Terminals added in Implementation are saved; agents there are told about their peers.
     state().setView('implementation')
+    state().clearHighlights()
     state().toggleHighlight('beta')
     state().toggleHighlight('nearby')
     await until(
@@ -535,6 +603,55 @@
         textOf(briefSid).includes('**NEARBY**'),
     )
     smoke.stopTerminal(briefSid)
+    await until('briefing terminal stopped', () => !state().sessions[briefSid]?.running)
+    // Closing stops a running terminal and removes its saved tile. Closing a
+    // maximized tile restores the remaining terminals instead of leaving a blank group.
+    const nearbyGroup = () => document.querySelector('.implementation-group[aria-label="NEARBY"]')
+    const nearbyCount = state().nodes.find((n) => n.id === 'nearby').data.terminals.length
+    choose(nearbyGroup().querySelector('select.add-terminal'), 'custom')
+    await until(
+      'closable terminal added',
+      () => state().nodes.find((n) => n.id === 'nearby').data.terminals.length === nearbyCount + 1,
+    )
+    const closeId = state()
+      .nodes.find((n) => n.id === 'nearby')
+      .data.terminals.at(-1).id
+    state().updateTerminal('nearby', closeId, { name: 'Closable', kind: 'task', command: 'cat' })
+    await until('close control', () =>
+      nearbyGroup().querySelector('button[aria-label="Close Closable"]'),
+    )
+    await smoke.startTerminal('nearby', closeId)
+    const closeSid = smoke.sessionId('nearby', closeId)
+    await until('closable terminal running', () => state().sessions[closeSid]?.running)
+    click(nearbyGroup().querySelector('button[aria-label="Maximize Closable"]'))
+    await until('closable terminal maximized', () =>
+      document.querySelector('.terminal-tile.maximized'),
+    )
+    click(nearbyGroup().querySelector('button[aria-label="Close Closable"]'))
+    await until(
+      'running terminal closed',
+      () =>
+        !state().sessions[closeSid]?.running &&
+        !state()
+          .nodes.find((n) => n.id === 'nearby')
+          .data.terminals.some((t) => t.id === closeId),
+    )
+    await until(
+      'remaining grids restored after close',
+      () =>
+        document.querySelectorAll('.implementation-group').length === 2 &&
+        !document.querySelector('.terminal-tile.maximized'),
+    )
+    assert(state().dirty, 'closing a saved terminal did not mark the map edited')
+    click(nearbyGroup().querySelector('button[aria-label="Close Task"]'))
+    await until(
+      'last stopped terminal closed',
+      () => nearbyGroup().querySelector('.empty-state-title')?.textContent === 'No terminals',
+    )
+    assert(
+      pill('NEARBY').getAttribute('aria-pressed') === 'true',
+      'closing the last terminal hid its component',
+    )
     state().clearHighlights()
 
     // Status: an agent reporting through its status file, and a task printing a local URL.
@@ -607,7 +724,9 @@
       'adding lost the temporary reveal',
     )
     assert(state().revealed === null, 'adding did not clear the temporary reveal')
-    click(pill('UNRELATED'))
+    removeComponent('BETA')
+    await until('beta removed after reveal', () => !pill('BETA'))
+    removeComponent('NEARBY')
     await until(
       'revealed component focused',
       () => document.querySelectorAll('.implementation-group').length === 1,

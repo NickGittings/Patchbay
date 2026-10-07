@@ -228,6 +228,34 @@ function markPlanStarted(projectId: string, sid: string, ids: string[]) {
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
 
+/** Stop a tiled terminal before removing its saved command from its originating project. */
+export async function closeTerminal(componentId: string, terminalId: string, task?: string | null) {
+  try {
+    const launch = captureLaunch(componentId, terminalId, task)
+    if (useStore.getState().sessions[launch.sid]?.running) await terminalStop(launch.sid)
+    const s = useStore.getState()
+    const origin = s.captureProjects()[launch.projectId]?.state
+    if (!origin) return false
+    s.patchProject(launch.projectId, {
+      nodes: origin.nodes.map((n) =>
+        n.id === componentId
+          ? {
+              ...n,
+              data: { ...n.data, terminals: n.data.terminals.filter((t) => t.id !== terminalId) },
+            }
+          : n,
+      ),
+      dirty: true,
+      activeSession: origin.activeSession === launch.sid ? null : origin.activeSession,
+    })
+    if (s.project?.id === launch.projectId && s.revealed?.sid === launch.sid) s.setRevealed(null)
+    return true
+  } catch (e) {
+    useStore.getState().setMessage(String(e))
+    return false
+  }
+}
+
 /**
  * Restart only after the old process exits, so it cannot race the new spawn. The new run
  * belongs to the project and task the restart was asked in, even if the user has switched since.

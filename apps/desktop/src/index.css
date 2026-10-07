@@ -1144,16 +1144,31 @@ input[type='radio'] {
   overflow-x: auto;
   padding: 2px 0;
 }
-.component-pill {
+.component-pill-container {
   display: flex;
   flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+}
+.component-pill {
+  display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: 16px;
+  border: 0;
+  border-radius: 16px 0 0 16px;
   white-space: nowrap;
 }
-.component-pill.active,
-.component-pill.active:hover:not(:disabled) {
+.component-remove {
+  border: 0;
+  border-radius: 0 16px 16px 0;
+  padding: 4px 8px;
+  color: var(--muted);
+}
+.component-pill:hover:not(:disabled),
+.component-remove:hover:not(:disabled) {
+  background: transparent;
+}
+.component-pill-container.active {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }

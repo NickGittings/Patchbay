@@ -47,6 +47,8 @@ export interface ProjectState {
   inspector: boolean | null
   view: View
   highlighted: string[]
+  /** Components kept in Implementation's header, including hidden ones (UI only). */
+  implementationComponents: string[] | null
   planStartedWith: Record<string, string>
   planActive: string | null
   dirty: boolean
@@ -136,6 +138,8 @@ interface State {
   inspector: boolean | null
   view: View
   highlighted: string[]
+  implementationComponents: string[] | null
+  setImplementationScope: (components: string[], shown: string[]) => void
   planStartedWith: Record<string, string>
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
@@ -364,6 +368,9 @@ export const useStore = create<State>((set, get) => ({
   messageTransient: false,
   view: 'navigation',
   highlighted: [],
+  implementationComponents: null,
+  setImplementationScope: (implementationComponents, highlighted) =>
+    set({ implementationComponents, highlighted, revealed: null }),
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
@@ -646,6 +653,7 @@ function emptyProjectState(): ProjectState {
     inspector: null,
     view: 'navigation',
     highlighted: [],
+    implementationComponents: null,
     planStartedWith: {},
     planActive: null,
     dirty: false,
@@ -673,6 +681,7 @@ function projectState(s: State): ProjectState {
     inspector,
     view,
     highlighted,
+    implementationComponents,
     planStartedWith,
     planActive,
     dirty,
@@ -699,6 +708,7 @@ function projectState(s: State): ProjectState {
     inspector,
     view,
     highlighted,
+    implementationComponents,
     planStartedWith,
     planActive,
     dirty,
