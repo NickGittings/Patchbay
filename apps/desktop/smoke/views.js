@@ -71,34 +71,43 @@
       () => document.querySelector('.hierarchy') && nodeElement('alpha'),
     )
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
+    // Hidden panels collapse but stay mounted, so check their size.
+    const visible = (selector) => {
+      const rect = document.querySelector(selector)?.getBoundingClientRect()
+      return !!rect && rect.width > 0 && rect.height > 0
+    }
     assert(
-      !document.querySelector('.inspector') && !document.querySelector('.terminal-dock'),
+      !visible('.inspector') && !visible('.terminal-dock'),
       'navigation opened with the inspector or dock',
     )
     click(nodeElement('unrelated'))
-    await until('inspector on selection', () => document.querySelector('.inspector'))
-    assert(!document.querySelector('.terminal-dock'), 'dock shown with nothing running')
+    await until('inspector on selection', () => visible('.inspector'))
+    assert(!visible('.terminal-dock'), 'dock shown with nothing running')
     const unrelatedTask = smoke.sessionId('unrelated', 'task')
     await smoke.startTerminal('unrelated', 'task')
     await until('dock for a running terminal', () =>
       document.querySelector('.terminal-dock .tabs .tab.active'),
     )
+    // Revealed, as a result or attention item does, so it stays listed once it exits.
+    state().setActiveSession(unrelatedTask)
     smoke.stopTerminal(unrelatedTask)
     await until('stopped', () => state().sessions[unrelatedTask]?.running === false)
     assert(
-      document.querySelector('.terminal-dock .tabs .tab.active'),
+      visible('.terminal-dock') && document.querySelector('.terminal-dock .tabs .tab.active'),
       'dock dropped the exited terminal it showed',
     )
     click(document.querySelector('.inspector-close'))
     await until(
       'inspector closed',
-      () => !document.querySelector('.inspector') && document.querySelector('.inspector-toggle'),
+      () => !visible('.inspector') && document.querySelector('.inspector-toggle'),
     )
     assert(state().selectedId === 'unrelated', 'closing the inspector cleared the selection')
+    click(nodeElement('unrelated'))
+    assert(state().inspector === false, 'reselecting the same component reopened the inspector')
     click(document.querySelector('.terminal-dock .dock-close'))
-    await until('dock hidden once nothing runs', () => !document.querySelector('.terminal-dock'))
+    await until('dock hidden once nothing runs', () => !visible('.terminal-dock'))
     click(document.querySelector('.inspector-toggle'))
-    await until('inspector toggled open', () => document.querySelector('.inspector'))
+    await until('inspector toggled open', () => visible('.inspector'))
     state().select(null)
     smoke.store.setState({ inspector: null })
     const viewport = () => document.querySelector('.react-flow__viewport')?.style.transform

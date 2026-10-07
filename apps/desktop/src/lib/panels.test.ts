@@ -3,7 +3,7 @@ import type { SessionState, TerminalSpec } from '../types'
 import { sessionId, setProjectIdentity } from '../types'
 
 vi.mock('../store', () => ({ useStore: { getState: () => ({}) } }))
-const { dockTabs, showsInspector } = await import('./panels')
+const { dockTabs, hasDockTabs, showsInspector } = await import('./panels')
 
 setProjectIdentity('p-1')
 
@@ -22,7 +22,7 @@ function state(sessions: Record<string, SessionState>, extra = {}) {
     sessions,
     runtimeTerminals: {},
     activeTask: null,
-    dockSession: null,
+    dockKept: [],
     project: { id: 'p-1', name: 'p', root: '/p' },
     ...extra,
   } as unknown as Parameters<typeof dockTabs>[0]
@@ -37,7 +37,7 @@ test('the dock lists running sessions, labelled by component when nothing is sel
 test('the exited session the dock showed stays listed', () => {
   const sid = sessionId('web', 'test')
   expect(labels(state({ [sid]: exited }))).toEqual([])
-  expect(labels(state({ [sid]: exited }, { dockSession: sid }))).toEqual(['web · test'])
+  expect(labels(state({ [sid]: exited }, { dockKept: [sid] }))).toEqual(['web · test'])
 })
 
 test('a selected component without running sessions keeps the project-wide tabs', () => {
@@ -47,9 +47,29 @@ test('a selected component without running sessions keeps the project-wide tabs'
 })
 
 test('the inspector follows the selection unless opened or closed', () => {
-  const sel = { selectedId: 'web', selectedEdgeId: null }
+  const map = { nodes: [node('web', [])], edges: [] } as unknown as Pick<
+    Parameters<typeof showsInspector>[0],
+    'nodes' | 'edges'
+  >
+  const sel = { selectedId: 'web', selectedEdgeId: null, ...map }
   expect(showsInspector({ inspector: null, ...sel })).toBe(true)
   expect(showsInspector({ inspector: false, ...sel })).toBe(false)
-  expect(showsInspector({ inspector: null, selectedId: null, selectedEdgeId: null })).toBe(false)
-  expect(showsInspector({ inspector: true, selectedId: null, selectedEdgeId: null })).toBe(true)
+  expect(showsInspector({ inspector: null, selectedId: null, selectedEdgeId: null, ...map })).toBe(
+    false,
+  )
+  expect(showsInspector({ ...sel, inspector: null, selectedId: 'gone' })).toBe(false)
+  expect(showsInspector({ ...sel, inspector: true, selectedId: null })).toBe(true)
+})
+
+test('hasDockTabs agrees with dockTabs', () => {
+  const sid = sessionId('web', 'test')
+  for (const s of [
+    state({}),
+    state({ [sid]: running }),
+    state({ [sid]: exited }),
+    state({ [sid]: exited }, { dockKept: [sid] }),
+    state({ [sessionId('web', 'test', 'other-task')]: running }),
+    state({ [sessionId('gone', 'dev')]: running }),
+  ])
+    expect(hasDockTabs(s)).toBe(dockTabs(s).length > 0)
 })

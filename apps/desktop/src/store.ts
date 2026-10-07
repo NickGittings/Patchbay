@@ -83,9 +83,13 @@ interface State {
   serviceInstance: string
   serviceConnected: boolean
   sessionsPanelOpen: boolean
-  /** The exited session Navigation's dock keeps showing, until it is closed (UI only). */
-  dockSession: string | null
-  setDockSession: (id: string | null) => void
+  /**
+   * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
+   * failed, or exited while active (UI only).
+   */
+  dockKept: string[]
+  keepInDock: (id: string) => void
+  dropFromDock: (id: string) => void
   restoring: boolean
   viewport?: { x: number; y: number; zoom: number }
   panels: Record<string, Record<string, number>>
@@ -221,8 +225,10 @@ export const useStore = create<State>((set, get) => ({
   serviceInstance: '',
   serviceConnected: false,
   sessionsPanelOpen: false,
-  dockSession: null,
-  setDockSession: (dockSession) => set({ dockSession }),
+  dockKept: [],
+  keepInDock: (id) =>
+    set((s) => (s.dockKept.includes(id) ? {} : { dockKept: [...s.dockKept, id] })),
+  dropFromDock: (id) => set((s) => ({ dockKept: s.dockKept.filter((k) => k !== id) })),
   restoring: true,
   panels: {},
   setViewport: (viewport) => set({ viewport }),
@@ -547,15 +553,25 @@ export const useStore = create<State>((set, get) => ({
     set({
       selectedId: id,
       selectedEdgeId: null,
-      inspector: null,
+      inspector: id === get().selectedId ? get().inspector : null,
       activeSession: keep ? current : first ? sessionId(id, first.id, get().activeTask) : null,
     })
   },
   selectEdge: (selectedEdgeId) =>
     set(
-      selectedEdgeId ? { selectedEdgeId, selectedId: null, inspector: null } : { selectedEdgeId },
+      selectedEdgeId && selectedEdgeId !== get().selectedEdgeId
+        ? { selectedEdgeId, selectedId: null, inspector: null }
+        : { selectedEdgeId, selectedId: null },
     ),
-  setActiveSession: (activeSession) => set({ activeSession }),
+  // Revealing a session keeps it in the dock, even once it has exited.
+  setActiveSession: (activeSession) =>
+    set((s) => ({
+      activeSession,
+      dockKept:
+        activeSession && !s.dockKept.includes(activeSession)
+          ? [...s.dockKept, activeSession]
+          : s.dockKept,
+    })),
   setSession: (id, st) => set((s) => ({ sessions: { ...s.sessions, [id]: st } })),
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),

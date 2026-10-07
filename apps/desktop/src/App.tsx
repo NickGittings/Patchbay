@@ -9,7 +9,7 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import {
   Panel,
@@ -91,15 +91,13 @@ function openPanel(p: PanelImperativeHandle, id: string) {
 
 /**
  * Collapse panel `id` while it has nothing to show and expand it, at the size it had when it was
- * last collapsed, once it does. `onDragShut` runs when the user drags it shut while it is shown.
+ * last collapsed, once it does or `reveal` changes. Returns the panel's props and whether it is
+ * collapsed, including by the user dragging it shut; `onDragShut` runs then.
  */
-function useCollapsed(
-  id: string,
-  shown: boolean,
-  onDragShut: (panel: PanelImperativeHandle) => void,
-) {
+function useCollapsed(id: string, shown: boolean, reveal?: unknown, onDragShut?: () => void) {
   const panelRef = usePanelRef()
   const shownRef = useRef(shown)
+  const [collapsed, setCollapsed] = useState(true)
   useLayoutEffect(() => {
     shownRef.current = shown
     const p = panelRef.current
@@ -111,29 +109,28 @@ function useCollapsed(
       if (size > 0) s.setPanelLayout(OPEN_SIZES, { ...s.panels[OPEN_SIZES], [id]: size })
       p.collapse()
     }
-  }, [panelRef, id, shown])
+  }, [panelRef, id, shown, reveal])
   const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
-    if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current && panelRef.current)
-      onDragShut(panelRef.current)
+    setCollapsed(size.asPercentage === 0)
+    if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current) onDragShut?.()
   }
-  return { panelRef, onResize, collapsible: true }
+  return { props: { panelRef, onResize, collapsible: true }, collapsed }
 }
 
 /**
  * Hierarchy and canvas, with the Inspector while something is selected (or it is opened) and the
- * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put.
+ * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put
+ * and their tabs keep their state.
  */
 function NavigationView() {
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
+  const activeSession = useStore((s) => s.activeSession)
   // Dragged shut: close it, so the canvas's Inspector button comes back.
-  const inspectorPanel = useCollapsed('App-pane-5', inspector, closeInspector)
-  // The dock can't be dismissed while terminals run, and a zero-height terminal would resize its
-  // PTY to one row: open it again.
-  const dockPanel = useCollapsed('App-pane-4', dock, (p) =>
-    requestAnimationFrame(() => p.isCollapsed() && openPanel(p, 'App-pane-4')),
-  )
+  const inspectorPanel = useCollapsed('App-pane-5', inspector, undefined, closeInspector)
+  // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
+  const dockPanel = useCollapsed('App-pane-4', dock, activeSession)
   return (
     <PersistedGroup layoutId="App-1" orientation="horizontal" className="workspace">
       <Panel id="App-pane-1" defaultSize="14" minSize="10">
@@ -146,14 +143,14 @@ function NavigationView() {
             <Canvas />
           </Panel>
           <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
-          <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel}>
-            {dock && <TerminalDock />}
+          <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
+            <TerminalDock collapsed={dockPanel.collapsed} />
           </Panel>
         </PersistedGroup>
       </Panel>
       <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
-      <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel}>
-        {inspector && <Inspector />}
+      <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>
+        <Inspector />
       </Panel>
     </PersistedGroup>
   )

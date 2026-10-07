@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
@@ -9,26 +8,17 @@ import { useStore } from '../store'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 
-export default function TerminalDock() {
+/** `collapsed`: the dock's panel is dragged shut, so no terminal is fitted to it. */
+export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
   const extensionViews = useExtensionViews('dock')
   const tabs = useDockTabs()
   const sessions = useStore((s) => s.sessions)
   useClockTick()
   const activeSession = useStore((s) => s.activeSession)
   const setActiveSession = useStore((s) => s.setActiveSession)
-  const dockSession = useStore((s) => s.dockSession)
-  const setDockSession = useStore((s) => s.setDockSession)
-  const active =
-    tabs.find((t) => t.sid === activeSession) ??
-    tabs.find((t) => t.sid === dockSession) ??
-    tabs[0] ??
-    null
+  const dropFromDock = useStore((s) => s.dropFromDock)
+  const active = tabs.find((t) => t.sid === activeSession) ?? tabs[0] ?? null
   const session = active ? sessions[active.sid] : undefined
-  // Remember the shown session, so it stays listed once it exits.
-  const activeSid = active?.sid
-  useEffect(() => {
-    if (activeSid) setDockSession(activeSid)
-  }, [activeSid, setDockSession])
   // With no terminal to show, show an extension's view rather than an empty terminal.
   const view = extensionViews.selected ?? (active ? null : (extensionViews.views[0]?.id ?? null))
 
@@ -40,7 +30,7 @@ export default function TerminalDock() {
           return (
             <button
               key={t.sid}
-              className={`tab health-${status.health} ${t.sid === active?.sid ? 'active' : ''}`}
+              className={`tab health-${status.health} ${!view && t.sid === active?.sid ? 'active' : ''}`}
               title={statusTitle(status)}
               onClick={() => {
                 extensionViews.setSelected(null)
@@ -82,7 +72,7 @@ export default function TerminalDock() {
               <button
                 className="dock-close"
                 title="Close this exited terminal"
-                onClick={() => setDockSession(null)}
+                onClick={() => dropFromDock(active.sid)}
               >
                 Close
               </button>
@@ -92,7 +82,7 @@ export default function TerminalDock() {
       </div>
       {view ? (
         <ExtensionView id={view} />
-      ) : active ? (
+      ) : active && !collapsed ? (
         <TerminalPane
           key={active.sid}
           componentId={active.componentId}
