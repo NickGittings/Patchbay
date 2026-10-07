@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { DeviceManifest } from '../types'
-import { nearbyIds, planTerminals } from './plan'
+import { agentDevices, nearbyIds, plannerDevice, planTerminals } from './plan'
 
 const device = (id: string, kind: DeviceManifest['kind']): DeviceManifest => ({
   id,
@@ -16,6 +16,18 @@ test('planner terminals come from agent devices, else Claude', () => {
     { id: 'codex', name: 'codex', command: 'codex', adapter: undefined, kind: 'agent' },
   ])
   expect(planTerminals([]).map((t) => t.id)).toEqual(['claude'])
+})
+
+test('agent presets are offered, else the built-in Claude', () => {
+  const codex = device('codex', 'agent')
+  expect(agentDevices([codex, device('dev', 'task')])).toEqual([codex])
+  expect(agentDevices([]).map((d) => d.id)).toEqual(['claude'])
+})
+
+test('the planner device is the preset behind the planner terminal, else Claude', () => {
+  const codex = device('codex', 'agent')
+  expect(plannerDevice([device('dev', 'task'), codex], 'codex')).toBe(codex)
+  expect(plannerDevice([], 'claude')).toMatchObject({ id: 'claude', command: 'claude' })
 })
 
 test('nearby components are direct neighbours outside the highlight', () => {

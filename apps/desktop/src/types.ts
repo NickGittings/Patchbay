@@ -239,6 +239,12 @@ export interface SessionStatus {
   seenMs: number | null
 }
 
+/** `plans::Plan`: a saved plan for the editor, `cut` when the file is longer than it holds. */
+export interface PlanText {
+  text: string
+  cut: boolean
+}
+
 export interface TerminalSnapshot {
   /** Original launch folder for this incarnation; absent in legacy history. */
   launchDirectory?: string | null

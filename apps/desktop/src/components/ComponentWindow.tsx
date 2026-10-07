@@ -61,6 +61,7 @@ export default function ComponentWindow({ id }: { id: string }) {
           const s = useStore.getState()
           s.setTasks(e.payload.tasks)
           s.setActiveTask(e.payload.activeTask)
+          useStore.setState({ highlighted: e.payload.highlighted })
         }),
       )
       await register(

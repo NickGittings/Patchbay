@@ -589,10 +589,61 @@ pub fn plan_context(
     }
     out.push_str(
         "\nYou are planning, not implementing: explore, ask questions and produce a plan; \
-         don't edit files unless asked.\n",
+         don't edit files unless asked.",
     );
+    // Only a repo has somewhere to keep the plan (`plan_session_spec_for` sets the variable).
+    if crate::plans::plan_file(Path::new(&project.root), None).is_ok() {
+        out.push_str(
+            " When the plan is agreed, write it as Markdown to the file named by \
+             `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their briefing.",
+        );
+    }
+    out.push('\n');
     append_sections(&mut out, sections);
     out
+}
+
+/// Briefing section naming the other components changed alongside `component_id`
+/// (the peers being implemented together), with the links between them.
+/// `None` when no other known peer remains.
+#[must_use]
+pub fn peers_section(
+    project: &Project,
+    component_id: &str,
+    peers: &[String],
+) -> Option<ContextSection> {
+    let mut body = String::new();
+    let mut seen = HashSet::from([component_id]);
+    for id in peers {
+        let Some(peer) = project.component(id) else {
+            continue;
+        };
+        if !seen.insert(peer.id.as_str()) {
+            continue;
+        }
+        describe_component(&mut body, project, peer);
+        for link in &project.links {
+            let relation = if link.source == component_id && link.target == peer.id {
+                "this component depends on it"
+            } else if link.source == peer.id && link.target == component_id {
+                "it depends on this component"
+            } else {
+                continue;
+            };
+            let _ = write!(body, "  - {relation}");
+            if let Some(label) = &link.label {
+                let _ = write!(body, " — {label}");
+            }
+            body.push('\n');
+        }
+    }
+    (!body.is_empty()).then(|| ContextSection {
+        title: "Working alongside".into(),
+        body: format!(
+            "This change also covers these components:\n\n{body}\nCoordinate interface \
+             changes with them; another agent may be editing them."
+        ),
+    })
 }
 
 fn plan_components<'a>(project: &'a Project, component_ids: &[String]) -> Vec<&'a Component> {
@@ -814,8 +865,20 @@ pub fn plan_session_spec_for(
             &briefing,
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
-        // cwd is the root; components in other repos must be added explicitly.
         let dirs = &mut context_dirs;
+        // Without a repo there is nowhere to keep the plan; the briefing still works.
+        // The folder is always added: it sits under `.git`, which agents' sandboxes
+        // (Codex's workspace-write) keep read-only unless it is a writable root itself.
+        if let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), task) {
+            if let Some(dir) = plan.parent() {
+                dirs.push(dir.to_path_buf());
+            }
+            env.insert(
+                crate::plans::PLAN_FILE_ENV.into(),
+                plan.display().to_string(),
+            );
+        }
+        // cwd is the root; components in other repos must be added explicitly.
         for c in &components {
             let reach =
                 std::iter::once(*c).chain(project.neighbours(&c.id).into_iter().map(|(n, _)| n));
@@ -879,6 +942,32 @@ pub fn session_spec_for(
     policy: &dyn Policy,
     sections: &[ContextSection],
 ) -> Result<SessionSpec> {
+    session_spec_with(
+        project,
+        component_id,
+        terminal_id,
+        task,
+        policy,
+        sections,
+        &[],
+    )
+}
+
+/// [`session_spec_for`], also handing an agent `extra_dirs` beside its
+/// neighbours' folders (the folders its briefing names, such as peers being
+/// changed alongside it or the plans folder). Other terminals ignore them.
+///
+/// # Errors
+/// As [`session_spec`].
+pub fn session_spec_with(
+    project: &Project,
+    component_id: &str,
+    terminal_id: &str,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    extra_dirs: &[PathBuf],
+) -> Result<SessionSpec> {
     let component = project
         .component(component_id)
         .ok_or_else(|| anyhow!("unknown component {component_id}"))?;
@@ -902,6 +991,11 @@ pub fn session_spec_for(
             .iter()
             .map(|(n, _)| project.component_dir(n))
             .collect();
+        for dir in extra_dirs {
+            if !context_dirs.contains(dir) {
+                context_dirs.push(dir.clone());
+            }
+        }
         let briefing = Briefing {
             file: &file,
             text: &briefing,
@@ -1227,6 +1321,62 @@ mod tests {
         let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
         assert_eq!(spec.command.matches("--add-dir").count(), 1);
         assert!(spec.command.contains("--add-dir '/shared/db'"));
+    }
+
+    #[test]
+    fn peers_section_lists_other_peers_and_their_links() {
+        let p = project();
+        let section = peers_section(&p, "api", &["api".into(), "db".into(), "x".into()]).unwrap();
+        assert_eq!(section.title, "Working alongside");
+        assert!(section.body.contains("**DB**"));
+        assert!(!section.body.contains("**API**"));
+        assert!(section.body.contains("this component depends on it"));
+        let reverse = peers_section(&p, "db", &["api".into()]).unwrap();
+        assert!(reverse.body.contains("it depends on this component"));
+        assert!(peers_section(&p, "api", &["api".into()]).is_none());
+        assert!(peers_section(&p, "api", &[]).is_none());
+    }
+
+    #[test]
+    fn agents_get_extra_dirs_once() {
+        let p = project();
+        let peer = PathBuf::from("/shared/peer");
+        let extra = [peer.clone(), peer.clone()];
+        let spec = session_spec_with(&p, "api", "agent", None, &AllowAll, &[], &extra).unwrap();
+        assert_eq!(spec.dirs.iter().filter(|d| **d == peer).count(), 1);
+        let plain = session_spec_for(&p, "api", "agent", None, &AllowAll, &[]).unwrap();
+        assert!(!plain.dirs.contains(&peer));
+    }
+
+    #[test]
+    fn planner_is_told_where_to_write_the_plan() {
+        let root = std::env::temp_dir().join(format!("patchbay-plan-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let git = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .output();
+        if !git.is_ok_and(|o| o.status.success()) {
+            return;
+        }
+        let mut p = project();
+        p.root = root.canonicalize().unwrap().display().to_string();
+        let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
+        let plans = crate::plans::dir(Path::new(&p.root)).unwrap();
+        assert_eq!(
+            spec.env[crate::plans::PLAN_FILE_ENV],
+            plans.join("main.md").display().to_string()
+        );
+        // The folder exists before the first plan and is handed to the agent.
+        assert!(spec.dirs.contains(&plans));
+        let task = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
+        assert!(task.env[crate::plans::PLAN_FILE_ENV].ends_with("t1.md"));
+        assert!(plan_context(&p, &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
+        // Outside a repo nothing names the file, so the briefing doesn't ask for it.
+        assert!(!plan_context(&project(), &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

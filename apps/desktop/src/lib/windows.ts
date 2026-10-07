@@ -36,11 +36,15 @@ export function absolutePath(root: string, path: string) {
 export const PROJECT_EVENT = 'patchbay://project'
 export const READY_EVENT = 'patchbay://popout-ready'
 export const GIT_EVENT = 'patchbay://git'
-/** The task list and active task, so pop-outs run terminals in the same worktree. */
+/**
+ * The task list, active task and highlighted components, so pop-outs run terminals in the same
+ * worktree and brief agents with the same peers.
+ */
 export const TASKS_EVENT = 'patchbay://tasks'
 export interface TasksPayload {
   tasks: Task[]
   activeTask: string | null
+  highlighted: string[]
 }
 const ACTIVE_EVENT = 'patchbay://active-window'
 /** Emitted by the backend with the label of a window that has closed. */
@@ -169,7 +173,11 @@ export function syncComponentWindows(): () => void {
     return {
       project: projectFrom(state),
       git: state.gitChanges,
-      tasks: { tasks: state.tasks, activeTask: state.activeTask } as TasksPayload,
+      tasks: {
+        tasks: state.tasks,
+        activeTask: state.activeTask,
+        highlighted: state.highlighted,
+      } as TasksPayload,
     }
   }
   const broadcast = async () => {
@@ -216,7 +224,8 @@ export function syncComponentWindows(): () => void {
       s.projects === prev.projects &&
       s.gitChanges === prev.gitChanges &&
       s.tasks === prev.tasks &&
-      s.activeTask === prev.activeTask
+      s.activeTask === prev.activeTask &&
+      s.highlighted === prev.highlighted
     )
       return
     clearTimeout(timer)

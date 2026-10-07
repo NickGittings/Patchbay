@@ -24,6 +24,16 @@
       (b) => b.textContent === name,
     )
   const textOf = (sid) => smoke.terminalText(sid).text
+  const pill = (name) =>
+    Array.from(document.querySelectorAll('.component-pill')).find((b) =>
+      b.textContent.includes(name),
+    )
+  // React reads a form control's value through the native setter.
+  const choose = (el, value) => {
+    if (!el) throw new Error('missing form control')
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  }
   const assert = (value, message) => {
     if (!value) throw new Error(message)
   }
@@ -160,7 +170,11 @@
     await until('stale hint cleared', () => !document.querySelector('.planner-stale'))
     await smoke.terminalWrite(sid, 'scrollback-$((6*7))\r')
     await until('scrollback marker', () => textOf(sid).includes('scrollback-'))
-    click(viewButton('Implementation'))
+    click(
+      Array.from(document.querySelectorAll('.plan-implement button')).find((b) =>
+        b.textContent.includes('Implement'),
+      ),
+    )
     await until('implementation grid', () =>
       document.querySelector('.implementation-view .terminal-tile'),
     )
@@ -170,10 +184,32 @@
       'implementation terminal has no height',
     )
     assert(!document.querySelector('.file-tree'), 'implementation has a file tree')
-    const betaPill = Array.from(document.querySelectorAll('.component-pill')).find((b) =>
-      b.textContent.includes('BETA'),
+    assert(
+      document.querySelectorAll('.implementation-group').length === 1 &&
+        document.querySelector('.implementation-group')?.textContent.includes('ALPHA'),
+      'implementation does not show the highlighted component',
     )
-    click(betaPill)
+    // ⌘-click works on several components side by side, sharing the planner's scope.
+    pill('BETA').dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
+    await until(
+      'two components side by side',
+      () => document.querySelectorAll('.implementation-group').length === 2,
+    )
+    assert(state().highlighted.join() === 'alpha,beta', 'cmd-click did not extend the scope')
+    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
+    await until(
+      'maximized tile',
+      () =>
+        document.querySelectorAll('.implementation-view .terminal-tile').length === 1 &&
+        document.querySelector('.implementation-view .terminal-tile.maximized'),
+    )
+    click(document.querySelector('.implementation-view button[aria-label^="Restore"]'))
+    await until(
+      'restored tiles',
+      () => document.querySelectorAll('.implementation-view .terminal-tile').length === 2,
+    )
+    // A plain click shows one component again.
+    click(pill('BETA'))
     await until('implementation selection', () => state().selectedId === 'beta')
     click(
       Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
@@ -268,6 +304,46 @@
     assert(await smoke.removeComponents(['alpha']), 'component removal was refused')
     assert(state().highlighted.length === 0, 'removed highlight was not pruned')
 
+    // Terminals added in Implementation are saved; agents there are told about their peers.
+    state().setView('implementation')
+    state().toggleHighlight('beta')
+    state().toggleHighlight('nearby')
+    await until(
+      'beta and nearby',
+      () => document.querySelectorAll('.implementation-group').length === 2,
+    )
+    const terminalsBefore = state().nodes.find((n) => n.id === 'beta').data.terminals.length
+    choose(document.querySelector('.implementation-group select.add-terminal'), 'custom')
+    await until(
+      'added terminal',
+      () =>
+        state().nodes.find((n) => n.id === 'beta').data.terminals.length === terminalsBefore + 1,
+    )
+    assert(state().dirty, 'an added terminal is not a map edit')
+    state().updateTerminal(
+      'beta',
+      state()
+        .nodes.find((n) => n.id === 'beta')
+        .data.terminals.at(-1).id,
+      {
+        kind: 'agent',
+        command: 'cat "$PATCHBAY_CONTEXT_FILE"; exec cat',
+      },
+    )
+    const briefTerminal = state()
+      .nodes.find((n) => n.id === 'beta')
+      .data.terminals.at(-1).id
+    const briefSid = smoke.sessionId('beta', briefTerminal)
+    await smoke.startTerminal('beta', briefTerminal)
+    await until(
+      'peer briefing',
+      () =>
+        textOf(briefSid).includes('## Working alongside') &&
+        textOf(briefSid).includes('**NEARBY**'),
+    )
+    smoke.stopTerminal(briefSid)
+    state().clearHighlights()
+
     // Status: an agent reporting through its status file, and a task printing a local URL.
     state().updateComponent('unrelated', {
       terminals: [
@@ -361,7 +437,7 @@
       () => state().view === 'plan' && state().planActive === secondary.id,
     )
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity',
+      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

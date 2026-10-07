@@ -980,6 +980,17 @@ select:focus {
 .plan-scope .section-title {
   margin: 0;
 }
+.plan-implement {
+  margin-top: 8px;
+  gap: 6px;
+}
+.plan-file textarea {
+  width: 100%;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  resize: vertical;
+}
 .scope-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1036,6 +1047,50 @@ select:focus {
 .implementation-terminals {
   flex: 1;
   min-height: 0;
+}
+.implementation-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+.implementation-groups.multi > .implementation-group + .implementation-group {
+  border-left: 1px solid var(--border);
+}
+.implementation-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.implementation-group > .terminal-grid {
+  flex: 1;
+  min-height: 0;
+}
+.implementation-group-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px 0;
+  min-width: 0;
+}
+.implementation-group-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.add-terminal.compact {
+  width: auto;
+  max-width: 180px;
+}
+.agent-in-each {
+  flex: none;
+  max-width: 170px;
+}
+.terminal-grid.has-maximized {
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
 }
 
 /* Changes and review */

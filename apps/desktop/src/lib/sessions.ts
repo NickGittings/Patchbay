@@ -17,7 +17,7 @@ import {
   type TerminalSnapshot,
 } from '../types'
 import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
-import { planTerminals } from './plan'
+import { peersFor, planTerminals } from './plan'
 import { requestGitRefresh } from './git'
 import {
   disposeAll,
@@ -176,7 +176,15 @@ function launchTerminal(launch: Launch): Promise<void> {
         await planStart(project, ids, terminal, task, requestId)
         if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
-        await terminalStart(project, componentId, terminalId, undefined, task, requestId)
+        await terminalStart(
+          project,
+          componentId,
+          terminalId,
+          undefined,
+          task,
+          requestId,
+          peersFor(componentId, launch.highlighted),
+        )
       }
       launchRequests.delete(sid)
     } catch (e) {

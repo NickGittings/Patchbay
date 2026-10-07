@@ -130,6 +130,12 @@ interface State {
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
   setPlanActive: (id: string | null) => void
+  /**
+   * A terminal Implementation should bring on screen (UI only): its component is shown beside the
+   * highlighted ones without joining them, and no other tile stays maximized.
+   */
+  revealed: { componentId: string; sid: string } | null
+  setRevealed: (revealed: { componentId: string; sid: string } | null) => void
   setView: (view: View) => void
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
@@ -158,7 +164,8 @@ interface State {
   onConnect: (c: Connection) => void
   addComponent: (position: { x: number; y: number }) => void
   updateComponent: (id: string, patch: Partial<ComponentData>) => void
-  addTerminal: (componentId: string, device: DeviceManifest | null) => void
+  /** Adds a saved terminal to the component and returns its id; `focus` makes it the active session. */
+  addTerminal: (componentId: string, device: DeviceManifest | null, focus?: boolean) => string
   updateTerminal: (componentId: string, terminalId: string, patch: Partial<TerminalSpec>) => void
   removeTerminal: (componentId: string, terminalId: string) => void
   setEdgeLabel: (id: string, label: string) => void
@@ -345,6 +352,8 @@ export const useStore = create<State>((set, get) => ({
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
+  revealed: null,
+  setRevealed: (revealed) => set({ revealed }),
   tasks: [],
   activeTask: null,
   setTasks: (tasks) =>
@@ -462,7 +471,7 @@ export const useStore = create<State>((set, get) => ({
   updateComponent: (id, patch) =>
     set((s) => ({ nodes: mapNode(s.nodes, id, (d) => ({ ...d, ...patch })), dirty: true })),
 
-  addTerminal: (componentId, device) => {
+  addTerminal: (componentId, device, focus = true) => {
     const terminal: TerminalSpec = {
       id: newId(device?.id ?? 'task'),
       name: device?.name ?? 'Task',
@@ -476,9 +485,10 @@ export const useStore = create<State>((set, get) => ({
         ...d,
         terminals: [...d.terminals, terminal],
       })),
-      activeSession: sessionId(componentId, terminal.id, s.activeTask),
+      activeSession: focus ? sessionId(componentId, terminal.id, s.activeTask) : s.activeSession,
       dirty: true,
     }))
+    return terminal.id
   },
   updateTerminal: (componentId, terminalId, patch) =>
     set((s) => ({
@@ -513,8 +523,9 @@ export const useStore = create<State>((set, get) => ({
         : s.nodes.some((n) => n.id === id)
           ? [...s.highlighted, id]
           : s.highlighted,
+      revealed: null,
     })),
-  clearHighlights: () => set({ highlighted: [] }),
+  clearHighlights: () => set({ highlighted: [], revealed: null }),
   markPlanStarted: (sid, ids) =>
     set((s) => ({
       planStartedWith: { ...s.planStartedWith, [sid]: [...ids].sort().join(',') },

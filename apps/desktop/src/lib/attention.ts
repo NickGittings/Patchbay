@@ -165,5 +165,11 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   }
   s.select(item.componentId)
   s.setActiveSession(item.sid)
-  s.setView(s.runtimeTerminals[item.sid] ? 'navigation' : 'implementation')
+  if (s.runtimeTerminals[item.sid]) {
+    s.setView('navigation')
+    return
+  }
+  // Highlights are the planner's scope and agents' peers, so revealing never changes them.
+  s.setRevealed({ componentId: item.componentId, sid: item.sid })
+  s.setView('implementation')
 }

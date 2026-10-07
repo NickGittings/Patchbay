@@ -124,6 +124,45 @@
       document.querySelector('.task-card.active')?.textContent.includes('±1'),
     )
 
+    // A plan saved in Plan reaches the task's component agents.
+    state().updateComponent('web', {
+      terminals: [
+        ...state().nodes.find((n) => n.id === 'web').data.terminals,
+        {
+          id: 'brief',
+          name: 'Brief',
+          kind: 'agent',
+          command: 'cat "$PATCHBAY_CONTEXT_FILE"; exec cat',
+        },
+      ],
+    })
+    click(viewButton('Plan'))
+    click(await until('saved plan', () => document.querySelector('.plan-file summary')))
+    const editor = await until('plan editor', () => {
+      const el = document.querySelector('.plan-file textarea')
+      return el && !el.disabled && el
+    })
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(
+      editor,
+      'smoke-plan-step-one',
+    )
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    const save = await until('plan save', () =>
+      Array.from(document.querySelectorAll('.plan-file button')).find(
+        (b) => b.textContent === 'Save' && !b.disabled,
+      ),
+    )
+    click(save)
+    await until('plan saved', () => save.disabled)
+    const briefSid = smoke.sessionId('web', 'brief', task.id)
+    await smoke.startTerminal('web', 'brief', task.id)
+    await until(
+      'plan in the agent briefing',
+      () =>
+        textOf(briefSid).includes('##Sharedplan') &&
+        textOf(briefSid).includes('smoke-plan-step-one'),
+    )
+
     // git refuses to remove a dirty worktree; the task stays.
     let refused = false
     await smoke.removeTask(task.id, true).catch(() => {
@@ -140,7 +179,9 @@
     assert(state().sessions[mainSid]?.running, 'removing a task stopped the open worktree')
     assert(state().tasks.length === 0 && state().activeTask === null, 'task not removed')
     task = undefined
-    await smoke.report('PASS tasks: create, parallel worktree terminals, badges, review, remove')
+    await smoke.report(
+      'PASS tasks: create, parallel worktree terminals, badges, review, plan handoff, remove',
+    )
   } catch (e) {
     smoke.resetSessions(await smoke.terminalReset())
     if (task) await smoke.removeTask(task.id, false).catch(() => {})

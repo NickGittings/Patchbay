@@ -718,6 +718,7 @@ async fn component_context(
     component_id: String,
     extra_context: Option<Vec<ContextSection>>,
     task: Option<String>,
+    peers: Option<Vec<String>>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -727,11 +728,14 @@ async fn component_context(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let sections = extensions.get().sections(
+        let (handoff, _) = handoff_sections(&project, &component_id, task.as_deref(), peers);
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             ids,
             &roots,
-            with_task_section(section, extra_context),
+            section.into_iter().chain(handoff),
+            extra_context,
         );
         Ok(context::component_context(
             &project,
@@ -759,11 +763,13 @@ async fn plan_context(
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
-        let sections = extensions.get().sections(
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            with_task_section(section, extra_context),
+            section,
+            extra_context,
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
     })
@@ -791,11 +797,13 @@ async fn plan_start(
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
-        let sections = extensions.get().sections(
+        let sections = briefing_sections(
+            &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            with_task_section(section, extra_context),
+            section,
+            extra_context,
         );
         let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
         metadata.task.clone_from(&task);
@@ -853,15 +861,75 @@ fn for_task(
     Ok((moved, roots, Some(section)))
 }
 
-/// Extension context with the task's section first.
-fn with_task_section(
-    section: Option<ContextSection>,
+/// A briefing's sections: the backend's own (`own`: the task, plan and peers),
+/// whole and first, since core caps them itself, then the extension context
+/// (component files and providers' `extra`) within the registry's budget.
+fn briefing_sections(
+    registry: &Registry,
+    project: &Project,
+    ids: &[String],
+    roots: &[PathBuf],
+    own: impl IntoIterator<Item = ContextSection>,
     extra: Option<Vec<ContextSection>>,
 ) -> Vec<ContextSection> {
-    section
-        .into_iter()
-        .chain(extra.unwrap_or_default())
-        .collect()
+    let mut sections: Vec<_> = own.into_iter().collect();
+    sections.extend(registry.sections(project, ids, roots, extra.unwrap_or_default()));
+    sections
+}
+
+/// What a component agent gets from planning: the saved plan and the other
+/// components being changed with it (peers outside the trusted map are dropped).
+/// Also returns the folders those sections name, for the agent to reach: the
+/// peers' and, with a plan, the plans folder (the whole plan when it was cut).
+fn handoff_sections(
+    project: &Project,
+    component_id: &str,
+    task: Option<&str>,
+    peers: Option<Vec<String>>,
+) -> (Vec<ContextSection>, Vec<PathBuf>) {
+    let root = Path::new(&project.root);
+    let peers = peers.unwrap_or_default();
+    let plan = patchbay_core::plans::section(root, task);
+    let mut dirs: Vec<PathBuf> = peers
+        .iter()
+        .filter(|id| *id != component_id)
+        .filter_map(|id| project.component(id))
+        .map(|c| project.component_dir(c))
+        .collect();
+    if plan.is_some() {
+        dirs.extend(patchbay_core::plans::existing_dir(root));
+    }
+    let peers = context::peers_section(project, component_id, &peers);
+    (plan.into_iter().chain(peers).collect(), dirs)
+}
+
+/// The saved plan of the project (or `task`), empty when there is none.
+#[tauri::command]
+async fn plan_read(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: Option<String>,
+) -> CmdResult<patchbay_core::plans::Plan> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::plans::read(&root, task.as_deref()).map_err(err)).await
+}
+
+/// Replace the saved plan of the project (or `task`) while it still holds
+/// `expected` (any content when `None`); `false` when it didn't.
+#[tauri::command]
+async fn plan_write(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: Option<String>,
+    text: String,
+    expected: Option<String>,
+) -> CmdResult<bool> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        patchbay_core::plans::write_if(&root, task.as_deref(), &text, expected.as_deref())
+            .map_err(err)
+    })
+    .await
 }
 
 /// `root` and `components` in `task`'s worktree, or unchanged without a task.
@@ -1148,6 +1216,7 @@ async fn terminal_start(
     terminal_id: String,
     extra_context: Option<Vec<ContextSection>>,
     task: Option<String>,
+    peers: Option<Vec<String>>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1158,25 +1227,34 @@ async fn terminal_start(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let sections = extensions.get().sections(
-            &project,
-            ids,
-            &roots,
-            with_task_section(section, extra_context),
-        );
         let terminal = project
             .component(&component_id)
             .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
             .ok_or("Unknown terminal")?;
+        // Only agents read a briefing, so skip the plan lookup for the rest.
+        let (handoff, dirs) = if terminal.kind == model::TerminalKind::Agent {
+            handoff_sections(&project, &component_id, task.as_deref(), peers)
+        } else {
+            Default::default()
+        };
+        let sections = briefing_sections(
+            &extensions.get(),
+            &project,
+            ids,
+            &roots,
+            section.into_iter().chain(handoff),
+            extra_context,
+        );
         let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
         metadata.task.clone_from(&task);
-        let spec = context::session_spec_for(
+        let spec = context::session_spec_with(
             &project,
             &component_id,
             &terminal_id,
             task.as_deref(),
             &AllowAll,
             &sections,
+            &dirs,
         )
         .map_err(err)?;
         let id = bridge.start(spec, metadata, request_id)?;
@@ -1371,18 +1449,18 @@ async fn session_resume(
             .get(&record.metadata.project_id)
             .ok_or("Project unavailable; locate its folder first")?;
         // A task's terminal may only reach the task's worktree, as when it started.
-        let roots = match &record.metadata.task {
+        let root = scoped.access.snapshot().root();
+        let mut roots = match &record.metadata.task {
             Some(task) => {
-                let root = scoped
-                    .access
-                    .snapshot()
-                    .root()
-                    .ok_or("No project is open")?;
-                let worktree = tasks::stored(&root, task).map_err(err)?.worktree;
+                let root = root.as_deref().ok_or("No project is open")?;
+                let worktree = tasks::stored(root, task).map_err(err)?.worktree;
                 vec![Path::new(&worktree).canonicalize().map_err(err)?]
             }
             None => scoped.roots(),
         };
+        // Planners and agents with a plan were handed the repo's plans folder,
+        // which lies under `.git` (and every worktree shares).
+        roots.extend(root.and_then(|r| patchbay_core::plans::existing_dir(&r)));
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
@@ -1732,7 +1810,9 @@ pub fn run() {
                 git_review,
                 git_worktrees,
                 plan_context,
+                plan_read,
                 plan_start,
+                plan_write,
                 list_devices,
                 save_device,
                 terminal_start,
@@ -1945,7 +2025,7 @@ async fn launch_extension_terminal(
             .map_err(err)?;
         let ids = std::slice::from_ref(&component_id);
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let sections = registry.sections(&project, ids, &roots, with_task_section(section, None));
+        let sections = briefing_sections(&registry, &project, ids, &roots, section, None);
         let mut metadata = service::metadata(&project_id, &project, &component_id, &terminal);
         metadata.task.clone_from(&task);
         metadata.extension_id = Some(extension_id);

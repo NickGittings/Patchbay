@@ -1,17 +1,44 @@
 import type { DeviceManifest, TerminalSpec } from '../types'
 
+/** The planner when no agent preset is installed. */
+const FALLBACK_AGENT: DeviceManifest = {
+  id: 'claude',
+  name: 'Claude',
+  category: 'agent',
+  command: 'claude',
+  kind: 'agent',
+  source: 'builtin',
+}
+
+/** Agent presets (planners and "Agent in each"), else the built-in Claude. */
+export const agentDevices = (devices: DeviceManifest[]) => {
+  const agents = devices.filter((d) => d.kind === 'agent')
+  return agents.length ? agents : [FALLBACK_AGENT]
+}
+
 /** Planner terminals are session UI state, never persisted on a component. */
 export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
-  const agents = devices.filter((d) => d.kind === 'agent')
-  return agents.length
-    ? agents.map(({ id, name, command, adapter }) => ({
-        id,
-        name,
-        command,
-        adapter,
-        kind: 'agent',
-      }))
-    : [{ id: 'claude', name: 'Claude', command: 'claude', kind: 'agent' }]
+  return agentDevices(devices).map(({ id, name, command, adapter }) => ({
+    id,
+    name,
+    command,
+    adapter,
+    kind: 'agent',
+  }))
+}
+
+/** The agent preset behind planner terminal `id`, so components get the planner's own agent. */
+export function plannerDevice(devices: DeviceManifest[], id: string): DeviceManifest {
+  const agents = agentDevices(devices)
+  return agents.find((d) => d.id === id) ?? agents[0]
+}
+
+/**
+ * The components implemented alongside `componentId`: the highlighted set when it
+ * includes the component and others, so each agent's briefing names its peers.
+ */
+export function peersFor(componentId: string, highlighted: string[]): string[] | undefined {
+  return highlighted.length > 1 && highlighted.includes(componentId) ? highlighted : undefined
 }
 
 type PlanEdge = { source: string; target: string }
