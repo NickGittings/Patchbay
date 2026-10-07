@@ -130,6 +130,12 @@ interface State {
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
   setPlanActive: (id: string | null) => void
+  /**
+   * A terminal Implementation should bring on screen (UI only): its component is shown beside the
+   * highlighted ones without joining them, and no other tile stays maximized.
+   */
+  revealed: { componentId: string; sid: string } | null
+  setRevealed: (revealed: { componentId: string; sid: string } | null) => void
   setView: (view: View) => void
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
@@ -346,6 +352,8 @@ export const useStore = create<State>((set, get) => ({
   planStartedWith: {},
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
+  revealed: null,
+  setRevealed: (revealed) => set({ revealed }),
   tasks: [],
   activeTask: null,
   setTasks: (tasks) =>
@@ -515,8 +523,9 @@ export const useStore = create<State>((set, get) => ({
         : s.nodes.some((n) => n.id === id)
           ? [...s.highlighted, id]
           : s.highlighted,
+      revealed: null,
     })),
-  clearHighlights: () => set({ highlighted: [] }),
+  clearHighlights: () => set({ highlighted: [], revealed: null }),
   markPlanStarted: (sid, ids) =>
     set((s) => ({
       planStartedWith: { ...s.planStartedWith, [sid]: [...ids].sort().join(',') },

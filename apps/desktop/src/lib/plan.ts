@@ -10,14 +10,15 @@ const FALLBACK_AGENT: DeviceManifest = {
   source: 'builtin',
 }
 
-const agentsOf = (devices: DeviceManifest[]) => {
+/** Agent presets (planners and "Agent in each"), else the built-in Claude. */
+export const agentDevices = (devices: DeviceManifest[]) => {
   const agents = devices.filter((d) => d.kind === 'agent')
   return agents.length ? agents : [FALLBACK_AGENT]
 }
 
 /** Planner terminals are session UI state, never persisted on a component. */
 export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
-  return agentsOf(devices).map(({ id, name, command, adapter }) => ({
+  return agentDevices(devices).map(({ id, name, command, adapter }) => ({
     id,
     name,
     command,
@@ -28,7 +29,7 @@ export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
 
 /** The agent preset behind planner terminal `id`, so components get the planner's own agent. */
 export function plannerDevice(devices: DeviceManifest[], id: string): DeviceManifest {
-  const agents = agentsOf(devices)
+  const agents = agentDevices(devices)
   return agents.find((d) => d.id === id) ?? agents[0]
 }
 

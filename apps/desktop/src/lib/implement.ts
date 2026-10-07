@@ -29,6 +29,3 @@ export function startAgentsIn(
     }),
   )
 }
-
-/** Agent presets, the choices for "agent in each". */
-export const agentDevices = (devices: DeviceManifest[]) => devices.filter((d) => d.kind === 'agent')

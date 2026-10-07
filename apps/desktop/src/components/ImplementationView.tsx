@@ -4,7 +4,8 @@ import { Panel, Separator } from 'react-resizable-panels'
 import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
-import { agentDevices, startAgentsIn } from '../lib/implement'
+import { startAgentsIn } from '../lib/implement'
+import { agentDevices } from '../lib/plan'
 import { startTerminal } from '../lib/sessions'
 import { openComponentWindow } from '../lib/windows'
 import { useStore, type FlowNode } from '../store'
@@ -22,6 +23,8 @@ export default function ImplementationView() {
   const nodes = useStore((s) => s.nodes)
   const selectedId = useStore((s) => s.selectedId)
   const highlighted = useStore((s) => s.highlighted)
+  const revealed = useStore((s) => s.revealed)
+  const setRevealed = useStore((s) => s.setRevealed)
   const sessions = useStore((s) => s.sessions)
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const task = useStore((s) => s.activeTask)
@@ -38,7 +41,18 @@ export default function ImplementationView() {
   const scoped = highlighted
     .map((id) => nodes.find((n) => n.id === id))
     .filter((n): n is FlowNode => !!n)
-  const shown = scoped.length ? scoped : fallback ? [fallback] : []
+  // A revealed terminal's component is shown after the highlighted ones until the scope changes.
+  const extra =
+    revealed && scoped.length && !scoped.some((n) => n.id === revealed.componentId)
+      ? nodes.find((n) => n.id === revealed.componentId)
+      : undefined
+  const shown = scoped.length ? (extra ? [...scoped, extra] : scoped) : fallback ? [fallback] : []
+  // A new reveal un-maximizes any other tile, which would hide the revealed one.
+  const [seenReveal, setSeenReveal] = useState(revealed)
+  if (seenReveal !== revealed) {
+    setSeenReveal(revealed)
+    if (revealed && maximized !== revealed.sid) setMaximized(null)
+  }
   const shownIds = new Set(shown.map((n) => n.id))
   // Changes and pop-out act on one component: the selected one when shown.
   const focused = shown.find((n) => n.id === selectedId) ?? shown[0]
@@ -62,6 +76,7 @@ export default function ImplementationView() {
       clearHighlights()
       select(id)
     }
+    setRevealed(null)
     setMaximized(null)
   }
 

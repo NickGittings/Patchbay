@@ -589,10 +589,16 @@ pub fn plan_context(
     }
     out.push_str(
         "\nYou are planning, not implementing: explore, ask questions and produce a plan; \
-         don't edit files unless asked. When the plan is agreed, write it as Markdown to the \
-         file named by `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their \
-         briefing.\n",
+         don't edit files unless asked.",
     );
+    // Only a repo has somewhere to keep the plan (`plan_session_spec_for` sets the variable).
+    if crate::plans::plan_file(Path::new(&project.root), None).is_ok() {
+        out.push_str(
+            " When the plan is agreed, write it as Markdown to the file named by \
+             `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their briefing.",
+        );
+    }
+    out.push('\n');
     append_sections(&mut out, sections);
     out
 }
@@ -936,6 +942,32 @@ pub fn session_spec_for(
     policy: &dyn Policy,
     sections: &[ContextSection],
 ) -> Result<SessionSpec> {
+    session_spec_with(
+        project,
+        component_id,
+        terminal_id,
+        task,
+        policy,
+        sections,
+        &[],
+    )
+}
+
+/// [`session_spec_for`], also handing an agent `extra_dirs` beside its
+/// neighbours' folders (the folders its briefing names, such as peers being
+/// changed alongside it or the plans folder). Other terminals ignore them.
+///
+/// # Errors
+/// As [`session_spec`].
+pub fn session_spec_with(
+    project: &Project,
+    component_id: &str,
+    terminal_id: &str,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    extra_dirs: &[PathBuf],
+) -> Result<SessionSpec> {
     let component = project
         .component(component_id)
         .ok_or_else(|| anyhow!("unknown component {component_id}"))?;
@@ -959,6 +991,11 @@ pub fn session_spec_for(
             .iter()
             .map(|(n, _)| project.component_dir(n))
             .collect();
+        for dir in extra_dirs {
+            if !context_dirs.contains(dir) {
+                context_dirs.push(dir.clone());
+            }
+        }
         let briefing = Briefing {
             file: &file,
             text: &briefing,
@@ -1301,6 +1338,17 @@ mod tests {
     }
 
     #[test]
+    fn agents_get_extra_dirs_once() {
+        let p = project();
+        let peer = PathBuf::from("/shared/peer");
+        let extra = [peer.clone(), peer.clone()];
+        let spec = session_spec_with(&p, "api", "agent", None, &AllowAll, &[], &extra).unwrap();
+        assert_eq!(spec.dirs.iter().filter(|d| **d == peer).count(), 1);
+        let plain = session_spec_for(&p, "api", "agent", None, &AllowAll, &[]).unwrap();
+        assert!(!plain.dirs.contains(&peer));
+    }
+
+    #[test]
     fn planner_is_told_where_to_write_the_plan() {
         let root = std::env::temp_dir().join(format!("patchbay-plan-env-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1326,6 +1374,8 @@ mod tests {
         let task = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
         assert!(task.env[crate::plans::PLAN_FILE_ENV].ends_with("t1.md"));
         assert!(plan_context(&p, &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
+        // Outside a repo nothing names the file, so the briefing doesn't ask for it.
+        assert!(!plan_context(&project(), &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
         let _ = std::fs::remove_dir_all(root);
     }
 

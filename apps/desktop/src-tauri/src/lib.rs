@@ -728,7 +728,7 @@ async fn component_context(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let handoff = handoff_sections(&project, &component_id, task.as_deref(), peers);
+        let (handoff, _) = handoff_sections(&project, &component_id, task.as_deref(), peers);
         let sections = briefing_sections(
             &extensions.get(),
             &project,
@@ -879,15 +879,28 @@ fn briefing_sections(
 
 /// What a component agent gets from planning: the saved plan and the other
 /// components being changed with it (peers outside the trusted map are dropped).
+/// Also returns the folders those sections name, for the agent to reach: the
+/// peers' and, with a plan, the plans folder (the whole plan when it was cut).
 fn handoff_sections(
     project: &Project,
     component_id: &str,
     task: Option<&str>,
     peers: Option<Vec<String>>,
-) -> Vec<ContextSection> {
-    let plan = patchbay_core::plans::section(Path::new(&project.root), task);
-    let peers = context::peers_section(project, component_id, &peers.unwrap_or_default());
-    plan.into_iter().chain(peers).collect()
+) -> (Vec<ContextSection>, Vec<PathBuf>) {
+    let root = Path::new(&project.root);
+    let peers = peers.unwrap_or_default();
+    let plan = patchbay_core::plans::section(root, task);
+    let mut dirs: Vec<PathBuf> = peers
+        .iter()
+        .filter(|id| *id != component_id)
+        .filter_map(|id| project.component(id))
+        .map(|c| project.component_dir(c))
+        .collect();
+    if plan.is_some() {
+        dirs.extend(patchbay_core::plans::existing_dir(root));
+    }
+    let peers = context::peers_section(project, component_id, &peers);
+    (plan.into_iter().chain(peers).collect(), dirs)
 }
 
 /// The saved plan of the project (or `task`), empty when there is none.
@@ -896,26 +909,27 @@ async fn plan_read(
     project_id: String,
     state: State<'_, AppState>,
     task: Option<String>,
-) -> CmdResult<String> {
+) -> CmdResult<patchbay_core::plans::Plan> {
     let (root, _) = task_repo(&state, &project_id)?;
-    blocking(move || {
-        patchbay_core::plans::read(&root, task.as_deref())
-            .map(Option::unwrap_or_default)
-            .map_err(err)
-    })
-    .await
+    blocking(move || patchbay_core::plans::read(&root, task.as_deref()).map_err(err)).await
 }
 
-/// Replace the saved plan of the project (or `task`).
+/// Replace the saved plan of the project (or `task`) while it still holds
+/// `expected` (any content when `None`); `false` when it didn't.
 #[tauri::command]
 async fn plan_write(
     project_id: String,
     state: State<'_, AppState>,
     task: Option<String>,
     text: String,
-) -> CmdResult<()> {
+    expected: Option<String>,
+) -> CmdResult<bool> {
     let (root, _) = task_repo(&state, &project_id)?;
-    blocking(move || patchbay_core::plans::write(&root, task.as_deref(), &text).map_err(err)).await
+    blocking(move || {
+        patchbay_core::plans::write_if(&root, task.as_deref(), &text, expected.as_deref())
+            .map_err(err)
+    })
+    .await
 }
 
 /// `root` and `components` in `task`'s worktree, or unchanged without a task.
@@ -1218,10 +1232,10 @@ async fn terminal_start(
             .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
             .ok_or("Unknown terminal")?;
         // Only agents read a briefing, so skip the plan lookup for the rest.
-        let handoff = if terminal.kind == model::TerminalKind::Agent {
+        let (handoff, dirs) = if terminal.kind == model::TerminalKind::Agent {
             handoff_sections(&project, &component_id, task.as_deref(), peers)
         } else {
-            Vec::new()
+            Default::default()
         };
         let sections = briefing_sections(
             &extensions.get(),
@@ -1233,13 +1247,14 @@ async fn terminal_start(
         );
         let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
         metadata.task.clone_from(&task);
-        let spec = context::session_spec_for(
+        let spec = context::session_spec_with(
             &project,
             &component_id,
             &terminal_id,
             task.as_deref(),
             &AllowAll,
             &sections,
+            &dirs,
         )
         .map_err(err)?;
         let id = bridge.start(spec, metadata, request_id)?;
@@ -1443,12 +1458,9 @@ async fn session_resume(
             }
             None => scoped.roots(),
         };
-        // Planners were handed the repo's plans folder, which lies under `.git`.
-        if record.metadata.component_id == model::PLAN_SCOPE
-            && let Some(plans) = root.and_then(|r| patchbay_core::plans::dir(&r).ok())
-        {
-            roots.push(plans);
-        }
+        // Planners and agents with a plan were handed the repo's plans folder,
+        // which lies under `.git` (and every worktree shares).
+        roots.extend(root.and_then(|r| patchbay_core::plans::existing_dir(&r)));
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;

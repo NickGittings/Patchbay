@@ -19,7 +19,7 @@ const addTerminal = vi.fn(() => 'claude-new')
 const startTerminal = vi.fn(() => Promise.resolve())
 vi.mock('../store', () => ({ useStore: { getState: () => ({ nodes, addTerminal }) } }))
 vi.mock('./sessions', () => ({ startTerminal }))
-const { agentDevices, startAgentsIn } = await import('./implement')
+const { startAgentsIn } = await import('./implement')
 
 const claude: DeviceManifest = {
   id: 'claude',
@@ -43,8 +43,4 @@ test('reuses a matching agent terminal and adds one where missing', async () => 
     ['api', 'claude-new', 't1'],
     ['db', 'claude-new', 't1'],
   ])
-})
-
-test('only agent presets are offered', () => {
-  expect(agentDevices([claude, { ...claude, id: 'dev', kind: 'task' }])).toEqual([claude])
 })

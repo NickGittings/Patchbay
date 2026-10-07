@@ -165,9 +165,11 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   }
   s.select(item.componentId)
   s.setActiveSession(item.sid)
-  const implementation = !s.runtimeTerminals[item.sid]
-  // Implementation shows the highlighted set when there is one; join it so the terminal is on screen.
-  if (implementation && s.highlighted.length && !s.highlighted.includes(item.componentId))
-    s.toggleHighlight(item.componentId)
-  s.setView(implementation ? 'implementation' : 'navigation')
+  if (s.runtimeTerminals[item.sid]) {
+    s.setView('navigation')
+    return
+  }
+  // Highlights are the planner's scope and agents' peers, so revealing never changes them.
+  s.setRevealed({ componentId: item.componentId, sid: item.sid })
+  s.setView('implementation')
 }

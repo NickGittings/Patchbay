@@ -2,7 +2,7 @@ import { extraContext } from '../extensions/context'
 import type { ExtensionRegistry } from '../types'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
-import type { OpenedProject, SessionRecord, WorkspaceDocument } from '../types'
+import type { OpenedProject, PlanText, SessionRecord, WorkspaceDocument } from '../types'
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   return tauriInvoke<T>(command, { projectId: useStore.getState().project?.id, ...args })
 }
@@ -159,10 +159,17 @@ export const planContext = async (project: Project, componentIds: string[], task
   })
 /** The plan the planner saved for the project (or task); empty when there is none. */
 export const planRead = (projectId: string, task?: string) =>
-  invoke<string>('plan_read', { projectId, task })
-/** Replace the saved plan that component agents receive in their briefing. */
-export const planWrite = (projectId: string, task: string | undefined, text: string) =>
-  invoke<void>('plan_write', { projectId, task, text })
+  invoke<PlanText>('plan_read', { projectId, task })
+/**
+ * Replace the saved plan that component agents receive in their briefing, while the file still
+ * holds `expected` (`null` replaces any content); `false` when it didn't.
+ */
+export const planWrite = (
+  projectId: string,
+  task: string | undefined,
+  text: string,
+  expected: string | null,
+) => invoke<boolean>('plan_write', { projectId, task, text, expected })
 export const planStart = async (
   project: Project,
   componentIds: string[],

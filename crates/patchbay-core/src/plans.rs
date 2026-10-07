@@ -4,8 +4,10 @@
 
 use crate::context::ContextSection;
 use anyhow::{Result, bail};
+use serde::Serialize;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -46,6 +48,17 @@ pub fn dir(root: &Path) -> Result<PathBuf> {
     let dir = crate::tasks::store_dir(root)?.join("plans");
     std::fs::create_dir_all(&dir)?;
     Ok(dir.canonicalize()?)
+}
+
+/// The plans folder when it exists, canonical and without creating it: the
+/// folder planners and component agents were handed, for checking a resume.
+#[must_use]
+pub fn existing_dir(root: &Path) -> Option<PathBuf> {
+    crate::tasks::store_dir(root)
+        .ok()?
+        .join("plans")
+        .canonicalize()
+        .ok()
 }
 
 /// `task`'s plan file in the created, canonical [`dir`].
@@ -91,6 +104,14 @@ fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
         .read_to_end(&mut bytes)?;
     let cut = bytes.len() > PLAN_LIMIT;
     bytes.truncate(PLAN_LIMIT);
+    if cut {
+        // Cut at a character boundary, so the text stays within the limit.
+        if let Err(e) = std::str::from_utf8(&bytes)
+            && e.error_len().is_none()
+        {
+            bytes.truncate(e.valid_up_to());
+        }
+    }
     Ok(Some(Saved {
         text: String::from_utf8_lossy(&bytes).into_owned(),
         cut,
@@ -98,12 +119,58 @@ fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
     }))
 }
 
-/// The saved plan, or `None` when there is none yet. Cut at [`PLAN_LIMIT`].
+/// A saved plan for the editor: empty when there is none yet, and `cut` when
+/// the file is longer than [`PLAN_LIMIT`] (so saving `text` would lose the rest).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub text: String,
+    pub cut: bool,
+}
+
+/// The saved plan, cut at [`PLAN_LIMIT`].
 ///
 /// # Errors
 /// Fails as [`plan_file`], or when the file exists but can't be read.
-pub fn read(root: &Path, task: Option<&str>) -> Result<Option<String>> {
-    Ok(load(root, task)?.map(|saved| saved.text))
+pub fn read(root: &Path, task: Option<&str>) -> Result<Plan> {
+    Ok(load(root, task)?.map_or_else(
+        || Plan {
+            text: String::new(),
+            cut: false,
+        },
+        |saved| Plan {
+            text: saved.text,
+            cut: saved.cut,
+        },
+    ))
+}
+
+/// Serializes [`write_if`]'s check and replace within this process.
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// Save the plan as [`write`] does, but only while the file still holds
+/// `expected` (as [`read`] returned it, and not cut); `None` saves regardless.
+/// Returns whether it saved, so an editor can tell the planner rewrote it.
+///
+/// # Errors
+/// As [`write`].
+pub fn write_if(
+    root: &Path,
+    task: Option<&str>,
+    text: &str,
+    expected: Option<&str>,
+) -> Result<bool> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(expected) = expected {
+        let current = read(root, task)?;
+        if current.cut || current.text != expected {
+            return Ok(false);
+        }
+    }
+    write(root, task, text)?;
+    Ok(true)
 }
 
 /// Save the plan atomically, so an agent never reads half of it.
@@ -207,15 +274,12 @@ mod tests {
     #[test]
     fn plans_round_trip_per_task() {
         let Some(root) = repo() else { return };
-        assert_eq!(read(&root, None).unwrap(), None);
+        assert_eq!(read(&root, None).unwrap().text, "");
         assert!(section(&root, None).is_none());
         write(&root, None, "1. do it").unwrap();
         write(&root, Some("t1"), "task plan").unwrap();
-        assert_eq!(read(&root, None).unwrap().as_deref(), Some("1. do it"));
-        assert_eq!(
-            read(&root, Some("t1")).unwrap().as_deref(),
-            Some("task plan")
-        );
+        assert_eq!(read(&root, None).unwrap().text, "1. do it");
+        assert_eq!(read(&root, Some("t1")).unwrap().text, "task plan");
         let file = plan_file(&root, None).unwrap();
         assert!(file.starts_with(root.join(".git")));
         assert!(section(&root, None).unwrap().body.contains("1. do it"));
@@ -228,7 +292,7 @@ mod tests {
         write(&root, None, "  \n").unwrap();
         assert!(section(&root, None).is_none());
         remove(&root, Some("t1")).unwrap();
-        assert_eq!(read(&root, Some("t1")).unwrap(), None);
+        assert!(!plan_file(&root, Some("t1")).unwrap().exists());
         remove(&root, Some("t1")).unwrap();
         let _ = fs::remove_dir_all(root);
     }
@@ -245,14 +309,36 @@ mod tests {
                 .body
                 .contains("continues past")
         );
+        assert!(!read(&root, None).unwrap().cut);
         fs::write(&file, "y".repeat(PLAN_LIMIT + 10)).unwrap();
-        assert_eq!(read(&root, None).unwrap().unwrap().len(), PLAN_LIMIT);
+        let plan = read(&root, None).unwrap();
+        assert!(plan.cut && plan.text.len() == PLAN_LIMIT);
         assert!(
             section(&root, None)
                 .unwrap()
                 .body
                 .contains("continues past 64 KiB")
         );
+        // A cut inside a character drops the partial character instead of replacing it.
+        fs::write(&file, format!("{}é", "y".repeat(PLAN_LIMIT - 1))).unwrap();
+        let plan = read(&root, None).unwrap();
+        assert!(plan.cut && plan.text == "y".repeat(PLAN_LIMIT - 1));
+        // A cut plan is never replaced conditionally: saving it would lose the rest.
+        assert!(!write_if(&root, None, "z", Some(&plan.text)).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn conditional_writes_notice_a_rewritten_plan() {
+        let Some(root) = repo() else { return };
+        assert_eq!(existing_dir(&root), None);
+        assert!(write_if(&root, None, "mine", Some("")).unwrap());
+        assert_eq!(existing_dir(&root), Some(dir(&root).unwrap()));
+        write(&root, None, "planner's").unwrap();
+        assert!(!write_if(&root, None, "stale", Some("mine")).unwrap());
+        assert_eq!(read(&root, None).unwrap().text, "planner's");
+        assert!(write_if(&root, None, "forced", None).unwrap());
+        assert_eq!(read(&root, None).unwrap().text, "forced");
         let _ = fs::remove_dir_all(root);
     }
 
