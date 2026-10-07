@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
+import { modifierKey } from '../lib/platform'
 import { startAgentsIn } from '../lib/implement'
 import { agentDevices } from '../lib/plan'
 import { startTerminal } from '../lib/sessions'
@@ -80,31 +81,23 @@ export default function ImplementationView() {
     <div className={`implementation-groups ${groups.length > 1 ? 'multi' : ''}`}>
       {groups.map((n) => (
         <section key={n.id} className="implementation-group" aria-label={n.data.name}>
-          {(shown.length > 1 || !solo) && (
-            <header className="implementation-group-header">
-              <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
-              <strong>{n.data.name}</strong>
-              <AttentionPill
-                status={componentAttention(
-                  n.id,
-                  n.data.terminals,
-                  sessions,
-                  runtimeTerminals,
-                  task,
-                )}
-              />
-              <span className="spacer" />
-              <AddTerminalSelect componentId={n.id} className="add-terminal compact" />
-              <button
-                className="group-popout"
-                title={`Open ${n.data.name} in its own window`}
-                aria-label={`Open ${n.data.name} in its own window`}
-                onClick={() => void openComponentWindow(n.id, n.data.name)}
-              >
-                ⧉
-              </button>
-            </header>
-          )}
+          <header className="implementation-group-header">
+            <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
+            <strong>{n.data.name}</strong>
+            <AttentionPill
+              status={componentAttention(n.id, n.data.terminals, sessions, runtimeTerminals, task)}
+            />
+            <span className="spacer" />
+            <AddTerminalSelect componentId={n.id} className="add-terminal compact" />
+            <button
+              className="group-popout"
+              title={`Open ${n.data.name} in its own window`}
+              aria-label={`Open ${n.data.name} in its own window`}
+              onClick={() => void openComponentWindow(n.id, n.data.name)}
+            >
+              ⧉
+            </button>
+          </header>
           <TerminalGrid
             componentId={n.id}
             terminals={n.data.terminals}
@@ -122,7 +115,7 @@ export default function ImplementationView() {
         <div
           className="component-switcher"
           role="group"
-          aria-label="Components (⌘-click to work on several)"
+          aria-label={`Components (${modifierKey}-click to work on several)`}
         >
           {nodes.map((n) => {
             const running = n.data.terminals.filter(
@@ -142,7 +135,7 @@ export default function ImplementationView() {
                 key={n.id}
                 className={`component-pill ${inScope ? 'active' : ''}`}
                 aria-pressed={inScope}
-                title="⌘-click or Shift-click to work on several components at once"
+                title={`${modifierKey}-click or Shift-click to work on several components at once`}
                 onClick={(e) => onPill(n.id, e.metaKey || e.ctrlKey || e.shiftKey)}
               >
                 <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />

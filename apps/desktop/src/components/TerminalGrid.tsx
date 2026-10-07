@@ -18,11 +18,13 @@ export default function TerminalGrid({
   terminals,
   maximized: controlled,
   onMaximize,
+  emptyMessage = 'Add a dev server, test runner or agent using the “+ Add terminal…” menu above.',
 }: {
   componentId: string
   terminals: TerminalSpec[]
   maximized?: string | null
   onMaximize?: (sid: string | null) => void
+  emptyMessage?: string
 }) {
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
@@ -71,8 +73,7 @@ export default function TerminalGrid({
       })}
       {terminals.length === 0 && (
         <EmptyState icon="›_" title="No terminals">
-          No terminals configured for this component. Add a dev server, test runner or agent from
-          the Inspector or the “+ Add terminal…” menu.
+          {emptyMessage}
         </EmptyState>
       )}
     </div>

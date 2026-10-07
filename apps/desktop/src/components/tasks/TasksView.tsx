@@ -57,8 +57,7 @@ export default function TasksView() {
               </button>
             }
           >
-            No tasks yet. Start one to work on a branch in its own worktree, with the same map and
-            terminals.
+            Work on a branch in its own worktree, with the same map and terminals.
           </EmptyState>
         )}
       </div>

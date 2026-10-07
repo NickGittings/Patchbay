@@ -1,3 +1,4 @@
+import { modifierKey, shiftKey } from '../lib/platform'
 import { openInEditor, revealLabel } from '../lib/navigation'
 import { closeInspector } from '../lib/panels'
 import { revealPath } from '../lib/ipc'
@@ -415,10 +416,10 @@ function NothingSelected({ hasProject }: { hasProject: boolean }) {
           </span>
         </li>
         <li>
-          <span>⌘</span>
+          <span>{modifierKey}</span>
           <span>
-            <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>P</kbd> opens the command palette, <kbd>⌘</kbd>{' '}
-            <kbd>P</kbd> finds a file.
+            <kbd>{modifierKey}</kbd> <kbd>{shiftKey}</kbd> <kbd>P</kbd> opens the command palette,{' '}
+            <kbd>{modifierKey}</kbd> <kbd>P</kbd> finds a file.
           </span>
         </li>
       </ul>

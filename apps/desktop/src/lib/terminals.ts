@@ -1,6 +1,6 @@
 import { openTerminalReference, terminalReferences } from './navigation'
 import { FitAddon } from '@xterm/addon-fit'
-import { Terminal, type IBufferLine, type ILink, type IMarker } from '@xterm/xterm'
+import { Terminal, type IBufferLine, type ILink, type IMarker, type ITheme } from '@xterm/xterm'
 import { terminalResize, terminalWrite } from './ipc'
 import { useStore } from '../store'
 
@@ -18,28 +18,51 @@ interface Entry {
 /** One long-lived xterm per session so scrollback survives tab switches and restarts. */
 const registry = new Map<string, Entry>()
 
-const theme = {
-  background: '#121215',
-  foreground: '#ededef',
-  cursor: '#3d7bff',
-  cursorAccent: '#121215',
-  selectionBackground: '#1e3a7a',
-  black: '#25252a',
-  red: '#ff5c5c',
-  green: '#3ecf8e',
-  yellow: '#f5c451',
-  blue: '#5b8cff',
-  magenta: '#c084fc',
-  cyan: '#22d3ee',
-  white: '#d4d4d8',
-  brightBlack: '#52525b',
-  brightRed: '#ff8080',
-  brightGreen: '#6ee7b7',
-  brightYellow: '#fcd679',
-  brightBlue: '#8fb0ff',
-  brightMagenta: '#d8b4fe',
-  brightCyan: '#67e8f9',
-  brightWhite: '#fafafa',
+/** xterm takes resolved colors rather than CSS variable references. */
+function terminalTheme(): ITheme {
+  const styles = getComputedStyle(document.documentElement)
+  const color = (variable: string) => styles.getPropertyValue(variable).trim()
+  return {
+    background: color('--bg'),
+    foreground: color('--text'),
+    cursor: color('--accent'),
+    cursorAccent: color('--bg'),
+    selectionBackground: color('--terminal-selection'),
+    black: color('--hover'),
+    red: color('--bad'),
+    green: color('--ok'),
+    yellow: color('--terminal-yellow'),
+    blue: color('--terminal-blue'),
+    magenta: color('--terminal-magenta'),
+    cyan: color('--running'),
+    white: color('--terminal-white'),
+    brightBlack: color('--terminal-bright-black'),
+    brightRed: color('--terminal-bright-red'),
+    brightGreen: color('--terminal-bright-green'),
+    brightYellow: color('--terminal-bright-yellow'),
+    brightBlue: color('--terminal-bright-blue'),
+    brightMagenta: color('--terminal-bright-magenta'),
+    brightCyan: color('--terminal-bright-cyan'),
+    brightWhite: color('--terminal-bright-white'),
+  }
+}
+
+let themeObserver: MutationObserver | undefined
+let themeSignature = ''
+function refreshTheme() {
+  const theme = terminalTheme()
+  const signature = JSON.stringify(theme)
+  if (signature === themeSignature) return
+  themeSignature = signature
+  for (const { term } of registry.values()) term.options.theme = theme
+}
+function observeTheme() {
+  if (themeObserver) return
+  themeObserver = new MutationObserver(refreshTheme)
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class', 'style', 'data-theme'],
+  })
 }
 
 /** Map UTF-16 string offsets onto xterm cell columns (wide and combining characters). */
@@ -118,7 +141,7 @@ function entry(sessionId: string): Entry {
       fontSize: 12.5,
       cursorBlink: true,
       scrollback: 10000,
-      theme,
+      theme: terminalTheme(),
     })
     term.registerLinkProvider({
       provideLinks(line, callback) {
@@ -152,6 +175,7 @@ function entry(sessionId: string): Entry {
     })
     e = created
     registry.set(sessionId, e)
+    observeTheme()
   }
   return e
 }
@@ -217,6 +241,7 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
   if (!e.hosts.includes(container)) e.hosts.push(container)
   if (e.hosts.at(-1) !== container) return
   if (e.el.parentElement !== container) container.replaceChildren(e.el)
+  refreshTheme()
   if (!e.opened) {
     e.term.open(e.el)
     e.opened = true
@@ -269,6 +294,9 @@ export function detachHost(sessionId: string, host: HTMLElement): boolean {
 }
 
 export function disposeAll() {
+  themeObserver?.disconnect()
+  themeObserver = undefined
+  themeSignature = ''
   for (const e of registry.values()) e.term.dispose()
   registry.clear()
 }

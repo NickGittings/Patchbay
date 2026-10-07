@@ -181,7 +181,11 @@ export default function ComponentWindow({ id }: { id: string }) {
         </Panel>
         <Separator className="separator" />
         <Panel id="ComponentWindow-pane-2" defaultSize="72" minSize="30">
-          <TerminalGrid componentId={id} terminals={data.terminals} />
+          <TerminalGrid
+            componentId={id}
+            terminals={data.terminals}
+            emptyMessage="Add a dev server, test runner or agent in the main window’s Inspector for this component."
+          />
         </Panel>
       </PersistedGroup>
     </div>

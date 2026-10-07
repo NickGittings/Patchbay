@@ -92,6 +92,11 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       <div className="component-header">
         <span className="kind-badge">{data.kind}</span>
         <span className="component-name">{data.name}</span>
+        {inTask && (
+          <span className="task-badge" title="In the active task">
+            Task
+          </span>
+        )}
         {repo && (
           <span className="repo-badge" title={`In the ${repo} repo`}>
             {repo}

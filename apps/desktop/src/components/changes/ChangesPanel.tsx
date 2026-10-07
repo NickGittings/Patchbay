@@ -18,6 +18,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
   // A new object on every Git refresh (pop-outs get it over `patchbay://git`), so the list
   // also reloads when an edit leaves the change count as it was.
   const revision = useStore((s) => s.gitChanges)
+  const name = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.name ?? componentId)
   const base = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.path ?? '.')
   const [loaded, setLoaded] = useState<{ scope: string; files: ChangedFile[] }>()
   const [error, setError] = useState('')
@@ -64,7 +65,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       ) : !files ? (
         <div className="hint">Loading…</div>
       ) : !files.length ? (
-        <EmptyState icon="✓" title="Working tree clean">
+        <EmptyState icon="✓" title={`No changes in ${name}`}>
           No uncommitted changes.
         </EmptyState>
       ) : (

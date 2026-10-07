@@ -230,6 +230,14 @@
         document.querySelector('.implementation-group')?.textContent.includes('ALPHA'),
       'implementation does not show the highlighted component',
     )
+    const startButton = await until('terminal start overlay', () =>
+      document.querySelector('.implementation-view .terminal-overlay button'),
+    )
+    assert(startButton.textContent.trim() === '▶ Start Task', 'start button repeats the command')
+    assert(
+      document.querySelector('.terminal-overlay-command')?.textContent === 'cat',
+      'terminal command is missing from the start overlay',
+    )
     // ⌘-click works on several components side by side, sharing the planner's scope.
     pill('BETA').dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
     await until(
@@ -252,6 +260,14 @@
     // A plain click shows one component again.
     click(pill('BETA'))
     await until('implementation selection', () => state().selectedId === 'beta')
+    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
+    await until(
+      'single-component maximized pop-out action',
+      () =>
+        document.querySelector('.terminal-tile.maximized') &&
+        document.querySelector('.implementation-group-header .group-popout'),
+    )
+    click(document.querySelector('.implementation-view button[aria-label^="Restore"]'))
     click(
       Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
         b.textContent.includes('Start all'),

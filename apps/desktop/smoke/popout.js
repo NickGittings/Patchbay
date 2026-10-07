@@ -3,7 +3,7 @@
 //
 // Main window: open the repo, start a shell, print a marker, pop the component out.
 // Pop-out: check the marker was replayed from the backlog, live input works, and the
-// file tree and terminal tiles render.
+// file tree, terminal tiles and Changes tab render.
 ;(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const until = async (what, check, timeout = 20000) => {
@@ -33,7 +33,21 @@
       // Arithmetic so the typed command never matches the expected output.
       await smoke.terminalWrite(sid, 'echo backlog-$((40+2))\r')
       await until('marker output', () => textOf(sid).includes('backlog-42'))
-      await smoke.openComponentWindow(node.id, node.data.name)
+      const state = smoke.store.getState()
+      state.clearHighlights()
+      state.select(node.id)
+      state.setView('implementation')
+      await until('implementation tile', () =>
+        document.querySelector('.implementation-view button[aria-label^="Maximize"]'),
+      )
+      document.querySelector('.implementation-view button[aria-label^="Maximize"]').click()
+      await until('maximized tile', () =>
+        document.querySelector('.implementation-view .terminal-tile.maximized'),
+      )
+      const button = document.querySelector('.implementation-view .group-popout')
+      if (!button || button.getBoundingClientRect().width === 0)
+        throw new Error('maximizing the only component hides its pop-out button')
+      button.click()
       return
     }
 
@@ -49,7 +63,35 @@
       'terminal tiles',
       () => document.querySelectorAll('.terminal-tile').length === node.data.terminals.length,
     )
-    await smoke.report(`PASS ${node.data.name}: backlog replayed, live input, file tree, tiles`)
+    const changesTab = Array.from(document.querySelectorAll('.side-tabs [role="tab"]')).find(
+      (button) => button.textContent.startsWith('Changes'),
+    )
+    if (!changesTab) throw new Error('missing Changes tab')
+    changesTab.click()
+    await until('component changes', () => {
+      const panel = document.querySelector('.component-window .changes-panel')
+      if (!panel) return false
+      const error = panel.querySelector('.file-tree-error, .diff-error')
+      if (error) throw new Error(error.textContent)
+      return panel.querySelector('.change-list') || panel.querySelector('.empty-state')
+    })
+    if (document.querySelector('.changes-panel .change-list')) {
+      await until('component diff', () => {
+        const error = document.querySelector('.changes-panel .diff-error')
+        if (error) throw new Error(error.textContent)
+        const diff = document.querySelector('.changes-panel .diff-view')
+        return diff && !diff.classList.contains('diff-loading')
+      })
+    } else {
+      const title = document.querySelector('.changes-panel .empty-state-title')?.textContent
+      if (title !== `No changes in ${node.data.name}`)
+        throw new Error(`incorrect component changes empty state: ${title}`)
+    }
+    if (!document.querySelector('.component-window .terminal-tile'))
+      throw new Error('Changes tab hides the terminals')
+    await smoke.report(
+      `PASS ${node.data.name}: maximized pop-out, backlog replayed, live input, file tree, tiles, changes`,
+    )
   } catch (e) {
     await smoke.report(`FAIL ${popout ?? 'main'}: ${e?.message ?? e}`)
   }

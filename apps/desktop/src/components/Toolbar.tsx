@@ -10,6 +10,7 @@ import Toast from './Toast'
 import AttentionMenu from './status/AttentionMenu'
 import TaskMenu from './tasks/TaskMenu'
 import type { View } from '../types'
+import { mod, shiftMod } from '../lib/platform'
 
 const views: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
@@ -18,10 +19,6 @@ const views: { id: View; label: string }[] = [
   { id: 'review', label: 'Review' },
   { id: 'tasks', label: 'Tasks' },
 ]
-
-const mac = /mac/i.test(navigator.userAgent)
-const mod = mac ? '⌘' : 'Ctrl+'
-const shiftMod = mac ? '⇧⌘' : 'Ctrl+Shift+'
 
 export default function Toolbar() {
   const [integrationsOpen, setIntegrationsOpen] = useState(false)

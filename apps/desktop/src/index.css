@@ -17,6 +17,20 @@
   --running: #22d3ee;
   --input: #f5a524;
   --review: #a78bfa;
+  --task: var(--review);
+  --terminal-selection: #1e3a7a;
+  --terminal-yellow: #f5c451;
+  --terminal-blue: #5b8cff;
+  --terminal-magenta: #c084fc;
+  --terminal-white: #d4d4d8;
+  --terminal-bright-black: #52525b;
+  --terminal-bright-red: #ff8080;
+  --terminal-bright-green: #6ee7b7;
+  --terminal-bright-yellow: #fcd679;
+  --terminal-bright-blue: #8fb0ff;
+  --terminal-bright-magenta: #d8b4fe;
+  --terminal-bright-cyan: #67e8f9;
+  --terminal-bright-white: #fafafa;
   --add-bg: color-mix(in srgb, var(--ok) 9%, var(--bg));
   --add-gutter: color-mix(in srgb, var(--ok) 15%, var(--bg));
   --add-text: #b4ecd0;
@@ -680,6 +694,7 @@ input[type='radio'] {
   --xy-controls-button-color-hover: var(--text);
   --xy-controls-button-border-color: var(--border);
   --xy-minimap-background-color: var(--panel);
+  --xy-minimap-mask-background-color: var(--overlay);
   --xy-edge-label-color: var(--muted);
 }
 
@@ -2024,11 +2039,18 @@ button.review-name:hover:not(:disabled) {
   padding: 3px 6px;
 }
 .task-select.in-task {
-  border-color: var(--accent);
-  color: var(--accent-text);
+  border-color: var(--task);
+  color: var(--task);
 }
-.component-node.in-task:not(.selected) {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+.component-node.in-task:not(.selected):not(.highlighted) {
+  border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
+}
+.task-badge {
+  font-size: 10px;
+  color: var(--task);
+  background: color-mix(in srgb, var(--task) 14%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 .attention-task {
   color: var(--muted);

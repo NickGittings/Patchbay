@@ -1,3 +1,4 @@
+import { modifierKey, shiftKey } from '../lib/platform'
 import { useOpenProject } from '../lib/project'
 
 export default function Welcome() {
@@ -31,7 +32,7 @@ export default function Welcome() {
           </li>
         </ul>
         <div className="welcome-keys">
-          <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>P</kbd> command palette
+          <kbd>{modifierKey}</kbd> <kbd>{shiftKey}</kbd> <kbd>P</kbd> command palette
         </div>
       </div>
     </div>
