@@ -46,6 +46,60 @@ cargo test --workspace
 - **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
 
+## Task workspaces
+
+Implementation uses goal tabs such as **Add button** or **Fix login**. **＋ New task** requires
+a title and creates a new branch/worktree immediately by default; choose **Current checkout**
+or **Existing worktree** to attach instead. A checkout can belong to only one task. Assigning
+the open checkout replaces its unnamed **Project folder** tab; older checkout sessions remain
+accessible in **Sessions**. Non-Git projects retain the Project folder workspace.
+
+Plan and Implementation share the task's checkout and component scope. Switching tasks restores
+scope, terminal visibility, focus, maximization and splits while other processes continue running.
+New tasks have a stopped root shell for manual setup. **Add terminal** defaults to the task root
+and can target a component. **Start implementation agent** launches one coordinating agent at
+the root; **Start agents per component** is an explicit option. The task menu offers rename,
+forget and worktree removal. Removal checks for changes and cannot delete the open checkout.
+
+Planners can submit an agreed Markdown plan and ordered component assignments:
+
+```json
+{
+  "version": 1,
+  "plan": "# Add button\nImplement and validate the agreed design.",
+  "assignments": [{ "componentId": "web", "assignment": "Add the button and its behavior." }]
+}
+```
+
+The briefing supplies stable component IDs and `"$PATCHBAY_CLI" agent propose --file proposal.json`.
+Submission only creates a proposal. **Apply selection** in Plan saves its plan, assignments and
+scope. Users can then adjust the scope. Editing the shared Markdown invalidates assignments
+until a proposal is applied again. Implementation receives saved artifacts, separately from the
+planner session and its conversation.
+
+Agent sessions receive the packaged CLI path and an authenticated local desktop connection:
+
+```sh
+"$PATCHBAY_CLI" agent context
+"$PATCHBAY_CLI" agent environment start GROUP_ID
+"$PATCHBAY_CLI" agent environment stop GROUP_ID
+"$PATCHBAY_CLI" agent validate COMPONENT_ID
+"$PATCHBAY_CLI" agent status
+"$PATCHBAY_CLI" agent logs SESSION_ID
+```
+
+These commands return versioned JSON and use configured action IDs. They stay bound to their
+launch project/task when tabs change and require that project to remain open. Validation includes
+transitive consumers and reports missing validators as incomplete checks. Environment startup
+uses existing readiness, rollback and ownership rules. Results, logs, stop/rerun controls and
+preview links appear in the initiating task; background results raise tab attention. Closing the
+desktop disconnects these commands while service-owned processes keep running. Restart an agent
+session after reopening the desktop to receive a fresh command connection.
+
+Patchbay does not install dependencies, copy environment files, isolate ports/databases, merge
+branches or delete worktrees automatically. `npm run smoke:tasks` covers proposals, root-agent
+handoff, configured actions, worktree isolation and switching while commands finish.
+
 ## Editor navigation
 
 Choose **Tools → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom
@@ -230,8 +284,8 @@ any task launches. Readiness timeouts or early exits roll back tasks launched by
 **Stop** cancels pending startup and stops the group's managed tasks in reverse startup order,
 escalating to kill stubborn processes. Tasks shared by another started group keep running.
 Manually started tasks are reused but remain outside group ownership. Deleting a group stops
-its managed tasks first. Environment ownership lasts for the current app session; configuration
-is saved separately. Opening another project cancels actions and resets terminals.
+its managed tasks first. Environment ownership lives in the session service; configuration is saved separately.
+Switching projects or tasks keeps environments and other terminals running.
 
 **Validate affected** runs the component's validation tasks and the validation tasks of every
 transitive consumer, once each. Validation runs sequentially and continues after nonzero exits.

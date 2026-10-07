@@ -195,6 +195,7 @@ pub fn write(root: &Path, task: Option<&str>, text: &str) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
+    crate::proposals::invalidate(root, task)?;
     Ok(())
 }
 
@@ -240,7 +241,7 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
     Some(ContextSection {
         title: "Shared plan".into(),
         body: format!(
-            "The planner agreed this plan for the change{when}; your component's part of it \
+            "The planner agreed this plan for the change{when}; the selected scope \
              is yours to implement. If it doesn't match the change you were started for, \
              ask before acting on it.\n\n{text}{cut}"
         ),

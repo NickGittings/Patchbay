@@ -50,6 +50,7 @@
   // Without whitespace, since long paths wrap across terminal rows.
   const textOf = (sid) => smoke.terminalText(sid).text.replace(/\s+/g, '')
   let task
+  let secondTask
   try {
     const opened = await smoke.openProject()
     if (!opened) throw new Error('project was not opened')
@@ -95,17 +96,17 @@
     state().toggleHighlight('docs')
     click(
       await until('New worktree', () =>
-        button(document.querySelector('.plan-scope'), 'New worktree…'),
+        button(document.querySelector('.plan-scope'), '＋ New task'),
       ),
     )
     const dialog = await until('New worktree dialog', () =>
-      document.querySelector('[aria-label="New worktree"]'),
+      document.querySelector('[aria-label="New task"]'),
     )
     assert(
       dialog.querySelectorAll('.chip.active').length === 2,
       'worktree lost highlighted components',
     )
-    assert(dialog.textContent.includes("What's it for"), 'worktree purpose label missing')
+    assert(dialog.textContent.includes('Goal title'), 'worktree purpose label missing')
     edit(dialog.querySelector('input'), 'Smoke task')
     await until(
       'branch from purpose',
@@ -114,7 +115,7 @@
     edit(dialog.querySelectorAll('input')[1], 'smoke/task')
     click(
       await until('Create worktree button', () => {
-        const create = button(dialog, 'Create worktree')
+        const create = button(dialog, 'Create task')
         return create && !create.disabled && create
       }),
     )
@@ -287,6 +288,231 @@
         textOf(briefSid).includes('smoke-plan-step-one'),
     )
 
+    // Two task workspaces retain layout and processes while proposals and CLI actions stay bound.
+    secondTask = await smoke.createTask({
+      title: 'Update API',
+      branch: 'smoke/api',
+      components: ['docs'],
+    })
+    state().setPanelLayout('task-split', { orientation: 2 })
+    const secondShell = smoke.sessionId('@task', 'shell', secondTask.id)
+    await smoke.startTerminal('@task', 'shell', secondTask.id)
+    await until('second root shell', () => state().sessions[secondShell]?.running)
+    state().setActiveTask(task.id)
+    assert(state().highlighted.includes('web'), 'first task scope not restored')
+    assert(!state().panels['task-split'], 'second task splits leaked into first')
+    assert(
+      !state().sessions[smoke.sessionId('@task', 'shell', task.id)]?.running,
+      'new root shell auto-started',
+    )
+    click(viewButton('Implementation'))
+    await until(
+      'task tabs',
+      () =>
+        document.querySelectorAll('[role="tablist"][aria-label="Task workspaces"] [role="tab"]')
+          .length === 3,
+    )
+
+    const proposal = {
+      version: 1,
+      plan: '# Agreed task plan\nImplement the login button.',
+      assignments: [{ componentId: 'web', assignment: 'Add the login button and run checks.' }],
+    }
+    const plannerDevice = {
+      id: 'smoke-planner',
+      name: 'Smoke planner',
+      category: 'agent',
+      kind: 'agent',
+      source: 'builtin',
+      command: `printf '%s' '${JSON.stringify(proposal)}' > "$PATCHBAY_PLAN_FILE.input.json"; "$PATCHBAY_CLI" agent propose --file "$PATCHBAY_PLAN_FILE.input.json"; exec cat`,
+    }
+    state().setDevices([plannerDevice])
+    click(viewButton('Plan'))
+    const scopeBefore = [...state().highlighted]
+    await smoke.startTerminal('@plan', plannerDevice.id, task.id)
+    const plannerSid = smoke.sessionId('@plan', plannerDevice.id, task.id)
+    await until('planner CLI submission', () =>
+      textOf(plannerSid).includes('"submitted":true'),
+    ).catch((e) => {
+      throw new Error(
+        `${e.message}; message: ${state().message}; output: ${smoke.terminalText(plannerSid).text}`,
+      )
+    })
+    assert(
+      JSON.stringify(state().highlighted) === JSON.stringify(scopeBefore),
+      'submission changed scope',
+    )
+    click(
+      await until('Apply selection', () =>
+        button(document.querySelector('.proposed-scope'), 'Apply selection'),
+      ),
+    )
+    await until(
+      'proposal selection applied',
+      () =>
+        state().highlighted.join(',') === 'web' &&
+        state()
+          .tasks.find((t) => t.id === task.id)
+          ?.components.join(',') === 'web',
+    )
+    assert(
+      !state().rootTerminals.some((t) => t.kind === 'agent'),
+      'proposal started an implementation agent',
+    )
+
+    const node = state().nodes.find((n) => n.id === 'web')
+    state().updateComponent('web', {
+      terminals: [
+        ...node.data.terminals,
+        {
+          id: 'environment',
+          name: 'Environment',
+          kind: 'task',
+          action: 'development',
+          readyWhen: 'ENV READY',
+          command: "printf 'ENV READY http://localhost:19991\\n'; exec cat",
+        },
+        {
+          id: 'check',
+          name: 'Check',
+          kind: 'task',
+          action: 'validation',
+          command: 'sleep 1; printf "validated:%s\\n" "$PWD"',
+        },
+      ],
+    })
+    state().addGroup('Smoke environment', ['web'])
+    const group = state().groups.find((g) => g.name === 'Smoke environment')
+    state().updateGroup(group.id, { orderedStartup: true })
+    const checkSid = smoke.sessionId('web', 'check', task.id)
+    const worker = {
+      id: 'smoke-worker',
+      name: 'Smoke worker',
+      category: 'agent',
+      kind: 'agent',
+      source: 'builtin',
+      command: `cat "$PATCHBAY_CONTEXT_FILE"; "$PATCHBAY_CLI" agent context; "$PATCHBAY_CLI" agent environment start ${group.id}; "$PATCHBAY_CLI" agent validate web; "$PATCHBAY_CLI" agent validate docs; "$PATCHBAY_CLI" agent logs ${checkSid}; "$PATCHBAY_CLI" agent logs ${secondShell}; "$PATCHBAY_CLI" agent status; printf 'worker-finished\\n'; exec sh`,
+    }
+    state().setDevices([plannerDevice, worker])
+    const rootAgent = state().addRootTerminal(worker)
+    const rootAgentSid = smoke.sessionId('@task', rootAgent, task.id)
+    click(viewButton('Implementation'))
+    await smoke.startTerminal('@task', rootAgent, task.id)
+    await until('root worker starts', () => state().sessions[rootAgentSid]?.running)
+    state().setActiveTask(secondTask.id)
+    await until(
+      'worker finishes commands in background task',
+      () => textOf(rootAgentSid).includes('worker-finished'),
+      30000,
+    )
+    assert(state().activeTask === secondTask.id, 'agent request activated its task')
+    assert(state().graphActionReport === null, 'background result leaked into active task')
+    assert(
+      textOf(rootAgentSid).includes('"taskId":"' + task.id + '"'),
+      'CLI context followed active tab',
+    )
+    assert(
+      textOf(rootAgentSid).includes('"missingValidators":["docs"]') &&
+        textOf(rootAgentSid).includes('"passed":false'),
+      'missing validator was accepted as passing',
+    )
+    assert(
+      textOf(rootAgentSid).includes('Sessionisoutsidethelaunchtask'),
+      'logs allowed another task',
+    )
+    assert(
+      textOf(rootAgentSid).includes('validated:' + task.worktree + '/apps/web'),
+      'validator used the wrong checkout',
+    )
+    assert(
+      textOf(rootAgentSid).includes('Appliedassignments') &&
+        textOf(rootAgentSid).includes('Addtheloginbutton'),
+      'root briefing lost assignment',
+    )
+    assert(
+      !textOf(rootAgentSid).includes('Youareplanning'),
+      'planner instructions leaked into implementation',
+    )
+    assert(
+      state().sessions[secondShell]?.running &&
+        state().sessions[rootAgentSid]?.running &&
+        state().sessions[taskSid]?.running,
+      'tab switch stopped processes',
+    )
+    state().setActiveTask(task.id)
+    await until('initiating task activity visible', () =>
+      document.querySelector('.task-activity')?.textContent.includes('Smoke worker'),
+    )
+    const activities = Object.values(state().taskActivities).filter(
+      (a) => a.task === task.id && a.initiator === rootAgentSid,
+    )
+    assert(
+      activities.length >= 3 &&
+        activities.some((a) => a.previewUrls.includes('http://localhost:19991/')),
+      'agent activity or preview URL missing',
+    )
+    // Existing agents use current configured commands, while their launch task remains fixed.
+    state().updateTerminal('web', 'check', { command: 'printf live-validator; exit 7' })
+    await smoke.terminalWrite(
+      rootAgentSid,
+      '"$PATCHBAY_CLI" agent validate web; printf "live-config-finished\\n"\r',
+    )
+    await until(
+      'updated validator in existing agent',
+      () =>
+        textOf(rootAgentSid).includes('live-config-finished') &&
+        textOf(rootAgentSid).includes('"exitCode":7'),
+    )
+    state().updateTerminal('web', 'check', { command: 'sleep 1; exit 0' })
+    await smoke.terminalWrite(
+      rootAgentSid,
+      '"$PATCHBAY_CLI" agent validate web & "$PATCHBAY_CLI" agent validate web; wait; printf "contention-finished\\n"\r',
+    )
+    await until('bridge action contention', () =>
+      textOf(rootAgentSid).includes('Anothergraphactionisstillrunningorstopping'),
+    )
+    await until(
+      'contended action finished',
+      () =>
+        textOf(rootAgentSid).includes('contention-finished') &&
+        !state().graphActionBusy &&
+        !state().sessions[checkSid]?.running,
+    )
+    await smoke.terminalWrite(
+      rootAgentSid,
+      `"$PATCHBAY_CLI" agent environment stop ${group.id}; printf "agent-stop-finished\\n"\r`,
+    )
+    await until(
+      'CLI environment stop',
+      () =>
+        textOf(rootAgentSid).includes('agent-stop-finished') &&
+        textOf(rootAgentSid).includes('"stopped":true'),
+    )
+    assert(
+      Object.values(state().taskActivities).some(
+        (a) =>
+          a.task === task.id &&
+          a.initiator === rootAgentSid &&
+          a.action.kind === 'environmentStop' &&
+          a.state === 'finished',
+      ),
+      'agent environment stop is missing from task activity',
+    )
+    await smoke.stopGroup(group.id)
+    state().removeGroup(group.id)
+    await smoke.terminalWrite(
+      rootAgentSid,
+      `"$PATCHBAY_CLI" agent environment start ${group.id}; printf "removed-group-finished\\n"\r`,
+    )
+    await until(
+      'removed group rejected for existing agent',
+      () =>
+        textOf(rootAgentSid).includes('removed-group-finished') &&
+        /unknowngroup/i.test(textOf(rootAgentSid)),
+    )
+    await smoke.removeTask(secondTask.id, true)
+    secondTask = undefined
+
     // git refuses to remove a dirty worktree; the task stays.
     click(viewButton('Implementation'))
     await openPicker()
@@ -317,11 +543,71 @@
     assert(state().sessions[mainSid]?.running, 'removing a task stopped the open worktree')
     assert(state().tasks.length === 0 && state().activeTask === null, 'task not removed')
     task = undefined
+
+    // Naming the current checkout replaces Project folder, preserving its legacy processes.
+    const attachCurrent = async (title) => {
+      click(
+        await until('new task control', () =>
+          button(document.querySelector('.task-tabs'), '＋ New task'),
+        ),
+      )
+      const dialog = await until('current checkout dialog', () =>
+        document.querySelector('[aria-label="New task"]'),
+      )
+      edit(dialog.querySelector('input'), title)
+      click(
+        await until('current checkout choice', () => {
+          const control = button(dialog, 'Current checkout')
+          return control && !control.disabled && control
+        }),
+      )
+      click(
+        await until('attach current checkout', () => {
+          const control = button(dialog, 'Create task') ?? button(dialog, 'Activate task')
+          return control && !control.disabled && control
+        }),
+      )
+      await until(
+        'current checkout dialog closed',
+        () => !document.querySelector('[aria-label="New task"]'),
+      )
+    }
+    await attachCurrent('Project goal')
+    task = state().tasks.find((t) => t.current)
+    assert(task && state().activeTask === task.id, 'current checkout was not attached')
+    await until(
+      'single checkout tab',
+      () => document.querySelectorAll('.task-tabs [role="tab"]').length === 1,
+    )
+    assert(
+      !document.querySelector('.task-tabs').textContent.includes('Project folder'),
+      'duplicate project checkout tab',
+    )
+    await attachCurrent('Another title')
+    assert(
+      state().tasks.length === 1 && state().tasks[0].id === task.id,
+      'checkout attachment created another task',
+    )
+    assert(state().tasks[0].title === 'Project goal', 'reactivating changed the existing task')
+    await openPicker()
+    click(button(document.querySelector('.worktree-row.active'), 'Remove…'))
+    await until(
+      'open checkout cannot be deleted',
+      () => button(document.querySelector('.worktree-confirm'), 'Remove worktree')?.disabled,
+    )
+    assert(state().sessions[mainSid]?.running, 'attaching stopped the legacy checkout session')
+    await smoke.removeTask(task.id, false)
+    assert(
+      state().sessions[mainSid]?.running,
+      'forgetting a named checkout stopped its legacy session',
+    )
+    task = undefined
     await smoke.report(
-      'PASS tasks: create, parallel worktree terminals, badges, review, plan handoff, remove',
+      'PASS tasks: isolated workspaces, planner proposal, root agent CLI, environment/checks, retained processes, remove',
     )
   } catch (e) {
     smoke.resetSessions(await smoke.terminalReset())
+    if (secondTask) await smoke.removeTask(secondTask.id, false).catch(() => {})
     if (task) await smoke.removeTask(task.id, false).catch(() => {})
     await smoke.report(`FAIL tasks: ${e?.message ?? e}`)
   }

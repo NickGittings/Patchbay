@@ -30,8 +30,15 @@ import type {
   Task,
   TerminalSpec,
   View,
+  TaskActivity,
 } from './types'
-import { retask, sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
+import {
+  TASK_ROOT_SCOPE,
+  sessionId,
+  sessionMetadata,
+  setProjectIdentity,
+  type SessionRecord,
+} from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
@@ -41,7 +48,70 @@ export interface ImplementationComponent {
   visible: boolean
 }
 
+/** Saved per task. Processes and output remain service-owned. */
+export interface TaskWorkspace {
+  highlighted: string[]
+  implementationComponents: ImplementationComponent[] | null
+  activeSession: string | null
+  planActive: string | null
+  panels: Record<string, Record<string, number>>
+  rootTerminals: TerminalSpec[]
+  visibleTerminals: string[] | null
+  maximizedTerminal: string | null
+  graphActionBusy: boolean
+  graphAction: ActionRequest | null
+  graphActionReport: ActionReport | null
+}
+export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
+  return {
+    highlighted: components,
+    implementationComponents: components.map((id) => ({ id, visible: true })),
+    activeSession: null,
+    planActive: null,
+    panels: {},
+    rootTerminals: [{ id: 'shell', name: 'Shell', command: '', kind: 'shell' }],
+    visibleTerminals: null,
+    maximizedTerminal: null,
+    graphActionBusy: false,
+    graphAction: null,
+    graphActionReport: null,
+  }
+}
+export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
+  const {
+    highlighted,
+    implementationComponents,
+    activeSession,
+    planActive,
+    panels,
+    rootTerminals,
+    visibleTerminals,
+    maximizedTerminal,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+  } = s
+  return {
+    highlighted,
+    implementationComponents,
+    activeSession,
+    planActive,
+    panels,
+    rootTerminals,
+    visibleTerminals,
+    maximizedTerminal,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+  }
+}
+
 export interface ProjectState {
+  taskWorkspaces: Record<string, TaskWorkspace>
+  rootTerminals: TerminalSpec[]
+  visibleTerminals: string[] | null
+  maximizedTerminal: string | null
+
   project: { id: string; name: string; root: string } | null
   nodes: FlowNode[]
   edges: FlowEdge[]
@@ -87,10 +157,17 @@ export interface ProjectEntry {
   unavailableLayout?: Record<string, unknown>
 }
 interface State {
+  taskWorkspaces: Record<string, TaskWorkspace>
+  rootTerminals: TerminalSpec[]
+  visibleTerminals: string[] | null
+  maximizedTerminal: string | null
+
   project: { id: string; name: string; root: string } | null
   projects: Record<string, ProjectEntry>
   activeProjectId: string | null
   projectOrder: string[]
+  taskActivities: Record<string, TaskActivity>
+  seenActivities: string[]
   sessionRecords: SessionRecord[]
   serviceInstance: string
   serviceConnected: boolean
@@ -112,6 +189,10 @@ interface State {
   captureProjects: () => Record<string, ProjectEntry>
   /** Apply `patch` to open project `id`'s state, whether or not its tab is active. */
   patchProject: (id: string, patch: Partial<ProjectState>) => void
+  patchTask: (projectId: string, task: string | null, patch: Partial<TaskWorkspace>) => void
+  addRootTerminal: (device: DeviceManifest | null) => string
+  setVisibleTerminals: (ids: string[] | null) => void
+  setMaximizedTerminal: (id: string | null) => void
   nodes: FlowNode[]
   edges: FlowEdge[]
   groups: ComponentGroup[]
@@ -226,22 +307,74 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
-/** Move the active terminal to the same terminal of the task switched to. */
-function switchTask(s: State, activeTask: string | null): Partial<State> {
+/** Restore layout without stopping or retargeting processes. */
+export function switchTaskWorkspace(
+  s: Pick<State, keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces'>,
+  requested: string | null,
+): Partial<ProjectState> & { revealed?: null } {
+  const activeTask = requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null
   if (s.activeTask === activeTask) return {}
-  const current = s.activeSession
-  const runtime = current && s.runtimeTerminals[current]
-  return {
-    activeTask,
-    activeSession: current && !runtime ? retask(current, activeTask) : current,
-  }
+  const task = s.tasks.find((t) => t.id === activeTask)
+  if (activeTask && (!task || task.missing)) return {}
+  const taskWorkspaces = { ...s.taskWorkspaces, [s.activeTask ?? '']: taskWorkspace(s) }
+  const restored = taskWorkspaces[activeTask ?? ''] ?? emptyTaskWorkspace(task?.components)
+  return { activeTask, taskWorkspaces, ...restored, revealed: null }
 }
 
 export const useStore = create<State>((set, get) => ({
+  taskWorkspaces: {},
+  rootTerminals: emptyTaskWorkspace().rootTerminals,
+  visibleTerminals: null,
+  maximizedTerminal: null,
+  setVisibleTerminals: (visibleTerminals) =>
+    set((s) => ({
+      visibleTerminals,
+      maximizedTerminal:
+        visibleTerminals && s.maximizedTerminal && !visibleTerminals.includes(s.maximizedTerminal)
+          ? null
+          : s.maximizedTerminal,
+    })),
+  setMaximizedTerminal: (maximizedTerminal) => set({ maximizedTerminal }),
+  addRootTerminal: (device) => {
+    const terminal: TerminalSpec = {
+      id: newId(device?.id ?? 'shell'),
+      name: device?.name ?? 'Shell',
+      command: device?.command ?? '',
+      kind: device?.kind ?? 'shell',
+      ...(device?.adapter ? { adapter: device.adapter } : {}),
+    }
+    set((s) => ({
+      rootTerminals: [...s.rootTerminals, terminal],
+      activeSession: sessionId(TASK_ROOT_SCOPE, terminal.id, s.activeTask),
+      visibleTerminals: s.visibleTerminals
+        ? [...s.visibleTerminals, sessionId(TASK_ROOT_SCOPE, terminal.id, s.activeTask)]
+        : null,
+    }))
+    return terminal.id
+  },
+  patchTask: (projectId, task, patch) => {
+    const s = get()
+    const state = s.captureProjects()[projectId]?.state
+    if (!state) return
+    if (state.activeTask === task) s.patchProject(projectId, patch)
+    else
+      s.patchProject(projectId, {
+        taskWorkspaces: {
+          ...state.taskWorkspaces,
+          [task ?? '']: {
+            ...(state.taskWorkspaces[task ?? ''] ??
+              emptyTaskWorkspace(state.tasks.find((t) => t.id === task)?.components)),
+            ...patch,
+          },
+        },
+      })
+  },
   project: null,
   activeProjectId: null,
   projects: {},
   projectOrder: [],
+  taskActivities: {},
+  seenActivities: [],
   sessionRecords: [],
   serviceInstance: '',
   serviceConnected: false,
@@ -395,9 +528,12 @@ export const useStore = create<State>((set, get) => ({
   setTasks: (tasks) =>
     set((s) => {
       const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
-      return active ? { tasks } : { tasks, ...switchTask(s, null) }
+      const current = tasks.find((t) => t.current && !t.missing)
+      return active
+        ? { tasks }
+        : { tasks, ...switchTaskWorkspace({ ...s, tasks }, current?.id ?? null) }
     }),
-  setActiveTask: (id) => set((s) => switchTask(s, id)),
+  setActiveTask: (id) => set((s) => switchTaskWorkspace(s, id)),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
 
@@ -692,6 +828,10 @@ export function projectFrom({
 
 function emptyProjectState(): ProjectState {
   return {
+    taskWorkspaces: {},
+    rootTerminals: emptyTaskWorkspace().rootTerminals,
+    visibleTerminals: null,
+    maximizedTerminal: null,
     project: null,
     // Explicit, so loading a project without one doesn't keep the previous viewport.
     viewport: undefined,
@@ -747,6 +887,10 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    taskWorkspaces,
+    rootTerminals,
+    visibleTerminals,
+    maximizedTerminal,
   } = s
   return {
     project,
@@ -774,6 +918,10 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    taskWorkspaces: { ...taskWorkspaces, [activeTask ?? '']: taskWorkspace(s) },
+    rootTerminals,
+    visibleTerminals,
+    maximizedTerminal,
   }
 }
 

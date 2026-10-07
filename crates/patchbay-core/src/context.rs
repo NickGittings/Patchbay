@@ -2,7 +2,8 @@
 //! terminals the component's neighbours as context.
 
 use crate::model::{
-    Component, PLAN_SCOPE, Project, Relation, TerminalKind, TerminalSpec, task_session_id,
+    Component, PLAN_SCOPE, Project, Relation, TASK_ROOT_SCOPE, TerminalKind, TerminalSpec,
+    task_session_id,
 };
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
@@ -76,6 +77,7 @@ pub fn component_context(
             out.push('\n');
         }
     }
+    out.push_str(IMPLEMENTATION_ACTIONS);
     out.push_str(
         "\nStay focused on this component. Read related components for context, but only \
          change them when asked.\n",
@@ -598,7 +600,29 @@ pub fn plan_context(
              `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their briefing.",
         );
     }
-    out.push('\n');
+    out.push_str("\nTo propose scope and assignments, write JSON {\"version\":1,\"plan\":\"agreed Markdown\",\"assignments\":[{\"componentId\":\"stable ID above\",\"assignment\":\"specific work\"}]} and run \"$PATCHBAY_CLI\" agent propose --file <json>. Order assignments deliberately. Submission waits for the user to Apply selection; it never changes scope or starts agents. Markdown-only plans remain supported.\n");
+    append_sections(&mut out, sections);
+    out
+}
+
+const IMPLEMENTATION_ACTIONS: &str = "\nAfter changing a component, run its configured affected-component checks with \"$PATCHBAY_CLI\" agent validate <componentId>. Report missing validators explicitly. Start configured environments when needed with agent environment start <groupId>, and stop them with agent environment stop <groupId>. Use agent context, status and logs <sessionId> for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n";
+
+/// Implementation instructions for one agent coordinating the complete selected scope.
+#[must_use]
+pub fn implementation_context(
+    project: &Project,
+    ids: &[String],
+    sections: &[ContextSection],
+) -> String {
+    let mut out = format!(
+        "# Patchbay implementation context\n\nImplement the task in **{}** at `{}`.\n\n## Selected components\n\n",
+        project.name, project.root
+    );
+    for component in plan_components(project, ids) {
+        describe_component(&mut out, project, component);
+    }
+    out.push_str("\nCoordinate and implement the complete selected scope, using the saved plan and applied assignments below.\n");
+    out.push_str(IMPLEMENTATION_ACTIONS);
     append_sections(&mut out, sections);
     out
 }
@@ -657,8 +681,9 @@ fn plan_components<'a>(project: &'a Project, component_ids: &[String]) -> Vec<&'
 fn describe_component(out: &mut String, project: &Project, c: &Component) {
     let _ = write!(
         out,
-        "- **{}** ({:?}) at `{}`",
+        "- **{}** (ID: `{}`, {:?}) at `{}`",
         c.name,
+        c.id,
         c.kind,
         project.component_dir(c).display()
     );
@@ -848,20 +873,77 @@ pub fn plan_session_spec_for(
     policy: &dyn Policy,
     sections: &[ContextSection],
 ) -> Result<SessionSpec> {
+    root_session_spec(
+        project,
+        component_ids,
+        terminal,
+        task,
+        policy,
+        sections,
+        true,
+    )
+}
+
+/// Root implementation and shell sessions, separate from all planner sessions.
+pub fn task_root_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
+    root_session_spec(
+        project,
+        component_ids,
+        terminal,
+        task,
+        policy,
+        sections,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn root_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    planning: bool,
+) -> Result<SessionSpec> {
+    let scope = if planning {
+        PLAN_SCOPE
+    } else {
+        TASK_ROOT_SCOPE
+    };
     for id in component_ids {
         if project.component(id).is_none() {
             return Err(anyhow!("unknown component {id}"));
         }
     }
     let components = plan_components(project, component_ids);
-    let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), "plan".into())]);
+    let mut env = BTreeMap::from([(
+        COMPONENT_ENV.to_string(),
+        if planning {
+            "plan".into()
+        } else {
+            scope.into()
+        },
+    )]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
     let mut context_dirs: Vec<PathBuf> = Vec::new();
     if terminal.kind == TerminalKind::Agent {
-        let briefing = plan_context(project, component_ids, sections);
+        let briefing = if planning {
+            plan_context(project, component_ids, sections)
+        } else {
+            implementation_context(project, component_ids, sections)
+        };
         let file = context_file(
-            &briefing_name(project, &format!("{PLAN_SCOPE}-{}", terminal.id), task),
+            &briefing_name(project, &format!("{scope}-{}", terminal.id), task),
             &briefing,
         )?;
         env.insert(CONTEXT_ENV.into(), file.display().to_string());
@@ -869,7 +951,9 @@ pub fn plan_session_spec_for(
         // Without a repo there is nowhere to keep the plan; the briefing still works.
         // The folder is always added: it sits under `.git`, which agents' sandboxes
         // (Codex's workspace-write) keep read-only unless it is a writable root itself.
-        if let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), task) {
+        if planning
+            && let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), task)
+        {
             if let Some(dir) = plan.parent() {
                 dirs.push(dir.to_path_buf());
             }
@@ -877,6 +961,9 @@ pub fn plan_session_spec_for(
                 crate::plans::PLAN_FILE_ENV.into(),
                 plan.display().to_string(),
             );
+        }
+        if !planning {
+            dirs.extend(crate::plans::existing_dir(Path::new(&project.root)));
         }
         // cwd is the root; components in other repos must be added explicitly.
         for c in &components {
@@ -900,7 +987,7 @@ pub fn plan_session_spec_for(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        id: task_session_id(&project.root, PLAN_SCOPE, &terminal.id, task),
+        id: task_session_id(&project.root, scope, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
         env,
@@ -1265,7 +1352,7 @@ mod tests {
         });
         let text = plan_context(&p, &["web".into(), "api".into(), "api".into()], &[]);
         let (scope, nearby) = text.split_once("## Nearby components").unwrap();
-        assert!(scope.contains("**API** (Backend) at `/repo/services/api` — api notes"));
+        assert!(scope.contains("**API** (ID: `api`, Backend) at `/repo/services/api` — api notes"));
         assert!(scope.contains("**WEB** depends on **API** — calls"));
         assert!(!scope.contains("**DB**"));
         assert!(!text.contains("UNRELATED"));
@@ -1292,6 +1379,43 @@ mod tests {
         let text = plan_context(&p, &["api".into()], &[]);
         assert!(!text.contains("## Links between them"));
         assert!(!text.contains("## Nearby components"));
+    }
+
+    #[test]
+    fn both_root_providers_receive_selected_scope_without_planner_instructions() {
+        let p = project();
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.id = provider.into();
+            terminal.command = provider.into();
+            let spec = task_root_session_spec(
+                &p,
+                &["api".into()],
+                &terminal,
+                Some("t1"),
+                &AllowAll,
+                &[ContextSection {
+                    title: "Applied assignments".into(),
+                    body: "api: Fix login".into(),
+                }],
+            )
+            .unwrap();
+            assert_eq!(
+                spec.id,
+                crate::model::task_session_id(&p.root, TASK_ROOT_SCOPE, provider, Some("t1"))
+            );
+            assert_eq!(spec.cwd, PathBuf::from(&p.root));
+            let text = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+            assert!(text.contains("ID: `api`") && text.contains("Fix login"));
+            assert!(text.contains("agent validate <componentId>"));
+            assert!(!text.contains("You are planning") && !text.contains("agent propose"));
+            assert!(!spec.env.contains_key(crate::plans::PLAN_FILE_ENV));
+            assert!(spec.command.contains(if provider == "claude" {
+                "--append-system-prompt-file"
+            } else {
+                "developer_instructions="
+            }));
+        }
     }
 
     #[test]

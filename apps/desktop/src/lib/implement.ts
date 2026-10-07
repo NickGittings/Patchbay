@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import type { DeviceManifest } from '../types'
+import { TASK_ROOT_SCOPE, type DeviceManifest } from '../types'
 import { startTerminal } from './sessions'
 
 /**
@@ -28,4 +28,17 @@ export function startAgentsIn(
       return startTerminal(id, terminalId, task)
     }),
   )
+}
+
+/** One implementation agent coordinates the task's complete selected scope. */
+export function startTaskAgent(device: DeviceManifest, task = useStore.getState().activeTask) {
+  const s = useStore.getState()
+  const existing = s.rootTerminals.find(
+    (t) =>
+      t.kind === 'agent' &&
+      t.command.trim() === device.command.trim() &&
+      (t.adapter ?? null) === (device.adapter ?? null),
+  )
+  const terminalId = existing?.id ?? s.addRootTerminal(device)
+  return startTerminal(TASK_ROOT_SCOPE, terminalId, task)
 }

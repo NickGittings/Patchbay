@@ -2761,6 +2761,7 @@ dependencies = [
 name = "patchbay-desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "patchbay-core",
  "percent-encoding",
  "serde",

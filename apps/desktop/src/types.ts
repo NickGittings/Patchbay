@@ -1,6 +1,7 @@
 // Mirrors patchbay-core's serde types.
 
 export const PLAN_SCOPE = '@plan'
+export const TASK_ROOT_SCOPE = '@task'
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
 export type View = 'navigation' | 'plan' | 'implementation' | 'review'
@@ -559,4 +560,21 @@ export interface ComponentSessionSummary {
   running: boolean
   generation: number
   urls: string[]
+}
+
+export interface PlannerProposal {
+  version: number
+  plan: string
+  assignments: { componentId: string; assignment: string }[]
+}
+export interface TaskActivity {
+  id: string
+  projectId: string
+  task: string | null
+  initiator: string
+  action: { kind: string; groupId?: string; componentId?: string }
+  state: 'running' | 'finished' | 'failed'
+  report: ActionReport | null
+  error: string | null
+  previewUrls: string[]
 }

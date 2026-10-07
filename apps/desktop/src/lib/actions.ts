@@ -1,3 +1,4 @@
+import { taskActionState } from './taskActions'
 import { useStore } from '../store'
 import type { ActionRequest } from '../types'
 import { graphActionRun, graphGroupStop, graphValidationCancel } from './ipc'
@@ -13,9 +14,14 @@ export async function runGraphAction(request: ActionRequest) {
   const projectId = s.project.id
   const project = s.toProject()
   const task = s.activeTask ?? undefined
-  const patch = useStore.getState().patchProject
+  const patch = (id: string, change: Parameters<typeof s.patchTask>[2]) =>
+    useStore.getState().patchTask(id, task ?? null, change)
   const say = (message: string) => {
-    if (useStore.getState().project?.id === projectId) useStore.getState().setMessage(message)
+    if (
+      useStore.getState().project?.id === projectId &&
+      useStore.getState().activeTask === (task ?? null)
+    )
+      useStore.getState().setMessage(message)
   }
   patch(projectId, { graphActionBusy: true, graphAction: request, graphActionReport: null })
   say(request.kind === 'startGroup' ? 'Starting environment…' : 'Validating affected components…')
@@ -34,7 +40,7 @@ export async function runGraphAction(request: ActionRequest) {
   } catch (e) {
     say(String(e))
   } finally {
-    patch(projectId, { graphActionBusy: false, graphAction: null })
+    patch(projectId, taskActionState(useStore.getState().taskActivities, projectId, task ?? null))
   }
 }
 

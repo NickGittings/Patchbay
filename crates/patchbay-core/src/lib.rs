@@ -16,6 +16,7 @@ pub mod model;
 pub mod navigation;
 pub mod plans;
 pub mod policy;
+pub mod proposals;
 pub mod pty;
 pub mod status;
 pub mod tasks;
@@ -25,6 +26,7 @@ pub use events::{EventSink, TerminalEvent};
 pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalSpec};
 
 pub mod adapters;
+pub mod agent_bridge;
 pub mod agent_hooks;
 pub mod session;
 pub mod workspace;

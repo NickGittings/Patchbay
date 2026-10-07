@@ -3,10 +3,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
-import { projectOf, useStore } from '../store'
+import { emptyTaskWorkspace, projectOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
+  TASK_ROOT_SCOPE,
   type Project,
   type RuntimeTerminal,
   type SessionRecord,
@@ -16,7 +17,14 @@ import {
   type TerminalEvent,
   type TerminalSnapshot,
 } from '../types'
-import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
+import {
+  onTerminalEvent,
+  taskRootStart,
+  planStart,
+  terminalSnapshot,
+  terminalStart,
+  terminalStop,
+} from './ipc'
 import { peersFor, planTerminals } from './plan'
 import { requestGitRefresh } from './git'
 import {
@@ -103,6 +111,7 @@ interface Launch {
   task: string | null
   project: Project
   highlighted: string[]
+  rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
 }
 
@@ -119,6 +128,11 @@ function captureLaunch(
   if (!id || !project) throw new Error('Open a project first')
   const state = s.project?.id === id ? s : s.projects[id]?.state
   const scope = task === undefined ? (state?.activeTask ?? null) : task
+  const workspace =
+    state?.activeTask === scope
+      ? state
+      : (state?.taskWorkspaces[scope ?? ''] ??
+        emptyTaskWorkspace(state?.tasks.find((t) => t.id === scope)?.components))
   const sid = sessionId(componentId, terminalId, scope, id)
   return {
     sid,
@@ -127,7 +141,11 @@ function captureLaunch(
     projectId: id,
     task: scope,
     project,
-    highlighted: [...(state?.highlighted ?? [])],
+    highlighted: [...(workspace?.highlighted ?? [])],
+    rootTerminal:
+      componentId === TASK_ROOT_SCOPE
+        ? workspace?.rootTerminals.find((t) => t.id === terminalId)
+        : undefined,
     runtime: s.runtimeTerminals[sid],
   }
 }
@@ -167,6 +185,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (requestedEpoch !== epoch || isClosing(launch)) return
       if (
         componentId !== PLAN_SCOPE &&
+        componentId !== TASK_ROOT_SCOPE &&
         !runtime &&
         !projectOf(launch.projectId)?.components.some(
           (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
@@ -175,7 +194,10 @@ function launchTerminal(launch: Launch): Promise<void> {
         return
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
-      if (runtime?.commandId)
+      if (componentId === TASK_ROOT_SCOPE) {
+        if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
+        await taskRootStart(project, launch.highlighted, launch.rootTerminal, task, requestId)
+      } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
@@ -553,7 +575,14 @@ export function reconcileSessions(force = true): Promise<void> {
             prev && !prev.running && next.running && prev.startedMs === next.startedMs
           if (!staleRun && !sameSession(prev, next)) current.setSession(r.id, next)
         }
-        const mapped = onMap(r)
+        const state = projects[r.metadata.projectId]?.state
+        const root =
+          r.metadata.componentId === TASK_ROOT_SCOPE &&
+          (state?.activeTask === (r.metadata.task ?? null)
+            ? state.rootTerminals
+            : state?.taskWorkspaces[r.metadata.task ?? '']?.rootTerminals
+          )?.some((t) => t.id === r.metadata.terminalId)
+        const mapped = onMap(r) || root
         if (mapped && useStore.getState().runtimeTerminals[r.id])
           useStore.setState((s) => {
             const runtimeTerminals = { ...s.runtimeTerminals }

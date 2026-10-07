@@ -16,10 +16,16 @@ const nodes = [
   },
 ]
 const addTerminal = vi.fn(() => 'claude-new')
+const rootTerminals = [terminal('root-agent', 'claude', 'agent')]
+const addRootTerminal = vi.fn(() => 'root-new')
 const startTerminal = vi.fn(() => Promise.resolve())
-vi.mock('../store', () => ({ useStore: { getState: () => ({ nodes, addTerminal }) } }))
+vi.mock('../store', () => ({
+  useStore: {
+    getState: () => ({ nodes, addTerminal, rootTerminals, addRootTerminal, activeTask: 't1' }),
+  },
+}))
 vi.mock('./sessions', () => ({ startTerminal }))
-const { startAgentsIn } = await import('./implement')
+const { startAgentsIn, startTaskAgent } = await import('./implement')
 
 const claude: DeviceManifest = {
   id: 'claude',
@@ -43,4 +49,16 @@ test('reuses a matching agent terminal and adds one where missing', async () => 
     ['api', 'claude-new', 't1'],
     ['db', 'claude-new', 't1'],
   ])
+})
+
+test('task implementation defaults to one root agent and reuses its configured provider', async () => {
+  startTerminal.mockClear()
+  await startTaskAgent(claude)
+  expect(addRootTerminal).not.toHaveBeenCalled()
+  expect(startTerminal.mock.calls).toEqual([['@task', 'root-agent', 't1']])
+  startTerminal.mockClear()
+  const codex = { ...claude, id: 'codex', command: 'codex', adapter: 'codex' as const }
+  await startTaskAgent(codex)
+  expect(addRootTerminal).toHaveBeenCalledWith(codex)
+  expect(startTerminal.mock.calls).toEqual([['@task', 'root-new', 't1']])
 })

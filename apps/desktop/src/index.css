@@ -2509,3 +2509,73 @@ kbd {
 .map-save-error {
   color: var(--bad);
 }
+
+.task-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1;
+}
+.task-tabs .tab {
+  white-space: nowrap;
+}
+.task-controls,
+.task-scope,
+.task-actions {
+  padding: 6px 10px;
+  flex-wrap: wrap;
+}
+.task-controls select {
+  width: auto;
+  max-width: 230px;
+}
+.task-terminal-filter {
+  position: relative;
+}
+.task-terminal-filter > .panel {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  min-width: 260px;
+  padding: 12px;
+}
+.task-terminal-filter label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.task-terminal-filter input {
+  width: auto;
+}
+.task-terminal-grid,
+.task-terminal-splits {
+  height: 100%;
+  min-height: 0;
+}
+.task-terminal-grid {
+  grid-auto-rows: minmax(220px, 1fr);
+}
+.task-terminal-splits .terminal-tile {
+  height: 100%;
+  min-height: 0;
+}
+.terminal-tile.focused {
+  border-color: var(--accent);
+}
+.terminal-command-edit {
+  padding: 6px;
+}
+.task-activity {
+  margin: 0 10px 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+.task-action-result {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.task-action-result.failed strong {
+  color: var(--red);
+}

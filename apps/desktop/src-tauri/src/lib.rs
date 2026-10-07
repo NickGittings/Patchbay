@@ -17,6 +17,7 @@ use patchbay_core::session::{self, PreviewScan, Record, Request};
 use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
+mod agent_commands;
 mod layout;
 mod service;
 use patchbay_core::{Project, context, detect, git, maintenance, watch};
@@ -50,6 +51,8 @@ struct AppState {
     quitting: std::sync::atomic::AtomicBool,
     layout_dirty: std::sync::atomic::AtomicBool,
     service: Arc<service::Bridge>,
+    agent_commands: Mutex<Option<Arc<patchbay_core::agent_bridge::Server>>>,
+    activities: Mutex<Vec<agent_commands::Activity>>,
     projects: RwLock<HashMap<String, Arc<ProjectAccess>>>,
     workspace: Mutex<Workspace>,
     workspace_ready: std::sync::atomic::AtomicBool,
@@ -57,6 +60,7 @@ struct AppState {
 }
 #[derive(Default)]
 struct ProjectAccess {
+    agent_project: RwLock<Option<Project>>,
     maintenance: Mutex<Option<PendingPreview>>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
@@ -808,8 +812,10 @@ async fn plan_start(
     let extensions = state.extensions.clone();
     let roots = scoped.roots();
     let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let launch_project = project.clone();
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = briefing_sections(
             &extensions.get(),
@@ -821,7 +827,7 @@ async fn plan_start(
         );
         let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        let spec = context::plan_session_spec_for(
+        let mut spec = context::plan_session_spec_for(
             &project,
             &component_ids,
             &terminal,
@@ -830,6 +836,24 @@ async fn plan_start(
             &sections,
         )
         .map_err(err)?;
+        if terminal.kind == model::TerminalKind::Agent {
+            agent_commands::inject(
+                agent_server,
+                patchbay_core::agent_bridge::LaunchContext {
+                    project_id: project_id.clone(),
+                    project: launch_project,
+                    task: task.clone(),
+                    agent_session: model::task_session_id(
+                        &project_id,
+                        &metadata.component_id,
+                        &terminal.id,
+                        task.as_deref(),
+                    ),
+                    planner: true,
+                },
+                &mut spec,
+            )?;
+        }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
     })
@@ -914,7 +938,11 @@ fn handoff_sections(
         dirs.extend(patchbay_core::plans::existing_dir(root));
     }
     let peers = context::peers_section(project, component_id, &peers);
-    (plan.into_iter().chain(peers).collect(), dirs)
+    let assignments = patchbay_core::proposals::section(project, task, &[component_id.into()]);
+    (
+        plan.into_iter().chain(assignments).chain(peers).collect(),
+        dirs,
+    )
 }
 
 /// The saved plan of the project (or `task`), empty when there is none.
@@ -1237,9 +1265,11 @@ async fn terminal_start(
     let extensions = state.extensions.clone();
     let roots = scoped.roots();
     let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
+        let launch_project = project.clone();
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let terminal = project
             .component(&component_id)
@@ -1261,7 +1291,7 @@ async fn terminal_start(
         );
         let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
         metadata.task.clone_from(&task);
-        let spec = context::session_spec_with(
+        let mut spec = context::session_spec_with(
             &project,
             &component_id,
             &terminal_id,
@@ -1271,8 +1301,106 @@ async fn terminal_start(
             &dirs,
         )
         .map_err(err)?;
+        if terminal.kind == model::TerminalKind::Agent {
+            agent_commands::inject(
+                agent_server,
+                patchbay_core::agent_bridge::LaunchContext {
+                    project_id: project_id.clone(),
+                    project: launch_project,
+                    task: task.clone(),
+                    agent_session: model::task_session_id(
+                        &project_id,
+                        &metadata.component_id,
+                        &terminal.id,
+                        task.as_deref(),
+                    ),
+                    planner: false,
+                },
+                &mut spec,
+            )?;
+        }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
+    })
+    .await
+}
+
+/// Start a configured root session with implementation instructions only.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn task_root_start(
+    request_id: String,
+    project_id: String,
+    state: State<'_, AppState>,
+    project: Project,
+    component_ids: Vec<String>,
+    terminal: TerminalSpec,
+    task: Option<String>,
+    extra_context: Option<Vec<ContextSection>>,
+) -> CmdResult<String> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let roots = scoped.roots();
+    let extensions = state.extensions.clone();
+    let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
+    blocking(move || {
+        let project = access.restrict(project, &component_ids).map_err(err)?;
+        let launch_project = project.clone();
+        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
+        let selected = if component_ids.is_empty() {
+            project.components.iter().map(|c| c.id.clone()).collect()
+        } else {
+            component_ids
+        };
+        let root = Path::new(&project.root);
+        let own = section
+            .into_iter()
+            .chain(patchbay_core::plans::section(root, task.as_deref()))
+            .chain(patchbay_core::proposals::section(
+                &project,
+                task.as_deref(),
+                &selected,
+            ));
+        let sections = briefing_sections(
+            &extensions.get(),
+            &project,
+            &selected,
+            &roots,
+            own,
+            extra_context,
+        );
+        let mut metadata =
+            service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
+        metadata.task.clone_from(&task);
+        let mut spec = context::task_root_session_spec(
+            &project,
+            &selected,
+            &terminal,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+        )
+        .map_err(err)?;
+        if terminal.kind == model::TerminalKind::Agent {
+            agent_commands::inject(
+                agent_server,
+                patchbay_core::agent_bridge::LaunchContext {
+                    project_id: project_id.clone(),
+                    project: launch_project,
+                    task: task.clone(),
+                    agent_session: model::task_session_id(
+                        &project_id,
+                        model::TASK_ROOT_SCOPE,
+                        &terminal.id,
+                        task.as_deref(),
+                    ),
+                    planner: false,
+                },
+                &mut spec,
+            )?;
+        }
+        bridge.start(spec, metadata, request_id)
     })
     .await
 }
@@ -1300,51 +1428,46 @@ async fn graph_action_plan(
 /// Run a graph action in the session service, which owns the terminals it starts.
 #[tauri::command]
 async fn graph_action_run(
+    app: AppHandle,
     project_id: String,
     window: WebviewWindow,
     state: State<'_, AppState>,
-    mut project: Project,
+    project: Project,
     request: ActionRequest,
     task: Option<String>,
 ) -> CmdResult<ActionReport> {
     main_only(&window)?;
-    let scoped = state.project(&project_id)?;
-    let access = scoped.access.snapshot();
-    let roots = scoped.roots();
-    let bridge = state.service.clone();
+    state.project(&project_id)?;
     blocking(move || {
-        access.trust(&mut project).map_err(err)?;
-        // Compute affected scope before filtering access or moving into the
-        // task's worktree, so locked consumers or ones outside the task's repo
-        // produce an error instead of disappearing from validation.
-        let plan =
-            ActionPlan::build(&project, &project_id, request, task.as_deref()).map_err(err)?;
-        let ids = plan.component_ids();
-        let project = access.restrict(project, &ids).map_err(err)?;
-        let (project, _, _) = for_task(project, task.as_deref(), &ids, roots)?;
-        bridge.call(Request::ActionRun {
-            project: Box::new(project),
-            plan: Box::new(plan),
-        })
+        agent_commands::run_action(&app, &project_id, project, request, task.as_deref(), "User")
     })
     .await
 }
 
 #[tauri::command]
 async fn graph_group_stop(
+    app: AppHandle,
     project_id: String,
     window: WebviewWindow,
     state: State<'_, AppState>,
+    project: Project,
     group_id: String,
     task: Option<String>,
 ) -> CmdResult<()> {
     main_only(&window)?;
-    let request = Request::ActionStopGroup {
-        project_id,
-        group_id,
-        task,
-    };
-    service(&state, request).await
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        let project = access.restrict(project, &[]).map_err(err)?;
+        agent_commands::stop_group(
+            &app,
+            &project_id,
+            &project,
+            &group_id,
+            task.as_deref(),
+            "User",
+        )
+    })
+    .await
 }
 
 /// Stop the running validation; it still reports the validators that ran.
@@ -1798,6 +1921,8 @@ pub fn run() {
             let main = smoke::main_window(main);
             main.build()?;
             app.state::<AppState>().service.run(app.handle().clone());
+            *app.state::<AppState>().agent_commands.lock().unwrap() =
+                Some(agent_commands::start(app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(|invoke| {
@@ -1847,6 +1972,11 @@ pub fn run() {
                 git_worktrees,
                 plan_context,
                 plan_read,
+                task_root_start,
+                agent_commands::task_activities,
+                agent_commands::sync_agent_project,
+                agent_commands::proposal_read,
+                agent_commands::proposal_apply,
                 plan_start,
                 plan_write,
                 list_devices,
@@ -1929,6 +2059,15 @@ pub fn run() {
                 layout::save(app);
                 for project in app.state::<AppState>().projects.read().unwrap().values() {
                     project.watcher.stop();
+                }
+                if let Some(server) = app
+                    .state::<AppState>()
+                    .agent_commands
+                    .lock()
+                    .unwrap()
+                    .take()
+                {
+                    server.stop();
                 }
                 app.state::<AppState>().service.disconnect();
             }
@@ -2379,6 +2518,7 @@ async fn project_relink(
         .ok_or("Chosen project unavailable")?;
     scoped.watcher.stop();
     let relinked = Arc::new(ProjectAccess {
+        agent_project: RwLock::new(scoped.agent_project.read().unwrap().clone()),
         maintenance: Mutex::default(),
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),

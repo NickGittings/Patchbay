@@ -5,127 +5,124 @@ import { attachTask, branchFor, createTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import type { Worktree } from '../../types'
 
-/**
- * Start a task: a new branch in a worktree beside the repo (or an existing worktree), connected
- * to the components it is about. Open while the store's `newTask` holds the seed components.
- */
 export default function NewTaskDialog() {
   const seed = useStore((s) => s.newTask)
-  if (!seed) return null
-  return <Dialog seed={seed} />
+  return seed ? <Dialog seed={seed} /> : null
 }
-
 function Dialog({ seed }: { seed: string[] }) {
   const nodes = useStore((s) => s.nodes)
   const tasks = useStore((s) => s.tasks)
+  const projectId = useStore((s) => s.project?.id)
   const close = () => useStore.getState().setNewTask(null)
-  const [mode, setMode] = useState<'new' | 'attach'>('new')
+  const [mode, setMode] = useState<'new' | 'current' | 'attach'>('new')
   const [title, setTitle] = useState('')
   const [branch, setBranch] = useState('')
   const [branchEdited, setBranchEdited] = useState(false)
   const [base, setBase] = useState('')
-  // Shown as the placeholder: an empty base branches from the open HEAD, and keeps an existing
-  // branch as it is.
-  const [head, setHead] = useState('HEAD')
   const [components, setComponents] = useState(seed)
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const [worktree, setWorktree] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-
   useEffect(() => {
     let disposed = false
     void gitWorktrees()
       .then((list) => {
-        if (disposed) return
-        setWorktrees(list)
-        const current = list.find((w) => w.current)
-        if (current?.branch) setHead(current.branch)
+        if (!disposed) setWorktrees(list)
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (!disposed) setError(String(e))
+      })
     return () => {
       disposed = true
     }
-  }, [])
-
-  const free = worktrees.filter((w) => !w.current && !tasks.some((t) => t.worktree === w.path))
-  const toggle = (id: string) =>
-    setComponents(
-      components.includes(id) ? components.filter((c) => c !== id) : [...components, id],
-    )
-
+  }, [projectId])
+  const current = worktrees.find((w) => w.current)
+  const others = worktrees.filter((w) => !w.current)
+  const chosen = mode === 'current' ? current?.path : worktree
+  const assigned = tasks.find((t) => t.worktree === chosen)
+  const ready = !!title.trim() && (mode === 'new' ? !!branch.trim() && !!current : !!chosen)
   const submit = async () => {
+    if (!ready || useStore.getState().project?.id !== projectId) return
     setBusy(true)
     setError('')
     try {
       if (mode === 'new') await createTask({ title, branch, base: base || undefined, components })
-      else await attachTask(worktree, components)
-      close()
+      else await attachTask(chosen!, components, title)
+      if (useStore.getState().project?.id === projectId) close()
     } catch (e) {
       setError(String(e))
     } finally {
       setBusy(false)
     }
   }
-  const ready = mode === 'new' ? title.trim() && branch.trim() : worktree
-
   return (
-    <div className="extension-overlay" onClick={close}>
+    <div
+      className="extension-overlay"
+      onClick={() => {
+        if (!busy) close()
+      }}
+    >
       <form
         className="extensions-panel panel task-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="New worktree"
+        aria-label="New task"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') close()
+          if (e.key === 'Escape' && !busy) close()
         }}
         onSubmit={(e) => {
           e.preventDefault()
-          if (ready && !busy) void submit()
+          if (!busy) void submit()
         }}
       >
         <div className="row">
-          <h2>New worktree</h2>
+          <h2>New task</h2>
           <span className="spacer" />
-          <div className="view-switcher" role="group" aria-label="Worktree">
-            <button
-              type="button"
-              className={mode === 'new' ? 'active' : ''}
-              aria-pressed={mode === 'new'}
-              onClick={() => setMode('new')}
-            >
-              New branch
-            </button>
-            <button
-              type="button"
-              className={mode === 'attach' ? 'active' : ''}
-              aria-pressed={mode === 'attach'}
-              disabled={!free.length}
-              title={free.length ? '' : 'Every other worktree is already listed'}
-              onClick={() => {
-                setMode('attach')
-                setWorktree(worktree || free[0]?.path || '')
-              }}
-            >
-              Existing worktree
-            </button>
-          </div>
+        </div>
+        <label>
+          Goal title
+          <input
+            autoFocus
+            value={title}
+            placeholder="Fix login"
+            onChange={(e) => {
+              setTitle(e.target.value)
+              if (!branchEdited) setBranch(branchFor(e.target.value))
+            }}
+          />
+        </label>
+        <div className="view-switcher" role="group" aria-label="Task checkout">
+          <button
+            type="button"
+            className={mode === 'new' ? 'active' : ''}
+            onClick={() => setMode('new')}
+          >
+            New worktree
+          </button>
+          <button
+            type="button"
+            className={mode === 'current' ? 'active' : ''}
+            disabled={!current}
+            onClick={() => setMode('current')}
+          >
+            Current checkout
+          </button>
+          <button
+            type="button"
+            className={mode === 'attach' ? 'active' : ''}
+            disabled={!others.length}
+            onClick={() => {
+              setMode('attach')
+              setWorktree(worktree || others[0]?.path || '')
+            }}
+          >
+            Existing worktree
+          </button>
         </div>
         {mode === 'new' ? (
           <>
-            <label>
-              What's it for
-              <input
-                autoFocus
-                value={title}
-                placeholder="Fix checkout totals"
-                onChange={(e) => {
-                  setTitle(e.target.value)
-                  if (!branchEdited) setBranch(branchFor(e.target.value))
-                }}
-              />
-            </label>
             <div className="row">
               <label className="grow">
                 Branch
@@ -139,26 +136,39 @@ function Dialog({ seed }: { seed: string[] }) {
               </label>
               <label className="grow">
                 From
-                <input value={base} placeholder={head} onChange={(e) => setBase(e.target.value)} />
+                <input
+                  value={base}
+                  placeholder={current?.branch ?? 'HEAD'}
+                  onChange={(e) => setBase(e.target.value)}
+                />
               </label>
             </div>
-            <div className="hint flush">
-              The worktree is created beside the repo. An existing branch is checked out as is.
-            </div>
+            <p className="hint flush">
+              Creates the checkout before planning. Start the stopped root shell to set up this
+              worktree.
+            </p>
           </>
-        ) : (
+        ) : mode === 'attach' ? (
           <label>
             Worktree
-            <select autoFocus value={worktree} onChange={(e) => setWorktree(e.target.value)}>
-              {free.map((w) => (
+            <select value={worktree} onChange={(e) => setWorktree(e.target.value)}>
+              {others.map((w) => (
                 <option key={w.path} value={w.path}>
-                  {w.branch ?? `detached ${w.head.slice(0, 7)}`} · {w.path}
+                  {tasks.find((t) => t.worktree === w.path)?.title ?? w.branch ?? 'Detached'} ·{' '}
+                  {w.path}
                 </option>
               ))}
             </select>
           </label>
+        ) : (
+          <code>{current?.path}</code>
         )}
-        <div className="section-title">Components</div>
+        {assigned && (
+          <p className="hint flush">
+            This checkout belongs to “{assigned.title}”. Creating activates that task.
+          </p>
+        )}
+        <div className="section-title">Components in scope</div>
         <div className="scope-chips">
           {nodes.map((n) => (
             <button
@@ -166,7 +176,13 @@ function Dialog({ seed }: { seed: string[] }) {
               type="button"
               className={`chip ${components.includes(n.id) ? 'active' : ''}`}
               aria-pressed={components.includes(n.id)}
-              onClick={() => toggle(n.id)}
+              onClick={() =>
+                setComponents(
+                  components.includes(n.id)
+                    ? components.filter((id) => id !== n.id)
+                    : [...components, n.id],
+                )
+              }
             >
               <span className="kind-dot" style={{ background: KIND_COLOR[n.data.kind] }} />
               {n.data.name}
@@ -176,11 +192,11 @@ function Dialog({ seed }: { seed: string[] }) {
         {error && <div className="hint file-tree-error">{error}</div>}
         <div className="row">
           <span className="spacer" />
-          <button type="button" onClick={close}>
+          <button type="button" disabled={busy} onClick={close}>
             Cancel
           </button>
           <button type="submit" className="primary" disabled={!ready || busy}>
-            {busy ? 'Creating…' : mode === 'new' ? 'Create worktree' : 'Use worktree'}
+            {busy ? 'Creating…' : assigned ? 'Activate task' : 'Create task'}
           </button>
         </div>
       </form>

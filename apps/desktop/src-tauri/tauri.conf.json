@@ -35,7 +35,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/patchbay-sessiond"
+      "binaries/patchbay-sessiond",
+      "binaries/patchbay"
     ]
   },
   "plugins": {

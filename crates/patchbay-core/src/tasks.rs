@@ -394,24 +394,22 @@ pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
 }
 
 /// Make a task of an existing worktree of the repo (one [`git::worktrees`]
-/// lists, other than the open one).
+/// lists, including the open one).
 ///
 /// # Errors
-/// Fails if `worktree` isn't one of the repo's worktrees, is the open one, or
-/// already has a task.
+/// Fails if `worktree` isn't one of the repo's worktrees. An assigned checkout
+/// returns its existing task, without changing its title or scope.
 pub fn attach(
     root: &Path,
     worktree: &str,
     title: Option<String>,
     components: Vec<String>,
 ) -> Result<Task> {
+    let canonical = Path::new(worktree).canonicalize()?;
     let tree = git::worktrees(root)
         .into_iter()
-        .find(|w| w.path == worktree)
+        .find(|w| Path::new(&w.path) == canonical)
         .ok_or_else(|| anyhow!("{worktree} isn't a worktree of this repo"))?;
-    if tree.current {
-        bail!("That is the worktree the project is open in");
-    }
     let title = title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
@@ -433,14 +431,14 @@ pub fn attach(
         missing: false,
         current: false,
     };
-    modify(root, |tasks| {
-        if tasks.iter().any(|t| t.worktree == tree.path) {
-            bail!("That worktree already has a task");
+    let id = modify(root, |tasks| {
+        if let Some(existing) = tasks.iter().find(|t| t.worktree == tree.path) {
+            return Ok(existing.id.clone());
         }
         tasks.push(task.clone());
-        Ok(())
+        Ok(task.id.clone())
     })?;
-    find(root, &task.id)
+    find(root, &id)
 }
 
 /// Edit a task's title, notes or components.
@@ -524,6 +522,7 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     // The plan was for this task only. The task is gone already, so a plan that
     // can't be deleted (held open on Windows) doesn't fail the removal.
     let _ = crate::plans::remove(root, Some(id));
+    let _ = crate::proposals::remove(root, Some(id));
     Ok(())
 }
 
@@ -842,6 +841,36 @@ mod tests {
     }
 
     #[test]
+    fn current_checkout_attaches_once_and_cannot_be_deleted() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else { return };
+        let task = attach(
+            &root,
+            root.to_str().unwrap(),
+            Some("Fix login".into()),
+            vec!["web".into()],
+        )
+        .unwrap();
+        assert!(task.current);
+        let same = attach(
+            &root,
+            &root.join(".").display().to_string(),
+            Some("Other".into()),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(same.id, task.id);
+        assert_eq!(same.title, "Fix login");
+        assert_eq!(list(&root).unwrap().len(), 1);
+        assert!(check_removable(&root, &task.id).is_err());
+        assert!(remove(&root, &task.id, true).is_err());
+        let (mapped, _) = project_in(&project(&root), &task, &["web".into()]).unwrap();
+        assert_eq!(Path::new(&mapped.root), root);
+        remove(&root, &task.id, false).unwrap();
+        assert!(root.exists());
+    }
+
+    #[test]
     fn attaches_existing_worktrees_once() {
         let f = Fixture::new();
         let Some(root) = f.repo() else {
@@ -853,11 +882,11 @@ mod tests {
             &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]
         ));
         let wt = wt.canonicalize().unwrap().to_string_lossy().into_owned();
-        assert!(attach(&root, root.to_str().unwrap(), None, vec![]).is_err());
+
         assert!(attach(&root, f.0.to_str().unwrap(), None, vec![]).is_err());
         let task = attach(&root, &wt, None, vec![]).unwrap();
         assert_eq!(task.title, "side");
-        assert!(attach(&root, &wt, None, vec![]).is_err());
+        assert_eq!(attach(&root, &wt, None, vec![]).unwrap().id, task.id);
         fs::remove_dir_all(&wt).unwrap();
         assert!(list(&root).unwrap()[0].missing);
         assert!(find(&root, &task.id).is_err());

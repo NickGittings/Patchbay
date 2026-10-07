@@ -1,14 +1,18 @@
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { projectOf, useStore } from '../store'
+import { projectOf, switchTaskWorkspace, useStore } from '../store'
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
+import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import {
+  graphGroupStop,
   taskActivate,
   taskAttach,
   taskCheckRemovable,
   taskCreate,
   taskList,
   taskRemove,
+  taskUpdate,
   terminalSnapshot,
   terminalStop,
 } from './ipc'
@@ -60,14 +64,21 @@ function applyTasks(projectId: string, tasks: Task[]) {
   const state = s.projects[projectId]?.state
   if (!state) return
   const keep = tasks.some((t) => t.id === state.activeTask && !t.missing)
-  s.patchProject(projectId, { tasks, activeTask: keep ? state.activeTask : null })
+  s.patchProject(projectId, {
+    tasks,
+    ...switchTaskWorkspace({ ...state, tasks }, keep ? state.activeTask : null),
+  })
 }
 
 /** Switch a project's task, whether or not its tab is active. */
 function activateTaskIn(projectId: string, task: string | null) {
   const s = useStore.getState()
   if (s.project?.id === projectId) s.setActiveTask(task)
-  else s.patchProject(projectId, { activeTask: task })
+  else {
+    const state = s.projects[projectId]?.state
+    if (!state) return
+    s.patchProject(projectId, switchTaskWorkspace(state, task))
+  }
 }
 
 /**
@@ -76,8 +87,12 @@ function activateTaskIn(projectId: string, task: string | null) {
  * not a task switch.
  */
 export function followActiveTask() {
+  const listener = listen<import('../types').TaskActivity>('patchbay://task-activity', (event) =>
+    applyTaskActivity(event.payload),
+  )
   // The task last sent to each project's backend, so a slow earlier call can't leave the
   // watcher on a worktree the user already switched away from.
+  const scopeWrites = new Map<string, Promise<unknown>>()
   const sent = new Map<string, string | null>()
   const activating = new Map<string, Promise<void>>()
   const activate = (projectId: string): Promise<void> => {
@@ -93,12 +108,28 @@ export function followActiveTask() {
     activating.set(projectId, running)
     return running
   }
-  return useStore.subscribe((s, prev) => {
+  const unsubscribe = useStore.subscribe((s, prev) => {
     // A closed project's backend state is gone; reopening it starts from scratch.
     if (s.projects !== prev.projects)
       for (const id of sent.keys()) if (!s.projects[id] && s.project?.id !== id) sent.delete(id)
     const id = s.project?.id
     if (!id) return
+    if (
+      s.activeTask &&
+      s.activeTask === prev.activeTask &&
+      id === prev.project?.id &&
+      s.highlighted !== prev.highlighted
+    ) {
+      const task = s.activeTask
+      const components = [...s.highlighted]
+      const key = `${id}/${task}`
+      const write = (scopeWrites.get(key) ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => taskUpdate(task, { components }, id))
+        .then(() => refreshTasks(id))
+        .catch((e) => useStore.getState().setMessage(String(e)))
+      scopeWrites.set(key, write)
+    }
     // Also covers a task restored with the workspace, which the backend hasn't heard of.
     if ((sent.get(id) ?? null) !== s.activeTask) void activate(id)
     if (id !== prev.project?.id || s.activeTask === prev.activeTask) return
@@ -106,6 +137,10 @@ export function followActiveTask() {
     useStore.getState().setGitStatus({ changes: {}, repos: {} })
     void requestGitRefresh(id)
   })
+  return () => {
+    unsubscribe()
+    void listener.then((unlisten) => unlisten())
+  }
 }
 
 export async function createTask(draft: TaskDraft): Promise<Task> {
@@ -117,10 +152,14 @@ export async function createTask(draft: TaskDraft): Promise<Task> {
   return task
 }
 
-export async function attachTask(worktree: string, components: string[]): Promise<Task> {
+export async function attachTask(
+  worktree: string,
+  components: string[],
+  title?: string,
+): Promise<Task> {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
-  const task = await taskAttach(worktree, undefined, components, projectId)
+  const task = await taskAttach(worktree, title, components, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
   return task
@@ -128,6 +167,8 @@ export async function attachTask(worktree: string, components: string[]): Promis
 
 /** Stop a project's task terminals and wait (up to 10s) for them to exit. */
 async function stopTaskSessions(projectId: string, id: string) {
+  const project = projectOf(projectId)
+  for (const group of project?.groups ?? []) await graphGroupStop(group.id, id, projectId)
   const sids = Object.entries(useStore.getState().sessions)
     .filter(
       ([sid, session]) =>
@@ -175,4 +216,26 @@ export function branchFor(title: string) {
     .replace(/[^a-z0-9/._-]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^[-./]+|[-./]+$/g, '')
+}
+
+export function applyTaskActivity(activity: import('../types').TaskActivity) {
+  const s = useStore.getState()
+  if (
+    s.taskActivities[activity.id]?.state !== undefined &&
+    s.taskActivities[activity.id].state !== 'running' &&
+    activity.state === 'running'
+  )
+    return
+  const active = s.project?.id === activity.projectId && s.activeTask === activity.task
+  useStore.setState({
+    taskActivities: { ...s.taskActivities, [activity.id]: activity },
+    seenActivities:
+      active && activity.state !== 'running'
+        ? [...new Set([...s.seenActivities, activity.id])]
+        : s.seenActivities,
+  })
+  s.patchTask(activity.projectId, activity.task, {
+    ...taskActionState(useStore.getState().taskActivities, activity.projectId, activity.task),
+    ...(activity.report ? { graphActionReport: activity.report } : {}),
+  })
 }

@@ -5,7 +5,14 @@ import { gitReview, gitWorktrees, taskUpdate } from '../../lib/ipc'
 import { planTerminals } from '../../lib/plan'
 import { refreshTasks, removeTask, seedNewTask } from '../../lib/tasks'
 import { useStore } from '../../store'
-import { PLAN_SCOPE, PROJECT_SCOPE, sessionId, type Review, type Task } from '../../types'
+import {
+  TASK_ROOT_SCOPE,
+  PLAN_SCOPE,
+  PROJECT_SCOPE,
+  sessionId,
+  type Review,
+  type Task,
+} from '../../types'
 
 import Popover from '../Popover'
 import { CloseMenu } from '../menuContext'
@@ -65,7 +72,7 @@ export default function WorktreePicker({ align = 'left' }: { align?: 'left' | 'r
           )}
         </>
       }
-      title="Choose a worktree"
+      title="Task menu"
       className="worktree-picker"
       listClassName="worktree-popover"
       align={align}
@@ -87,7 +94,9 @@ function WorktreeOverview({ branch, onOpen }: { branch: string; onOpen: () => vo
   return (
     <>
       <div className="worktree-list">
-        <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+        {!tasks.some((t) => t.current && !t.missing) && (
+          <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+        )}
         {tasks.map((task) => (
           <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
         ))}
@@ -99,19 +108,19 @@ function WorktreeOverview({ branch, onOpen }: { branch: string; onOpen: () => vo
           seedNewTask()
         }}
       >
-        + New worktree…
+        ＋ New task
       </button>
     </>
   )
 }
 
 /** Save notes still waiting in `pending`, once. */
-function saveNotes(pending: RefObject<{ id: string; notes: string } | null>) {
+function saveNotes(pending: RefObject<{ id: string; notes: string; projectId?: string } | null>) {
   const edit = pending.current
   if (!edit) return
   pending.current = null
-  void taskUpdate(edit.id, { notes: edit.notes })
-    .then(() => refreshTasks())
+  void taskUpdate(edit.id, { notes: edit.notes }, edit.projectId)
+    .then(() => refreshTasks(edit.projectId))
     .catch((e) => useStore.getState().setMessage(String(e)))
 }
 
@@ -125,6 +134,9 @@ function WorktreeRow({
   branch?: string
 }) {
   const close = useContext(CloseMenu)
+  const projectId = useStore((s) => s.project?.id)
+  const [rename, setRename] = useState(false)
+  const [title, setTitle] = useState(task?.title ?? '')
   const id = task?.id ?? null
   const switchTo = () => {
     if (task?.missing) return
@@ -136,13 +148,16 @@ function WorktreeRow({
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
   const activeTask = useStore((s) => s.activeTask)
+  const rootTerminals = useStore((s) => s.rootTerminals)
+  const taskWorkspaces = useStore((s) => s.taskWorkspaces)
+  const roots = activeTask === id ? rootTerminals : (taskWorkspaces[id ?? '']?.rootTerminals ?? [])
   const revision = useStore((s) => s.gitChanges)
   const pathsKey = useStore((s) => s.nodes.map((n) => `${n.id}\0${n.data.path}`).join('\n'))
   const [review, setReview] = useState<Review | null>(null)
   const [error, setError] = useState('')
   const [notes, setNotes] = useState(task?.notes ?? '')
   // Saved shortly after typing stops, and when the card goes away, since a blur isn't reliable.
-  const pendingNotes = useRef<{ id: string; notes: string } | null>(null)
+  const pendingNotes = useRef<{ id: string; notes: string; projectId?: string } | null>(null)
   const taskId = task?.id
   const savedNotes = task?.notes
   useEffect(() => {
@@ -150,10 +165,10 @@ function WorktreeRow({
       pendingNotes.current = null
       return
     }
-    pendingNotes.current = { id: taskId, notes }
+    pendingNotes.current = { id: taskId, notes, projectId }
     const timer = setTimeout(() => saveNotes(pendingNotes), 600)
     return () => clearTimeout(timer)
-  }, [taskId, notes, savedNotes])
+  }, [taskId, notes, savedNotes, projectId])
   useEffect(() => () => saveNotes(pendingNotes), [])
   const [confirming, setConfirming] = useState(false)
   const active = activeTask === id
@@ -190,10 +205,19 @@ function WorktreeRow({
     Object.values(review?.changes ?? {}).flatMap((files) => files.map((f) => f.path)),
   ).size
   const running = [
+    ...roots.map((t) => ({
+      componentId: TASK_ROOT_SCOPE,
+      name: 'Task root',
+      t,
+      sid: sessionId(TASK_ROOT_SCOPE, t.id, id),
+    })),
     ...nodes.flatMap((n) =>
-      componentTerminals(n.id, n.data.terminals, id ? {} : runtimeTerminals, id).map(
-        ([sid, t]) => ({ componentId: n.id, name: n.data.name, t, sid }),
-      ),
+      componentTerminals(n.id, n.data.terminals, runtimeTerminals, id).map(([sid, t]) => ({
+        componentId: n.id,
+        name: n.data.name,
+        t,
+        sid,
+      })),
     ),
     ...planTerminals(devices).map((t) => ({
       componentId: PLAN_SCOPE,
@@ -233,7 +257,14 @@ function WorktreeRow({
     const current = s.tasks.find((t) => t.id === task.id)?.components ?? task.components
     const components = current.includes(cid) ? current.filter((c) => c !== cid) : [...current, cid]
     s.setTasks(s.tasks.map((t) => (t.id === task.id ? { ...t, components } : t)))
-    void taskUpdate(task.id, { components }).catch((e) => useStore.getState().setMessage(String(e)))
+    if (projectId)
+      s.patchTask(projectId, task.id, {
+        highlighted: components,
+        implementationComponents: components.map((id) => ({ id, visible: true })),
+      })
+    void taskUpdate(task.id, { components }, projectId).catch((e) =>
+      useStore.getState().setMessage(String(e)),
+    )
   }
 
   return (
@@ -272,12 +303,28 @@ function WorktreeRow({
         >
           Review
         </button>
+        {task && <button onClick={() => setRename(!rename)}>Rename…</button>}
         {task && !confirming && (
           <button className="danger" onClick={() => setConfirming(true)}>
             Remove…
           </button>
         )}
       </header>
+      {task && rename && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void taskUpdate(task.id, { title }, projectId)
+              .then(() => refreshTasks(projectId))
+              .catch((e) => useStore.getState().setMessage(String(e)))
+            setRename(false)
+          }}
+        >
+          <input aria-label="Task title" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <button disabled={!title.trim()}>Save name</button>
+        </form>
+      )}
       {task && (
         <div className="worktree-path mono" title={task.worktree}>
           {task.worktree}

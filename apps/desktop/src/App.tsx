@@ -29,7 +29,7 @@ import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
-import { GIT_DIRTY_EVENT } from './lib/ipc'
+import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
@@ -173,6 +173,34 @@ export default function App() {
       stopWindows()
       stopTasks()
     }
+  }, [])
+  useEffect(() => {
+    const signatures = new Map<string, string>()
+    const sync = () => {
+      const s = useStore.getState()
+      if (!s.project) return
+      const project = s.toProject()
+      const signature = JSON.stringify({
+        ...project,
+        components: project.components.map(({ position: _position, ...component }) => component),
+      })
+      if (signatures.get(s.project.id) === signature) return
+      signatures.set(s.project.id, signature)
+      void syncAgentProject(project).catch((e) => {
+        if (useStore.getState().project?.id === project.projectId)
+          useStore.getState().setMessage(String(e))
+      })
+    }
+    sync()
+    return useStore.subscribe((s, prev) => {
+      if (
+        s.project !== prev.project ||
+        s.nodes !== prev.nodes ||
+        s.edges !== prev.edges ||
+        s.groups !== prev.groups
+      )
+        sync()
+    })
   }, [])
   // Tasks belong to the repo, so each project loads its own when its tab opens.
   useEffect(() => {
