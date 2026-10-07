@@ -158,7 +158,8 @@ interface State {
   onConnect: (c: Connection) => void
   addComponent: (position: { x: number; y: number }) => void
   updateComponent: (id: string, patch: Partial<ComponentData>) => void
-  addTerminal: (componentId: string, device: DeviceManifest | null) => void
+  /** Adds a saved terminal to the component and returns its id. */
+  addTerminal: (componentId: string, device: DeviceManifest | null) => string
   updateTerminal: (componentId: string, terminalId: string, patch: Partial<TerminalSpec>) => void
   removeTerminal: (componentId: string, terminalId: string) => void
   setEdgeLabel: (id: string, label: string) => void
@@ -479,6 +480,7 @@ export const useStore = create<State>((set, get) => ({
       activeSession: sessionId(componentId, terminal.id, s.activeTask),
       dirty: true,
     }))
+    return terminal.id
   },
   updateTerminal: (componentId, terminalId, patch) =>
     set((s) => ({

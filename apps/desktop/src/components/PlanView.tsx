@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
-import { planContext } from '../lib/ipc'
+import { startAgentsIn } from '../lib/implement'
+import { planContext, planRead, planWrite } from '../lib/ipc'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId } from '../types'
+import { PLAN_SCOPE, sessionId, type DeviceManifest } from '../types'
 import Canvas from './Canvas'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
@@ -22,6 +23,7 @@ export default function PlanView() {
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
   const setNewTask = useStore((s) => s.setNewTask)
+  const setView = useStore((s) => s.setView)
   useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
@@ -30,6 +32,11 @@ export default function PlanView() {
   const [contextOpen, setContextOpen] = useState(false)
   const [context, setContext] = useState('Loading planner context…')
   const [restarting, setRestarting] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
+  const [plan, setPlan] = useState('')
+  const [planState, setPlanState] = useState<'loading' | 'saved' | 'edited' | 'saving' | string>(
+    'loading',
+  )
   const terminals = planTerminals(devices)
   const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
   const sid = sessionId(PLAN_SCOPE, active.id, task)
@@ -51,6 +58,57 @@ export default function PlanView() {
       disposed = true
     }
   }, [contextOpen, project, nodes, edges, highlighted, task])
+
+  const projectId = project?.id
+  const [planLoads, setPlanLoads] = useState(0)
+  useEffect(() => {
+    if (!planOpen || !projectId) return
+    let disposed = false
+    planRead(projectId, task ?? undefined)
+      .then((text) => {
+        if (disposed) return
+        setPlan(text)
+        setPlanState('saved')
+      })
+      .catch((e) => {
+        if (!disposed) setPlanState(String(e))
+      })
+    return () => {
+      disposed = true
+    }
+  }, [planOpen, projectId, task, planLoads])
+  const loadPlan = () => {
+    setPlanState('loading')
+    setPlanLoads((n) => n + 1)
+  }
+
+  const savePlan = async () => {
+    if (!projectId) return
+    setPlanState('saving')
+    try {
+      await planWrite(projectId, task ?? undefined, plan)
+      setPlanState('saved')
+    } catch (e) {
+      setPlanState(String(e))
+    }
+  }
+
+  /** Implementation over the highlights, optionally starting the active planner's agent in each. */
+  const implement = (withAgents: boolean) => {
+    const ids = [...highlighted]
+    setView('implementation')
+    if (!withAgents) return
+    const device: DeviceManifest = devices.find((d) => d.id === active.id) ?? {
+      id: active.id,
+      name: active.name,
+      command: active.command,
+      kind: 'agent',
+      category: 'agent',
+      source: 'builtin',
+      ...(active.adapter ? { adapter: active.adapter } : {}),
+    }
+    void startAgentsIn(ids, device, task)
+  }
 
   const restart = async () => {
     setRestarting(true)
@@ -84,6 +142,22 @@ export default function PlanView() {
                 Start task…
               </button>
             </div>
+            <div className="row plan-implement">
+              <button
+                disabled={highlighted.length === 0}
+                title="Work on the highlighted components side by side"
+                onClick={() => implement(false)}
+              >
+                Implement →
+              </button>
+              <button
+                disabled={highlighted.length === 0}
+                title={`Implement and start ${active.name} in each highlighted component, with the saved plan in its briefing`}
+                onClick={() => implement(true)}
+              >
+                + start {active.name}
+              </button>
+            </div>
             <div className="hint flush">
               {highlighted.length
                 ? `${highlighted.length} highlighted · ${nearby.size} nearby`
@@ -113,6 +187,48 @@ export default function PlanView() {
             >
               <summary>Planner context</summary>
               <pre>{context}</pre>
+            </details>
+            <details
+              className="context plan-file"
+              open={planOpen}
+              onToggle={(e) => {
+                if (e.currentTarget.open && !planOpen) setPlanState('loading')
+                setPlanOpen(e.currentTarget.open)
+              }}
+            >
+              <summary>Saved plan</summary>
+              <div className="hint flush">
+                The planner writes it to <code>$PATCHBAY_PLAN_FILE</code>; component agents started
+                afterwards get it in their briefing.
+              </div>
+              <textarea
+                className="mono"
+                spellCheck={false}
+                rows={10}
+                placeholder="No plan saved yet. Ask the planner to write it, or paste one here."
+                value={plan}
+                disabled={planState === 'loading'}
+                onChange={(e) => {
+                  setPlan(e.target.value)
+                  setPlanState('edited')
+                }}
+              />
+              <div className="row">
+                <span className="hint flush">
+                  {planState === 'edited'
+                    ? 'Unsaved changes'
+                    : planState === 'saved' || planState === 'loading' || planState === 'saving'
+                      ? ''
+                      : planState}
+                </span>
+                <span className="spacer" />
+                <button disabled={planState === 'loading'} onClick={() => loadPlan()}>
+                  Reload
+                </button>
+                <button disabled={planState !== 'edited'} onClick={() => void savePlan()}>
+                  Save
+                </button>
+              </div>
             </details>
           </aside>
           <div className="terminal-dock planner-terminal">

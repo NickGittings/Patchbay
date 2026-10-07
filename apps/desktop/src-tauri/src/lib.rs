@@ -718,6 +718,7 @@ async fn component_context(
     component_id: String,
     extra_context: Option<Vec<ContextSection>>,
     task: Option<String>,
+    peers: Option<Vec<String>>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -727,11 +728,20 @@ async fn component_context(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
+        let mut own = section.into_iter().collect::<Vec<_>>();
+        own.extend(handoff_sections(
+            &project,
+            &component_id,
+            task.as_deref(),
+            peers,
+        ));
         let sections = extensions.get().sections(
             &project,
             ids,
             &roots,
-            with_task_section(section, extra_context),
+            own.into_iter()
+                .chain(extra_context.unwrap_or_default())
+                .collect(),
         );
         Ok(context::component_context(
             &project,
@@ -862,6 +872,47 @@ fn with_task_section(
         .into_iter()
         .chain(extra.unwrap_or_default())
         .collect()
+}
+
+/// What a component agent gets from planning: the saved plan and the other
+/// components being changed with it (peers outside the trusted map are dropped).
+fn handoff_sections(
+    project: &Project,
+    component_id: &str,
+    task: Option<&str>,
+    peers: Option<Vec<String>>,
+) -> Vec<ContextSection> {
+    let plan = patchbay_core::plans::section(Path::new(&project.root), task);
+    let peers = context::peers_section(project, component_id, &peers.unwrap_or_default());
+    plan.into_iter().chain(peers).collect()
+}
+
+/// The saved plan of the project (or `task`), empty when there is none.
+#[tauri::command]
+async fn plan_read(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: Option<String>,
+) -> CmdResult<String> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        patchbay_core::plans::read(&root, task.as_deref())
+            .map(Option::unwrap_or_default)
+            .map_err(err)
+    })
+    .await
+}
+
+/// Replace the saved plan of the project (or `task`).
+#[tauri::command]
+async fn plan_write(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: Option<String>,
+    text: String,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::plans::write(&root, task.as_deref(), &text).map_err(err)).await
 }
 
 /// `root` and `components` in `task`'s worktree, or unchanged without a task.
@@ -1148,6 +1199,7 @@ async fn terminal_start(
     terminal_id: String,
     extra_context: Option<Vec<ContextSection>>,
     task: Option<String>,
+    peers: Option<Vec<String>>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1158,16 +1210,28 @@ async fn terminal_start(
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
-        let sections = extensions.get().sections(
-            &project,
-            ids,
-            &roots,
-            with_task_section(section, extra_context),
-        );
         let terminal = project
             .component(&component_id)
             .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
             .ok_or("Unknown terminal")?;
+        let mut own = section.into_iter().collect::<Vec<_>>();
+        // Only agents read a briefing, so skip the plan lookup for the rest.
+        if terminal.kind == model::TerminalKind::Agent {
+            own.extend(handoff_sections(
+                &project,
+                &component_id,
+                task.as_deref(),
+                peers,
+            ));
+        }
+        let sections = extensions.get().sections(
+            &project,
+            ids,
+            &roots,
+            own.into_iter()
+                .chain(extra_context.unwrap_or_default())
+                .collect(),
+        );
         let mut metadata = service::metadata(&project_id, &project, &component_id, terminal);
         metadata.task.clone_from(&task);
         let spec = context::session_spec_for(
@@ -1732,7 +1796,9 @@ pub fn run() {
                 git_review,
                 git_worktrees,
                 plan_context,
+                plan_read,
                 plan_start,
+                plan_write,
                 list_devices,
                 save_device,
                 terminal_start,

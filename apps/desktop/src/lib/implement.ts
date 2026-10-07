@@ -1,0 +1,30 @@
+import { useStore } from '../store'
+import type { DeviceManifest } from '../types'
+import { startTerminal } from './sessions'
+
+/**
+ * Start `device`'s agent in each component: reuse a terminal already running
+ * its command, otherwise add one to the map (saved like any other edit).
+ */
+export function startAgentsIn(
+  componentIds: string[],
+  device: DeviceManifest,
+  task?: string | null,
+): Promise<void[]> {
+  const command = device.command.trim()
+  return Promise.all(
+    componentIds.map((id) => {
+      const s = useStore.getState()
+      const node = s.nodes.find((n) => n.id === id)
+      if (!node) return Promise.resolve()
+      const existing = node.data.terminals.find(
+        (t) => t.kind === 'agent' && t.command.trim() === command,
+      )
+      const terminalId = existing?.id ?? s.addTerminal(id, device)
+      return startTerminal(id, terminalId, task)
+    }),
+  )
+}
+
+/** Agent presets, the choices for "agent in each". */
+export const agentDevices = (devices: DeviceManifest[]) => devices.filter((d) => d.kind === 'agent')

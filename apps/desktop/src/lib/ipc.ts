@@ -98,13 +98,19 @@ export const graphGroupStop = (
 /** Stop the running validation; `false` if none was running. */
 export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
   invoke<boolean>('graph_validation_cancel', { projectId })
-export const componentContext = async (project: Project, componentId: string, task?: string) =>
+export const componentContext = async (
+  project: Project,
+  componentId: string,
+  task?: string,
+  peers?: string[],
+) =>
   invoke<string>('component_context', {
     project,
     projectId: project.projectId,
     componentId,
     extraContext: await extraContext(project, [componentId], undefined, task),
     task,
+    peers,
   })
 /** Opens a folder picker; `null` if cancelled. */
 export const addFolder = (project: Project) =>
@@ -151,6 +157,12 @@ export const planContext = async (project: Project, componentIds: string[], task
     extraContext: await extraContext(project, componentIds, undefined, task),
     task,
   })
+/** The plan the planner saved for the project (or task); empty when there is none. */
+export const planRead = (projectId: string, task?: string) =>
+  invoke<string>('plan_read', { projectId, task })
+/** Replace the saved plan that component agents receive in their briefing. */
+export const planWrite = (projectId: string, task: string | undefined, text: string) =>
+  invoke<void>('plan_write', { projectId, task, text })
 export const planStart = async (
   project: Project,
   componentIds: string[],
@@ -206,6 +218,7 @@ export const terminalStart = async (
   caller?: string,
   task?: string,
   requestId: string = crypto.randomUUID(),
+  peers?: string[],
 ) => {
   const terminal = project.components
     .find((c) => c.id === componentId)
@@ -219,6 +232,7 @@ export const terminalStart = async (
     extraContext:
       terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
+    peers,
   })
 }
 export const terminalWrite = (sessionId: string, data: string) =>

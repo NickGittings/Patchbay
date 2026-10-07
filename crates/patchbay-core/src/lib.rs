@@ -14,6 +14,7 @@ pub mod git;
 pub mod maintenance;
 pub mod model;
 pub mod navigation;
+pub mod plans;
 pub mod policy;
 pub mod pty;
 pub mod status;

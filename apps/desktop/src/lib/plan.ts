@@ -14,6 +14,14 @@ export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
     : [{ id: 'claude', name: 'Claude', command: 'claude', kind: 'agent' }]
 }
 
+/**
+ * The components implemented alongside `componentId`: the highlighted set when it
+ * includes the component and others, so each agent's briefing names its peers.
+ */
+export function peersFor(componentId: string, highlighted: string[]): string[] | undefined {
+  return highlighted.length > 1 && highlighted.includes(componentId) ? highlighted : undefined
+}
+
 type PlanEdge = { source: string; target: string }
 let lastHighlighted: string[] | undefined
 let lastEdges: PlanEdge[] | undefined

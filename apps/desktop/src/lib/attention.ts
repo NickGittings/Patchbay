@@ -165,5 +165,9 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   }
   s.select(item.componentId)
   s.setActiveSession(item.sid)
-  s.setView(s.runtimeTerminals[item.sid] ? 'navigation' : 'implementation')
+  const implementation = !s.runtimeTerminals[item.sid]
+  // Implementation shows the highlighted set when there is one; join it so the terminal is on screen.
+  if (implementation && s.highlighted.length && !s.highlighted.includes(item.componentId))
+    s.toggleHighlight(item.componentId)
+  s.setView(implementation ? 'implementation' : 'navigation')
 }

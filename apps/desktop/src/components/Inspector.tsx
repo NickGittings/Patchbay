@@ -7,6 +7,8 @@ import { openComponentWindow } from '../lib/windows'
 import { useState } from 'react'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
+import { peersFor } from '../lib/plan'
+import AddTerminalSelect from './AddTerminalSelect'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
 import { repairComponentPath, provenanceLabel, useMaintenance } from '../lib/maintenance'
 import { startTerminal, stopTerminal } from '../lib/sessions'
@@ -72,7 +74,6 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const { id, data } = node
   const projectId = useStore((s) => s.project?.id)
   const issue = useMaintenance((s) => s.issues[projectId ?? '']?.find((i) => i.componentId === id))
-  const devices = useStore((s) => s.devices)
   const sessions = useStore((s) => s.sessions)
   const graphActionBusy = useStore((s) => s.graphActionBusy)
   const validating = useStore((s) => s.graphAction?.kind === 'validateAffected')
@@ -80,8 +81,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   useClockTick()
   const edges = useStore((s) => s.edges)
   const nodes = useStore((s) => s.nodes)
-  const { updateComponent, updateTerminal, removeTerminal, addTerminal, setActiveSession } =
-    useStore.getState()
+  const { updateComponent, updateTerminal, removeTerminal, setActiveSession } = useStore.getState()
   const [context, setContext] = useState<string | null>(null)
 
   const nameOf = (nid: string) => nodes.find((n) => n.id === nid)?.data.name ?? nid
@@ -91,7 +91,14 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const loadContext = async () => {
     try {
       const s = useStore.getState()
-      setContext(await componentContext(s.toProject(), id, s.activeTask ?? undefined))
+      setContext(
+        await componentContext(
+          s.toProject(),
+          id,
+          s.activeTask ?? undefined,
+          peersFor(id, s.highlighted),
+        ),
+      )
     } catch (e) {
       setContext(String(e))
     }
@@ -278,24 +285,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
           </div>
         )
       })}
-      <select
-        className="add-terminal"
-        value=""
-        onChange={(e) => {
-          const v = e.target.value
-          addTerminal(id, v === 'custom' ? null : (devices.find((d) => d.id === v) ?? null))
-        }}
-      >
-        <option value="" disabled>
-          + Add terminal…
-        </option>
-        {devices.map((d) => (
-          <option key={d.id} value={d.id}>
-            {d.name} {d.command ? `— ${d.command}` : ''}
-          </option>
-        ))}
-        <option value="custom">Custom command</option>
-      </select>
+      <AddTerminalSelect componentId={id} />
 
       <div className="section-title">Related</div>
       {dependsOn.length + usedBy.length === 0 && (

@@ -108,10 +108,19 @@ fn run(cmd: &mut Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn store_file(root: &Path) -> Result<PathBuf> {
+/// Patchbay's per-user folder in the repo's common git directory, shared by
+/// every worktree and never committed.
+///
+/// # Errors
+/// Fails when `root` isn't in a git repo or git fails.
+pub fn store_dir(root: &Path) -> Result<PathBuf> {
     let repo = repo_of(root)?;
     let dir = run(git(&repo).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]))?;
-    Ok(PathBuf::from(dir).join("patchbay").join("tasks.json"))
+    Ok(PathBuf::from(dir).join("patchbay"))
+}
+
+fn store_file(root: &Path) -> Result<PathBuf> {
+    Ok(store_dir(root)?.join("tasks.json"))
 }
 
 fn load(file: &Path) -> Result<Store> {
