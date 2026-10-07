@@ -20,6 +20,7 @@
     "smoke:extensions": "node scripts/smoke-all.mjs extensions",
     "smoke:tasks": "node scripts/smoke-all.mjs tasks",
     "prepare:sessiond": "node scripts/sessiond.mjs",
+    "smoke:sessions": "node scripts/smoke-all.mjs sessions",
     "smoke:workspace": "node scripts/smoke-all.mjs workspace",
     "smoke:status": "node scripts/smoke-all.mjs status",
     "smoke:lifecycle": "node scripts/smoke-all.mjs lifecycle",

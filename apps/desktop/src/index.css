@@ -1776,6 +1776,13 @@ button.review-name:hover:not(:disabled) {
   padding: 20px;
   overflow: auto;
 }
+.session-group-heading {
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.session-group-heading h3 {
+  margin: 0;
+}
 .session-row {
   display: flex;
   align-items: center;

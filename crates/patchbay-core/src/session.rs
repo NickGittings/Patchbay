@@ -508,6 +508,11 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
+            // A record without a snapshot was saved mid-launch; nothing runs it any more, and
+            // clients read a snapshot-less, uninterrupted record as a session still starting.
+            if record.snapshot.is_none() {
+                record.interrupted = true;
+            }
             // Only the latest snapshot is known to belong to Record.spec. Older legacy
             // history has no folder metadata, so preserve None instead of guessing.
             if let Some(snapshot) = &mut record.snapshot
@@ -1804,6 +1809,14 @@ mod tests {
         };
         assert!(check_resume(&record, std::slice::from_ref(&project)).is_err());
         assert!(check_resume(&record, &[project, external]).is_ok());
+        // A record saved before its process spawned comes back interrupted, not starting.
+        let saved = BTreeMap::from([(record.id.clone(), record)]);
+        std::fs::write(
+            dir.join("sessions.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        assert!(Service::load(&dir).unwrap().list()[0].interrupted);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
