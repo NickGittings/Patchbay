@@ -5,7 +5,9 @@ workspace, and sessions smoke tests. Keep it tracked and independent of the loca
 map at the repository root.
 
 The runner copies this folder into a fresh temporary Git repository for each test.
-Tests may change that copy without changing these files or a developer's map.
+Workspace and sessions tests get two separate copies with distinct project names.
+Tests may change those copies without changing these files or a developer's map.
+The Docker extension fixture is also copied; its map is detected in the temporary folder.
 The `app` folder supplies shell sessions and file-tree entries; `crates` and
 `devices` supply paths used by the Git watcher and component merge checks.
 Other smoke tests retain their own explicit fixtures.

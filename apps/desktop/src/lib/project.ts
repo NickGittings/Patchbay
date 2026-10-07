@@ -1,12 +1,12 @@
-import { invoke } from '@tauri-apps/api/core'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { useStore } from '../store'
 import type { Added } from '../types'
-import { addFolder, openProject, saveProject } from './ipc'
+import { addFolder, openProject } from './ipc'
 import { acceptOpened, projectFromState } from './workspace'
 import { syncCurrentRoots } from './access'
 import { reviewRescan } from './maintenance'
+import { saveMapNow } from './mapSave'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -25,7 +25,7 @@ export function useOpenProject() {
       acceptOpened(opened)
       s.setMessage(
         detected
-          ? `Detected ${project.components.length} component(s). Review, then Save to create patchbay.json.`
+          ? `Detected ${project.components.length} component(s). Review, then choose Project → Create map configuration. Later map edits save automatically.`
           : locked.length
             ? `Locked (folder missing or not allowed): ${locked.join(', ')}. Pick their folders with Browse… or Add repo….`
             : '',
@@ -39,28 +39,8 @@ export function useOpenProject() {
 }
 
 export async function saveCurrentProject() {
-  const s = useStore.getState()
-  if (!s.project) return
-  const captured = s.toProject()
-  try {
-    const path = await saveProject(captured)
-    const current = useStore.getState()
-    if (
-      current.project?.id === s.project.id &&
-      JSON.stringify(current.toProject()) === JSON.stringify(captured)
-    )
-      s.markSaved()
-    const fingerprint = await invoke<string>('project_fingerprint', { projectId: s.project.id })
-    useStore.setState((current) => ({
-      projects: {
-        ...current.projects,
-        [s.project!.id]: { ...current.projects[s.project!.id], fingerprint },
-      },
-    }))
-    s.setMessage(`Saved ${path.split(/[\\/]/).pop()}`, true)
-  } catch (e) {
-    s.setMessage(String(e))
-  }
+  const id = useStore.getState().activeProjectId
+  if (id) await saveMapNow(id)
 }
 
 /**
@@ -100,7 +80,7 @@ export function applyAdded(
   return components.length
 }
 
-/** Review structural proposals; application and saving remain explicit. */
+/** Review structural proposals; application remains explicit; existing configurations autosave. */
 export function useRescanProject() {
   return useCallback(() => reviewRescan(), [])
 }

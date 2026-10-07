@@ -125,7 +125,11 @@ export async function applyMapReview(selected: string[]) {
     const edit = await applyReconciliation(before, review.preview.id, selected)
     await acceptEdit(before, edit)
     closeMapReview()
-    messageFor(review.projectId, 'Applied selected map changes. Save to persist the map.', true)
+    messageFor(
+      review.projectId,
+      'Applied selected map changes. Existing map configurations save automatically.',
+      true,
+    )
   } catch (e) {
     messageFor(review.projectId, String(e))
   } finally {

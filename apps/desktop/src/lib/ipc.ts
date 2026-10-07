@@ -73,8 +73,17 @@ export const cleanupComponentScopes = (project: Project, removed: string[]) =>
   invoke<void>('cleanup_component_scopes', { project, projectId: project.projectId, removed })
 export const releaseMapEdit = (projectId: string, token: string) =>
   invoke<void>('release_map_edit', { projectId, token })
-export const saveProject = (project: Project) =>
-  invoke<string>('save_project', { project, projectId: project.projectId })
+export type ProjectSaveResult =
+  | { status: 'saved'; path: string; fingerprint: string }
+  | { status: 'conflict'; fingerprint: string }
+export const saveProject = (project: Project, expectedFingerprint: string | null) =>
+  invoke<ProjectSaveResult>('save_project', {
+    project,
+    projectId: project.projectId,
+    expectedFingerprint,
+  })
+export const reloadProject = (projectId: string) =>
+  invoke<OpenedProject>('reload_project', { projectId })
 export const graphActionPlan = (project: Project, request: ActionRequest, task?: string) =>
   invoke<ActionPlan>('graph_action_plan', {
     project,

@@ -4,13 +4,13 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 
 ## Layout
 
-| Path | What |
-|---|---|
-| `crates/patchbay-core` | Headless engine: project model, repo detection, PTY sessions, agent context, git status, device presets, policy hook |
-| `crates/patchbay-cli` | Project inspection and session lifecycle commands without the UI |
-| `crates/patchbay-sessiond` | Independent local PTY service shared by desktop and CLI |
-| `apps/desktop` | Tauri 2 + React app (React Flow canvas, xterm.js terminals) |
-| `devices/` | Built-in terminal presets (same format as user devices) |
+| Path                       | What                                                                                                                 |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `crates/patchbay-core`     | Headless engine: project model, repo detection, PTY sessions, agent context, git status, device presets, policy hook |
+| `crates/patchbay-cli`      | Project inspection and session lifecycle commands without the UI                                                     |
+| `crates/patchbay-sessiond` | Independent local PTY service shared by desktop and CLI                                                              |
+| `apps/desktop`             | Tauri 2 + React app (React Flow canvas, xterm.js terminals)                                                          |
+| `devices/`                 | Built-in terminal presets (same format as user devices)                                                              |
 
 ## Develop
 
@@ -38,7 +38,7 @@ cargo test --workspace
 
 ## Concepts
 
-- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then Save to write `patchbay.json` (commit it to share the map). **Rescan** opens a selectable preview of detected additions, dependencies, stale links, missing folders, and unique package moves. **Apply selected** changes the draft; **Save** persists it. Existing configuration and manual relationships survive. Inspector and hierarchy show origin and Missing, Locked, or Unreadable folders. Stop live sessions and managed environments before deleting components or repairing paths. See [map maintenance and validation](docs/map-maintenance.md).
+- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then choose **Project → Create map configuration** to write `patchbay.json` (commit it to share the map). Later map edits save automatically after 750 ms of inactivity; the toolbar shows map-saving status. **Save map configuration now** and Cmd/Ctrl+S flush the current map. **Rescan** opens a selectable preview of detected additions, dependencies, stale links, missing folders, and unique package moves. **Apply selected** changes the draft and autosaves it when a map configuration already exists. Existing configuration and manual relationships survive. Inspector and hierarchy show origin and Missing, Locked, or Unreadable folders. Stop live sessions and managed environments before deleting components or repairing paths. See [map maintenance and validation](docs/map-maintenance.md).
 - **Repos**: a project can span several git repos. Open a parent folder that holds them, or use **Add repo…** to add a repo that lives beside the project; it is stored as a relative path such as `../billing`, so keep the same folder layout on other machines. Any nested repo becomes a component even without a recognised manifest, and git status is tracked per repo.
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
 - **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders and double-click entries to open them in your preferred editor. **Open in editor** is also available in the Inspector, file tree, and review files; **Reveal in Finder/Explorer** remains a separate action. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
@@ -153,8 +153,12 @@ reconnects; losing a connection never starts replacement processes. The helper e
 
 Local recovery lives in `~/.patchbay/workspaces/default.json`; identities live beside it.
 Drafts are written atomically after 500 ms of inactivity and flushed on orderly main-window
-closure. Autosave does **not** save `patchbay.json` or clear its unsaved indicator. When the
-saved map changed, choose **Recover draft** or **Use saved map**. Missing folders remain
+closure. Map autosave separately writes existing `patchbay.json` configurations after 750 ms
+of inactivity and flushes on orderly closure. A missing configuration requires an explicit
+**Create map configuration** first. Failed saves retain the recovery draft and show **Retry**.
+External map edits pause autosave; the status menu offers **Reload saved map** or
+**Replace with my map**. When the saved map changed while Patchbay was closed, choose
+**Recover draft** or **Use saved map**. Missing folders remain
 visible with **Locate folder…** and **Remove**. Restored external folders remain locked until
 their grants are revalidated through Browse or Add repo.
 
@@ -202,11 +206,12 @@ local state for tests; it must be an absolute path. `npm run smoke:workspace` ac
 fixture through `PATCHBAY_SMOKE_ROOT_2`. `npm run smoke:lifecycle` creates isolated fixtures,
 quits and relaunches the desktop, and verifies the same process and recovered workspace.
 `PATCHBAY_SMOKE_PORT` can select a free port for that harness.
+
 ## Graph actions
 
 Use **Groups** beneath the component hierarchy to save reusable component sets in
 `patchbay.json`. New groups include the selected canvas components; expand a group to edit
-membership. **Plan** uses the group as the planner scope. Save persists groups and task roles.
+membership. **Plan** uses the group as the planner scope. Groups and task roles autosave once a map configuration exists.
 
 In the component inspector, assign each task terminal a **Graph action**: **Development
 environment**, **Validation**, or **Manual only** (the default). Shells and agents are never

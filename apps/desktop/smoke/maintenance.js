@@ -142,6 +142,12 @@
       (p) => p.change.kind === 'moveComponent' && p.change.componentId === 'old',
     )
     assert(move && !move.selected, 'move repair must require review')
+    await smoke.flushMapSaves()
+    const beforeApply = await smoke.openProject()
+    assert(
+      !beforeApply.project.components.some((c) => c.id === 'new'),
+      'Review must not persist proposed changes',
+    )
     const selections = preview.proposals
       .filter(
         (p) =>
@@ -192,11 +198,12 @@
       'task scope cleanup missing',
     )
     assert(state().dirty, 'Apply must leave a dirty draft')
+    await until('applied map autosaved', () => !state().dirty)
     const freshOpened = await smoke.openProject()
     assert(
-      freshOpened.project.schemaVersion === 3 &&
-        !freshOpened.project.components.some((c) => c.id === 'new'),
-      'Apply must not persist patchbay.json',
+      freshOpened.project.schemaVersion === 4 &&
+        freshOpened.project.components.some((c) => c.id === 'new'),
+      'Approved changes must autosave to patchbay.json',
     )
     const second = await smoke.openSecondProject()
     smoke.acceptOpened(second)

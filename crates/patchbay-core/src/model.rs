@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::io::Write;
 use std::path::{Component as PathPart, Path, PathBuf};
+use std::sync::Mutex;
 
 pub const SCHEMA_VERSION: u32 = 4;
 /// Reserved component scope for project-level planner sessions.
@@ -11,6 +13,16 @@ pub const PLAN_SCOPE: &str = "@plan";
 pub const PROJECT_SCOPE: &str = "@project";
 /// Saved at the repo root so the map can be committed alongside the code.
 pub const PROJECT_FILE: &str = "patchbay.json";
+
+/// Result of a fingerprint-checked map write.
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ProjectSave {
+    Saved { path: PathBuf, fingerprint: String },
+    Conflict { fingerprint: String },
+}
+
+static MAP_WRITING: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -320,16 +332,57 @@ impl Project {
     }
 
     pub fn save(&self) -> Result<PathBuf> {
+        match self.save_checked(None)? {
+            ProjectSave::Saved { path, .. } => Ok(path),
+            ProjectSave::Conflict { .. } => unreachable!("unchecked save cannot conflict"),
+        }
+    }
+
+    /// Save only if the map still matches `expected`; `None` explicitly replaces it.
+    /// Writes a complete sibling file before replacing the destination, so readers never
+    /// observe a truncated JSON document. Serializes map writers in this process.
+    pub fn save_checked(&self, expected: Option<&str>) -> Result<ProjectSave> {
+        let _guard = MAP_WRITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.validate()?;
-        let file = Path::new(&self.root).join(PROJECT_FILE);
+        let root = Path::new(&self.root);
+        if let Some(expected) = expected {
+            let fingerprint = crate::workspace::fingerprint(root)?;
+            if fingerprint != expected {
+                return Ok(ProjectSave::Conflict { fingerprint });
+            }
+        }
+        let file = root.join(PROJECT_FILE);
         let mut text = serde_json::to_string_pretty(&Self {
             schema_version: SCHEMA_VERSION,
             root: String::new(),
             ..self.clone()
         })?;
         text.push('\n');
-        std::fs::write(&file, text)?;
-        Ok(file)
+        let tmp = root.join(format!(".patchbay.{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            output.write_all(text.as_bytes())?;
+            if let Ok(metadata) = std::fs::metadata(&file) {
+                output.set_permissions(metadata.permissions())?;
+            }
+            output.sync_all()?;
+            drop(output);
+            std::fs::rename(&tmp, &file)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result?;
+        Ok(ProjectSave::Saved {
+            path: file,
+            fingerprint: crate::workspace::session_id("map", "", &text),
+        })
     }
 }
 
@@ -482,6 +535,74 @@ mod tests {
             saved["components"][1]["detection"]["packageIdentity"],
             "npm:new"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checked_save_preserves_external_edits_and_returns_the_written_fingerprint() {
+        let root = std::env::temp_dir().join(format!("patchbay-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = linked(&[]);
+        project.root = root.display().to_string();
+        let ProjectSave::Saved { fingerprint, .. } = project.save_checked(Some("absent")).unwrap()
+        else {
+            panic!("first creation should save");
+        };
+        assert_eq!(fingerprint, crate::workspace::fingerprint(&root).unwrap());
+        project.name = "edited".into();
+        std::fs::write(root.join(PROJECT_FILE), "external edit").unwrap();
+        assert!(matches!(
+            project.save_checked(Some(&fingerprint)).unwrap(),
+            ProjectSave::Conflict { .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join(PROJECT_FILE)).unwrap(),
+            "external edit"
+        );
+        assert!(matches!(
+            project.save_checked(None).unwrap(),
+            ProjectSave::Saved { .. }
+        ));
+        assert_eq!(Project::load(&root).unwrap().unwrap().name, "edited");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_save_readers_always_observe_complete_json() {
+        let root = std::env::temp_dir().join(format!("patchbay-atomic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = linked(&[]);
+        project.root = root.display().to_string();
+        project.save().unwrap();
+        let writer = project.clone();
+        let thread = std::thread::spawn(move || {
+            let mut writer = writer;
+            for i in 0..30 {
+                writer.name = format!("map-{i}-{}", "x".repeat(10000));
+                writer.save().unwrap();
+            }
+        });
+        for _ in 0..200 {
+            let text = std::fs::read_to_string(root.join(PROJECT_FILE)).unwrap();
+            let _: Project =
+                serde_json::from_str(&text).expect("readers must never see partial JSON");
+        }
+        thread.join().unwrap();
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_atomic_replace_cleans_up_its_temporary_file() {
+        let root =
+            std::env::temp_dir().join(format!("patchbay-save-failure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(PROJECT_FILE)).unwrap();
+        let mut project = linked(&[]);
+        project.root = root.display().to_string();
+        assert!(project.save().is_err());
+        assert!(root.join(PROJECT_FILE).is_dir());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

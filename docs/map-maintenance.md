@@ -10,7 +10,9 @@ move also starts unselected, so accepting the defaults does not duplicate the mi
 component. Choose a repair or the corresponding new component. Dependencies selected with a
 repair follow the original component ID.
 
-**Apply selected** updates the draft. **Save** writes `patchbay.json`. Names, kinds, notes,
+**Apply selected** updates the draft. Existing map configurations autosave to `patchbay.json`.
+For a detected map without a file, choose **Project → Create map configuration** once; later
+edits autosave. **Save map configuration now** or Cmd/Ctrl+S saves immediately. Names, kinds, notes,
 terminal configuration, positions, link labels, manual relationships, and component IDs
 survive rescans and repairs. Edits made while a scan or guard is running invalidate that
 preview; choose **Refresh preview**. Folder grants and available detectors are rechecked too.
@@ -49,7 +51,7 @@ component's repaired path.
 Schema version 4 adds optional `detection` metadata to components and links:
 
 ```json
-{"detector":"builtin","packageIdentity":"npm:@example/web"}
+{ "detector": "builtin", "packageIdentity": "npm:@example/web" }
 ```
 
 Built-in detection uses `builtin`; extension detection uses

@@ -7,6 +7,7 @@ import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } fr
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
+import MapSaveStatus from './MapSaveStatus'
 import AttentionMenu from './status/AttentionMenu'
 import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
@@ -24,7 +25,7 @@ export default function Toolbar() {
   const project = useStore((s) => s.project)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
-  const dirty = useStore((s) => s.dirty)
+  const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
   const openFolder = useOpenProject()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -63,6 +64,22 @@ export default function Toolbar() {
             <MenuItem onClick={() => void openFolder()}>Open folder…</MenuItem>
             {project && (
               <>
+                <MenuSeparator />
+                <MenuItem
+                  onClick={() => void saveCurrentProject()}
+                  shortcut={`${mod}S`}
+                  title="Saves the component map and terminal presets to patchbay.json"
+                  disabled={
+                    !!entry?.conflict ||
+                    !!entry?.unavailable ||
+                    entry?.mapSave?.status === 'conflict' ||
+                    entry?.mapSave?.status === 'saving'
+                  }
+                >
+                  {entry?.fingerprint === 'absent'
+                    ? 'Create map configuration'
+                    : 'Save map configuration now'}
+                </MenuItem>
                 <MenuSeparator />
                 <MenuItem
                   onClick={() => void rescan()}
@@ -121,13 +138,7 @@ export default function Toolbar() {
               {/* Plan and Implementation carry the picker in their own headers. */}
               {(view === 'navigation' || view === 'review') && <WorktreePicker align="right" />}
               <AttentionMenu />
-              <button
-                className={dirty ? 'primary' : undefined}
-                title={`${dirty ? 'Unsaved changes. ' : ''}Save patchbay.json (${mod}S)`}
-                onClick={() => void saveCurrentProject()}
-              >
-                Save
-              </button>
+              <MapSaveStatus />
             </>
           )}
         </div>

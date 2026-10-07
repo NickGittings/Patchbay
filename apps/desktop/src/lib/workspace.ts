@@ -5,6 +5,7 @@ import type { OpenedProject, Project, WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
 import { reconcileSessions } from './sessions'
+import { flushMapSaves, initializeMapAutosave } from './mapSave'
 
 let initialized: Promise<void> | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -116,11 +117,13 @@ export function initializeWorkspace() {
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
     await listen('patchbay://quit-request', async () => {
+      await flushMapSaves()
       await flushWorkspace()
       await quitPatchbay(false)
     })
     await getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault()
+      await flushMapSaves()
       await flushWorkspace()
       await getCurrentWindow().destroy()
     })
@@ -195,6 +198,7 @@ export function initializeWorkspace() {
       useStore.getState().setMessage(String(e))
     } finally {
       useStore.setState({ restoring: false })
+      if (!recoveryBlocked) initializeMapAutosave()
     }
     useStore.subscribe((s, prev) => {
       if (

@@ -74,6 +74,17 @@
     const idsOne = await addSessions(one)
     const two = await smoke.openSecondProject()
     const idsTwo = await addSessions(two)
+    assert(await smoke.flushMapSaves(), 'Disposable session map saves failed')
+    for (const opened of [await smoke.openProject(), await smoke.openSecondProject()]) {
+      assert(
+        opened.project.components.some(
+          (c) =>
+            c.terminals.length === 4 &&
+            c.terminals.some((t) => t.id === 'session-0' && t.command.includes('live-output')),
+        ),
+        'Synthetic session presets were not persisted to their disposable map',
+      )
+    }
     const first = one.project.name
     const second = two.project.name
     await click(() => document, 'Sessions')

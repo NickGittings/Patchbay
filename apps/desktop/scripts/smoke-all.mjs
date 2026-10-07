@@ -5,15 +5,16 @@
 // Scripts run one at a time: fixtures use fixed temp paths and the checks are timing-sensitive.
 import { spawn, execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { cpSync, mkdtempSync } from 'node:fs'
 import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
 import { desktop, root } from './smoke-lib.mjs'
+import { copySmokeProject } from './smoke-fixtures.mjs'
 const require = createRequire(import.meta.url)
 // Where the `smoke/*-fixture.sh` scripts put their repos (`${TMPDIR:-/tmp}`).
 const temp = tmpdir()
 const at = (...parts) => resolve(desktop, ...parts)
 const defaultFixture = at('smoke', 'fixtures', 'project')
+const dockerFixture = join(root, 'examples/extensions/docker/fixture')
 const smoke = (script, env = {}, fixture) => ({
   fixture,
   run: ['scripts/smoke.mjs'],
@@ -21,6 +22,14 @@ const smoke = (script, env = {}, fixture) => ({
 })
 const SCRIPTS = {
   popout: smoke('popout.js'),
+  autosave: smoke(
+    'autosave.js',
+    {
+      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-autosave/one'),
+      PATCHBAY_SMOKE_ROOT_2: join(temp, 'patchbay-smoke-autosave/two'),
+    },
+    'autosave-fixture.sh',
+  ),
   views: smoke('views.js'),
   git: smoke('git.js'),
   actions: smoke(
@@ -30,7 +39,7 @@ const SCRIPTS = {
   ),
   extensions: smoke('extensions.js', {
     PATCHBAY_EXTENSIONS_DIR: join(root, 'examples/extensions'),
-    PATCHBAY_SMOKE_ROOT: join(root, 'examples/extensions/docker/fixture'),
+    PATCHBAY_SMOKE_ROOT: dockerFixture,
   }),
   tasks: smoke(
     'tasks.js',
@@ -38,10 +47,10 @@ const SCRIPTS = {
     'tasks-fixture.sh',
   ),
   workspace: smoke('workspace.js', {
-    PATCHBAY_SMOKE_ROOT_2: join(root, 'examples/extensions/docker/fixture'),
+    PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   sessions: smoke('sessions.js', {
-    PATCHBAY_SMOKE_ROOT_2: join(root, 'examples/extensions/docker/fixture'),
+    PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   status: { run: ['scripts/status.mjs'] },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
@@ -145,28 +154,17 @@ const results = []
 for (const name of selected) {
   const entry = SCRIPTS[name]
   const env = { ...process.env, ...entry.env, PATCHBAY_SMOKE_PREBUILT: '1' }
-  // Copy the tracked map and files so each test gets its own writable Git repository.
-  // Leave temporary fixtures available for inspection, like each run's session state.
-  if (env.PATCHBAY_SMOKE_ROOT === defaultFixture) {
-    const fixture = mkdtempSync(join(temp, 'patchbay-smoke-project-'))
-    cpSync(defaultFixture, fixture, { recursive: true })
-    execFileSync('git', ['init', '--quiet', '-b', 'main', fixture])
-    execFileSync('git', ['-C', fixture, 'add', '.'])
-    execFileSync('git', [
-      '-C',
-      fixture,
-      '-c',
-      'user.name=Patchbay Smoke',
-      '-c',
-      'user.email=smoke@patchbay.invalid',
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '--quiet',
-      '-m',
-      'Initialize smoke fixture',
-    ])
-    env.PATCHBAY_SMOKE_ROOT = fixture
+  // Every in-checkout project is a read-only template. Both workspace roots get their own
+  // writable Git repositories; explicit temporary fixtures already provide their own isolation.
+  for (const key of ['PATCHBAY_SMOKE_ROOT', 'PATCHBAY_SMOKE_ROOT_2']) {
+    if (env[key] === defaultFixture) {
+      env[key] = copySmokeProject(defaultFixture, {
+        name: key === 'PATCHBAY_SMOKE_ROOT_2' ? 'Smoke second project' : undefined,
+      })
+    } else if (env[key] === dockerFixture) {
+      // Exercise the detector even if someone has a personal map in the example folder.
+      env[key] = copySmokeProject(dockerFixture, { skipMap: true })
+    }
   }
   const started = Date.now()
   console.log(`\n── smoke ${name} ──`)
