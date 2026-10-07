@@ -71,9 +71,9 @@
       () => document.querySelector('.hierarchy') && nodeElement('alpha'),
     )
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
-    // Hidden panels collapse but stay mounted, so check their size.
+    // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
     const visible = (selector) => {
-      const rect = document.querySelector(selector)?.getBoundingClientRect()
+      const rect = document.querySelector(selector)?.parentElement?.getBoundingClientRect()
       return !!rect && rect.width > 0 && rect.height > 0
     }
     assert(
@@ -109,6 +109,7 @@
     click(document.querySelector('.inspector-toggle'))
     await until('inspector toggled open', () => visible('.inspector'))
     state().select(null)
+    state().setActiveSession(null)
     smoke.store.setState({ inspector: null })
     const viewport = () => document.querySelector('.react-flow__viewport')?.style.transform
     await until(
