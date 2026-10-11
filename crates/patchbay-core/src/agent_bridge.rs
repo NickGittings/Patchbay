@@ -72,6 +72,9 @@ pub enum Action {
     Propose {
         proposal: Proposal,
     },
+    SavePlan {
+        plan: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]

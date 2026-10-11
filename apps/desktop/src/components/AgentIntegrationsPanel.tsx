@@ -61,7 +61,8 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
         </div>
         <p>
           Install optional status hooks to show Working, Needs input, and Ready for review. Hooks
-          report only inside Patchbay and leave provider approvals to you.
+          report only inside Patchbay and leave provider approvals to you. Claude hooks also pass
+          native plans to Patchbay when Claude presents them for approval.
         </p>
         <label>
           Provider{' '}

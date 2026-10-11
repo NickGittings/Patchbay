@@ -1299,6 +1299,7 @@ async fn task_root_start(
     terminal: TerminalSpec,
     task: Option<String>,
     extra_context: Option<Vec<ContextSection>>,
+    implement_plan: Option<bool>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1334,7 +1335,12 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        let mut spec = context::task_root_session_spec(
+        let build = if implement_plan.unwrap_or(false) {
+            context::task_root_implementation_spec
+        } else {
+            context::task_root_session_spec
+        };
+        let mut spec = build(
             &project,
             &selected,
             &terminal,

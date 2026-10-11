@@ -1,0 +1,128 @@
+import { beforeEach, expect, test, vi } from 'vitest'
+import { useStore } from '../store'
+import { PLAN_SCOPE, TASK_ROOT_SCOPE, sessionId, type DeviceManifest } from '../types'
+
+vi.mock('./ipc', () => ({
+  planRead: vi.fn(),
+  planWrite: vi.fn(),
+  proposalRead: vi.fn(),
+  proposalApply: vi.fn(),
+  terminalStop: vi.fn(),
+}))
+vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
+vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
+const ipc = await import('./ipc')
+const { startTerminal } = await import('./sessions')
+const { implementPlannerPlan } = await import('./planHandoff')
+const { planDrafts } = await import('./planDrafts')
+const claude: DeviceManifest = {
+  id: 'claude',
+  name: 'Claude',
+  command: 'claude --model sonnet',
+  adapter: 'claude',
+  category: 'Agents',
+  kind: 'agent',
+  source: 'builtin',
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  planDrafts.clear()
+  useStore.setState(useStore.getInitialState())
+  useStore.getState().loadProject({
+    projectId: 'p',
+    name: 'Project',
+    root: '/p',
+    schemaVersion: 4,
+    links: [],
+    components: [
+      {
+        id: 'web',
+        name: 'Web',
+        path: '.',
+        kind: 'app',
+        notes: '',
+        position: { x: 0, y: 0 },
+        terminals: [],
+      },
+    ],
+  })
+  useStore.getState().setDevices([claude])
+  useStore.getState().setView('plan')
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Plan', cut: false })
+  vi.mocked(ipc.planWrite).mockResolvedValue(true)
+  vi.mocked(ipc.proposalRead).mockResolvedValue(null)
+})
+
+test('one click hands off a whole-project plan using the planner provider', async () => {
+  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [sid]: { running: true } } })
+  await implementPlannerPlan('claude')
+  const s = useStore.getState()
+  expect(s.highlighted).toEqual([])
+  expect(s.view).toBe('implementation')
+  expect(ipc.terminalStop).toHaveBeenCalledWith(sid)
+  expect(s.rootTerminals.at(-1)).toMatchObject({
+    kind: 'agent',
+    command: claude.command,
+    adapter: 'claude',
+  })
+  expect(startTerminal).toHaveBeenCalledWith(
+    TASK_ROOT_SCOPE,
+    s.rootTerminals.at(-1)!.id,
+    null,
+    'p',
+    true,
+  )
+})
+
+test('each accepted plan receives a fresh briefing instead of reusing a running agent', async () => {
+  useStore.getState().addRootTerminal(claude)
+  const before = useStore.getState().rootTerminals.length
+  await implementPlannerPlan('claude')
+  expect(useStore.getState().rootTerminals).toHaveLength(before + 1)
+})
+
+test('Implement accepts the pending plan and assignments before starting', async () => {
+  const proposal = {
+    version: 1,
+    plan: '# Scoped plan',
+    assignments: [{ componentId: 'web', assignment: 'Fix login' }],
+  }
+  vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
+  vi.mocked(ipc.proposalApply).mockResolvedValue(['web'])
+  await implementPlannerPlan('claude')
+  expect(ipc.proposalApply).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: 'p' }),
+    undefined,
+    proposal,
+  )
+  expect(useStore.getState().highlighted).toEqual(['web'])
+  expect(startTerminal).toHaveBeenCalledOnce()
+})
+
+test('a missing plan leaves the planner open and starts no agent', async () => {
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: ' ', cut: false })
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('No plan received yet')
+  expect(useStore.getState().view).toBe('plan')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+})
+
+test('editor changes are saved first and conflicts block implementation', async () => {
+  planDrafts.set('p\n', { text: 'Edited plan', base: '# Plan', overwrite: false })
+  vi.mocked(ipc.planWrite).mockResolvedValue(false)
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('Review and save your edits')
+  expect(startTerminal).not.toHaveBeenCalled()
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
+test('switching tasks while reading the plan cannot launch into another task', async () => {
+  vi.mocked(ipc.planRead).mockImplementation(async () => {
+    useStore.setState({ activeTask: 'another-task' })
+    return { text: '# Plan', cut: false }
+  })
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('The task changed')
+  expect(startTerminal).not.toHaveBeenCalled()
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+})

@@ -9,6 +9,7 @@ import {
   extensionFileRead,
   sessionsList,
   syncAgentProject,
+  planRead,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
@@ -56,6 +57,7 @@ import {
   syncRoots,
 } from './ipc'
 const hooks = {
+  planRead,
   syncAgentProject,
   saveMap,
   flushMapSaves,

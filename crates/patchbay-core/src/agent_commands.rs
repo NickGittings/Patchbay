@@ -321,6 +321,22 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 json!({"sessionId":record.id,"output":output,"running":snapshot.as_ref().is_some_and(|s| s.running),"truncated":snapshot.as_ref().is_some_and(|s| s.truncated),"previewUrls":previews(state, [session_id])?}),
             )
         }
+        Action::SavePlan { plan } => {
+            anyhow::ensure!(launch.planner, "Only planner sessions can save plans");
+            anyhow::ensure!(!plan.trim().is_empty(), "The plan is empty");
+            let project = scoped.project()?;
+            let readable = scoped.access.restrict(project, &[])?;
+            let (mapped, _, _) = for_task(readable, launch.task.as_deref(), &[], scoped.roots)?;
+            let root = Path::new(&mapped.root);
+            // PreToolUse, PermissionRequest and PostToolUse can carry the same plan.
+            // Leave applied assignments intact when its contents haven't changed.
+            let saved = crate::plans::read(root, launch.task.as_deref())?;
+            if saved.cut || saved.text != plan {
+                crate::plans::write(root, launch.task.as_deref(), &plan)?;
+                app.proposal_submitted(launch);
+            }
+            Ok(json!({"saved":true}))
+        }
         Action::Propose { proposal } => {
             let project = scoped.project()?;
             let readable = scoped.access.restrict(project, &[])?;
@@ -385,9 +401,20 @@ mod tests {
 
     struct Fixture {
         calls: Mutex<Vec<Request>>,
+        project: Option<Project>,
+        saves: Mutex<usize>,
     }
     impl Host for Fixture {
         fn project(&self, _: &str) -> Result<ProjectScope> {
+            if let Some(project) = &self.project {
+                let access = crate::access::Access::default();
+                access.open(project)?;
+                return Ok(ProjectScope {
+                    access: access.snapshot(),
+                    project: Some(project.clone()),
+                    roots: vec![PathBuf::from(&project.root)],
+                });
+            }
             // No map or checkout: status and logs must use session records only.
             Ok(ProjectScope {
                 access: AccessSnapshot::default(),
@@ -419,7 +446,9 @@ mod tests {
             vec![]
         }
         fn emit_activity(&self, _: &Activity) {}
-        fn proposal_submitted(&self, _: &LaunchContext) {}
+        fn proposal_submitted(&self, _: &LaunchContext) {
+            *self.saves.lock().unwrap() += 1;
+        }
     }
     fn record(id: &str, task: &str) -> Value {
         json!({"id":id,"metadata":{"projectId":"p","projectName":"P","projectRoot":"/missing",
@@ -439,6 +468,8 @@ mod tests {
     fn status_uses_one_preview_scan_without_resolving_the_map_or_task() {
         let host = Fixture {
             calls: Mutex::default(),
+            project: None,
+            saves: Mutex::default(),
         };
         let result = dispatch(&host, &launch(), Action::Status {}).unwrap();
         assert_eq!(result["sessions"].as_array().unwrap().len(), 2);
@@ -451,6 +482,8 @@ mod tests {
     fn logs_remain_task_bound_without_resolving_a_checkout() {
         let host = Fixture {
             calls: Mutex::default(),
+            project: None,
+            saves: Mutex::default(),
         };
         let result = dispatch(
             &host,
@@ -471,5 +504,81 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn captured_plans_are_planner_only_task_bound_and_idempotent() {
+        let root =
+            std::env::temp_dir().join(format!("patchbay-native-plan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let root = root.canonicalize().unwrap();
+        let host = Fixture {
+            calls: Mutex::default(),
+            saves: Mutex::default(),
+            project: Some(Project {
+                schema_version: crate::model::SCHEMA_VERSION,
+                name: "Plan fixture".into(),
+                root: root.display().to_string(),
+                components: vec![],
+                links: vec![],
+                groups: vec![],
+            }),
+        };
+        let mut planner = launch();
+        planner.task = None;
+        let save = || Action::SavePlan {
+            plan: "# Native plan".into(),
+        };
+        assert!(dispatch(&host, &planner, save()).is_err());
+        assert!(crate::plans::read(&root, None).unwrap().text.is_empty());
+        planner.planner = true;
+        crate::plans::write(&root, Some("other"), "Other task's plan").unwrap();
+        dispatch(&host, &planner, save()).unwrap();
+        let stamp = std::fs::metadata(crate::plans::plan_file(&root, None).unwrap())
+            .unwrap()
+            .modified()
+            .unwrap();
+        dispatch(&host, &planner, save()).unwrap();
+        assert_eq!(*host.saves.lock().unwrap(), 1);
+        assert_eq!(
+            std::fs::metadata(crate::plans::plan_file(&root, None).unwrap())
+                .unwrap()
+                .modified()
+                .unwrap(),
+            stamp
+        );
+        assert_eq!(
+            crate::plans::read(&root, None).unwrap().text,
+            "# Native plan"
+        );
+        assert_eq!(
+            crate::plans::read(&root, Some("other")).unwrap().text,
+            "Other task's plan"
+        );
+        planner.task = Some("unknown-task".into());
+        assert!(dispatch(&host, &planner, save()).is_err());
+        planner.task = None;
+        assert!(dispatch(&host, &planner, Action::SavePlan { plan: " ".into() }).is_err());
+        assert!(
+            dispatch(
+                &host,
+                &planner,
+                Action::SavePlan {
+                    plan: "x".repeat(crate::plans::PLAN_LIMIT + 1)
+                }
+            )
+            .is_err()
+        );
+        assert!(host.calls.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

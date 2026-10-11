@@ -22,6 +22,7 @@ import TerminalPane from './TerminalPane'
 import WorktreePicker from './tasks/WorktreePicker'
 
 import { planDrafts } from '../lib/planDrafts'
+import { implementPlannerPlan } from '../lib/planHandoff'
 
 export default function PlanView() {
   const project = useStore((s) => s.project)
@@ -32,7 +33,6 @@ export default function PlanView() {
   const startedWith = useStore((s) => s.planStartedWith)
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
-  const setView = useStore((s) => s.setView)
   useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
@@ -49,6 +49,9 @@ export default function PlanView() {
   const [contextOpen, setContextOpen] = useState(false)
   const [context, setContext] = useState('Loading planner context…')
   const [restarting, setRestarting] = useState(false)
+  const [implementing, setImplementing] = useState(false)
+  const [handoffResult, setHandoffResult] = useState({ key: '', error: '' })
+  const [planLoads, setPlanLoads] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
   const [plan, setPlan] = useState('')
   // The file as last read or written, to tell edits apart and notice the planner rewriting it.
@@ -98,7 +101,10 @@ export default function PlanView() {
     void load()
     // A planner's submission is the only other writer of the pending proposal.
     const unlisten = onProposal((event) => {
-      if (event.projectId === projectId && (event.task ?? null) === (task ?? null)) void load()
+      if (event.projectId === projectId && (event.task ?? null) === (task ?? null)) {
+        void load()
+        if (!planDrafts.has(`${projectId}\n${task ?? ''}`)) setPlanLoads((n) => n + 1)
+      }
     })
     return () => {
       disposed = true
@@ -135,12 +141,12 @@ export default function PlanView() {
     }
   }
   const planKey = projectId ? `${projectId}\n${task ?? ''}` : null
+  const handoffError = handoffResult.key === planKey ? handoffResult.error : ''
   // Which plan a finished save belongs to, so a task switch mid-save doesn't show its result.
   const currentKey = useRef(planKey)
   useEffect(() => {
     currentKey.current = planKey
   }, [planKey])
-  const [planLoads, setPlanLoads] = useState(0)
   // The plan the editor holds; edits wait until it matches the current project and task.
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   useEffect(() => {
@@ -226,6 +232,19 @@ export default function PlanView() {
     }
   }
 
+  const implement = async () => {
+    if (implementing) return
+    setImplementing(true)
+    setHandoffResult({ key: planKey ?? '', error: '' })
+    try {
+      await implementPlannerPlan(active.id)
+    } catch (e) {
+      if (currentKey.current === planKey) setHandoffResult({ key: planKey ?? '', error: String(e) })
+    } finally {
+      setImplementing(false)
+    }
+  }
+
   return (
     <PersistedGroup layoutId="PlanView-1" orientation="vertical" className="workspace">
       <Panel id="PlanView-pane-1" defaultSize="45" minSize="20">
@@ -251,13 +270,18 @@ export default function PlanView() {
             </div>
             <div className="row plan-implement">
               <button
-                disabled={highlighted.length === 0}
-                title="Work on the highlighted components side by side"
-                onClick={() => setView('implementation')}
+                disabled={implementing || proposalBusy}
+                title={`Pass the plan to ${active.name} and start implementation`}
+                onClick={() => void implement()}
               >
-                Implement →
+                {implementing ? 'Starting implementation…' : 'Implement →'}
               </button>
             </div>
+            {handoffError && (
+              <p className="hint file-tree-error" role="alert">
+                {handoffError}
+              </p>
+            )}
             <div className="hint flush">
               {highlighted.length
                 ? `${highlighted.length} highlighted · ${nearby.size} nearby`
@@ -321,8 +345,7 @@ export default function PlanView() {
             >
               <summary>Saved plan</summary>
               <div className="hint flush">
-                The planner writes it to <code>$PATCHBAY_PLAN_FILE</code>; implementation agents
-                started afterwards get it in their briefing.
+                Passed automatically to your agent when you choose Implement.
               </div>
               <textarea
                 className="mono"

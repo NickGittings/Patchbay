@@ -73,7 +73,13 @@
         category: 'agents',
         source: 'builtin',
         kind: 'agent',
-        command: 'printf "planner-root:%s\\n" "$PWD"; cat "$PATCHBAY_CONTEXT_FILE"; exec cat',
+        adapter: 'claude',
+        command:
+          'printf "planner-root:%s\\n" "$PWD"; cat "$PATCHBAY_CONTEXT_FILE"; ' +
+          'while IFS= read -r line; do printf "%s\\n" "$line"; ' +
+          'if [ "$line" = "handoff" ]; then ' +
+          `printf '%s' '{"hook_event_name":"PreToolUse","session_id":"smoke-native-plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Smoke handoff\\nImplement the saved plan."}}' | ` +
+          '"${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude; fi; done',
       },
     ])
     await until(
@@ -211,6 +217,11 @@
     await until('stale hint cleared', () => !document.querySelector('.planner-stale'))
     await smoke.terminalWrite(sid, 'scrollback-$((6*7))\r')
     await until('scrollback marker', () => textOf(sid).includes('scrollback-'))
+    // Exercise Claude's native hook payload before approval, without user settings or a real CLI.
+    await smoke.terminalWrite(sid, 'handoff\r')
+    await until('native plan captured', async () =>
+      (await smoke.planRead(project.projectId)).text.includes('# Smoke handoff'),
+    )
     click(
       Array.from(document.querySelectorAll('.plan-implement button')).find((b) =>
         b.textContent.includes('Implement'),
@@ -225,7 +236,11 @@
       'implementation terminal has no height',
     )
     assert(!document.querySelector('.file-tree'), 'implementation has a file tree')
-    assert(tiles('@task').length === 1, 'task root shell is missing')
+    await until('implementation agent', () => tiles('@task').length === 2)
+    const agent = state().rootTerminals.find((t) => t.kind === 'agent')
+    const agentSid = smoke.sessionId('@task', agent.id)
+    await until('automatic plan handoff', () => textOf(agentSid).includes('# Smoke handoff'))
+    await until('planner stopped after handoff', () => !state().sessions[sid]?.running)
     assert(!tiles('alpha').length, 'highlighting a component added its terminals to the task')
     assertScope(['alpha'])
     // A component's saved terminal joins the task through the Add terminal dialog, stopped.

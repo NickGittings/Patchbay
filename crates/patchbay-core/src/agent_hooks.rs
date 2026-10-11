@@ -1,5 +1,6 @@
 //! Opt-in provider hook configuration and a silent, portable native reporter.
 //! Reporting is passive: no provider decisions, stdout, or trust bypasses.
+//! Planner hooks also hand native Claude plans to the authenticated desktop bridge.
 use crate::adapters::Adapter;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,30 @@ pub struct HookEvent {
     /// Why a session started (`startup`, `resume`, `clear`, `compact`).
     #[serde(default)]
     pub source: Option<String>,
+}
+
+/// Claude injects the native plan before presenting its approval dialog. Capture
+/// text directly, without opening provider-supplied paths or approving the tool.
+fn native_plan(provider: Adapter, input: &Value) -> Option<&str> {
+    if provider != Adapter::Claude
+        || input.get("tool_name")?.as_str()? != "ExitPlanMode"
+        || input
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        || !crate::adapters::valid_id(input.get("session_id")?.as_str()?)
+    {
+        return None;
+    }
+    let payload = match input.get("hook_event_name")?.as_str()? {
+        "PreToolUse" | "PermissionRequest" => input.get("tool_input")?,
+        "PostToolUse" => input.get("tool_response")?,
+        _ => return None,
+    };
+    payload
+        .get("plan")?
+        .as_str()
+        .filter(|plan| !plan.trim().is_empty() && plan.len() <= crate::plans::PLAN_LIMIT)
 }
 
 /// Isolate and bound provider payloads. Ignore subagents and unrelated notifications.
@@ -143,6 +168,16 @@ pub fn reporter(provider: &str) {
             return Ok(());
         }
         let input: Value = serde_json::from_slice(&bytes)?;
+        if std::env::var(crate::context::COMPONENT_ENV).ok().as_deref() == Some("plan")
+            && let Some(plan) = native_plan(provider, &input)
+        {
+            // Saving is independent of turn-status support in older Claude versions.
+            // The bridge's launch capability fixes the project/task and rejects
+            // non-planners. An unavailable desktop must never block Claude.
+            let _ = crate::agent_bridge::call_from_env(crate::agent_bridge::Action::SavePlan {
+                plan: plan.into(),
+            });
+        }
         let Some(mut event) = normalize(provider, &input) else {
             return Ok(());
         };
@@ -587,6 +622,52 @@ fn atomic_replace(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn captures_native_plans_before_approval_and_uses_approved_response() {
+        let mut input = json!({
+            "hook_event_name":"PreToolUse", "session_id":"12345678-session",
+            "tool_name":"ExitPlanMode", "tool_input":{"plan":"# Proposed plan"}
+        });
+        assert_eq!(
+            native_plan(Adapter::Claude, &input),
+            Some("# Proposed plan")
+        );
+        // Capture still works when older providers omit turn identity.
+        assert!(normalize(Adapter::Claude, &input).is_none());
+        input["hook_event_name"] = json!("PermissionRequest");
+        assert_eq!(
+            native_plan(Adapter::Claude, &input),
+            Some("# Proposed plan")
+        );
+        input["hook_event_name"] = json!("PostToolUse");
+        input["tool_response"] = json!({"plan":"# Approved revision", "filePath":"/ignored"});
+        assert_eq!(
+            native_plan(Adapter::Claude, &input),
+            Some("# Approved revision")
+        );
+        assert!(native_plan(Adapter::Codex, &input).is_none());
+        input["agent_id"] = json!("child");
+        assert!(native_plan(Adapter::Claude, &input).is_none());
+    }
+
+    #[test]
+    fn native_plan_ignores_unrelated_events_paths_and_invalid_content() {
+        let mut input = json!({
+            "hook_event_name":"PreToolUse", "session_id":"12345678-session",
+            "tool_name":"ExitPlanMode", "tool_input":{"planFilePath":"/private/plan.md"}
+        });
+        assert!(native_plan(Adapter::Claude, &input).is_none());
+        for plan in [" ".to_string(), "x".repeat(crate::plans::PLAN_LIMIT + 1)] {
+            input["tool_input"]["plan"] = json!(plan);
+            assert!(native_plan(Adapter::Claude, &input).is_none());
+        }
+        input["tool_input"]["plan"] = json!("# Plan");
+        input["tool_name"] = json!("Write");
+        assert!(native_plan(Adapter::Claude, &input).is_none());
+        input["tool_name"] = json!("ExitPlanMode");
+        input["hook_event_name"] = json!("PostToolUseFailure");
+        assert!(native_plan(Adapter::Claude, &input).is_none());
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {

@@ -409,6 +409,7 @@ export const taskRootStart = async (
   terminal: TerminalSpec,
   task?: string,
   requestId: string = crypto.randomUUID(),
+  implementPlan = false,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -417,6 +418,7 @@ export const taskRootStart = async (
     terminal,
     task,
     requestId,
+    implementPlan,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
   })

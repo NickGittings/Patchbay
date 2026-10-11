@@ -601,13 +601,19 @@ pub fn plan_context(
     }
     out.push_str(
         "\nYou are planning, not implementing: explore, ask questions and produce a plan; \
-         don't edit files unless asked.",
+         don't edit project files unless asked. Implementation begins through Patchbay's \
+         Implement action, not by switching this planner to auto mode.",
     );
     // Only a repo has somewhere to keep the plan (`plan_session_spec_for` sets the variable).
     if crate::plans::plan_file(Path::new(&project.root), None).is_ok() {
         out.push_str(
-            " When the plan is agreed, write it as Markdown to the file named by \
-             `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their briefing.",
+            " Whenever you produce or revise a complete plan, save it as Markdown to \
+             `$PATCHBAY_PLAN_FILE` before replying; this plan artifact is an exception to \
+             the no-edit rule. Do not wait for the user to request a save. Implementation \
+             agents receive it automatically. When Claude's native plan mode prevents \
+             writing this file, its ExitPlanMode hook can hand the native plan to Patchbay \
+             through the enabled Claude integration. Present the plan for review without \
+             starting implementation in this planner.",
         );
     }
     let _ = writeln!(
@@ -906,6 +912,7 @@ pub fn plan_session_spec_for(
         policy,
         sections,
         true,
+        false,
     )
 }
 
@@ -929,6 +936,35 @@ pub fn task_root_session_spec(
         policy,
         sections,
         false,
+        false,
+    )
+}
+
+/// Start a new implementation agent with the saved plan as its first task.
+///
+/// # Errors
+/// As [`task_root_session_spec`], or if the terminal is not an agent.
+pub fn task_root_implementation_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        terminal.kind == TerminalKind::Agent,
+        "Choose an agent to implement the plan"
+    );
+    root_session_spec(
+        project,
+        component_ids,
+        terminal,
+        task,
+        policy,
+        sections,
+        false,
+        true,
     )
 }
 
@@ -941,6 +977,7 @@ fn root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     planning: bool,
+    implement_plan: bool,
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1010,6 +1047,12 @@ fn root_session_spec(
             dirs,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        if implement_plan && crate::adapters::Adapter::default_for(&terminal.command).is_some() {
+            command.push(' ');
+            command.push_str(&Shell::current().quote(
+                "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.",
+            ));
+        }
     }
     policy
         .check(Scope::Plan(&components), &command)
@@ -1409,7 +1452,7 @@ mod tests {
         assert!(!scope.contains("**DB**"));
         assert!(!text.contains("UNRELATED"));
         assert_eq!(nearby.matches("**DB**").count(), 1);
-        assert!(text.contains("don't edit files unless asked"));
+        assert!(text.contains("don't edit project files unless asked"));
     }
 
     #[test]
@@ -1549,10 +1592,39 @@ mod tests {
         assert!(spec.dirs.contains(&plans));
         let task = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
         assert!(task.env[crate::plans::PLAN_FILE_ENV].ends_with("t1.md"));
-        assert!(plan_context(&p, &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
+        let context = plan_context(&p, &[], &[]);
+        assert!(context.contains("$PATCHBAY_PLAN_FILE"));
+        assert!(context.contains("Do not wait for the user to request a save"));
         // Outside a repo nothing names the file, so the briefing doesn't ask for it.
         assert!(!plan_context(&project(), &[], &[]).contains("$PATCHBAY_PLAN_FILE"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn implementation_starts_with_a_task_prompt_without_changing_planner_launches() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = provider.into();
+            let sections = [ContextSection {
+                title: "Shared plan".into(),
+                body: "Fix login".into(),
+            }];
+            let spec = task_root_implementation_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &sections,
+            )
+            .unwrap();
+            assert!(spec.command.contains("Implement the shared plan"));
+            let briefing = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+            assert!(briefing.contains("Fix login"));
+            assert!(!briefing.contains("You are planning, not implementing"));
+            let planner = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
+            assert!(!planner.command.contains("Implement the shared plan"));
+        }
     }
 
     #[test]

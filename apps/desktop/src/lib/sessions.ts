@@ -114,6 +114,7 @@ interface Launch {
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
+  implementPlan?: boolean
 }
 
 /** `task` defaults to the project's active task; `null` is the project's own worktree. */
@@ -163,10 +164,12 @@ export function startTerminal(
   terminalId: string,
   task?: string | null,
   projectId?: string,
+  implementPlan = false,
 ): Promise<void> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
+    launch.implementPlan = implementPlan
   } catch (e) {
     useStore.getState().setMessage(String(e))
     return Promise.resolve()
@@ -208,7 +211,14 @@ function launchTerminal(launch: Launch): Promise<void> {
         await savePlanDraft(launch.projectId, launch.task)
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
-        await taskRootStart(project, launch.highlighted, launch.rootTerminal, task, requestId)
+        await taskRootStart(
+          project,
+          launch.highlighted,
+          launch.rootTerminal,
+          task,
+          requestId,
+          launch.implementPlan,
+        )
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
