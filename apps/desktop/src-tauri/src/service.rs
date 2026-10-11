@@ -55,15 +55,28 @@ impl Default for Bridge {
 impl Bridge {
     /// Run one request on an idle pooled connection, or a new one.
     pub fn call<T: DeserializeOwned>(&self, request: Request) -> Result<T, String> {
+        self.call_reporting(request).map_err(|(e, _)| e)
+    }
+    /// Like `call`; an error also says whether the service may have handled the
+    /// request anyway (its reply was lost), rather than certainly not running it.
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the request or its reply is lost.
+    pub fn call_reporting<T: DeserializeOwned>(
+        &self,
+        request: Request,
+    ) -> Result<T, (String, bool)> {
         session::with_pending_briefing(request, |request| {
             let instance = self
                 .instance
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or_else(|| DISCONNECTED.to_string())?;
-            let mut client = self.take(&instance)?;
-            let result = client.call(request).map_err(|e| e.to_string());
+                .ok_or_else(|| (DISCONNECTED.to_string(), false))?;
+            let mut client = self.take(&instance).map_err(|e| (e, false))?;
+            let result = client
+                .call(request)
+                .map_err(|e| (e.to_string(), client.is_broken()));
             if !client.is_broken() {
                 let mut pool = self.pool.lock().unwrap();
                 if pool.len() < POOL_SIZE
@@ -109,8 +122,22 @@ impl Bridge {
         metadata: Metadata,
         request_id: String,
     ) -> Result<String, String> {
+        self.start_reporting(spec, metadata, request_id)
+            .map_err(|(e, _)| e)
+    }
+    /// Like `start`; an error also says whether the session may have started anyway
+    /// (the reply was lost), so callers undo their preparation only on a certain refusal.
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the launch or its reply is lost.
+    pub fn start_reporting(
+        &self,
+        spec: SessionSpec,
+        metadata: Metadata,
+        request_id: String,
+    ) -> Result<String, (String, bool)> {
         let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
-        let id: String = self.call(Request::Start {
+        let id: String = self.call_reporting(Request::Start {
             request_id,
             metadata: Box::new(metadata),
             spec,
@@ -311,6 +338,7 @@ pub fn metadata(
         extension_id: None,
         command_id: None,
         key: None,
+        branch: None,
         command: terminal.command.clone(),
     }
 }

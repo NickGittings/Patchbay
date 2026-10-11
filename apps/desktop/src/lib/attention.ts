@@ -2,6 +2,8 @@ import { useStore } from '../store'
 import {
   PLAN_SCOPE,
   MERGE_SCOPE,
+  REVIEW_SCOPE,
+  isReviewAgentScope,
   TASK_ROOT_SCOPE,
   sessionView,
   parseSessionId,
@@ -86,19 +88,19 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal,
       })),
     ]),
-    // Merge jobs are recovered from records, never registered as component runtimes.
+    // Review and merge jobs are recovered from records, never registered as component runtimes.
     ...(s.sessionRecords ?? [])
       .filter(
         (r) =>
           r.metadata.projectId === useStore.getState().project?.id &&
-          r.metadata.componentId === MERGE_SCOPE,
+          isReviewAgentScope(r.metadata.componentId),
       )
       .map((r) => {
         const task = s.tasks.find((t) => !t.missing && t.worktree === r.spec.cwd)
         return {
           sid: r.id,
-          componentId: MERGE_SCOPE,
-          owner: 'Merge agent',
+          componentId: r.metadata.componentId,
+          owner: r.metadata.componentId === REVIEW_SCOPE ? 'Review agent' : 'Merge agent',
           task: task?.id ?? null,
           taskTitle: task?.title,
           terminal: {
@@ -122,11 +124,13 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         componentId: r.componentId,
         owner:
           s.nodes.find((n) => n.id === r.componentId)?.data.name ??
-          (r.componentId === MERGE_SCOPE
-            ? 'Merge agent'
-            : r.componentId === TASK_ROOT_SCOPE
-              ? 'Task root'
-              : r.componentId),
+          (r.componentId === REVIEW_SCOPE
+            ? 'Review agent'
+            : r.componentId === MERGE_SCOPE
+              ? 'Merge agent'
+              : r.componentId === TASK_ROOT_SCOPE
+                ? 'Task root'
+                : r.componentId),
         task: r.taskId ?? sessionTask(sid),
         taskTitle: s.tasks.find((t) => t.id === (r.taskId ?? sessionTask(sid)))?.title,
         terminal: r.terminal,
@@ -208,7 +212,7 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
-  if (item.componentId === MERGE_SCOPE) {
+  if (isReviewAgentScope(item.componentId)) {
     s.setActiveSession(item.sid)
     s.setView(sessionView(item.componentId)!)
     return

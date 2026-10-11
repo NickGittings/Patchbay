@@ -90,16 +90,10 @@ struct Saved {
     modified: Option<SystemTime>,
 }
 
-fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
-    let file = plan_file(root, task)?;
-    let handle = match std::fs::File::open(&file) {
-        Ok(handle) => handle,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let modified = handle.metadata().and_then(|m| m.modified()).ok();
+/// Read at most `PLAN_LIMIT` bytes as text, and whether the file was longer.
+pub(crate) fn read_capped(handle: std::fs::File) -> std::io::Result<(String, bool)> {
     let mut bytes = Vec::new();
-    // One byte past the limit tells a cut plan from one exactly at it.
+    // One byte past the limit tells a cut file from one exactly at it.
     handle
         .take(u64::try_from(PLAN_LIMIT + 1).unwrap_or(u64::MAX))
         .read_to_end(&mut bytes)?;
@@ -113,8 +107,38 @@ fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
             bytes.truncate(e.valid_up_to());
         }
     }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), cut))
+}
+
+/// Replace `file` atomically through a temporary file beside it.
+pub(crate) fn write_atomic(file: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        file.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, file) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
+    let file = plan_file(root, task)?;
+    let handle = match std::fs::File::open(&file) {
+        Ok(handle) => handle,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let modified = handle.metadata().and_then(|m| m.modified()).ok();
+    let (text, cut) = read_capped(handle)?;
     Ok(Some(Saved {
-        text: String::from_utf8_lossy(&bytes).into_owned(),
+        text,
         cut,
         modified,
     }))
@@ -190,19 +214,8 @@ pub(crate) fn write_locked(root: &Path, task: Option<&str>, text: &str) -> Resul
         bail!("The plan is longer than {} KiB", PLAN_LIMIT / 1024);
     }
     let file = plan_file(root, task)?;
-    let dir = file.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let tmp = dir.join(format!(
-        ".plan.{}.{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, &file) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
-    }
+    std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
+    write_atomic(&file, text.as_bytes())?;
     crate::proposals::invalidate(root, task)?;
     Ok(())
 }

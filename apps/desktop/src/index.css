@@ -2633,11 +2633,12 @@ kbd {
   color: var(--red);
 }
 
-/* The merge agent stays beside the reviewed source, regardless of the active task. */
+/* Job agents stay beside the reviewed source, regardless of the active task. */
 .review-title-row {
   flex-wrap: wrap;
 }
-.review-merge-button {
+.review-merge-button,
+.review-agent-button {
   font-size: 12px;
 }
 .review-merge-terminal {
@@ -2663,4 +2664,22 @@ kbd {
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
   font-size: 11px;
+}
+
+.review-status {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 0;
+}
+.review-findings {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.review-findings pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  margin: 0;
 }

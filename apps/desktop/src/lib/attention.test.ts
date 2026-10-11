@@ -167,3 +167,30 @@ test('merge input is counted on its destination task, including the current task
   expect(items.find((i) => i.sid === 'missing-merge')?.task).toBeNull()
   expect(JSON.parse(attentionCounts(s))).toEqual({ task: 1, '': 2 })
 })
+
+test('reviews appear beside merges and reveal without switching worktrees', async () => {
+  vi.clearAllMocks()
+  const records = ['@review', '@merge'].map((componentId, index) => ({
+    id: `job-${index}`,
+    metadata: { projectId: 'p-1', componentId, terminalId: 'job', name: 'Job', kind: 'agent' },
+    spec: { cwd: '/task', command: 'claude' },
+  }))
+  const items = attentionItems(
+    snapshot(
+      { 'job-0': needsInput(1), 'job-1': needsInput(2) },
+      {
+        sessionRecords: records,
+        tasks: [{ id: 'abc', title: 'Review source', worktree: '/task' }],
+      },
+    ),
+  )
+  expect(items.map((i) => [i.owner, i.task])).toEqual([
+    ['Review agent', 'abc'],
+    ['Merge agent', 'abc'],
+  ])
+  const { revealTerminal } = await import('./attention')
+  revealTerminal(items[0])
+  expect(revealState.setView).toHaveBeenCalledWith('review')
+  expect(revealState.setActiveSession).toHaveBeenCalledWith('job-0')
+  expect(revealState.setActiveTask).not.toHaveBeenCalled()
+})

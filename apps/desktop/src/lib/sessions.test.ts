@@ -181,7 +181,7 @@ test('reconciliation recovers merge records without registering generic runtime 
 test('a post-launch reconcile waits for an older list before selecting and revealing the merge', async () => {
   const { reconcileSessions, reconcileFreshSessions } = await import('./sessions')
   useStore.setState({ serviceInstance: 'test' })
-  useStore.getState().hideReviewMerge('old-merge')
+  useStore.getState().hideReviewAgent('old-merge')
   const pending = deferred()
   vi.mocked(ipc.sessionsList).mockImplementationOnce(async () => {
     await pending.promise
@@ -202,6 +202,6 @@ test('a post-launch reconcile waits for an older list before selecting and revea
   await Promise.all([prior, fresh])
   expect(ipc.sessionsList).toHaveBeenCalledTimes(2)
   useStore.getState().setActiveSession(record.id)
-  expect(useStore.getState().reviewMerges.p).toEqual({ sid: record.id, hidden: false })
+  expect(useStore.getState().reviewAgents.p).toEqual({ sid: record.id, hidden: false })
   expect(useStore.getState().dockKept).not.toContain(record.id)
 })

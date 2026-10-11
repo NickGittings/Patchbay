@@ -34,7 +34,7 @@ import type {
 } from './types'
 import {
   TASK_ROOT_SCOPE,
-  MERGE_SCOPE,
+  isReviewAgentScope,
   showsInDock,
   sessionId,
   sessionTask,
@@ -190,6 +190,8 @@ interface State {
   sessionRecords: SessionRecord[]
   serviceInstance: string
   serviceConnected: boolean
+  /** Why the last connection to the session service failed, if it did. */
+  serviceError?: string
   sessionsPanelOpen: boolean
   activityPanelOpen: boolean
   /**
@@ -198,8 +200,8 @@ interface State {
    */
   dockKept: string[]
   /** Explicit merge selection and Hide state survive Review remounts, per project. */
-  reviewMerges: Record<string, { sid: string; hidden: boolean }>
-  hideReviewMerge: (sid: string) => void
+  reviewAgents: Record<string, { sid: string; hidden: boolean }>
+  hideReviewAgent: (sid: string) => void
   keepInDock: (id: string) => void
   dropFromDock: (id: string) => void
   restoring: boolean
@@ -456,12 +458,12 @@ export const useStore = create<State>((set, get) => ({
   sessionsPanelOpen: false,
   activityPanelOpen: false,
   dockKept: [],
-  reviewMerges: {},
-  hideReviewMerge: (sid) =>
+  reviewAgents: {},
+  hideReviewAgent: (sid) =>
     set((s) =>
       s.project
         ? {
-            reviewMerges: { ...s.reviewMerges, [s.project.id]: { sid, hidden: true } },
+            reviewAgents: { ...s.reviewAgents, [s.project.id]: { sid, hidden: true } },
           }
         : {},
     ),
@@ -859,10 +861,10 @@ export const useStore = create<State>((set, get) => ({
   setActiveSession: (activeSession) =>
     set((s) => ({
       activeSession,
-      reviewMerges:
-        activeSession && s.project && sessionScope(s, activeSession) === MERGE_SCOPE
-          ? { ...s.reviewMerges, [s.project.id]: { sid: activeSession, hidden: false } }
-          : s.reviewMerges,
+      reviewAgents:
+        activeSession && s.project && isReviewAgentScope(sessionScope(s, activeSession))
+          ? { ...s.reviewAgents, [s.project.id]: { sid: activeSession, hidden: false } }
+          : s.reviewAgents,
       dockKept:
         activeSession &&
         showsInDock(sessionScope(s, activeSession)) &&

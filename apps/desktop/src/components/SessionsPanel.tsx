@@ -229,7 +229,7 @@ function SessionList({
                               }
                             >
                               {sessionView(r.metadata.componentId) === 'review'
-                                ? 'Review merge'
+                                ? 'Show in Review'
                                 : 'Start new'}
                             </button>
                             <button

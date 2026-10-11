@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -114,6 +114,9 @@ pub struct Metadata {
     pub command_id: Option<String>,
     #[serde(default)]
     pub key: Option<String>,
+    /// The branch a review job covers, so its findings never depend on the display name.
+    #[serde(default)]
+    pub branch: Option<String>,
     #[serde(default)]
     pub command: String,
 }
@@ -320,7 +323,8 @@ impl Client {
             serde_json::from_slice(&std::fs::read(dir.join("endpoint.json"))?)?;
         anyhow::ensure!(
             endpoint.protocol == PROTOCOL,
-            "Session service protocol mismatch. Running work was preserved. Install a matching Patchbay version, or explicitly stop work with the matching CLI before upgrading."
+            "Session service protocol mismatch (service {}, this build {PROTOCOL}). Running work was preserved. Install a matching Patchbay version, or explicitly stop work with the matching CLI before upgrading.",
+            endpoint.protocol
         );
         let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
         let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
@@ -385,10 +389,12 @@ impl Client {
                 spawned = Some(Instant::now());
             } else if spawned.is_none()
                 && let Ok(bytes) = std::fs::read(dir.join("endpoint.json"))
-                && serde_json::from_slice::<Endpoint>(&bytes).is_ok_and(|e| e.protocol != PROTOCOL)
+                && let Ok(endpoint) = serde_json::from_slice::<Endpoint>(&bytes)
+                && endpoint.protocol != PROTOCOL
             {
                 bail!(
-                    "Session service protocol mismatch; running work was preserved. Use the matching Patchbay version."
+                    "Session service protocol mismatch (service {}, this build {PROTOCOL}); running work was preserved. Use the matching Patchbay version.",
+                    endpoint.protocol
                 );
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -1393,6 +1399,7 @@ impl Terminals for ServiceTerminals<'_> {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: terminal.command.clone(),
         };
         let started = self.service.start_with_command(
@@ -2290,6 +2297,7 @@ mod tests {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -2341,12 +2349,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn merge_briefings_are_retained_for_recovery_and_removed_when_unclaimed() {
+        owned_job_briefings_are_retained(crate::model::MERGE_SCOPE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_briefings_are_retained_for_recovery_and_removed_when_unclaimed() {
+        owned_job_briefings_are_retained(crate::model::REVIEW_SCOPE);
+    }
+
+    #[cfg(unix)]
+    fn owned_job_briefings_are_retained(scope: &str) {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({
             "projectId":"p", "projectName":"P", "projectRoot":dir,
-            "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge", "name":"Merge",
+            "componentId":scope, "terminalId":"merge", "name":"Merge",
             "kind":"agent"
         }))
         .unwrap();
@@ -2363,14 +2382,28 @@ mod tests {
         }))
         .unwrap();
         let make_spec = || {
-            crate::context::merge_agent_spec(
-                &project,
-                &terminal,
-                "Merge briefing",
-                vec![],
-                &crate::policy::AllowAll,
-            )
-            .unwrap()
+            if scope == crate::model::MERGE_SCOPE {
+                crate::context::merge_agent_spec(
+                    &project,
+                    &terminal,
+                    "Merge briefing",
+                    vec![],
+                    &crate::policy::AllowAll,
+                )
+                .unwrap()
+            } else {
+                crate::context::job_agent_spec(
+                    &project,
+                    &terminal,
+                    "Review briefing",
+                    vec![],
+                    scope,
+                    crate::context::REVIEW_PROMPT,
+                    BTreeMap::new(),
+                    &crate::policy::AllowAll,
+                )
+                .unwrap()
+            }
         };
         let file = |spec: &SessionSpec| PathBuf::from(&spec.env[crate::context::CONTEXT_ENV]);
         let first = make_spec();
@@ -2422,7 +2455,10 @@ mod tests {
         service.persist().unwrap();
         let recovered = Service::load(&dir).unwrap();
         let record = recovered.list().pop().unwrap();
-        assert!(record.spec.exclusive_cwd);
+        assert_eq!(
+            record.spec.exclusive_cwd,
+            scope == crate::model::MERGE_SCOPE
+        );
         assert_eq!(record.spec.dirs, service.list()[0].spec.dirs);
         assert_eq!(record.spec.command, service.list()[0].spec.command);
         assert_eq!(
@@ -2686,6 +2722,7 @@ mod tests {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -2995,6 +3032,7 @@ mod tests {
                 extension_id: None,
                 command_id: None,
                 key: None,
+                branch: None,
                 command: String::new(),
             },
             spec: SessionSpec {

@@ -1017,6 +1017,20 @@ async fn git_worktrees(
     .await
 }
 
+/// Local branches of the project root's repo, for choosing a review base.
+#[tauri::command]
+async fn git_branches(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || {
+        Ok(access
+            .root()
+            .and_then(|r| git::branches(&r).ok())
+            .unwrap_or_default())
+    })
+    .await
+}
+
 /// The diff of one of a component's changed files, `path` (and a rename's
 /// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
 /// listed) or the open one.
@@ -1372,6 +1386,62 @@ async fn merge_agent_start(
     .await
 }
 
+/// Launch a review agent in a registered worktree.
+#[tauri::command]
+async fn review_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::reviews::ReviewRequest,
+    terminal: TerminalSpec,
+    request_id: String,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let prepared = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
+            .map_err(err)?;
+        prepared.launch(|job| {
+            let mut metadata =
+                service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
+            metadata.branch = Some(request.branch);
+            bridge.start_reporting(job.spec, metadata, request_id)
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn review_read(
+    state: State<'_, AppState>,
+    project_id: String,
+    branch: String,
+) -> CmdResult<Option<patchbay_core::reviews::Findings>> {
+    let scoped = state.project(&project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    blocking(move || Ok(patchbay_core::reviews::read(&root, &branch))).await
+}
+
+/// Drop saved reviews of deleted branches, best-effort; Review calls it once on opening.
+#[tauri::command]
+async fn review_prune(state: State<'_, AppState>, project_id: String) -> CmdResult<()> {
+    let scoped = state.project(&project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    blocking(move || patchbay_core::reviews::prune(&root).map_err(err)).await
+}
+
 /// Preview what a graph action would run.
 #[tauri::command]
 async fn graph_action_plan(
@@ -1590,6 +1660,12 @@ async fn session_resume(
                 &record.spec,
             )
             .map_err(err)?
+        } else if record.metadata.component_id == model::REVIEW_SCOPE {
+            patchbay_core::reviews::resume_roots(
+                root.as_deref().ok_or("No project is open")?,
+                &record.spec,
+            )
+            .map_err(err)?
         } else {
             match &record.metadata.task {
                 Some(task) => {
@@ -1602,15 +1678,26 @@ async fn session_resume(
         };
         // Planners and agents with a plan were handed the repo's plans folder,
         // which lies under `.git` (and every worktree shares).
-        roots.extend(root.and_then(|r| patchbay_core::plans::existing_dir(&r)));
+        roots.extend(root.as_deref().and_then(patchbay_core::plans::existing_dir));
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
-        bridge.call(Request::Resume {
+        let resume = Request::Resume {
             id: session_id,
             request_id,
-        })
+        };
+        // A resumed review re-reviews the worktree as it is now.
+        if record.metadata.component_id == model::REVIEW_SCOPE
+            && let Some(attempt) = patchbay_core::reviews::resume_attempt(
+                root.as_deref().ok_or("No project is open")?,
+                &record.spec,
+            )
+            .map_err(err)?
+        {
+            return attempt.launch(|| bridge.call_reporting(resume));
+        }
+        bridge.call(resume)
     })
     .await
 }
@@ -1949,10 +2036,14 @@ pub fn run() {
                 git_diff,
                 git_review,
                 git_worktrees,
+                git_branches,
                 plan_context,
                 plan_read,
                 task_root_start,
                 merge_agent_start,
+                review_agent_start,
+                review_read,
+                review_prune,
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,
                 agent_commands::proposal_read,

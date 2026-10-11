@@ -5,7 +5,7 @@ import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
-import { MERGE_SCOPE, TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
+import { isReviewAgentScope, TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -30,6 +30,7 @@ export default function TerminalPane({
   const task = taskProp === undefined ? activeTask : taskProp
   const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)
   const connected = useStore((s) => s.serviceConnected)
+  const serviceError = useStore((s) => s.serviceError)
   const session = useStore((s) => s.sessions[sid])
   const unseen = terminalStatus(terminal.kind, session).unseenSince
   const hostRef = useRef<HTMLDivElement>(null)
@@ -111,7 +112,9 @@ export default function TerminalPane({
     <div className="terminal-area">
       {!connected && (
         <div className="terminal-notice" role="status">
-          Disconnected · reconnecting to session service…
+          {serviceError?.includes('protocol mismatch')
+            ? 'An older Patchbay session service is still running (its work is preserved). Stop it with `patchbay-cli sessions shutdown` from the matching version (add `--stop-running` to end its running work); Patchbay then starts a new one.'
+            : 'Disconnected · reconnecting to session service…'}
         </div>
       )}
       {session?.truncated && (
@@ -134,7 +137,7 @@ export default function TerminalPane({
       {connected &&
         ready &&
         !session &&
-        componentId !== MERGE_SCOPE &&
+        !isReviewAgentScope(componentId) &&
         (terminal.kind !== 'shell' || componentId === TASK_ROOT_SCOPE) && (
           <div className="terminal-overlay">
             <button

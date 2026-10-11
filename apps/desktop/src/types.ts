@@ -3,15 +3,18 @@
 export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
+export const REVIEW_SCOPE = '@review'
+
+export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
 export const isReservedScope = (scope: string) =>
-  scope === PLAN_SCOPE || scope === TASK_ROOT_SCOPE || scope === MERGE_SCOPE
+  scope === PLAN_SCOPE || scope === TASK_ROOT_SCOPE || isReviewAgentScope(scope)
 
 /** Scopes rendered in their own panels instead of Navigation's dock. */
-export const showsInDock = (scope: string) => scope !== PLAN_SCOPE && scope !== MERGE_SCOPE
+export const showsInDock = (scope: string) => scope !== PLAN_SCOPE && !isReviewAgentScope(scope)
 
 export const sessionView = (scope: string): View | null =>
-  scope === MERGE_SCOPE ? 'review' : scope === PLAN_SCOPE ? 'plan' : null
+  isReviewAgentScope(scope) ? 'review' : scope === PLAN_SCOPE ? 'plan' : null
 
 /** A whole-branch merge between existing worktrees of the project repository. */
 export interface MergeRequest {
@@ -20,6 +23,24 @@ export interface MergeRequest {
   destination: string
   destinationBranch: string
 }
+export interface ReviewRequest {
+  worktree: string
+  branch: string
+  base: string
+}
+
+export interface ReviewFindings {
+  text: string
+  modifiedMs: number
+  reviewedHead: string | null
+  base: string
+  /** When the review attempt started; later changes weren't reviewed. */
+  startedMs: number
+  /** Files in the branch's worktree changed after the attempt started, or couldn't be checked. */
+  editedSinceStart: boolean
+  truncated: boolean
+}
+
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
 export type View = 'navigation' | 'plan' | 'implementation' | 'review'
@@ -397,6 +418,8 @@ export interface SessionRecord {
     commandId?: string | null
     extensionId?: string | null
     key?: string | null
+    /** The branch a review job covers; absent for other sessions and older records. */
+    branch?: string | null
     conversationId: string | null
     /** Set by the user, so captured resume hints don't replace it. */
     conversationPinned?: boolean

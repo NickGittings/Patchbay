@@ -161,6 +161,7 @@ export const gitDiff = (
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, projectId: project.projectId, worktree })
 export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
+export const gitBranches = () => invoke<string[]>('git_branches')
 /** Planners belong to the project, so they never take a task. */
 export const planContext = async (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', {
@@ -462,3 +463,22 @@ export const mergeAgentStart = (
     terminal,
     requestId,
   })
+
+export const reviewAgentStart = (
+  project: Project,
+  request: import('../types').ReviewRequest,
+  terminal: TerminalSpec,
+  requestId: string,
+) =>
+  invoke<string>('review_agent_start', {
+    projectId: project.projectId,
+    project,
+    request,
+    terminal,
+    requestId,
+  })
+
+export const reviewRead = (projectId: string, branch: string) =>
+  invoke<import('../types').ReviewFindings | null>('review_read', { projectId, branch })
+
+export const reviewPrune = (projectId: string) => invoke<void>('review_prune', { projectId })

@@ -2,13 +2,21 @@ import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
-import { gitReview, gitWorktrees } from '../lib/ipc'
-import { latestChange, latestChangeOf, lineTotals } from '../lib/review'
+import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
+import { ago, latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
-import { currentMergeRecord, mergeDestinations, mergeRecords } from '../lib/merge'
+import {
+  currentReviewAgentRecord,
+  mergeDestinations,
+  reviewAgentRecords,
+  reviewState,
+} from '../lib/reviewAgents'
 import MergeAgentDialog from './MergeAgentDialog'
-import MergeAgentTerminal from './MergeAgentTerminal'
+import ReviewAgentDialog from './ReviewAgentDialog'
+import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings'
+import { useClockTick } from '../lib/clock'
+import ReviewAgentPanel from './ReviewAgentPanel'
 import { useStore } from '../store'
 import { PROJECT_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
@@ -62,13 +70,14 @@ export default function ReviewView() {
   const worktree = picked?.task === activeTask ? picked.path : taskWorktree
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
+  const [reviewDialogScope, setReviewDialogScope] = useState<string | null>(null)
   const [mergeDialogScope, setMergeDialogScope] = useState<string | null>(null)
-  const mergeSelection = useStore((s) => s.reviewMerges[s.project?.id ?? ''])
-  const currentMerge = useStore((s) =>
-    currentMergeRecord(
-      mergeRecords(s.sessionRecords, s.project?.id),
+  const agentSelection = useStore((s) => s.reviewAgents[s.project?.id ?? ''])
+  const currentAgent = useStore((s) =>
+    currentReviewAgentRecord(
+      reviewAgentRecords(s.sessionRecords, s.project?.id),
       s.sessions,
-      s.reviewMerges[s.project?.id ?? '']?.sid,
+      s.reviewAgents[s.project?.id ?? '']?.sid,
     ),
   )
 
@@ -77,16 +86,16 @@ export default function ReviewView() {
   const target = other?.path
   const projectId = useStore((s) => s.project?.id)
   const source = other ?? worktrees.find((w) => w.current)
-  const mergeHidden = mergeSelection?.sid === currentMerge?.id && !!mergeSelection?.hidden
-  const showMerge = !!currentMerge && !mergeHidden
-  const hideMerge = () => {
-    if (currentMerge) useStore.getState().hideReviewMerge(currentMerge.id)
+  const agentsHidden = agentSelection?.sid === currentAgent?.id && !!agentSelection?.hidden
+  const showAgents = !!currentAgent && !agentsHidden
+  const hideAgents = () => {
+    if (currentAgent) useStore.getState().hideReviewAgent(currentAgent.id)
   }
-  const mergePanel = useCollapsed(
+  const agentPanel = useCollapsed(
     'ReviewView-merge-terminal',
-    showMerge,
-    currentMerge?.id,
-    hideMerge,
+    showAgents,
+    currentAgent?.id,
+    hideAgents,
     'ReviewView-open',
   )
   // Refresh worktree branches and HEADs independently of the diff watcher.
@@ -94,12 +103,16 @@ export default function ReviewView() {
     .map((t) => `${t.id}\0${t.worktree}\0${t.branch}\0${t.missing}`)
     .join('\n')
   const dialogScope = JSON.stringify([projectId, source?.path, source?.branch, activeTask])
+  const reviewDialog = reviewDialogScope === dialogScope
+  if (reviewDialogScope && !reviewDialog) setReviewDialogScope(null)
   const mergeDialog = mergeDialogScope === dialogScope
   if (mergeDialogScope && !mergeDialog) setMergeDialogScope(null)
   const canMerge = !!source?.branch && mergeDestinations(source, worktrees).length > 0
   const reviewScope = JSON.stringify([projectId, target])
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
+  const findings = useReviewFindings(projectId, source?.branch)
+  const status = reviewState(findings?.findings, source)
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
   // The open worktree's sessions belong to the active task when the project is open in its
@@ -107,6 +120,11 @@ export default function ReviewView() {
   const openTask = tasks.find((t) => t.id === activeTask && t.current)?.id ?? null
   const validationTask = other ? (reviewTask?.id ?? undefined) : openTask
   const watched = !other || other.path === taskWorktree
+
+  // Findings of deleted branches are dropped once per visit, off the polling path.
+  useEffect(() => {
+    if (projectId) reviewPrune(projectId).catch(() => {})
+  }, [projectId])
 
   useEffect(() => {
     let disposed = false
@@ -201,11 +219,25 @@ export default function ReviewView() {
 
   return (
     <div className="workspace review-view">
+      {reviewDialog && source?.branch && (
+        <ReviewAgentDialog
+          key={`${projectId}/${source.path}/${source.branch}`}
+          source={source}
+          worktrees={worktrees}
+          close={() => setReviewDialogScope(null)}
+          launched={(sid) => {
+            if (useStore.getState().project?.id === projectId)
+              useStore.getState().setActiveSession(sid)
+            setReviewDialogScope(null)
+          }}
+        />
+      )}
       {mergeDialog && source?.branch && (
         <MergeAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
           source={source}
           worktrees={worktrees}
+          findings={findings}
           close={() => setMergeDialogScope(null)}
           launched={(sid) => {
             if (useStore.getState().project?.id === projectId)
@@ -223,6 +255,13 @@ export default function ReviewView() {
                   <div className="review-title-row">
                     <span className="review-title">Review</span>
                     <button
+                      className="review-agent-button"
+                      disabled={!source?.branch}
+                      onClick={() => setReviewDialogScope(dialogScope)}
+                    >
+                      Review branch…
+                    </button>
+                    <button
                       className="review-merge-button"
                       disabled={!canMerge}
                       title={
@@ -232,11 +271,11 @@ export default function ReviewView() {
                       }
                       onClick={() => setMergeDialogScope(dialogScope)}
                     >
-                      Start merge agent
+                      Merge into…
                     </button>
-                    {mergeHidden && currentMerge && (
-                      <button onClick={() => useStore.getState().setActiveSession(currentMerge.id)}>
-                        Show merge
+                    {agentsHidden && currentAgent && (
+                      <button onClick={() => useStore.getState().setActiveSession(currentAgent.id)}>
+                        Show agents
                       </button>
                     )}
                     {worktrees.length > 1 && (
@@ -272,6 +311,7 @@ export default function ReviewView() {
                       ↻
                     </button>
                   </div>
+                  <ReviewStatus branch={source?.branch} findings={findings} status={status} />
                   {review && (
                     <div className="review-summary">
                       <span>{plural(shownFiles.length, 'file')}</span>
@@ -422,16 +462,46 @@ export default function ReviewView() {
           </PersistedGroup>
         </Panel>
         <Separator className="separator horizontal" />
-        <Panel id="ReviewView-merge-terminal" defaultSize="35" minSize="15" {...mergePanel.props}>
-          {currentMerge && !mergePanel.collapsed && (
-            <MergeAgentTerminal
-              selected={currentMerge}
+        <Panel id="ReviewView-merge-terminal" defaultSize="35" minSize="15" {...agentPanel.props}>
+          {currentAgent && !agentPanel.collapsed && (
+            <ReviewAgentPanel
+              selected={currentAgent}
               select={(sid) => useStore.getState().setActiveSession(sid)}
-              hide={hideMerge}
+              hide={hideAgents}
+              sourceBranch={source?.branch}
+              sourceFindings={findings}
             />
           )}
         </Panel>
       </PersistedGroup>
+    </div>
+  )
+}
+
+/** Its own component, so the relative time ticks without re-rendering all of Review. */
+function ReviewStatus({
+  branch,
+  findings,
+  status,
+}: {
+  branch: string | null | undefined
+  findings: LoadedFindings | undefined
+  status: ReturnType<typeof reviewState>
+}) {
+  useClockTick()
+  return (
+    <div className="review-status" role="status">
+      {findings?.error
+        ? findings.error
+        : !branch
+          ? 'Not reviewed'
+          : !findings
+            ? 'Loading review status…'
+            : status === 'none'
+              ? 'Not reviewed'
+              : status === 'stale'
+                ? 'Changed since review'
+                : `Reviewed ${ago(findings.findings!.modifiedMs)}`}
     </div>
   )
 }

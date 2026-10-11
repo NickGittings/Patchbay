@@ -1,3 +1,4 @@
+import { useClockTick } from '../../lib/clock'
 import { ago, validations, type Validation } from '../../lib/review'
 import { startTerminal } from '../../lib/sessions'
 import { useStore } from '../../store'
@@ -35,6 +36,7 @@ export default function ValidationChips({
   const task = taskProp === undefined ? activeTask : taskProp
   const terminals = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.terminals)
   const sessions = useStore((s) => s.sessions)
+  useClockTick()
   const checks = validations(componentId, terminals ?? [], sessions, changedAt, task)
   if (!checks.length) return <div className="validation-chips none">No task terminals</div>
   return (
