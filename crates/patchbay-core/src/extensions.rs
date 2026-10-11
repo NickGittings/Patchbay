@@ -970,6 +970,7 @@ mod tests {
                 component_id: "web".into(),
                 terminal_id: "dev".into(),
                 task: Some("t".into()),
+                task_title: None,
                 name: "Dev".into(),
                 kind: TerminalKind::Task,
                 adapter: None,

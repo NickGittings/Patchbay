@@ -1,6 +1,12 @@
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { projectOf, reconcileTaskList, switchTaskWorkspace, useStore } from '../store'
+import {
+  projectOf,
+  projectStateOf,
+  reconcileTaskList,
+  switchTaskWorkspace,
+  useStore,
+} from '../store'
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
@@ -61,7 +67,7 @@ function applyTasks(projectId: string, tasks: Task[]) {
     s.setTasks(tasks)
     return
   }
-  const state = s.projects[projectId]?.state
+  const state = projectStateOf(projectId, s)
   if (!state) return
   s.patchProject(projectId, reconcileTaskList(state, tasks))
 }
@@ -71,7 +77,7 @@ function activateTaskIn(projectId: string, task: string | null) {
   const s = useStore.getState()
   if (s.project?.id === projectId) s.setActiveTask(task)
   else {
-    const state = s.projects[projectId]?.state
+    const state = projectStateOf(projectId, s)
     if (!state) return
     s.patchProject(projectId, switchTaskWorkspace(state, task))
   }

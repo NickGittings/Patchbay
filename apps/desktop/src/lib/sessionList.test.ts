@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import type { SessionRecord, TerminalSnapshot } from '../types'
+import type { SessionRecord, Task, TerminalSnapshot } from '../types'
 import {
   DEFAULT_SESSION_LIST_OPTIONS,
   groupByProject,
+  groupByWorktree,
   projectSessions,
   sessionLive,
   sessionTimeMs,
@@ -189,6 +190,173 @@ describe('groupByProject', () => {
     const named = (projectId: string) =>
       record(projectId, { metadata: { ...running.metadata, projectId, projectName: 'Same' } })
     expect(groupByProject([named('b'), named('a')]).map((g) => g.projectId)).toEqual(['a', 'b'])
+  })
+})
+
+describe('groupByWorktree', () => {
+  const task = (id: string, title: string): Task => ({
+    id,
+    title,
+    worktree: `/worktrees/${id}`,
+    components: [],
+    notes: '',
+    createdMs: 0,
+    missing: false,
+    current: false,
+  })
+  const inTask = (id: string, taskId: string | null | undefined, startedMs = 100, title?: string) =>
+    record(id, {
+      metadata: {
+        ...running.metadata,
+        task: taskId,
+        taskTitle: title,
+        projectRoot: taskId ? `/worktrees/${taskId}/project` : '/one/project',
+      },
+      snapshot: snapshot({ startedMs }),
+      spec: { cwd: `/components/${id}`, command: 'echo hello' },
+    })
+
+  test('retained names order closed-project worktrees by title, with main first and id ties', () => {
+    const records = [
+      inTask('z', 'z', 100, 'Zebra'),
+      inTask('b', 'b', 100, 'Alpha'),
+      inTask('a', 'a', 100, 'Alpha'),
+      inTask('null', null),
+      inTask('legacy', undefined),
+    ]
+    const groups = groupByWorktree(records, defaults)
+    expect(groups.map((g) => [g.task, g.title, g.path, ids(g.rows)])).toEqual([
+      [null, 'Main worktree', '/one/project', ['legacy', 'null']],
+      ['a', 'Alpha', '/worktrees/a/project', ['a']],
+      ['b', 'Alpha', '/worktrees/b/project', ['b']],
+      ['z', 'Zebra', '/worktrees/z/project', ['z']],
+    ])
+    expect(groupByWorktree([...records].reverse(), defaults)).toEqual(groups)
+  })
+
+  test('cached task lists supply only legacy titles; retained project folders always supply paths', () => {
+    const records = [inTask('a', 'a'), inTask('b', 'b', 100, 'Recorded title')]
+    const tasks = [task('a', 'Legacy title'), task('b', 'Changed title')]
+    expect(groupByWorktree(records, defaults, tasks).map((g) => [g.title, g.path])).toEqual([
+      ['Legacy title', '/worktrees/a/project'],
+      ['Recorded title', '/worktrees/b/project'],
+    ])
+    expect(
+      groupByWorktree(records, defaults)
+        .map((g) => g.path)
+        .sort(),
+    ).toEqual(
+      groupByWorktree(records, defaults, tasks)
+        .map((g) => g.path)
+        .sort(),
+    )
+  })
+
+  test('legacy records without task metadata identify the folder instead of the internal task id', () => {
+    expect(groupByWorktree([inTask('a', 'removed')], defaults)[0]).toMatchObject({
+      title: 'Worktree · project',
+      path: '/worktrees/removed/project',
+    })
+  })
+
+  test.each<SessionSort>(['latest', 'oldest'])(
+    '%s keeps paths and titles stable across All, Running and Closed after a move',
+    (sort) => {
+      const old = {
+        ...inTask('old', 't', 100, 'Old title'),
+        snapshot: snapshot({ running: false }),
+      }
+      const newer = {
+        ...inTask('new', 't', 200, 'New title'),
+        metadata: {
+          ...inTask('new', 't', 200, 'New title').metadata,
+          projectRoot: '/moved/project',
+        },
+      }
+      const mainOld = { ...inTask('main-old', null, 100), snapshot: snapshot({ running: false }) }
+      const mainNew = {
+        ...inTask('main-new', null, 200),
+        metadata: { ...running.metadata, projectRoot: '/main-moved/project' },
+      }
+      for (const filter of ['all', 'running', 'closed'] as const) {
+        const groups = groupByWorktree([old, newer, mainOld, mainNew], choices(filter, sort))
+        expect(groups.map((g) => [g.title, g.path])).toEqual([
+          ['Main worktree', '/main-moved/project'],
+          ['New title', '/moved/project'],
+        ])
+        if (filter !== 'all') expect(groups.every((g) => g.rows.length === 1)).toBe(true)
+      }
+    },
+  )
+
+  test('legacy paths and retained-title ties are stable regardless of record order or filters', () => {
+    const a = { ...inTask('a', 'gone', 100, 'Alpha'), snapshot: snapshot({ running: false }) }
+    const b = {
+      ...inTask('b', 'gone', 100, 'Beta'),
+      metadata: { ...a.metadata, taskTitle: 'Beta', projectRoot: '/other' },
+    }
+    for (const records of [
+      [a, b],
+      [b, a],
+    ]) {
+      for (const filter of ['all', 'running', 'closed'] as const) {
+        expect(groupByWorktree(records, choices(filter))[0]).toMatchObject({
+          title: 'Alpha',
+          path: '/worktrees/gone/project',
+        })
+      }
+    }
+  })
+
+  test.each<SessionSort>(['latest', 'oldest'])('keeps %s ordering inside each worktree', (sort) => {
+    const groups = groupByWorktree(
+      [
+        inTask('main-old', null, 100),
+        inTask('task-new', 't', 400),
+        inTask('task-old', 't', 200),
+        inTask('main-new', null, 300),
+      ],
+      choices('all', sort),
+      [task('t', 'Task')],
+    )
+    expect(groups.map((g) => ids(g.rows))).toEqual(
+      sort === 'latest'
+        ? [
+            ['main-new', 'main-old'],
+            ['task-new', 'task-old'],
+          ]
+        : [
+            ['main-old', 'main-new'],
+            ['task-old', 'task-new'],
+          ],
+    )
+  })
+
+  test('filters hide empty worktrees and repositories retain their own groups', () => {
+    const closed = { ...inTask('closed', 'closed'), snapshot: snapshot({ running: false }) }
+    const otherRepo = {
+      ...inTask('other', 'live'),
+      metadata: { ...running.metadata, projectId: 'two', task: 'live' },
+    }
+    const repos = groupByProject([closed, inTask('live', 'live'), otherRepo])
+    expect(
+      repos.map((repo) =>
+        groupByWorktree(repo.records, choices('running')).map((w) => ids(w.rows)),
+      ),
+    ).toEqual([[['live']], [['other']]])
+    expect(groupByWorktree([closed], choices('running'))).toEqual([])
+  })
+
+  test('does not mutate records, options or legacy task metadata', () => {
+    const records = [inTask('b', 'b'), inTask('a', 'a')]
+    const tasks = [task('b', 'Beta'), task('a', 'Alpha')]
+    const options = choices('closed')
+    const before = structuredClone({ records, tasks, options })
+    Object.freeze(records)
+    Object.freeze(tasks)
+    Object.freeze(options)
+    groupByWorktree(records, options, tasks)
+    expect({ records, tasks, options }).toEqual(before)
   })
 })
 

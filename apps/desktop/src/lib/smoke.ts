@@ -8,6 +8,9 @@ import {
   extensionTerminalRun,
   extensionFileRead,
   sessionsList,
+  sessionForget,
+  terminalStop,
+  terminalSnapshot,
   syncAgentProject,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
@@ -105,6 +108,9 @@ const hooks = {
   extensionTerminalRun,
   extensionFileRead,
   sessionsList,
+  sessionForget,
+  terminalStop,
+  terminalSnapshot,
   refreshExtensions,
   componentContext,
   executeExtensionCommand,

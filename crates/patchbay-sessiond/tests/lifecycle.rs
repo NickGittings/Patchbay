@@ -26,7 +26,7 @@ fn independent_service_survives_clients_and_serializes_startup() {
     let mut client = Client::connect(&dir).unwrap();
     let id: String = client.call(Request::Start {
         request_id: "counter-request".into(),
-        metadata: Box::new(Metadata { project_id: "project".into(), project_name: "P".into(), project_root: dir.display().to_string(), component_id: "api".into(), terminal_id: "counter".into(), task: None, name: "Counter".into(), kind: TerminalKind::Task, adapter: None, conversation_id: None, conversation_pinned: false, extension_id: None, command_id: None, key: None, command: String::new() }),
+        metadata: Box::new(Metadata { project_id: "project".into(), project_name: "P".into(), project_root: dir.display().to_string(), component_id: "api".into(), terminal_id: "counter".into(), task: None, task_title: None, name: "Counter".into(), kind: TerminalKind::Task, adapter: None, conversation_id: None, conversation_pinned: false, extension_id: None, command_id: None, key: None, command: String::new() }),
         spec: SessionSpec { id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
     }).unwrap();
     std::thread::sleep(Duration::from_millis(200));
@@ -173,6 +173,7 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
                     component_id: "shared".into(),
                     terminal_id: name.into(),
                     task: None,
+                    task_title: None,
                     name: name.into(),
                     kind: TerminalKind::Agent,
                     adapter: Some(adapter),

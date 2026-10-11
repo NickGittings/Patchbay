@@ -841,11 +841,14 @@ export const useStore = create<State>((set, get) => ({
   markSaved: () => set({ dirty: false }),
 }))
 
+/** The live state for the active project, or its saved state for an inactive tab. */
+export function projectStateOf(id: string, s = useStore.getState()): ProjectState | undefined {
+  return s.project?.id === id ? s : s.projects[id]?.state
+}
+
 /** The map of open project `id`, whether or not its tab is active. */
 export function projectOf(id: string): Project | null {
-  const s = useStore.getState()
-  if (s.project?.id === id) return s.toProject()
-  const state = s.projects[id]?.state
+  const state = projectStateOf(id)
   return state?.project ? projectFrom(state) : null
 }
 

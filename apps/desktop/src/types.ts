@@ -367,6 +367,8 @@ export interface SessionRecord {
     componentId: string
     terminalId: string
     task?: string | null
+    /** Display name captured at launch; absent in older retained records. */
+    taskTitle?: string | null
     name: string
     kind: TerminalKind
     adapter: 'claude' | 'codex' | null

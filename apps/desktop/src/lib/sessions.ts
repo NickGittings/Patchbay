@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
-import { emptyTaskWorkspace, projectOf, useStore } from '../store'
+import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
@@ -127,7 +127,7 @@ function captureLaunch(
   const id = projectId ?? s.project?.id ?? s.activeProjectId
   const project = id ? projectOf(id) : null
   if (!id || !project) throw new Error('Open a project first')
-  const state = s.project?.id === id ? s : s.projects[id]?.state
+  const state = projectStateOf(id, s)
   const scope = task === undefined ? (state?.activeTask ?? null) : task
   const workspace =
     state?.activeTask === scope

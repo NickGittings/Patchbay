@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { useStore } from '../store'
+import { useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { projectStateOf, useStore } from '../store'
 import {
   sessionConversation,
   sessionHistory,
@@ -7,6 +8,7 @@ import {
   sessionResume,
   terminalStop,
   sessionsStopAll,
+  taskList,
 } from '../lib/ipc'
 import { hydrateSession, reconcileSessions, startTerminal } from '../lib/sessions'
 import { ago } from '../lib/review'
@@ -14,14 +16,14 @@ import { useClockTick } from '../lib/clock'
 import {
   DEFAULT_SESSION_LIST_OPTIONS,
   groupByProject,
-  projectSessions,
+  groupByWorktree,
   sessionLive,
   type ProjectSessionChoices,
   type SessionFilter,
   type SessionListOptions,
   type SessionSort,
 } from '../lib/sessionList'
-import type { SessionRecord } from '../types'
+import type { SessionRecord, Task } from '../types'
 import TerminalPane from './TerminalPane'
 
 const EMPTY: Record<SessionFilter, string> = {
@@ -41,10 +43,223 @@ function Ago({ ms }: { ms: number }) {
   )
 }
 
+interface SessionListProps {
+  choices: ProjectSessionChoices
+  choose: (projectId: string, patch: Partial<SessionListOptions>) => void
+  connected: boolean
+  busy: boolean
+  perform: (action: () => Promise<unknown>) => Promise<void>
+  onSelect: (record: SessionRecord) => void
+  onConversation: (conversation: { id: string; value: string }) => void
+}
+
+/** Mounted only while the panel is open; subscriptions and legacy lookups stop on close. */
+function SessionList({
+  choices,
+  choose,
+  connected,
+  busy,
+  perform,
+  onSelect,
+  onConversation,
+}: SessionListProps) {
+  const records = useStore((s) => s.sessionRecords)
+  const groups = useMemo(() => groupByProject(records), [records])
+  const projectTasks: Record<string, Task[] | undefined> = useStore(
+    useShallow((s) =>
+      Object.fromEntries(
+        groups.map(({ projectId }) => [projectId, projectStateOf(projectId, s)?.tasks]),
+      ),
+    ),
+  )
+  const [loadedTasks, setLoadedTasks] = useState<Record<string, Task[]>>({})
+  // New records carry their own title. Only older records need a read-only Tauri lookup.
+  const legacyIds = groups
+    .filter(
+      ({ projectId, records }) =>
+        projectTasks[projectId] !== undefined &&
+        records.some(
+          ({ metadata }) =>
+            metadata.task &&
+            !metadata.taskTitle &&
+            !projectTasks[projectId]?.some((t) => t.id === metadata.task),
+        ),
+    )
+    .map(({ projectId }) => projectId)
+    .sort()
+    .join('\n')
+  useEffect(() => {
+    let cancelled = false
+    if (legacyIds)
+      for (const id of legacyIds.split('\n')) {
+        void taskList(id)
+          .then((tasks) => {
+            if (!cancelled) setLoadedTasks((current) => ({ ...current, [id]: tasks }))
+          })
+          .catch(() => {})
+      }
+    return () => {
+      cancelled = true
+    }
+  }, [legacyIds])
+  return (
+    <>
+      {!records.length && <p>No retained sessions.</p>}
+      <div className="session-list">
+        {groups.map(({ projectId, projectName, records: group }) => {
+          const chosen = choices[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
+          // Running state is unknown while disconnected, so the filter shows everything.
+          const options = connected ? chosen : { ...chosen, filter: 'all' as const }
+          const visible = groupByWorktree(group, options, [
+            ...(loadedTasks[projectId] ?? []),
+            ...(projectTasks[projectId] ?? []),
+          ])
+          return (
+            <section key={projectId}>
+              <div className="row session-group-heading">
+                <h3>{projectName}</h3>
+                <span className="spacer" />
+                <label>
+                  Show{' '}
+                  <select
+                    aria-label={`Filter sessions for ${projectName}`}
+                    value={options.filter}
+                    disabled={!connected}
+                    onChange={(e) => choose(projectId, { filter: e.target.value as SessionFilter })}
+                  >
+                    <option value="all">All</option>
+                    <option value="running">Running</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </label>
+                <label>
+                  Sort{' '}
+                  <select
+                    aria-label={`Sort sessions for ${projectName}`}
+                    value={options.sort}
+                    onChange={(e) => choose(projectId, { sort: e.target.value as SessionSort })}
+                  >
+                    <option value="latest">Newest first</option>
+                    <option value="oldest">Oldest first</option>
+                  </select>
+                </label>
+              </div>
+              {!visible.length && <p className="hint">{EMPTY[options.filter]}</p>}
+              {visible.map((worktree) => (
+                <section
+                  className="session-worktree"
+                  key={worktree.task === null ? 'main' : `task:${worktree.task}`}
+                >
+                  <div className="session-worktree-heading">
+                    <h4>{worktree.title}</h4>
+                    {worktree.path && <small className="mono">{worktree.path}</small>}
+                  </div>
+                  {worktree.rows.map(({ record: r, time }) => {
+                    const live = sessionLive(r)
+                    // Recorded but not spawned yet: output is not available to reconnect to.
+                    const starting = live && !r.snapshot
+                    return (
+                      <div className="session-row" key={r.id}>
+                        <div>
+                          <strong>{r.metadata.name}</strong>
+                          <small>
+                            {r.metadata.componentId} · {r.metadata.kind} · {r.spec.cwd}
+                          </small>
+                        </div>
+                        <span>
+                          {!connected
+                            ? 'Disconnected'
+                            : starting
+                              ? 'Starting'
+                              : live
+                                ? 'Running'
+                                : r.interrupted
+                                  ? 'Interrupted'
+                                  : 'Ended'}
+                        </span>
+                        <small>{time !== undefined && <Ago ms={time} />}</small>
+                        <button
+                          disabled={!connected || busy || starting}
+                          onClick={() =>
+                            void perform(async () => {
+                              await hydrateSession(r.id)
+                              onSelect(r)
+                            })
+                          }
+                        >
+                          {live ? 'Reconnect' : 'View output'}
+                        </button>
+                        {live ? (
+                          <button
+                            title="Stop this session; cancel startup if its plan includes this session"
+                            disabled={!connected || busy}
+                            onClick={() => void perform(() => terminalStop(r.id))}
+                          >
+                            Stop
+                          </button>
+                        ) : (
+                          <>
+                            {r.metadata.adapter && (
+                              <button
+                                disabled={!connected || busy}
+                                onClick={() => void perform(() => sessionResume(r.id))}
+                              >
+                                Resume conversation
+                              </button>
+                            )}
+                            <button
+                              disabled={!connected || busy || projectTasks[projectId] === undefined}
+                              onClick={() =>
+                                void perform(async () => {
+                                  useStore.getState().activateProject(r.metadata.projectId)
+                                  await startTerminal(
+                                    r.metadata.componentId,
+                                    r.metadata.terminalId,
+                                    r.metadata.task ?? null,
+                                    r.metadata.projectId,
+                                  )
+                                })
+                              }
+                            >
+                              Start new
+                            </button>
+                            <button
+                              disabled={!connected || busy}
+                              onClick={() => void perform(() => sessionForget(r.id))}
+                            >
+                              Forget
+                            </button>
+                          </>
+                        )}
+                        {r.metadata.adapter && (
+                          <button
+                            disabled={!connected || busy}
+                            onClick={() =>
+                              onConversation({
+                                id: r.id,
+                                value: r.metadata.conversationId ?? '',
+                              })
+                            }
+                          >
+                            Set conversation ID
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </section>
+              ))}
+            </section>
+          )
+        })}
+      </div>
+    </>
+  )
+}
+
 export default function SessionsPanel() {
   const open = useStore((s) => s.sessionsPanelOpen)
-  const records = useStore((s) => s.sessionRecords)
-  const connected = useStore((s) => s.serviceConnected)
+  const connected = useStore((s) => s.sessionsPanelOpen && s.serviceConnected)
   const [choices, setChoices] = useState<ProjectSessionChoices>({})
   const choose = (projectId: string, patch: Partial<SessionListOptions>) =>
     setChoices((current) => ({
@@ -73,7 +288,6 @@ export default function SessionsPanel() {
     useStore.setState({ sessionsPanelOpen: false })
   }
   if (!open) return null
-  const groups = groupByProject(records)
   return (
     <div className="extension-overlay" onClick={close}>
       <div
@@ -123,145 +337,18 @@ export default function SessionsPanel() {
             </div>
           </section>
         )}
-        {!records.length && <p>No retained sessions.</p>}
-        <div className="session-list">
-          {groups.map(({ projectId, projectName, records: group }) => {
-            const chosen = choices[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
-            // Running state is unknown while disconnected, so the filter shows everything.
-            const options = connected ? chosen : { ...chosen, filter: 'all' as const }
-            const visible = projectSessions(group, options)
-            return (
-              <section key={projectId}>
-                <div className="row session-group-heading">
-                  <h3>{projectName}</h3>
-                  <span className="spacer" />
-                  <label>
-                    Show{' '}
-                    <select
-                      aria-label={`Filter sessions for ${projectName}`}
-                      value={options.filter}
-                      disabled={!connected}
-                      onChange={(e) =>
-                        choose(projectId, { filter: e.target.value as SessionFilter })
-                      }
-                    >
-                      <option value="all">All</option>
-                      <option value="running">Running</option>
-                      <option value="closed">Closed</option>
-                    </select>
-                  </label>
-                  <label>
-                    Sort{' '}
-                    <select
-                      aria-label={`Sort sessions for ${projectName}`}
-                      value={options.sort}
-                      onChange={(e) => choose(projectId, { sort: e.target.value as SessionSort })}
-                    >
-                      <option value="latest">Newest first</option>
-                      <option value="oldest">Oldest first</option>
-                    </select>
-                  </label>
-                </div>
-                {!visible.length && <p className="hint">{EMPTY[options.filter]}</p>}
-                {visible.map(({ record: r, time }) => {
-                  const live = sessionLive(r)
-                  // Recorded but not spawned yet: output is not available to reconnect to.
-                  const starting = live && !r.snapshot
-                  return (
-                    <div className="session-row" key={r.id}>
-                      <div>
-                        <strong>{r.metadata.name}</strong>
-                        <small>
-                          {r.metadata.componentId} · {r.metadata.kind} · {r.spec.cwd}
-                        </small>
-                      </div>
-                      <span>
-                        {!connected
-                          ? 'Disconnected'
-                          : starting
-                            ? 'Starting'
-                            : live
-                              ? 'Running'
-                              : r.interrupted
-                                ? 'Interrupted'
-                                : 'Ended'}
-                      </span>
-                      <small>{time !== undefined && <Ago ms={time} />}</small>
-                      <button
-                        disabled={!connected || busy || starting}
-                        onClick={() =>
-                          void perform(async () => {
-                            await hydrateSession(r.id)
-                            setSelected(r)
-                            setHistory(null)
-                          })
-                        }
-                      >
-                        {live ? 'Reconnect' : 'View output'}
-                      </button>
-                      {live ? (
-                        <button
-                          title="Stop this session; cancel startup if its plan includes this session"
-                          disabled={!connected || busy}
-                          onClick={() => void perform(() => terminalStop(r.id))}
-                        >
-                          Stop
-                        </button>
-                      ) : (
-                        <>
-                          {r.metadata.adapter && (
-                            <button
-                              disabled={!connected || busy}
-                              onClick={() => void perform(() => sessionResume(r.id))}
-                            >
-                              Resume conversation
-                            </button>
-                          )}
-                          <button
-                            disabled={
-                              !connected ||
-                              busy ||
-                              !useStore.getState().projects[r.metadata.projectId]?.state
-                            }
-                            onClick={() =>
-                              void perform(async () => {
-                                useStore.getState().activateProject(r.metadata.projectId)
-                                await startTerminal(
-                                  r.metadata.componentId,
-                                  r.metadata.terminalId,
-                                  r.metadata.task ?? null,
-                                  r.metadata.projectId,
-                                )
-                              })
-                            }
-                          >
-                            Start new
-                          </button>
-                          <button
-                            disabled={!connected || busy}
-                            onClick={() => void perform(() => sessionForget(r.id))}
-                          >
-                            Forget
-                          </button>
-                        </>
-                      )}
-                      {r.metadata.adapter && (
-                        <button
-                          disabled={!connected || busy}
-                          onClick={() =>
-                            setConversation({ id: r.id, value: r.metadata.conversationId ?? '' })
-                          }
-                        >
-                          Set conversation ID
-                        </button>
-                      )}
-                    </div>
-                  )
-                })}
-              </section>
-            )
-          })}
-        </div>
+        <SessionList
+          choices={choices}
+          choose={choose}
+          connected={connected}
+          busy={busy}
+          perform={perform}
+          onSelect={(record) => {
+            setSelected(record)
+            setHistory(null)
+          }}
+          onConversation={setConversation}
+        />
         {conversation && (
           <form
             className="row"

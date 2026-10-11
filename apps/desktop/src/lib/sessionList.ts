@@ -1,4 +1,4 @@
-import type { SessionRecord } from '../types'
+import type { SessionRecord, Task } from '../types'
 
 export type SessionFilter = 'all' | 'running' | 'closed'
 export type SessionSort = 'latest' | 'oldest'
@@ -20,6 +20,58 @@ export interface SessionGroup {
   projectId: string
   projectName: string
   records: SessionRecord[]
+}
+export interface WorktreeSessionGroup {
+  task: string | null
+  title: string
+  path: string | undefined
+  rows: SessionRow[]
+}
+
+const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+
+const newestRow = (rows: readonly SessionRow[]) =>
+  rows.reduce((a, b) => {
+    const aTime = a.time ?? -Infinity
+    const bTime = b.time ?? -Infinity
+    return bTime > aTime || (bTime === aTime && compareIds(b.record.id, a.record.id) < 0) ? b : a
+  })
+
+/** Group the full project history before filtering, so labels and paths stay stable. */
+export function groupByWorktree(
+  records: readonly SessionRecord[],
+  options: SessionListOptions,
+  tasks: readonly Task[] = [],
+): WorktreeSessionGroup[] {
+  const knownTasks = new Map(tasks.map((task) => [task.id, task]))
+  const groups = new Map<string | null, WorktreeSessionGroup>()
+  for (const row of projectSessions(records, { ...options, filter: 'all' })) {
+    const id = row.record.metadata.task ?? null
+    const group = groups.get(id)
+    if (group) group.rows.push(row)
+    else groups.set(id, { task: id, title: '', path: undefined, rows: [row] })
+  }
+  for (const group of groups.values()) {
+    // Folder moves and mixed legacy records must not make the displayed sort choose the path.
+    group.path = newestRow(group.rows).record.metadata.projectRoot
+    if (group.task === null) group.title = 'Main worktree'
+    else {
+      const named = group.rows.filter((row) => row.record.metadata.taskTitle)
+      // Cached/read-only task lists support records saved before taskTitle was introduced.
+      group.title =
+        (named.length ? newestRow(named).record.metadata.taskTitle : undefined) ??
+        knownTasks.get(group.task)?.title ??
+        `Worktree · ${group.path.split(/[\\/]/).filter(Boolean).at(-1) ?? group.path}`
+    }
+    group.rows = group.rows.filter(({ record }) => matchesFilter(record, options.filter))
+  }
+  return [...groups.values()]
+    .filter((group) => group.rows.length)
+    .sort((a, b) => {
+      if (a.task === null) return -1
+      if (b.task === null) return 1
+      return a.title.localeCompare(b.title) || compareIds(a.task, b.task)
+    })
 }
 
 /** Latest valid `Date` time (±8.64e15 ms), so a corrupt one can't break `toISOString`. */
@@ -62,11 +114,12 @@ export function groupByProject(records: readonly SessionRecord[]): SessionGroup[
     else groups.set(projectId, { projectId, projectName, records: [record] })
   }
   return [...groups.values()].sort(
-    (a, b) =>
-      a.projectName.localeCompare(b.projectName) ||
-      (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0),
+    (a, b) => a.projectName.localeCompare(b.projectName) || compareIds(a.projectId, b.projectId),
   )
 }
+
+const matchesFilter = (record: SessionRecord, filter: SessionFilter): boolean =>
+  filter === 'all' || sessionLive(record) === (filter === 'running')
 
 /** One project's visible rows; never mutates the records. */
 export function projectSessions(
@@ -74,13 +127,13 @@ export function projectSessions(
   { filter, sort }: SessionListOptions,
 ): SessionRow[] {
   return records
-    .filter((record) => filter === 'all' || sessionLive(record) === (filter === 'running'))
+    .filter((record) => matchesFilter(record, filter))
     .map((record) => ({ record, time: sessionTimeMs(record) }))
     .sort((a, b) => {
       if (a.time === undefined && b.time !== undefined) return 1
       if (b.time === undefined && a.time !== undefined) return -1
       if (a.time !== undefined && b.time !== undefined && a.time !== b.time)
         return sort === 'latest' ? b.time - a.time : a.time - b.time
-      return a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0
+      return compareIds(a.record.id, b.record.id)
     })
 }
