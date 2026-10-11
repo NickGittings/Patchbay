@@ -8,7 +8,7 @@ import {
   type Worktree,
 } from '../types'
 import { mergeAgentStart } from './ipc'
-import { listenForTerminals, reconcileSessions } from './sessions'
+import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
@@ -71,6 +71,6 @@ export async function startMergeAgent(
     },
     requestId,
   )
-  await reconcileSessions()
+  await reconcileFreshSessions()
   return sid
 }

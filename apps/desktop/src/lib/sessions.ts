@@ -572,6 +572,12 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
 
 const launchRequests = new Map<string, string>()
 let reconciling: Promise<void> | undefined
+/** Wait out any pre-launch list, then read records fetched after the launch completed. */
+export async function reconcileFreshSessions(): Promise<void> {
+  if (reconciling) await reconciling
+  await reconcileSessions()
+}
+
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {

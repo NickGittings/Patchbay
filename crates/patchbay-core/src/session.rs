@@ -17,9 +17,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-mod record;
+mod briefing;
+pub use briefing::with_pending_briefing;
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -114,7 +115,7 @@ pub struct Metadata {
     pub command: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", from = "record::StoredRecord")]
+#[serde(rename_all = "camelCase")]
 pub struct Record {
     pub id: String,
     pub metadata: Metadata,
@@ -401,6 +402,9 @@ impl Client {
     /// Fails if the service reports an error, or on transport errors and timeouts,
     /// after which the client is broken and every later call fails.
     pub fn call<T: DeserializeOwned>(&mut self, request: Request) -> Result<T> {
+        with_pending_briefing(request, |request| self.call_inner(request))
+    }
+    fn call_inner<T: DeserializeOwned>(&mut self, request: Request) -> Result<T> {
         anyhow::ensure!(!self.broken, "Session service connection was lost");
         let timeout = match request {
             // Validators and readiness gates take as long as they take.
@@ -796,8 +800,12 @@ impl Service {
         self: &Arc<Self>,
         request: String,
         metadata: Metadata,
-        spec: SessionSpec,
+        mut spec: SessionSpec,
     ) -> Result<String> {
+        let _pending = briefing::PendingBriefing::new(&spec);
+        // Keep a service-owned copy before spawning. A timed-out sender can always remove
+        // its pending file without invalidating a launch that the service accepted.
+        crate::context::retain_owned_briefing(&mut spec)?;
         let candidate = crate::context::owned_briefing(&spec);
         let result = self.start_with_command(request, metadata, spec, None, false);
         // A rejected or idempotent launch must not leave its pending briefing behind.
@@ -865,15 +873,22 @@ impl Service {
             !self.pty.is_running(&id),
             "Terminal is already running; reconnect instead"
         );
-        if spec.exclusive_cwd {
-            let running = self.records.lock().unwrap().values().any(|r| {
-                r.spec.exclusive_cwd && r.spec.cwd == spec.cwd && self.pty.is_running(&r.id)
-            });
-            anyhow::ensure!(
-                !running,
-                "An exclusive session is already running in this working directory"
-            );
-        }
+        let cwd = spec.cwd.canonicalize()?;
+        let busy = self.records.lock().unwrap().values().any(|r| {
+            if !(spec.exclusive_cwd || r.spec.exclusive_cwd) || !self.pty.is_running(&r.id) {
+                return false;
+            }
+            let other = r
+                .spec
+                .cwd
+                .canonicalize()
+                .unwrap_or_else(|_| r.spec.cwd.clone());
+            cwd.starts_with(&other) || other.starts_with(&cwd)
+        });
+        anyhow::ensure!(
+            !busy,
+            "An exclusive session requires an unused worktree; stop other terminals there first"
+        );
         if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
             let running = self.records.lock().unwrap().values().any(|r| {
                 r.metadata.adapter == Some(adapter)
@@ -2280,10 +2295,12 @@ mod tests {
         };
         let file = |spec: &SessionSpec| PathBuf::from(&spec.env[crate::context::CONTEXT_ENV]);
         let first = make_spec();
-        let first_file = file(&first);
+        let pending_file = file(&first);
         let id = service
             .start("first".into(), metadata.clone(), first)
             .unwrap();
+        assert!(!pending_file.exists());
+        let first_file = file(&service.list()[0].spec);
         assert!(first_file.exists());
         let retry = make_spec();
         let retry_file = file(&retry);
@@ -2312,8 +2329,10 @@ mod tests {
         // Stop retains the briefing for resume; a new launch supersedes it.
         assert!(first_file.exists());
         let next = make_spec();
-        let next_file = file(&next);
+        let pending_file = file(&next);
         service.start("next".into(), metadata, next).unwrap();
+        assert!(!pending_file.exists());
+        let next_file = file(&service.list()[0].spec);
         assert!(!first_file.exists());
         assert!(next_file.exists());
         service.pty.stop(&id);
@@ -2322,51 +2341,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         service.persist().unwrap();
-        let path = dir.join("sessions.json");
-        let mut saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        saved[&id]["spec"]
-            .as_object_mut()
-            .unwrap()
-            .remove("resume_command");
-        saved[&id]["spec"]
-            .as_object_mut()
-            .unwrap()
-            .remove("owns_briefing");
-        saved[&id]["spec"]
-            .as_object_mut()
-            .unwrap()
-            .remove("exclusive_cwd");
-        saved[&id]["spec"]
-            .as_object_mut()
-            .unwrap()
-            .remove("merge_source");
-        // The source has already been removed. Neither its grant nor its launch option
-        // should survive recovery of records written by the previous implementation.
-        let source = dir.join("removed source's worktree");
-        let metadata_dir = dir.join(".git");
-        saved[&id]["spec"]["dirs"] = serde_json::json!([source, metadata_dir]);
-        let grant = format!(
-            " --add-dir {}",
-            crate::context::quote_argument(source.to_str().unwrap())
-        );
-        let kickoff = crate::context::quote_argument(
-            "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.",
-        );
-        saved[&id]["launchCommand"] =
-            serde_json::json!(format!("claude --model fixture{grant} {kickoff}"));
-        saved[&id]["spec"]["command"] = saved[&id]["launchCommand"].clone();
-        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let recovered = Service::load(&dir).unwrap();
         let record = recovered.list().pop().unwrap();
         assert!(record.spec.exclusive_cwd);
-        assert_eq!(record.spec.merge_source, Some(source));
-        assert_eq!(record.spec.dirs, vec![metadata_dir]);
-        assert!(!record.spec.command.contains(&grant));
-        assert!(!record.launch_command.contains(&grant));
+        assert_eq!(record.spec.dirs, service.list()[0].spec.dirs);
+        assert_eq!(record.spec.command, service.list()[0].spec.command);
         assert_eq!(
-            record.spec.resume_command.as_deref(),
-            Some("claude --model fixture")
+            record.spec.resume_command,
+            service.list()[0].spec.resume_command
         );
         assert_eq!(
             crate::context::owned_briefing(&record.spec),
@@ -2382,11 +2364,136 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn missing_exclusive_flag_never_removes_git_metadata_grants() {
+        let dir = std::env::temp_dir().join("repo/.git");
+        let command = format!(
+            "claude --add-dir {}",
+            crate::context::quote_argument(dir.to_str().unwrap())
+        );
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "id":"merge", "metadata": {
+                "projectId":"p", "projectName":"P", "projectRoot":"/repo",
+                "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge",
+                "name":"Merge", "kind":"agent"
+            },
+            "spec": {"id":"merge", "command":command, "cwd":"/repo", "env":{},
+                "ready_when":"", "service":false, "notice":null, "dirs":[dir]},
+            "snapshot":null, "history":[], "interrupted":true, "requestIds":[],
+            "launchCommand":command
+        }))
+        .unwrap();
+        assert_eq!(record.spec.dirs, vec![dir]);
+        assert_eq!(record.spec.command, command);
+        assert_eq!(record.launch_command, command);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lost_start_replies_remove_pending_files_and_keep_accepted_briefings() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let project: crate::model::Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion":4, "root":dir, "name":"P", "components":[], "links":[], "groups":[]
+        }))
+        .unwrap();
+        let terminal: crate::model::TerminalSpec = serde_json::from_value(serde_json::json!({
+            "id":"merge", "name":"Merge", "kind":"agent", "command":"sleep 30"
+        }))
+        .unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId":"p", "projectName":"P", "projectRoot":dir,
+            "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge", "name":"Merge", "kind":"agent"
+        })).unwrap();
+        for accepted in [false, true] {
+            let spec = crate::context::merge_agent_spec(
+                &project,
+                &terminal,
+                "private briefing",
+                vec![],
+                &crate::policy::AllowAll,
+            )
+            .unwrap();
+            let pending = crate::context::owned_briefing(&spec).unwrap();
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let service_copy = service.clone();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let request: Request = read_frame(&mut socket).unwrap();
+                if accepted {
+                    service_copy.handle("test", request).unwrap();
+                }
+                // The request was written, but the peer closes without a reply.
+            });
+            let mut client = Client {
+                stream,
+                instance: "test".into(),
+                broken: false,
+            };
+            assert!(
+                client
+                    .call::<String>(Request::Start {
+                        request_id: "lost-reply".into(),
+                        metadata: Box::new(metadata.clone()),
+                        spec,
+                    })
+                    .is_err()
+            );
+            server.join().unwrap();
+            assert!(client.is_broken());
+            assert!(!pending.exists());
+            if accepted {
+                let record = service.list().pop().unwrap();
+                let retained = crate::context::owned_briefing(&record.spec).unwrap();
+                assert_ne!(retained, pending);
+                assert_eq!(
+                    std::fs::read_to_string(&retained).unwrap(),
+                    "private briefing"
+                );
+                service.pty.stop(&record.id);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while service.pty.is_running(&record.id) {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                service
+                    .handle("test", Request::Forget { id: record.id })
+                    .unwrap();
+                assert!(!retained.exists());
+            }
+        }
+        // A caller that cannot even connect uses the same core cleanup boundary.
+        let spec = crate::context::merge_agent_spec(
+            &project,
+            &terminal,
+            "retry",
+            vec![],
+            &crate::policy::AllowAll,
+        )
+        .unwrap();
+        let pending = crate::context::owned_briefing(&spec).unwrap();
+        let result: Result<()> = with_pending_briefing(
+            Request::Start {
+                request_id: "disconnected".into(),
+                metadata: Box::new(metadata),
+                spec,
+            },
+            |_| bail!("Disconnected"),
+        );
+        assert!(result.is_err());
+        assert!(!pending.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn exclusive_sessions_serialize_directories_across_projects_and_allow_retries() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
+        let worktree = dir.join("destination");
+        std::fs::create_dir(&worktree).unwrap();
         let other = dir.join("other");
         std::fs::create_dir(&other).unwrap();
         let service = Service::load(&dir).unwrap();
@@ -2403,7 +2510,7 @@ mod tests {
             merge_source: None,
             id: "ignored".into(),
             command: "sleep 30".into(),
-            cwd: dir.clone(),
+            cwd: worktree.clone(),
             env: BTreeMap::new(),
             ready_when: String::new(),
             service: false,
@@ -2427,8 +2534,28 @@ mod tests {
                 .start("competing".into(), second.clone(), spec.clone())
                 .unwrap_err()
                 .to_string()
-                .contains("exclusive session is already running")
+                .contains("exclusive session requires an unused worktree")
         );
+        // Regular task agents and development terminals cannot enter any part of the reserved
+        // worktree, including a component folder or a symlink spelling of that folder.
+        let nested = worktree.join("component");
+        std::fs::create_dir(&nested).unwrap();
+        let alias = dir.join("alias");
+        std::os::unix::fs::symlink(&nested, &alias).unwrap();
+        for cwd in [&worktree, &nested, &alias] {
+            let mut ordinary = spec.clone();
+            ordinary.exclusive_cwd = false;
+            ordinary.cwd = cwd.clone();
+            for kind in [TerminalKind::Agent, TerminalKind::Task, TerminalKind::Shell] {
+                second.kind = kind;
+                assert!(
+                    service
+                        .start("ordinary".into(), second.clone(), ordinary.clone())
+                        .is_err()
+                );
+            }
+        }
+        std::fs::remove_file(alias).unwrap();
         let mut other_spec = spec.clone();
         other_spec.cwd = other;
         let other_id = service
@@ -2441,7 +2568,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         second.terminal_id = "replacement".into();
-        let replacement = service.start("after-stop".into(), second, spec).unwrap();
+        let mut ordinary = spec.clone();
+        ordinary.exclusive_cwd = false;
+        ordinary.cwd = nested;
+        let replacement = service
+            .start("after-stop".into(), second, ordinary)
+            .unwrap();
+        // An idle-but-running task agent also prevents an exclusive launch.
+        assert!(
+            service
+                .start("blocked-by-task".into(), metadata, spec)
+                .is_err()
+        );
         service.pty.stop(&replacement);
         service.pty.stop(&other_id);
         std::fs::remove_dir_all(dir).unwrap();

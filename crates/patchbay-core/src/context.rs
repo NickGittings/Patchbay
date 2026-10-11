@@ -842,24 +842,6 @@ pub(crate) fn merge_resume_command(command: &str) -> String {
     command.strip_suffix(&suffix).unwrap_or(command).to_owned()
 }
 
-/// Remove a previously generated folder grant while preserving other provider options.
-pub(crate) fn remove_agent_dir(command: &mut String, dir: &Path, env: &BTreeMap<String, String>) {
-    let shell = Shell::current();
-    let path = dir.display().to_string();
-    let quoted = shell.quote(&path);
-    let argument = if matches!(shell, Shell::Windows) && path.contains('%') {
-        env.iter()
-            .find(|(key, value)| {
-                key.starts_with("PATCHBAY_ARGUMENT_") && **value == quoted[1..quoted.len() - 1]
-            })
-            .map(|(key, _)| shell.quote(&format!("%{key}%")))
-            .unwrap_or(quoted)
-    } else {
-        quoted
-    };
-    *command = command.replacen(&format!(" --add-dir {argument}"), "", 1);
-}
-
 /// Build a dedicated agent job without planner or implementation instructions.
 ///
 /// # Errors
@@ -880,8 +862,8 @@ pub fn merge_agent_spec(
         "Choose an agent command"
     );
     let scope = crate::model::MERGE_SCOPE;
-    // Each pending launch is immutable. The service removes unclaimed, superseded and
-    // forgotten merge briefings; it retains the current one for conversation recovery.
+    // Each pending launch is immutable. Core transport removes it after dispatch;
+    // the service retains an independent copy for conversation recovery.
     let file = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), text)?;
     let mut env = BTreeMap::from([
         (COMPONENT_ENV.into(), scope.into()),
@@ -930,19 +912,49 @@ pub fn owned_briefing(spec: &SessionSpec) -> Option<PathBuf> {
         .flatten()
 }
 
+/// Retain an independent briefing for an accepted session. Only the UUID filename changes,
+/// preserving directory quoting and encoded shell arguments on every platform.
+pub(crate) fn retain_owned_briefing(spec: &mut SessionSpec) -> Result<()> {
+    let Some(pending) = owned_briefing(spec) else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        is_owned_briefing_file(&pending),
+        "Invalid owned briefing path"
+    );
+    let text = std::fs::read_to_string(&pending)?;
+    let retained = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), &text)?;
+    let old = pending.file_name().unwrap().to_str().unwrap();
+    let new = retained.file_name().unwrap().to_str().unwrap();
+    spec.command = spec.command.replace(old, new);
+    if let Some(command) = &mut spec.resume_command {
+        *command = command.replace(old, new);
+    }
+    for value in spec.env.values_mut() {
+        *value = value.replace(old, new);
+    }
+    if let Some(notice) = &mut spec.notice {
+        *notice = notice.replace(old, new);
+    }
+    Ok(())
+}
+
 /// Delete only files in the dedicated briefing namespace, never arbitrary env paths.
 pub fn remove_owned_briefing_file(file: &Path) {
+    if is_owned_briefing_file(file) {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
+fn is_owned_briefing_file(file: &Path) -> bool {
     let dir = std::env::temp_dir().join("patchbay");
-    let owned = file.parent() == Some(dir.as_path())
+    file.parent() == Some(dir.as_path())
         && file
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| s.strip_prefix("merge-"))
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
-        && file.extension().is_some_and(|s| s == "md");
-    if owned {
-        let _ = std::fs::remove_file(file);
-    }
+        && file.extension().is_some_and(|s| s == "md")
 }
 
 fn brief_agent(
@@ -2166,6 +2178,39 @@ mod tests {
             &mut env,
         ));
         assert!(expanded.encode_utf16().count() < 1000);
+    }
+
+    #[test]
+    fn retained_merge_briefings_rewrite_launch_resume_and_shell_paths() {
+        for command in ["claude", "codex", "custom-agent"] {
+            let text = "a".repeat(130 * 1024); // Also exercise Codex's file-pointer fallback.
+            let mut terminal = project().components[0].terminals[0].clone();
+            terminal.command = command.into();
+            let mut spec =
+                merge_agent_spec(&project(), &terminal, &text, vec![], &AllowAll).unwrap();
+            let pending = owned_briefing(&spec).unwrap();
+            let old = pending.file_name().unwrap().to_str().unwrap();
+            // Windows may store a quoted path in a private argument variable.
+            spec.env
+                .insert("PATCHBAY_ARGUMENT_TEST".into(), format!("quoted-{old}"));
+            retain_owned_briefing(&mut spec).unwrap();
+            let retained = owned_briefing(&spec).unwrap();
+            assert_ne!(pending, retained);
+            assert!(pending.exists());
+            assert_eq!(std::fs::read_to_string(&retained).unwrap(), text);
+            assert!(!spec.command.contains(old));
+            assert!(!spec.resume_command.as_ref().unwrap().contains(old));
+            assert!(spec.env.values().all(|v| !v.contains(old)));
+            assert!(spec.notice.as_ref().is_none_or(|n| !n.contains(old)));
+            if command == "claude" {
+                assert!(
+                    spec.command
+                        .contains(retained.file_name().unwrap().to_str().unwrap())
+                );
+            }
+            remove_owned_briefing_file(&pending);
+            remove_owned_briefing_file(&retained);
+        }
     }
 
     #[test]

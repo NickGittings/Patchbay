@@ -236,6 +236,17 @@
       'stopped destination available again',
       () => !dialog().querySelector('button[type="submit"]').disabled,
     )
+    // A clean but still-running terminal must not share the merge destination.
+    await smoke.terminalStop(shell)
+    await until('destination shell stopped', () => state().sessions[shell]?.running === false)
+    click(
+      [...document.querySelectorAll('.review-merge-terminal button')].find(
+        (b) => b.textContent === 'Hide',
+      ),
+    )
+    // Forgetting the hidden merge must not collapse the next merge, even before selection.
+    await smoke.sessionForget(sid)
+    await smoke.reconcileSessions()
     choose(form.querySelector('select[aria-label="Destination worktree"]'), opened.project.root)
     submit()
     await until('conflict destination terminal', () => {

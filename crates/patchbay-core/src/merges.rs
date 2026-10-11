@@ -51,7 +51,12 @@ fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>> {
+fn clean(
+    tree: &mut Worktree,
+    expected_branch: &str,
+    role: &str,
+    common: &Path,
+) -> Result<Vec<PathBuf>> {
     let root = Path::new(&tree.path);
     // Read ownership, live revision and every operation marker in one process.
     let metadata = git::run(git::git(root).args([
@@ -91,10 +96,11 @@ fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>>
         "The {role} worktree has a detached HEAD; check out a branch first"
     );
     ensure!(
-        branch == tree.branch.as_deref(),
+        branch == Some(expected_branch),
         "The {role} branch changed; refresh Review and try again"
     );
     tree.head = head.into();
+    tree.branch = branch.map(str::to_owned);
     ensure!(
         lines.all(|path| !Path::new(path).exists()),
         "The {role} worktree has an operation in progress; finish or abort it first"
@@ -107,18 +113,10 @@ fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>>
     Ok(dirs)
 }
 
-fn checked_tree(trees: &[Worktree], path: &str, branch: &str, role: &str) -> Result<Worktree> {
+fn checked_tree(trees: &[Worktree], path: &str, role: &str) -> Result<Worktree> {
     let tree = trees.iter().find(|t| t.path == path).with_context(|| {
         format!("The {role} worktree is missing or isn't in this project's repository")
     })?;
-    ensure!(
-        tree.branch.is_some(),
-        "The {role} worktree has a detached HEAD; check out a branch first"
-    );
-    ensure!(
-        tree.branch.as_deref() == Some(branch),
-        "The {role} branch changed; refresh Review and try again"
-    );
     Ok(tree.clone())
 }
 
@@ -133,20 +131,20 @@ pub fn prepare(
     policy: &dyn Policy,
 ) -> Result<MergeJob> {
     let trees = git::worktrees(Path::new(&project.root));
-    let mut source = checked_tree(&trees, &request.source, &request.source_branch, "source")?;
-    let mut destination = checked_tree(
-        &trees,
-        &request.destination,
-        &request.destination_branch,
-        "destination",
-    )?;
+    let mut source = checked_tree(&trees, &request.source, "source")?;
+    let mut destination = checked_tree(&trees, &request.destination, "destination")?;
     ensure!(
         source.path != destination.path && source.branch != destination.branch,
         "Choose a different destination branch and worktree"
     );
     let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
-    clean(&mut source, "source", &common)?;
-    let destination_dirs = clean(&mut destination, "destination", &common)?;
+    clean(&mut source, &request.source_branch, "source", &common)?;
+    let destination_dirs = clean(
+        &mut destination,
+        &request.destination_branch,
+        "destination",
+        &common,
+    )?;
     let mut terminal = terminal.clone();
     // One slot per destination, regardless of source branch or agent preset.
     terminal.id = crate::workspace::session_id(&destination.path, MERGE_SCOPE, "destination");
@@ -200,36 +198,6 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
     roots.sort();
     roots.dedup();
     Ok(roots)
-}
-
-/// Upgrade older merge records at the serialization boundary, without involving session service
-/// lifecycle rules. Legacy source grants must also be removed from retained launch options.
-pub(crate) fn restore_record(record: &mut crate::session::Record) {
-    if record.metadata.component_id != MERGE_SCOPE {
-        return;
-    }
-    let spec = &mut record.spec;
-    if !spec.exclusive_cwd {
-        if spec.merge_source.is_none() && !spec.dirs.is_empty() {
-            let source = spec.dirs.remove(0);
-            context::remove_agent_dir(&mut spec.command, &source, &spec.env);
-            context::remove_agent_dir(&mut record.launch_command, &source, &spec.env);
-            if let Some(command) = &mut spec.resume_command {
-                context::remove_agent_dir(command, &source, &spec.env);
-            }
-            spec.merge_source = Some(source);
-        }
-        spec.exclusive_cwd = true;
-    }
-    if spec.resume_command.is_none() && !spec.env.is_empty() {
-        let command = if record.launch_command.is_empty() {
-            &spec.command
-        } else {
-            &record.launch_command
-        };
-        spec.resume_command = Some(context::merge_resume_command(command));
-        spec.owns_briefing = spec.env.contains_key(context::CONTEXT_ENV);
-    }
 }
 
 #[cfg(test)]

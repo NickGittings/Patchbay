@@ -8,9 +8,9 @@ import {
 } from '../types'
 
 vi.mock('./ipc', () => ({ mergeAgentStart: vi.fn() }))
-vi.mock('./sessions', () => ({ listenForTerminals: vi.fn(), reconcileSessions: vi.fn() }))
+vi.mock('./sessions', () => ({ listenForTerminals: vi.fn(), reconcileFreshSessions: vi.fn() }))
 const { mergeAgentStart } = await import('./ipc')
-const { listenForTerminals, reconcileSessions } = await import('./sessions')
+const { listenForTerminals, reconcileFreshSessions } = await import('./sessions')
 const { defaultMergeDestination, mergeDestinations, mergeRecords, startMergeAgent } =
   await import('./merge')
 const tree = (path: string, branch: string | undefined, current = false): Worktree => ({
@@ -94,7 +94,7 @@ test('launch uses the captured project and whole branch request, subscribes firs
   expect(vi.mocked(listenForTerminals).mock.invocationCallOrder[0]).toBeLessThan(
     vi.mocked(mergeAgentStart).mock.invocationCallOrder[0],
   )
-  expect(vi.mocked(reconcileSessions).mock.invocationCallOrder[0]).toBeGreaterThan(
+  expect(vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0]).toBeGreaterThan(
     vi.mocked(mergeAgentStart).mock.invocationCallOrder[0],
   )
 })
@@ -121,7 +121,7 @@ test('launch errors reach the dialog without reporting a successful session', as
       'request',
     ),
   ).rejects.toThrow('uncommitted changes')
-  expect(reconcileSessions).not.toHaveBeenCalled()
+  expect(reconcileFreshSessions).not.toHaveBeenCalled()
 })
 
 test('merge runtime terminals do not enter the implementation task grid', async () => {

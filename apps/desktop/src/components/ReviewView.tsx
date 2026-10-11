@@ -77,7 +77,7 @@ export default function ReviewView() {
   const target = other?.path
   const projectId = useStore((s) => s.project?.id)
   const source = other ?? worktrees.find((w) => w.current)
-  const mergeHidden = mergeSelection?.hidden ?? false
+  const mergeHidden = mergeSelection?.sid === currentMerge?.id && !!mergeSelection?.hidden
   const showMerge = !!currentMerge && !mergeHidden
   const hideMerge = () => {
     if (currentMerge) useStore.getState().hideReviewMerge(currentMerge.id)
@@ -121,14 +121,13 @@ export default function ReviewView() {
     return () => {
       disposed = true
     }
-  }, [projectId, worktreesKey, activeTask, worktreeRefresh, pathsKey, revision])
+  }, [projectId, worktreesKey, activeTask, worktreeRefresh])
 
-  // Another worktree has no watcher: poll it while shown, and refresh on focus.
+  // Poll branch metadata independently; also refresh diffs for an unwatched worktree.
   useEffect(() => {
-    if (!target || watched) return
     const bump = () => {
       setWorktreeRefresh((n) => n + 1)
-      setRefresh((n) => n + 1)
+      if (target && !watched) setRefresh((n) => n + 1)
     }
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)

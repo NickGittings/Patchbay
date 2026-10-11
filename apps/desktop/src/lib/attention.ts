@@ -91,18 +91,22 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
           r.metadata.projectId === useStore.getState().project?.id &&
           r.metadata.componentId === MERGE_SCOPE,
       )
-      .map((r) => ({
-        sid: r.id,
-        componentId: MERGE_SCOPE,
-        owner: 'Merge agent',
-        task: null,
-        terminal: {
-          id: r.metadata.terminalId,
-          name: r.metadata.name,
-          kind: r.metadata.kind,
-          command: r.spec.command,
-        },
-      })),
+      .map((r) => {
+        const task = s.tasks.find((t) => !t.missing && t.worktree === r.spec.cwd)
+        return {
+          sid: r.id,
+          componentId: MERGE_SCOPE,
+          owner: 'Merge agent',
+          task: task?.id ?? null,
+          taskTitle: task?.title,
+          terminal: {
+            id: r.metadata.terminalId,
+            name: r.metadata.name,
+            kind: r.metadata.kind,
+            command: r.spec.command,
+          },
+        }
+      }),
     ...Object.entries(s.runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(

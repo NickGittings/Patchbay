@@ -31,7 +31,7 @@ pub struct SessionSpec {
     /// The session service owns the temporary context file's lifetime.
     #[serde(default)]
     pub owns_briefing: bool,
-    /// Reject another exclusive session in this working directory while one is running.
+    /// Reserve this worktree against all other terminals while running.
     #[serde(default)]
     pub exclusive_cwd: bool,
     /// Merge provenance, never an additional writable folder or a recovery prerequisite.
