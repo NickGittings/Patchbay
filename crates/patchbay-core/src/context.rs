@@ -847,15 +847,10 @@ const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay 
 
 pub(crate) const REVIEW_PROMPT: &str = "Review the whole branch described in your Patchbay briefing. Report findings to PATCHBAY_REVIEW_FILE and do not modify the worktree.";
 
-/// Drop only Patchbay's exact trailing kickoff, preserving all provider options.
-pub(crate) fn job_resume_command(command: &str) -> String {
-    for prompt in [MERGE_PROMPT, REVIEW_PROMPT] {
-        let suffix = format!(" {}", Shell::current().quote(prompt));
-        if let Some(command) = command.strip_suffix(&suffix) {
-            return command.to_owned();
-        }
-    }
-    command.to_owned()
+/// Drop only the exact trailing kickoff Patchbay appended, preserving all provider options.
+fn job_resume_command(command: &str, prompt: &str) -> String {
+    let suffix = format!(" {}", Shell::current().quote(prompt));
+    command.strip_suffix(&suffix).unwrap_or(command).to_owned()
 }
 
 /// Build a dedicated agent job without planner or implementation instructions.
@@ -936,7 +931,7 @@ pub fn job_agent_spec(
         Shell::current(),
         &mut env,
     );
-    let resume_command = job_resume_command(&command);
+    let resume_command = job_resume_command(&command, prompt);
     let components = project.components.iter().collect::<Vec<_>>();
     if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
         remove_owned_briefing_file(&file);

@@ -510,7 +510,13 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     let _ = crate::plans::remove(root, Some(id));
     // Findings belong to the branch, which outlives a forgotten task; only removing
     // the worktree retires them (prune drops the rest once the branch is deleted).
-    if delete_worktree && let Some(branch) = &task.branch {
+    // A missing task's branch may since be checked out and reviewed elsewhere.
+    if delete_worktree
+        && let Some(branch) = &task.branch
+        && !crate::git::worktrees(root)
+            .iter()
+            .any(|w| w.branch.as_deref() == Some(branch.as_str()))
+    {
         let _ = crate::reviews::remove(root, branch);
     }
     let _ = crate::proposals::remove(root, Some(id));
@@ -761,6 +767,90 @@ mod tests {
         assert!(list(&root).unwrap().is_empty());
         // The branch is kept.
         assert!(verifies(&root, "refs/heads/fix/login"));
+    }
+
+    #[test]
+    fn forgetting_a_task_keeps_findings_until_its_worktree_is_removed() {
+        let f = Fixture::new();
+        let root = f.repo().expect("test repository");
+        let task = create(
+            &root,
+            TaskDraft {
+                title: "Review".into(),
+                branch: "feature/review".into(),
+                base: Some("main".into()),
+                components: vec![],
+            },
+        )
+        .unwrap();
+        let terminal = serde_json::from_value(serde_json::json!({
+            "id": "review", "name": "Review", "kind": "agent", "command": "claude"
+        }))
+        .unwrap();
+        let prepared = crate::reviews::prepare(
+            &project(&root),
+            &crate::reviews::ReviewRequest {
+                worktree: task.worktree.clone(),
+                branch: "feature/review".into(),
+                base: "main".into(),
+            },
+            &terminal,
+            &crate::policy::AllowAll,
+        )
+        .unwrap();
+        let findings = crate::reviews::file(&root, "feature/review").unwrap();
+        let sidecar = findings.with_extension("json");
+        fs::write(&findings, "saved findings").unwrap();
+        let original_sidecar = fs::read(&sidecar).unwrap();
+
+        remove(&root, &task.id, false).unwrap();
+        assert!(Path::new(&task.worktree).exists());
+        assert!(list(&root).unwrap().is_empty());
+        assert_eq!(fs::read(&sidecar).unwrap(), original_sidecar);
+        assert_eq!(
+            crate::reviews::read(&root, "feature/review").unwrap().text,
+            "saved findings"
+        );
+
+        let attached = attach(&root, &task.worktree, None, vec![]).unwrap();
+        let dirty = Path::new(&task.worktree).join("dirty.txt");
+        fs::write(&dirty, "uncommitted").unwrap();
+        assert!(remove(&root, &attached.id, true).is_err());
+        assert!(findings.exists() && sidecar.exists());
+        fs::remove_file(dirty).unwrap();
+        remove(&root, &attached.id, true).unwrap();
+        assert!(!Path::new(&task.worktree).exists());
+        assert!(!findings.exists() && !sidecar.exists());
+        assert!(verifies(&root, "refs/heads/feature/review"));
+        crate::context::remove_owned_briefing_file(
+            &crate::context::owned_briefing(&prepared.job.spec).unwrap(),
+        );
+    }
+
+    #[test]
+    fn removing_a_missing_task_keeps_findings_of_its_branch_checked_out_elsewhere() {
+        let f = Fixture::new();
+        let root = f.repo().expect("test repository");
+        let task = create(
+            &root,
+            TaskDraft {
+                title: "Moved".into(),
+                branch: "feature/moved".into(),
+                base: Some("main".into()),
+                components: vec![],
+            },
+        )
+        .unwrap();
+        fs::remove_dir_all(&task.worktree).unwrap();
+        run(git(&root).args(["worktree", "prune"])).unwrap();
+        run(git(&root).args(["checkout", "-q", "feature/moved"])).unwrap();
+        let findings = crate::reviews::file(&root, "feature/moved").unwrap();
+        fs::create_dir_all(findings.parent().unwrap()).unwrap();
+        fs::write(&findings, "current findings").unwrap();
+        assert!(list(&root).unwrap()[0].missing);
+        remove(&root, &task.id, true).unwrap();
+        assert!(list(&root).unwrap().is_empty());
+        assert!(findings.exists());
     }
 
     #[test]

@@ -3,6 +3,8 @@ import { useStore } from '../store'
 import { REVIEW_SCOPE, type ReviewFindings } from '../types'
 import { reviewRead } from './ipc'
 
+export type LoadedFindings = { key: string; findings: ReviewFindings | null; error?: string }
+
 /** Keep findings current on polling, focus and review exits, discarding results for old branches. */
 export function useReviewFindings(projectId: string | undefined, branch: string | undefined) {
   const exits = useStore((s) =>
@@ -12,11 +14,7 @@ export function useReviewFindings(projectId: string | undefined, branch: string 
       .join(','),
   )
   const key = JSON.stringify([projectId, branch])
-  const [loaded, setLoaded] = useState<{
-    key: string
-    findings: ReviewFindings | null
-    error?: string
-  }>()
+  const [loaded, setLoaded] = useState<LoadedFindings>()
   useEffect(() => {
     if (!projectId || !branch) return
     let disposed = false

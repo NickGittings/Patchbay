@@ -34,6 +34,8 @@ export interface ReviewFindings {
   modifiedMs: number
   reviewedHead: string | null
   base: string
+  /** When the review attempt started; later changes weren't reviewed. */
+  startedMs: number
   truncated: boolean
 }
 

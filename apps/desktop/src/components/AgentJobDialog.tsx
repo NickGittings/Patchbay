@@ -33,11 +33,12 @@ export default function AgentJobDialog({
   const devices = useStore((s) => s.devices)
   const connected = useStore((s) => s.serviceConnected)
   const agents = agentDevices(devices)
-  const [agent, setAgent] = useState(agents[0].id)
+  // Devices may still be loading, or no agent preset exists.
+  const [agent, setAgent] = useState(agents[0]?.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
-  const device = agents.find((d) => d.id === agent) ?? agents[0]
+  const device = agents.find((d) => d.id === agent) ?? (agents[0] as DeviceManifest | undefined)
   const submit = async () => {
     if (pending.current || !ready || !source.branch || !device || !connected || running) return
     pending.current = true
@@ -83,10 +84,11 @@ export default function AgentJobDialog({
           Agent
           <select
             aria-label="Agent"
-            value={device.id}
-            disabled={busy}
+            value={device?.id ?? ''}
+            disabled={busy || !device}
             onChange={(e) => setAgent(e.target.value)}
           >
+            {!device && <option value="">No agent presets</option>}
             {agents.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -95,6 +97,7 @@ export default function AgentJobDialog({
           </select>
         </label>
         <p className="hint flush">{hint}</p>
+        {!device && <p role="status">Add an agent preset before starting an agent.</p>}
         {running && <p role="status">{runningText}</p>}
         {!connected && <p role="status">{offlineText}</p>}
         {error && (

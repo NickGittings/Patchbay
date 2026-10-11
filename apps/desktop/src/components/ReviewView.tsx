@@ -11,6 +11,7 @@ import {
   mergeDestinations,
   reviewAgentRecords,
   reviewState,
+  sourceLatestChange,
 } from '../lib/reviewAgents'
 import MergeAgentDialog from './MergeAgentDialog'
 import ReviewAgentDialog from './ReviewAgentDialog'
@@ -113,7 +114,8 @@ export default function ReviewView() {
   const review = loaded?.scope === reviewScope ? loaded.review : null
   const findings = useReviewFindings(projectId, source?.branch)
   useClockTick()
-  const latestChangeMs = latestChange(Object.values(review?.changes ?? {}).flat())
+  const repos = useStore((s) => s.repos)
+  const latestChangeMs = sourceLatestChange(review?.changes, repos)
   const status = reviewState(findings?.findings, source, latestChangeMs)
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
@@ -239,6 +241,7 @@ export default function ReviewView() {
           key={`${projectId}/${source.path}/${source.branch}`}
           source={source}
           worktrees={worktrees}
+          findings={findings}
           latestChangeMs={latestChangeMs}
           close={() => setMergeDialogScope(null)}
           launched={(sid) => {

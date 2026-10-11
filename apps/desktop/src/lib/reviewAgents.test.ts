@@ -189,6 +189,16 @@ test('review base prefers the matching task base then the open branch', async ()
   expect(defaultReviewBase(source, [], [])).toBe('')
 })
 
+test('local branches supply bases when no worktree or task names one', async () => {
+  const { defaultReviewBase, reviewBases } = await import('./reviewAgents')
+  const open = { ...source, current: true }
+  const branches = ['feature', 'main', 'topic']
+  expect(reviewBases(open, [], [open], branches)).toEqual(['main', 'topic'])
+  expect(defaultReviewBase(open, [], [open], branches)).toBe('main')
+  expect(defaultReviewBase(open, [], [open], ['feature', 'master'])).toBe('master')
+  expect(defaultReviewBase(open, [], [open], ['feature', 'topic'])).toBe('')
+})
+
 test('a branch is never its own review base', async () => {
   const { defaultReviewBase, reviewBases } = await import('./reviewAgents')
   const open = { ...source, current: true }
@@ -207,14 +217,26 @@ test('findings become stale for new HEADs, newer edits and unfinished review att
     modifiedMs: 100,
     reviewedHead: 'abc',
     base: 'main',
+    startedMs: 40,
     truncated: false,
   }
   expect(reviewState(null, source, undefined)).toBe('none')
   expect(reviewState(findings, source, undefined)).toBe('current')
-  expect(reviewState(findings, source, 100)).toBe('current')
+  expect(reviewState(findings, source, 40)).toBe('current')
+  // Edited while the agent was reviewing, before it saved its findings.
+  expect(reviewState(findings, source, 41)).toBe('stale')
   expect(reviewState(findings, source, 101)).toBe('stale')
   expect(reviewState(findings, { ...source, head: 'def' }, 50)).toBe('stale')
   expect(reviewState({ ...findings, reviewedHead: null }, source, undefined)).toBe('stale')
+})
+
+test('only changes in the reviewed repository count toward staleness', async () => {
+  const { sourceLatestChange } = await import('./reviewAgents')
+  const file = (modifiedMs: number) => ({ path: 'x', kind: 'modified' as const, modifiedMs })
+  const changes = { api: [file(10)], billing: [file(90)], '@project': [file(20)] }
+  expect(sourceLatestChange(changes, { billing: 'billing' })).toBe(20)
+  expect(sourceLatestChange(changes, {})).toBe(90)
+  expect(sourceLatestChange(undefined, {})).toBeUndefined()
 })
 
 test('both job scopes recover together with explicit finished selection', async () => {

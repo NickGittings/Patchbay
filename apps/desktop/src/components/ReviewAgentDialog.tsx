@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { gitBranches } from '../lib/ipc'
 import {
   defaultReviewBase,
   reviewBases,
@@ -25,8 +26,22 @@ export default function ReviewAgentDialog({
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
   const tasks = useStore((s) => s.tasks)
-  const [base, setBase] = useState(() => defaultReviewBase(source, tasks, worktrees))
-  const bases = reviewBases(source, tasks, worktrees)
+  const [branches, setBranches] = useState<string[]>([])
+  // Until the user picks one, the default follows the branches as they load.
+  const [picked, setPicked] = useState<string>()
+  const base = picked ?? defaultReviewBase(source, tasks, worktrees, branches)
+  const bases = reviewBases(source, tasks, worktrees, branches)
+  useEffect(() => {
+    let disposed = false
+    gitBranches()
+      .then((list) => {
+        if (!disposed) setBranches(list)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [])
   return (
     <AgentJobDialog
       title="Start review agent"
@@ -56,7 +71,7 @@ export default function ReviewAgentDialog({
             disabled={busy}
             value={base}
             onChange={(e) => {
-              setBase(e.target.value)
+              setPicked(e.target.value)
               clearError()
             }}
           >

@@ -39,6 +39,8 @@ pub struct Findings {
     /// Absent when the findings predate the latest review attempt.
     pub reviewed_head: Option<String>,
     pub base: String,
+    /// When the review attempt started; later changes weren't reviewed.
+    pub started_ms: u64,
     pub truncated: bool,
 }
 
@@ -90,14 +92,21 @@ pub fn existing_dir(root: &Path) -> Option<PathBuf> {
         .ok()
 }
 
-/// Findings path, with a safe filename for any branch.
+/// Findings path, with a safe filename for any branch, inside the canonical folder
+/// once it exists, so it matches the folder agents are granted.
 ///
 /// # Errors
 /// Fails when the root isn't in a repository.
 pub fn file(root: &Path, branch: &str) -> Result<PathBuf> {
-    Ok(crate::tasks::store_dir(root)?
-        .join("reviews")
-        .join(format!("{}.md", name(branch))))
+    let folder = match existing_dir(root) {
+        Some(folder) => folder,
+        None => crate::tasks::store_dir(root)?.join("reviews"),
+    };
+    Ok(in_dir(&folder, branch))
+}
+
+fn in_dir(folder: &Path, branch: &str) -> PathBuf {
+    folder.join(format!("{}.md", name(branch)))
 }
 
 /// Prepare a review without modifying repository files or Git state.
@@ -142,7 +151,7 @@ pub fn prepare(
     let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
     let merge_base = git::run(git::git(cwd).args(["merge-base", &request.base, "HEAD"]))?;
     let folder = dir(root)?;
-    let findings = file(root, &request.branch)?;
+    let findings = in_dir(&folder, &request.branch);
     let mut terminal = terminal.clone();
     terminal.id = crate::workspace::session_id(&request.worktree, REVIEW_SCOPE, "review");
     terminal.name = format!("Review · {}", request.branch);
@@ -212,6 +221,7 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
         modified_ms,
         reviewed_head: (modified_ms > started.started_ms).then_some(started.head),
         base: started.base,
+        started_ms: started.started_ms,
         truncated,
     })
 }
@@ -244,7 +254,7 @@ pub fn prune(root: &Path) -> Result<()> {
     // A failed ref listing must never be interpreted as deleted branches.
     let refs =
         git::run(git::git(root).args(["for-each-ref", "--format=%(refname)", "refs/heads/"]))?;
-    for entry in std::fs::read_dir(folder)? {
+    for entry in std::fs::read_dir(&folder)? {
         let path = entry?.path();
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
@@ -256,7 +266,7 @@ pub fn prune(root: &Path) -> Result<()> {
             continue;
         };
         // Never trust a sidecar's branch to remove a different artifact.
-        if path != file(root, &started.branch)?.with_extension("json") {
+        if path != in_dir(&folder, &started.branch).with_extension("json") {
             continue;
         }
         if !refs
@@ -533,7 +543,7 @@ mod tests {
 
     #[test]
     fn rollback_restores_the_previous_review_attempt() {
-        let f = Fixture::new();
+        let mut f = Fixture::new();
         let sidecar = file(&f.dir, &f.request.branch)
             .unwrap()
             .with_extension("json");
@@ -542,6 +552,8 @@ mod tests {
         let first = f.prepare("claude").unwrap();
         f.save("findings", true);
         let before = fs::read(&sidecar).unwrap();
+        git::run(git::git(&f.dir).args(["branch", "release"])).unwrap();
+        f.request.base = "release".into();
         std::thread::sleep(Duration::from_millis(5));
         let refused = f.prepared("claude").unwrap();
         let briefing = context::owned_briefing(&refused.job.spec).unwrap();
@@ -549,13 +561,44 @@ mod tests {
         refused.rollback();
         assert_eq!(fs::read(&sidecar).unwrap(), before);
         assert!(!briefing.exists());
-        assert!(
-            read(&f.dir, &f.request.branch)
-                .unwrap()
-                .reviewed_head
-                .is_some()
-        );
+        let restored = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(restored.text, "findings");
+        assert_eq!(restored.base, "main");
+        assert!(restored.reviewed_head.is_some());
         context::remove_owned_briefing_file(&context::owned_briefing(&first.spec).unwrap());
+    }
+
+    #[test]
+    fn prune_skips_failed_deletions_keeps_live_findings_and_retries_later() {
+        let mut f = Fixture::new();
+        let failed = f.prepare("claude").unwrap();
+        let failed_file = file(&f.dir, &f.request.branch).unwrap();
+        // A directory at the findings path makes deletion fail on every platform.
+        fs::create_dir(&failed_file).unwrap();
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        git::run(git::git(&f.dir).args(["branch", "-D", "feature/a"])).unwrap();
+        git::run(git::git(&f.dir).args(["checkout", "-qb", "feature/live"])).unwrap();
+        f.request.branch = "feature/live".into();
+        let live = f.prepare("claude").unwrap();
+        f.save("live findings", true);
+
+        prune(&f.dir).unwrap();
+        assert!(failed_file.with_extension("json").exists());
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.text, "live findings");
+        assert_eq!(findings.base, "main");
+        assert!(findings.reviewed_head.is_some());
+
+        fs::remove_dir(&failed_file).unwrap();
+        prune(&f.dir).unwrap();
+        assert!(!failed_file.with_extension("json").exists());
+        assert_eq!(
+            read(&f.dir, &f.request.branch).unwrap().text,
+            "live findings"
+        );
+        for spec in [failed.spec, live.spec] {
+            context::remove_owned_briefing_file(&context::owned_briefing(&spec).unwrap());
+        }
     }
 
     #[test]

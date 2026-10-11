@@ -1017,6 +1017,14 @@ async fn git_worktrees(
     .await
 }
 
+/// Local branches of the project root's repo, for choosing a review base.
+#[tauri::command]
+async fn git_branches(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || Ok(access.root().map(|r| git::branches(&r)).unwrap_or_default())).await
+}
+
 /// The diff of one of a component's changed files, `path` (and a rename's
 /// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
 /// listed) or the open one.
@@ -1398,9 +1406,11 @@ async fn review_agent_start(
             &prepared.job.terminal,
         );
         metadata.branch = Some(request.branch);
-        match bridge.start(prepared.job.spec.clone(), metadata, request_id) {
+        match bridge.start_reporting(prepared.job.spec.clone(), metadata, request_id) {
             Ok(sid) => Ok(sid),
-            Err(e) => {
+            // A lost reply may hide a running review, which owns the new sidecar.
+            Err((e, true)) => Err(e),
+            Err((e, false)) => {
                 // A refused launch must not invalidate or re-attribute saved findings.
                 prepared.rollback();
                 Err(e)
@@ -2020,6 +2030,7 @@ pub fn run() {
                 git_diff,
                 git_review,
                 git_worktrees,
+                git_branches,
                 plan_context,
                 plan_read,
                 task_root_start,

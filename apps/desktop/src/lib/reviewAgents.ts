@@ -12,9 +12,11 @@ import {
   type SessionState,
   type TerminalSpec,
   type Worktree,
+  type ChangedFile,
 } from '../types'
 import { mergeAgentStart, reviewAgentStart } from './ipc'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
+import { latestChange } from './review'
 import { sessionLive, sessionTimeMs } from './sessionList'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
@@ -116,23 +118,49 @@ export const startReviewAgent = (
 ) => startJobAgent(reviewAgentStart, project, request, device, requestId)
 
 /** Bases a branch can be reviewed against: never the branch itself. */
-export function reviewBases(source: Worktree, tasks: Task[], worktrees: Worktree[]) {
+export function reviewBases(
+  source: Worktree,
+  tasks: Task[],
+  worktrees: Worktree[],
+  branches: string[] = [],
+) {
   return [
     ...new Set(
-      [...worktrees.map((w) => w.branch), ...tasks.map((t) => t.base)].filter(
+      [...worktrees.map((w) => w.branch), ...tasks.map((t) => t.base), ...branches].filter(
         (b): b is string => !!b && b !== source.branch,
       ),
     ),
   ]
 }
 
-/** The source's task base, else the open worktree's branch; never the source branch. */
-export function defaultReviewBase(source: Worktree, tasks: Task[], worktrees: Worktree[]) {
+/**
+ * The source's task base, else the open worktree's branch, else a local `main` or
+ * `master`; never the source branch.
+ */
+export function defaultReviewBase(
+  source: Worktree,
+  tasks: Task[],
+  worktrees: Worktree[],
+  branches: string[] = [],
+) {
   const candidates = [
     tasks.find((t) => !t.missing && t.worktree === source.path)?.base,
     worktrees.find((w) => w.current)?.branch,
+    ...['main', 'master'].filter((b) => branches.includes(b)),
   ]
   return candidates.find((b): b is string => !!b && b !== source.branch) ?? ''
+}
+
+/** The latest change in the reviewed repository, leaving out components in other repos. */
+export function sourceLatestChange(
+  changes: Record<string, ChangedFile[]> | undefined,
+  repos: Record<string, string>,
+) {
+  return latestChange(
+    Object.entries(changes ?? {})
+      .filter(([id]) => !(id in repos))
+      .flatMap(([, files]) => files),
+  )
 }
 
 export function reviewState(
@@ -144,7 +172,8 @@ export function reviewState(
   if (
     !findings.reviewedHead ||
     findings.reviewedHead !== source?.head ||
-    (latestChangeMs !== undefined && latestChangeMs > findings.modifiedMs)
+    // Edits made while the agent was reviewing weren't necessarily reviewed.
+    (latestChangeMs !== undefined && latestChangeMs > findings.startedMs)
   )
     return 'stale'
   return 'current'

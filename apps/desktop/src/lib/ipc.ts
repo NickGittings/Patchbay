@@ -161,6 +161,7 @@ export const gitDiff = (
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, projectId: project.projectId, worktree })
 export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
+export const gitBranches = () => invoke<string[]>('git_branches')
 /** Planners belong to the project, so they never take a task. */
 export const planContext = async (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', {

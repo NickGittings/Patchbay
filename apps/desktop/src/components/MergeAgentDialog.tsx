@@ -6,7 +6,7 @@ import {
   reviewState,
   startMergeAgent,
 } from '../lib/reviewAgents'
-import { useReviewFindings } from '../lib/useReviewFindings'
+import type { LoadedFindings } from '../lib/useReviewFindings'
 import { useStore } from '../store'
 import type { Worktree } from '../types'
 import AgentJobDialog from './AgentJobDialog'
@@ -16,17 +16,19 @@ export default function MergeAgentDialog({
   worktrees,
   close,
   launched,
+  findings: loaded,
   latestChangeMs,
 }: {
   source: Worktree
   worktrees: Worktree[]
   close: () => void
   launched: (sid: string) => void
+  /** The source branch's findings, as Review already polls them. */
+  findings: LoadedFindings | undefined
   latestChangeMs?: number
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
-  const loaded = useReviewFindings(project.projectId, source.branch)
   const status = reviewState(loaded?.findings, source, latestChangeMs)
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)

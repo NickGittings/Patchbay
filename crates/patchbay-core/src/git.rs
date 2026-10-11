@@ -631,6 +631,23 @@ struct RawWorktree {
 /// `git worktree list --porcelain`: blank-line separated blocks of
 /// `worktree <path>`, `HEAD <sha>`, `branch refs/heads/<name>` or `detached`,
 /// and flags such as `bare`, `locked` and `prunable`.
+/// Local branch names of the repo containing `root`, sorted; empty if `root`
+/// isn't in a repo or git fails.
+#[must_use]
+pub fn branches(root: &Path) -> Vec<String> {
+    let Some(repo) = nearest_repo(root) else {
+        return Vec::new();
+    };
+    run(git(&repo).args(["for-each-ref", "--format=%(refname)", "refs/heads/"]))
+        .map(|out| {
+            out.lines()
+                .filter_map(|r| r.strip_prefix("refs/heads/"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_worktrees(out: &str) -> Vec<RawWorktree> {
     let mut list = Vec::new();
     let mut current: Option<RawWorktree> = None;
@@ -1470,6 +1487,9 @@ mod tests {
         let wt = &list[1];
         assert_eq!(wt.branch.as_deref(), Some("feature"));
         assert!(!wt.main && !wt.current);
+        let names = branches(&main);
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().any(|b| b == "feature"));
 
         let c = components(&main, &[("web", "apps/web")]);
         // The current worktree is unchanged.
