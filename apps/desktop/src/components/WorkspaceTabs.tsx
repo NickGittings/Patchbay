@@ -4,6 +4,7 @@ import { closeComponentWindows } from '../lib/windows'
 import { acceptOpened, flushWorkspace, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
 import { flushMapSaves, reloadSavedMap } from '../lib/mapSave'
+import { ActivityButton } from './tasks/TaskActivityPanel'
 
 export default function WorkspaceTabs() {
   const s = useStore()
@@ -53,6 +54,7 @@ export default function WorkspaceTabs() {
           )
         })}
         <span className="spacer" />
+        <ActivityButton />
         <button onClick={() => useStore.setState({ sessionsPanelOpen: true })}>Sessions</button>
       </nav>
       {active?.unavailable && (

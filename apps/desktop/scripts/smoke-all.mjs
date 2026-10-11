@@ -22,6 +22,7 @@ const smoke = (script, env = {}, fixture) => ({
 })
 const SCRIPTS = {
   popout: smoke('popout.js'),
+  bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
   autosave: smoke(
     'autosave.js',
     {

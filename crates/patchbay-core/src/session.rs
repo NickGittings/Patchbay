@@ -212,6 +212,10 @@ pub enum Request {
     PreviewUrls {
         id: String,
     },
+    /// Scan selected session outputs in one service request, deduplicating URLs.
+    PreviewUrlsBatch {
+        ids: Vec<String>,
+    },
     History {
         id: String,
         incarnation: usize,
@@ -245,10 +249,26 @@ pub enum Request {
         group_id: String,
         task: Option<String>,
     },
+    /// Stop every environment started in the task's worktree.
+    ActionStopTask {
+        project_id: String,
+        task: String,
+    },
     /// Stop the project's running validation; returns whether one was running.
     ActionCancel {
         project_id: String,
     },
+    /// The running session launched with this agent command token, if any.
+    AgentSession {
+        token: String,
+    },
+}
+/// A running agent session, found by the command token it was launched with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSession {
+    pub id: String,
+    pub metadata: Metadata,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
@@ -389,7 +409,8 @@ impl Client {
             | Request::StopAll
             | Request::Forget { .. }
             | Request::Shutdown { .. }
-            | Request::ActionStopGroup { .. } => Some(SLOW_TIMEOUT),
+            | Request::ActionStopGroup { .. }
+            | Request::ActionStopTask { .. } => Some(SLOW_TIMEOUT),
             _ => Some(TIMEOUT),
         };
         let response = (|| -> Result<Response> {
@@ -923,6 +944,29 @@ impl Service {
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::AgentSession { token } => {
+                let found = (!token.is_empty())
+                    .then(|| {
+                        let records = self.records.lock().unwrap();
+                        records
+                            .values()
+                            .find(|r| {
+                                r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token)
+                            })
+                            .map(|r| AgentSession {
+                                id: r.id.clone(),
+                                metadata: r.metadata.clone(),
+                            })
+                    })
+                    .flatten();
+                // A token lives as long as its process; a restart replaces it.
+                let running = found.filter(|s| {
+                    self.pty
+                        .snapshot_with(&s.id, 0)
+                        .is_some_and(|snapshot| snapshot.running)
+                });
+                serde_json::to_value(running)?
+            }
             Request::History { id, incarnation } => {
                 let snapshot = self
                     .records
@@ -945,6 +989,19 @@ impl Service {
                     running: s.running,
                     urls: crate::extensions::preview_urls(&s.data),
                 }))?
+            }
+            Request::PreviewUrlsBatch { ids } => {
+                let mut urls = Vec::new();
+                for id in ids {
+                    if let Some(snapshot) = self.snapshot(&id) {
+                        for url in crate::extensions::preview_urls(&snapshot.data) {
+                            if !urls.contains(&url) {
+                                urls.push(url);
+                            }
+                        }
+                    }
+                }
+                serde_json::to_value(urls)?
             }
             Request::Attach { id, viewer, claim } => {
                 self.claim(client, id.clone(), viewer, claim);
@@ -1185,6 +1242,17 @@ impl Service {
                 let actions = self.actions_for(&project_id);
                 let epoch = actions.epoch();
                 actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
+                serde_json::Value::Null
+            }
+            Request::ActionStopTask { project_id, task } => {
+                let terminals = ServiceTerminals {
+                    service: self.clone(),
+                    project_id: &project_id,
+                    project: None,
+                };
+                let actions = self.actions_for(&project_id);
+                let epoch = actions.epoch();
+                actions.stop_task(&project_id, &task, epoch, &terminals)?;
                 serde_json::Value::Null
             }
             Request::ActionCancel { project_id } => {
@@ -2044,6 +2112,71 @@ mod tests {
                 },
             )
             .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_tokens_resolve_only_to_their_running_session() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata = Metadata {
+            project_id: "p".into(),
+            project_name: "P".into(),
+            project_root: dir.display().to_string(),
+            component_id: crate::model::PLAN_SCOPE.into(),
+            terminal_id: "planner".into(),
+            task: Some("t1".into()),
+            name: "Planner".into(),
+            kind: TerminalKind::Agent,
+            adapter: None,
+            conversation_id: None,
+            conversation_pinned: false,
+            extension_id: None,
+            command_id: None,
+            key: None,
+            command: String::new(),
+        };
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "read line".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::from([(
+                crate::agent_bridge::TOKEN_ENV.to_string(),
+                "secret".to_string(),
+            )]),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: Vec::new(),
+        };
+        let id = service.start("request".into(), metadata, spec).unwrap();
+        let lookup = |token: &str| -> Option<AgentSession> {
+            serde_json::from_value(
+                service
+                    .handle(
+                        "1",
+                        Request::AgentSession {
+                            token: token.into(),
+                        },
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let found = lookup("secret").unwrap();
+        assert_eq!(found.id, id);
+        assert_eq!(found.metadata.task.as_deref(), Some("t1"));
+        assert!(lookup("other").is_none());
+        assert!(lookup("").is_none());
+        // Records outlive their process; the token doesn't.
+        service.pty.kill(&id);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&id) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(lookup("secret").is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

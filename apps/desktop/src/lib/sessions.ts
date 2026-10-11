@@ -1,12 +1,13 @@
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { releaseMapEdit, sessionsList, terminalCloseGuard } from './ipc'
+import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
-import { projectOf, useStore } from '../store'
+import { emptyTaskWorkspace, projectOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
+  TASK_ROOT_SCOPE,
   type Project,
   type RuntimeTerminal,
   type SessionRecord,
@@ -16,8 +17,16 @@ import {
   type TerminalEvent,
   type TerminalSnapshot,
 } from '../types'
-import { onTerminalEvent, planStart, terminalSnapshot, terminalStart, terminalStop } from './ipc'
+import {
+  onTerminalEvent,
+  taskRootStart,
+  planStart,
+  terminalSnapshot,
+  terminalStart,
+  terminalStop,
+} from './ipc'
 import { peersFor, planTerminals } from './plan'
+import { savePlanDraft } from './planDrafts'
 import { requestGitRefresh } from './git'
 import {
   disposeAll,
@@ -103,6 +112,7 @@ interface Launch {
   task: string | null
   project: Project
   highlighted: string[]
+  rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
 }
 
@@ -119,6 +129,11 @@ function captureLaunch(
   if (!id || !project) throw new Error('Open a project first')
   const state = s.project?.id === id ? s : s.projects[id]?.state
   const scope = task === undefined ? (state?.activeTask ?? null) : task
+  const workspace =
+    state?.activeTask === scope
+      ? state
+      : (state?.taskWorkspaces[scope ?? ''] ??
+        emptyTaskWorkspace(state?.tasks.find((t) => t.id === scope)?.components))
   const sid = sessionId(componentId, terminalId, scope, id)
   return {
     sid,
@@ -127,7 +142,14 @@ function captureLaunch(
     projectId: id,
     task: scope,
     project,
-    highlighted: [...(state?.highlighted ?? [])],
+    // Saved task layouts can name components removed from the map since; the backend rejects those.
+    highlighted: (workspace?.highlighted ?? []).filter((c) =>
+      project.components.some((n) => n.id === c),
+    ),
+    rootTerminal:
+      componentId === TASK_ROOT_SCOPE
+        ? workspace?.rootTerminals.find((t) => t.id === terminalId)
+        : undefined,
     runtime: s.runtimeTerminals[sid],
   }
 }
@@ -167,6 +189,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (requestedEpoch !== epoch || isClosing(launch)) return
       if (
         componentId !== PLAN_SCOPE &&
+        componentId !== TASK_ROOT_SCOPE &&
         !runtime &&
         !projectOf(launch.projectId)?.components.some(
           (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
@@ -175,7 +198,18 @@ function launchTerminal(launch: Launch): Promise<void> {
         return
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
-      if (runtime?.commandId)
+      const terminal =
+        launch.rootTerminal ??
+        runtime?.terminal ??
+        project.components
+          .find((c) => c.id === componentId)
+          ?.terminals.find((t) => t.id === terminalId)
+      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
+        await savePlanDraft(launch.projectId, launch.task)
+      if (componentId === TASK_ROOT_SCOPE) {
+        if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
+        await taskRootStart(project, launch.highlighted, launch.rootTerminal, task, requestId)
+      } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
         await extensionTerminalRun(
@@ -244,6 +278,37 @@ function markPlanStarted(projectId: string, sid: string, ids: string[]) {
 
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
+
+/**
+ * Take a terminal out of the active task. A root or retained terminal is also stopped and its
+ * service record forgotten, or the next reconcile would bring it back as a retained tile; a saved
+ * component terminal just stops and stays on the map.
+ */
+export async function removeTaskTerminal(componentId: string, terminalId: string, sid: string) {
+  const s = useStore.getState()
+  const saved = s.nodes.some(
+    (n) => n.id === componentId && n.data.terminals.some((t) => t.id === terminalId),
+  )
+  s.removeTaskTerminal(componentId, terminalId)
+  useStore.setState((state) => {
+    if (!state.runtimeTerminals[sid]) return {}
+    const runtimeTerminals = { ...state.runtimeTerminals }
+    delete runtimeTerminals[sid]
+    return { runtimeTerminals }
+  })
+  try {
+    if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
+    if (saved) return
+    const deadline = Date.now() + 10000
+    while ((await terminalSnapshot(sid))?.running) {
+      if (Date.now() >= deadline) throw new Error('Terminal is still stopping; remove it again.')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    if (sessionMetadata.has(sid)) await sessionForget(sid)
+  } catch (e) {
+    useStore.getState().setMessage(String(e))
+  }
+}
 
 /** Stop every worktree copy, including launches still waiting for a started event. */
 export async function closeTerminal(componentId: string, terminalId: string) {
@@ -553,7 +618,14 @@ export function reconcileSessions(force = true): Promise<void> {
             prev && !prev.running && next.running && prev.startedMs === next.startedMs
           if (!staleRun && !sameSession(prev, next)) current.setSession(r.id, next)
         }
-        const mapped = onMap(r)
+        const state = projects[r.metadata.projectId]?.state
+        const root =
+          r.metadata.componentId === TASK_ROOT_SCOPE &&
+          (state?.activeTask === (r.metadata.task ?? null)
+            ? state.rootTerminals
+            : state?.taskWorkspaces[r.metadata.task ?? '']?.rootTerminals
+          )?.some((t) => t.id === r.metadata.terminalId)
+        const mapped = onMap(r) || root
         if (mapped && useStore.getState().runtimeTerminals[r.id])
           useStore.setState((s) => {
             const runtimeTerminals = { ...s.runtimeTerminals }

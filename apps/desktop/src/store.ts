@@ -30,8 +30,16 @@ import type {
   Task,
   TerminalSpec,
   View,
+  TaskActivity,
 } from './types'
-import { retask, sessionId, sessionMetadata, setProjectIdentity, type SessionRecord } from './types'
+import {
+  TASK_ROOT_SCOPE,
+  sessionId,
+  sessionTask,
+  sessionMetadata,
+  setProjectIdentity,
+  type SessionRecord,
+} from './types'
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
@@ -41,7 +49,76 @@ export interface ImplementationComponent {
   visible: boolean
 }
 
+export interface TaskComponentTerminal {
+  componentId: string
+  terminalId: string
+}
+
+/** Saved per task. Processes and output remain service-owned. */
+export interface TaskWorkspace {
+  highlighted: string[]
+  implementationComponents: ImplementationComponent[] | null
+  activeSession: string | null
+  planActive: string | null
+  panels: Record<string, Record<string, number>>
+  rootTerminals: TerminalSpec[]
+  /** Saved component terminals the user added to this task, in order. */
+  componentTerminals: TaskComponentTerminal[]
+  maximizedTerminal: string | null
+  graphActionBusy: boolean
+  graphAction: ActionRequest | null
+  graphActionReport: ActionReport | null
+}
+export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
+  return {
+    highlighted: components,
+    implementationComponents: components.map((id) => ({ id, visible: true })),
+    activeSession: null,
+    planActive: null,
+    panels: {},
+    rootTerminals: [{ id: 'shell', name: 'Shell', command: '', kind: 'shell' }],
+    componentTerminals: [],
+    maximizedTerminal: null,
+    graphActionBusy: false,
+    graphAction: null,
+    graphActionReport: null,
+  }
+}
+export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
+  const {
+    highlighted,
+    implementationComponents,
+    activeSession,
+    planActive,
+    panels,
+    rootTerminals,
+    componentTerminals,
+    maximizedTerminal,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+  } = s
+  return {
+    highlighted,
+    implementationComponents,
+    activeSession,
+    planActive,
+    panels,
+    rootTerminals,
+    componentTerminals,
+    maximizedTerminal,
+    graphActionBusy,
+    graphAction,
+    graphActionReport,
+  }
+}
+
 export interface ProjectState {
+  taskWorkspaces: Record<string, TaskWorkspace>
+  rootTerminals: TerminalSpec[]
+  componentTerminals: TaskComponentTerminal[]
+  maximizedTerminal: string | null
+
   project: { id: string; name: string; root: string } | null
   nodes: FlowNode[]
   edges: FlowEdge[]
@@ -69,6 +146,7 @@ export interface ProjectState {
   graphActionReport: ActionReport | null
   tasks: Task[]
   activeTask: string | null
+  closedTaskIds: string[]
 }
 export interface MapSaveState {
   status: 'pending' | 'saving' | 'error' | 'conflict'
@@ -87,14 +165,22 @@ export interface ProjectEntry {
   unavailableLayout?: Record<string, unknown>
 }
 interface State {
+  taskWorkspaces: Record<string, TaskWorkspace>
+  rootTerminals: TerminalSpec[]
+  componentTerminals: TaskComponentTerminal[]
+  maximizedTerminal: string | null
+
   project: { id: string; name: string; root: string } | null
   projects: Record<string, ProjectEntry>
   activeProjectId: string | null
   projectOrder: string[]
+  taskActivities: Record<string, TaskActivity>
+  seenActivities: string[]
   sessionRecords: SessionRecord[]
   serviceInstance: string
   serviceConnected: boolean
   sessionsPanelOpen: boolean
+  activityPanelOpen: boolean
   /**
    * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
    * failed, or exited while active (UI only).
@@ -112,6 +198,12 @@ interface State {
   captureProjects: () => Record<string, ProjectEntry>
   /** Apply `patch` to open project `id`'s state, whether or not its tab is active. */
   patchProject: (id: string, patch: Partial<ProjectState>) => void
+  patchTask: (projectId: string, task: string | null, patch: Partial<TaskWorkspace>) => void
+  addRootTerminal: (device: DeviceManifest | null) => string
+  addTaskComponentTerminal: (componentId: string, terminalId: string) => void
+  /** Drops a terminal from the active task's list; component terminals stay on the map. */
+  removeTaskTerminal: (componentId: string, terminalId: string) => void
+  setMaximizedTerminal: (id: string | null) => void
   nodes: FlowNode[]
   edges: FlowEdge[]
   groups: ComponentGroup[]
@@ -168,8 +260,11 @@ interface State {
   tasks: Task[]
   /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
   activeTask: string | null
+  /** Task tabs hidden by the user; their workspaces and processes are retained. */
+  closedTaskIds: string[]
   setTasks: (tasks: Task[]) => void
-  setActiveTask: (id: string | null) => void
+  setActiveTask: (id: string | null, exact?: boolean) => void
+  closeTaskTab: (id: string) => void
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
@@ -226,26 +321,123 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
-/** Move the active terminal to the same terminal of the task switched to. */
-function switchTask(s: State, activeTask: string | null): Partial<State> {
-  if (s.activeTask === activeTask) return {}
-  const current = s.activeSession
-  const runtime = current && s.runtimeTerminals[current]
-  return {
-    activeTask,
-    activeSession: current && !runtime ? retask(current, activeTask) : current,
-  }
+type TaskState = Pick<
+  State,
+  keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces' | 'closedTaskIds'
+>
+
+/** Restore layout and reopen its tab without stopping or retargeting processes. */
+export function switchTaskWorkspace(
+  s: TaskState,
+  requested: string | null,
+  exact = false,
+): Partial<ProjectState> & { revealed?: null } {
+  const activeTask = exact
+    ? requested
+    : (requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null)
+  const task = s.tasks.find((t) => t.id === activeTask)
+  if (activeTask && (!task || task.missing)) return {}
+  const reopened =
+    activeTask && s.closedTaskIds.includes(activeTask)
+      ? { closedTaskIds: s.closedTaskIds.filter((id) => id !== activeTask) }
+      : {}
+  if (s.activeTask === activeTask) return reopened
+  const taskWorkspaces = { ...s.taskWorkspaces, [s.activeTask ?? '']: taskWorkspace(s) }
+  const restored = taskWorkspaces[activeTask ?? ''] ?? emptyTaskWorkspace(task?.components)
+  return { activeTask, taskWorkspaces, ...restored, ...reopened, revealed: null }
+}
+
+/** Refresh task metadata while retaining closed tabs and dropping vanished or pinned ids. */
+export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectState> {
+  const closable = new Set(tasks.filter((t) => !t.current).map((t) => t.id))
+  const closedTaskIds = s.closedTaskIds.filter((id) => closable.has(id))
+  const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
+  const switched = switchTaskWorkspace(
+    { ...s, tasks, closedTaskIds },
+    keep ? s.activeTask : null,
+    s.activeTask === null && !!s.activeSession && sessionTask(s.activeSession) === null,
+  )
+  // Removed tasks' layouts would otherwise stay in the saved workspace for good.
+  const known = new Set(['', ...tasks.map((t) => t.id)])
+  const taskWorkspaces = Object.fromEntries(
+    Object.entries(switched.taskWorkspaces ?? s.taskWorkspaces).filter(([id]) => known.has(id)),
+  )
+  return { tasks, closedTaskIds, ...switched, taskWorkspaces }
 }
 
 export const useStore = create<State>((set, get) => ({
+  taskWorkspaces: {},
+  rootTerminals: emptyTaskWorkspace().rootTerminals,
+  componentTerminals: [],
+  maximizedTerminal: null,
+  addTaskComponentTerminal: (componentId, terminalId) =>
+    set((s) => ({
+      componentTerminals: s.componentTerminals.some(
+        (t) => t.componentId === componentId && t.terminalId === terminalId,
+      )
+        ? s.componentTerminals
+        : [...s.componentTerminals, { componentId, terminalId }],
+      activeSession: sessionId(componentId, terminalId, s.activeTask),
+      maximizedTerminal: null,
+    })),
+  removeTaskTerminal: (componentId, terminalId) =>
+    set((s) => ({
+      rootTerminals:
+        componentId === TASK_ROOT_SCOPE
+          ? s.rootTerminals.filter((t) => t.id !== terminalId)
+          : s.rootTerminals,
+      componentTerminals: s.componentTerminals.filter(
+        (t) => t.componentId !== componentId || t.terminalId !== terminalId,
+      ),
+      maximizedTerminal:
+        s.maximizedTerminal === sessionId(componentId, terminalId, s.activeTask)
+          ? null
+          : s.maximizedTerminal,
+    })),
+  setMaximizedTerminal: (maximizedTerminal) => set({ maximizedTerminal }),
+  addRootTerminal: (device) => {
+    const terminal: TerminalSpec = {
+      id: newId(device?.id ?? 'shell'),
+      name: device?.name ?? 'Shell',
+      command: device?.command ?? '',
+      kind: device?.kind ?? 'shell',
+      ...(device?.adapter ? { adapter: device.adapter } : {}),
+    }
+    set((s) => ({
+      rootTerminals: [...s.rootTerminals, terminal],
+      activeSession: sessionId(TASK_ROOT_SCOPE, terminal.id, s.activeTask),
+      maximizedTerminal: null,
+    }))
+    return terminal.id
+  },
+  patchTask: (projectId, task, patch) => {
+    const s = get()
+    const state = s.captureProjects()[projectId]?.state
+    if (!state) return
+    if (state.activeTask === task) s.patchProject(projectId, patch)
+    else
+      s.patchProject(projectId, {
+        taskWorkspaces: {
+          ...state.taskWorkspaces,
+          [task ?? '']: {
+            ...(state.taskWorkspaces[task ?? ''] ??
+              emptyTaskWorkspace(state.tasks.find((t) => t.id === task)?.components)),
+            ...patch,
+          },
+        },
+      })
+  },
   project: null,
   activeProjectId: null,
   projects: {},
   projectOrder: [],
+  taskActivities: {},
+  seenActivities: [],
   sessionRecords: [],
   serviceInstance: '',
   serviceConnected: false,
   sessionsPanelOpen: false,
+  activityPanelOpen: false,
   dockKept: [],
   keepInDock: (id) =>
     set((s) => (s.dockKept.includes(id) ? {} : { dockKept: [...s.dockKept, id] })),
@@ -392,12 +584,20 @@ export const useStore = create<State>((set, get) => ({
   setRevealed: (revealed) => set({ revealed }),
   tasks: [],
   activeTask: null,
-  setTasks: (tasks) =>
+  closedTaskIds: [],
+  setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
+  setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
+  closeTaskTab: (id) =>
     set((s) => {
-      const active = s.activeTask && tasks.some((t) => t.id === s.activeTask && !t.missing)
-      return active ? { tasks } : { tasks, ...switchTask(s, null) }
+      const task = s.tasks.find((t) => t.id === id)
+      if (!task || task.current || s.closedTaskIds.includes(id)) return {}
+      const closedTaskIds = [...s.closedTaskIds, id]
+      if (s.activeTask !== id) return { closedTaskIds }
+      const visible = s.tasks.filter((t) => !t.missing && !s.closedTaskIds.includes(t.id))
+      const index = visible.findIndex((t) => t.id === id)
+      const next = visible[index + 1] ?? visible[index - 1]
+      return { closedTaskIds, ...switchTaskWorkspace(s, next?.id ?? null) }
     }),
-  setActiveTask: (id) => set((s) => switchTask(s, id)),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
 
@@ -531,6 +731,7 @@ export const useStore = create<State>((set, get) => ({
         terminals: [...d.terminals, terminal],
       })),
       activeSession: focus ? sessionId(componentId, terminal.id, s.activeTask) : s.activeSession,
+      maximizedTerminal: focus ? null : s.maximizedTerminal,
       dirty: true,
     }))
     return terminal.id
@@ -575,17 +776,8 @@ export const useStore = create<State>((set, get) => ({
       dirty: true,
     })),
 
-  setView: (view) =>
-    set((s) => {
-      if (view !== 'implementation' || s.highlighted.length) return { view }
-      const fallback = s.nodes.find((n) => n.id === s.selectedId) ?? s.nodes[0]
-      if (!fallback) return { view }
-      const components = s.implementationComponents ?? []
-      const implementationComponents = components.some((c) => c.id === fallback.id)
-        ? components.map((c) => (c.id === fallback.id ? { ...c, visible: true } : c))
-        : [...components, { id: fallback.id, visible: true }]
-      return { view, implementationComponents, highlighted: [fallback.id] }
-    }),
+  // Highlights are the active task's saved scope, so switching views never changes them.
+  setView: (view) => set({ view }),
   toggleHighlight: (id) =>
     set((s) => {
       if (!s.nodes.some((n) => n.id === id)) return {}
@@ -692,6 +884,10 @@ export function projectFrom({
 
 function emptyProjectState(): ProjectState {
   return {
+    taskWorkspaces: {},
+    rootTerminals: emptyTaskWorkspace().rootTerminals,
+    componentTerminals: [],
+    maximizedTerminal: null,
     project: null,
     // Explicit, so loading a project without one doesn't keep the previous viewport.
     viewport: undefined,
@@ -718,6 +914,7 @@ function emptyProjectState(): ProjectState {
     graphActionReport: null,
     tasks: [],
     activeTask: null,
+    closedTaskIds: [],
   }
 }
 function projectState(s: State): ProjectState {
@@ -747,6 +944,11 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    closedTaskIds,
+    taskWorkspaces,
+    rootTerminals,
+    componentTerminals,
+    maximizedTerminal,
   } = s
   return {
     project,
@@ -774,6 +976,11 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
+    closedTaskIds,
+    taskWorkspaces: { ...taskWorkspaces, [activeTask ?? '']: taskWorkspace(s) },
+    rootTerminals,
+    componentTerminals,
+    maximizedTerminal,
   }
 }
 

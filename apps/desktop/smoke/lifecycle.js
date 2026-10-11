@@ -67,6 +67,12 @@
       await until('startup badge in second project', () =>
         state().extensionBadges.shared?.some((b) => b.text === 'two'),
       )
+      const agentSid = await smoke.executeExtensionCommand('fixture.continuity.agent')
+      await until('extension agent CLI', () =>
+        smoke.terminalText(agentSid).text.includes('extension-agent-ready'),
+      )
+      if (!smoke.terminalText(agentSid).text.replace(/\s+/g, '').includes('"ok":true'))
+        throw new Error('Extension agent did not receive working CLI capabilities')
       const viewTab = await until('second project view tab', () =>
         document.querySelector('button[data-extension-view-tab="fixture.continuity.panel"]'),
       )
@@ -97,6 +103,23 @@
       )
     } else {
       if (state().projectOrder.length !== 2) throw new Error('Tabs were not restored')
+      // The agent in the background project must work before its tab is ever activated.
+      const background = state().projectOrder[1]
+      const agentSid = smoke.sessionId('shared', 'ext-fixture.continuity.agent', null, background)
+      await until('restored background agent', () => state().sessions[agentSid]?.running)
+      await smoke.terminalWrite(
+        agentSid,
+        '"$PATCHBAY_CLI" agent context; printf "background-context-%s\\n" ready\r',
+      )
+      await until('background agent context', () =>
+        smoke.terminalText(agentSid).text.includes('background-context-ready'),
+      )
+      const output = smoke.terminalText(agentSid).text.replace(/\s+/g, '')
+      if (
+        output.includes('OpenthelaunchprojectinPatchbay') ||
+        !output.includes('"projectId":"' + background + '"')
+      )
+        throw new Error('Background project map was unavailable after restart')
       const id = state().projectOrder[0]
       state().activateProject(id)
       if (state().nodes[0].data.notes !== 'recovery draft' || state().dirty)

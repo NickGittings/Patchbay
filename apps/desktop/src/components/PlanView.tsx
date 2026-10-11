@@ -3,24 +3,25 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
-import { startAgentsIn } from '../lib/implement'
-import { planContext, planRead, planWrite } from '../lib/ipc'
-import { nearbyIds, plannerDevice, planTerminals } from '../lib/plan'
+import {
+  onProposal,
+  planContext,
+  planRead,
+  planWrite,
+  proposalRead,
+  proposalApply,
+} from '../lib/ipc'
+import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
-import { seedNewTask } from '../lib/tasks'
+import { refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId } from '../types'
+import { PLAN_SCOPE, sessionId, type PlannerProposal } from '../types'
 import Canvas from './Canvas'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import WorktreePicker from './tasks/WorktreePicker'
 
-/**
- * Unsaved Saved-plan edits per project and task, kept outside the component so leaving the view or
- * switching task doesn't discard them; `overwrite` remembers that the planner's newer file may be
- * replaced.
- */
-const planDrafts = new Map<string, { text: string; base: string; overwrite: boolean }>()
+import { planDrafts } from '../lib/planDrafts'
 
 export default function PlanView() {
   const project = useStore((s) => s.project)
@@ -37,6 +38,14 @@ export default function PlanView() {
   const clearHighlights = useStore((s) => s.clearHighlights)
   const activeId = useStore((s) => s.planActive)
   const setActiveId = useStore((s) => s.setPlanActive)
+  const proposalKey = `${project?.id ?? ''}/${task ?? ''}`
+  const [proposalResult, setProposalResult] = useState<{
+    key: string
+    value: PlannerProposal | null
+  }>({ key: '', value: null })
+  const proposal = proposalResult.key === proposalKey ? proposalResult.value : null
+  const [proposalBusy, setProposalBusy] = useState(false)
+  const [proposalError, setProposalError] = useState('')
   const [contextOpen, setContextOpen] = useState(false)
   const [context, setContext] = useState('Loading planner context…')
   const [restarting, setRestarting] = useState(false)
@@ -72,6 +81,59 @@ export default function PlanView() {
   }, [contextOpen, project, nodes, edges, highlighted, task])
 
   const projectId = project?.id
+  useEffect(() => {
+    if (!projectId) return
+    let disposed = false
+    const load = () =>
+      proposalRead(projectId, task ?? undefined)
+        .then((value) => {
+          if (!disposed) {
+            setProposalResult({ key: proposalKey, value })
+            setProposalError('')
+          }
+        })
+        .catch((e) => {
+          if (!disposed) setProposalError(String(e))
+        })
+    void load()
+    // A planner's submission is the only other writer of the pending proposal.
+    const unlisten = onProposal((event) => {
+      if (event.projectId === projectId && (event.task ?? null) === (task ?? null)) void load()
+    })
+    return () => {
+      disposed = true
+      void unlisten.then((stop) => stop())
+    }
+  }, [projectId, task, proposalKey])
+  const applyProposal = async () => {
+    if (!projectId || !proposal) return
+    const map = useStore.getState().toProject()
+    const targetTask = task
+    setProposalBusy(true)
+    setProposalError('')
+    try {
+      const ids = await proposalApply(map, targetTask ?? undefined, proposal)
+      setProposalResult({ key: proposalKey, value: null })
+      useStore.getState().patchTask(projectId, targetTask, {
+        highlighted: ids,
+        implementationComponents: ids.map((id) => ({ id, visible: true })),
+      })
+      await refreshTasks(projectId)
+      if (
+        useStore.getState().project?.id === projectId &&
+        useStore.getState().activeTask === targetTask
+      )
+        loadPlan()
+    } catch (e) {
+      if (
+        useStore.getState().project?.id === projectId &&
+        useStore.getState().activeTask === targetTask
+      )
+        setProposalError(String(e))
+    } finally {
+      setProposalBusy(false)
+    }
+  }
   const planKey = projectId ? `${projectId}\n${task ?? ''}` : null
   // Which plan a finished save belongs to, so a task switch mid-save doesn't show its result.
   const currentKey = useRef(planKey)
@@ -155,21 +217,6 @@ export default function PlanView() {
   const planBusy = planState === 'loading' || planState === 'saving' || loadedKey !== planKey
   const planEdited = plan !== planBase
 
-  /**
-   * Implementation over the highlights, optionally starting the active planner's agent in each.
-   * Unsaved plan edits are saved first, since the agents' briefings read the file.
-   */
-  const implement = async (withAgents: boolean) => {
-    const ids = [...highlighted]
-    if (withAgents && planEdited && !(await savePlan())) {
-      setPlanOpen(true)
-      return
-    }
-    setView('implementation')
-    if (!withAgents) return
-    void startAgentsIn(ids, plannerDevice(devices, active.id), task)
-  }
-
   const restart = async () => {
     setRestarting(true)
     try {
@@ -199,23 +246,16 @@ export default function PlanView() {
                 title="Create a branch and worktree for the highlighted components, or the selected one"
                 onClick={seedNewTask}
               >
-                New worktree…
+                ＋ New task
               </button>
             </div>
             <div className="row plan-implement">
               <button
                 disabled={highlighted.length === 0}
                 title="Work on the highlighted components side by side"
-                onClick={() => void implement(false)}
+                onClick={() => setView('implementation')}
               >
                 Implement →
-              </button>
-              <button
-                disabled={highlighted.length === 0}
-                title={`Implement and start ${active.name} in each highlighted component, with the saved plan in its briefing`}
-                onClick={() => void implement(true)}
-              >
-                + start {active.name}
               </button>
             </div>
             <div className="hint flush">
@@ -240,6 +280,32 @@ export default function PlanView() {
                 )
               })}
             </div>
+            {proposal && (
+              <details className="context proposed-scope" open>
+                <summary>Proposed scope · {proposal.assignments.length} components</summary>
+                {proposal.assignments.map((entry) => (
+                  <div key={entry.componentId}>
+                    <strong>
+                      {nodes.find((n) => n.id === entry.componentId)?.data.name ??
+                        entry.componentId}
+                    </strong>
+                    <p>{entry.assignment}</p>
+                  </div>
+                ))}
+                <pre>{proposal.plan}</pre>
+                <button
+                  className="primary"
+                  disabled={proposalBusy}
+                  onClick={() => void applyProposal()}
+                >
+                  {proposalBusy ? 'Applying…' : 'Apply selection'}
+                </button>
+                <p className="hint flush">
+                  Saves this plan and assignments and selects this task's components.
+                </p>
+              </details>
+            )}
+            {proposalError && <p className="hint file-tree-error">{proposalError}</p>}
             <details
               className="context"
               open={contextOpen}
@@ -255,8 +321,8 @@ export default function PlanView() {
             >
               <summary>Saved plan</summary>
               <div className="hint flush">
-                The planner writes it to <code>$PATCHBAY_PLAN_FILE</code>; component agents started
-                afterwards get it in their briefing.
+                The planner writes it to <code>$PATCHBAY_PLAN_FILE</code>; implementation agents
+                started afterwards get it in their briefing.
               </div>
               <textarea
                 className="mono"
@@ -277,7 +343,7 @@ export default function PlanView() {
                       : !['loading', 'ready', 'saving'].includes(planState)
                         ? planState
                         : planEdited
-                          ? 'Unsaved changes'
+                          ? 'Unsaved changes · saving clears applied assignments'
                           : ''}
                 </span>
                 <span className="spacer" />

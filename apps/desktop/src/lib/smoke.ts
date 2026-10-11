@@ -8,6 +8,7 @@ import {
   extensionTerminalRun,
   extensionFileRead,
   sessionsList,
+  syncAgentProject,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
@@ -55,6 +56,7 @@ import {
   syncRoots,
 } from './ipc'
 const hooks = {
+  syncAgentProject,
   saveMap,
   flushMapSaves,
   saveProject,

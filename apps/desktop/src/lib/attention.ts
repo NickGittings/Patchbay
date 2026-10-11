@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import {
   PLAN_SCOPE,
+  TASK_ROOT_SCOPE,
   parseSessionId,
   sessionId,
   sessionTask,
@@ -28,7 +29,10 @@ export interface AttentionItem {
 type Snapshot = Pick<
   ReturnType<typeof useStore.getState>,
   'nodes' | 'sessions' | 'runtimeTerminals' | 'devices' | 'tasks'
->
+> &
+  Partial<
+    Pick<ReturnType<typeof useStore.getState>, 'rootTerminals' | 'taskWorkspaces' | 'activeTask'>
+  >
 
 function since(session: SessionState | undefined) {
   return session?.status?.agent?.sinceMs ?? session?.exitedMs ?? session?.startedMs ?? 0
@@ -55,6 +59,17 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
           terminal,
         })),
       ),
+      ...(task === s.activeTask
+        ? (s.rootTerminals ?? [])
+        : (s.taskWorkspaces?.[task ?? '']?.rootTerminals ?? [])
+      ).map((terminal) => ({
+        sid: sessionId(TASK_ROOT_SCOPE, terminal.id, task),
+        componentId: TASK_ROOT_SCOPE,
+        owner: 'Task root',
+        task,
+        taskTitle,
+        terminal,
+      })),
       ...planTerminals(s.devices).map((terminal) => ({
         sid: sessionId(PLAN_SCOPE, terminal.id, task),
         componentId: PLAN_SCOPE,
@@ -75,12 +90,16 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
       .map(([sid, r]) => ({
         sid,
         componentId: r.componentId,
-        owner: s.nodes.find((n) => n.id === r.componentId)?.data.name ?? r.componentId,
-        task: null,
+        owner:
+          s.nodes.find((n) => n.id === r.componentId)?.data.name ??
+          (r.componentId === TASK_ROOT_SCOPE ? 'Task root' : r.componentId),
+        task: r.taskId ?? sessionTask(sid),
+        taskTitle: s.tasks.find((t) => t.id === (r.taskId ?? sessionTask(sid)))?.title,
         terminal: r.terminal,
       })),
   ]
   return terminals
+    .filter((t, index) => terminals.findIndex((other) => other.sid === t.sid) === index)
     .map((t) => {
       const session = s.sessions[t.sid]
       return {
@@ -120,8 +139,8 @@ export function componentTerminals(
     ...terminals.map((t): [string, TerminalSpec] => [sessionId(componentId, t.id, task), t]),
     ...Object.entries(runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
-      .filter(([, r]) => r.componentId === componentId)
-      .filter(([sid]) => !terminals.some((t) => sessionId(componentId, t.id) === sid))
+      .filter(([, r]) => r.componentId === componentId && (r.taskId ?? null) === task)
+      .filter(([sid]) => !terminals.some((t) => sessionId(componentId, t.id, task) === sid))
       .map(([sid, r]): [string, TerminalSpec] => [sid, r.terminal]),
   ]
 }
@@ -151,11 +170,15 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
 /**
  * Show a terminal: its tab in the planner, its tile in Implementation, or (for terminals an
  * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
- * session's task first.
+ * session's task first, except for extension terminals.
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
-  if (!s.runtimeTerminals[item.sid]) s.setActiveTask(sessionTask(item.sid))
+  const runtime = s.runtimeTerminals[item.sid]
+  const extension = !!(runtime?.extensionId || runtime?.commandId)
+  // Extension terminals run in the open worktree and show in any task, so they never switch it.
+  if (!extension) s.setActiveTask(sessionTask(item.sid), true)
+  s.setActiveSession(item.sid)
   if (item.componentId === PLAN_SCOPE) {
     const { terminalId } = parseSessionId(item.sid)
     if (!terminalId) return
@@ -163,9 +186,17 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
     s.setView('plan')
     return
   }
+  if (item.componentId === TASK_ROOT_SCOPE) {
+    s.setView('implementation')
+    s.setActiveSession(item.sid)
+    s.setRevealed(item)
+    s.setMaximizedTerminal(null)
+    return
+  }
+  s.setMaximizedTerminal(null)
   s.select(item.componentId)
   s.setActiveSession(item.sid)
-  if (s.runtimeTerminals[item.sid]) {
+  if (extension) {
     s.setView('navigation')
     return
   }

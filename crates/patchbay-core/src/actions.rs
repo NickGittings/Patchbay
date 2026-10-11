@@ -1,8 +1,6 @@
 //! Explicit graph actions, shared by desktop and other core clients.
 use crate::context;
-use crate::model::{
-    Project, TASK_SEPARATOR, TerminalAction, TerminalKind, TerminalSpec, task_session_id,
-};
+use crate::model::{Project, TerminalAction, TerminalKind, TerminalSpec, task_session_id};
 use crate::policy::AllowAll;
 use crate::pty::{SessionSpec, Snapshot};
 use anyhow::{Result, anyhow, bail, ensure};
@@ -254,6 +252,28 @@ pub struct ActionReport {
     pub results: Vec<TaskResult>,
 }
 
+impl ActionReport {
+    /// Every task started, was reused or passed, and no affected component lacked a validator.
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        let complete = !matches!(self.plan.request, ActionRequest::ValidateAffected { .. })
+            || self.plan.skipped.is_empty();
+        complete
+            && self.results.iter().all(|r| {
+                matches!(
+                    r.outcome,
+                    TaskOutcome::Passed | TaskOutcome::Started | TaskOutcome::Reused
+                )
+            })
+    }
+
+    /// The sessions it ran, in order.
+    #[must_use]
+    pub fn session_ids(&self) -> Vec<String> {
+        self.results.iter().map(|r| r.session_id.clone()).collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskResult {
@@ -285,11 +305,14 @@ enum Exit {
 
 /// Environments are per project and task: the same group runs separately in
 /// each open project and worktree.
+/// JSON, so free-text group ids can't make two environments share a key.
 fn environment_key(project_id: &str, group_id: &str, task: Option<&str>) -> String {
-    match task {
-        Some(task) => format!("{project_id}:{group_id}{TASK_SEPARATOR}{task}"),
-        None => format!("{project_id}:{group_id}"),
-    }
+    serde_json::to_string(&(project_id, group_id, task)).unwrap_or_default()
+}
+
+/// The `(project, group, task)` an [`environment_key`] was made from.
+fn environment_of(key: &str) -> Option<(String, String, Option<String>)> {
+    serde_json::from_str(key).ok()
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -712,41 +735,86 @@ impl GraphActions {
         epoch: u64,
         pty: &dyn Terminals,
     ) -> Result<()> {
-        let group_id = environment_key(project_id, group_id, task);
-        let group_id = group_id.as_str();
-        let runs = {
+        let key = environment_key(project_id, group_id, task);
+        self.stop_environments(epoch, pty, |k| k == key)
+    }
+
+    /// Stop every environment started in `task`'s worktree, including those of groups
+    /// no longer on the map, before the task goes away.
+    ///
+    /// # Errors
+    /// As [`GraphActions::stop_group`].
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    pub fn stop_task(
+        &self,
+        project_id: &str,
+        task: &str,
+        epoch: u64,
+        pty: &dyn Terminals,
+    ) -> Result<()> {
+        self.stop_environments(epoch, pty, |key| {
+            environment_of(key)
+                .is_some_and(|(p, _, t)| p == project_id && t.as_deref() == Some(task))
+        })
+    }
+
+    fn stop_environments(
+        &self,
+        epoch: u64,
+        pty: &dyn Terminals,
+        matches: impl Fn(&str) -> bool,
+    ) -> Result<()> {
+        let stopping = {
             let mut state = self.0.lock().unwrap();
             ensure!(state.epoch == epoch, "Project changed before stop started");
             ensure!(!state.stopping, "An environment is already stopping");
             if let Some(active) = &state.active
-                && active.key == format!("group:{group_id}")
+                && active.key.strip_prefix("group:").is_some_and(&matches)
             {
                 active.cancelled.store(true, Ordering::SeqCst);
             }
             state.stopping = true;
-            let mut runs = state.environments.remove(group_id).unwrap_or_default();
-            runs.retain(|run| !state.environments.values().any(|other| other.contains(run)));
-            runs
+            let mut keys: Vec<String> = state
+                .environments
+                .keys()
+                .chain(state.environment_components.keys())
+                .filter(|k| matches(k))
+                .cloned()
+                .collect();
+            keys.sort();
+            keys.dedup();
+            let mut stopping = Vec::new();
+            for key in keys {
+                let mut runs = state.environments.remove(&key).unwrap_or_default();
+                runs.retain(|run| !state.environments.values().any(|other| other.contains(run)));
+                stopping.push((key, runs));
+            }
+            stopping
         };
         let mut failures = Vec::new();
         let mut unfinished = Vec::new();
-        for run in runs.iter().rev() {
-            if let Err(error) = pty.stop_generation(&run.id, run.generation) {
-                failures.push(error.to_string());
-                unfinished.push(run.clone());
+        for (key, runs) in stopping {
+            let mut left = Vec::new();
+            for run in runs.iter().rev() {
+                if let Err(error) = pty.stop_generation(&run.id, run.generation) {
+                    failures.push(error.to_string());
+                    left.push(run.clone());
+                }
             }
+            left.reverse();
+            unfinished.push((key, left));
         }
         let mut state = self.0.lock().unwrap();
-        if state.epoch == epoch && !unfinished.is_empty() {
-            unfinished.reverse();
-            state
-                .environments
-                .entry(group_id.to_string())
-                .or_default()
-                .extend(unfinished);
-        }
-        if state.epoch == epoch && failures.is_empty() {
-            state.environment_components.remove(group_id);
+        if state.epoch == epoch {
+            for (key, left) in unfinished {
+                if left.is_empty() {
+                    state.environment_components.remove(&key);
+                } else {
+                    state.environments.entry(key).or_default().extend(left);
+                }
+            }
         }
         state.stopping = false;
         ensure!(
@@ -946,10 +1014,87 @@ mod tests {
     }
 
     #[test]
+    fn a_validation_missing_validators_does_not_succeed() {
+        let report = |request: serde_json::Value,
+                      skipped: &[&str],
+                      outcome: &str|
+         -> ActionReport {
+            serde_json::from_value(serde_json::json!({
+                "plan": {"projectId":"p","task":null,"request":request,"stages":[],"skipped":skipped,"sessions":["s"]},
+                "results": [{"sessionId":"s","outcome":outcome,"exitCode":null}],
+            }))
+            .unwrap()
+        };
+        let validate = serde_json::json!({"kind":"validateAffected","componentId":"web"});
+        let start = serde_json::json!({"kind":"startGroup","groupId":"dev"});
+        assert!(report(validate.clone(), &[], "passed").succeeded());
+        assert!(!report(validate.clone(), &["lib"], "passed").succeeded());
+        assert!(!report(validate, &[], "failed").succeeded());
+        assert!(report(start.clone(), &[], "reused").succeeded());
+        assert!(!report(start, &[], "stopped").succeeded());
+    }
+
+    #[test]
+    fn stopping_a_task_stops_its_environments_even_for_groups_off_the_map() {
+        struct Recording(Mutex<Vec<String>>);
+        impl Terminals for Recording {
+            fn snapshot(&self, _: &str) -> Option<Snapshot> {
+                None
+            }
+            fn is_running(&self, _: &str) -> bool {
+                false
+            }
+            fn launch_matches(&self, _: &SessionSpec) -> bool {
+                false
+            }
+            fn launch(&self, _: Launch) -> Result<()> {
+                Ok(())
+            }
+            fn stop_generation(&self, id: &str, _: u64) -> Result<()> {
+                self.0.lock().unwrap().push(id.into());
+                Ok(())
+            }
+        }
+        let actions = GraphActions::default();
+        let run = |id: &str| {
+            vec![Run {
+                id: id.into(),
+                generation: 1,
+            }]
+        };
+        {
+            let mut state = actions.0.lock().unwrap();
+            state
+                .environments
+                .insert(environment_key("p", "removed", Some("t1")), run("a"));
+            state
+                .environments
+                .insert(environment_key("p", "dev", Some("t1")), run("b"));
+            state
+                .environments
+                .insert(environment_key("p", "dev", Some("t2")), run("c"));
+            state
+                .environments
+                .insert(environment_key("p", "dev", None), run("d"));
+            state
+                .environments
+                .insert(environment_key("q", "dev", Some("t1")), run("e"));
+        }
+        let terminals = Recording(Mutex::default());
+        actions
+            .stop_task("p", "t1", actions.epoch(), &terminals)
+            .unwrap();
+        let mut stopped = terminals.0.into_inner().unwrap();
+        stopped.sort();
+        assert_eq!(stopped, ["a", "b"]);
+        assert_eq!(actions.0.lock().unwrap().environments.len(), 3);
+    }
+
+    #[test]
     fn maintenance_requires_releasing_environment_ownership_even_after_exit() {
         let actions = GraphActions::default();
         actions.0.lock().unwrap().environments.insert(
-            "p:dev".into(),
+            environment_key("p", "dev", None),
             vec![Run {
                 id: "owned-session".into(),
                 generation: 9,
@@ -1031,9 +1176,23 @@ mod tests {
             ]
         );
         assert_ne!(plan.sessions[0], sid("api", "dev"));
-        assert_eq!(environment_key("p", "dev", Some("t1")), "p:dev@task-t1");
-        assert_eq!(environment_key("p", "dev", None), "p:dev");
-        assert_ne!(environment_key("q", "dev", None), "p:dev");
+        assert_ne!(
+            environment_key("p", "dev", Some("t1")),
+            environment_key("p", "dev", None)
+        );
+        assert_ne!(
+            environment_key("q", "dev", None),
+            environment_key("p", "dev", None)
+        );
+        // Free-text group ids can't collide with another group's task environment.
+        assert_ne!(
+            environment_key("p", "dev@task-t1", None),
+            environment_key("p", "dev", Some("t1"))
+        );
+        assert_eq!(
+            environment_of(&environment_key("p", "dev", Some("t1"))),
+            Some(("p".into(), "dev".into(), Some("t1".into())))
+        );
     }
 
     #[test]

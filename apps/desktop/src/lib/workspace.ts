@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { projectFrom, useStore, type ProjectState } from '../store'
+import { emptyTaskWorkspace, projectFrom, useStore, type ProjectState } from '../store'
 import type { OpenedProject, Project, WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
@@ -57,6 +57,12 @@ export function workspaceDocument(): WorkspaceDocument {
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
+              closedTaskIds: state.closedTaskIds,
+              taskWorkspaces: state.taskWorkspaces,
+              rootTerminals: state.rootTerminals,
+              componentTerminals: state.componentTerminals,
+              maximizedTerminal: state.maximizedTerminal,
+              graphActionReport: state.graphActionReport,
             }
           : (p.unavailableLayout ?? {}),
       }
@@ -73,8 +79,15 @@ export function flushWorkspace() {
     .catch((e) => useStore.getState().setMessage(String(e)))
   return writing
 }
-export function restoredLayout(layout: Record<string, unknown>): Partial<ProjectState> {
+export function restoredLayout(
+  layout: Record<string, unknown>,
+  nested = false,
+): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
+  if (!nested)
+    out.closedTaskIds = Array.isArray(layout.closedTaskIds)
+      ? [...new Set(layout.closedTaskIds.filter((id): id is string => typeof id === 'string'))]
+      : []
   if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
   // The active session belongs to the active task's scope, so both are restored together;
@@ -110,6 +123,68 @@ export function restoredLayout(layout: Record<string, unknown>): Partial<Project
     out.panels = layout.panels as ProjectState['panels']
   if (layout.planStartedWith && typeof layout.planStartedWith === 'object')
     out.planStartedWith = layout.planStartedWith as Record<string, string>
+  if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
+    const report = layout.graphActionReport as ProjectState['graphActionReport']
+    if (
+      report &&
+      Array.isArray(report.results) &&
+      report.plan &&
+      Array.isArray(report.plan.sessions) &&
+      Array.isArray(report.plan.skipped)
+    )
+      out.graphActionReport = report
+  }
+  if (Array.isArray(layout.rootTerminals))
+    out.rootTerminals = layout.rootTerminals.filter(
+      (t) =>
+        t &&
+        typeof t === 'object' &&
+        typeof t.id === 'string' &&
+        typeof t.name === 'string' &&
+        typeof t.command === 'string' &&
+        ['shell', 'task', 'agent'].includes(t.kind),
+    )
+  if (Array.isArray(layout.componentTerminals))
+    out.componentTerminals = layout.componentTerminals.filter(
+      (t) =>
+        t &&
+        typeof t === 'object' &&
+        typeof t.componentId === 'string' &&
+        typeof t.terminalId === 'string',
+    )
+  if (typeof layout.maximizedTerminal === 'string' || layout.maximizedTerminal === null)
+    out.maximizedTerminal = layout.maximizedTerminal
+  if (!nested && layout.taskWorkspaces && typeof layout.taskWorkspaces === 'object') {
+    out.taskWorkspaces = {}
+    for (const [key, value] of Object.entries(layout.taskWorkspaces)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const restored = restoredLayout(value as Record<string, unknown>, true)
+      out.taskWorkspaces[key] = { ...emptyTaskWorkspace(), ...restored }
+    }
+  }
+  if (!nested)
+    out.taskWorkspaces = {
+      ...out.taskWorkspaces,
+      [out.activeTask ?? '']: {
+        ...emptyTaskWorkspace(),
+        ...(out.taskWorkspaces?.[out.activeTask ?? ''] ?? {}),
+        ...Object.fromEntries(
+          Object.entries(out).filter(
+            ([key]) =>
+              ![
+                'taskWorkspaces',
+                'view',
+                'activeTask',
+                'closedTaskIds',
+                'selectedId',
+                'selectedEdgeId',
+                'viewport',
+                'planStartedWith',
+              ].includes(key),
+          ),
+        ),
+      },
+    }
   return out
 }
 export function initializeWorkspace() {
@@ -219,7 +294,12 @@ export function initializeWorkspace() {
           s.viewport === prev.viewport &&
           s.panels === prev.panels &&
           s.groups === prev.groups &&
-          s.activeTask === prev.activeTask)
+          s.activeTask === prev.activeTask &&
+          s.closedTaskIds === prev.closedTaskIds &&
+          s.taskWorkspaces === prev.taskWorkspaces &&
+          s.rootTerminals === prev.rootTerminals &&
+          s.componentTerminals === prev.componentTerminals &&
+          s.maximizedTerminal === prev.maximizedTerminal)
       )
         return
       clearTimeout(timer)

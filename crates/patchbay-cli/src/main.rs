@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
-    name = "patchbay",
+    name = "patchbay-cli",
     about = "Inspect Patchbay component maps from the command line"
 )]
 struct Cli {
@@ -15,6 +15,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Use configured actions in the desktop agent's fixed launch task.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCmd,
+    },
     /// Inspect and control independent local terminal sessions.
     Sessions {
         #[command(subcommand)]
@@ -55,6 +60,11 @@ fn open(dir: &Path) -> Result<Project> {
 fn main() -> Result<()> {
     let registry = Registry::load();
     match Cli::parse().cmd {
+        Cmd::Agent { command } => {
+            if !agent(command)? {
+                std::process::exit(1);
+            }
+        }
         Cmd::Sessions { command } => sessions(command)?,
         Cmd::Extensions => println!("{}", serde_json::to_string_pretty(&registry)?),
         Cmd::Detect { dir } => {
@@ -120,7 +130,7 @@ mod tests {
     fn plan_ids_are_positional_and_directory_is_a_flag() {
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan", "api", "web"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan", "api", "web"]).unwrap()
         else {
             panic!("expected plan command")
         };
@@ -129,12 +139,47 @@ mod tests {
 
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan", "api", "--dir", "../shop"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan", "api", "--dir", "../shop"]).unwrap()
         else {
             panic!("expected plan command")
         };
         assert_eq!(dir, PathBuf::from("../shop"));
         assert_eq!(component_ids, ["api"]);
+    }
+
+    #[test]
+    fn agent_commands_accept_configured_ids_and_require_proposal_files() {
+        for args in [
+            vec!["patchbay-cli", "agent", "context"],
+            vec!["patchbay-cli", "agent", "status"],
+            vec!["patchbay-cli", "agent", "validate", "web"],
+            vec!["patchbay-cli", "agent", "environment", "start", "dev"],
+            vec!["patchbay-cli", "agent", "environment", "stop", "dev"],
+            vec!["patchbay-cli", "agent", "logs", "s-1"],
+            vec![
+                "patchbay-cli",
+                "agent",
+                "propose",
+                "--file",
+                "proposal.json",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "validate"]).is_err());
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "patchbay-cli",
+                "agent",
+                "environment",
+                "start",
+                "dev",
+                "--command",
+                "echo hi"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -152,7 +197,7 @@ mod tests {
     fn plan_without_ids_uses_the_current_project() {
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan"]).unwrap()
         else {
             panic!("expected plan command")
         };
@@ -391,4 +436,67 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
         viewer,
     })?;
     Ok(())
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    Context,
+    Environment {
+        #[command(subcommand)]
+        command: EnvironmentCmd,
+    },
+    Validate {
+        component_id: String,
+    },
+    Status,
+    Logs {
+        session_id: String,
+    },
+    Propose {
+        #[arg(long)]
+        file: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum EnvironmentCmd {
+    Start { group_id: String },
+    Stop { group_id: String },
+}
+fn agent(command: AgentCmd) -> Result<bool> {
+    use patchbay_core::agent_bridge::{self, Action, Response};
+    let response = Response::from_result((|| {
+        let action = match command {
+            AgentCmd::Context => Action::Context {},
+            AgentCmd::Status => Action::Status {},
+            AgentCmd::Logs { session_id } => Action::Logs { session_id },
+            AgentCmd::Validate { component_id } => Action::Validate { component_id },
+            AgentCmd::Environment {
+                command: EnvironmentCmd::Start { group_id },
+            } => Action::EnvironmentStart { group_id },
+            AgentCmd::Environment {
+                command: EnvironmentCmd::Stop { group_id },
+            } => Action::EnvironmentStop { group_id },
+            AgentCmd::Propose { file } => {
+                anyhow::ensure!(
+                    file.metadata()?.len() <= 1024 * 1024,
+                    "Proposal file is too large"
+                );
+                Action::Propose {
+                    proposal: serde_json::from_slice(&std::fs::read(file)?)?,
+                }
+            }
+        };
+        let response = agent_bridge::call_from_env(action)?;
+        if !response.ok {
+            bail!(
+                "{}",
+                response
+                    .error
+                    .unwrap_or_else(|| "Agent command failed".into())
+            );
+        }
+        Ok(response.result.unwrap_or(serde_json::Value::Null))
+    })());
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(response.ok)
 }

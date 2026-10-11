@@ -104,6 +104,9 @@ export const graphGroupStop = (
   task?: string,
   projectId = useStore.getState().project?.id,
 ) => invoke<void>('graph_group_stop', { groupId, task, projectId })
+/** Stop every environment started in the task's worktree, groups since removed included. */
+export const graphTaskStop = (task: string, projectId = useStore.getState().project?.id) =>
+  invoke<void>('graph_task_stop', { task, projectId })
 /** Stop the running validation; `false` if none was running. */
 export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
   invoke<boolean>('graph_validation_cancel', { projectId })
@@ -208,8 +211,8 @@ export const taskAttach = (
   components: string[],
   projectId = activeId(),
 ) => invoke<Task>('task_attach', { worktree, title, components, projectId })
-export const taskUpdate = (id: string, patch: TaskPatch) =>
-  invoke<Task>('task_update', { id, patch })
+export const taskUpdate = (id: string, patch: TaskPatch, projectId = activeId()) =>
+  invoke<Task>('task_update', { id, patch, projectId })
 /** git refuses to remove a worktree with changes; the branch is always kept. */
 export const taskRemove = (id: string, deleteWorktree: boolean, projectId = activeId()) =>
   invoke<void>('task_remove', { id, deleteWorktree, projectId })
@@ -399,3 +402,39 @@ export const extensionSessionsList = (
   })
 export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
   invoke<void>('extension_url_open', { extensionId, projectId, url })
+
+export const taskRootStart = async (
+  project: Project,
+  componentIds: string[],
+  terminal: TerminalSpec,
+  task?: string,
+  requestId: string = crypto.randomUUID(),
+) =>
+  invoke<string>('task_root_start', {
+    projectId: project.projectId,
+    project,
+    componentIds,
+    terminal,
+    task,
+    requestId,
+    extraContext:
+      terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
+  })
+/** A planner submitted a proposal (`agent_commands.rs` emits it). */
+export const PROPOSAL_EVENT = 'patchbay://proposal'
+export const onProposal = (
+  handler: (event: { projectId: string; task: string | null }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ projectId: string; task: string | null }>(PROPOSAL_EVENT, (e) => handler(e.payload))
+export const proposalRead = (projectId: string, task?: string) =>
+  invoke<import('../types').PlannerProposal | null>('proposal_read', { projectId, task })
+export const proposalApply = (
+  project: Project,
+  task: string | undefined,
+  expected: import('../types').PlannerProposal,
+) => invoke<string[]>('proposal_apply', { projectId: project.projectId, project, task, expected })
+export const taskActivities = (projectId: string) =>
+  invoke<import('../types').TaskActivity[]>('task_activities', { projectId })
+
+export const syncAgentProject = (project: Project) =>
+  invoke<void>('sync_agent_project', { projectId: project.projectId, project })

@@ -99,6 +99,17 @@ async function acceptEdit(before: Project, edit: MapEdit) {
               components: t.components.filter((c) => !removed.includes(c)),
             })),
             highlighted: state.highlighted.filter((c) => !removed.includes(c)),
+            taskWorkspaces: Object.fromEntries(
+              Object.entries(state.taskWorkspaces).map(([task, w]) => [
+                task,
+                {
+                  ...w,
+                  highlighted: w.highlighted.filter((c) => !removed.includes(c)),
+                  implementationComponents:
+                    w.implementationComponents?.filter((c) => !removed.includes(c.id)) ?? null,
+                },
+              ]),
+            ),
             implementationComponents:
               state.implementationComponents?.filter((c) => !removed.includes(c.id)) ?? null,
             selectedId: removed.includes(state.selectedId ?? '') ? null : state.selectedId,

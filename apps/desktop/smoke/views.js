@@ -24,10 +24,7 @@
       (b) => b.textContent === name,
     )
   const textOf = (sid) => smoke.terminalText(sid).text
-  const pill = (name) =>
-    Array.from(document.querySelectorAll('.component-pill')).find((b) =>
-      b.textContent.includes(name),
-    )
+  const tiles = (id) => [...document.querySelectorAll(`.terminal-tile[data-component="${id}"]`)]
   // React reads a form control's value through the native setter.
   const choose = (el, value) => {
     if (!el) throw new Error('missing form control')
@@ -37,57 +34,8 @@
   const assert = (value, message) => {
     if (!value) throw new Error(message)
   }
-  const addComponent = () => document.querySelector('select[aria-label="Add component"]')
-  const removeComponent = (name) =>
-    click(document.querySelector(`button[aria-label="Remove ${name} from Implementation"]`))
-  const assertScope = (ids, hidden = []) => {
-    const pills = [...document.querySelectorAll('.component-pill')]
-    assert(
-      pills.length === ids.length,
-      `pills expected ${ids.join()}, got ${pills.map((p) => p.textContent).join()}`,
-    )
-    for (const [i, id] of ids.entries()) {
-      const name = state().nodes.find((n) => n.id === id).data.name
-      assert(
-        pills[i].textContent.includes(name) &&
-          pills[i].getAttribute('aria-pressed') === String(!hidden.includes(id)) &&
-          pills[i].classList.contains('active') === !hidden.includes(id) &&
-          pills[i].parentElement.classList.contains('active') === !hidden.includes(id),
-        `incorrect visibility or highlight for ${id}`,
-      )
-      const close = pills[i].parentElement.querySelector('.component-remove')
-      assert(close?.textContent.trim() === '×', `missing close button for ${id}`)
-      assert(
-        getComputedStyle(close).borderLeftWidth === '0px' &&
-          getComputedStyle(pills[i]).borderRightWidth === '0px',
-        'component close button has a dividing line',
-      )
-    }
-    if (!document.querySelector('.terminal-tile.maximized')) {
-      const names = ids
-        .filter((id) => !hidden.includes(id))
-        .map((id) => state().nodes.find((n) => n.id === id).data.name)
-      assert(
-        JSON.stringify(
-          [...document.querySelectorAll('.implementation-group')].map((g) =>
-            g.getAttribute('aria-label'),
-          ),
-        ) === JSON.stringify(names),
-        'terminal group order differs from pill order',
-      )
-    }
-    const inactive = state().nodes.filter((n) => !ids.includes(n.id))
-    const select = addComponent()
-    if (!inactive.length) {
-      assert(!select, 'add component remains when every component is active')
-      return
-    }
-    assert(select?.value === '', 'add component did not reset to its placeholder')
-    assert(
-      JSON.stringify([...select.options].slice(1).map((o) => [o.value, o.textContent])) ===
-        JSON.stringify(inactive.map((n) => [n.id, n.data.name])),
-      'add component options do not match inactive components in repository order',
-    )
+  const assertScope = (ids) => {
+    assert(state().highlighted.join() === ids.join(), 'incorrect task component scope')
   }
   // A changes list (or its empty state) has loaded under `selector`; errors fail the run.
   const changesSettled = (selector) => {
@@ -277,243 +225,84 @@
       'implementation terminal has no height',
     )
     assert(!document.querySelector('.file-tree'), 'implementation has a file tree')
-    assert(
-      document.querySelectorAll('.implementation-group').length === 1 &&
-        document.querySelector('.implementation-group')?.textContent.includes('ALPHA'),
-      'implementation does not show the highlighted component',
-    )
-    await smoke.startTerminal('unrelated', 'task')
-    await until('inactive terminal running', () => state().sessions[unrelatedTask]?.running)
-    assertScope(['alpha', 'beta'], ['beta'])
-    removeComponent('BETA')
-    await until('hidden Plan component explicitly removed', () => !pill('BETA'))
+    assert(tiles('@task').length === 1, 'task root shell is missing')
+    assert(!tiles('alpha').length, 'highlighting a component added its terminals to the task')
     assertScope(['alpha'])
-    assert(!pill('UNRELATED'), 'a running terminal makes an inactive component active')
-    assert(!pill('ALPHA').querySelector('.count.running'), 'a stopped terminal has a running badge')
-    const startButton = await until('terminal start overlay', () =>
-      document.querySelector('.implementation-view .terminal-overlay button'),
-    )
-    assert(startButton.textContent.trim() === '▶ Start Task', 'start button repeats the command')
-    assert(
-      document.querySelector('.terminal-overlay-command')?.textContent === 'cat',
-      'terminal command is missing from the start overlay',
-    )
-    // Adding while maximized keeps the current scope and restores every group.
-    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
-    await until('maximized before adding', () => document.querySelector('.terminal-tile.maximized'))
-    choose(addComponent(), 'beta')
-    await until(
-      'two components side by side',
-      () => document.querySelectorAll('.implementation-group').length === 2,
-    )
-    assert(state().highlighted.join() === 'alpha,beta', 'adding did not extend the shared scope')
-    assertScope(['alpha', 'beta'])
-    assert(!document.querySelector('.terminal-tile.maximized'), 'adding left a terminal maximized')
-    click(pill('BETA'))
-    await until(
-      'click hides beta',
-      () => document.querySelectorAll('.implementation-group').length === 1,
-    )
-    assertScope(['alpha', 'beta'], ['beta'])
-    assert(state().highlighted.join() === 'alpha', 'hiding beta left it in the Plan scope')
-    click(pill('BETA'))
-    await until(
-      'click shows beta',
-      () => document.querySelectorAll('.implementation-group').length === 2,
-    )
-    assertScope(['alpha', 'beta'])
-    removeComponent('BETA')
-    await until('close removes beta', () => !pill('BETA'))
-    assertScope(['alpha'])
-    choose(addComponent(), 'beta')
-    await until(
-      'beta added again',
-      () => document.querySelectorAll('.implementation-group').length === 2,
-    )
-    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
-    await until(
-      'maximized tile',
-      () =>
-        document.querySelectorAll('.implementation-view .terminal-tile').length === 1 &&
-        document.querySelector('.implementation-view .terminal-tile.maximized'),
-    )
-    click(document.querySelector('.implementation-view button[aria-label^="Restore"]'))
-    await until(
-      'restored tiles',
-      () => document.querySelectorAll('.implementation-view .terminal-tile').length === 2,
-    )
-    // Constrain the header to the space available in a narrow window. Long active
-    // names scroll with their badges; a long inactive name must not widen the select.
-    const originalNodes = state().nodes
-    const header = document.querySelector('.implementation-header')
-    smoke.store.setState({
-      nodes: originalNodes.map((n) => ({
-        ...n,
-        data: { ...n.data, name: `${n.data.name} ${'long component name '.repeat(8)}` },
-      })),
-    })
-    header.style.width = '820px'
-    header.style.maxWidth = '100%'
-    await until('long component names rendered', () =>
-      pill('ALPHA')?.textContent.includes('long component name'),
-    )
-    const switcher = header.querySelector('.component-switcher')
-    assert(switcher.scrollWidth > switcher.clientWidth, 'long active pills do not scroll')
-    assert(
-      addComponent().getBoundingClientRect().width <= 180,
-      'long option widens the add component control',
-    )
-    const headerRect = header.getBoundingClientRect()
-    for (const control of header.querySelectorAll('select, button.start-all')) {
-      const rect = control.getBoundingClientRect()
-      assert(
-        rect.width > 0 && rect.left >= headerRect.left && rect.right <= headerRect.right,
-        'header action overflows the narrow layout',
+    // A component's saved terminal joins the task through the Add terminal dialog, stopped.
+    const openAddTerminal = async () => {
+      click(document.querySelector('button.add-task-terminal-button'))
+      return until('add terminal dialog', () =>
+        document.querySelector('form[aria-label="Add terminal"]'),
       )
     }
-    smoke.store.setState({ nodes: originalNodes })
-    header.style.removeProperty('width')
-    header.style.removeProperty('max-width')
-    await until(
-      'component names restored',
-      () => !pill('ALPHA')?.textContent.includes('long component name'),
-    )
-    choose(addComponent(), 'nearby')
-    await until('nearby added', () => document.querySelectorAll('.component-pill').length === 3)
-    assertScope(['alpha', 'beta', 'nearby'])
-    choose(addComponent(), 'unrelated')
-    await until(
-      'all components active',
-      () => document.querySelectorAll('.component-pill').length === 4,
-    )
-    assertScope(['alpha', 'beta', 'nearby', 'unrelated'])
-    assert(
-      pill('UNRELATED').querySelector('.count.running')?.textContent === '1',
-      'running badge missing',
-    )
-    assert(
-      document.querySelectorAll('.implementation-group').length === 4,
-      'adding omitted terminal groups',
-    )
-    click(pill('BETA'))
-    await until(
-      'beta hidden before Plan',
-      () => pill('BETA').getAttribute('aria-pressed') === 'false',
-    )
-    click(viewButton('Plan'))
-    await until('added scope in Plan', () =>
-      nodeElement('unrelated')?.querySelector('.highlighted'),
-    )
-    assert(
-      state().highlighted.join() === 'alpha,nearby,unrelated' &&
-        !nodeElement('beta').querySelector('.highlighted'),
-      'adding lost the Plan scope',
-    )
-    click(viewButton('Implementation'))
-    await until('implementation returned', () => pill('UNRELATED'))
-    assertScope(['alpha', 'beta', 'nearby', 'unrelated'], ['beta'])
-    click(pill('BETA'))
-    await until('beta shown again', () => pill('BETA').getAttribute('aria-pressed') === 'true')
-    removeComponent('NEARBY')
-    await until('close removes nearby', () => !pill('NEARBY'))
-    removeComponent('UNRELATED')
-    await until('close removes unrelated', () => !pill('UNRELATED'))
-    assert(state().sessions[unrelatedTask]?.running, 'removing a component stopped its terminal')
-    assertScope(['alpha', 'beta'])
-    click(pill('ALPHA'))
-    await until(
-      'alpha hidden',
-      () => document.querySelectorAll('.implementation-group').length === 1,
-    )
-    assertScope(['alpha', 'beta'], ['alpha'])
-    click(pill('BETA'))
-    await until('all components hidden', () => !document.querySelector('.implementation-group'))
-    assertScope(['alpha', 'beta'], ['alpha', 'beta'])
-    assert(state().highlighted.length === 0, 'hiding every component retained Plan highlights')
-    assert(
-      document.querySelector('.empty-state')?.textContent.includes('No components shown'),
-      'hiding the last component brought back a fallback',
-    )
-    click(pill('BETA'))
-    await until(
-      'beta restored from hidden',
-      () => document.querySelectorAll('.implementation-group').length === 1,
-    )
-    removeComponent('ALPHA')
-    await until('hidden alpha removed', () => !pill('ALPHA'))
-    assertScope(['beta'])
-    removeComponent('BETA')
-    await until(
-      'last pill removed',
-      () => document.querySelectorAll('.component-pill').length === 0,
-    )
-    assertScope([])
-    assert(
-      !document.querySelector('.implementation-group'),
-      'removing the last component restored a fallback',
-    )
-    choose(addComponent(), 'beta')
-    await until('beta added to empty scope', () => pill('BETA'))
-    assertScope(['beta'])
-    // The initial selected fallback can still be promoted into an explicit scope.
-    state().clearHighlights()
-    state().select('beta')
-    state().setImplementationScope([])
-    state().setView('implementation')
-    await until('selected fallback', () => pill('BETA')?.getAttribute('aria-pressed') === 'true')
-    assertScope(['beta'])
-    choose(addComponent(), 'nearby')
-    await until(
-      'selected fallback preserved',
-      () => document.querySelectorAll('.implementation-group').length === 2,
-    )
-    assert(state().highlighted.join() === 'beta,nearby', 'adding lost the selected fallback')
-    assertScope(['beta', 'nearby'])
-    state().clearHighlights()
-    state().select(null)
-    state().setImplementationScope([])
-    state().setView('implementation')
-    await until('first component fallback', () => pill('ALPHA'))
+    const addTerminal = async (target, key) => {
+      const dialog = await openAddTerminal()
+      choose(dialog.querySelector('select[aria-label="Where"]'), target)
+      const terminal = dialog.querySelector('select[aria-label="Terminal"]')
+      await until(`terminal choice ${key}`, () =>
+        [...terminal.options].some((o) => o.value === key),
+      )
+      choose(terminal, key)
+      await until('choice picked', () => terminal.value === key)
+      click(document.querySelector('form[aria-label="Add terminal"] button[type=submit]'))
+      await until('dialog closed', () => !document.querySelector('form[aria-label="Add terminal"]'))
+    }
+    await addTerminal('alpha', 'saved\ntask')
+    await until('alpha terminal added', () => tiles('alpha').length === 1)
+    // Anything running in the worktree shows too, so nothing it runs is out of sight.
+    await smoke.startTerminal('unrelated', 'task')
+    await until('background terminal visible', () => tiles('unrelated').length === 1)
     assertScope(['alpha'])
-    choose(addComponent(), 'beta')
-    await until('first fallback preserved', () => pill('BETA'))
-    assert(state().highlighted.join() === 'alpha,beta', 'adding lost the first component fallback')
-    removeComponent('ALPHA')
+    assert(state().sessions[unrelatedTask]?.running, 'background terminal was stopped')
+    const startButton = tiles('alpha')[0].querySelector('.terminal-overlay button')
+    assert(startButton?.textContent.trim() === '▶ Start Task', 'incorrect terminal start overlay')
+    assert(
+      tiles('alpha')[0].querySelector('.terminal-overlay-command')?.textContent === 'cat',
+      'terminal command missing from overlay',
+    )
+    click(tiles('alpha')[0].querySelector('button[aria-label="Maximize Task"]'))
+    await until('focused alpha', () => document.querySelector('.terminal-tile.maximized'))
+    click(document.querySelector('.terminal-tile.maximized button[aria-label="Remove Task"]'))
+    await until(
+      'removed alpha restores others',
+      () => !tiles('alpha').length && tiles('@task').length,
+    )
+    assert(!state().maximizedTerminal, 'removing left another terminal maximized')
+    assert(state().sessions[unrelatedTask]?.running, 'removing stopped another process')
+    assert(
+      state()
+        .nodes.find((n) => n.id === 'alpha')
+        .data.terminals.some((t) => t.id === 'task'),
+      'removing from the task removed the saved terminal',
+    )
+    // Highlights set what agents are briefed on, not which terminals the tab shows.
+    state().toggleHighlight('beta')
+    assertScope(['alpha', 'beta'])
+    state().toggleHighlight('alpha')
+    assertScope(['beta'])
+    assert(!tiles('beta').length, 'highlighting added terminals')
+    await addTerminal('beta', 'saved\ntask')
+    await until('beta added', () => tiles('beta').length)
+    click(viewButton('Plan'))
+    await until('shared Plan scope', () => nodeElement('beta')?.querySelector('.highlighted'))
+    assert(!nodeElement('alpha').querySelector('.highlighted'), 'filters lost shared Plan scope')
+    click(viewButton('Implementation'))
+    await until('returned task workspace', () => tiles('beta').length)
+    assertScope(['beta'])
     state().select('beta')
+    click(tiles('beta')[0].querySelector('button[aria-label="Maximize Task"]'))
+    await until('component popout while maximized', () =>
+      document.querySelector('.terminal-tile.maximized .group-popout'),
+    )
+    click(document.querySelector('button[aria-label="Restore Task"]'))
+    await smoke.startTerminal('beta', 'task')
     await until(
-      'beta alone again',
-      () => document.querySelectorAll('.implementation-group').length === 1,
+      'beta task running',
+      () => state().sessions[smoke.sessionId('beta', 'task')]?.running,
     )
-    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
-    await until(
-      'single-component maximized pop-out action',
-      () =>
-        document.querySelector('.terminal-tile.maximized') &&
-        document.querySelector('.implementation-group-header .group-popout'),
-    )
-    click(document.querySelector('.implementation-view button[aria-label^="Restore"]'))
-    click(
-      Array.from(document.querySelectorAll('.implementation-header > button')).find((b) =>
-        b.textContent.includes('Start all'),
-      ),
-    )
-    await until('start all', () => state().sessions[smoke.sessionId('beta', 'task')]?.running)
-    assert(
-      state().sessions[smoke.sessionId('beta', 'task')].startedMs > 0,
-      'session has no start time',
-    )
-    assert(
-      !state().sessions[smoke.sessionId('alpha', 'task')]?.running &&
-        !state().sessions[smoke.sessionId('nearby', 'task')]?.running,
-      'Start all launched an inactive component terminal',
-    )
+    assert(state().sessions[smoke.sessionId('beta', 'task')].startedMs > 0, 'missing start time')
     smoke.stopTerminal(unrelatedTask)
-    await until('inactive task stopped', () => !state().sessions[unrelatedTask]?.running)
-    assert(
-      document.querySelectorAll('.implementation-group-header .group-popout').length ===
-        document.querySelectorAll('.implementation-group-header').length,
-      'a component group has no pop-out button',
-    )
+    await until('background task stopped', () => !state().sessions[unrelatedTask]?.running)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '4', metaKey: true, bubbles: true }))
     await until('review shortcut', () => document.querySelector('.review-view'))
     await until('review list', () => changesSettled('.review-view'))
@@ -557,8 +346,9 @@
         state().nodes.find((n) => n.id === 'beta').selected,
       'merge loses session, planner, or canvas selection state',
     )
-    await until('implementation still on beta', () =>
-      document.querySelector('.implementation-view .terminal-tile')?.textContent.includes('Task'),
+    await until(
+      'implementation still on beta',
+      () => tiles('beta')[0]?.querySelector('.terminal-tile-header strong')?.textContent === 'Task',
     )
     state().selectEdge('ab')
     state().onEdgesChange([{ type: 'select', id: 'ab', selected: true }])
@@ -595,23 +385,42 @@
     )
     assert(!state().highlighted.includes('alpha'), 'removed highlight was not pruned')
 
-    // Terminals added in Implementation are saved; agents there are told about their peers.
+    // Terminals added to a component are saved; agents there are told about their peers.
     state().setView('implementation')
     state().clearHighlights()
     state().toggleHighlight('beta')
     state().toggleHighlight('nearby')
-    await until(
-      'beta and nearby',
-      () => document.querySelectorAll('.implementation-group').length === 2,
+    const dialog = await openAddTerminal()
+    assert(
+      dialog.querySelector('select[aria-label="Where"]').options[0].textContent === 'Project root',
+      'Project root is not first in Add terminal',
     )
+    assert(
+      dialog.querySelector('button[type=submit]').textContent === 'Start agent',
+      'Add terminal does not offer agents first',
+    )
+    click(dialog.querySelector('.row button[type=button]'))
+    await until(
+      'dialog cancelled',
+      () => !document.querySelector('form[aria-label="Add terminal"]'),
+    )
+    assert(
+      !document.querySelector('select[aria-label="Start agent"]'),
+      'Start agent select is still shown',
+    )
+    const rootsBefore = state().rootTerminals.length
+    await addTerminal('@task', 'custom')
+    await until('root terminal added', () => state().rootTerminals.length === rootsBefore + 1)
+    assert(state().rootTerminals.at(-1).kind === 'task', 'custom terminal has the wrong kind')
     const terminalsBefore = state().nodes.find((n) => n.id === 'beta').data.terminals.length
-    choose(document.querySelector('.implementation-group select.add-terminal'), 'custom')
+    state().addTerminal('beta', null)
     await until(
       'added terminal',
       () =>
         state().nodes.find((n) => n.id === 'beta').data.terminals.length === terminalsBefore + 1,
     )
     assert(state().dirty, 'an added terminal is not a map edit')
+
     state().updateTerminal(
       'beta',
       state()
@@ -635,72 +444,29 @@
     )
     smoke.stopTerminal(briefSid)
     await until('briefing terminal stopped', () => !state().sessions[briefSid]?.running)
-    // Closing stops a running terminal and removes its saved tile. Closing a
-    // maximized tile restores the remaining terminals instead of leaving a blank group.
-    const nearbyGroup = () => document.querySelector('.implementation-group[aria-label="NEARBY"]')
-    const nearbyCount = state().nodes.find((n) => n.id === 'nearby').data.terminals.length
-    choose(nearbyGroup().querySelector('select.add-terminal'), 'custom')
+    // Removing a running terminal asks first, then stops it; the map keeps its configuration.
+    await smoke.startTerminal('nearby', 'task')
+    const nearbySid = smoke.sessionId('nearby', 'task')
+    await until('nearby task running', () => state().sessions[nearbySid]?.running)
+    await until('running nearby listed', () => tiles('nearby').length)
+    const confirm = window.confirm
+    const asked = []
+    window.confirm = (message) => (asked.push(message), true)
+    try {
+      click(tiles('nearby')[0].querySelector('button[aria-label="Remove Task"]'))
+    } finally {
+      window.confirm = confirm
+    }
+    assert(asked.length === 1, 'removing a running terminal did not ask first')
     await until(
-      'closable terminal added',
-      () => state().nodes.find((n) => n.id === 'nearby').data.terminals.length === nearbyCount + 1,
+      'nearby stopped and gone',
+      () => !state().sessions[nearbySid]?.running && !tiles('nearby').length,
     )
-    const closeId = state()
-      .nodes.find((n) => n.id === 'nearby')
-      .data.terminals.at(-1).id
-    state().updateTerminal('nearby', closeId, { name: 'Closable', kind: 'task', command: 'cat' })
-    await until('close control', () =>
-      nearbyGroup().querySelector('button[aria-label="Close Closable"]'),
-    )
-    await smoke.startTerminal('nearby', closeId)
-    const closeSid = smoke.sessionId('nearby', closeId)
-    await until('closable terminal running', () => state().sessions[closeSid]?.running)
-    click(nearbyGroup().querySelector('button[aria-label="Maximize Closable"]'))
-    await until('closable terminal maximized', () =>
-      document.querySelector('.terminal-tile.maximized'),
-    )
-    click(nearbyGroup().querySelector('button[aria-label="Close Closable"]'))
-    await until('close confirmation', () => nearbyGroup().querySelector('[role="alertdialog"]'))
-    assert(state().sessions[closeSid]?.running, 'opening confirmation stopped the terminal')
-    const confirmationButton = (label) =>
-      Array.from(nearbyGroup().querySelectorAll('[role="alertdialog"] button')).find(
-        (b) => b.textContent === label,
-      )
-    click(confirmationButton('Cancel'))
-    await until('close cancelled', () => !nearbyGroup().querySelector('[role="alertdialog"]'))
     assert(
       state()
         .nodes.find((n) => n.id === 'nearby')
-        .data.terminals.some((t) => t.id === closeId),
-      'cancelling removed the terminal',
-    )
-    click(nearbyGroup().querySelector('button[aria-label="Close Closable"]'))
-    await until('close confirmation reopened', () => confirmationButton('Remove terminal'))
-    click(confirmationButton('Remove terminal'))
-    await until(
-      'running terminal closed',
-      () =>
-        !state().sessions[closeSid]?.running &&
-        !state()
-          .nodes.find((n) => n.id === 'nearby')
-          .data.terminals.some((t) => t.id === closeId),
-    )
-    await until(
-      'remaining grids restored after close',
-      () =>
-        document.querySelectorAll('.implementation-group').length === 2 &&
-        !document.querySelector('.terminal-tile.maximized'),
-    )
-    assert(state().dirty, 'closing a saved terminal did not mark the map edited')
-    click(nearbyGroup().querySelector('button[aria-label="Close Task"]'))
-    await until('stopped terminal confirmation', () => confirmationButton('Remove terminal'))
-    click(confirmationButton('Remove terminal'))
-    await until(
-      'last stopped terminal closed',
-      () => nearbyGroup().querySelector('.empty-state-title')?.textContent === 'No terminals',
-    )
-    assert(
-      pill('NEARBY').getAttribute('aria-pressed') === 'true',
-      'closing the last terminal hid its component',
+        .data.terminals.some((t) => t.id === 'task'),
+      'removing a terminal dropped its saved configuration',
     )
     state().clearHighlights()
 
@@ -736,7 +502,7 @@
         'http://localhost:9/',
     )
     state().toggleHighlight('beta')
-    await until('beta scope before attention reveal', () => pill('BETA'))
+    await until('beta scope before attention reveal', () => tiles('beta').length)
     click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
     await until('maximized before attention reveal', () =>
       document.querySelector('.terminal-tile.maximized'),
@@ -756,43 +522,24 @@
         state().activeSession === smoke.sessionId('unrelated', 'agent') &&
         document.querySelector('.implementation-view .status-label.health-input'),
     )
-    assertScope(['beta', 'nearby', 'unrelated'], ['nearby'])
-    assert(state().highlighted.join() === 'beta', 'attention reveal changed shared highlights')
+    assertScope(['beta'])
+    assert(state().highlighted.join() === 'beta', 'attention reveal changed shared scope')
     assert(
       !document.querySelector('.terminal-tile.maximized'),
       'attention reveal left another tile maximized',
     )
-    assert(
-      pill('UNRELATED').querySelector('.health-input'),
-      'revealed pill lost its attention badge',
-    )
-    removeComponent('NEARBY')
-    await until('hidden nearby removed before readding', () => !pill('NEARBY'))
-    assertScope(['beta', 'unrelated'])
-    choose(addComponent(), 'nearby')
-    await until('revealed scope preserved when adding', () => pill('NEARBY'))
-    assertScope(['beta', 'unrelated', 'nearby'])
-    assert(
-      state().highlighted.join() === 'beta,unrelated,nearby',
-      'adding lost the temporary reveal',
-    )
-    assert(state().revealed === null, 'adding did not clear the temporary reveal')
-    removeComponent('BETA')
-    await until('beta removed after reveal', () => !pill('BETA'))
-    removeComponent('NEARBY')
-    await until(
-      'revealed component focused',
-      () => document.querySelectorAll('.implementation-group').length === 1,
-    )
+    await until('running agent and server visible', () => tiles('unrelated').length === 2)
     smoke.stopTerminal(smoke.sessionId('unrelated', 'server'))
     await until('stopped server', () => {
       const server = state().sessions[smoke.sessionId('unrelated', 'server')]
       return server && !server.running && server.status?.stopped
     })
+    // Background sessions are tiled only while they run; one still shown must read Stopped.
+    const serverTile = tiles('unrelated').find((tile) => tile.textContent.includes('Server'))
     assert(
       !document.querySelector('.attention-button')?.textContent.includes('failed') &&
-        document.querySelector('.implementation-view .status-label.health-idle')?.textContent ===
-          'Stopped',
+        (!serverTile ||
+          serverTile.querySelector('.status-label.health-idle')?.textContent === 'Stopped'),
       'a stopped task counts as failed',
     )
 

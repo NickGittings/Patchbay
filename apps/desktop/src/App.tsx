@@ -1,6 +1,7 @@
 import PersistedGroup from './components/PersistedGroup'
 import WorkspaceTabs from './components/WorkspaceTabs'
 import SessionsPanel from './components/SessionsPanel'
+import TaskActivityPanel from './components/tasks/TaskActivityPanel'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
 import CommandPalette from './components/CommandPalette'
@@ -29,13 +30,13 @@ import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
-import { GIT_DIRTY_EVENT } from './lib/ipc'
+import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
-import { useStore } from './store'
+import { projectOf, useStore } from './store'
 
 /** Refresh on project changes, file mutations and focus in any app window. */
 function useGitRefresh() {
@@ -174,6 +175,51 @@ export default function App() {
       stopTasks()
     }
   }, [])
+  useEffect(() => {
+    const signatures = new Map<string, string>()
+    const pending = new Set<string>()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const sync = () => {
+      timer = undefined
+      for (const id of pending) {
+        const project = projectOf(id)
+        if (!project) continue
+        const signature = JSON.stringify({
+          ...project,
+          components: project.components.map(({ position: _position, ...component }) => component),
+        })
+        if (signatures.get(id) === signature) continue
+        signatures.set(id, signature)
+        void syncAgentProject(project).catch((e) => {
+          if (signatures.get(id) === signature) signatures.delete(id)
+          if (useStore.getState().project?.id === project.projectId)
+            useStore.getState().setMessage(String(e))
+        })
+      }
+      pending.clear()
+    }
+    const schedule = (id: string | undefined, delay: number) => {
+      if (!id) return
+      pending.add(id)
+      clearTimeout(timer)
+      timer = setTimeout(sync, delay)
+    }
+    for (const id of Object.keys(useStore.getState().captureProjects())) schedule(id, 0)
+    // Edits arrive per keystroke and drag frame, so agents get the map once they settle.
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.projects !== prev.projects || (prev.restoring && !s.restoring))
+        for (const id of Object.keys(s.captureProjects())) schedule(id, 0)
+      if (s.project !== prev.project) {
+        schedule(prev.project?.id, 0)
+        schedule(s.project?.id, 0)
+      } else if (s.nodes !== prev.nodes || s.edges !== prev.edges || s.groups !== prev.groups)
+        schedule(s.project?.id, 250)
+    })
+    return () => {
+      unsubscribe()
+      clearTimeout(timer)
+    }
+  }, [])
   // Tasks belong to the repo, so each project loads its own when its tab opens.
   useEffect(() => {
     if (projectId) void refreshTasks()
@@ -187,6 +233,7 @@ export default function App() {
         <Toolbar />
         <WorkspaceTabs />
         <SessionsPanel />
+        <TaskActivityPanel />
         <CommandPalette />
         <NavigationDialogs />
         <MapMaintenanceReview />

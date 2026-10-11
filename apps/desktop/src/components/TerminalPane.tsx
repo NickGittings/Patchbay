@@ -5,7 +5,7 @@ import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
-import { sessionId, type TerminalSpec } from '../types'
+import { TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -69,6 +69,7 @@ export default function TerminalPane({
             useStore.getState().serviceConnected &&
             !snapshot &&
             terminal.kind === 'shell' &&
+            componentId !== TASK_ROOT_SCOPE &&
             !useStore.getState().sessions[sid]
           ) {
             void startTerminal(componentId, terminal.id, task)
@@ -130,21 +131,24 @@ export default function TerminalPane({
         </div>
       )}
       <div className="terminal-host" ref={hostRef} />
-      {connected && ready && !session && terminal.kind !== 'shell' && (
-        <div className="terminal-overlay">
-          <button
-            className="primary"
-            onClick={() => void startTerminal(componentId, terminal.id, task)}
-          >
-            ▶ Start {terminal.name}
-          </button>
-          {terminal.command && (
-            <code className="terminal-overlay-command" title={terminal.command}>
-              {terminal.command}
-            </code>
-          )}
-        </div>
-      )}
+      {connected &&
+        ready &&
+        !session &&
+        (terminal.kind !== 'shell' || componentId === TASK_ROOT_SCOPE) && (
+          <div className="terminal-overlay">
+            <button
+              className="primary"
+              onClick={() => void startTerminal(componentId, terminal.id, task)}
+            >
+              ▶ Start {terminal.name}
+            </button>
+            {terminal.kind !== 'agent' && terminal.command && (
+              <code className="terminal-overlay-command" title={terminal.command}>
+                {terminal.command}
+              </code>
+            )}
+          </div>
+        )}
     </div>
   )
 }

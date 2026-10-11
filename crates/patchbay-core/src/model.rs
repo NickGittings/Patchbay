@@ -8,6 +8,8 @@ use std::sync::Mutex;
 pub const SCHEMA_VERSION: u32 = 4;
 /// Reserved component scope for project-level planner sessions.
 pub const PLAN_SCOPE: &str = "@plan";
+/// Root implementation sessions have no planner instructions.
+pub const TASK_ROOT_SCOPE: &str = "@task";
 /// Reserved component id for changed files under the project root that no
 /// component contains (root files like `README.md`), as git reports them.
 pub const PROJECT_SCOPE: &str = "@project";
@@ -284,6 +286,9 @@ impl Project {
     /// # Errors
     /// Fails for reserved or duplicate ids, or invalid group members.
     pub fn validate(&self) -> Result<()> {
+        if self.components.iter().any(|c| c.id == TASK_ROOT_SCOPE) {
+            anyhow::bail!("Component id {TASK_ROOT_SCOPE} is reserved for task root sessions");
+        }
         if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
             anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
         }

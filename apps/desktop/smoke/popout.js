@@ -38,9 +38,15 @@
       state.select(node.id)
       state.setView('implementation')
       await until('implementation tile', () =>
-        document.querySelector('.implementation-view button[aria-label^="Maximize"]'),
+        document.querySelector(
+          `.implementation-view [data-component="${node.id}"] button[aria-label^="Maximize"]`,
+        ),
       )
-      document.querySelector('.implementation-view button[aria-label^="Maximize"]').click()
+      document
+        .querySelector(
+          `.implementation-view [data-component="${node.id}"] button[aria-label^="Maximize"]`,
+        )
+        .click()
       await until('maximized tile', () =>
         document.querySelector('.implementation-view .terminal-tile.maximized'),
       )
