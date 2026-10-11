@@ -161,13 +161,13 @@ export const gitDiff = (
 export const gitReview = (project: Project, worktree?: string) =>
   invoke<Review>('git_review', { project, projectId: project.projectId, worktree })
 export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
-export const planContext = async (project: Project, componentIds: string[], task?: string) =>
+/** Planners belong to the project, so they never take a task. */
+export const planContext = async (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', {
     project,
     projectId: project.projectId,
     componentIds,
-    extraContext: await extraContext(project, componentIds, undefined, task),
-    task,
+    extraContext: await extraContext(project, componentIds),
   })
 /** The plan the planner saved for the project (or task); empty when there is none. */
 export const planRead = (projectId: string, task?: string) =>
@@ -186,7 +186,6 @@ export const planStart = async (
   project: Project,
   componentIds: string[],
   terminal: TerminalSpec,
-  task?: string,
   requestId: string = crypto.randomUUID(),
 ) =>
   invoke<string>('plan_start', {
@@ -195,8 +194,7 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
-    extraContext: await extraContext(project, componentIds, undefined, task),
-    task,
+    extraContext: await extraContext(project, componentIds),
   })
 
 const activeId = () => useStore.getState().project?.id

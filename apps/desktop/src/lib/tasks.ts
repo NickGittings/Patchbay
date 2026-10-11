@@ -229,6 +229,12 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
 
 /** What to do with the worktree the open New worktree dialog creates, once it is active. */
 let onNewTask: ((task: Task) => void) | null = null
+/** Close the dialog without leaving its follow-up attached to a later worktree. */
+export function cancelNewTask() {
+  onNewTask = null
+  useStore.getState().setNewTask(null)
+}
+
 function afterNewTask(task: Task) {
   const then = onNewTask
   onNewTask = null

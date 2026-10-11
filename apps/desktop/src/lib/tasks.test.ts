@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import type { Task } from '../types'
 
@@ -10,16 +10,54 @@ vi.mock('./ipc', () => ({
   taskUpdate: vi.fn(),
   taskList: vi.fn(),
   taskActivate: vi.fn(async () => {}),
+  taskCreate: vi.fn(),
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
-const { followActiveTask } = await import('./tasks')
-const { taskUpdate, taskList } = await import('./ipc')
+const { cancelNewTask, createTask, followActiveTask, seedNewTask } = await import('./tasks')
+const { taskCreate, taskUpdate, taskList } = await import('./ipc')
 
 let stop: (() => void) | undefined
+beforeEach(() => vi.clearAllMocks())
 afterEach(() => {
   stop?.()
   stop = undefined
   vi.useRealTimers()
+  cancelNewTask()
+})
+
+test('cancelling the worktree dialog clears its pending follow-up', async () => {
+  useStore.setState(useStore.getInitialState())
+  useStore.getState().loadProject({
+    projectId: 'p',
+    name: 'P',
+    root: '/p',
+    schemaVersion: 4,
+    links: [],
+    components: [],
+  })
+  const task: Task = {
+    id: 't',
+    title: 'T',
+    worktree: '/t',
+    branch: 't',
+    components: [],
+    notes: '',
+    createdMs: 1,
+    missing: false,
+    current: false,
+  }
+  vi.mocked(taskCreate).mockResolvedValue(task)
+  vi.mocked(taskList).mockResolvedValue([task])
+  const then = vi.fn()
+  seedNewTask(then)
+  cancelNewTask()
+  expect(useStore.getState().newTask).toBeNull()
+  await createTask({ title: 'T', branch: 't', components: [] })
+  expect(useStore.getState().activeTask).toBe('t')
+  expect(then).not.toHaveBeenCalled()
+  seedNewTask(then)
+  await createTask({ title: 'T', branch: 't', components: [] })
+  expect(then).toHaveBeenCalledExactlyOnceWith(task)
 })
 
 test('rapid highlights write only the latest scope without listing worktrees again', async () => {

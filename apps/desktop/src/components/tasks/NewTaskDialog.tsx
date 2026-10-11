@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { KIND_COLOR } from '../../lib/display'
 import { gitWorktrees } from '../../lib/ipc'
-import { attachTask, branchFor, createTask } from '../../lib/tasks'
+import { attachTask, branchFor, cancelNewTask, createTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import type { Worktree } from '../../types'
 
@@ -13,7 +13,7 @@ function Dialog({ seed }: { seed: string[] }) {
   const nodes = useStore((s) => s.nodes)
   const tasks = useStore((s) => s.tasks)
   const projectId = useStore((s) => s.project?.id)
-  const close = () => useStore.getState().setNewTask(null)
+  const close = cancelNewTask
   const [mode, setMode] = useState<'new' | 'attach'>('new')
   const [title, setTitle] = useState('')
   const [branch, setBranch] = useState('')

@@ -9,6 +9,7 @@ import {
   TASK_ROOT_SCOPE,
   PLAN_SCOPE,
   PROJECT_SCOPE,
+  plannerSessionId,
   sessionId,
   type Review,
   type Task,
@@ -235,7 +236,7 @@ export function WorktreeRow({
       componentId: PLAN_SCOPE,
       name: 'Planner',
       t,
-      sid: sessionId(PLAN_SCOPE, t.id, id),
+      sid: plannerSessionId(t.id),
     })),
   ].filter(({ sid }) => sessions[sid]?.running)
 

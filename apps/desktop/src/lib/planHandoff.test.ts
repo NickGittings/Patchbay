@@ -110,6 +110,51 @@ test('a missing plan leaves the planner open and starts no agent', async () => {
   expect(startTerminal).not.toHaveBeenCalled()
 })
 
+test('a launch failure after stopping the planner stays in Plan and reports the error', async () => {
+  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [sid]: { running: true } } })
+  vi.mocked(startTerminal).mockRejectedValue(new Error('Launch failed'))
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('Launch failed')
+  expect(ipc.terminalStop).toHaveBeenCalledWith(sid)
+  expect(useStore.getState().view).toBe('plan')
+})
+
+test('an empty project plan cannot reuse a previous worktree plan', async () => {
+  useStore.setState({ activeTask: 'later' })
+  vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
+    text: task ? '# Old worktree plan' : ' ',
+    cut: false,
+  }))
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('No plan received yet')
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+  expect(useStore.getState().view).toBe('plan')
+})
+
+test('saving an edited draft still applies the pending scope assignments', async () => {
+  planDrafts.set('p\n', { text: 'Edited plan', base: '# Plan', overwrite: false })
+  const proposal = {
+    version: 1,
+    plan: '# Earlier proposal',
+    assignments: [{ componentId: 'web', assignment: 'Fix login' }],
+  }
+  vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
+  vi.mocked(ipc.proposalApply).mockResolvedValue(['web'])
+  await implementPlannerPlan('claude')
+  expect(ipc.planWrite).toHaveBeenCalledWith('p', undefined, 'Edited plan', '# Plan')
+  expect(ipc.proposalApply).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: 'p' }),
+    undefined,
+    proposal,
+    undefined,
+  )
+  expect(vi.mocked(ipc.planWrite).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(ipc.proposalApply).mock.invocationCallOrder[0],
+  )
+  expect(useStore.getState().highlighted).toEqual(['web'])
+})
+
 test('editor changes are saved first and conflicts block implementation', async () => {
   planDrafts.set('p\n', { text: 'Edited plan', base: '# Plan', overwrite: false })
   vi.mocked(ipc.planWrite).mockResolvedValue(false)

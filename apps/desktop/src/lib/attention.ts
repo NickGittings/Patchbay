@@ -3,6 +3,7 @@ import {
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
   parseSessionId,
+  plannerSessionId,
   sessionId,
   sessionTask,
   type SessionState,
@@ -72,7 +73,7 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
       })),
       // The planner belongs to the project, so it is listed once, with the project folder.
       ...(task === null ? planTerminals(s.devices) : []).map((terminal) => ({
-        sid: sessionId(PLAN_SCOPE, terminal.id, task),
+        sid: plannerSessionId(terminal.id),
         componentId: PLAN_SCOPE,
         owner: 'Planner',
         task,

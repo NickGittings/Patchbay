@@ -765,7 +765,7 @@ async fn component_context(
     .await
 }
 
-/// The briefing a planner terminal over these components would get.
+/// The briefing a planner terminal over these components would get, in the project folder.
 #[tauri::command]
 async fn plan_context(
     project_id: String,
@@ -773,7 +773,6 @@ async fn plan_context(
     project: Project,
     component_ids: Vec<String>,
     extra_context: Option<Vec<ContextSection>>,
-    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -781,13 +780,12 @@ async fn plan_context(
     let roots = scoped.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = briefing_sections(
             &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            section,
+            None,
             extra_context,
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
@@ -806,7 +804,6 @@ async fn plan_start(
     component_ids: Vec<String>,
     terminal: TerminalSpec,
     extra_context: Option<Vec<ContextSection>>,
-    task: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -814,30 +811,23 @@ async fn plan_start(
     let roots = scoped.roots();
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
+    // The planner belongs to the project, not a worktree: it always runs in the project folder.
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = briefing_sections(
             &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            section,
+            None,
             extra_context,
         );
-        let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        metadata.task.clone_from(&task);
-        let mut spec = context::plan_session_spec_for(
-            &project,
-            &component_ids,
-            &terminal,
-            task.as_deref(),
-            &AllowAll,
-            &sections,
-        )
-        .map_err(err)?;
+        let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
+        let mut spec =
+            context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
+                .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
-            agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
+            agent_commands::inject(agent_server, &project_id, None, &mut spec);
         }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)

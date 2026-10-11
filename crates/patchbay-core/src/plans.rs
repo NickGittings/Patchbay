@@ -4,7 +4,7 @@
 
 use crate::context::ContextSection;
 use anyhow::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -75,6 +75,7 @@ pub fn prepared_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
 /// # Errors
 /// Fails as [`plan_file`], or when the file exists but can't be removed.
 pub fn remove(root: &Path, task: Option<&str>) -> Result<()> {
+    let _ = std::fs::remove_file(presented_file(root, task)?);
     match std::fs::remove_file(plan_file(root, task)?) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),
@@ -206,6 +207,92 @@ pub(crate) fn write_locked(root: &Path, task: Option<&str>, text: &str) -> Resul
     Ok(())
 }
 
+/// A plan an agent presented for approval in its provider's dialog, and the text it
+/// replaced, so a rejection can put that back.
+#[derive(Serialize, Deserialize)]
+struct Presented {
+    previous: String,
+    presented: String,
+}
+
+fn presented_file(root: &Path, task: Option<&str>) -> Result<PathBuf> {
+    Ok(plan_file(root, task)?.with_extension("presented.json"))
+}
+
+/// Save a plan an agent's provider captured: `presented` while it awaits approval
+/// (remembering what it replaced, see [`withdraw`]), else approved. Returns whether
+/// the plan changed; an unchanged one leaves applied assignments alone.
+///
+/// # Errors
+/// As [`write`], or when the presented record can't be written or removed.
+pub fn capture(root: &Path, task: Option<&str>, text: &str, presented: bool) -> Result<bool> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let current = load(root, task)?;
+    let unchanged = current.as_ref().is_some_and(|s| !s.cut && s.text == text);
+    let marker = presented_file(root, task)?;
+    if !presented {
+        match std::fs::remove_file(&marker) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    } else if !unchanged {
+        // A cut plan can't be put back whole; a rejection then keeps the presented one.
+        let previous = match current {
+            Some(saved) if saved.cut => None,
+            Some(saved) => Some(saved.text),
+            None => Some(String::new()),
+        };
+        if let Some(previous) = previous {
+            std::fs::create_dir_all(marker.parent().unwrap_or(Path::new(".")))?;
+            std::fs::write(
+                &marker,
+                serde_json::to_vec(&Presented {
+                    previous,
+                    presented: text.into(),
+                })?,
+            )?;
+        }
+    }
+    if unchanged {
+        return Ok(false);
+    }
+    write_locked(root, task, text)?;
+    Ok(true)
+}
+
+/// Put back what a presented plan replaced once the provider's dialog closed
+/// without approving it, unless the plan was changed since. Returns whether it did.
+///
+/// # Errors
+/// As [`write`], or when the presented record can't be read or removed.
+pub fn withdraw(root: &Path, task: Option<&str>) -> Result<bool> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let marker = presented_file(root, task)?;
+    let bytes = match std::fs::read(&marker) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    std::fs::remove_file(&marker)?;
+    let Ok(Presented {
+        previous,
+        presented,
+    }) = serde_json::from_slice(&bytes)
+    else {
+        return Ok(false);
+    };
+    let current = read(root, task)?;
+    if current.cut || current.text != presented {
+        return Ok(false);
+    }
+    write_locked(root, task, &previous)?;
+    Ok(true)
+}
+
 /// How long ago `then` was, roughly ("3 hours ago").
 fn ago(then: SystemTime) -> String {
     let secs = SystemTime::now()
@@ -302,6 +389,33 @@ mod tests {
         remove(&root, Some("t1")).unwrap();
         assert!(!plan_file(&root, Some("t1")).unwrap().exists());
         remove(&root, Some("t1")).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn presented_plans_are_withdrawn_unless_approved_or_edited() {
+        let Some(root) = repo() else { return };
+        write(&root, None, "agreed").unwrap();
+        assert!(capture(&root, None, "shown", true).unwrap());
+        // The same plan arrives again from the next hook event.
+        assert!(!capture(&root, None, "shown", true).unwrap());
+        assert!(withdraw(&root, None).unwrap());
+        assert_eq!(read(&root, None).unwrap().text, "agreed");
+        assert!(!withdraw(&root, None).unwrap());
+        // Approved plans stay.
+        capture(&root, None, "shown", true).unwrap();
+        assert!(!capture(&root, None, "shown", false).unwrap());
+        assert!(!withdraw(&root, None).unwrap());
+        assert_eq!(read(&root, None).unwrap().text, "shown");
+        // A plan edited after it was shown is left alone.
+        capture(&root, None, "second", true).unwrap();
+        write(&root, None, "edited").unwrap();
+        assert!(!withdraw(&root, None).unwrap());
+        assert_eq!(read(&root, None).unwrap().text, "edited");
+        // Withdrawing the first plan shown leaves no plan.
+        capture(&root, Some("t1"), "first", true).unwrap();
+        withdraw(&root, Some("t1")).unwrap();
+        assert_eq!(read(&root, Some("t1")).unwrap().text, "");
         let _ = fs::remove_dir_all(root);
     }
 

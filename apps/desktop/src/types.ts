@@ -334,6 +334,10 @@ export function sessionId(
   hashed.set(key, id)
   return id
 }
+
+/** The planner belongs to the project, not a worktree, so its sessions never carry a task. */
+export const plannerSessionId = (terminalId: string, projectId?: string) =>
+  sessionId(PLAN_SCOPE, terminalId, null, projectId)
 /** Ids already hashed: selectors compute them for every terminal on every store change. */
 const hashed = new Map<string, string>()
 

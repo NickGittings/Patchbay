@@ -177,6 +177,7 @@ export function startTerminal(
     launch.implementPlan = implementPlan
   } catch (e) {
     useStore.getState().setMessage(String(e))
+    if (implementPlan) return Promise.reject(e)
     return Promise.resolve()
   }
   return launchTerminal(launch)
@@ -239,7 +240,7 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, task, requestId)
+        await planStart(project, ids, terminal, requestId)
         if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
         await terminalStart(
@@ -256,7 +257,10 @@ function launchTerminal(launch: Launch): Promise<void> {
     } catch (e) {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
-      if (requestedEpoch === epoch && !snapshot?.running) useStore.getState().setMessage(String(e))
+      if (requestedEpoch === epoch && !snapshot?.running) {
+        useStore.getState().setMessage(String(e))
+        if (launch.implementPlan) throw e
+      }
     }
   })().finally(() => {
     if (starting.get(sid) === request) starting.delete(sid)

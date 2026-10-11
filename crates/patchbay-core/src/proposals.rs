@@ -144,7 +144,8 @@ pub fn submit(project: &Project, task: Option<&str>, proposal: &Proposal) -> Res
 /// Apply exactly the reviewed artifact pending for `from` to the `to` task (`None`:
 /// the project folder); a newer submission requires review again. The planner
 /// belongs to the project, so its proposals may land in the worktree chosen at
-/// handoff.
+/// handoff. A plan saved for `from` after the proposal (by the planner, its native
+/// plan dialog or the editor) replaces the proposal's plan; the assignments still apply.
 ///
 /// # Errors
 /// Fails if the proposal is invalid or no longer pending, a task is unknown, or the
@@ -185,14 +186,33 @@ pub fn apply(
     let _plan_guard = plans::WRITING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    plans::write_locked(root, to, &expected.plan)?;
+    let mut applied = expected.clone();
+    if let Some(newer) = newer_plan(root, from)? {
+        applied.plan = newer;
+    }
+    plans::write_locked(root, to, &applied.plan)?;
     // The planner's own plan follows what it agreed, so its editor shows what was handed off.
     if from != to {
-        plans::write_locked(root, from, &expected.plan)?;
+        plans::write_locked(root, from, &applied.plan)?;
     }
-    save(root, to, expected, true)?;
+    save(root, to, &applied, true)?;
     std::fs::remove_file(file(root, from, false)?)?;
     Ok(ids)
+}
+
+/// `task`'s saved plan when it was written after its pending proposal was submitted.
+fn newer_plan(root: &Path, task: Option<&str>) -> Result<Option<String>> {
+    let submitted = std::fs::metadata(file(root, task, false)?)?.modified()?;
+    let saved = match std::fs::metadata(plans::plan_file(root, task)?) {
+        Ok(meta) => meta.modified()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if saved <= submitted {
+        return Ok(None);
+    }
+    let plan = plans::read(root, task)?;
+    Ok((!plan.cut && !plan.text.trim().is_empty()).then_some(plan.text))
 }
 
 /// Forget the applied assignments, once the plan they came with changed.
@@ -384,6 +404,40 @@ mod tests {
         );
         assert_eq!(read(&root, Some(&task.id), true).unwrap(), Some(proposed));
         assert_eq!(tasks::find(&root, &task.id).unwrap().components, ["web"]);
+        // A newer native or edited plan keeps the proposal's scope and assignments,
+        // whether Implement targets a worktree or the project folder.
+        for target in [Some(task.id.as_str()), None] {
+            let proposed = proposal();
+            submit(&p, None, &proposed).unwrap();
+            plans::write(&root, None, "# Revised plan\nKeep the newer requirements").unwrap();
+            let path = plans::plan_file(&root, None).unwrap();
+            let submitted = std::fs::metadata(file(&root, None, false).unwrap())
+                .unwrap()
+                .modified()
+                .unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(submitted + std::time::Duration::from_secs(1)),
+                )
+                .unwrap();
+            assert_eq!(apply(&p, None, target, &proposed).unwrap(), ["web"]);
+            let applied = read(&root, target, true).unwrap().unwrap();
+            assert_eq!(applied.plan, "# Revised plan\nKeep the newer requirements");
+            assert_eq!(applied.assignments, proposed.assignments);
+            assert_eq!(plans::read(&root, None).unwrap().text, applied.plan);
+            assert_eq!(plans::read(&root, target).unwrap().text, applied.plan);
+            assert!(read(&root, None, false).unwrap().is_none());
+            assert!(
+                section(&p, target, &["web".into()])
+                    .unwrap()
+                    .body
+                    .contains("Add button")
+            );
+        }
         std::fs::remove_dir_all(base).unwrap();
     }
 }

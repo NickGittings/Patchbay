@@ -41,11 +41,21 @@ pub struct HookEvent {
     pub source: Option<String>,
 }
 
+/// What a planner's hook event says about Claude's native plan dialog.
+#[derive(Debug, PartialEq, Eq)]
+enum PlanSignal<'a> {
+    /// `ExitPlanMode` shows the plan for approval.
+    Presented(&'a str),
+    /// The user approved it.
+    Approved(&'a str),
+    /// The turn went on, so an open dialog closed without approval.
+    Moved,
+}
+
 /// Claude injects the native plan before presenting its approval dialog. Capture
 /// text directly, without opening provider-supplied paths or approving the tool.
-fn native_plan(provider: Adapter, input: &Value) -> Option<&str> {
+fn plan_signal(provider: Adapter, input: &Value) -> Option<PlanSignal<'_>> {
     if provider != Adapter::Claude
-        || input.get("tool_name")?.as_str()? != "ExitPlanMode"
         || input
             .get("agent_id")
             .and_then(Value::as_str)
@@ -54,15 +64,57 @@ fn native_plan(provider: Adapter, input: &Value) -> Option<&str> {
     {
         return None;
     }
-    let payload = match input.get("hook_event_name")?.as_str()? {
-        "PreToolUse" | "PermissionRequest" => input.get("tool_input")?,
-        "PostToolUse" => input.get("tool_response")?,
-        _ => return None,
+    let plan = |field: &str| {
+        input
+            .get(field)?
+            .get("plan")?
+            .as_str()
+            .filter(|plan| !plan.trim().is_empty() && plan.len() <= crate::plans::PLAN_LIMIT)
     };
-    payload
-        .get("plan")?
-        .as_str()
-        .filter(|plan| !plan.trim().is_empty() && plan.len() <= crate::plans::PLAN_LIMIT)
+    let exit_plan = input.get("tool_name").and_then(Value::as_str) == Some("ExitPlanMode");
+    match input.get("hook_event_name")?.as_str()? {
+        "PreToolUse" | "PermissionRequest" if exit_plan => {
+            plan("tool_input").map(PlanSignal::Presented)
+        }
+        "PostToolUse" if exit_plan => plan("tool_response").map(PlanSignal::Approved),
+        // The dialog's own notification, and a new session, say nothing about it.
+        "Notification" | "SessionStart" => None,
+        _ => Some(PlanSignal::Moved),
+    }
+}
+
+/// Hand a planner's native plan to the desktop, within the hook's own timeout. The
+/// journal folder remembers a presented plan, so only this session's dialog is withdrawn.
+fn hand_plan(dir: &Path, signal: PlanSignal<'_>, conversation: Option<String>) {
+    use crate::agent_bridge::{Action, call_from_env_within};
+    let presented = dir.join("plan-presented");
+    let action = match signal {
+        PlanSignal::Presented(plan) => {
+            let _ = std::fs::write(&presented, b"");
+            Action::SavePlan {
+                plan: plan.into(),
+                conversation,
+                presented: true,
+            }
+        }
+        PlanSignal::Approved(plan) => {
+            let _ = std::fs::remove_file(&presented);
+            Action::SavePlan {
+                plan: plan.into(),
+                conversation,
+                presented: false,
+            }
+        }
+        PlanSignal::Moved => {
+            if std::fs::remove_file(&presented).is_err() {
+                return;
+            }
+            Action::WithdrawPlan { conversation }
+        }
+    };
+    // The bridge's launch capability fixes the project/task and rejects non-planners.
+    // An unavailable or slow desktop must never block Claude.
+    let _ = call_from_env_within(action, std::time::Duration::from_secs(1));
 }
 
 /// Isolate and bound provider payloads. Ignore subagents and unrelated notifications.
@@ -168,51 +220,54 @@ pub fn reporter(provider: &str) {
             return Ok(());
         }
         let input: Value = serde_json::from_slice(&bytes)?;
+        if let Some(mut event) = normalize(provider, &input) {
+            event.at_ms = invoked_ms;
+            event.session = session;
+            event.generation = generation;
+            // Status first: handing over a plan waits on the desktop.
+            let _ = journal(&dir, event);
+        }
+        // Plans are captured even when older Claude versions omit turn identity.
         if std::env::var(crate::context::COMPONENT_ENV).ok().as_deref() == Some("plan")
-            && let Some(plan) = native_plan(provider, &input)
+            && let Some(signal) = plan_signal(provider, &input)
         {
-            // Saving is independent of turn-status support in older Claude versions.
-            // The bridge's launch capability fixes the project/task and rejects
-            // non-planners. An unavailable desktop must never block Claude.
-            let _ = crate::agent_bridge::call_from_env(crate::agent_bridge::Action::SavePlan {
-                plan: plan.into(),
-            });
+            let conversation = input.get("session_id").and_then(Value::as_str);
+            hand_plan(&dir, signal, conversation.map(Into::into));
         }
-        let Some(mut event) = normalize(provider, &input) else {
-            return Ok(());
-        };
-        event.at_ms = invoked_ms;
-        event.session = session;
-        event.generation = generation;
-        // Serialize commits so the monitor can consume prompt/progress/completion in order.
-        let lock = crate::workspace::lock(&dir.join("report.lock"))?;
-        let mut locked = false;
-        for _ in 0..100 {
-            if lock.try_lock().is_ok() {
-                locked = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        if !locked {
-            return Ok(());
-        }
-        let counter = dir.join("sequence");
-        let previous = std::fs::read_to_string(&counter)
-            .unwrap_or_default()
-            .parse::<u64>()
-            .unwrap_or(0);
-        event.sequence = previous
-            .checked_add(1)
-            .context("Reporter sequence exhausted")?;
-        atomic_replace(&counter, event.sequence.to_string().as_bytes(), false)?;
-        atomic_replace(
-            &dir.join(format!("{:020}.json", event.sequence)),
-            &serde_json::to_vec(&event)?,
-            false,
-        )?;
         Ok(())
     })();
+}
+
+/// Append `event` to the session's journal, in sequence.
+fn journal(dir: &Path, mut event: HookEvent) -> Result<()> {
+    // Serialize commits so the monitor can consume prompt/progress/completion in order.
+    let lock = crate::workspace::lock(&dir.join("report.lock"))?;
+    let mut locked = false;
+    for _ in 0..100 {
+        if lock.try_lock().is_ok() {
+            locked = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    if !locked {
+        return Ok(());
+    }
+    let counter = dir.join("sequence");
+    let previous = std::fs::read_to_string(&counter)
+        .unwrap_or_default()
+        .parse::<u64>()
+        .unwrap_or(0);
+    event.sequence = previous
+        .checked_add(1)
+        .context("Reporter sequence exhausted")?;
+    atomic_replace(&counter, event.sequence.to_string().as_bytes(), false)?;
+    atomic_replace(
+        &dir.join(format!("{:020}.json", event.sequence)),
+        &serde_json::to_vec(&event)?,
+        false,
+    )?;
+    Ok(())
 }
 
 /// Read committed events, ordered and consumed once. Called under the tracker lock.
@@ -629,44 +684,58 @@ mod tests {
             "tool_name":"ExitPlanMode", "tool_input":{"plan":"# Proposed plan"}
         });
         assert_eq!(
-            native_plan(Adapter::Claude, &input),
-            Some("# Proposed plan")
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Presented("# Proposed plan"))
         );
         // Capture still works when older providers omit turn identity.
         assert!(normalize(Adapter::Claude, &input).is_none());
         input["hook_event_name"] = json!("PermissionRequest");
         assert_eq!(
-            native_plan(Adapter::Claude, &input),
-            Some("# Proposed plan")
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Presented("# Proposed plan"))
         );
         input["hook_event_name"] = json!("PostToolUse");
         input["tool_response"] = json!({"plan":"# Approved revision", "filePath":"/ignored"});
         assert_eq!(
-            native_plan(Adapter::Claude, &input),
-            Some("# Approved revision")
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Approved("# Approved revision"))
         );
-        assert!(native_plan(Adapter::Codex, &input).is_none());
+        assert!(plan_signal(Adapter::Codex, &input).is_none());
         input["agent_id"] = json!("child");
-        assert!(native_plan(Adapter::Claude, &input).is_none());
+        assert!(plan_signal(Adapter::Claude, &input).is_none());
     }
 
     #[test]
-    fn native_plan_ignores_unrelated_events_paths_and_invalid_content() {
+    fn a_turn_that_goes_on_withdraws_and_paths_or_invalid_plans_are_ignored() {
         let mut input = json!({
             "hook_event_name":"PreToolUse", "session_id":"12345678-session",
             "tool_name":"ExitPlanMode", "tool_input":{"planFilePath":"/private/plan.md"}
         });
-        assert!(native_plan(Adapter::Claude, &input).is_none());
+        assert!(plan_signal(Adapter::Claude, &input).is_none());
         for plan in [" ".to_string(), "x".repeat(crate::plans::PLAN_LIMIT + 1)] {
             input["tool_input"]["plan"] = json!(plan);
-            assert!(native_plan(Adapter::Claude, &input).is_none());
+            assert!(plan_signal(Adapter::Claude, &input).is_none());
         }
         input["tool_input"]["plan"] = json!("# Plan");
-        input["tool_name"] = json!("Write");
-        assert!(native_plan(Adapter::Claude, &input).is_none());
-        input["tool_name"] = json!("ExitPlanMode");
+        // A rejected plan: the dialog's notification says nothing, the turn going on does.
+        input["hook_event_name"] = json!("Notification");
+        assert!(plan_signal(Adapter::Claude, &input).is_none());
         input["hook_event_name"] = json!("PostToolUseFailure");
-        assert!(native_plan(Adapter::Claude, &input).is_none());
+        assert_eq!(
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Moved)
+        );
+        input["hook_event_name"] = json!("PreToolUse");
+        input["tool_name"] = json!("Write");
+        assert_eq!(
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Moved)
+        );
+        input["hook_event_name"] = json!("Stop");
+        assert_eq!(
+            plan_signal(Adapter::Claude, &input),
+            Some(PlanSignal::Moved)
+        );
     }
     struct Fixture(PathBuf);
     impl Fixture {

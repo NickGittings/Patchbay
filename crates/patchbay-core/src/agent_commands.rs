@@ -253,6 +253,45 @@ pub fn stop_group(
     result
 }
 
+/// Whether a provider `conversation` is the one the session's native status follows;
+/// any is accepted until the session has reported one.
+fn current_conversation(current: Option<&str>, conversation: Option<&str>) -> bool {
+    match (current, conversation) {
+        (Some(current), Some(conversation)) => current == conversation,
+        _ => true,
+    }
+}
+
+/// The checkout holding a planner's plan, for its own provider conversation only: a
+/// nested run (`claude -p`) inherits the planner's capability but not its conversation.
+fn planner_root(
+    state: &impl Host,
+    scoped: ProjectScope,
+    launch: &LaunchContext,
+    conversation: Option<&str>,
+) -> Result<PathBuf> {
+    anyhow::ensure!(launch.planner, "Only planner sessions can save plans");
+    let snapshot: Option<crate::pty::Snapshot> = call(
+        state,
+        Request::Snapshot {
+            id: launch.agent_session.clone(),
+        },
+    )?;
+    anyhow::ensure!(
+        current_conversation(
+            snapshot
+                .as_ref()
+                .and_then(|s| s.status.agent.as_ref()?.conversation_id.as_deref()),
+            conversation
+        ),
+        "Only the planner's own conversation can save its plan"
+    );
+    let project = scoped.project()?;
+    let readable = scoped.access.restrict(project, &[])?;
+    let (mapped, _, _) = for_task(readable, launch.task.as_deref(), &[], scoped.roots)?;
+    Ok(PathBuf::from(mapped.root))
+}
+
 /// Execute an authenticated command in its fixed launch context.
 ///
 /// # Errors
@@ -321,21 +360,27 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 json!({"sessionId":record.id,"output":output,"running":snapshot.as_ref().is_some_and(|s| s.running),"truncated":snapshot.as_ref().is_some_and(|s| s.truncated),"previewUrls":previews(state, [session_id])?}),
             )
         }
-        Action::SavePlan { plan } => {
-            anyhow::ensure!(launch.planner, "Only planner sessions can save plans");
+        Action::SavePlan {
+            plan,
+            conversation,
+            presented,
+        } => {
             anyhow::ensure!(!plan.trim().is_empty(), "The plan is empty");
-            let project = scoped.project()?;
-            let readable = scoped.access.restrict(project, &[])?;
-            let (mapped, _, _) = for_task(readable, launch.task.as_deref(), &[], scoped.roots)?;
-            let root = Path::new(&mapped.root);
+            let root = planner_root(state, scoped, launch, conversation.as_deref())?;
             // PreToolUse, PermissionRequest and PostToolUse can carry the same plan.
             // Leave applied assignments intact when its contents haven't changed.
-            let saved = crate::plans::read(root, launch.task.as_deref())?;
-            if saved.cut || saved.text != plan {
-                crate::plans::write(root, launch.task.as_deref(), &plan)?;
+            if crate::plans::capture(&root, launch.task.as_deref(), &plan, presented)? {
                 app.proposal_submitted(launch);
             }
             Ok(json!({"saved":true}))
+        }
+        Action::WithdrawPlan { conversation } => {
+            let root = planner_root(state, scoped, launch, conversation.as_deref())?;
+            let withdrawn = crate::plans::withdraw(&root, launch.task.as_deref())?;
+            if withdrawn {
+                app.proposal_submitted(launch);
+            }
+            Ok(json!({"withdrawn":withdrawn}))
         }
         Action::Propose { proposal } => {
             let project = scoped.project()?;
@@ -537,6 +582,8 @@ mod tests {
         planner.task = None;
         let save = || Action::SavePlan {
             plan: "# Native plan".into(),
+            conversation: None,
+            presented: false,
         };
         assert!(dispatch(&host, &planner, save()).is_err());
         assert!(crate::plans::read(&root, None).unwrap().text.is_empty());
@@ -567,18 +614,63 @@ mod tests {
         planner.task = Some("unknown-task".into());
         assert!(dispatch(&host, &planner, save()).is_err());
         planner.task = None;
-        assert!(dispatch(&host, &planner, Action::SavePlan { plan: " ".into() }).is_err());
         assert!(
             dispatch(
                 &host,
                 &planner,
                 Action::SavePlan {
-                    plan: "x".repeat(crate::plans::PLAN_LIMIT + 1)
+                    plan: " ".into(),
+                    conversation: None,
+                    presented: false,
                 }
             )
             .is_err()
         );
-        assert!(host.calls.lock().unwrap().is_empty());
+        assert!(
+            dispatch(
+                &host,
+                &planner,
+                Action::SavePlan {
+                    plan: "x".repeat(crate::plans::PLAN_LIMIT + 1),
+                    conversation: None,
+                    presented: false,
+                }
+            )
+            .is_err()
+        );
+        // A plan shown for approval is put back when the dialog closes without it.
+        let shown = Action::SavePlan {
+            plan: "# Shown".into(),
+            conversation: Some("12345678-conversation".into()),
+            presented: true,
+        };
+        dispatch(&host, &planner, shown).unwrap();
+        assert_eq!(crate::plans::read(&root, None).unwrap().text, "# Shown");
+        let withdraw = Action::WithdrawPlan { conversation: None };
+        assert_eq!(
+            dispatch(&host, &planner, withdraw).unwrap()["withdrawn"],
+            true
+        );
+        assert_eq!(
+            crate::plans::read(&root, None).unwrap().text,
+            "# Native plan"
+        );
+        // The planner's own session is the only one consulted.
+        assert!(
+            host.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| matches!(r, Request::Snapshot { .. }))
+        );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn only_the_planners_conversation_hands_over_plans() {
+        assert!(current_conversation(None, Some("nested")));
+        assert!(current_conversation(Some("planner"), None));
+        assert!(current_conversation(Some("planner"), Some("planner")));
+        assert!(!current_conversation(Some("planner"), Some("nested")));
     }
 }

@@ -72,8 +72,18 @@ pub enum Action {
     Propose {
         proposal: Proposal,
     },
+    /// A native plan from the planner's provider: `presented` while its approval
+    /// dialog is open, else approved. `conversation` is the provider's, so a nested
+    /// run in the planner's terminal can't replace the plan.
     SavePlan {
         plan: String,
+        conversation: Option<String>,
+        #[serde(default)]
+        presented: bool,
+    },
+    /// The provider's approval dialog closed without approving the presented plan.
+    WithdrawPlan {
+        conversation: Option<String>,
     },
 }
 
@@ -233,16 +243,20 @@ impl Server {
 /// Fails if the address isn't loopback, the desktop can't be reached, or it
 /// answers with something other than a version 1 response.
 pub fn call(address: &str, token: &str, action: Action) -> Result<Response> {
+    // Configured validators can take time; connection loss still returns EOF immediately.
+    call_within(address, token, action, Duration::from_secs(3600))
+}
+
+fn call_within(address: &str, token: &str, action: Action, wait: Duration) -> Result<Response> {
     let address: SocketAddr = address
         .trim()
         .parse()
         .context("Invalid desktop connection address")?;
     ensure!(address.ip().is_loopback(), "Desktop bridge must be local");
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+    let mut stream = TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(2)))
         .context("Desktop disconnected; open the launch project in Patchbay")?;
-    // Configured validators can take time; connection loss still returns EOF immediately.
-    stream.set_read_timeout(Some(Duration::from_secs(3600)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(wait))?;
+    stream.set_write_timeout(Some(wait.min(Duration::from_secs(10))))?;
     serde_json::to_writer(
         &mut stream,
         &Request {
@@ -268,16 +282,25 @@ pub fn call(address: &str, token: &str, action: Action) -> Result<Response> {
 /// # Errors
 /// Fails outside a Patchbay agent terminal, when the desktop isn't running, or as [`call`].
 pub fn call_from_env(action: Action) -> Result<Response> {
+    call_from_env_within(action, Duration::from_secs(3600))
+}
+
+/// [`call_from_env`] that waits at most `wait` to connect and again for the answer,
+/// for provider hooks, which must finish within their own timeout.
+///
+/// # Errors
+/// As [`call_from_env`], or when the desktop doesn't answer in time.
+pub fn call_from_env_within(action: Action, wait: Duration) -> Result<Response> {
     let endpoint =
         std::env::var(ENDPOINT_ENV).context("Run agent commands from a Patchbay agent terminal")?;
     let token = std::env::var(TOKEN_ENV).context("Missing Patchbay agent capability")?;
-    call_endpoint(Path::new(&endpoint), &token, action)
+    call_endpoint(Path::new(&endpoint), &token, action, wait)
 }
 
-fn call_endpoint(endpoint: &Path, token: &str, action: Action) -> Result<Response> {
+fn call_endpoint(endpoint: &Path, token: &str, action: Action, wait: Duration) -> Result<Response> {
     let address = std::fs::read_to_string(endpoint)
         .context("Desktop disconnected; open the launch project in Patchbay")?;
-    call(&address, token, action)
+    call_within(&address, token, action, wait)
 }
 
 #[cfg(test)]
@@ -424,6 +447,7 @@ mod tests {
             Path::new(&env[ENDPOINT_ENV]),
             &env[TOKEN_ENV],
             Action::Context {},
+            Duration::from_secs(5),
         )
         .unwrap();
         assert_eq!(response.result.unwrap()["task"], "one");

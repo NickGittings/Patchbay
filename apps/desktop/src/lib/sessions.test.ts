@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { sessionId, type Project } from '../types'
+import { TASK_ROOT_SCOPE, sessionId, type Project } from '../types'
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('./ipc', () => ({
   sessionsList: vi.fn(async () => []),
@@ -11,6 +11,7 @@ vi.mock('./ipc', () => ({
   releaseMapEdit: vi.fn(async () => {}),
   onTerminalEvent: vi.fn(async () => () => {}),
   planStart: vi.fn(),
+  taskRootStart: vi.fn(),
   extensionTerminalRun: vi.fn(),
 }))
 vi.mock('../extensions/host', () => ({ executeExtensionCommand: vi.fn() }))
@@ -116,6 +117,21 @@ test('failed stop keeps the saved terminal and releases its removal guard', asyn
   expect(await closeTerminal('web', 'dev')).toBe(false)
   expect(hasTerminal()).toBe(true)
   expect(ipc.releaseMapEdit).toHaveBeenCalledWith('p', 'lease')
+})
+test('Implement propagates a failed launch so Plan can display it', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))
+  await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', true)).rejects.toThrow(
+    'Launch failed',
+  )
+  expect(useStore.getState().message).toContain('Launch failed')
 })
 test('tab switch while closing edits only the originating project', async () => {
   const stop = deferred()

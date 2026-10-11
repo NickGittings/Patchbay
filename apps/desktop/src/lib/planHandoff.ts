@@ -1,8 +1,8 @@
 import { useStore } from '../store'
-import { PLAN_SCOPE, TASK_ROOT_SCOPE, sessionId } from '../types'
+import { TASK_ROOT_SCOPE, plannerSessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
 import { plannerDevice } from './plan'
-import { planDrafts, savePlanDraft } from './planDrafts'
+import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
@@ -23,10 +23,8 @@ export async function implementPlannerPlan(plannerId: string) {
       throw new Error('The task changed. Choose Implement in the task you want to work on.')
     return s
   }
-  // An edited plan takes precedence over a pending scope proposal.
-  const edited = planDrafts.has(`${projectId}\n`)
   await savePlanDraft(projectId, null)
-  const proposal = edited ? null : await proposalRead(projectId)
+  const proposal = await proposalRead(projectId)
   current()
   if (proposal) {
     const ids = await proposalApply(current().toProject(), undefined, proposal, task ?? undefined)
@@ -39,7 +37,8 @@ export async function implementPlannerPlan(plannerId: string) {
     // Carry the planner's plan into the worktree, where its agents read it.
     const { text, cut } = await planRead(projectId)
     if (cut) throw new Error('The plan is longer than 64 KiB; shorten it before implementing.')
-    if (text.trim()) await planWrite(projectId, task, text, null)
+    if (!text.trim()) throw new Error('No plan received yet. Ask the planner to finish its plan.')
+    await planWrite(projectId, task, text, null)
   }
   const plan = await planRead(projectId, task ?? undefined)
   if (!plan.text.trim())
@@ -49,12 +48,12 @@ export async function implementPlannerPlan(plannerId: string) {
   current()
   // End the planner before launching: approving its native dialog later must not
   // start a second implementation in the planning terminal.
-  const sid = sessionId(PLAN_SCOPE, plannerId, null, projectId)
+  const sid = plannerSessionId(plannerId, projectId)
   if (current().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
-  s.setView('implementation')
   await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, true)
+  current().setView('implementation')
 }

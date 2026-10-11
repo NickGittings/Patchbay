@@ -767,11 +767,13 @@ fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     Ok(file)
 }
 
-/// An agent briefing: its file, its text, and the folders the agent may also read.
+/// An agent briefing: its file, its text, the folders the agent may also read, and
+/// an optional first prompt, given only to a command the briefing was injected into.
 struct Briefing<'a> {
     file: &'a Path,
     text: &'a str,
     dirs: &'a [PathBuf],
+    prompt: Option<&'a str>,
 }
 
 /// Returns false when Codex receives a file pointer instead of the full text.
@@ -787,7 +789,12 @@ fn decorate_agent(
     for dir in briefing.dirs {
         let _ = write!(command, " --add-dir {}", quote_path(shell, dir, env));
     }
-    match agent {
+    // The prompt goes last, but counts against the budget alongside the instructions.
+    let prompt = briefing
+        .prompt
+        .map(|prompt| format!(" {}", shell.quote(prompt)))
+        .unwrap_or_default();
+    let inlined = match agent {
         Agent::Claude => {
             // Interactive sessions honour the file flag (checked with Claude Code 2.1.289).
             let _ = write!(
@@ -797,6 +804,7 @@ fn decorate_agent(
             );
             // Status integration is opt-in in the effective user hook source.
             // Preserve all launch settings, including disabled-hook policy.
+            true
         }
         Agent::Codex => {
             let argument = |text: &str| {
@@ -814,20 +822,25 @@ fn decorate_agent(
             };
             let inline = argument(briefing.text);
             let too_long = match shell {
-                Shell::Windows => cmd_expanded_len(&format!("{command}{inline}"), env) > CMD_BUDGET,
-                Shell::Unix => command.len() + inline.len() > SHELL_ARG_BUDGET,
+                Shell::Windows => {
+                    cmd_expanded_len(&format!("{command}{inline}{prompt}"), env) > CMD_BUDGET
+                }
+                Shell::Unix => command.len() + inline.len() + prompt.len() > SHELL_ARG_BUDGET,
             };
             if too_long {
                 command.push_str(&argument(&format!(
                     "Your Patchbay briefing is in {}; read it before starting.",
                     briefing.file.display()
                 )));
-                return false;
+                false
+            } else {
+                command.push_str(&inline);
+                true
             }
-            command.push_str(&inline);
         }
-    }
-    true
+    };
+    command.push_str(&prompt);
+    inlined
 }
 
 fn brief_agent(
@@ -968,6 +981,9 @@ pub fn task_root_implementation_spec(
     )
 }
 
+/// The first prompt of an agent started by Implement.
+const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
+
 #[allow(clippy::too_many_arguments)]
 fn root_session_spec(
     project: &Project,
@@ -1045,14 +1061,9 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
+            prompt: implement_plan.then_some(IMPLEMENT_PROMPT),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
-        if implement_plan && crate::adapters::Adapter::default_for(&terminal.command).is_some() {
-            command.push(' ');
-            command.push_str(&Shell::current().quote(
-                "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.",
-            ));
-        }
     }
     policy
         .check(Scope::Plan(&components), &command)
@@ -1158,6 +1169,7 @@ pub fn session_spec_with(
             file: &file,
             text: &briefing,
             dirs: &context_dirs,
+            prompt: None,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1393,6 +1405,7 @@ mod tests {
             file: Path::new("/tmp/ctx.md"),
             text: "",
             dirs: &[],
+            prompt: None,
         };
         for command in [
             "claude --settings ./team.json",
@@ -1625,6 +1638,20 @@ mod tests {
             let planner = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
             assert!(!planner.command.contains("Implement the shared plan"));
         }
+        // The prompt follows the briefing: an env-prefixed agent gets it, a command left
+        // unchanged doesn't.
+        for (command, prompted) in [("env FOO=1 claude", true), ("codex exec inspect", false)] {
+            let mut terminal = planner();
+            terminal.command = command.into();
+            let spec =
+                task_root_implementation_spec(&project(), &[], &terminal, None, &AllowAll, &[])
+                    .unwrap();
+            assert_eq!(
+                spec.command.contains("Implement the shared plan"),
+                prompted,
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -1683,7 +1710,12 @@ mod tests {
     }
 
     fn briefing<'a>(file: &'a Path, text: &'a str, dirs: &'a [PathBuf]) -> Briefing<'a> {
-        Briefing { file, text, dirs }
+        Briefing {
+            file,
+            text,
+            dirs,
+            prompt: None,
+        }
     }
 
     #[test]

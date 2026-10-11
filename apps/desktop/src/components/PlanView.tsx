@@ -15,7 +15,7 @@ import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
-import { PLAN_SCOPE, sessionId, type PlannerProposal } from '../types'
+import { PLAN_SCOPE, plannerSessionId, type PlannerProposal } from '../types'
 import Canvas from './Canvas'
 import Menu, { MenuItem } from './Menu'
 import StatusLabel from './status/StatusLabel'
@@ -24,12 +24,6 @@ import WorktreePicker from './tasks/WorktreePicker'
 
 import { planDrafts } from '../lib/planDrafts'
 import { implementPlannerPlan } from '../lib/planHandoff'
-
-/**
- * The planner, its plan and its proposal belong to the project, not a worktree, so switching or
- * creating a worktree mid-plan keeps them; Implement hands the plan to the active worktree.
- */
-const PLANNER_TASK = null
 
 export default function PlanView() {
   const project = useStore((s) => s.project)
@@ -77,7 +71,7 @@ export default function PlanView() {
   const [planCut, setPlanCut] = useState(false)
   const terminals = planTerminals(devices)
   const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
-  const sid = sessionId(PLAN_SCOPE, active.id, PLANNER_TASK)
+  const sid = plannerSessionId(active.id)
   const session = sessions[sid]
   const nearby = nearbyIds(highlighted, edges)
   const stale = session?.running && startedWith[sid] !== [...highlighted].sort().join(',')
@@ -115,7 +109,7 @@ export default function PlanView() {
     void load()
     // A planner's submission is the only other writer of the pending proposal.
     const unlisten = onProposal((event) => {
-      if (event.projectId === projectId && (event.task ?? null) === PLANNER_TASK) {
+      if (event.projectId === projectId && !event.task) {
         void load()
         if (!planDrafts.has(`${projectId}\n`)) setPlanLoads((n) => n + 1)
       }
@@ -238,7 +232,7 @@ export default function PlanView() {
   const restart = async () => {
     setRestarting(true)
     try {
-      await restartTerminal(PLAN_SCOPE, active.id, PLANNER_TASK)
+      await restartTerminal(PLAN_SCOPE, active.id)
     } finally {
       setRestarting(false)
     }
@@ -422,7 +416,7 @@ export default function PlanView() {
           <div className="terminal-dock planner-terminal">
             <div className="tabs">
               {terminals.map((t) => {
-                const tabSid = sessionId(PLAN_SCOPE, t.id, PLANNER_TASK)
+                const tabSid = plannerSessionId(t.id)
                 const status = terminalStatus(t.kind, sessions[tabSid])
                 return (
                   <button
@@ -452,7 +446,7 @@ export default function PlanView() {
                 ) : (
                   <button
                     disabled={restarting}
-                    onClick={() => void startTerminal(PLAN_SCOPE, active.id, PLANNER_TASK)}
+                    onClick={() => void startTerminal(PLAN_SCOPE, active.id)}
                   >
                     ▶ {restarting ? 'Stopping…' : session ? 'Restart' : 'Start'}
                   </button>
@@ -464,12 +458,7 @@ export default function PlanView() {
                 Highlights changed — restart to apply
               </div>
             )}
-            <TerminalPane
-              key={sid}
-              componentId={PLAN_SCOPE}
-              terminal={active}
-              task={PLANNER_TASK}
-            />
+            <TerminalPane key={sid} componentId={PLAN_SCOPE} terminal={active} task={null} />
           </div>
         </div>
       </Panel>
