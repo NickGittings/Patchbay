@@ -27,7 +27,7 @@ fn independent_service_survives_clients_and_serializes_startup() {
     let id: String = client.call(Request::Start {
         request_id: "counter-request".into(),
         metadata: Box::new(Metadata { project_id: "project".into(), project_name: "P".into(), project_root: dir.display().to_string(), component_id: "api".into(), terminal_id: "counter".into(), task: None, name: "Counter".into(), kind: TerminalKind::Task, adapter: None, conversation_id: None, conversation_pinned: false, extension_id: None, command_id: None, key: None, command: String::new() }),
-        spec: SessionSpec { resume_command: None, owns_briefing: false, id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
+        spec: SessionSpec { resume_command: None, owns_briefing: false, exclusive_cwd: false, merge_source: None, id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
     }).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     let before: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
@@ -186,6 +186,8 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
                 spec: SessionSpec {
                     resume_command: Some(command.clone()),
                     owns_briefing: false,
+                    exclusive_cwd: false,
+                    merge_source: None,
                     id: "discard".into(),
                     command: format!("{command} 'kickoff merge'"),
                     cwd: root.clone(),

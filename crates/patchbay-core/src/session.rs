@@ -17,6 +17,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod record;
+
 pub const PROTOCOL: u32 = 2;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
@@ -112,7 +114,7 @@ pub struct Metadata {
     pub command: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "record::StoredRecord")]
 pub struct Record {
     pub id: String,
     pub metadata: Metadata,
@@ -538,19 +540,6 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
-            // Older merge records saved the one-time kickoff in their launch options.
-            if record.metadata.component_id == crate::model::MERGE_SCOPE
-                && record.spec.resume_command.is_none()
-            {
-                let command = if record.launch_command.is_empty() {
-                    &record.spec.command
-                } else {
-                    &record.launch_command
-                };
-                record.spec.resume_command = Some(crate::context::merge_resume_command(command));
-                record.spec.owns_briefing =
-                    record.spec.env.contains_key(crate::context::CONTEXT_ENV);
-            }
             // A record without a snapshot was saved mid-launch; nothing runs it any more, and
             // clients read a snapshot-less, uninterrupted record as a session still starting.
             if record.snapshot.is_none() {
@@ -876,15 +865,13 @@ impl Service {
             !self.pty.is_running(&id),
             "Terminal is already running; reconnect instead"
         );
-        if metadata.component_id == crate::model::MERGE_SCOPE {
+        if spec.exclusive_cwd {
             let running = self.records.lock().unwrap().values().any(|r| {
-                r.metadata.component_id == crate::model::MERGE_SCOPE
-                    && r.spec.cwd == spec.cwd
-                    && self.pty.is_running(&r.id)
+                r.spec.exclusive_cwd && r.spec.cwd == spec.cwd && self.pty.is_running(&r.id)
             });
             anyhow::ensure!(
                 !running,
-                "A merge agent is already running in this destination worktree"
+                "An exclusive session is already running in this working directory"
             );
         }
         if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
@@ -1606,6 +1593,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: String::new(),
             command: "cat".into(),
             cwd: dir.clone(),
@@ -1697,6 +1686,8 @@ mod tests {
                     SessionSpec {
                         resume_command: None,
                         owns_briefing: false,
+                        exclusive_cwd: false,
+                        merge_source: None,
                         id: String::new(),
                         command: "cat".into(),
                         cwd: dir.clone(),
@@ -1829,6 +1820,8 @@ mod tests {
                         SessionSpec {
                             resume_command: None,
                             owns_briefing: false,
+                            exclusive_cwd: false,
+                            merge_source: None,
                             id: String::new(),
                             command: command.into(),
                             cwd: self.dir.clone(),
@@ -1995,6 +1988,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: String::new(),
             command: "echo retained; sleep 30".into(),
             cwd: dir.clone(),
@@ -2087,6 +2082,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: String::new(),
             command: "cat".into(),
             cwd: dir.clone(),
@@ -2204,6 +2201,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: "ignored".into(),
             command: "read line".into(),
             cwd: dir.clone(),
@@ -2334,14 +2333,37 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("owns_briefing");
+        saved[&id]["spec"]
+            .as_object_mut()
+            .unwrap()
+            .remove("exclusive_cwd");
+        saved[&id]["spec"]
+            .as_object_mut()
+            .unwrap()
+            .remove("merge_source");
+        // The source has already been removed. Neither its grant nor its launch option
+        // should survive recovery of records written by the previous implementation.
+        let source = dir.join("removed source's worktree");
+        let metadata_dir = dir.join(".git");
+        saved[&id]["spec"]["dirs"] = serde_json::json!([source, metadata_dir]);
+        let grant = format!(
+            " --add-dir {}",
+            crate::context::quote_argument(source.to_str().unwrap())
+        );
         let kickoff = crate::context::quote_argument(
             "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.",
         );
         saved[&id]["launchCommand"] =
-            serde_json::json!(format!("claude --model fixture {kickoff}"));
+            serde_json::json!(format!("claude --model fixture{grant} {kickoff}"));
+        saved[&id]["spec"]["command"] = saved[&id]["launchCommand"].clone();
         std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let recovered = Service::load(&dir).unwrap();
         let record = recovered.list().pop().unwrap();
+        assert!(record.spec.exclusive_cwd);
+        assert_eq!(record.spec.merge_source, Some(source));
+        assert_eq!(record.spec.dirs, vec![metadata_dir]);
+        assert!(!record.spec.command.contains(&grant));
+        assert!(!record.launch_command.contains(&grant));
         assert_eq!(
             record.spec.resume_command.as_deref(),
             Some("claude --model fixture")
@@ -2351,6 +2373,10 @@ mod tests {
             Some(next_file.clone())
         );
         assert!(recovered.summaries()[0].spec.resume_command.is_none());
+        let serialized = serde_json::to_vec(&record).unwrap();
+        let roundtrip: Record = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(roundtrip.spec.dirs, record.spec.dirs);
+        assert_eq!(roundtrip.spec.merge_source, record.spec.merge_source);
         recovered.handle("1", Request::Forget { id }).unwrap();
         assert!(!next_file.exists());
         std::fs::remove_dir_all(dir).unwrap();
@@ -2358,7 +2384,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn merge_sessions_serialize_destinations_across_projects_and_allow_retries() {
+    fn exclusive_sessions_serialize_directories_across_projects_and_allow_retries() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let other = dir.join("other");
@@ -2366,13 +2392,15 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({
             "projectId":"p", "projectName":"P", "projectRoot":dir,
-            "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge", "name":"Merge",
+            "componentId":"folder", "terminalId":"exclusive", "name":"Exclusive",
             "kind":"agent"
         }))
         .unwrap();
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: true,
+            merge_source: None,
             id: "ignored".into(),
             command: "sleep 30".into(),
             cwd: dir.clone(),
@@ -2399,7 +2427,7 @@ mod tests {
                 .start("competing".into(), second.clone(), spec.clone())
                 .unwrap_err()
                 .to_string()
-                .contains("merge agent is already running")
+                .contains("exclusive session is already running")
         );
         let mut other_spec = spec.clone();
         other_spec.cwd = other;
@@ -2445,6 +2473,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: "ignored".into(),
             command: "i=0; while :; do printf 'number:%s\\n' \"$i\"; i=$((i+1)); sleep 0.05; done"
                 .into(),
@@ -2610,6 +2640,8 @@ mod tests {
         let spec = SessionSpec {
             resume_command: None,
             owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
             id: "ignored".into(),
             command: "exec cat".into(),
             cwd: old.clone(),
@@ -2749,6 +2781,8 @@ mod tests {
             spec: SessionSpec {
                 resume_command: None,
                 owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
                 id: "s".into(),
                 command: String::new(),
                 cwd: project.clone(),

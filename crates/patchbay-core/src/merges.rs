@@ -36,13 +36,18 @@ fn git_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     .collect()
 }
 
-fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
-    let dirs = git_dirs(root)?;
+fn check_owned_dirs(dirs: &[PathBuf], root: &Path, common: &Path) -> Result<()> {
     ensure!(
         dirs.len() == 2 && dirs[1] == common,
         "The worktree at {} isn't in this project's repository",
         root.display()
     );
+    Ok(())
+}
+
+fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
+    let dirs = git_dirs(root)?;
+    check_owned_dirs(&dirs, root, common)?;
     Ok(dirs)
 }
 
@@ -76,10 +81,7 @@ fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>>
         .take(2)
         .map(|path| Path::new(path).canonicalize().map_err(anyhow::Error::from))
         .collect::<Result<Vec<_>>>()?;
-    ensure!(
-        dirs.len() == 2 && dirs[1] == common,
-        "The {role} worktree isn't in this project's repository"
-    );
+    check_owned_dirs(&dirs, root, common)?;
     let head = lines.next().context("Missing worktree HEAD")?;
     let branch = lines
         .next()
@@ -165,50 +167,69 @@ pub fn prepare(
         request.destination_branch,
         destination.head,
     );
-    // Keep the recorded source first so recovery can validate this exact pair.
-    let mut dirs = vec![PathBuf::from(&source.path)];
     // Linked worktrees write their private index/HEAD and the shared object/ref store.
-    for dir in destination_dirs {
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
+    let mut dirs = destination_dirs;
+    dirs.sort();
+    dirs.dedup();
     let mut scoped = project.clone();
     scoped.root.clone_from(&destination.path);
     scoped.components.clear();
     scoped.links.clear();
     scoped.groups.clear();
-    let spec = context::merge_agent_spec(&scoped, &terminal, &text, dirs, policy)?;
+    let mut spec = context::merge_agent_spec(&scoped, &terminal, &text, dirs, policy)?;
+    spec.merge_source = Some(PathBuf::from(&source.path));
     Ok(MergeJob { terminal, spec })
 }
 
-/// Validate only the recorded source and destination before granting resume access.
+/// Validate only the recorded destination before granting resume access.
 /// Unrelated worktrees never widen the grant or prevent a merge from resuming.
 ///
 /// # Errors
-/// Fails if either selected checkout is missing, no longer registered, or belongs to another repo.
+/// Fails if the destination is missing, no longer registered, or belongs to another repo.
 pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
     let common = git::common_dir(root)?.canonicalize()?;
     let trees = git::worktrees(root);
-    let source = spec.dirs.first().context("Missing recorded merge source")?;
-    let mut roots = Vec::new();
-    for path in [&spec.cwd, source] {
-        let path = path.canonicalize()?;
-        ensure!(
-            trees.iter().any(|tree| Path::new(&tree.path) == path),
-            "The merge worktree at {} is no longer registered",
-            path.display()
-        );
-        let dirs = owned_dirs(&path, &common)?;
-        // Only destination metadata was granted on launch.
-        if path == spec.cwd {
-            roots.extend(dirs);
-        }
-        roots.push(path);
-    }
+    let path = spec.cwd.canonicalize()?;
+    ensure!(
+        trees.iter().any(|tree| Path::new(&tree.path) == path),
+        "The merge worktree at {} is no longer registered",
+        path.display()
+    );
+    let mut roots = owned_dirs(&path, &common)?;
+    roots.push(path);
     roots.sort();
     roots.dedup();
     Ok(roots)
+}
+
+/// Upgrade older merge records at the serialization boundary, without involving session service
+/// lifecycle rules. Legacy source grants must also be removed from retained launch options.
+pub(crate) fn restore_record(record: &mut crate::session::Record) {
+    if record.metadata.component_id != MERGE_SCOPE {
+        return;
+    }
+    let spec = &mut record.spec;
+    if !spec.exclusive_cwd {
+        if spec.merge_source.is_none() && !spec.dirs.is_empty() {
+            let source = spec.dirs.remove(0);
+            context::remove_agent_dir(&mut spec.command, &source, &spec.env);
+            context::remove_agent_dir(&mut record.launch_command, &source, &spec.env);
+            if let Some(command) = &mut spec.resume_command {
+                context::remove_agent_dir(command, &source, &spec.env);
+            }
+            spec.merge_source = Some(source);
+        }
+        spec.exclusive_cwd = true;
+    }
+    if spec.resume_command.is_none() && !spec.env.is_empty() {
+        let command = if record.launch_command.is_empty() {
+            &spec.command
+        } else {
+            &record.launch_command
+        };
+        spec.resume_command = Some(context::merge_resume_command(command));
+        spec.owns_briefing = spec.env.contains_key(context::CONTEXT_ENV);
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +329,21 @@ mod tests {
             )
             .unwrap();
             assert_eq!(job.spec.cwd, PathBuf::from(&f.request.destination));
+            assert_eq!(
+                job.spec.merge_source,
+                Some(PathBuf::from(&f.request.source))
+            );
+            assert!(job.spec.exclusive_cwd);
+            assert!(!job.spec.dirs.contains(&PathBuf::from(&f.request.source)));
+            let source_grant = format!(" --add-dir {}", context::quote_argument(&f.request.source));
+            assert!(!job.spec.command.contains(&source_grant));
+            assert!(
+                !job.spec
+                    .resume_command
+                    .as_ref()
+                    .unwrap()
+                    .contains(&source_grant)
+            );
             assert!(!job.spec.service);
             let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
             assert!(body.contains("Source branch: feature"));
@@ -458,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_foreign_repositories_at_stale_registered_paths_on_launch_and_resume() {
+    fn rejects_foreign_worktrees_on_launch_and_foreign_destinations_on_resume() {
         for destination in [false, true] {
             let mut f = Fixture::new();
             if destination {
@@ -495,18 +531,23 @@ mod tests {
             ]))
             .unwrap();
             assert!(f.error().contains("isn't in this project's repository"));
-            assert!(
-                resume_roots(Path::new(&f.project.root), &job.spec)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("isn't in this project's repository")
-            );
+            let resumed = resume_roots(Path::new(&f.project.root), &job.spec);
+            if destination {
+                assert!(
+                    resumed
+                        .unwrap_err()
+                        .to_string()
+                        .contains("isn't in this project's repository")
+                );
+            } else {
+                assert!(resumed.is_ok());
+            }
             context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
     }
 
     #[test]
-    fn resume_only_grants_the_original_pair_and_ignores_broken_unrelated_worktrees() {
+    fn resume_only_grants_the_destination_and_survives_source_removal() {
         let f = Fixture::new();
         let job = f.prepare().unwrap();
         let unrelated = f.dir.join("unrelated");
@@ -521,6 +562,17 @@ mod tests {
         .unwrap();
         let unrelated = unrelated.canonicalize().unwrap();
         let roots = resume_roots(Path::new(&f.project.root), &job.spec).unwrap();
+        assert!(!roots.contains(&PathBuf::from(&f.request.source)));
+        assert!(crate::files::resolve(&roots, Path::new(&f.request.source)).is_err());
+        let record: crate::session::Record = serde_json::from_value(serde_json::json!({
+            "id":"merge", "metadata": {
+                "projectId":"p", "projectName":"P", "projectRoot":f.project.root,
+                "componentId":MERGE_SCOPE, "terminalId":"merge", "name":"Merge", "kind":"agent"
+            },
+            "spec":job.spec, "snapshot":null, "history":[], "interrupted":true, "requestIds":[]
+        }))
+        .unwrap();
+        crate::session::check_resume(&record, &roots).unwrap();
         assert!(!roots.contains(&unrelated));
         assert!(crate::files::resolve(&roots, &unrelated).is_err());
         fs::remove_file(unrelated.join(".git")).unwrap();
@@ -528,7 +580,45 @@ mod tests {
             resume_roots(Path::new(&f.project.root), &job.spec).unwrap(),
             roots
         );
-        fs::remove_dir_all(&f.request.source).unwrap();
+        git::run(git::git(Path::new(&f.project.root)).args([
+            "worktree",
+            "remove",
+            &f.request.source,
+        ]))
+        .unwrap();
+        assert_eq!(
+            resume_roots(Path::new(&f.project.root), &job.spec).unwrap(),
+            roots
+        );
+        crate::session::check_resume(&record, &roots).unwrap();
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+    }
+
+    #[test]
+    fn linked_destination_keeps_only_its_private_and_shared_metadata_grants() {
+        let mut f = Fixture::new();
+        std::mem::swap(&mut f.request.source, &mut f.request.destination);
+        std::mem::swap(
+            &mut f.request.source_branch,
+            &mut f.request.destination_branch,
+        );
+        let job = f.prepare().unwrap();
+        let common = git::common_dir(Path::new(&f.project.root))
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let mut expected = owned_dirs(&job.spec.cwd, &common).unwrap();
+        expected.sort();
+        assert_eq!(job.spec.dirs, expected);
+        let roots = resume_roots(Path::new(&f.project.root), &job.spec).unwrap();
+        assert!(!roots.contains(&PathBuf::from(&f.request.source)));
+        assert!(crate::files::resolve(&roots, Path::new(&f.request.source)).is_err());
+        git::run(git::git(Path::new(&f.project.root)).args([
+            "worktree",
+            "remove",
+            &f.request.destination,
+        ]))
+        .unwrap();
         assert!(resume_roots(Path::new(&f.project.root), &job.spec).is_err());
         context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
     }

@@ -1,22 +1,25 @@
 import { useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
+import { mergeRecords } from '../lib/merge'
 import { useStore } from '../store'
 import type { SessionRecord, TerminalSpec } from '../types'
 import TerminalPane from './TerminalPane'
 import StatusLabel from './status/StatusLabel'
 
 export default function MergeAgentTerminal({
-  records,
   selected,
   select,
   hide,
 }: {
-  records: SessionRecord[]
   selected: SessionRecord
   select: (sid: string) => void
   hide: () => void
 }) {
+  const records = useStore(
+    useShallow((s) => mergeRecords(s.sessionRecords, selected.metadata.projectId)),
+  )
   const session = useStore((s) => s.sessions[selected.id])
   const [stopping, setStopping] = useState(false)
   const terminal: TerminalSpec = {

@@ -842,6 +842,24 @@ pub(crate) fn merge_resume_command(command: &str) -> String {
     command.strip_suffix(&suffix).unwrap_or(command).to_owned()
 }
 
+/// Remove a previously generated folder grant while preserving other provider options.
+pub(crate) fn remove_agent_dir(command: &mut String, dir: &Path, env: &BTreeMap<String, String>) {
+    let shell = Shell::current();
+    let path = dir.display().to_string();
+    let quoted = shell.quote(&path);
+    let argument = if matches!(shell, Shell::Windows) && path.contains('%') {
+        env.iter()
+            .find(|(key, value)| {
+                key.starts_with("PATCHBAY_ARGUMENT_") && **value == quoted[1..quoted.len() - 1]
+            })
+            .map(|(key, _)| shell.quote(&format!("%{key}%")))
+            .unwrap_or(quoted)
+    } else {
+        quoted
+    };
+    *command = command.replacen(&format!(" --add-dir {argument}"), "", 1);
+}
+
 /// Build a dedicated agent job without planner or implementation instructions.
 ///
 /// # Errors
@@ -890,6 +908,8 @@ pub fn merge_agent_spec(
     Ok(SessionSpec {
         resume_command: Some(resume_command),
         owns_briefing: true,
+        exclusive_cwd: true,
+        merge_source: None,
         // Session service derives the identity from its project metadata.
         id: String::new(),
         command,
@@ -1119,6 +1139,8 @@ fn root_session_spec(
     Ok(SessionSpec {
         resume_command: None,
         owns_briefing: false,
+        exclusive_cwd: false,
+        merge_source: None,
         id: task_session_id(&project.root, scope, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
@@ -1231,6 +1253,8 @@ pub fn session_spec_with(
     Ok(SessionSpec {
         resume_command: None,
         owns_briefing: false,
+        exclusive_cwd: false,
+        merge_source: None,
         id: task_session_id(&project.root, component_id, terminal_id, task),
         command,
         cwd: project.component_dir(component),
@@ -2407,6 +2431,8 @@ mod tests {
             let output = launch(SessionSpec {
                 resume_command: None,
                 owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
                 id: "claude/argv".into(),
                 command,
                 cwd: fixture.0.clone(),

@@ -36,7 +36,6 @@ import {
   TASK_ROOT_SCOPE,
   MERGE_SCOPE,
   showsInDock,
-  parseSessionId,
   sessionId,
   sessionTask,
   sessionMetadata,
@@ -49,7 +48,7 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
     sessionMetadata.get(id)?.componentId ??
     s.runtimeTerminals[id]?.componentId ??
     s.sessionRecords.find((r) => r.id === id)?.metadata.componentId ??
-    parseSessionId(id).componentId
+    ''
   )
 }
 

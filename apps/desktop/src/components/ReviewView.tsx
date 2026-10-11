@@ -64,16 +64,19 @@ export default function ReviewView() {
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [mergeDialogScope, setMergeDialogScope] = useState<string | null>(null)
   const mergeSelection = useStore((s) => s.reviewMerges[s.project?.id ?? ''])
-  const sessions = useStore((s) => s.sessions)
-  const records = useStore((s) => s.sessionRecords)
+  const currentMerge = useStore((s) =>
+    currentMergeRecord(
+      mergeRecords(s.sessionRecords, s.project?.id),
+      s.sessions,
+      s.reviewMerges[s.project?.id ?? '']?.sid,
+    ),
+  )
 
   const other = worktrees.find((w) => w.path === worktree && !w.current)
   // `undefined` reviews the open worktree, which the watcher keeps current.
   const target = other?.path
   const projectId = useStore((s) => s.project?.id)
   const source = other ?? worktrees.find((w) => w.current)
-  const merges = mergeRecords(records, projectId)
-  const currentMerge = currentMergeRecord(merges, sessions, mergeSelection?.sid)
   const mergeHidden = mergeSelection?.hidden ?? false
   const showMerge = !!currentMerge && !mergeHidden
   const hideMerge = () => {
@@ -109,19 +112,23 @@ export default function ReviewView() {
     let disposed = false
     void gitWorktrees()
       .then((list) => {
-        if (!disposed) setWorktrees(list)
+        if (!disposed)
+          setWorktrees((previous) =>
+            JSON.stringify(previous) === JSON.stringify(list) ? previous : list,
+          )
       })
       .catch(() => {})
     return () => {
       disposed = true
     }
-  }, [projectId, worktreesKey, activeTask, worktreeRefresh, pathsKey])
+  }, [projectId, worktreesKey, activeTask, worktreeRefresh, pathsKey, revision])
 
   // Another worktree has no watcher: poll it while shown, and refresh on focus.
   useEffect(() => {
+    if (!target || watched) return
     const bump = () => {
       setWorktreeRefresh((n) => n + 1)
-      if (target && !watched) setRefresh((n) => n + 1)
+      setRefresh((n) => n + 1)
     }
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)
@@ -419,7 +426,6 @@ export default function ReviewView() {
         <Panel id="ReviewView-merge-terminal" defaultSize="35" minSize="15" {...mergePanel.props}>
           {currentMerge && !mergePanel.collapsed && (
             <MergeAgentTerminal
-              records={merges}
               selected={currentMerge}
               select={(sid) => useStore.getState().setActiveSession(sid)}
               hide={hideMerge}

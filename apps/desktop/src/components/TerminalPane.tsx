@@ -5,7 +5,7 @@ import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
+import { MERGE_SCOPE, TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -134,7 +134,7 @@ export default function TerminalPane({
       {connected &&
         ready &&
         !session &&
-        !existingSessionId &&
+        componentId !== MERGE_SCOPE &&
         (terminal.kind !== 'shell' || componentId === TASK_ROOT_SCOPE) && (
           <div className="terminal-overlay">
             <button

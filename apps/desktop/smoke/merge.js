@@ -33,7 +33,7 @@
     const opened = await smoke.openProject()
     state().loadProject(opened.project)
     const parent = opened.project.root.slice(0, opened.project.root.lastIndexOf('/'))
-    state().setDevices([
+    const devices = [
       {
         id: 'merge-smoke',
         name: 'Smoke merge agent',
@@ -42,7 +42,8 @@
         source: 'builtin',
         command: `python3 '${parent}/agent.py'`,
       },
-    ])
+    ]
+    state().setDevices([])
     await until('session service', () => state().serviceConnected)
     // Existing layouts from before the terminal was added have only the changes panel.
     state().setPanelLayout('ReviewView-merge', { 'ReviewView-changes': 100 })
@@ -55,6 +56,15 @@
       return until('merge dialog', dialog)
     }
     let form = await openDialog()
+    state().setDevices(devices)
+    await until(
+      'agent preset loaded after opening dialog',
+      () => form.querySelector('select[aria-label="Agent"]').value === 'merge-smoke',
+    )
+    assert(
+      !form.querySelector('button[type="submit"]').disabled,
+      'loaded preset did not enable Start',
+    )
     assert(
       form.querySelector('select[aria-label="Destination worktree"]').value === opened.project.root,
       'destination did not default to the open worktree',

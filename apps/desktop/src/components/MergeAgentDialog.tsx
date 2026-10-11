@@ -34,7 +34,7 @@ export default function MergeAgentDialog({
   const [error, setError] = useState('')
   const pending = useRef(false)
   const target = destinations.find((w) => w.path === destination)
-  const device = agents.find((d) => d.id === agent)
+  const device = agents.find((d) => d.id === agent) ?? agents[0]
   const running = mergeDestinationRunning(records, sessions, destination)
   const submit = async () => {
     if (pending.current || !target?.branch || !source.branch || !device || !connected || running)
@@ -113,7 +113,7 @@ export default function MergeAgentDialog({
           Agent
           <select
             aria-label="Agent"
-            value={agent}
+            value={device.id}
             disabled={busy}
             onChange={(e) => setAgent(e.target.value)}
           >
