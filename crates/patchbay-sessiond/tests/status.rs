@@ -147,6 +147,10 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
     manager
         .spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
                 id: "origin-session".into(),
                 cwd: fixture.0.clone(),
                 command: format!(

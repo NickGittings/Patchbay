@@ -23,7 +23,8 @@ import {
   type SessionListOptions,
   type SessionSort,
 } from '../lib/sessionList'
-import type { SessionRecord, Task } from '../types'
+import { sessionView, type SessionRecord, type Task } from '../types'
+import { revealTerminal } from '../lib/attention'
 import TerminalPane from './TerminalPane'
 
 const EMPTY: Record<SessionFilter, string> = {
@@ -50,6 +51,7 @@ interface SessionListProps {
   busy: boolean
   perform: (action: () => Promise<unknown>) => Promise<void>
   onSelect: (record: SessionRecord) => void
+  onReveal: (record: SessionRecord) => void
   onConversation: (conversation: { id: string; value: string }) => void
 }
 
@@ -61,6 +63,7 @@ function SessionList({
   busy,
   perform,
   onSelect,
+  onReveal,
   onConversation,
 }: SessionListProps) {
   const records = useStore((s) => s.sessionRecords)
@@ -212,6 +215,10 @@ function SessionList({
                               onClick={() =>
                                 void perform(async () => {
                                   useStore.getState().activateProject(r.metadata.projectId)
+                                  if (sessionView(r.metadata.componentId) === 'review') {
+                                    onReveal(r)
+                                    return
+                                  }
                                   await startTerminal(
                                     r.metadata.componentId,
                                     r.metadata.terminalId,
@@ -221,7 +228,9 @@ function SessionList({
                                 })
                               }
                             >
-                              Start new
+                              {sessionView(r.metadata.componentId) === 'review'
+                                ? 'Review merge'
+                                : 'Start new'}
                             </button>
                             <button
                               disabled={!connected || busy}
@@ -346,6 +355,10 @@ export default function SessionsPanel() {
           onSelect={(record) => {
             setSelected(record)
             setHistory(null)
+          }}
+          onReveal={(r) => {
+            revealTerminal({ sid: r.id, componentId: r.metadata.componentId })
+            close()
           }}
           onConversation={setConversation}
         />

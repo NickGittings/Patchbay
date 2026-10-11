@@ -55,16 +55,25 @@ impl Default for Bridge {
 impl Bridge {
     /// Run one request on an idle pooled connection, or a new one.
     pub fn call<T: DeserializeOwned>(&self, request: Request) -> Result<T, String> {
-        let instance = self.instance.lock().unwrap().clone().ok_or(DISCONNECTED)?;
-        let mut client = self.take(&instance)?;
-        let result = client.call(request).map_err(|e| e.to_string());
-        if !client.is_broken() {
-            let mut pool = self.pool.lock().unwrap();
-            if pool.len() < POOL_SIZE && self.instance.lock().unwrap().as_ref() == Some(&instance) {
-                pool.push((client, Instant::now()));
+        session::with_pending_briefing(request, |request| {
+            let instance = self
+                .instance
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| DISCONNECTED.to_string())?;
+            let mut client = self.take(&instance)?;
+            let result = client.call(request).map_err(|e| e.to_string());
+            if !client.is_broken() {
+                let mut pool = self.pool.lock().unwrap();
+                if pool.len() < POOL_SIZE
+                    && self.instance.lock().unwrap().as_ref() == Some(&instance)
+                {
+                    pool.push((client, Instant::now()));
+                }
             }
-        }
-        result
+            result
+        })
     }
     fn take(&self, instance: &str) -> Result<Client, String> {
         {

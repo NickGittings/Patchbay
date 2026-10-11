@@ -3,7 +3,7 @@
 //! repo that contains them and each repo is queried once.
 
 use crate::model::{PROJECT_SCOPE, Project, normalize, relative_path};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -887,6 +887,29 @@ fn parse_porcelain_v2(out: &str, is_repo: impl Fn(&str) -> bool) -> Vec<Entry> {
         });
     }
     entries
+}
+
+/// Run a git command, failing with its own error message.
+pub(crate) fn run(cmd: &mut Command) -> Result<String> {
+    let out = cmd.stdin(Stdio::null()).output().context("running git")?;
+    if !out.status.success() {
+        let message = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        bail!(if message.is_empty() {
+            "git failed".to_string()
+        } else {
+            message
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The object/ref store shared by all linked worktrees.
+pub(crate) fn common_dir(root: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(run(git(root).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ]))?))
 }
 
 #[cfg(test)]

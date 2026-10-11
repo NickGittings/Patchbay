@@ -843,6 +843,129 @@ fn decorate_agent(
     inlined
 }
 
+const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.";
+
+/// Drop only Patchbay's exact trailing kickoff, preserving all provider options.
+pub(crate) fn merge_resume_command(command: &str) -> String {
+    let suffix = format!(" {}", Shell::current().quote(MERGE_PROMPT));
+    command.strip_suffix(&suffix).unwrap_or(command).to_owned()
+}
+
+/// Build a dedicated agent job without planner or implementation instructions.
+///
+/// # Errors
+/// Fails for a non-agent terminal, briefing I/O, or a rejected policy check.
+pub fn merge_agent_spec(
+    project: &Project,
+    terminal: &TerminalSpec,
+    text: &str,
+    dirs: Vec<PathBuf>,
+    policy: &dyn Policy,
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        terminal.kind == TerminalKind::Agent,
+        "Choose an agent preset"
+    );
+    anyhow::ensure!(
+        !terminal.command.trim().is_empty(),
+        "Choose an agent command"
+    );
+    let scope = crate::model::MERGE_SCOPE;
+    // Each pending launch is immutable. Core transport removes it after dispatch;
+    // the service retains an independent copy for conversation recovery.
+    let file = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), text)?;
+    let mut env = BTreeMap::from([
+        (COMPONENT_ENV.into(), scope.into()),
+        (CONTEXT_ENV.into(), file.display().to_string()),
+    ]);
+    let mut command = terminal.command.trim().to_string();
+    let notice = brief_agent(
+        &mut command,
+        &Briefing {
+            file: &file,
+            text,
+            dirs: &dirs,
+            prompt: Some(MERGE_PROMPT),
+        },
+        Shell::current(),
+        &mut env,
+    );
+    let resume_command = merge_resume_command(&command);
+    let components = project.components.iter().collect::<Vec<_>>();
+    if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
+        remove_owned_briefing_file(&file);
+        return Err(anyhow!("blocked by policy: {reason}"));
+    }
+    Ok(SessionSpec {
+        resume_command: Some(resume_command),
+        owns_briefing: true,
+        exclusive_cwd: true,
+        merge_source: None,
+        // Session service derives the identity from its project metadata.
+        id: String::new(),
+        command,
+        cwd: PathBuf::from(&project.root),
+        env,
+        ready_when: String::new(),
+        service: false,
+        notice,
+        dirs,
+    })
+}
+
+/// Return the temporary briefing whose lifetime this session owns.
+#[must_use]
+pub fn owned_briefing(spec: &SessionSpec) -> Option<PathBuf> {
+    spec.owns_briefing
+        .then(|| spec.env.get(CONTEXT_ENV).map(PathBuf::from))
+        .flatten()
+}
+
+/// Retain an independent briefing for an accepted session. Only the UUID filename changes,
+/// preserving directory quoting and encoded shell arguments on every platform.
+pub(crate) fn retain_owned_briefing(spec: &mut SessionSpec) -> Result<()> {
+    let Some(pending) = owned_briefing(spec) else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        is_owned_briefing_file(&pending),
+        "Invalid owned briefing path"
+    );
+    let text = std::fs::read_to_string(&pending)?;
+    let retained = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), &text)?;
+    let old = pending.file_name().unwrap().to_str().unwrap();
+    let new = retained.file_name().unwrap().to_str().unwrap();
+    spec.command = spec.command.replace(old, new);
+    if let Some(command) = &mut spec.resume_command {
+        *command = command.replace(old, new);
+    }
+    for value in spec.env.values_mut() {
+        *value = value.replace(old, new);
+    }
+    if let Some(notice) = &mut spec.notice {
+        *notice = notice.replace(old, new);
+    }
+    Ok(())
+}
+
+/// Delete only files in the dedicated briefing namespace, never arbitrary env paths.
+pub fn remove_owned_briefing_file(file: &Path) {
+    if is_owned_briefing_file(file) {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
+fn is_owned_briefing_file(file: &Path) -> bool {
+    let dir = std::env::temp_dir().join("patchbay");
+    file.parent() == Some(dir.as_path())
+        && file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("merge-"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && file.extension().is_some_and(|s| s == "md")
+}
+
 fn brief_agent(
     command: &mut String,
     briefing: &Briefing<'_>,
@@ -1069,6 +1192,10 @@ fn root_session_spec(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
+        resume_command: None,
+        owns_briefing: false,
+        exclusive_cwd: false,
+        merge_source: None,
         id: task_session_id(&project.root, scope, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
@@ -1179,6 +1306,10 @@ pub fn session_spec_with(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
+        resume_command: None,
+        owns_briefing: false,
+        exclusive_cwd: false,
+        merge_source: None,
         id: task_session_id(&project.root, component_id, terminal_id, task),
         command,
         cwd: project.component_dir(component),
@@ -2136,6 +2267,107 @@ mod tests {
     }
 
     #[test]
+    fn retained_merge_briefings_rewrite_launch_resume_and_shell_paths() {
+        for command in ["claude", "codex", "custom-agent"] {
+            let text = "a".repeat(130 * 1024); // Also exercise Codex's file-pointer fallback.
+            let mut terminal = project().components[0].terminals[0].clone();
+            terminal.command = command.into();
+            let mut spec =
+                merge_agent_spec(&project(), &terminal, &text, vec![], &AllowAll).unwrap();
+            let pending = owned_briefing(&spec).unwrap();
+            let old = pending.file_name().unwrap().to_str().unwrap();
+            // Windows may store a quoted path in a private argument variable.
+            spec.env
+                .insert("PATCHBAY_ARGUMENT_TEST".into(), format!("quoted-{old}"));
+            retain_owned_briefing(&mut spec).unwrap();
+            let retained = owned_briefing(&spec).unwrap();
+            assert_ne!(pending, retained);
+            assert!(pending.exists());
+            assert_eq!(std::fs::read_to_string(&retained).unwrap(), text);
+            assert!(!spec.command.contains(old));
+            assert!(!spec.resume_command.as_ref().unwrap().contains(old));
+            assert!(spec.env.values().all(|v| !v.contains(old)));
+            assert!(spec.notice.as_ref().is_none_or(|n| !n.contains(old)));
+            if command == "claude" {
+                assert!(
+                    spec.command
+                        .contains(retained.file_name().unwrap().to_str().unwrap())
+                );
+            }
+            remove_owned_briefing_file(&pending);
+            remove_owned_briefing_file(&retained);
+        }
+    }
+
+    #[test]
+    fn merge_briefing_cleanup_never_deletes_arbitrary_files() {
+        let mut spec = merge_agent_spec(
+            &project(),
+            &project().components[0].terminals[0],
+            "merge",
+            vec![],
+            &AllowAll,
+        )
+        .unwrap();
+        let file = PathBuf::from(&spec.env[CONTEXT_ENV]);
+        spec.owns_briefing = false;
+        assert!(owned_briefing(&spec).is_none());
+        assert!(file.exists());
+        spec.owns_briefing = true;
+        remove_owned_briefing_file(&owned_briefing(&spec).unwrap());
+        assert!(!file.exists());
+        let unrelated = std::env::temp_dir().join(format!("unrelated-{}.md", uuid::Uuid::new_v4()));
+        std::fs::write(&unrelated, "keep").unwrap();
+        spec.env
+            .insert(CONTEXT_ENV.into(), unrelated.to_string_lossy().into());
+        remove_owned_briefing_file(&owned_briefing(&spec).unwrap());
+        assert!(unrelated.exists());
+        std::fs::remove_file(unrelated).unwrap();
+    }
+
+    #[test]
+    fn codex_counts_the_initial_prompt_before_selecting_inline_instructions() {
+        for (shell, budget, file) in [
+            (
+                Shell::Windows,
+                CMD_BUDGET,
+                Path::new(r"C:\Temp\briefing.md"),
+            ),
+            (Shell::Unix, SHELL_ARG_BUDGET, Path::new("/tmp/briefing.md")),
+        ] {
+            let text = "x".repeat(budget - 200);
+            let mut without_prompt = "codex".to_owned();
+            assert!(decorate_agent(
+                &mut without_prompt,
+                Agent::Codex,
+                &briefing(file, &text, &[]),
+                None,
+                shell,
+                &mut BTreeMap::new()
+            ));
+            let prompt = "p".repeat(250);
+            let with_prompt = Briefing {
+                file,
+                text: &text,
+                dirs: &[],
+                prompt: Some(&prompt),
+            };
+            let mut command = "codex".to_owned();
+            assert!(!decorate_agent(
+                &mut command,
+                Agent::Codex,
+                &with_prompt,
+                None,
+                shell,
+                &mut BTreeMap::new()
+            ));
+            assert!(command.contains("read it before starting"));
+            assert!(command.contains(&prompt));
+            assert!(command.len() < budget);
+        }
+    }
+
+    #[test]
     fn unix_codex_uses_a_pointer_before_exceeding_the_shell_argument_limit() {
         let file = Path::new("/tmp/briefing.md");
         let mut command = "codex".into();
@@ -2328,6 +2560,10 @@ mod tests {
                 &mut env
             ));
             let output = launch(SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
                 id: "claude/argv".into(),
                 command,
                 cwd: fixture.0.clone(),

@@ -447,3 +447,18 @@ export const taskActivities = (projectId: string) =>
 
 export const syncAgentProject = (project: Project) =>
   invoke<void>('sync_agent_project', { projectId: project.projectId, project })
+
+/** Launch a dedicated merge session; validates the worktrees immediately before starting. */
+export const mergeAgentStart = (
+  project: Project,
+  request: import('../types').MergeRequest,
+  terminal: TerminalSpec,
+  requestId: string,
+) =>
+  invoke<string>('merge_agent_start', {
+    projectId: project.projectId,
+    project,
+    request,
+    terminal,
+    requestId,
+  })

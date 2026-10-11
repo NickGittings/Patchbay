@@ -9,14 +9,15 @@
 
 use crate::context::ContextSection;
 use crate::detect::slug;
-use crate::git::{self, git, nearest_repo};
+use crate::git::{self, git, nearest_repo, run};
 use crate::model::Project;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -94,20 +95,6 @@ fn repo_of(root: &Path) -> Result<PathBuf> {
     nearest_repo(root).ok_or_else(|| anyhow!("Tasks need the project to be in a git repo"))
 }
 
-/// Run a git command, failing with its own error message.
-fn run(cmd: &mut Command) -> Result<String> {
-    let out = cmd.stdin(Stdio::null()).output().context("running git")?;
-    if !out.status.success() {
-        let message = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        bail!(if message.is_empty() {
-            "git failed".to_string()
-        } else {
-            message
-        });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 /// Patchbay's per-user folder in the repo's common git directory, shared by
 /// every worktree and never committed.
 ///
@@ -115,8 +102,7 @@ fn run(cmd: &mut Command) -> Result<String> {
 /// Fails when `root` isn't in a git repo or git fails.
 pub fn store_dir(root: &Path) -> Result<PathBuf> {
     let repo = repo_of(root)?;
-    let dir = run(git(&repo).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]))?;
-    Ok(PathBuf::from(dir).join("patchbay"))
+    Ok(git::common_dir(&repo)?.join("patchbay"))
 }
 
 fn store_file(root: &Path) -> Result<PathBuf> {

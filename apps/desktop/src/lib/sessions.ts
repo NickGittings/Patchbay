@@ -7,6 +7,8 @@ import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../stor
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
+  showsInDock,
+  isReservedScope,
   TASK_ROOT_SCOPE,
   type Project,
   type RuntimeTerminal,
@@ -197,8 +199,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       await listenForTerminals()
       if (requestedEpoch !== epoch || isClosing(launch)) return
       if (
-        componentId !== PLAN_SCOPE &&
-        componentId !== TASK_ROOT_SCOPE &&
+        !isReservedScope(componentId) &&
         !runtime &&
         !projectOf(launch.projectId)?.components.some(
           (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
@@ -590,6 +591,12 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
 
 const launchRequests = new Map<string, string>()
 let reconciling: Promise<void> | undefined
+/** Wait out any pre-launch list, then read records fetched after the launch completed. */
+export async function reconcileFreshSessions(): Promise<void> {
+  if (reconciling) await reconciling
+  await reconcileSessions()
+}
+
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
@@ -645,14 +652,17 @@ export function reconcileSessions(force = true): Promise<void> {
             : state?.taskWorkspaces[r.metadata.task ?? '']?.rootTerminals
           )?.some((t) => t.id === r.metadata.terminalId)
         const mapped = onMap(r) || root
-        if (mapped && useStore.getState().runtimeTerminals[r.id])
+        if (
+          (mapped || !showsInDock(r.metadata.componentId)) &&
+          useStore.getState().runtimeTerminals[r.id]
+        )
           useStore.setState((s) => {
             const runtimeTerminals = { ...s.runtimeTerminals }
             delete runtimeTerminals[r.id]
             return { runtimeTerminals }
           })
         if (
-          r.metadata.componentId !== PLAN_SCOPE &&
+          showsInDock(r.metadata.componentId) &&
           !mapped &&
           !useStore.getState().runtimeTerminals[r.id]
         )

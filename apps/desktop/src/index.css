@@ -2632,3 +2632,35 @@ kbd {
 .task-action-result.failed strong {
   color: var(--red);
 }
+
+/* The merge agent stays beside the reviewed source, regardless of the active task. */
+.review-title-row {
+  flex-wrap: wrap;
+}
+.review-merge-button {
+  font-size: 12px;
+}
+.review-merge-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.review-merge-terminal .terminal-tile-header {
+  flex-wrap: wrap;
+}
+.review-merge-terminal select {
+  max-width: 50%;
+}
+.review-merge-location {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.merge-agent-dialog code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}

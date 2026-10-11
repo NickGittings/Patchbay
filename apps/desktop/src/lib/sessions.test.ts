@@ -1,6 +1,9 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type Project } from '../types'
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => ({ connected: true, instanceId: 'test' })),
+}))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('./ipc', () => ({
   sessionsList: vi.fn(async () => []),
@@ -144,4 +147,61 @@ test('tab switch while closing edits only the originating project', async () => 
   expect(await close).toBe(true)
   expect(hasTerminal()).toBe(true)
   expect(useStore.getState().captureProjects().p.state?.nodes[0].data.terminals).toEqual([])
+})
+
+test('reconciliation recovers merge records without registering generic runtime terminals', async () => {
+  useStore.setState({ serviceInstance: 'test' })
+  const record = {
+    id: 'merge',
+    metadata: {
+      projectId: 'p',
+      componentId: '@merge',
+      terminalId: 'merge',
+      name: 'Merge',
+      kind: 'agent',
+    },
+    spec: { cwd: '/p', command: 'codex' },
+    snapshot: null,
+    history: [],
+  } as unknown as import('../types').SessionRecord
+  useStore.getState().addRuntimeTerminal('merge', {
+    projectId: 'p',
+    componentId: '@merge',
+    terminal: { id: 'merge', name: 'Merge', kind: 'agent', command: 'codex' },
+  })
+  vi.mocked(ipc.sessionsList).mockResolvedValue([record])
+  const { reconcileSessions } = await import('./sessions')
+  await reconcileSessions()
+  expect(useStore.getState().sessionRecords).toEqual([record])
+  expect(useStore.getState().runtimeTerminals.merge).toBeUndefined()
+  await reconcileSessions()
+  expect(useStore.getState().runtimeTerminals.merge).toBeUndefined()
+})
+
+test('a post-launch reconcile waits for an older list before selecting and revealing the merge', async () => {
+  const { reconcileSessions, reconcileFreshSessions } = await import('./sessions')
+  useStore.setState({ serviceInstance: 'test' })
+  useStore.getState().hideReviewMerge('old-merge')
+  const pending = deferred()
+  vi.mocked(ipc.sessionsList).mockImplementationOnce(async () => {
+    await pending.promise
+    return []
+  })
+  const prior = reconcileSessions()
+  await vi.waitFor(() => expect(ipc.sessionsList).toHaveBeenCalledOnce())
+  const record = {
+    id: 'new-merge',
+    metadata: { projectId: 'p', componentId: '@merge', terminalId: 'merge', kind: 'agent' },
+    spec: { cwd: '/p', command: 'codex' },
+    snapshot: null,
+    history: [],
+  } as unknown as import('../types').SessionRecord
+  vi.mocked(ipc.sessionsList).mockResolvedValue([record])
+  const fresh = reconcileFreshSessions()
+  pending.resolve()
+  await Promise.all([prior, fresh])
+  expect(ipc.sessionsList).toHaveBeenCalledTimes(2)
+  useStore.getState().setActiveSession(record.id)
+  expect(useStore.getState().reviewMerges.p).toEqual({ sid: record.id, hidden: false })
+  expect(useStore.getState().dockKept).not.toContain(record.id)
 })

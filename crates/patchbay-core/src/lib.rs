@@ -12,6 +12,7 @@ pub mod extensions;
 pub mod files;
 pub mod git;
 pub mod maintenance;
+pub mod merges;
 pub mod model;
 pub mod navigation;
 pub mod plans;
