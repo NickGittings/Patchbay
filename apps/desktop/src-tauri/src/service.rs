@@ -311,6 +311,7 @@ pub fn metadata(
         extension_id: None,
         command_id: None,
         key: None,
+        branch: None,
         command: terminal.command.clone(),
     }
 }

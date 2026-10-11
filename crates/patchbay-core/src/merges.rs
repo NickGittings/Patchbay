@@ -367,7 +367,8 @@ mod tests {
             &Fixture::terminal("claude"),
             &AllowAll,
         )
-        .unwrap();
+        .unwrap()
+        .job;
         let findings = crate::reviews::file(Path::new(&f.project.root), "feature").unwrap();
         fs::write(&findings, "P1 file.txt:1: sample finding").unwrap();
         // Ensure the file postdates the kickoff, including on coarse clocks.

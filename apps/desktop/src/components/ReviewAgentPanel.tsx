@@ -23,9 +23,12 @@ export default function ReviewAgentPanel({
   )
   const session = useStore((s) => s.sessions[selected.id])
   const isReview = selected.metadata.componentId === REVIEW_SCOPE
-  const branch = selected.metadata.name.replace(/^Review · /, '')
-  const loaded = useReviewFindings(selected.metadata.projectId, isReview ? branch : undefined)
   const [findings, setFindings] = useState(false)
+  // Read (and poll) findings only while they're shown.
+  const loaded = useReviewFindings(
+    selected.metadata.projectId,
+    isReview && findings ? (selected.metadata.branch ?? undefined) : undefined,
+  )
   const [stopping, setStopping] = useState(false)
   const terminal: TerminalSpec = {
     id: selected.metadata.terminalId,
@@ -84,7 +87,13 @@ export default function ReviewAgentPanel({
           {loaded?.error ? (
             <p role="alert">{loaded.error}</p>
           ) : (
-            <pre>{loaded ? (loaded.findings?.text ?? 'No findings saved yet.') : 'Loading…'}</pre>
+            <pre>
+              {!selected.metadata.branch
+                ? 'This session predates recorded review branches; findings are shown in Review.'
+                : loaded
+                  ? (loaded.findings?.text ?? 'No findings saved yet.')
+                  : 'Loading…'}
+            </pre>
           )}
           {loaded?.findings?.truncated && <p className="hint">Findings truncated at 64 KiB.</p>}
         </div>

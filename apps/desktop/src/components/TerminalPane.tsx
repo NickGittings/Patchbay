@@ -113,7 +113,7 @@ export default function TerminalPane({
       {!connected && (
         <div className="terminal-notice" role="status">
           {serviceError?.includes('protocol mismatch')
-            ? 'An older Patchbay session service is still running (its work is preserved). Stop it with `patchbay sessions shutdown` from the matching version; Patchbay then starts a new one.'
+            ? 'An older Patchbay session service is still running (its work is preserved). Stop it with `patchbay-cli sessions shutdown` from the matching version (add `--stop-running` to end its running work); Patchbay then starts a new one.'
             : 'Disconnected · reconnecting to session service…'}
         </div>
       )}

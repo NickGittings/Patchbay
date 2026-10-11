@@ -312,7 +312,7 @@ fn resolve(state: &mut AgentState, message: &mut Option<String>, effect: AgentSt
     resolves
 }
 
-fn unix_ms(time: SystemTime) -> u64 {
+pub(crate) fn unix_ms(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|d| u64::try_from(d.as_millis()).ok())

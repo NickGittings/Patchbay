@@ -979,6 +979,7 @@ mod tests {
                 extension_id: None,
                 command_id: None,
                 key: None,
+                branch: None,
                 command: String::new(),
             },
             spec: SessionSpec {

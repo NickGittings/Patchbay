@@ -479,3 +479,5 @@ export const reviewAgentStart = (
 
 export const reviewRead = (projectId: string, branch: string) =>
   invoke<import('../types').ReviewFindings | null>('review_read', { projectId, branch })
+
+export const reviewPrune = (projectId: string) => invoke<void>('review_prune', { projectId })

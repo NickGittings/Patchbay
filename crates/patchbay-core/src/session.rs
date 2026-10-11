@@ -114,6 +114,9 @@ pub struct Metadata {
     pub command_id: Option<String>,
     #[serde(default)]
     pub key: Option<String>,
+    /// The branch a review job covers, so its findings never depend on the display name.
+    #[serde(default)]
+    pub branch: Option<String>,
     #[serde(default)]
     pub command: String,
 }
@@ -1396,6 +1399,7 @@ impl Terminals for ServiceTerminals<'_> {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: terminal.command.clone(),
         };
         let started = self.service.start_with_command(
@@ -2293,6 +2297,7 @@ mod tests {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -2717,6 +2722,7 @@ mod tests {
             extension_id: None,
             command_id: None,
             key: None,
+            branch: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -3026,6 +3032,7 @@ mod tests {
                 extension_id: None,
                 command_id: None,
                 key: None,
+                branch: None,
                 command: String::new(),
             },
             spec: SessionSpec {

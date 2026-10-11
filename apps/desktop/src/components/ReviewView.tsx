@@ -2,7 +2,7 @@ import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
-import { gitReview, gitWorktrees } from '../lib/ipc'
+import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
 import { ago, latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
@@ -122,6 +122,11 @@ export default function ReviewView() {
   const openTask = tasks.find((t) => t.id === activeTask && t.current)?.id ?? null
   const validationTask = other ? (reviewTask?.id ?? undefined) : openTask
   const watched = !other || other.path === taskWorktree
+
+  // Findings of deleted branches are dropped once per visit, off the polling path.
+  useEffect(() => {
+    if (projectId) reviewPrune(projectId).catch(() => {})
+  }, [projectId])
 
   useEffect(() => {
     let disposed = false

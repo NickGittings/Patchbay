@@ -414,6 +414,8 @@ export interface SessionRecord {
     commandId?: string | null
     extensionId?: string | null
     key?: string | null
+    /** The branch a review job covers; absent for other sessions and older records. */
+    branch?: string | null
     conversationId: string | null
     /** Set by the user, so captured resume hints don't replace it. */
     conversationPinned?: boolean

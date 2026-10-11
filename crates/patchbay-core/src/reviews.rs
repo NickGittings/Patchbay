@@ -8,9 +8,8 @@ use crate::pty::SessionSpec;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
 
@@ -43,13 +42,26 @@ pub struct Findings {
     pub truncated: bool,
 }
 
-fn millis(time: SystemTime) -> u64 {
-    u64::try_from(
-        time.duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
+/// A prepared review whose sidecar is already recorded, so findings written as soon
+/// as the agent starts are attributed to it. `rollback` restores the previous sidecar
+/// when the launch is then refused.
+pub struct Prepared {
+    pub job: AgentJob,
+    sidecar: PathBuf,
+    previous: Option<Vec<u8>>,
+}
+
+impl Prepared {
+    /// Put back the sidecar this review replaced, best-effort.
+    pub fn rollback(self) {
+        let _ = match &self.previous {
+            Some(bytes) => crate::plans::write_atomic(&self.sidecar, bytes),
+            None => std::fs::remove_file(&self.sidecar).map_err(Into::into),
+        };
+        if let Some(file) = context::owned_briefing(&self.job.spec) {
+            context::remove_owned_briefing_file(&file);
+        }
+    }
 }
 
 // Include branch identity because slug alone aliases feature/a, feature-a and Feature-a.
@@ -90,15 +102,17 @@ pub fn file(root: &Path, branch: &str) -> Result<PathBuf> {
 
 /// Prepare a review without modifying repository files or Git state.
 /// Read-only behavior is requested in the briefing; the user's command is preserved.
+/// Call `Prepared::rollback` if the launch fails.
 ///
 /// # Errors
-/// Fails for missing, foreign, detached or changed worktrees, invalid refs, policy or I/O.
+/// Fails for missing, foreign, detached or changed worktrees, invalid refs, a base equal
+/// to the reviewed branch, policy or I/O.
 pub fn prepare(
     project: &Project,
     request: &ReviewRequest,
     terminal: &TerminalSpec,
     policy: &dyn Policy,
-) -> Result<AgentJob> {
+) -> Result<Prepared> {
     let root = Path::new(&project.root);
     ensure!(
         git::worktrees(root)
@@ -114,6 +128,10 @@ pub fn prepare(
     ensure!(
         branch == request.branch,
         "The review branch changed; refresh Review and try again"
+    );
+    ensure!(
+        request.base != request.branch,
+        "Choose a base other than the reviewed branch"
     );
     crate::tasks::check_branch(cwd, &request.base)?;
     ensure!(
@@ -159,24 +177,22 @@ pub fn prepare(
         head,
         base: request.base.clone(),
         merge_base,
-        started_ms: millis(SystemTime::now()),
+        started_ms: crate::status::unix_ms(SystemTime::now()),
     };
     // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
     let sidecar = findings.with_extension("json");
-    let tmp = sidecar.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let save = (|| -> Result<()> {
-        std::fs::write(&tmp, serde_json::to_vec(&started)?)?;
-        std::fs::rename(&tmp, &sidecar)?;
-        Ok(())
-    })();
-    if let Err(error) = save {
-        let _ = std::fs::remove_file(tmp);
+    let previous = std::fs::read(&sidecar).ok();
+    if let Err(error) = crate::plans::write_atomic(&sidecar, &serde_json::to_vec(&started)?) {
         if let Some(file) = context::owned_briefing(&spec) {
             context::remove_owned_briefing_file(&file);
         }
         return Err(error);
     }
-    Ok(AgentJob { terminal, spec })
+    Ok(Prepared {
+        job: AgentJob { terminal, spec },
+        sidecar,
+        previous,
+    })
 }
 
 /// Read capped findings. Older findings remain visible, but have no reviewed HEAD.
@@ -189,22 +205,10 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
         return None;
     }
     let handle = std::fs::File::open(file).ok()?;
-    let modified_ms = millis(handle.metadata().ok()?.modified().ok()?);
-    let mut bytes = Vec::new();
-    handle
-        .take(u64::try_from(crate::plans::PLAN_LIMIT + 1).ok()?)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    let truncated = bytes.len() > crate::plans::PLAN_LIMIT;
-    bytes.truncate(crate::plans::PLAN_LIMIT);
-    if truncated
-        && let Err(error) = std::str::from_utf8(&bytes)
-        && error.error_len().is_none()
-    {
-        bytes.truncate(error.valid_up_to());
-    }
+    let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
+    let (text, truncated) = crate::plans::read_capped(handle).ok()?;
     Some(Findings {
-        text: String::from_utf8_lossy(&bytes).into_owned(),
+        text,
         modified_ms,
         reviewed_head: (modified_ms > started.started_ms).then_some(started.head),
         base: started.base,
@@ -229,9 +233,10 @@ pub fn remove(root: &Path, branch: &str) -> Result<()> {
 }
 
 /// Delete saved reviews only when their recorded local branch ref is gone.
+/// A review that can't be deleted is left for the next prune.
 ///
 /// # Errors
-/// Fails for unreadable folders or deletion errors.
+/// Fails for an unreadable folder or ref listing.
 pub fn prune(root: &Path) -> Result<()> {
     let Some(folder) = existing_dir(root) else {
         return Ok(());
@@ -258,7 +263,7 @@ pub fn prune(root: &Path) -> Result<()> {
             .lines()
             .any(|r| r == format!("refs/heads/{}", started.branch))
         {
-            remove(root, &started.branch)?;
+            let _ = remove(root, &started.branch);
         }
     }
     Ok(())
@@ -289,7 +294,7 @@ mod tests {
     use super::*;
     use crate::policy::AllowAll;
     use std::fs;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     struct Fixture {
         dir: PathBuf,
@@ -330,9 +335,12 @@ mod tests {
                 request,
             }
         }
-        fn prepare(&self, command: &str) -> Result<AgentJob> {
+        fn prepared(&self, command: &str) -> Result<Prepared> {
             let terminal = serde_json::from_value(serde_json::json!({"id":"agent", "name":"Agent", "kind":"agent", "command":command})).unwrap();
             prepare(&self.project, &self.request, &terminal, &AllowAll)
+        }
+        fn prepare(&self, command: &str) -> Result<AgentJob> {
+            self.prepared(command).map(|p| p.job)
         }
         fn save(&self, text: &str, after: bool) {
             let path = file(&self.dir, &self.request.branch).unwrap();
@@ -438,6 +446,14 @@ mod tests {
             f.request.base = base.into();
             assert!(f.prepare("claude").is_err());
         }
+        f.request.base = f.request.branch.clone();
+        assert!(
+            f.prepare("claude")
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("other than the reviewed branch")
+        );
         f.request.base = "main".into();
         f.request.branch = "changed".into();
         assert!(
@@ -513,6 +529,33 @@ mod tests {
         git::run(git::git(&f.dir).args(["init", "-q"])).unwrap();
         assert!(resume_roots(&f.dir.join("old-git"), &job.spec).is_err());
         context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+    }
+
+    #[test]
+    fn rollback_restores_the_previous_review_attempt() {
+        let f = Fixture::new();
+        let sidecar = file(&f.dir, &f.request.branch)
+            .unwrap()
+            .with_extension("json");
+        f.prepared("claude").unwrap().rollback();
+        assert!(!sidecar.exists());
+        let first = f.prepare("claude").unwrap();
+        f.save("findings", true);
+        let before = fs::read(&sidecar).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let refused = f.prepared("claude").unwrap();
+        let briefing = context::owned_briefing(&refused.job.spec).unwrap();
+        assert_ne!(fs::read(&sidecar).unwrap(), before);
+        refused.rollback();
+        assert_eq!(fs::read(&sidecar).unwrap(), before);
+        assert!(!briefing.exists());
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .reviewed_head
+                .is_some()
+        );
+        context::remove_owned_briefing_file(&context::owned_briefing(&first.spec).unwrap());
     }
 
     #[test]

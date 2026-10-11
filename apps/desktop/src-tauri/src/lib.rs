@@ -1389,10 +1389,23 @@ async fn review_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        let job = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
+        let prepared = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
             .map_err(err)?;
-        let metadata = service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
-        bridge.start(job.spec, metadata, request_id)
+        let mut metadata = service::metadata(
+            &project_id,
+            &project,
+            model::REVIEW_SCOPE,
+            &prepared.job.terminal,
+        );
+        metadata.branch = Some(request.branch);
+        match bridge.start(prepared.job.spec.clone(), metadata, request_id) {
+            Ok(sid) => Ok(sid),
+            Err(e) => {
+                // A refused launch must not invalidate or re-attribute saved findings.
+                prepared.rollback();
+                Err(e)
+            }
+        }
     })
     .await
 }
@@ -1409,11 +1422,19 @@ async fn review_read(
         .snapshot()
         .root()
         .ok_or("No project is open")?;
-    blocking(move || {
-        patchbay_core::reviews::prune(&root).map_err(err)?;
-        Ok(patchbay_core::reviews::read(&root, &branch))
-    })
-    .await
+    blocking(move || Ok(patchbay_core::reviews::read(&root, &branch))).await
+}
+
+/// Drop saved reviews of deleted branches, best-effort; Review calls it once on opening.
+#[tauri::command]
+async fn review_prune(state: State<'_, AppState>, project_id: String) -> CmdResult<()> {
+    let scoped = state.project(&project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    blocking(move || patchbay_core::reviews::prune(&root).map_err(err)).await
 }
 
 /// Preview what a graph action would run.
@@ -1653,10 +1674,6 @@ async fn session_resume(
         // Planners and agents with a plan were handed the repo's plans folder,
         // which lies under `.git` (and every worktree shares).
         roots.extend(root.as_deref().and_then(patchbay_core::plans::existing_dir));
-        roots.extend(
-            root.as_deref()
-                .and_then(patchbay_core::reviews::existing_dir),
-        );
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
@@ -2009,6 +2026,7 @@ pub fn run() {
                 merge_agent_start,
                 review_agent_start,
                 review_read,
+                review_prune,
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,
                 agent_commands::proposal_read,

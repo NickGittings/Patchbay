@@ -508,7 +508,9 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     // The plan was for this task only. The task is gone already, so a plan that
     // can't be deleted (held open on Windows) doesn't fail the removal.
     let _ = crate::plans::remove(root, Some(id));
-    if let Some(branch) = &task.branch {
+    // Findings belong to the branch, which outlives a forgotten task; only removing
+    // the worktree retires them (prune drops the rest once the branch is deleted).
+    if delete_worktree && let Some(branch) = &task.branch {
         let _ = crate::reviews::remove(root, branch);
     }
     let _ = crate::proposals::remove(root, Some(id));

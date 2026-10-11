@@ -189,6 +189,17 @@ test('review base prefers the matching task base then the open branch', async ()
   expect(defaultReviewBase(source, [], [])).toBe('')
 })
 
+test('a branch is never its own review base', async () => {
+  const { defaultReviewBase, reviewBases } = await import('./reviewAgents')
+  const open = { ...source, current: true }
+  expect(defaultReviewBase(open, [], [open])).toBe('')
+  const own = { worktree: source.path, base: source.branch } as Task
+  expect(defaultReviewBase(source, [own], [tree('/main', 'main', true)])).toBe('main')
+  expect(
+    reviewBases(open, [{ base: 'release' } as Task], [open, tree('/main', 'main', false)]),
+  ).toEqual(['main', 'release'])
+})
+
 test('findings become stale for new HEADs, newer edits and unfinished review attempts', async () => {
   const { reviewState } = await import('./reviewAgents')
   const findings: ReviewFindings = {
