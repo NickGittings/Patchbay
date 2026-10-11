@@ -538,6 +538,19 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
+            // Older merge records saved the one-time kickoff in their launch options.
+            if record.metadata.component_id == crate::model::MERGE_SCOPE
+                && record.spec.resume_command.is_none()
+            {
+                let command = if record.launch_command.is_empty() {
+                    &record.spec.command
+                } else {
+                    &record.launch_command
+                };
+                record.spec.resume_command = Some(crate::context::merge_resume_command(command));
+                record.spec.owns_briefing =
+                    record.spec.env.contains_key(crate::context::CONTEXT_ENV);
+            }
             // A record without a snapshot was saved mid-launch; nothing runs it any more, and
             // clients read a snapshot-less, uninterrupted record as a session still starting.
             if record.snapshot.is_none() {
@@ -673,6 +686,7 @@ impl Service {
             .map(|r| {
                 let mut spec = r.spec.clone();
                 spec.env.clear();
+                spec.resume_command = None;
                 spec.command.clone_from(&r.metadata.command);
                 Record {
                     id: r.id.clone(),
@@ -795,34 +809,23 @@ impl Service {
         metadata: Metadata,
         spec: SessionSpec,
     ) -> Result<String> {
-        let candidate = (metadata.component_id == crate::model::MERGE_SCOPE).then(|| spec.clone());
+        let candidate = crate::context::owned_briefing(&spec);
         let result = self.start_with_command(request, metadata, spec, None, false);
         // A rejected or idempotent launch must not leave its pending briefing behind.
-        if let Some(candidate) = candidate {
-            self.remove_unused_merge_briefing(&candidate);
+        if let Some(file) = candidate {
+            self.remove_unused_briefing(&file);
         }
         result
     }
-    fn remove_unused_merge_briefing(&self, spec: &SessionSpec) {
-        if spec
-            .env
-            .get(crate::context::COMPONENT_ENV)
-            .map(String::as_str)
-            != Some(crate::model::MERGE_SCOPE)
-        {
-            return;
-        }
-        let Some(file) = spec.env.get(crate::context::CONTEXT_ENV) else {
-            return;
-        };
+    fn remove_unused_briefing(&self, file: &Path) {
         if !self
             .records
             .lock()
             .unwrap()
             .values()
-            .any(|record| record.spec.env.get(crate::context::CONTEXT_ENV) == Some(file))
+            .any(|record| crate::context::owned_briefing(&record.spec).as_deref() == Some(file))
         {
-            crate::context::remove_merge_briefing(spec);
+            crate::context::remove_owned_briefing_file(file);
         }
     }
     fn start_with_command(
@@ -939,8 +942,10 @@ impl Service {
             }
             return Err(e);
         }
-        if let Some(previous) = previous {
-            self.remove_unused_merge_briefing(&previous.spec);
+        if let Some(previous) = previous
+            && let Some(file) = crate::context::owned_briefing(&previous.spec)
+        {
+            self.remove_unused_briefing(&file);
         }
         // The serve loop persists shortly; a launch never waits on a full rewrite.
         self.dirty.store(true, Ordering::Release);
@@ -978,7 +983,8 @@ impl Service {
         } else {
             r.launch_command.clone()
         };
-        r.spec.command = adapter.resume(&original, conversation, &r.spec.cwd)?;
+        let resume_command = r.spec.resume_command.as_deref().unwrap_or(&original);
+        r.spec.command = adapter.resume(resume_command, conversation, &r.spec.cwd)?;
         crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
         // Keep the original launch command for later resumes; context environment persists.
         self.start_with_command(request_id, r.metadata, r.spec, Some(original), false)
@@ -1163,8 +1169,10 @@ impl Service {
                     "Stop running work before forgetting it"
                 );
                 let forgotten = self.records.lock().unwrap().remove(&id);
-                if let Some(record) = forgotten {
-                    self.remove_unused_merge_briefing(&record.spec);
+                if let Some(record) = forgotten
+                    && let Some(file) = crate::context::owned_briefing(&record.spec)
+                {
+                    self.remove_unused_briefing(&file);
                 }
                 self.pty.forget(&id);
                 self.dirty.store(true, Ordering::Release);
@@ -1596,6 +1604,8 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: String::new(),
             command: "cat".into(),
             cwd: dir.clone(),
@@ -1685,6 +1695,8 @@ mod tests {
                     "other".into(),
                     other,
                     SessionSpec {
+                        resume_command: None,
+                        owns_briefing: false,
                         id: String::new(),
                         command: "cat".into(),
                         cwd: dir.clone(),
@@ -1815,6 +1827,8 @@ mod tests {
                         request.into(),
                         metadata,
                         SessionSpec {
+                            resume_command: None,
+                            owns_briefing: false,
                             id: String::new(),
                             command: command.into(),
                             cwd: self.dir.clone(),
@@ -1979,6 +1993,8 @@ mod tests {
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: String::new(),
             command: "echo retained; sleep 30".into(),
             cwd: dir.clone(),
@@ -2069,6 +2085,8 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: String::new(),
             command: "cat".into(),
             cwd: dir.clone(),
@@ -2184,6 +2202,8 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: "ignored".into(),
             command: "read line".into(),
             cwd: dir.clone(),
@@ -2302,7 +2322,36 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
-        service.handle("1", Request::Forget { id }).unwrap();
+        service.persist().unwrap();
+        let path = dir.join("sessions.json");
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        saved[&id]["spec"]
+            .as_object_mut()
+            .unwrap()
+            .remove("resume_command");
+        saved[&id]["spec"]
+            .as_object_mut()
+            .unwrap()
+            .remove("owns_briefing");
+        let kickoff = crate::context::quote_argument(
+            "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.",
+        );
+        saved[&id]["launchCommand"] =
+            serde_json::json!(format!("claude --model fixture {kickoff}"));
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let recovered = Service::load(&dir).unwrap();
+        let record = recovered.list().pop().unwrap();
+        assert_eq!(
+            record.spec.resume_command.as_deref(),
+            Some("claude --model fixture")
+        );
+        assert_eq!(
+            crate::context::owned_briefing(&record.spec),
+            Some(next_file.clone())
+        );
+        assert!(recovered.summaries()[0].spec.resume_command.is_none());
+        recovered.handle("1", Request::Forget { id }).unwrap();
         assert!(!next_file.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2322,6 +2371,8 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: "ignored".into(),
             command: "sleep 30".into(),
             cwd: dir.clone(),
@@ -2392,6 +2443,8 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: "ignored".into(),
             command: "i=0; while :; do printf 'number:%s\\n' \"$i\"; i=$((i+1)); sleep 0.05; done"
                 .into(),
@@ -2555,6 +2608,8 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: "ignored".into(),
             command: "exec cat".into(),
             cwd: old.clone(),
@@ -2692,6 +2747,8 @@ mod tests {
                 command: String::new(),
             },
             spec: SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "s".into(),
                 command: String::new(),
                 cwd: project.clone(),

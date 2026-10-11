@@ -19,7 +19,21 @@ export default function AttentionMenu() {
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
   const tasks = useStore((s) => s.tasks)
-  const items = attentionItems({ nodes, sessions, runtimeTerminals, devices, tasks })
+  const sessionRecords = useStore((s) => s.sessionRecords)
+  const rootTerminals = useStore((s) => s.rootTerminals)
+  const taskWorkspaces = useStore((s) => s.taskWorkspaces)
+  const activeTask = useStore((s) => s.activeTask)
+  const items = attentionItems({
+    nodes,
+    sessions,
+    runtimeTerminals,
+    devices,
+    tasks,
+    sessionRecords,
+    rootTerminals,
+    taskWorkspaces,
+    activeTask,
+  })
 
   if (items.length === 0) return null
   const counts = new Map<string, number>()

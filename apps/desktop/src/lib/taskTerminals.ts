@@ -1,7 +1,7 @@
 import type { TaskWorkspace, FlowNode } from '../store'
 import {
   TASK_ROOT_SCOPE,
-  MERGE_SCOPE,
+  showsInDock,
   sessionId,
   type RuntimeTerminal,
   type SessionState,
@@ -55,7 +55,7 @@ export function taskTerminals(
     }
   for (const [sid, runtime] of Object.entries(runtimes)) {
     if (
-      runtime.componentId === MERGE_SCOPE ||
+      !showsInDock(runtime.componentId) ||
       !sessions[sid]?.running ||
       runtime.projectId !== projectId ||
       (runtime.taskId ?? null) !== task ||

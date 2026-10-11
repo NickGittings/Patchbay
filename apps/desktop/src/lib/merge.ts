@@ -41,6 +41,17 @@ export function mergeRecords(records: SessionRecord[], projectId: string | undef
     .sort((a, b) => (sessionTimeMs(b) ?? 0) - (sessionTimeMs(a) ?? 0))
 }
 
+export function currentMergeRecord(
+  records: SessionRecord[],
+  sessions: Record<string, SessionState>,
+  selected: string | undefined,
+) {
+  return (
+    records.find((r) => r.id === selected) ??
+    records.find((r) => sessions[r.id]?.running ?? sessionLive(r))
+  )
+}
+
 export async function startMergeAgent(
   project: Project,
   request: MergeRequest,

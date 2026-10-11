@@ -156,3 +156,21 @@ test('a stop event allows another merge despite an older running record snapshot
   expect(mergeDestinationRunning([r], { merge: { running: false } }, '/main')).toBe(false)
   expect(mergeDestinationRunning([r], { merge: { running: true } }, '/other')).toBe(false)
 })
+
+test('Review automatically selects only running merges and permits explicit finished selection', async () => {
+  const { currentMergeRecord } = await import('./merge')
+  const done = {
+    ...record('done', 'p', MERGE_SCOPE, 20),
+    snapshot: { running: false },
+  } as SessionRecord
+  const running = {
+    ...record('running', 'p', MERGE_SCOPE, 10),
+    snapshot: { running: true },
+  } as SessionRecord
+  expect(currentMergeRecord([done], {}, undefined)).toBeUndefined()
+  expect(currentMergeRecord([done, running], {}, undefined)).toBe(running)
+  expect(
+    currentMergeRecord([done, running], { running: { running: false } }, undefined),
+  ).toBeUndefined()
+  expect(currentMergeRecord([done], {}, 'done')).toBe(done)
+})

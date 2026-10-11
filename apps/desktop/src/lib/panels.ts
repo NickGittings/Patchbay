@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useStore } from '../store'
-import { MERGE_SCOPE, PLAN_SCOPE, sessionId, sessionMetadata, type TerminalSpec } from '../types'
+import { showsInDock, sessionId, sessionMetadata, type TerminalSpec } from '../types'
 
 type State = ReturnType<typeof useStore.getState>
 
@@ -56,8 +56,7 @@ export function dockTabs(s: DockState): DockTab[] {
     ...Object.entries(s.runtimeTerminals)
       .filter(
         ([, t]) =>
-          t.componentId !== MERGE_SCOPE &&
-          t.componentId !== PLAN_SCOPE &&
+          showsInDock(t.componentId) &&
           t.projectId === s.project?.id &&
           (t.taskId ?? null) === task,
       )
@@ -98,8 +97,7 @@ export function hasDockTabs(s: DockState): boolean {
       return true
     return (
       !!runtime &&
-      runtime.componentId !== MERGE_SCOPE &&
-      runtime.componentId !== PLAN_SCOPE &&
+      showsInDock(runtime.componentId) &&
       runtime.projectId === s.project?.id &&
       (runtime.taskId ?? null) === s.activeTask
     )

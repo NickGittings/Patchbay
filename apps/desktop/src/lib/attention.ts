@@ -3,6 +3,7 @@ import {
   PLAN_SCOPE,
   MERGE_SCOPE,
   TASK_ROOT_SCOPE,
+  sessionView,
   parseSessionId,
   sessionId,
   sessionTask,
@@ -203,7 +204,7 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   const s = useStore.getState()
   if (item.componentId === MERGE_SCOPE) {
     s.setActiveSession(item.sid)
-    s.setView('review')
+    s.setView(sessionView(item.componentId)!)
     return
   }
   const runtime = s.runtimeTerminals[item.sid]

@@ -6,7 +6,7 @@ import { gitReview, gitWorktrees } from '../lib/ipc'
 import { latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
-import { mergeDestinations, mergeRecords } from '../lib/merge'
+import { currentMergeRecord, mergeDestinations, mergeRecords } from '../lib/merge'
 import MergeAgentDialog from './MergeAgentDialog'
 import MergeAgentTerminal from './MergeAgentTerminal'
 import { useStore } from '../store'
@@ -63,8 +63,8 @@ export default function ReviewView() {
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [mergeDialogScope, setMergeDialogScope] = useState<string | null>(null)
-  const mergeSession = useStore((s) => s.activeSession)
-  const [hiddenMerge, setHiddenMerge] = useState<{ session: string; focus: string | null }>()
+  const mergeSelection = useStore((s) => s.reviewMerges[s.project?.id ?? ''])
+  const sessions = useStore((s) => s.sessions)
   const records = useStore((s) => s.sessionRecords)
 
   const other = worktrees.find((w) => w.path === worktree && !w.current)
@@ -73,12 +73,11 @@ export default function ReviewView() {
   const projectId = useStore((s) => s.project?.id)
   const source = other ?? worktrees.find((w) => w.current)
   const merges = mergeRecords(records, projectId)
-  const currentMerge = merges.find((r) => r.id === mergeSession) ?? merges[0]
-  const mergeHidden =
-    hiddenMerge?.session === currentMerge?.id && hiddenMerge?.focus === mergeSession
+  const currentMerge = currentMergeRecord(merges, sessions, mergeSelection?.sid)
+  const mergeHidden = mergeSelection?.hidden ?? false
   const showMerge = !!currentMerge && !mergeHidden
   const hideMerge = () => {
-    if (currentMerge) setHiddenMerge({ session: currentMerge.id, focus: mergeSession })
+    if (currentMerge) useStore.getState().hideReviewMerge(currentMerge.id)
   }
   const mergePanel = useCollapsed(
     'ReviewView-merge-terminal',
@@ -87,8 +86,7 @@ export default function ReviewView() {
     hideMerge,
     'ReviewView-open',
   )
-  // Task lifecycle updates and explicit refreshes can change the worktree list. Git's
-  // frequent status updates and review polling only need to reload the diff.
+  // Refresh worktree branches and HEADs independently of the diff watcher.
   const worktreesKey = tasks
     .map((t) => `${t.id}\0${t.worktree}\0${t.branch}\0${t.missing}`)
     .join('\n')
@@ -117,12 +115,14 @@ export default function ReviewView() {
     return () => {
       disposed = true
     }
-  }, [projectId, worktreesKey, activeTask, worktreeRefresh])
+  }, [projectId, worktreesKey, activeTask, worktreeRefresh, pathsKey])
 
   // Another worktree has no watcher: poll it while shown, and refresh on focus.
   useEffect(() => {
-    if (!target || watched) return
-    const bump = () => setRefresh((n) => n + 1)
+    const bump = () => {
+      setWorktreeRefresh((n) => n + 1)
+      if (target && !watched) setRefresh((n) => n + 1)
+    }
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)
     return () => {
@@ -204,7 +204,6 @@ export default function ReviewView() {
           launched={(sid) => {
             if (useStore.getState().project?.id === projectId)
               useStore.getState().setActiveSession(sid)
-            setHiddenMerge(undefined)
             setMergeDialogScope(null)
           }}
         />
@@ -230,7 +229,9 @@ export default function ReviewView() {
                       Start merge agent
                     </button>
                     {mergeHidden && currentMerge && (
-                      <button onClick={() => setHiddenMerge(undefined)}>Show merge</button>
+                      <button onClick={() => useStore.getState().setActiveSession(currentMerge.id)}>
+                        Show merge
+                      </button>
                     )}
                     {worktrees.length > 1 && (
                       <select

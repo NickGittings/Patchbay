@@ -34,12 +34,24 @@ import type {
 } from './types'
 import {
   TASK_ROOT_SCOPE,
+  MERGE_SCOPE,
+  showsInDock,
+  parseSessionId,
   sessionId,
   sessionTask,
   sessionMetadata,
   setProjectIdentity,
   type SessionRecord,
 } from './types'
+
+function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id: string) {
+  return (
+    sessionMetadata.get(id)?.componentId ??
+    s.runtimeTerminals[id]?.componentId ??
+    s.sessionRecords.find((r) => r.id === id)?.metadata.componentId ??
+    parseSessionId(id).componentId
+  )
+}
 
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
@@ -186,6 +198,9 @@ interface State {
    * failed, or exited while active (UI only).
    */
   dockKept: string[]
+  /** Explicit merge selection and Hide state survive Review remounts, per project. */
+  reviewMerges: Record<string, { sid: string; hidden: boolean }>
+  hideReviewMerge: (sid: string) => void
   keepInDock: (id: string) => void
   dropFromDock: (id: string) => void
   restoring: boolean
@@ -439,8 +454,21 @@ export const useStore = create<State>((set, get) => ({
   sessionsPanelOpen: false,
   activityPanelOpen: false,
   dockKept: [],
+  reviewMerges: {},
+  hideReviewMerge: (sid) =>
+    set((s) =>
+      s.project
+        ? {
+            reviewMerges: { ...s.reviewMerges, [s.project.id]: { sid, hidden: true } },
+          }
+        : {},
+    ),
   keepInDock: (id) =>
-    set((s) => (s.dockKept.includes(id) ? {} : { dockKept: [...s.dockKept, id] })),
+    set((s) =>
+      !showsInDock(sessionScope(s, id)) || s.dockKept.includes(id)
+        ? {}
+        : { dockKept: [...s.dockKept, id] },
+    ),
   dropFromDock: (id) => set((s) => ({ dockKept: s.dockKept.filter((k) => k !== id) })),
   restoring: true,
   panels: {},
@@ -827,8 +855,14 @@ export const useStore = create<State>((set, get) => ({
   setActiveSession: (activeSession) =>
     set((s) => ({
       activeSession,
+      reviewMerges:
+        activeSession && s.project && sessionScope(s, activeSession) === MERGE_SCOPE
+          ? { ...s.reviewMerges, [s.project.id]: { sid: activeSession, hidden: false } }
+          : s.reviewMerges,
       dockKept:
-        activeSession && !s.dockKept.includes(activeSession)
+        activeSession &&
+        showsInDock(sessionScope(s, activeSession)) &&
+        !s.dockKept.includes(activeSession)
           ? [...s.dockKept, activeSession]
           : s.dockKept,
     })),

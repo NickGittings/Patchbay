@@ -7,7 +7,8 @@ import { emptyTaskWorkspace, projectOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
-  MERGE_SCOPE,
+  showsInDock,
+  isReservedScope,
   TASK_ROOT_SCOPE,
   type Project,
   type RuntimeTerminal,
@@ -189,8 +190,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       await listenForTerminals()
       if (requestedEpoch !== epoch || isClosing(launch)) return
       if (
-        componentId !== PLAN_SCOPE &&
-        componentId !== TASK_ROOT_SCOPE &&
+        !isReservedScope(componentId) &&
         !runtime &&
         !projectOf(launch.projectId)?.components.some(
           (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
@@ -628,7 +628,7 @@ export function reconcileSessions(force = true): Promise<void> {
           )?.some((t) => t.id === r.metadata.terminalId)
         const mapped = onMap(r) || root
         if (
-          (mapped || r.metadata.componentId === MERGE_SCOPE) &&
+          (mapped || !showsInDock(r.metadata.componentId)) &&
           useStore.getState().runtimeTerminals[r.id]
         )
           useStore.setState((s) => {
@@ -637,8 +637,7 @@ export function reconcileSessions(force = true): Promise<void> {
             return { runtimeTerminals }
           })
         if (
-          r.metadata.componentId !== PLAN_SCOPE &&
-          r.metadata.componentId !== MERGE_SCOPE &&
+          showsInDock(r.metadata.componentId) &&
           !mapped &&
           !useStore.getState().runtimeTerminals[r.id]
         )

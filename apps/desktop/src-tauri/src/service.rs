@@ -55,8 +55,25 @@ impl Default for Bridge {
 impl Bridge {
     /// Run one request on an idle pooled connection, or a new one.
     pub fn call<T: DeserializeOwned>(&self, request: Request) -> Result<T, String> {
-        let instance = self.instance.lock().unwrap().clone().ok_or(DISCONNECTED)?;
-        let mut client = self.take(&instance)?;
+        let connection = self
+            .instance
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| DISCONNECTED.to_string())
+            .and_then(|instance| self.take(&instance).map(|client| (instance, client)));
+        let (instance, mut client) = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                // No request was sent, so the service cannot own this pending briefing.
+                if let Request::Start { spec, .. } = &request
+                    && let Some(file) = patchbay_core::context::owned_briefing(spec)
+                {
+                    patchbay_core::context::remove_owned_briefing_file(&file);
+                }
+                return Err(error);
+            }
+        };
         let result = client.call(request).map_err(|e| e.to_string());
         if !client.is_broken() {
             let mut pool = self.pool.lock().unwrap();
@@ -302,5 +319,46 @@ pub fn metadata(
         command_id: None,
         key: None,
         command: terminal.command.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use patchbay_core::{Project, TerminalSpec, context, policy::AllowAll};
+
+    #[test]
+    fn disconnected_launch_removes_its_pending_owned_briefing() {
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 4, "name": "Fixture", "root": std::env::temp_dir(),
+            "components": [], "links": [], "groups": []
+        }))
+        .unwrap();
+        let terminal: TerminalSpec = serde_json::from_value(serde_json::json!({
+            "id": "merge", "name": "Merge", "kind": "agent", "command": "claude"
+        }))
+        .unwrap();
+        for _ in 0..2 {
+            let spec = context::merge_agent_spec(
+                &project,
+                &terminal,
+                "private briefing",
+                vec![],
+                &AllowAll,
+            )
+            .unwrap();
+            let file = context::owned_briefing(&spec).unwrap();
+            assert!(file.exists());
+            assert!(
+                Bridge::default()
+                    .start(
+                        spec,
+                        metadata("p", &project, patchbay_core::model::MERGE_SCOPE, &terminal),
+                        "retry".into()
+                    )
+                    .is_err()
+            );
+            assert!(!file.exists());
+        }
     }
 }

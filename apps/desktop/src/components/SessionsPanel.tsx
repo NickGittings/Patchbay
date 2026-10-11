@@ -21,7 +21,8 @@ import {
   type SessionListOptions,
   type SessionSort,
 } from '../lib/sessionList'
-import { MERGE_SCOPE, type SessionRecord } from '../types'
+import { sessionView, type SessionRecord } from '../types'
+import { revealTerminal } from '../lib/attention'
 import TerminalPane from './TerminalPane'
 
 const EMPTY: Record<SessionFilter, string> = {
@@ -226,9 +227,8 @@ export default function SessionsPanel() {
                             onClick={() =>
                               void perform(async () => {
                                 useStore.getState().activateProject(r.metadata.projectId)
-                                if (r.metadata.componentId === MERGE_SCOPE) {
-                                  useStore.getState().setView('review')
-                                  useStore.getState().setActiveSession(r.id)
+                                if (sessionView(r.metadata.componentId) === 'review') {
+                                  revealTerminal({ sid: r.id, componentId: r.metadata.componentId })
                                   close()
                                   return
                                 }
@@ -241,7 +241,9 @@ export default function SessionsPanel() {
                               })
                             }
                           >
-                            {r.metadata.componentId === MERGE_SCOPE ? 'Review merge' : 'Start new'}
+                            {sessionView(r.metadata.componentId) === 'review'
+                              ? 'Review merge'
+                              : 'Start new'}
                           </button>
                           <button
                             disabled={!connected || busy}

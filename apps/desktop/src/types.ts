@@ -4,6 +4,15 @@ export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 
+export const isReservedScope = (scope: string) =>
+  scope === PLAN_SCOPE || scope === TASK_ROOT_SCOPE || scope === MERGE_SCOPE
+
+/** Scopes rendered in their own panels instead of Navigation's dock. */
+export const showsInDock = (scope: string) => scope !== PLAN_SCOPE && scope !== MERGE_SCOPE
+
+export const sessionView = (scope: string): View | null =>
+  scope === MERGE_SCOPE ? 'review' : scope === PLAN_SCOPE ? 'plan' : null
+
 /** A whole-branch merge between existing worktrees of the project repository. */
 export interface MergeRequest {
   source: string

@@ -25,6 +25,12 @@ pub struct SessionSpec {
     pub id: String,
     /// Empty for an interactive shell.
     pub command: String,
+    /// Launch options without a one-time kickoff prompt, used for conversation recovery.
+    #[serde(default)]
+    pub resume_command: Option<String>,
+    /// The session service owns the temporary context file's lifetime.
+    #[serde(default)]
+    pub owns_briefing: bool,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     /// Output text that means a service is ready; empty for none.
@@ -1271,6 +1277,8 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "notice".into(),
                 command: "printf process-output".into(),
                 cwd: std::env::temp_dir(),
@@ -1317,6 +1325,8 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "c/t".into(),
                 command: "echo $PB_TEST; exit 3".into(),
                 cwd: std::env::temp_dir(),
@@ -1358,6 +1368,8 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "c/agent".into(),
                 command:
                     "printf 'needs-input\\n{\"message\":\"Allow?\"}' > \"$PATCHBAY_STATUS_FILE\"; \
@@ -1410,6 +1422,8 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "c/agent".into(),
                 command: "printf 'review\\n' > \"$PATCHBAY_STATUS_FILE\"".into(),
                 cwd: std::env::temp_dir(),
@@ -1449,6 +1463,8 @@ mod tests {
     fn reset_forgets_history_and_keeps_generations_unique() {
         let pty = Arc::new(PtyManager::new());
         let spec = |command: &str| SessionSpec {
+            resume_command: None,
+            owns_briefing: false,
             id: "root/shell".into(),
             command: command.into(),
             cwd: std::env::temp_dir(),
@@ -1480,6 +1496,8 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "stubborn".into(),
                 command: "trap '' HUP; echo ready; sleep 30".into(),
                 cwd: std::env::temp_dir(),
@@ -1513,6 +1531,8 @@ mod tests {
             let sink = Arc::new(Collect::default());
             pty.spawn(
                 SessionSpec {
+                    resume_command: None,
+                    owns_briefing: false,
                     id: "restart".into(),
                     command: format!("echo {text}"),
                     cwd: std::env::temp_dir(),
@@ -1551,6 +1571,8 @@ mod tests {
                     barrier.wait();
                     pty.spawn(
                         SessionSpec {
+                            resume_command: None,
+                            owns_briefing: false,
                             id: "concurrent".into(),
                             command: "read line".into(),
                             cwd: std::env::temp_dir(),

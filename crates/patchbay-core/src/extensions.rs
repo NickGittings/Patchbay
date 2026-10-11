@@ -981,6 +981,8 @@ mod tests {
                 command: String::new(),
             },
             spec: SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "s".into(),
                 command: String::new(),
                 cwd: allowed.clone(),

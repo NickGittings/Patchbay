@@ -8,7 +8,6 @@ use crate::pty::SessionSpec;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,27 +23,14 @@ pub struct MergeJob {
     pub spec: SessionSpec,
 }
 
-fn git_output(root: &Path, args: &[&str]) -> Result<String> {
-    let out = git::git(root).args(args).stdin(Stdio::null()).output()?;
-    ensure!(
-        out.status.success(),
-        "Git check failed: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8(out.stdout)?.trim().to_owned())
-}
-
 /// Read both metadata paths in one process, resolving linked-worktree indirection.
 fn git_dirs(root: &Path) -> Result<Vec<PathBuf>> {
-    git_output(
-        root,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-dir",
-            "--git-common-dir",
-        ],
-    )?
+    git::run(git::git(root).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+    ]))?
     .lines()
     .map(|path| Path::new(path).canonicalize().map_err(Into::into))
     .collect()
@@ -63,30 +49,27 @@ fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
 fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>> {
     let root = Path::new(&tree.path);
     // Read ownership, live revision and every operation marker in one process.
-    let metadata = git_output(
-        root,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-dir",
-            "--git-common-dir",
-            "HEAD",
-            "--symbolic-full-name",
-            "HEAD",
-            "--git-path",
-            "MERGE_HEAD",
-            "--git-path",
-            "rebase-merge",
-            "--git-path",
-            "rebase-apply",
-            "--git-path",
-            "CHERRY_PICK_HEAD",
-            "--git-path",
-            "REVERT_HEAD",
-            "--git-path",
-            "sequencer",
-        ],
-    )?;
+    let metadata = git::run(git::git(root).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+        "HEAD",
+        "--symbolic-full-name",
+        "HEAD",
+        "--git-path",
+        "MERGE_HEAD",
+        "--git-path",
+        "rebase-merge",
+        "--git-path",
+        "rebase-apply",
+        "--git-path",
+        "CHERRY_PICK_HEAD",
+        "--git-path",
+        "REVERT_HEAD",
+        "--git-path",
+        "sequencer",
+    ]))?;
     let mut lines = metadata.lines();
     let dirs = lines
         .by_ref()
@@ -114,7 +97,7 @@ fn clean(tree: &mut Worktree, role: &str, common: &Path) -> Result<Vec<PathBuf>>
         lines.all(|path| !Path::new(path).exists()),
         "The {role} worktree has an operation in progress; finish or abort it first"
     );
-    let status = git_output(root, &["status", "--porcelain", "--untracked-files=all"])?;
+    let status = git::run(git::git(root).args(["status", "--porcelain", "--untracked-files=all"]))?;
     ensure!(
         status.is_empty(),
         "The {role} worktree has uncommitted changes; commit or clear them before merging"
@@ -159,9 +142,7 @@ pub fn prepare(
         source.path != destination.path && source.branch != destination.branch,
         "Choose a different destination branch and worktree"
     );
-    let common = git_dirs(Path::new(&project.root))?
-        .pop()
-        .context("Missing Git common directory")?;
+    let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
     clean(&mut source, "source", &common)?;
     let destination_dirs = clean(&mut destination, "destination", &common)?;
     let mut terminal = terminal.clone();
@@ -207,9 +188,7 @@ pub fn prepare(
 /// # Errors
 /// Fails if either selected checkout is missing, no longer registered, or belongs to another repo.
 pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
-    let common = git_dirs(root)?
-        .pop()
-        .context("Missing Git common directory")?;
+    let common = git::common_dir(root)?.canonicalize()?;
     let trees = git::worktrees(root);
     let source = spec.dirs.first().context("Missing recorded merge source")?;
     let mut roots = Vec::new();
@@ -249,25 +228,23 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("patchbay-merge-{}", uuid::Uuid::new_v4()));
             let root = dir.join("main");
             fs::create_dir_all(&root).unwrap();
-            git_output(&root, &["init", "-q", "-b", "main"]).unwrap();
-            git_output(&root, &["config", "user.name", "Merge test"]).unwrap();
-            git_output(&root, &["config", "user.email", "merge@patchbay.invalid"]).unwrap();
-            git_output(&root, &["config", "commit.gpgsign", "false"]).unwrap();
+            git::run(git::git(&root).args(["init", "-q", "-b", "main"])).unwrap();
+            git::run(git::git(&root).args(["config", "user.name", "Merge test"])).unwrap();
+            git::run(git::git(&root).args(["config", "user.email", "merge@patchbay.invalid"]))
+                .unwrap();
+            git::run(git::git(&root).args(["config", "commit.gpgsign", "false"])).unwrap();
             fs::write(root.join("file.txt"), "base\n").unwrap();
-            git_output(&root, &["add", "."]).unwrap();
-            git_output(&root, &["commit", "-qm", "base"]).unwrap();
+            git::run(git::git(&root).args(["add", "."])).unwrap();
+            git::run(git::git(&root).args(["commit", "-qm", "base"])).unwrap();
             let source = dir.join("feature");
-            git_output(
-                &root,
-                &[
-                    "worktree",
-                    "add",
-                    "-q",
-                    "-b",
-                    "feature",
-                    source.to_str().unwrap(),
-                ],
-            )
+            git::run(git::git(&root).args([
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                source.to_str().unwrap(),
+            ]))
             .unwrap();
             let root = root.canonicalize().unwrap();
             let source = source.canonicalize().unwrap();
@@ -344,20 +321,25 @@ mod tests {
             } else {
                 assert!(job.spec.command.contains("Complete the local merge"));
             }
+            let resume = job.spec.resume_command.as_ref().unwrap();
+            assert!(
+                !resume.contains("Complete the local merge described in your Patchbay briefing")
+            );
+            assert!(job.spec.command.starts_with(resume));
+            assert!(job.spec.owns_briefing);
             assert!(job.spec.dirs.iter().any(|d| d.ends_with(".git")));
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
         // Preparation is read-only with respect to repository state.
         assert!(
-            git_output(
-                Path::new(&f.request.destination),
-                &["status", "--porcelain"]
-            )
-            .unwrap()
-            .is_empty()
+            git::run(git::git(Path::new(&f.request.destination)).args(["status", "--porcelain"]))
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
-            git_output(Path::new(&f.request.destination), &["rev-parse", "HEAD"]).unwrap(),
-            git_output(Path::new(&f.request.source), &["rev-parse", "HEAD"]).unwrap()
+            git::run(git::git(Path::new(&f.request.destination)).args(["rev-parse", "HEAD"]))
+                .unwrap(),
+            git::run(git::git(Path::new(&f.request.source)).args(["rev-parse", "HEAD"])).unwrap()
         );
     }
 
@@ -380,7 +362,7 @@ mod tests {
                 f.error()
                     .contains(&format!("{role} worktree has uncommitted"))
             );
-            git_output(Path::new(root), &["checkout", "--", "file.txt"]).unwrap();
+            git::run(git::git(Path::new(root)).args(["checkout", "--", "file.txt"])).unwrap();
         }
     }
 
@@ -393,17 +375,11 @@ mod tests {
         f.request.source = f.dir.to_string_lossy().into();
         assert!(f.error().contains("isn't in this project's repository"));
         f.request.source = original;
-        git_output(
-            Path::new(&f.request.source),
-            &["checkout", "--detach", "-q"],
-        )
-        .unwrap();
+        git::run(git::git(Path::new(&f.request.source)).args(["checkout", "--detach", "-q"]))
+            .unwrap();
         assert!(f.error().contains("detached HEAD"));
-        git_output(
-            Path::new(&f.request.source),
-            &["checkout", "-q", "-b", "changed"],
-        )
-        .unwrap();
+        git::run(git::git(Path::new(&f.request.source)).args(["checkout", "-q", "-b", "changed"]))
+            .unwrap();
         assert!(f.error().contains("branch changed"));
     }
 
@@ -428,10 +404,12 @@ mod tests {
                 "sequencer",
             ] {
                 let path = PathBuf::from(
-                    git_output(
-                        Path::new(root),
-                        &["rev-parse", "--path-format=absolute", "--git-path", marker],
-                    )
+                    git::run(git::git(Path::new(root)).args([
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-path",
+                        marker,
+                    ]))
                     .unwrap(),
                 );
                 fs::write(&path, "marker").unwrap();
@@ -447,17 +425,14 @@ mod tests {
         let first = f.prepare().unwrap();
         let root = Path::new(&f.project.root);
         let second = f.dir.join("second");
-        git_output(
-            root,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "second",
-                second.to_str().unwrap(),
-            ],
-        )
+        git::run(git::git(root).args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "second",
+            second.to_str().unwrap(),
+        ]))
         .unwrap();
         f.request.source = second.canonicalize().unwrap().to_string_lossy().into();
         f.request.source_branch = "second".into();
@@ -501,24 +476,23 @@ mod tests {
             };
             fs::remove_dir_all(replaced).unwrap();
             fs::create_dir_all(replaced).unwrap();
-            git_output(Path::new(replaced), &["init", "-q", "-b", "feature"]).unwrap();
-            git_output(Path::new(replaced), &["config", "user.name", "Foreign"]).unwrap();
-            git_output(
-                Path::new(replaced),
-                &["config", "user.email", "foreign@patchbay.invalid"],
-            )
+            git::run(git::git(Path::new(replaced)).args(["init", "-q", "-b", "feature"])).unwrap();
+            git::run(git::git(Path::new(replaced)).args(["config", "user.name", "Foreign"]))
+                .unwrap();
+            git::run(git::git(Path::new(replaced)).args([
+                "config",
+                "user.email",
+                "foreign@patchbay.invalid",
+            ]))
             .unwrap();
-            git_output(
-                Path::new(replaced),
-                &[
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "--allow-empty",
-                    "-qm",
-                    "foreign",
-                ],
-            )
+            git::run(git::git(Path::new(replaced)).args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "foreign",
+            ]))
             .unwrap();
             assert!(f.error().contains("isn't in this project's repository"));
             assert!(
@@ -527,7 +501,7 @@ mod tests {
                     .to_string()
                     .contains("isn't in this project's repository")
             );
-            context::remove_merge_briefing(&job.spec);
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
     }
 
@@ -536,17 +510,14 @@ mod tests {
         let f = Fixture::new();
         let job = f.prepare().unwrap();
         let unrelated = f.dir.join("unrelated");
-        git_output(
-            Path::new(&f.project.root),
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "unrelated",
-                unrelated.to_str().unwrap(),
-            ],
-        )
+        git::run(git::git(Path::new(&f.project.root)).args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "unrelated",
+            unrelated.to_str().unwrap(),
+        ]))
         .unwrap();
         let unrelated = unrelated.canonicalize().unwrap();
         let roots = resume_roots(Path::new(&f.project.root), &job.spec).unwrap();
@@ -559,7 +530,7 @@ mod tests {
         );
         fs::remove_dir_all(&f.request.source).unwrap();
         assert!(resume_roots(Path::new(&f.project.root), &job.spec).is_err());
-        context::remove_merge_briefing(&job.spec);
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
     }
 
     #[cfg(unix)]
@@ -571,10 +542,11 @@ mod tests {
         let called = f.dir.join("hook-called");
         fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", called.display())).unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        git_output(
-            Path::new(&f.project.root),
-            &["config", "core.fsmonitor", hook.to_str().unwrap()],
-        )
+        git::run(git::git(Path::new(&f.project.root)).args([
+            "config",
+            "core.fsmonitor",
+            hook.to_str().unwrap(),
+        ]))
         .unwrap();
         let index = git_dirs(Path::new(&f.request.source)).unwrap()[0].join("index");
         let before = fs::read(&index).unwrap();
@@ -583,7 +555,7 @@ mod tests {
         let job = f.prepare().unwrap();
         assert!(!called.exists());
         assert_eq!(fs::read(index).unwrap(), before);
-        context::remove_merge_briefing(&job.spec);
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
     }
 
     #[test]

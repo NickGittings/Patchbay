@@ -834,6 +834,14 @@ fn decorate_agent(
     full_text
 }
 
+const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.";
+
+/// Drop only Patchbay's exact trailing kickoff, preserving all provider options.
+pub(crate) fn merge_resume_command(command: &str) -> String {
+    let suffix = format!(" {}", Shell::current().quote(MERGE_PROMPT));
+    command.strip_suffix(&suffix).unwrap_or(command).to_owned()
+}
+
 /// Build a dedicated agent job without planner or implementation instructions.
 ///
 /// # Errors
@@ -868,19 +876,20 @@ pub fn merge_agent_spec(
             file: &file,
             text,
             dirs: &dirs,
-            prompt: Some(
-                "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.",
-            ),
+            prompt: Some(MERGE_PROMPT),
         },
         Shell::current(),
         &mut env,
     );
+    let resume_command = merge_resume_command(&command);
     let components = project.components.iter().collect::<Vec<_>>();
     if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
-        remove_merge_briefing_file(&file);
+        remove_owned_briefing_file(&file);
         return Err(anyhow!("blocked by policy: {reason}"));
     }
     Ok(SessionSpec {
+        resume_command: Some(resume_command),
+        owns_briefing: true,
         // Session service derives the identity from its project metadata.
         id: String::new(),
         command,
@@ -893,16 +902,16 @@ pub fn merge_agent_spec(
     })
 }
 
-/// Delete only files in the dedicated merge briefing namespace, never arbitrary env paths.
-pub(crate) fn remove_merge_briefing(spec: &SessionSpec) {
-    if spec.env.get(COMPONENT_ENV).map(String::as_str) == Some(crate::model::MERGE_SCOPE)
-        && let Some(file) = spec.env.get(CONTEXT_ENV)
-    {
-        remove_merge_briefing_file(Path::new(file));
-    }
+/// Return the temporary briefing whose lifetime this session owns.
+#[must_use]
+pub fn owned_briefing(spec: &SessionSpec) -> Option<PathBuf> {
+    spec.owns_briefing
+        .then(|| spec.env.get(CONTEXT_ENV).map(PathBuf::from))
+        .flatten()
 }
 
-fn remove_merge_briefing_file(file: &Path) {
+/// Delete only files in the dedicated briefing namespace, never arbitrary env paths.
+pub fn remove_owned_briefing_file(file: &Path) {
     let dir = std::env::temp_dir().join("patchbay");
     let owned = file.parent() == Some(dir.as_path())
         && file
@@ -1108,6 +1117,8 @@ fn root_session_spec(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
+        resume_command: None,
+        owns_briefing: false,
         id: task_session_id(&project.root, scope, &terminal.id, task),
         command,
         cwd: PathBuf::from(&project.root),
@@ -1218,6 +1229,8 @@ pub fn session_spec_with(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
+        resume_command: None,
+        owns_briefing: false,
         id: task_session_id(&project.root, component_id, terminal_id, task),
         command,
         cwd: project.component_dir(component),
@@ -2142,13 +2155,17 @@ mod tests {
         )
         .unwrap();
         let file = PathBuf::from(&spec.env[CONTEXT_ENV]);
-        remove_merge_briefing(&spec);
+        spec.owns_briefing = false;
+        assert!(owned_briefing(&spec).is_none());
+        assert!(file.exists());
+        spec.owns_briefing = true;
+        remove_owned_briefing_file(&owned_briefing(&spec).unwrap());
         assert!(!file.exists());
         let unrelated = std::env::temp_dir().join(format!("unrelated-{}.md", uuid::Uuid::new_v4()));
         std::fs::write(&unrelated, "keep").unwrap();
         spec.env
             .insert(CONTEXT_ENV.into(), unrelated.to_string_lossy().into());
-        remove_merge_briefing(&spec);
+        remove_owned_briefing_file(&owned_briefing(&spec).unwrap());
         assert!(unrelated.exists());
         std::fs::remove_file(unrelated).unwrap();
     }
@@ -2388,6 +2405,8 @@ mod tests {
                 &mut env
             ));
             let output = launch(SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
                 id: "claude/argv".into(),
                 command,
                 cwd: fixture.0.clone(),
