@@ -434,7 +434,16 @@ export const proposalApply = (
   project: Project,
   task: string | undefined,
   expected: import('../types').PlannerProposal,
-) => invoke<string[]>('proposal_apply', { projectId: project.projectId, project, task, expected })
+  /** The task that receives it; defaults to `task`, which holds the proposal. */
+  target?: string,
+) =>
+  invoke<string[]>('proposal_apply', {
+    projectId: project.projectId,
+    project,
+    task,
+    target,
+    expected,
+  })
 export const taskActivities = (projectId: string) =>
   invoke<import('../types').TaskActivity[]>('task_activities', { projectId })
 

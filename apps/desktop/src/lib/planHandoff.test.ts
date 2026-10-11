@@ -96,6 +96,7 @@ test('Implement accepts the pending plan and assignments before starting', async
     expect.objectContaining({ projectId: 'p' }),
     undefined,
     proposal,
+    undefined,
   )
   expect(useStore.getState().highlighted).toEqual(['web'])
   expect(startTerminal).toHaveBeenCalledOnce()
@@ -125,4 +126,48 @@ test('switching tasks while reading the plan cannot launch into another task', a
   await expect(implementPlannerPlan('claude')).rejects.toThrow('The task changed')
   expect(startTerminal).not.toHaveBeenCalled()
   expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
+test('a plan made on the project folder is copied into the worktree it is implemented in', async () => {
+  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [sid]: { running: true } }, activeTask: 'later' })
+  vi.mocked(ipc.planRead).mockImplementation(async (_, task) =>
+    task ? { text: '# Copied', cut: false } : { text: '# Plan', cut: false },
+  )
+  await implementPlannerPlan('claude')
+  expect(ipc.planWrite).toHaveBeenCalledWith('p', 'later', '# Plan', null)
+  expect(ipc.terminalStop).toHaveBeenCalledWith(sid)
+  expect(startTerminal).toHaveBeenCalledWith(
+    TASK_ROOT_SCOPE,
+    useStore.getState().rootTerminals.at(-1)!.id,
+    'later',
+    'p',
+    true,
+  )
+})
+
+test('a project-folder proposal is applied to the active worktree', async () => {
+  useStore.setState({ activeTask: 'later' })
+  const proposal = {
+    version: 1,
+    plan: '# Scoped plan',
+    assignments: [{ componentId: 'web', assignment: 'Fix login' }],
+  }
+  vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
+  vi.mocked(ipc.proposalApply).mockResolvedValue(['web'])
+  await implementPlannerPlan('claude')
+  expect(ipc.proposalRead).toHaveBeenCalledWith('p')
+  expect(ipc.proposalApply).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: 'p' }),
+    undefined,
+    proposal,
+    'later',
+  )
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+})
+
+test('implementing in the project folder copies nothing', async () => {
+  await implementPlannerPlan('claude')
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+  expect(ipc.planRead).toHaveBeenCalledWith('p', undefined)
 })

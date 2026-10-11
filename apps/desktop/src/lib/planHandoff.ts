@@ -1,12 +1,16 @@
 import { useStore } from '../store'
 import { PLAN_SCOPE, TASK_ROOT_SCOPE, sessionId } from '../types'
-import { planRead, proposalApply, proposalRead, terminalStop } from './ipc'
+import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
 import { plannerDevice } from './plan'
 import { planDrafts, savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
-/** Accept the plan for this task and launch a fresh agent with the planner's provider. */
+/**
+ * Accept the project's plan into the active worktree and launch a fresh agent there with the
+ * planner's provider. The planner belongs to the project, so the plan may have been written
+ * before the worktree existed.
+ */
 export async function implementPlannerPlan(plannerId: string) {
   const initial = useStore.getState()
   const projectId = initial.project?.id
@@ -20,17 +24,22 @@ export async function implementPlannerPlan(plannerId: string) {
     return s
   }
   // An edited plan takes precedence over a pending scope proposal.
-  const edited = planDrafts.has(`${projectId}\n${task ?? ''}`)
-  await savePlanDraft(projectId, task)
-  const proposal = edited ? null : await proposalRead(projectId, task ?? undefined)
+  const edited = planDrafts.has(`${projectId}\n`)
+  await savePlanDraft(projectId, null)
+  const proposal = edited ? null : await proposalRead(projectId)
   current()
   if (proposal) {
-    const ids = await proposalApply(current().toProject(), task ?? undefined, proposal)
+    const ids = await proposalApply(current().toProject(), undefined, proposal, task ?? undefined)
     current().patchTask(projectId, task, {
       highlighted: ids,
       implementationComponents: ids.map((id) => ({ id, visible: true })),
     })
     await refreshTasks(projectId)
+  } else if (task) {
+    // Carry the planner's plan into the worktree, where its agents read it.
+    const { text, cut } = await planRead(projectId)
+    if (cut) throw new Error('The plan is longer than 64 KiB; shorten it before implementing.')
+    if (text.trim()) await planWrite(projectId, task, text, null)
   }
   const plan = await planRead(projectId, task ?? undefined)
   if (!plan.text.trim())
@@ -40,7 +49,7 @@ export async function implementPlannerPlan(plannerId: string) {
   current()
   // End the planner before launching: approving its native dialog later must not
   // start a second implementation in the planning terminal.
-  const sid = sessionId(PLAN_SCOPE, plannerId, task, projectId)
+  const sid = sessionId(PLAN_SCOPE, plannerId, null, projectId)
   if (current().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work

@@ -222,9 +222,17 @@
     await until('native plan captured', async () =>
       (await smoke.planRead(project.projectId)).text.includes('# Smoke handoff'),
     )
+    // On the project folder, Implement asks where: a new worktree or the folder itself.
     click(
       Array.from(document.querySelectorAll('.plan-implement button')).find((b) =>
         b.textContent.includes('Implement'),
+      ),
+    )
+    click(
+      await until('implement target menu', () =>
+        Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
+          b.textContent.includes('Implement in project folder'),
+        ),
       ),
     )
     await until('implementation grid', () =>

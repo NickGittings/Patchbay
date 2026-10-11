@@ -268,6 +268,9 @@ interface State {
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
+  /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */
+  proposedScope: string[]
+  setProposedScope: (ids: string[]) => void
   dirty: boolean
   /** The latest app message, shown by `Toast`; `messageId` changes on every `setMessage`. */
   message: string
@@ -600,6 +603,8 @@ export const useStore = create<State>((set, get) => ({
     }),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
+  proposedScope: [],
+  setProposedScope: (proposedScope) => set({ proposedScope }),
 
   loadProject: (p) => {
     const id = p.projectId ?? p.root

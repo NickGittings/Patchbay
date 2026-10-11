@@ -618,7 +618,7 @@ pub fn plan_context(
     }
     let _ = writeln!(
         out,
-        "\nTo propose scope and assignments, write JSON {{\"version\":1,\"plan\":\"agreed Markdown\",\"assignments\":[{{\"componentId\":\"stable ID above\",\"assignment\":\"specific work\"}}]}} and run {}. Order assignments deliberately. Submission waits for the user to Apply selection; it never changes scope or starts agents. Markdown-only plans remain supported.",
+        "\nTo propose scope and assignments, write JSON {{\"version\":1,\"plan\":\"agreed Markdown\",\"assignments\":[{{\"componentId\":\"stable ID above\",\"assignment\":\"specific work\"}}]}} and run {}. Submit one with every complete plan, including a plan presented through Claude's plan mode, so the user sees which components it touches. Order assignments deliberately. Submission waits for the user to Apply selection; it never changes scope or starts agents.",
         Shell::current().agent_command("propose --file <json>")
     );
     append_sections(&mut out, sections);

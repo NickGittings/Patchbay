@@ -230,7 +230,8 @@ export function WorktreeRow({
         sid,
       })),
     ),
-    ...planTerminals(devices).map((t) => ({
+    // The planner belongs to the project folder, whichever worktree is active.
+    ...(id === null ? planTerminals(devices) : []).map((t) => ({
       componentId: PLAN_SCOPE,
       name: 'Planner',
       t,

@@ -141,18 +141,26 @@ pub fn submit(project: &Project, task: Option<&str>, proposal: &Proposal) -> Res
     save(Path::new(&project.root), task, proposal, false)
 }
 
-/// Apply exactly the reviewed artifact; a newer submission requires review again.
+/// Apply exactly the reviewed artifact pending for `from` to the `to` task (`None`:
+/// the project folder); a newer submission requires review again. The planner
+/// belongs to the project, so its proposals may land in the worktree chosen at
+/// handoff.
 ///
 /// # Errors
-/// Fails if the proposal is invalid or no longer pending, the task is unknown, or the
+/// Fails if the proposal is invalid or no longer pending, a task is unknown, or the
 /// task, plan or applied record can't be written.
-pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Result<Vec<String>> {
+pub fn apply(
+    project: &Project,
+    from: Option<&str>,
+    to: Option<&str>,
+    expected: &Proposal,
+) -> Result<Vec<String>> {
     let _guard = SUBMISSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     expected.validate(project)?;
     let root = Path::new(&project.root);
-    let pending = read(root, task, false)?.ok_or_else(|| {
+    let pending = read(root, from, false)?.ok_or_else(|| {
         anyhow::anyhow!("This proposal is no longer pending; refresh before applying")
     })?;
     if &pending != expected {
@@ -163,7 +171,7 @@ pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Resu
         .iter()
         .map(|a| a.component_id.clone())
         .collect::<Vec<_>>();
-    if let Some(id) = task {
+    if let Some(id) = to {
         tasks::find(root, id)?;
         tasks::update(
             root,
@@ -177,9 +185,13 @@ pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Resu
     let _plan_guard = plans::WRITING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    plans::write_locked(root, task, &expected.plan)?;
-    save(root, task, expected, true)?;
-    std::fs::remove_file(file(root, task, false)?)?;
+    plans::write_locked(root, to, &expected.plan)?;
+    // The planner's own plan follows what it agreed, so its editor shows what was handed off.
+    if from != to {
+        plans::write_locked(root, from, &expected.plan)?;
+    }
+    save(root, to, expected, true)?;
+    std::fs::remove_file(file(root, from, false)?)?;
     Ok(ids)
 }
 
@@ -284,9 +296,9 @@ mod tests {
         submit(&p, None, &proposed).unwrap();
         assert!(plans::read(&root, None).unwrap().text.is_empty());
         assert!(section(&p, None, &["web".into()]).is_none());
-        assert_eq!(apply(&p, None, &proposed).unwrap(), ["web"]);
+        assert_eq!(apply(&p, None, None, &proposed).unwrap(), ["web"]);
         assert!(read(&root, None, false).unwrap().is_none());
-        assert!(apply(&p, None, &proposed).is_err());
+        assert!(apply(&p, None, None, &proposed).is_err());
         assert!(
             section(&p, None, &["web".into()])
                 .unwrap()
@@ -306,15 +318,15 @@ mod tests {
             .unwrap();
         assert!(read(&root, None, true).unwrap().is_none());
         submit(&p, None, &proposed).unwrap();
-        apply(&p, None, &proposed).unwrap();
+        apply(&p, None, None, &proposed).unwrap();
         // Direct planner/editor file writes invalidate assignments even if the old text is restored.
         std::thread::sleep(std::time::Duration::from_millis(2));
         std::fs::write(plans::plan_file(&root, None).unwrap(), &proposed.plan).unwrap();
         assert!(section(&p, None, &["web".into()]).is_none());
         submit(&p, None, &proposed).unwrap();
-        apply(&p, None, &proposed).unwrap();
+        apply(&p, None, None, &proposed).unwrap();
         plans::write(&root, None, "edited").unwrap();
-        assert!(apply(&p, None, &proposed).is_err());
+        assert!(apply(&p, None, None, &proposed).is_err());
         assert_eq!(plans::read(&root, None).unwrap().text, "edited");
         assert!(section(&p, None, &["web".into()]).is_none());
         plans::write(&root, None, &proposed.plan).unwrap();
@@ -322,7 +334,56 @@ mod tests {
         let mut newer = proposed.clone();
         newer.plan = "New plan".into();
         submit(&p, None, &newer).unwrap();
-        assert!(apply(&p, None, &proposed).is_err());
+        assert!(apply(&p, None, None, &proposed).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_project_folder_proposal_applies_to_the_chosen_task() {
+        let base = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let root = base.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(git(&["init", "-q"]) && git(&["commit", "-q", "--allow-empty", "-m", "init"]));
+        let root = root.canonicalize().unwrap();
+        let task = tasks::create(
+            &root,
+            tasks::TaskDraft {
+                title: "Later".into(),
+                branch: "later".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        let p = project(&root);
+        let proposed = proposal();
+        submit(&p, None, &proposed).unwrap();
+        assert!(apply(&p, None, Some(&task.id), &proposed).unwrap() == ["web"]);
+        assert!(read(&root, None, false).unwrap().is_none());
+        assert_eq!(plans::read(&root, None).unwrap().text, proposed.plan);
+        assert_eq!(
+            plans::read(&root, Some(&task.id)).unwrap().text,
+            proposed.plan
+        );
+        assert_eq!(read(&root, Some(&task.id), true).unwrap(), Some(proposed));
+        assert_eq!(tasks::find(&root, &task.id).unwrap().components, ["web"]);
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

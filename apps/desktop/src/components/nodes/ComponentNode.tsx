@@ -19,8 +19,18 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const highlighted = useStore((s) => s.highlighted.includes(id))
   const nearby = useStore((s) => s.view === 'plan' && nearbyIds(s.highlighted, s.edges).has(id))
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
-  const planClass =
-    planning && hasHighlights ? (highlighted ? 'highlighted' : nearby ? 'nearby' : 'dimmed') : ''
+  const proposed = useStore((s) => s.view === 'plan' && s.proposedScope.includes(id))
+  const planClass = !planning
+    ? ''
+    : highlighted
+      ? 'highlighted'
+      : proposed
+        ? 'proposed'
+        : hasHighlights
+          ? nearby
+            ? 'nearby'
+            : 'dimmed'
+          : ''
   const task = useStore((s) => s.activeTask)
   const inTask = useStore(
     (s) => !!s.activeTask && !!s.tasks.find((t) => t.id === s.activeTask)?.components.includes(id),

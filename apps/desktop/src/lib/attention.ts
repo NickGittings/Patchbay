@@ -70,7 +70,8 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         taskTitle,
         terminal,
       })),
-      ...planTerminals(s.devices).map((terminal) => ({
+      // The planner belongs to the project, so it is listed once, with the project folder.
+      ...(task === null ? planTerminals(s.devices) : []).map((terminal) => ({
         sid: sessionId(PLAN_SCOPE, terminal.id, task),
         componentId: PLAN_SCOPE,
         owner: 'Planner',
@@ -170,14 +171,15 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
 /**
  * Show a terminal: its tab in the planner, its tile in Implementation, or (for terminals an
  * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
- * session's task first, except for extension terminals.
+ * session's task first, except for extension and planner terminals.
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
   const runtime = s.runtimeTerminals[item.sid]
   const extension = !!(runtime?.extensionId || runtime?.commandId)
-  // Extension terminals run in the open worktree and show in any task, so they never switch it.
-  if (!extension) s.setActiveTask(sessionTask(item.sid), true)
+  // Extension terminals run in the open worktree and show in any task, and the planner in every
+  // task, so neither switches it.
+  if (!extension && item.componentId !== PLAN_SCOPE) s.setActiveTask(sessionTask(item.sid), true)
   s.setActiveSession(item.sid)
   if (item.componentId === PLAN_SCOPE) {
     const { terminalId } = parseSessionId(item.sid)

@@ -129,7 +129,7 @@ export default function TaskTabs() {
           className="header-action"
           disabled={!git}
           title={git ? 'Create a task workspace' : 'Named tasks require a Git repository'}
-          onClick={seedNewTask}
+          onClick={() => seedNewTask()}
         >
           ＋ New task
         </button>

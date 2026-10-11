@@ -253,7 +253,8 @@
         document.querySelector('.review-banner')?.textContent.includes('Viewing worktree'),
     )
 
-    // A plan saved in Plan reaches the task's component agents.
+    // A plan saved in Plan belongs to the project and reaches its component agents there;
+    // worktrees receive it at Implement (planHandoff.test.ts).
     state().updateComponent('web', {
       terminals: [
         ...state().nodes.find((n) => n.id === 'web').data.terminals,
@@ -283,8 +284,8 @@
     )
     click(save)
     await until('plan saved', () => save.disabled)
-    const briefSid = smoke.sessionId('web', 'brief', task.id)
-    await smoke.startTerminal('web', 'brief', task.id)
+    const briefSid = smoke.sessionId('web', 'brief', null)
+    await smoke.startTerminal('web', 'brief', null)
     await until(
       'plan in the agent briefing',
       () =>
@@ -381,8 +382,9 @@
     state().setDevices([plannerDevice])
     click(viewButton('Plan'))
     const scopeBefore = [...state().highlighted]
+    // The planner belongs to the project: asked for the task, it still runs in the project folder.
     await smoke.startTerminal('@plan', plannerDevice.id, task.id)
-    const plannerSid = smoke.sessionId('@plan', plannerDevice.id, task.id)
+    const plannerSid = smoke.sessionId('@plan', plannerDevice.id, null)
     await until('planner CLI submission', () =>
       textOf(plannerSid).includes('"submitted":true'),
     ).catch((e) => {
@@ -394,6 +396,7 @@
       JSON.stringify(state().highlighted) === JSON.stringify(scopeBefore),
       'submission changed scope',
     )
+    await until('proposed components outlined', () => state().proposedScope.includes('web'))
     click(
       await until('Apply selection', () =>
         button(document.querySelector('.proposed-scope'), 'Apply selection'),
@@ -511,7 +514,7 @@
         activities.some((a) => a.previewUrls.includes('http://localhost:19991/')),
       'agent activity or preview URL missing',
     )
-    // Implementation saves an editor draft before briefing its agent, even after leaving Plan.
+    // Implement saves the project plan's editor draft and hands it to the task's new agent.
     click(viewButton('Plan'))
     const savedPlan = await until('saved plan editor', () => document.querySelector('.plan-file'))
     if (!savedPlan.open) click(savedPlan.querySelector('summary'))
@@ -525,16 +528,29 @@
       'plan draft retained',
       () => button(savedPlan, 'Save') && !button(savedPlan, 'Save').disabled,
     )
-    click(viewButton('Implementation'))
-    const draftTerminal = state().addRootTerminal({
-      ...worker,
-      id: 'draft-probe',
-      name: 'Draft probe',
-      command:
-        'cat "$PATCHBAY_CONTEXT_FILE"; "$PATCHBAY_CLI" agent context; printf "draft-probe-ready\\n"; exec cat',
-    })
+    state().setDevices([
+      plannerDevice,
+      worker,
+      {
+        ...worker,
+        id: 'draft-probe',
+        name: 'Draft probe',
+        command:
+          'cat "$PATCHBAY_CONTEXT_FILE"; "$PATCHBAY_CLI" agent context; printf "draft-probe-ready\\n"; exec cat',
+      },
+    ])
+    state().setPlanActive('draft-probe')
+    const roots = state().rootTerminals.length
+    click(
+      await until('Implement in the task', () =>
+        Array.from(document.querySelectorAll('.plan-implement button')).find((b) =>
+          b.textContent.includes('Implement in'),
+        ),
+      ),
+    )
+    await until('implementation agent added', () => state().rootTerminals.length === roots + 1)
+    const draftTerminal = state().rootTerminals.at(-1).id
     const draftSid = smoke.sessionId('@task', draftTerminal, task.id)
-    await smoke.startTerminal('@task', draftTerminal, task.id)
     await until('draft reaches implementation briefing', () =>
       textOf(draftSid).includes('draft-probe-ready'),
     )

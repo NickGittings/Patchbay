@@ -179,6 +179,7 @@ pub async fn proposal_apply(
     project_id: String,
     project: Project,
     task: Option<String>,
+    target: Option<String>,
     expected: patchbay_core::proposals::Proposal,
     state: State<'_, AppState>,
 ) -> CmdResult<Vec<String>> {
@@ -194,8 +195,11 @@ pub async fn proposal_apply(
             .snapshot()
             .restrict(project, &ids)
             .map_err(err)?;
-        let (project, _, _) = for_task(project, task.as_deref(), &ids, scoped.roots())?;
-        patchbay_core::proposals::apply(&project, task.as_deref(), &expected).map_err(err)
+        // `task` holds the proposal; `target` (default: the same) receives it.
+        let target = target.or_else(|| task.clone());
+        let (project, _, _) = for_task(project, target.as_deref(), &ids, scoped.roots())?;
+        patchbay_core::proposals::apply(&project, task.as_deref(), target.as_deref(), &expected)
+            .map_err(err)
     })
     .await
 }

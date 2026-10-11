@@ -13,16 +13,23 @@ import {
 } from '../lib/ipc'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
-import { refreshTasks, seedNewTask } from '../lib/tasks'
+import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
 import { PLAN_SCOPE, sessionId, type PlannerProposal } from '../types'
 import Canvas from './Canvas'
+import Menu, { MenuItem } from './Menu'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import WorktreePicker from './tasks/WorktreePicker'
 
 import { planDrafts } from '../lib/planDrafts'
 import { implementPlannerPlan } from '../lib/planHandoff'
+
+/**
+ * The planner, its plan and its proposal belong to the project, not a worktree, so switching or
+ * creating a worktree mid-plan keeps them; Implement hands the plan to the active worktree.
+ */
+const PLANNER_TASK = null
 
 export default function PlanView() {
   const project = useStore((s) => s.project)
@@ -33,17 +40,24 @@ export default function PlanView() {
   const startedWith = useStore((s) => s.planStartedWith)
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
+  const taskTitle = useStore((s) => activeTaskOf(s)?.title)
   useClockTick()
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
   const activeId = useStore((s) => s.planActive)
   const setActiveId = useStore((s) => s.setPlanActive)
-  const proposalKey = `${project?.id ?? ''}/${task ?? ''}`
+  const proposalKey = project?.id ?? ''
   const [proposalResult, setProposalResult] = useState<{
     key: string
     value: PlannerProposal | null
   }>({ key: '', value: null })
   const proposal = proposalResult.key === proposalKey ? proposalResult.value : null
+  // Outline the proposed components on the canvas until the proposal is applied.
+  const proposedIds = proposal?.assignments.map((a) => a.componentId).join('\n') ?? ''
+  useEffect(() => {
+    useStore.getState().setProposedScope(proposedIds ? proposedIds.split('\n') : [])
+    return () => useStore.getState().setProposedScope([])
+  }, [proposedIds])
   const [proposalBusy, setProposalBusy] = useState(false)
   const [proposalError, setProposalError] = useState('')
   const [contextOpen, setContextOpen] = useState(false)
@@ -63,7 +77,7 @@ export default function PlanView() {
   const [planCut, setPlanCut] = useState(false)
   const terminals = planTerminals(devices)
   const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
-  const sid = sessionId(PLAN_SCOPE, active.id, task)
+  const sid = sessionId(PLAN_SCOPE, active.id, PLANNER_TASK)
   const session = sessions[sid]
   const nearby = nearbyIds(highlighted, edges)
   const stale = session?.running && startedWith[sid] !== [...highlighted].sort().join(',')
@@ -71,7 +85,7 @@ export default function PlanView() {
   useEffect(() => {
     if (!contextOpen || !project) return
     let disposed = false
-    void planContext(useStore.getState().toProject(), highlighted, task ?? undefined)
+    void planContext(useStore.getState().toProject(), highlighted)
       .then((text) => {
         if (!disposed) setContext(text)
       })
@@ -81,14 +95,14 @@ export default function PlanView() {
     return () => {
       disposed = true
     }
-  }, [contextOpen, project, nodes, edges, highlighted, task])
+  }, [contextOpen, project, nodes, edges, highlighted])
 
   const projectId = project?.id
   useEffect(() => {
     if (!projectId) return
     let disposed = false
     const load = () =>
-      proposalRead(projectId, task ?? undefined)
+      proposalRead(projectId)
         .then((value) => {
           if (!disposed) {
             setProposalResult({ key: proposalKey, value })
@@ -101,16 +115,16 @@ export default function PlanView() {
     void load()
     // A planner's submission is the only other writer of the pending proposal.
     const unlisten = onProposal((event) => {
-      if (event.projectId === projectId && (event.task ?? null) === (task ?? null)) {
+      if (event.projectId === projectId && (event.task ?? null) === PLANNER_TASK) {
         void load()
-        if (!planDrafts.has(`${projectId}\n${task ?? ''}`)) setPlanLoads((n) => n + 1)
+        if (!planDrafts.has(`${projectId}\n`)) setPlanLoads((n) => n + 1)
       }
     })
     return () => {
       disposed = true
       void unlisten.then((stop) => stop())
     }
-  }, [projectId, task, proposalKey])
+  }, [projectId, proposalKey])
   const applyProposal = async () => {
     if (!projectId || !proposal) return
     const map = useStore.getState().toProject()
@@ -118,18 +132,14 @@ export default function PlanView() {
     setProposalBusy(true)
     setProposalError('')
     try {
-      const ids = await proposalApply(map, targetTask ?? undefined, proposal)
+      const ids = await proposalApply(map, undefined, proposal, targetTask ?? undefined)
       setProposalResult({ key: proposalKey, value: null })
       useStore.getState().patchTask(projectId, targetTask, {
         highlighted: ids,
         implementationComponents: ids.map((id) => ({ id, visible: true })),
       })
       await refreshTasks(projectId)
-      if (
-        useStore.getState().project?.id === projectId &&
-        useStore.getState().activeTask === targetTask
-      )
-        loadPlan()
+      if (useStore.getState().project?.id === projectId) loadPlan()
     } catch (e) {
       if (
         useStore.getState().project?.id === projectId &&
@@ -140,14 +150,16 @@ export default function PlanView() {
       setProposalBusy(false)
     }
   }
-  const planKey = projectId ? `${projectId}\n${task ?? ''}` : null
-  const handoffError = handoffResult.key === planKey ? handoffResult.error : ''
-  // Which plan a finished save belongs to, so a task switch mid-save doesn't show its result.
+  const planKey = projectId ? `${projectId}\n` : null
+  // Which worktree a handoff targeted, so switching away hides its error.
+  const handoffKey = `${projectId ?? ''}\n${task ?? ''}`
+  const handoffError = handoffResult.key === handoffKey ? handoffResult.error : ''
+  // Which plan a finished save belongs to, so a project switch mid-save doesn't show its result.
   const currentKey = useRef(planKey)
   useEffect(() => {
     currentKey.current = planKey
   }, [planKey])
-  // The plan the editor holds; edits wait until it matches the current project and task.
+  // The plan the editor holds; edits wait until it matches the current project.
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   useEffect(() => {
     if (!planOpen || !projectId || !planKey) return
@@ -155,7 +167,7 @@ export default function PlanView() {
     const draft = planDrafts.get(planKey)
     const load = draft
       ? Promise.resolve({ ...draft, cut: false })
-      : planRead(projectId, task ?? undefined).then(({ text, cut }) => ({
+      : planRead(projectId).then(({ text, cut }) => ({
           text,
           base: text,
           overwrite: false,
@@ -177,7 +189,7 @@ export default function PlanView() {
     return () => {
       disposed = true
     }
-  }, [planOpen, projectId, planKey, task, planLoads])
+  }, [planOpen, projectId, planKey, planLoads])
   const editPlan = (text: string) => {
     if (!planKey) return
     setPlan(text)
@@ -199,7 +211,7 @@ export default function PlanView() {
     try {
       // The backend replaces the file only while it still holds what was loaded, unless the
       // user chose to replace the planner's newer version.
-      const saved = await planWrite(projectId, task ?? undefined, text, overwrite ? null : planBase)
+      const saved = await planWrite(projectId, undefined, text, overwrite ? null : planBase)
       if (!saved) {
         planDrafts.set(key, { text, base: planBase, overwrite: true })
         if (currentKey.current === key) {
@@ -226,24 +238,26 @@ export default function PlanView() {
   const restart = async () => {
     setRestarting(true)
     try {
-      await restartTerminal(PLAN_SCOPE, active.id, task)
+      await restartTerminal(PLAN_SCOPE, active.id, PLANNER_TASK)
     } finally {
       setRestarting(false)
     }
   }
 
-  const implement = async () => {
+  /** Hand the plan to the active worktree, which is `key` (see `handoffKey`). */
+  const implement = async (key = handoffKey) => {
     if (implementing) return
     setImplementing(true)
-    setHandoffResult({ key: planKey ?? '', error: '' })
+    setHandoffResult({ key, error: '' })
     try {
       await implementPlannerPlan(active.id)
     } catch (e) {
-      if (currentKey.current === planKey) setHandoffResult({ key: planKey ?? '', error: String(e) })
+      setHandoffResult({ key, error: String(e) })
     } finally {
       setImplementing(false)
     }
   }
+  const implementLabel = implementing ? 'Starting implementation…' : 'Implement →'
 
   return (
     <PersistedGroup layoutId="PlanView-1" orientation="vertical" className="workspace">
@@ -262,20 +276,36 @@ export default function PlanView() {
               </button>
               <WorktreePicker />
               <button
-                title="Create a branch and worktree for the highlighted components, or the selected one"
-                onClick={seedNewTask}
+                title="Create a branch and worktree for the highlighted components, or the selected one. The planner and its plan stay."
+                onClick={() => seedNewTask()}
               >
                 ＋ New task
               </button>
             </div>
             <div className="row plan-implement">
-              <button
-                disabled={implementing || proposalBusy}
-                title={`Pass the plan to ${active.name} and start implementation`}
-                onClick={() => void implement()}
-              >
-                {implementing ? 'Starting implementation…' : 'Implement →'}
-              </button>
+              {task ? (
+                <button
+                  disabled={implementing || proposalBusy}
+                  title={`Pass the plan to ${active.name} in ${taskTitle ?? 'this worktree'} and start implementation`}
+                  onClick={() => void implement()}
+                >
+                  {implementing ? implementLabel : `Implement in ${taskTitle ?? 'worktree'} →`}
+                </button>
+              ) : implementing || proposalBusy ? (
+                <button disabled>{implementLabel}</button>
+              ) : (
+                // On the project folder, offer a worktree first: plans often come before one.
+                <Menu label={implementLabel} title="Choose where to implement the plan">
+                  <MenuItem
+                    onClick={() =>
+                      seedNewTask((created) => void implement(`${projectId ?? ''}\n${created.id}`))
+                    }
+                  >
+                    New worktree…
+                  </MenuItem>
+                  <MenuItem onClick={() => void implement()}>Implement in project folder</MenuItem>
+                </Menu>
+              )}
             </div>
             {handoffError && (
               <p className="hint file-tree-error" role="alert">
@@ -325,7 +355,7 @@ export default function PlanView() {
                   {proposalBusy ? 'Applying…' : 'Apply selection'}
                 </button>
                 <p className="hint flush">
-                  Saves this plan and assignments and selects this task's components.
+                  Saves this plan and assignments to the active worktree and selects its components.
                 </p>
               </details>
             )}
@@ -345,7 +375,7 @@ export default function PlanView() {
             >
               <summary>Saved plan</summary>
               <div className="hint flush">
-                Passed automatically to your agent when you choose Implement.
+                Belongs to the project; copied to the worktree you implement in.
               </div>
               <textarea
                 className="mono"
@@ -392,7 +422,7 @@ export default function PlanView() {
           <div className="terminal-dock planner-terminal">
             <div className="tabs">
               {terminals.map((t) => {
-                const tabSid = sessionId(PLAN_SCOPE, t.id, task)
+                const tabSid = sessionId(PLAN_SCOPE, t.id, PLANNER_TASK)
                 const status = terminalStatus(t.kind, sessions[tabSid])
                 return (
                   <button
@@ -422,7 +452,7 @@ export default function PlanView() {
                 ) : (
                   <button
                     disabled={restarting}
-                    onClick={() => void startTerminal(PLAN_SCOPE, active.id, task)}
+                    onClick={() => void startTerminal(PLAN_SCOPE, active.id, PLANNER_TASK)}
                   >
                     ▶ {restarting ? 'Stopping…' : session ? 'Restart' : 'Start'}
                   </button>
@@ -434,7 +464,12 @@ export default function PlanView() {
                 Highlights changed — restart to apply
               </div>
             )}
-            <TerminalPane key={sid} componentId={PLAN_SCOPE} terminal={active} />
+            <TerminalPane
+              key={sid}
+              componentId={PLAN_SCOPE}
+              terminal={active}
+              task={PLANNER_TASK}
+            />
           </div>
         </div>
       </Panel>

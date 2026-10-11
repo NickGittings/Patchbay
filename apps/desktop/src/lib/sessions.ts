@@ -117,7 +117,10 @@ interface Launch {
   implementPlan?: boolean
 }
 
-/** `task` defaults to the project's active task; `null` is the project's own worktree. */
+/**
+ * `task` defaults to the project's active task; `null` is the project's own worktree. Planners
+ * always run in the project's own worktree.
+ */
 function captureLaunch(
   componentId: string,
   terminalId: string,
@@ -129,9 +132,11 @@ function captureLaunch(
   const project = id ? projectOf(id) : null
   if (!id || !project) throw new Error('Open a project first')
   const state = s.project?.id === id ? s : s.projects[id]?.state
-  const scope = task === undefined ? (state?.activeTask ?? null) : task
+  // The planner belongs to the project, whatever the worktree, and plans what is highlighted now.
+  const planner = componentId === PLAN_SCOPE
+  const scope = planner ? null : task === undefined ? (state?.activeTask ?? null) : task
   const workspace =
-    state?.activeTask === scope
+    planner || state?.activeTask === scope
       ? state
       : (state?.taskWorkspaces[scope ?? ''] ??
         emptyTaskWorkspace(state?.tasks.find((t) => t.id === scope)?.components))

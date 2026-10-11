@@ -172,6 +172,7 @@ export async function createTask(draft: TaskDraft): Promise<Task> {
   const task = await taskCreate(draft, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
+  afterNewTask(task)
   return task
 }
 
@@ -185,6 +186,7 @@ export async function attachTask(
   const task = await taskAttach(worktree, title, components, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
+  afterNewTask(task)
   return task
 }
 
@@ -225,8 +227,20 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   }
 }
 
-/** Open the new-worktree dialog for the highlighted components, else the selected one. */
-export function seedNewTask() {
+/** What to do with the worktree the open New worktree dialog creates, once it is active. */
+let onNewTask: ((task: Task) => void) | null = null
+function afterNewTask(task: Task) {
+  const then = onNewTask
+  onNewTask = null
+  then?.(task)
+}
+
+/**
+ * Open the new-worktree dialog for the highlighted components, else the selected one; `then` runs
+ * once it has created and activated a worktree.
+ */
+export function seedNewTask(then?: (task: Task) => void) {
+  onNewTask = then ?? null
   const s = useStore.getState()
   s.setNewTask(s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [])
 }
