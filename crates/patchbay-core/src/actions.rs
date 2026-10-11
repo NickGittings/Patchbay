@@ -989,12 +989,10 @@ mod tests {
     #[test]
     fn maintenance_also_guards_managed_group_members_without_terminals() {
         let actions = GraphActions::default();
-        actions
-            .0
-            .lock()
-            .unwrap()
-            .environment_components
-            .insert("p:dev".into(), vec!["no-terminal-library".into()]);
+        actions.0.lock().unwrap().environment_components.insert(
+            environment_key("p", "dev", None),
+            vec!["no-terminal-library".into()],
+        );
         assert!(
             actions
                 .with_maintenance_guard(&[], &["no-terminal-library".into()], || Ok(()))
@@ -1412,7 +1410,11 @@ mod tests {
                     fail,
                 );
                 if fail {
-                    assert!(!f.actions.0.lock().unwrap().environments["p:dev"].is_empty());
+                    assert!(
+                        !f.actions.0.lock().unwrap().environments
+                            [&environment_key("p", "dev", None)]
+                            .is_empty()
+                    );
                     f.actions
                         .stop_group("p", "dev", None, 0, &Local(f.pty.clone()))
                         .unwrap();
@@ -1447,7 +1449,10 @@ mod tests {
                 .to_string();
             assert!(error.contains("rollback incomplete"), "{error}");
             assert_eq!(f.actions.epoch(), 0);
-            assert!(!f.actions.0.lock().unwrap().environments["p:dev"].is_empty());
+            assert!(
+                !f.actions.0.lock().unwrap().environments[&environment_key("p", "dev", None)]
+                    .is_empty()
+            );
             assert!(
                 f.actions
                     .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
