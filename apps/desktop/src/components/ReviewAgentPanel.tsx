@@ -5,7 +5,7 @@ import { terminalStop } from '../lib/ipc'
 import { reviewAgentRecords } from '../lib/reviewAgents'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
-import { useReviewFindings } from '../lib/useReviewFindings'
+import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings'
 import TerminalPane from './TerminalPane'
 import StatusLabel from './status/StatusLabel'
 
@@ -13,10 +13,15 @@ export default function ReviewAgentPanel({
   selected,
   select,
   hide,
+  sourceBranch,
+  sourceFindings,
 }: {
   selected: SessionRecord
   select: (sid: string) => void
   hide: () => void
+  /** Review already polls the source branch's findings; reuse them for that branch. */
+  sourceBranch?: string | null
+  sourceFindings?: LoadedFindings
 }) {
   const records = useStore(
     useShallow((s) => reviewAgentRecords(s.sessionRecords, selected.metadata.projectId)),
@@ -24,11 +29,14 @@ export default function ReviewAgentPanel({
   const session = useStore((s) => s.sessions[selected.id])
   const isReview = selected.metadata.componentId === REVIEW_SCOPE
   const [findings, setFindings] = useState(false)
-  // Read (and poll) findings only while they're shown.
-  const loaded = useReviewFindings(
+  const branch = selected.metadata.branch ?? undefined
+  const shared = !!branch && branch === sourceBranch
+  // Read (and poll) findings only while they're shown, and only those Review doesn't.
+  const own = useReviewFindings(
     selected.metadata.projectId,
-    isReview && findings ? (selected.metadata.branch ?? undefined) : undefined,
+    isReview && findings && !shared ? branch : undefined,
   )
+  const loaded = shared ? sourceFindings : own
   const [stopping, setStopping] = useState(false)
   const terminal: TerminalSpec = {
     id: selected.metadata.terminalId,

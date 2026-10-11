@@ -1022,7 +1022,13 @@ async fn git_worktrees(
 async fn git_branches(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
-    blocking(move || Ok(access.root().map(|r| git::branches(&r)).unwrap_or_default())).await
+    blocking(move || {
+        Ok(access
+            .root()
+            .and_then(|r| git::branches(&r).ok())
+            .unwrap_or_default())
+    })
+    .await
 }
 
 /// The diff of one of a component's changed files, `path` (and a rename's
@@ -1399,23 +1405,12 @@ async fn review_agent_start(
         access.trust(&mut project).map_err(err)?;
         let prepared = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
             .map_err(err)?;
-        let mut metadata = service::metadata(
-            &project_id,
-            &project,
-            model::REVIEW_SCOPE,
-            &prepared.job.terminal,
-        );
-        metadata.branch = Some(request.branch);
-        match bridge.start_reporting(prepared.job.spec.clone(), metadata, request_id) {
-            Ok(sid) => Ok(sid),
-            // A lost reply may hide a running review, which owns the new sidecar.
-            Err((e, true)) => Err(e),
-            Err((e, false)) => {
-                // A refused launch must not invalidate or re-attribute saved findings.
-                prepared.rollback();
-                Err(e)
-            }
-        }
+        prepared.launch(|job| {
+            let mut metadata =
+                service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
+            metadata.branch = Some(request.branch);
+            bridge.start_reporting(job.spec, metadata, request_id)
+        })
     })
     .await
 }
@@ -1688,10 +1683,21 @@ async fn session_resume(
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
-        bridge.call(Request::Resume {
+        let resume = Request::Resume {
             id: session_id,
             request_id,
-        })
+        };
+        // A resumed review re-reviews the worktree as it is now.
+        if record.metadata.component_id == model::REVIEW_SCOPE
+            && let Some(attempt) = patchbay_core::reviews::resume_attempt(
+                root.as_deref().ok_or("No project is open")?,
+                &record.spec,
+            )
+            .map_err(err)?
+        {
+            return attempt.launch(|| bridge.call_reporting(resume));
+        }
+        bridge.call(resume)
     })
     .await
 }

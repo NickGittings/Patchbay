@@ -11,11 +11,10 @@ import {
   mergeDestinations,
   reviewAgentRecords,
   reviewState,
-  sourceLatestChange,
 } from '../lib/reviewAgents'
 import MergeAgentDialog from './MergeAgentDialog'
 import ReviewAgentDialog from './ReviewAgentDialog'
-import { useReviewFindings } from '../lib/useReviewFindings'
+import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings'
 import { useClockTick } from '../lib/clock'
 import ReviewAgentPanel from './ReviewAgentPanel'
 import { useStore } from '../store'
@@ -113,10 +112,7 @@ export default function ReviewView() {
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
   const findings = useReviewFindings(projectId, source?.branch)
-  useClockTick()
-  const repos = useStore((s) => s.repos)
-  const latestChangeMs = sourceLatestChange(review?.changes, repos)
-  const status = reviewState(findings?.findings, source, latestChangeMs)
+  const status = reviewState(findings?.findings, source)
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
   // The open worktree's sessions belong to the active task when the project is open in its
@@ -242,7 +238,6 @@ export default function ReviewView() {
           source={source}
           worktrees={worktrees}
           findings={findings}
-          latestChangeMs={latestChangeMs}
           close={() => setMergeDialogScope(null)}
           launched={(sid) => {
             if (useStore.getState().project?.id === projectId)
@@ -316,19 +311,7 @@ export default function ReviewView() {
                       ↻
                     </button>
                   </div>
-                  <div className="review-status" role="status">
-                    {findings?.error
-                      ? findings.error
-                      : !source?.branch
-                        ? 'Not reviewed'
-                        : !findings
-                          ? 'Loading review status…'
-                          : status === 'none'
-                            ? 'Not reviewed'
-                            : status === 'stale'
-                              ? 'Changed since review'
-                              : `Reviewed ${ago(findings.findings!.modifiedMs)}`}
-                  </div>
+                  <ReviewStatus branch={source?.branch} findings={findings} status={status} />
                   {review && (
                     <div className="review-summary">
                       <span>{plural(shownFiles.length, 'file')}</span>
@@ -485,10 +468,40 @@ export default function ReviewView() {
               selected={currentAgent}
               select={(sid) => useStore.getState().setActiveSession(sid)}
               hide={hideAgents}
+              sourceBranch={source?.branch}
+              sourceFindings={findings}
             />
           )}
         </Panel>
       </PersistedGroup>
+    </div>
+  )
+}
+
+/** Its own component, so the relative time ticks without re-rendering all of Review. */
+function ReviewStatus({
+  branch,
+  findings,
+  status,
+}: {
+  branch: string | null | undefined
+  findings: LoadedFindings | undefined
+  status: ReturnType<typeof reviewState>
+}) {
+  useClockTick()
+  return (
+    <div className="review-status" role="status">
+      {findings?.error
+        ? findings.error
+        : !branch
+          ? 'Not reviewed'
+          : !findings
+            ? 'Loading review status…'
+            : status === 'none'
+              ? 'Not reviewed'
+              : status === 'stale'
+                ? 'Changed since review'
+                : `Reviewed ${ago(findings.findings!.modifiedMs)}`}
     </div>
   )
 }

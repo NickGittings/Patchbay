@@ -59,7 +59,13 @@ impl Bridge {
     }
     /// Like `call`; an error also says whether the service may have handled the
     /// request anyway (its reply was lost), rather than certainly not running it.
-    fn call_reporting<T: DeserializeOwned>(&self, request: Request) -> Result<T, (String, bool)> {
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the request or its reply is lost.
+    pub fn call_reporting<T: DeserializeOwned>(
+        &self,
+        request: Request,
+    ) -> Result<T, (String, bool)> {
         session::with_pending_briefing(request, |request| {
             let instance = self
                 .instance
@@ -121,6 +127,9 @@ impl Bridge {
     }
     /// Like `start`; an error also says whether the session may have started anyway
     /// (the reply was lost), so callers undo their preparation only on a certain refusal.
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the launch or its reply is lost.
     pub fn start_reporting(
         &self,
         spec: SessionSpec,

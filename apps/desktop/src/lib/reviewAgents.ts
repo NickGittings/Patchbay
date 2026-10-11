@@ -12,11 +12,9 @@ import {
   type SessionState,
   type TerminalSpec,
   type Worktree,
-  type ChangedFile,
 } from '../types'
 import { mergeAgentStart, reviewAgentStart } from './ipc'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
-import { latestChange } from './review'
 import { sessionLive, sessionTimeMs } from './sessionList'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
@@ -151,29 +149,16 @@ export function defaultReviewBase(
   return candidates.find((b): b is string => !!b && b !== source.branch) ?? ''
 }
 
-/** The latest change in the reviewed repository, leaving out components in other repos. */
-export function sourceLatestChange(
-  changes: Record<string, ChangedFile[]> | undefined,
-  repos: Record<string, string>,
-) {
-  return latestChange(
-    Object.entries(changes ?? {})
-      .filter(([id]) => !(id in repos))
-      .flatMap(([, files]) => files),
-  )
-}
-
 export function reviewState(
   findings: ReviewFindings | null | undefined,
   source: Worktree | undefined,
-  latestChangeMs: number | undefined,
 ): 'none' | 'current' | 'stale' {
   if (!findings) return 'none'
   if (
     !findings.reviewedHead ||
     findings.reviewedHead !== source?.head ||
     // Edits made while the agent was reviewing weren't necessarily reviewed.
-    (latestChangeMs !== undefined && latestChangeMs > findings.startedMs)
+    findings.editedSinceStart
   )
     return 'stale'
   return 'current'

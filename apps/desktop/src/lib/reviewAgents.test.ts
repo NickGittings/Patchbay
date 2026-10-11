@@ -218,25 +218,15 @@ test('findings become stale for new HEADs, newer edits and unfinished review att
     reviewedHead: 'abc',
     base: 'main',
     startedMs: 40,
+    editedSinceStart: false,
     truncated: false,
   }
-  expect(reviewState(null, source, undefined)).toBe('none')
-  expect(reviewState(findings, source, undefined)).toBe('current')
-  expect(reviewState(findings, source, 40)).toBe('current')
-  // Edited while the agent was reviewing, before it saved its findings.
-  expect(reviewState(findings, source, 41)).toBe('stale')
-  expect(reviewState(findings, source, 101)).toBe('stale')
-  expect(reviewState(findings, { ...source, head: 'def' }, 50)).toBe('stale')
-  expect(reviewState({ ...findings, reviewedHead: null }, source, undefined)).toBe('stale')
-})
-
-test('only changes in the reviewed repository count toward staleness', async () => {
-  const { sourceLatestChange } = await import('./reviewAgents')
-  const file = (modifiedMs: number) => ({ path: 'x', kind: 'modified' as const, modifiedMs })
-  const changes = { api: [file(10)], billing: [file(90)], '@project': [file(20)] }
-  expect(sourceLatestChange(changes, { billing: 'billing' })).toBe(20)
-  expect(sourceLatestChange(changes, {})).toBe(90)
-  expect(sourceLatestChange(undefined, {})).toBeUndefined()
+  expect(reviewState(null, source)).toBe('none')
+  expect(reviewState(findings, source)).toBe('current')
+  // Edited while the agent was reviewing, or after: the backend checks the whole worktree.
+  expect(reviewState({ ...findings, editedSinceStart: true }, source)).toBe('stale')
+  expect(reviewState(findings, { ...source, head: 'def' })).toBe('stale')
+  expect(reviewState({ ...findings, reviewedHead: null }, source)).toBe('stale')
 })
 
 test('both job scopes recover together with explicit finished selection', async () => {

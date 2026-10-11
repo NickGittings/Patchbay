@@ -17,7 +17,6 @@ export default function MergeAgentDialog({
   close,
   launched,
   findings: loaded,
-  latestChangeMs,
 }: {
   source: Worktree
   worktrees: Worktree[]
@@ -25,11 +24,10 @@ export default function MergeAgentDialog({
   launched: (sid: string) => void
   /** The source branch's findings, as Review already polls them. */
   findings: LoadedFindings | undefined
-  latestChangeMs?: number
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
-  const status = reviewState(loaded?.findings, source, latestChangeMs)
+  const status = reviewState(loaded?.findings, source)
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
   const destinations = mergeDestinations(source, worktrees)

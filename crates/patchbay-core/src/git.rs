@@ -628,26 +628,23 @@ struct RawWorktree {
     bare: bool,
 }
 
+/// Local branch names of the repo containing `root`, sorted.
+///
+/// # Errors
+/// Fails when `root` isn't in a repository or git fails.
+pub fn branches(root: &Path) -> Result<Vec<String>> {
+    Ok(
+        run(git(root).args(["for-each-ref", "--format=%(refname)", "refs/heads/"]))?
+            .lines()
+            .filter_map(|r| r.strip_prefix("refs/heads/"))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 /// `git worktree list --porcelain`: blank-line separated blocks of
 /// `worktree <path>`, `HEAD <sha>`, `branch refs/heads/<name>` or `detached`,
 /// and flags such as `bare`, `locked` and `prunable`.
-/// Local branch names of the repo containing `root`, sorted; empty if `root`
-/// isn't in a repo or git fails.
-#[must_use]
-pub fn branches(root: &Path) -> Vec<String> {
-    let Some(repo) = nearest_repo(root) else {
-        return Vec::new();
-    };
-    run(git(&repo).args(["for-each-ref", "--format=%(refname)", "refs/heads/"]))
-        .map(|out| {
-            out.lines()
-                .filter_map(|r| r.strip_prefix("refs/heads/"))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn parse_worktrees(out: &str) -> Vec<RawWorktree> {
     let mut list = Vec::new();
     let mut current: Option<RawWorktree> = None;
@@ -824,6 +821,27 @@ fn changed_entries(repo: &Path, pathspecs: &[String]) -> Option<Vec<Entry>> {
         &String::from_utf8_lossy(&output.stdout),
         |dir| repo.join(dir).join(".git").exists(),
     ))
+}
+
+/// Whether an uncommitted or untracked file anywhere in the worktree at `repo`
+/// (its top level) changed after `since_ms` (Unix ms). A deleted file counts
+/// its nearest remaining folder's mtime.
+///
+/// # Errors
+/// Fails when `git status` fails.
+pub fn changed_since(repo: &Path, since_ms: u64) -> Result<bool> {
+    let entries = changed_entries(repo, &[]).context("git status failed")?;
+    Ok(entries.iter().any(|entry| {
+        let mut path = repo.join(&entry.path);
+        loop {
+            if let Some(ms) = modified_ms(&path) {
+                return ms > since_ms;
+            }
+            if !path.pop() {
+                return true;
+            }
+        }
+    }))
 }
 
 /// How a tracked entry's `XY` field compares to `HEAD`.
@@ -1487,7 +1505,7 @@ mod tests {
         let wt = &list[1];
         assert_eq!(wt.branch.as_deref(), Some("feature"));
         assert!(!wt.main && !wt.current);
-        let names = branches(&main);
+        let names = branches(&main).unwrap();
         assert_eq!(names.len(), 2);
         assert!(names.iter().any(|b| b == "feature"));
 

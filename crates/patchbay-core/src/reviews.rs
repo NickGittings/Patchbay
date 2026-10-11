@@ -9,6 +9,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
@@ -29,6 +30,9 @@ struct Started {
     base: String,
     merge_base: String,
     started_ms: u64,
+    /// Unique per attempt, so a rollback recognises the sidecar it wrote.
+    #[serde(default)]
+    attempt: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,28 +45,97 @@ pub struct Findings {
     pub base: String,
     /// When the review attempt started; later changes weren't reviewed.
     pub started_ms: u64,
+    /// Uncommitted or untracked files in the branch's worktree changed after the
+    /// attempt started, or couldn't be checked.
+    pub edited_since_start: bool,
     pub truncated: bool,
 }
 
-/// A prepared review whose sidecar is already recorded, so findings written as soon
-/// as the agent starts are attributed to it. `rollback` restores the previous sidecar
-/// when the launch is then refused.
-pub struct Prepared {
-    pub job: AgentJob,
+/// Serializes sidecar writes, so a rollback can't overwrite a newer attempt's.
+static SIDECARS: Mutex<()> = Mutex::new(());
+
+/// A recorded review attempt: findings written after it count for its HEAD.
+pub struct Attempt {
     sidecar: PathBuf,
     previous: Option<Vec<u8>>,
+    written: Vec<u8>,
+    briefing: Option<PathBuf>,
+}
+
+impl Attempt {
+    fn record(sidecar: PathBuf, started: &Started, briefing: Option<PathBuf>) -> Result<Self> {
+        let written = serde_json::to_vec(started)?;
+        let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
+        let previous = std::fs::read(&sidecar).ok();
+        // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
+        crate::plans::write_atomic(&sidecar, &written)?;
+        Ok(Self {
+            sidecar,
+            previous,
+            written,
+            briefing,
+        })
+    }
+
+    /// Put back the sidecar this attempt replaced, best-effort, unless a later attempt
+    /// has replaced it since.
+    pub fn rollback(self) {
+        {
+            let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
+            if std::fs::read(&self.sidecar).ok().as_deref() == Some(self.written.as_slice()) {
+                let _ = match &self.previous {
+                    Some(bytes) => crate::plans::write_atomic(&self.sidecar, bytes),
+                    None => std::fs::remove_file(&self.sidecar).map_err(Into::into),
+                };
+            }
+        }
+        if let Some(file) = &self.briefing {
+            context::remove_owned_briefing_file(file);
+        }
+    }
+
+    /// Run `start`, rolling back unless it may have started the session: its error
+    /// says whether the session may be running anyway (a lost reply), in which case
+    /// that session owns this attempt.
+    ///
+    /// # Errors
+    /// Returns `start`'s error.
+    pub fn launch<T>(self, start: impl FnOnce() -> Result<T, (String, bool)>) -> Result<T, String> {
+        match start() {
+            Ok(value) => Ok(value),
+            Err((error, true)) => Err(error),
+            Err((error, false)) => {
+                // A refused launch must not invalidate or re-attribute saved findings.
+                self.rollback();
+                Err(error)
+            }
+        }
+    }
+}
+
+/// A prepared review whose sidecar is already recorded, so findings written as soon
+/// as the agent starts are attributed to it.
+pub struct Prepared {
+    pub job: AgentJob,
+    attempt: Attempt,
 }
 
 impl Prepared {
-    /// Put back the sidecar this review replaced, best-effort.
+    /// Undo the recorded attempt and remove the briefing, best-effort.
     pub fn rollback(self) {
-        let _ = match &self.previous {
-            Some(bytes) => crate::plans::write_atomic(&self.sidecar, bytes),
-            None => std::fs::remove_file(&self.sidecar).map_err(Into::into),
-        };
-        if let Some(file) = context::owned_briefing(&self.job.spec) {
-            context::remove_owned_briefing_file(&file);
-        }
+        self.attempt.rollback();
+    }
+
+    /// Start the job with `start`, rolling back as [`Attempt::launch`] does.
+    ///
+    /// # Errors
+    /// Returns `start`'s error.
+    pub fn launch<T>(
+        self,
+        start: impl FnOnce(AgentJob) -> Result<T, (String, bool)>,
+    ) -> Result<T, String> {
+        let Self { job, attempt } = self;
+        attempt.launch(|| start(job))
     }
 }
 
@@ -111,7 +184,7 @@ fn in_dir(folder: &Path, branch: &str) -> PathBuf {
 
 /// Prepare a review without modifying repository files or Git state.
 /// Read-only behavior is requested in the briefing; the user's command is preserved.
-/// Call `Prepared::rollback` if the launch fails.
+/// Launch it with `Prepared::launch`, which rolls back a refused launch.
 ///
 /// # Errors
 /// Fails for missing, foreign, detached or changed worktrees, invalid refs, a base equal
@@ -187,21 +260,67 @@ pub fn prepare(
         base: request.base.clone(),
         merge_base,
         started_ms: crate::status::unix_ms(SystemTime::now()),
+        attempt: uuid::Uuid::new_v4().to_string(),
     };
-    // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
-    let sidecar = findings.with_extension("json");
-    let previous = std::fs::read(&sidecar).ok();
-    if let Err(error) = crate::plans::write_atomic(&sidecar, &serde_json::to_vec(&started)?) {
-        if let Some(file) = context::owned_briefing(&spec) {
-            context::remove_owned_briefing_file(&file);
+    let briefing = context::owned_briefing(&spec);
+    match Attempt::record(findings.with_extension("json"), &started, briefing.clone()) {
+        Ok(attempt) => Ok(Prepared {
+            job: AgentJob { terminal, spec },
+            attempt,
+        }),
+        Err(error) => {
+            if let Some(file) = briefing {
+                context::remove_owned_briefing_file(&file);
+            }
+            Err(error)
         }
-        return Err(error);
     }
-    Ok(Prepared {
-        job: AgentJob { terminal, spec },
-        sidecar,
-        previous,
-    })
+}
+
+/// Record a new attempt for a review session about to resume, so findings it writes
+/// count for its worktree's current HEAD. `None` when the HEAD and worktree are
+/// unchanged since the last attempt, so resuming alone doesn't age its findings.
+///
+/// # Errors
+/// Fails when the session's findings file isn't in the reviews folder, its record is
+/// missing, or the worktree no longer has the reviewed branch checked out.
+pub fn resume_attempt(root: &Path, spec: &SessionSpec) -> Result<Option<Attempt>> {
+    let findings = PathBuf::from(
+        spec.env
+            .get(REVIEW_FILE_ENV)
+            .context("The review session has no findings file")?,
+    );
+    let folder = existing_dir(root).context("The reviews folder is missing")?;
+    let sidecar = findings.with_extension("json");
+    let old: Started = serde_json::from_slice(
+        &std::fs::read(&sidecar).context("The review's record is missing; start a new review")?,
+    )?;
+    ensure!(
+        in_dir(&folder, &old.branch) == findings,
+        "The review's findings file is outside the reviews folder"
+    );
+    let cwd = spec.cwd.as_path();
+    let branch = git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .unwrap_or_default();
+    ensure!(
+        branch == old.branch,
+        "The review worktree no longer has {} checked out; start a new review",
+        old.branch
+    );
+    let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
+    if head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true) {
+        return Ok(None);
+    }
+    let merge_base = git::run(git::git(cwd).args(["merge-base", &old.base, "HEAD"]))
+        .with_context(|| format!("The review base {} is gone; start a new review", old.base))?;
+    let started = Started {
+        head,
+        merge_base,
+        started_ms: crate::status::unix_ms(SystemTime::now()),
+        attempt: uuid::Uuid::new_v4().to_string(),
+        ..old
+    };
+    Attempt::record(sidecar, &started, None).map(Some)
 }
 
 /// Read capped findings. Older findings remain visible, but have no reviewed HEAD.
@@ -216,12 +335,22 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
     let handle = std::fs::File::open(file).ok()?;
     let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
     let (text, truncated) = crate::plans::read_capped(handle).ok()?;
+    let reviewed_head = (modified_ms > started.started_ms).then_some(started.head);
+    // Findings without a reviewed HEAD are stale anyway; skip the worktree scan.
+    let edited_since_start = reviewed_head.is_some()
+        && git::worktrees(root)
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .is_some_and(|w| {
+                git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
+            });
     Some(Findings {
         text,
         modified_ms,
-        reviewed_head: (modified_ms > started.started_ms).then_some(started.head),
+        reviewed_head,
         base: started.base,
         started_ms: started.started_ms,
+        edited_since_start,
         truncated,
     })
 }
@@ -252,8 +381,7 @@ pub fn prune(root: &Path) -> Result<()> {
         return Ok(());
     };
     // A failed ref listing must never be interpreted as deleted branches.
-    let refs =
-        git::run(git::git(root).args(["for-each-ref", "--format=%(refname)", "refs/heads/"]))?;
+    let branches = git::branches(root)?;
     for entry in std::fs::read_dir(&folder)? {
         let path = entry?.path();
         if path.extension().is_none_or(|ext| ext != "json") {
@@ -269,10 +397,7 @@ pub fn prune(root: &Path) -> Result<()> {
         if path != in_dir(&folder, &started.branch).with_extension("json") {
             continue;
         }
-        if !refs
-            .lines()
-            .any(|r| r == format!("refs/heads/{}", started.branch))
-        {
+        if !branches.contains(&started.branch) {
             let _ = remove(root, &started.branch);
         }
     }
@@ -566,6 +691,110 @@ mod tests {
         assert_eq!(restored.base, "main");
         assert!(restored.reviewed_head.is_some());
         context::remove_owned_briefing_file(&context::owned_briefing(&first.spec).unwrap());
+    }
+
+    #[test]
+    fn rollback_keeps_a_newer_attempts_sidecar() {
+        let f = Fixture::new();
+        let sidecar = file(&f.dir, &f.request.branch)
+            .unwrap()
+            .with_extension("json");
+        let refused = f.prepared("claude").unwrap();
+        let running = f.prepared("claude").unwrap();
+        let current = fs::read(&sidecar).unwrap();
+        refused.rollback();
+        assert_eq!(fs::read(&sidecar).unwrap(), current);
+        context::remove_owned_briefing_file(&context::owned_briefing(&running.job.spec).unwrap());
+    }
+
+    #[test]
+    fn launch_rolls_back_only_a_certain_refusal() {
+        let f = Fixture::new();
+        let sidecar = file(&f.dir, &f.request.branch)
+            .unwrap()
+            .with_extension("json");
+        let lost = f.prepared("claude").unwrap();
+        let briefing = context::owned_briefing(&lost.job.spec).unwrap();
+        let written = fs::read(&sidecar).unwrap();
+        assert!(
+            lost.launch(|_| Err::<(), _>(("lost".into(), true)))
+                .is_err()
+        );
+        assert_eq!(fs::read(&sidecar).unwrap(), written);
+        context::remove_owned_briefing_file(&briefing);
+        let refused = f.prepared("claude").unwrap();
+        assert!(
+            refused
+                .launch(|_| Err::<(), _>(("refused".into(), false)))
+                .is_err()
+        );
+        assert_eq!(fs::read(&sidecar).unwrap(), written);
+    }
+
+    #[test]
+    fn edits_anywhere_in_the_worktree_after_the_start_make_findings_stale() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("findings", true);
+        let started = read(&f.dir, &f.request.branch).unwrap().started_ms;
+        assert!(!read(&f.dir, &f.request.branch).unwrap().edited_since_start);
+        // Outside any project subfolder, and before the review started: reviewed.
+        fs::create_dir_all(f.dir.join("other")).unwrap();
+        let edit = f.dir.join("other/edit.txt");
+        fs::write(&edit, "x").unwrap();
+        let at = |ms: u64| {
+            fs::File::options()
+                .write(true)
+                .open(&edit)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_millis(ms))
+                .unwrap();
+        };
+        at(started - 10);
+        assert!(!read(&f.dir, &f.request.branch).unwrap().edited_since_start);
+        at(started + 10);
+        assert!(read(&f.dir, &f.request.branch).unwrap().edited_since_start);
+        fs::remove_file(&edit).unwrap();
+        // A deletion counts its folder's mtime.
+        fs::remove_file(f.dir.join("file.txt")).unwrap();
+        assert!(read(&f.dir, &f.request.branch).unwrap().edited_since_start);
+    }
+
+    #[test]
+    fn resuming_records_a_new_attempt_only_when_the_worktree_moved_on() {
+        let f = Fixture::new();
+        let job = f.prepare("claude").unwrap();
+        f.save("findings", true);
+        assert!(resume_attempt(&f.dir, &job.spec).unwrap().is_none());
+
+        fs::write(f.dir.join("file.txt"), "next\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
+        let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
+        let attempt = resume_attempt(&f.dir, &job.spec).unwrap().unwrap();
+        // Old findings predate the new attempt until the agent rewrites them.
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .reviewed_head
+                .is_none()
+        );
+        attempt.rollback();
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .reviewed_head
+                .is_some()
+        );
+        let attempt = resume_attempt(&f.dir, &job.spec).unwrap().unwrap();
+        drop(attempt);
+        f.save("new findings", true);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewed_head.as_deref(), Some(head.as_str()));
+        assert_eq!(findings.base, "main");
+
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        assert!(resume_attempt(&f.dir, &job.spec).is_err());
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
     }
 
     #[test]

@@ -36,6 +36,8 @@ export interface ReviewFindings {
   base: string
   /** When the review attempt started; later changes weren't reviewed. */
   startedMs: number
+  /** Files in the branch's worktree changed after the attempt started, or couldn't be checked. */
+  editedSinceStart: boolean
   truncated: boolean
 }
 
