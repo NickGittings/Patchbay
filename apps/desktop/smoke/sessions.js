@@ -69,8 +69,63 @@
     }
     return ids
   }
+  let taskProjectId
+  const createdTasks = []
+  let failure
+  let result
+  const cleanupWorktrees = async () => {
+    if (!createdTasks.length) return
+    if (!state().projects[taskProjectId]?.state) smoke.acceptOpened(await smoke.openProject())
+    state().activateProject(taskProjectId)
+    const failures = []
+    for (const task of createdTasks) {
+      try {
+        await smoke.removeTask(task.id, true)
+      } catch (error) {
+        failures.push(`${task.title}: ${error.message ?? error}`)
+      }
+    }
+    // removeTask deliberately keeps branches; these disposable smoke branches have no commits.
+    state().setActiveTask(null)
+    const { rootTerminals, activeSession, maximizedTerminal } = state()
+    const terminal = state().addRootTerminal({
+      id: 'smoke-cleanup',
+      name: 'Smoke branch cleanup',
+      kind: 'task',
+      command: `git branch -d -- ${createdTasks.map((t) => t.branch).join(' ')}`,
+    })
+    const sid = smoke.sessionId('@task', terminal, null, taskProjectId)
+    try {
+      await smoke.startTerminal('@task', terminal, null)
+      const snapshot = await until('smoke branches removed', async () => {
+        await smoke.reconcileSessions()
+        const snapshot = state().sessionRecords.find((r) => r.id === sid)?.snapshot
+        return snapshot && !snapshot.running && snapshot
+      })
+      assert(snapshot.exitCode === 0, 'Could not remove smoke branches')
+    } catch (error) {
+      failures.push(`branch cleanup: ${error.message ?? error}`)
+    } finally {
+      try {
+        await smoke.terminalStop(sid)
+        await until(
+          'cleanup terminal stopped',
+          async () => !(await smoke.terminalSnapshot(sid))?.running,
+        )
+        if ((await smoke.sessionsList()).some((r) => r.id === sid)) await smoke.sessionForget(sid)
+        await smoke.reconcileSessions()
+        assert(!state().sessionRecords.some((r) => r.id === sid), 'Cleanup session was retained')
+      } catch (error) {
+        failures.push(`cleanup terminal: ${error.message ?? error}`)
+      } finally {
+        smoke.store.setState({ rootTerminals, activeSession, maximizedTerminal })
+      }
+    }
+    assert(!failures.length, `Cleanup failed: ${failures.join('; ')}`)
+  }
   try {
     const one = await smoke.openProject()
+    taskProjectId = one.id
     const idsOne = await addSessions(one)
     const two = await smoke.openSecondProject()
     const idsTwo = await addSessions(two)
@@ -249,10 +304,157 @@
     await click(panel, 'Stop all work')
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('cleanup completed', () => !globalStop()?.disabled)
-    await smoke.report(
-      'PASS sessions: independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, detached running work, global stop across filters, stopping Starting rows, new work after global stop',
+    // Newer worktree sessions stay beneath their worktree, after the main worktree's rows.
+    const zebra = await smoke.createTask({
+      title: 'Zebra work',
+      branch: 'smoke/sessions-zebra',
+      components: [],
+    })
+    createdTasks.push(zebra)
+    await smoke.startTerminal('@task', 'shell', zebra.id)
+    const alpha = await smoke.createTask({
+      title: 'Alpha work',
+      branch: 'smoke/sessions-alpha',
+      components: [],
+    })
+    createdTasks.push(alpha)
+    await smoke.startTerminal('@task', 'shell', alpha.id)
+    const worktrees = () => [...(group(first)?.querySelectorAll('.session-worktree') ?? [])]
+    const worktree = (title) =>
+      worktrees().find((w) => w.querySelector('h4')?.textContent === title)
+    await choose(first, 0, 'all')
+    await until('repo then worktrees then terminal rows', async () => {
+      await smoke.reconcileSessions()
+      return (
+        worktrees()
+          .map((w) => w.querySelector('h4').textContent)
+          .join('|') === 'Main worktree|Alpha work|Zebra work' &&
+        worktree('Alpha work').querySelectorAll('.session-row').length === 1 &&
+        worktree('Zebra work').querySelectorAll('.session-row').length === 1
+      )
+    })
+    assert(worktree('Alpha work').textContent.includes(alpha.worktree), 'Missing worktree path')
+    assert(worktree('Zebra work').textContent.includes(zebra.worktree), 'Missing worktree path')
+    assert(
+      worktree('Main worktree').querySelectorAll('.session-row').length === 4,
+      'Main worktree rows mixed with task terminals',
     )
+    // Task labels also resolve from saved state while another project is active.
+    smoke.acceptOpened(await smoke.openSecondProject())
+    await until(
+      'inactive project worktree labels',
+      () => state().project?.id === two.id && worktree('Alpha work') && worktree('Zebra work'),
+    )
+    // A read-only panel must preserve inactive task layouts and Git badges, even disconnected.
+    await click(panel, 'Close')
+    await until('panel closed before restart check', () => !panel())
+    const original = state().projects[one.id].state
+    state().patchProject(one.id, {
+      tasks: [],
+      activeTask: 'temporarily-missing',
+      taskWorkspaces: {
+        ...original.taskWorkspaces,
+        'temporarily-missing': {
+          ...original.taskWorkspaces[''],
+          panels: { retained: { left: 35, right: 65 } },
+        },
+      },
+      gitChanges: { retained: 7 },
+    })
+    const inactive = state().projects[one.id].state
+    smoke.store.setState({ serviceConnected: false })
+    await click(() => document, 'Sessions')
+    await until(
+      'retained task labels without cached tasks',
+      () => state().project?.id === two.id && worktree('Alpha work') && worktree('Zebra work'),
+    )
+    assert(state().projects[one.id].state === inactive, 'Opening Sessions changed an inactive tab')
+    // Remove previous rendered groups before testing the legacy read-only lookup.
+    await click(panel, 'Close')
+    await until('panel closed before legacy check', () => !panel())
+    // Old service records may lack names; their Tauri lookup must not reconcile project state.
+    smoke.store.setState({
+      sessionRecords: state().sessionRecords.map((r) =>
+        r.metadata.projectId === one.id && r.metadata.task
+          ? { ...r, metadata: { ...r.metadata, taskTitle: null } }
+          : r,
+      ),
+    })
+    await click(() => document, 'Sessions')
+    await until(
+      'legacy task names while disconnected',
+      () => worktree('Alpha work') && worktree('Zebra work'),
+    )
+    assert(
+      state().projects[one.id].state === inactive,
+      'Legacy task lookup changed an inactive tab',
+    )
+    smoke.store.setState({ serviceConnected: true })
+    await smoke.reconcileSessions()
+    state().patchProject(one.id, {
+      tasks: original.tasks,
+      activeTask: original.activeTask,
+      taskWorkspaces: original.taskWorkspaces,
+      gitChanges: original.gitChanges,
+    })
+    const alphaPath = worktree('Alpha work').querySelector(
+      '.session-worktree-heading small',
+    ).textContent
+    state().closeProject(one.id)
+    await until('closed project labels and disabled Start new', () => {
+      const starts = [...(group(first)?.querySelectorAll('button') ?? [])].filter(
+        (button) => button.textContent.trim() === 'Start new',
+      )
+      return (
+        worktree('Alpha work') &&
+        worktree('Zebra work') &&
+        starts.length &&
+        starts.every((b) => b.disabled)
+      )
+    })
+    assert(
+      worktree('Alpha work').querySelector('.session-worktree-heading small').textContent ===
+        alphaPath,
+      'Closing a project changed its worktree path',
+    )
+    smoke.acceptOpened(await smoke.openProject())
+    state().activateProject(two.id)
+    await until('reopened project enables Start new', () =>
+      [...(group(first)?.querySelectorAll('button') ?? [])].some(
+        (b) => b.textContent.trim() === 'Start new' && !b.disabled,
+      ),
+    )
+    await choose(first, 0, 'running')
+    await until(
+      'empty main worktree hidden',
+      () => !worktree('Main worktree') && worktrees().length === 2,
+    )
+    await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Reconnect')
+    await until('worktree shell preview', () =>
+      document.querySelector('.session-preview .hint')?.textContent.includes(alpha.worktree),
+    )
+    await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Stop')
+    await until('only selected worktree stopped', async () => {
+      await smoke.reconcileSessions()
+      return (
+        !worktree('Alpha work') &&
+        worktree('Zebra work') &&
+        state().sessionRecords.find((r) => r.metadata.task === zebra.id)?.snapshot?.running
+      )
+    })
+    await click(panel, 'Stop all work')
+    await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
+    await until('worktree cleanup completed', () => !globalStop()?.disabled)
+    result =
+      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
   } catch (error) {
-    await smoke.report(`FAIL sessions: ${error.message ?? error}`)
+    failure = error.message ?? String(error)
+  } finally {
+    try {
+      await cleanupWorktrees()
+    } catch (error) {
+      failure = [failure, error.message ?? String(error)].filter(Boolean).join('; ')
+    }
   }
+  await smoke.report(failure ? `FAIL sessions: ${failure}` : result)
 })()

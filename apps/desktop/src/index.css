@@ -1961,6 +1961,19 @@ button.review-name:hover:not(:disabled) {
 .session-group-heading h3 {
   margin: 0;
 }
+.session-worktree {
+  margin: 12px 0 0 16px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.session-worktree-heading h4 {
+  margin: 0 0 4px;
+}
+.session-worktree-heading small {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 .session-row {
   display: flex;
   align-items: center;

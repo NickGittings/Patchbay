@@ -291,6 +291,7 @@ pub fn metadata(
         component_id: component.into(),
         terminal_id: terminal.id.clone(),
         task: None,
+        task_title: None,
         name: terminal.name.clone(),
         kind: terminal.kind,
         adapter: terminal

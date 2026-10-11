@@ -93,6 +93,9 @@ pub struct Metadata {
     /// The task whose worktree this terminal runs in; `None` for the project's own.
     #[serde(default)]
     pub task: Option<String>,
+    /// The task's display name at launch, retained even when its project tab is closed.
+    #[serde(default)]
+    pub task_title: Option<String>,
     pub name: String,
     pub kind: TerminalKind,
     #[serde(default)]
@@ -800,7 +803,7 @@ impl Service {
     fn start_with_command(
         self: &Arc<Self>,
         request: String,
-        metadata: Metadata,
+        mut metadata: Metadata,
         mut spec: SessionSpec,
         original_command: Option<String>,
         managed: bool,
@@ -855,6 +858,13 @@ impl Service {
                 !running,
                 "Conversation is already running; reconnect instead"
             );
+        }
+        // Every launch path (desktop, CLI, extensions and graph actions) records the task name.
+        // A resumed or older request can keep its retained title if the task is no longer stored.
+        if let Some(task) = metadata.task.as_deref()
+            && let Ok(task) = crate::tasks::stored(Path::new(&metadata.project_root), task)
+        {
+            metadata.task_title = Some(task.title);
         }
         let previous = self.records.lock().unwrap().get(&id).cloned();
         let mut history = previous
@@ -1319,6 +1329,7 @@ impl Terminals for ServiceTerminals<'_> {
             component_id,
             terminal_id: terminal.id.clone(),
             task,
+            task_title: None,
             name: terminal.name.clone(),
             kind: terminal.kind,
             adapter: None,
@@ -1991,6 +2002,69 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn task_title_and_project_subfolder_survive_service_restart() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let root = dir.join("repo/project");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(dir.join("repo"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let store = crate::tasks::store_dir(&root).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("tasks.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "tasks": [{ "id": "t1", "title": "Retained work",
+                    "worktree": dir.join("repo") }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Older callers omit taskTitle; the service enriches every launch centrally.
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": root,
+            "componentId": "web", "terminalId": "shell", "task": "t1",
+            "name": "Shell", "kind": "shell"
+        }))
+        .unwrap();
+        assert!(metadata.task_title.is_none());
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "printf done".into(),
+            cwd: root.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: Vec::new(),
+        };
+        let state = dir.join("state");
+        let service = Service::load(&state).unwrap();
+        let id = service.start("start".into(), metadata, spec).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!service.pty.is_running(&id));
+        service.persist().unwrap();
+        // The task list needn't be present to recover the session's display identity.
+        std::fs::remove_file(store.join("tasks.json")).unwrap();
+        let restored = Service::load(&state).unwrap();
+        let record = &restored.list()[0];
+        assert_eq!(record.metadata.task_title.as_deref(), Some("Retained work"));
+        assert_eq!(record.metadata.project_root, root.display().to_string());
+        let json = serde_json::to_value(&record.metadata).unwrap();
+        assert_eq!(json["taskTitle"], "Retained work");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn load_marks_snapshotless_records_interrupted() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
@@ -2128,6 +2202,7 @@ mod tests {
             component_id: crate::model::PLAN_SCOPE.into(),
             terminal_id: "planner".into(),
             task: Some("t1".into()),
+            task_title: None,
             name: "Planner".into(),
             kind: TerminalKind::Agent,
             adapter: None,
@@ -2193,6 +2268,7 @@ mod tests {
             component_id: "same/id".into(),
             terminal_id: "shell".into(),
             task: None,
+            task_title: None,
             name: "Counter".into(),
             kind: TerminalKind::Task,
             adapter: None,
@@ -2493,6 +2569,7 @@ mod tests {
                 component_id: "api".into(),
                 terminal_id: "agent".into(),
                 task: None,
+                task_title: None,
                 name: "Agent".into(),
                 kind: TerminalKind::Agent,
                 adapter: None,
