@@ -258,9 +258,10 @@ export const terminalResize = (sessionId: string, cols: number, rows: number) =>
 export const terminalCloseGuard = (projectId: string, componentId: string, terminalId: string) =>
   invoke<string>('terminal_close_guard', { projectId, componentId, terminalId })
 export const terminalStop = (sessionId: string) => invoke<void>('terminal_stop', { sessionId })
+export const sessionsStopAll = () => invoke<void>('sessions_stop_all')
 /** A window showed the session to the user; every window hears the new status. */
 export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen', { sessionId })
-/** Kill every session and drop retained output; returns the generation floor. */
+/** Stop every session, retaining output; returns the highest observed generation. */
 export const terminalReset = () => invoke<number>('terminal_reset')
 
 /** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
@@ -357,7 +358,7 @@ export const sessionResume = (sessionId: string, requestId: string = crypto.rand
 export const sessionConversation = (sessionId: string, conversationId: string) =>
   invoke<void>('session_conversation', { sessionId, conversationId })
 export const sessionForget = (sessionId: string) => invoke<void>('session_forget', { sessionId })
-export const quitPatchbay = (stopWork = false) => invoke<void>('quit_patchbay', { stopWork })
+export const quitPatchbay = () => invoke<void>('quit_patchbay')
 export const workspaceLoad = () =>
   invoke<{ document: WorkspaceDocument; opened: OpenedProject[]; errors: Record<string, string> }>(
     'workspace_load',

@@ -1400,6 +1400,10 @@ fn terminal_resize(
 async fn terminal_stop(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     service(&state, Request::Stop { id: session_id }).await
 }
+#[tauri::command]
+async fn sessions_stop_all(state: State<'_, AppState>) -> CmdResult<()> {
+    service(&state, Request::StopAll).await
+}
 /// Block launches from every webview while the saved terminal is being removed.
 #[tauri::command]
 async fn terminal_close_guard(
@@ -1524,14 +1528,7 @@ async fn session_forget(state: State<'_, AppState>, session_id: String) -> CmdRe
     service(&state, Request::Forget { id: session_id }).await
 }
 #[tauri::command]
-async fn quit_patchbay(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    stop_work: bool,
-) -> CmdResult<()> {
-    if stop_work {
-        service::<()>(&state, Request::Shutdown { stop_running: true }).await?;
-    }
+async fn quit_patchbay(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     state
         .quitting
         .store(true, std::sync::atomic::Ordering::Release);
@@ -1741,8 +1738,8 @@ async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
                     .chain(&r.history)
                     .map(|s| s.generation)
                     .fold(floor, u64::max);
-                bridge.call::<()>(Request::Stop { id: r.id })?;
             }
+            bridge.call::<()>(Request::StopAll)?;
             Ok(floor)
         })
         .await
@@ -1877,6 +1874,7 @@ pub fn run() {
                 terminal_write,
                 terminal_resize,
                 terminal_stop,
+                sessions_stop_all,
                 terminal_close_guard,
                 terminal_seen,
                 terminal_reset,

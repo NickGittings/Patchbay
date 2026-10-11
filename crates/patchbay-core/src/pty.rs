@@ -1049,16 +1049,51 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn stop_all(&self) {
-        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
-        for id in &ids {
-            self.kill(id);
-        }
-        std::thread::sleep(RESET_GRACE);
-        for session in self.sessions.lock().unwrap().values_mut() {
-            session.process.force_kill();
-        }
+        let runs = self.begin_stop_all();
+        self.finish_stop_all(&runs);
+    }
+
+    /// Signal one batch while the service excludes launches. Waiting happens
+    /// after the service releases its launch lock.
+    pub(crate) fn begin_stop_all(&self) -> Vec<(String, u64)> {
+        let mut sessions = self.sessions.lock().unwrap();
+        sessions
+            .iter_mut()
+            .map(|(id, session)| {
+                session.process.hang_up();
+                if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
+                    backlog.lock().unwrap().tracker.on_stop();
+                }
+                (id.clone(), session.generation)
+            })
+            .collect()
+    }
+
+    pub(crate) fn finish_stop_all(&self, runs: &[(String, u64)]) {
         let deadline = Instant::now() + RESET_GRACE;
-        while !self.sessions.lock().unwrap().is_empty() && Instant::now() < deadline {
+        let final_deadline = deadline + RESET_GRACE;
+        let mut forced = false;
+        loop {
+            // Include the final lifecycle update so an immediate restart sees
+            // ended snapshots. Never signal a newer generation of the same id.
+            let running = runs.iter().any(|(id, generation)| {
+                self.snapshot_with(id, 0)
+                    .is_some_and(|s| s.generation == *generation && s.running)
+            });
+            if !running || Instant::now() >= final_deadline {
+                return;
+            }
+            if !forced && Instant::now() >= deadline {
+                let mut sessions = self.sessions.lock().unwrap();
+                for (id, generation) in runs {
+                    if let Some(session) = sessions.get_mut(id)
+                        && session.generation == *generation
+                    {
+                        session.process.force_kill();
+                    }
+                }
+                forced = true;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
     }

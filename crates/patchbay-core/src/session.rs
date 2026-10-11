@@ -201,6 +201,7 @@ pub enum Request {
     Stop {
         id: String,
     },
+    StopAll,
     Seen {
         id: String,
     },
@@ -385,6 +386,7 @@ impl Client {
             Request::Start { .. }
             | Request::Resume { .. }
             | Request::Stop { .. }
+            | Request::StopAll
             | Request::Forget { .. }
             | Request::Shutdown { .. }
             | Request::ActionStopGroup { .. } => Some(SLOW_TIMEOUT),
@@ -493,6 +495,7 @@ pub struct Service {
     /// Only output arrived: persisted within `SAVE_OUTPUT`.
     output_dirty: AtomicBool,
     shutdown: AtomicBool,
+    stopping: AtomicBool,
     clients: AtomicUsize,
     authority: AtomicUsize,
 }
@@ -561,9 +564,68 @@ impl Service {
             dirty: AtomicBool::new(true),
             output_dirty: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
             clients: AtomicUsize::new(0),
             authority: AtomicUsize::new(0),
         }))
+    }
+    fn stop_all(&self, shutdown: bool, stop_running: bool) -> Result<()> {
+        // Registry -> graph -> launch lock, matching coordinated startup.
+        let registry = self.actions.lock().unwrap();
+        let actions: Vec<_> = registry.values().cloned().collect();
+        GraphActions::with_stop_guards(
+            &actions,
+            || {
+                let operation = self.operation.lock().unwrap();
+                anyhow::ensure!(
+                    !self.stopping.load(Ordering::Acquire),
+                    "Sessions are already stopping"
+                );
+                anyhow::ensure!(
+                    stop_running || !self.pty.has_running(),
+                    "Work is running; shutdown requires --stop-running"
+                );
+                Ok(operation)
+            },
+            |operation| {
+                self.stopping.store(true, Ordering::Release);
+                let runs = if stop_running {
+                    self.pty.begin_stop_all()
+                } else {
+                    Vec::new()
+                };
+                self.mark_unspawned_stopped(None);
+                drop(operation);
+                drop(registry);
+                self.pty.finish_stop_all(&runs);
+                let _operation = self.operation.lock().unwrap();
+                let result = if shutdown {
+                    self.persist()
+                        .map(|()| self.shutdown.store(true, Ordering::Release))
+                } else {
+                    Ok(())
+                };
+                self.stopping.store(false, Ordering::Release);
+                result
+            },
+        )
+    }
+    fn mark_unspawned_stopped(&self, id: Option<&str>) {
+        let mut records = self.records.lock().unwrap();
+        let mut changed = false;
+        for record in records.values_mut() {
+            if id.is_none_or(|id| record.id == id)
+                && !record.interrupted
+                && record.snapshot.is_none()
+                && self.pty.snapshot_with(&record.id, 0).is_none()
+            {
+                record.interrupted = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty.store(true, Ordering::Release);
+        }
     }
     fn check_maintenance_block(&self, project_id: &str, components: &[String]) -> Result<()> {
         let mut leases = self.maintenance.lock().unwrap();
@@ -765,6 +827,10 @@ impl Service {
             );
         }
         let _operation = self.operation.lock().unwrap();
+        anyhow::ensure!(
+            !self.stopping.load(Ordering::Acquire),
+            "Sessions are stopping; retry after they finish"
+        );
         self.check_maintenance_block(
             &metadata.project_id,
             std::slice::from_ref(&metadata.component_id),
@@ -945,8 +1011,28 @@ impl Service {
                 serde_json::Value::Null
             }
             Request::Stop { id } => {
-                let _operation = self.operation.lock().unwrap();
-                self.pty.stop(&id);
+                let project = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .map(|r| r.metadata.project_id.clone());
+                let stop = || {
+                    let _operation = self.operation.lock().unwrap();
+                    self.pty.stop(&id);
+                    self.mark_unspawned_stopped(Some(&id));
+                };
+                let actions =
+                    project.and_then(|project| self.actions.lock().unwrap().get(&project).cloned());
+                if let Some(actions) = actions {
+                    actions.with_session_stop_guard(&id, stop);
+                } else {
+                    stop();
+                }
+                serde_json::Value::Null
+            }
+            Request::StopAll => {
+                self.stop_all(false, true)?;
                 serde_json::Value::Null
             }
             Request::Seen { id } => {
@@ -1102,6 +1188,10 @@ impl Service {
                 self.check_maintenance_block(&plan.project_id, &plan.component_ids())?;
                 let actions = self.actions_for(&plan.project_id);
                 let epoch = actions.epoch();
+                anyhow::ensure!(
+                    !self.stopping.load(Ordering::Acquire),
+                    "Sessions are stopping; retry after they finish"
+                );
                 let project_id = plan.project_id.clone();
                 let terminals = ServiceTerminals {
                     service: self.clone(),
@@ -1123,6 +1213,10 @@ impl Service {
                 };
                 let actions = self.actions_for(&project_id);
                 let epoch = actions.epoch();
+                anyhow::ensure!(
+                    !self.stopping.load(Ordering::Acquire),
+                    "Sessions are stopping; retry after they finish"
+                );
                 actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
                 serde_json::Value::Null
             }
@@ -1130,21 +1224,7 @@ impl Service {
                 serde_json::to_value(self.actions_for(&project_id).cancel_validation())?
             }
             Request::Shutdown { stop_running } => {
-                let _operation = self.operation.lock().unwrap();
-                anyhow::ensure!(
-                    !self.pty.has_running() || stop_running,
-                    "Work is running; shutdown requires --stop-running"
-                );
-                // Only once shutting down for certain: a refused shutdown keeps
-                // running actions and environment ownership intact.
-                for actions in self.actions.lock().unwrap().values() {
-                    actions.reset();
-                }
-                if stop_running {
-                    self.pty.stop_all();
-                }
-                self.persist()?;
-                self.shutdown.store(true, Ordering::Release);
+                self.stop_all(true, stop_running)?;
                 serde_json::Value::Null
             }
         };
@@ -1494,6 +1574,432 @@ mod tests {
         service.pty.stop(&kept);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn service_stops_cancel_staged_startups_without_stopping_unrelated_projects() {
+        use crate::actions::ActionRequest;
+        for bulk in [false, true] {
+            let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            private_dir(&dir).unwrap();
+            let service = Service::load(&dir).unwrap();
+            let project: crate::Project = serde_json::from_value(serde_json::json!({
+                "name":"P", "root":dir, "components":[
+                    {"id":"first", "name":"First", "path":".", "terminals":[
+                        {"id":"dev", "name":"Dev", "kind":"task", "command":"sleep 30",
+                            "readyWhen":"NEVER", "action":"development"}]},
+                    {"id":"later", "name":"Later", "path":".", "terminals":[
+                        {"id":"dev", "name":"Dev", "kind":"task", "command":"sleep 30",
+                            "action":"development"}]}],
+                "links":[{"id":"dependency", "source":"later", "target":"first"}],
+                "groups":[{"id":"dev", "name":"Dev", "componentIds":["first","later"],
+                    "orderedStartup":true}]
+            }))
+            .unwrap();
+            let other: Metadata = serde_json::from_value(serde_json::json!({
+                "projectId":"other", "projectName":"Other", "projectRoot":dir,
+                "componentId":"shell", "terminalId":"shell", "name":"Shell", "kind":"shell"
+            }))
+            .unwrap();
+            let other = service
+                .start(
+                    "other".into(),
+                    other,
+                    SessionSpec {
+                        id: String::new(),
+                        command: "cat".into(),
+                        cwd: dir.clone(),
+                        env: BTreeMap::new(),
+                        ready_when: String::new(),
+                        service: false,
+                        notice: None,
+                        dirs: vec![],
+                    },
+                )
+                .unwrap();
+            let plan = ActionPlan::build(
+                &project,
+                "p",
+                ActionRequest::StartGroup {
+                    group_id: "dev".into(),
+                },
+                None,
+            )
+            .unwrap();
+            let worker_service = service.clone();
+            let worker = std::thread::spawn(move || {
+                worker_service.handle(
+                    "desktop",
+                    Request::ActionRun {
+                        project: Box::new(project),
+                        plan: Box::new(plan),
+                    },
+                )
+            });
+            let first = crate::model::task_session_id("p", "first", "dev", None);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !service.pty.is_running(&first) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            service
+                .handle(
+                    "desktop",
+                    if bulk {
+                        Request::StopAll
+                    } else {
+                        Request::Stop { id: first }
+                    },
+                )
+                .unwrap();
+            assert!(worker.join().unwrap().is_err());
+            let later = crate::model::task_session_id("p", "later", "dev", None);
+            assert!(service.snapshot(&later).is_none());
+            assert_eq!(service.pty.is_running(&other), !bulk);
+            assert!(!service.shutdown.load(Ordering::Acquire));
+            service.handle("desktop", Request::StopAll).unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    mod stop_requests {
+        use super::*;
+        use crate::actions::{ActionReport, ActionRequest, TaskOutcome};
+
+        struct Fixture {
+            dir: PathBuf,
+            service: Arc<Service>,
+            project: crate::Project,
+        }
+        impl Fixture {
+            fn new() -> Self {
+                let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+                private_dir(&dir).unwrap();
+                let project = serde_json::from_value(serde_json::json!({
+                    "name":"P", "root":dir, "components":[
+                        {"id":"first", "name":"First", "path":".", "terminals":[
+                            {"id":"dev", "name":"Dev", "kind":"task",
+                                "command":"while test ! -f ready; do sleep 0.02; done; printf 'READY\\n'; cat",
+                                "readyWhen":"READY", "action":"development"},
+                            {"id":"check", "name":"Check", "kind":"task",
+                                "command":"sleep 30", "action":"validation"}]},
+                        {"id":"later", "name":"Later", "path":".", "terminals":[
+                            {"id":"dev", "name":"Dev", "kind":"task", "command":"cat",
+                                "action":"development"},
+                            {"id":"check", "name":"Check", "kind":"task", "command":"exit 0",
+                                "action":"validation"}]},
+                        {"id":"library", "name":"Library", "path":".", "terminals":[]}],
+                    "links":[{"id":"dependency", "source":"later", "target":"first"}],
+                    "groups":[{"id":"dev", "name":"Dev", "componentIds":["first","later","library"],
+                        "orderedStartup":true}]
+                })).unwrap();
+                let service = Service::load(&dir).unwrap();
+                Self {
+                    dir,
+                    service,
+                    project,
+                }
+            }
+            fn run(
+                &self,
+                request: ActionRequest,
+            ) -> std::thread::JoinHandle<Result<serde_json::Value>> {
+                let plan = ActionPlan::build(&self.project, "p", request, None).unwrap();
+                let project = self.project.clone();
+                let service = self.service.clone();
+                std::thread::spawn(move || {
+                    service.handle(
+                        "desktop",
+                        Request::ActionRun {
+                            project: Box::new(project),
+                            plan: Box::new(plan),
+                        },
+                    )
+                })
+            }
+            fn wait_running(&self, id: &str) {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !self.service.pty.is_running(id) {
+                    assert!(Instant::now() < deadline, "{id} never started");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            fn manual(&self, request: &str, command: &str) -> String {
+                let metadata = serde_json::from_value(serde_json::json!({
+                    "projectId":"p", "projectName":"P", "projectRoot":self.dir,
+                    "componentId":"unrelated", "terminalId":"dev", "name":"Dev", "kind":"task"
+                }))
+                .unwrap();
+                self.service
+                    .start(
+                        request.into(),
+                        metadata,
+                        SessionSpec {
+                            id: String::new(),
+                            command: command.into(),
+                            cwd: self.dir.clone(),
+                            env: BTreeMap::new(),
+                            ready_when: String::new(),
+                            service: false,
+                            notice: None,
+                            dirs: vec![],
+                        },
+                    )
+                    .unwrap()
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                self.service.handle("desktop", Request::StopAll).unwrap();
+                std::fs::remove_dir_all(&self.dir).unwrap();
+            }
+        }
+
+        #[test]
+        fn stop_request_for_one_validator_preserves_report_and_runs_the_rest() {
+            let f = Fixture::new();
+            let worker = f.run(ActionRequest::ValidateAffected {
+                component_id: "first".into(),
+            });
+            let first = crate::model::task_session_id("p", "first", "check", None);
+            f.wait_running(&first);
+            f.service
+                .handle("desktop", Request::Stop { id: first })
+                .unwrap();
+            let report: ActionReport =
+                serde_json::from_value(worker.join().unwrap().unwrap()).unwrap();
+            assert_eq!(report.results.len(), 2);
+            assert!(matches!(report.results[0].outcome, TaskOutcome::Stopped));
+            assert!(matches!(report.results[1].outcome, TaskOutcome::Passed));
+            assert_eq!(f.service.actions_for("p").epoch(), 0);
+        }
+
+        #[test]
+        fn restarting_unrelated_terminal_preserves_startup_and_its_scope() {
+            let f = Fixture::new();
+            let unrelated = f.manual("manual", "cat");
+            let worker = f.run(ActionRequest::StartGroup {
+                group_id: "dev".into(),
+            });
+            f.wait_running(&crate::model::task_session_id("p", "first", "dev", None));
+            f.service
+                .handle(
+                    "desktop",
+                    Request::Stop {
+                        id: unrelated.clone(),
+                    },
+                )
+                .unwrap();
+            f.manual("restart", "cat");
+            std::fs::write(f.dir.join("ready"), "").unwrap();
+            worker.join().unwrap().unwrap();
+            let actions = f.service.actions_for("p");
+            assert_eq!(actions.epoch(), 0);
+            assert!(
+                actions
+                    .with_maintenance_guard(&[], &["library".into()], || Ok(()))
+                    .is_err()
+            );
+            f.service
+                .handle(
+                    "desktop",
+                    Request::ActionStopGroup {
+                        project_id: "p".into(),
+                        group_id: "dev".into(),
+                        task: None,
+                    },
+                )
+                .unwrap();
+            assert!(
+                actions
+                    .with_maintenance_guard(&[], &["library".into()], || Ok(()))
+                    .is_ok()
+            );
+            assert!(f.service.pty.is_running(&unrelated));
+        }
+
+        #[test]
+        fn bulk_stop_releases_launch_lock_and_rejects_new_work_during_grace() {
+            let f = Fixture::new();
+            let id = f.manual("stubborn", "trap '' HUP; printf 'READY\\n'; cat");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !f
+                .service
+                .pty
+                .snapshot(&id)
+                .unwrap()
+                .data
+                .windows(5)
+                .any(|s| s == b"READY")
+            {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let service = f.service.clone();
+            let worker = std::thread::spawn(move || service.handle("desktop", Request::StopAll));
+            while !f.service.stopping.load(Ordering::Acquire) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Even requests that require the operation lock remain responsive.
+            let started = Instant::now();
+            f.service
+                .handle(
+                    "desktop",
+                    Request::Forget {
+                        id: "unknown".into(),
+                    },
+                )
+                .unwrap();
+            assert!(started.elapsed() < Duration::from_millis(500));
+            assert!(f.service.operation.try_lock().is_ok());
+            assert!(f.service.actions.try_lock().is_ok());
+            let metadata = f
+                .service
+                .records
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .metadata
+                .clone();
+            let spec = f
+                .service
+                .records
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .spec
+                .clone();
+            let error = f.service.start("late".into(), metadata, spec).unwrap_err();
+            assert!(
+                error.to_string().contains("Sessions are stopping"),
+                "{error}"
+            );
+            worker.join().unwrap().unwrap();
+            assert!(!f.service.pty.is_running(&id));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_all_retains_records_and_service_can_start_again() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let spec = SessionSpec {
+            id: String::new(),
+            command: "echo retained; sleep 30".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let metadata = |project: &str| -> Metadata {
+            serde_json::from_value(
+                serde_json::json!({"projectId":project, "projectName":project,
+                "projectRoot":dir.display().to_string(), "componentId":"web",
+                "terminalId":"shell", "name":"Shell", "kind":"shell"}),
+            )
+            .unwrap()
+        };
+        let one = service
+            .start("one".into(), metadata("one"), spec.clone())
+            .unwrap();
+        service
+            .start("two".into(), metadata("two"), spec.clone())
+            .unwrap();
+        service.handle("desktop", Request::StopAll).unwrap();
+        assert!(!service.shutdown.load(Ordering::Acquire));
+        assert_eq!(service.list().len(), 2);
+        assert!(
+            service
+                .list()
+                .iter()
+                .all(|r| r.snapshot.as_ref().is_some_and(|s| !s.running))
+        );
+        assert!(service.snapshot(&one).is_some());
+        let restarted = service
+            .start("restart".into(), metadata("one"), spec)
+            .unwrap();
+        assert!(service.pty.is_running(&restarted));
+        service
+            .handle("desktop", Request::Stop { id: restarted })
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stopping_an_idle_service_returns_without_grace_or_persistence_work() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        service.dirty.store(false, Ordering::Release);
+        let started = Instant::now();
+        service.handle("desktop", Request::StopAll).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(!service.dirty.load(Ordering::Acquire));
+        assert!(!service.stopping.load(Ordering::Acquire));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stop_marks_snapshotless_records_interrupted() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "id":"starting", "metadata":{"projectId":"p", "projectName":"P",
+                "projectRoot":dir.display().to_string(), "componentId":"web",
+                "terminalId":"shell", "name":"Shell", "kind":"shell"},
+            "spec":{"id":"starting", "command":"cat", "cwd":dir, "env":{},
+                "ready_when":"", "service":false, "notice":null, "dirs":[]},
+            "snapshot":null, "history":[], "launchCommand":"cat",
+            "interrupted":false, "requestIds":[]
+        }))
+        .unwrap();
+        service
+            .records
+            .lock()
+            .unwrap()
+            .insert(record.id.clone(), record.clone());
+        service.dirty.store(false, Ordering::Release);
+        service
+            .handle(
+                "desktop",
+                Request::Stop {
+                    id: record.id.clone(),
+                },
+            )
+            .unwrap();
+        assert!(service.list()[0].interrupted);
+        assert!(service.dirty.swap(false, Ordering::AcqRel));
+        assert!(service.actions.lock().unwrap().is_empty());
+        service
+            .handle(
+                "desktop",
+                Request::Stop {
+                    id: record.id.clone(),
+                },
+            )
+            .unwrap();
+        service.handle("desktop", Request::StopAll).unwrap();
+        assert!(!service.dirty.load(Ordering::Acquire));
+        service
+            .records
+            .lock()
+            .unwrap()
+            .insert(record.id.clone(), record);
+        service.handle("desktop", Request::StopAll).unwrap();
+        assert!(service.list()[0].interrupted);
+        service.persist().unwrap();
+        assert!(Service::load(&dir).unwrap().list()[0].interrupted);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn maintenance_lease_blocks_launches_until_frontend_apply_finishes() {

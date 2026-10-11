@@ -145,11 +145,15 @@ match. Switching tabs keeps drafts, selection, planner scope, view, panel sizes,
 terminals and component windows. Closing a tab detaches its work; **Sessions** continues to
 show it, grouped by project.
 
-**Quit Patchbay** and normal window closure leave shells, tasks and agents running in the
-independent `patchbay-sessiond` helper. **Stop** terminates a session. **Stop all work and
-quit** explicitly terminates all work. Sessions show **Disconnected** while the desktop
-reconnects; losing a connection never starts replacement processes. The helper exits after
-60 seconds without clients or running processes.
+Closing windows and quitting Patchbay leave shells, tasks and agents running in the
+independent `patchbay-sessiond` helper. **Stop** terminates a session and cancels coordinated
+startup only when its plan includes that session; stopping one validator lets validation
+continue. **Stop all work** asks for confirmation, then cancels coordinated actions and stops
+sessions across every project, including those hidden by filters, while keeping Patchbay
+open. From the CLI, `patchbay sessions shutdown --stop-running` stops all work and shuts down
+the helper. Sessions show **Disconnected** while the desktop reconnects; losing a connection
+never starts replacement processes. The helper exits after 60 seconds without clients or
+running processes.
 
 Local recovery lives in `~/.patchbay/workspaces/default.json`; identities live beside it.
 Drafts are written atomically after 500 ms of inactivity and flushed on orderly main-window

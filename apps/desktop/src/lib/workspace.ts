@@ -119,7 +119,7 @@ export function initializeWorkspace() {
     await listen('patchbay://quit-request', async () => {
       await flushMapSaves()
       await flushWorkspace()
-      await quitPatchbay(false)
+      await quitPatchbay()
     })
     await getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault()

@@ -1,16 +1,14 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import {
-  quitPatchbay,
   sessionConversation,
   sessionHistory,
   sessionForget,
   sessionResume,
   terminalStop,
+  sessionsStopAll,
 } from '../lib/ipc'
 import { hydrateSession, reconcileSessions, startTerminal } from '../lib/sessions'
-import { flushWorkspace } from '../lib/workspace'
-import { flushMapSaves } from '../lib/mapSave'
 import { ago } from '../lib/review'
 import { useClockTick } from '../lib/clock'
 import {
@@ -58,6 +56,7 @@ export default function SessionsPanel() {
   const [historyOutput, setHistoryOutput] = useState('')
   const [history, setHistory] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  const [confirmStopAll, setConfirmStopAll] = useState(false)
   const perform = async (action: () => Promise<unknown>) => {
     setBusy(true)
     try {
@@ -69,13 +68,14 @@ export default function SessionsPanel() {
       setBusy(false)
     }
   }
+  const close = () => {
+    setConfirmStopAll(false)
+    useStore.setState({ sessionsPanelOpen: false })
+  }
   if (!open) return null
   const groups = groupByProject(records)
   return (
-    <div
-      className="extension-overlay"
-      onClick={() => useStore.setState({ sessionsPanelOpen: false })}
-    >
+    <div className="extension-overlay" onClick={close}>
       <div
         className="sessions-panel panel"
         role="dialog"
@@ -87,12 +87,42 @@ export default function SessionsPanel() {
           <h2>Workspace sessions</h2>
           <span className="spacer" />
           <span>{connected ? 'Connected' : 'Disconnected · reconnecting…'}</span>
-          <button onClick={() => useStore.setState({ sessionsPanelOpen: false })}>Close</button>
+          <button
+            title="Stop work in every project, including sessions hidden by filters"
+            disabled={!connected || busy}
+            onClick={() => setConfirmStopAll(true)}
+          >
+            Stop all work
+          </button>
+          <button onClick={close}>Close</button>
         </div>
         <p>
           Closing tabs, windows, or quitting Patchbay leaves work running. Stop terminates it
           explicitly.
         </p>
+        {confirmStopAll && (
+          <section role="alertdialog" aria-label="Stop all work confirmation">
+            <p>
+              Stop every process in every project? This includes closed project tabs and sessions
+              hidden by filters. In-progress graph actions will be cancelled. Output will be kept.
+            </p>
+            <div className="row">
+              <button
+                className="danger"
+                disabled={!connected || busy}
+                onClick={() => {
+                  setConfirmStopAll(false)
+                  void perform(sessionsStopAll)
+                }}
+              >
+                Stop every project
+              </button>
+              <button disabled={busy} onClick={() => setConfirmStopAll(false)}>
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
         {!records.length && <p>No retained sessions.</p>}
         <div className="session-list">
           {groups.map(({ projectId, projectName, records: group }) => {
@@ -135,7 +165,7 @@ export default function SessionsPanel() {
                 {!visible.length && <p className="hint">{EMPTY[options.filter]}</p>}
                 {visible.map(({ record: r, time }) => {
                   const live = sessionLive(r)
-                  // Recorded but not spawned yet: nothing to reconnect to or stop for a moment.
+                  // Recorded but not spawned yet: output is not available to reconnect to.
                   const starting = live && !r.snapshot
                   return (
                     <div className="session-row" key={r.id}>
@@ -171,7 +201,8 @@ export default function SessionsPanel() {
                       </button>
                       {live ? (
                         <button
-                          disabled={!connected || busy || starting}
+                          title="Stop this session; cancel startup if its plan includes this session"
+                          disabled={!connected || busy}
                           onClick={() => void perform(() => terminalStop(r.id))}
                         >
                           Stop
@@ -311,32 +342,6 @@ export default function SessionsPanel() {
             )}
           </section>
         )}
-        <div className="row">
-          <span className="spacer" />
-          <button
-            onClick={() =>
-              void perform(async () => {
-                await flushMapSaves()
-                await flushWorkspace()
-                await quitPatchbay()
-              })
-            }
-          >
-            Quit Patchbay
-          </button>
-          <button
-            disabled={!connected || busy}
-            onClick={() =>
-              void perform(async () => {
-                await flushMapSaves()
-                await flushWorkspace()
-                await quitPatchbay(true)
-              })
-            }
-          >
-            Stop all work and quit
-          </button>
-        </div>
       </div>
     </div>
   )

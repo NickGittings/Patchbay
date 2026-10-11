@@ -180,8 +180,77 @@
         .every((id) => state().sessionRecords.find((r) => r.id === id)?.snapshot.running),
       'Closing a project tab changed running state',
     )
+    // Global stop includes detached projects and rows hidden by independent filters.
+    await choose(second, 0, 'closed')
+    const globalStop = () =>
+      [...panel().querySelectorAll('button')].find((b) => b.textContent.trim() === 'Stop all work')
+    smoke.store.setState({ serviceConnected: false })
+    await until('global Stop disabled while disconnected', () => globalStop()?.disabled)
+    smoke.store.setState({ serviceConnected: true })
+    await click(panel, 'Stop all work')
+    await until('global Stop confirmation', () => panel().querySelector('[role="alertdialog"]'))
+    assert(
+      state().sessionRecords.some((r) => r.snapshot?.running),
+      'Opening global Stop confirmation stopped work',
+    )
+    await click(() => panel().querySelector('[role="alertdialog"]'), 'Cancel')
+    await until(
+      'global Stop confirmation cancelled',
+      () => !panel().querySelector('[role="alertdialog"]'),
+    )
+    await smoke.reconcileSessions()
+    assert(
+      idsTwo
+        .slice(0, 2)
+        .every((id) => state().sessionRecords.find((r) => r.id === id)?.snapshot.running),
+      'Cancelling global Stop confirmation stopped hidden work',
+    )
+    await click(panel, 'Stop all work')
+    await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
+    await until(
+      'global Stop started or completed',
+      () => globalStop()?.disabled || state().sessionRecords.every((r) => !r.snapshot?.running),
+    )
+    await until('all projects stopped', async () => {
+      await smoke.reconcileSessions()
+      return state().sessionRecords.every((r) => !r.snapshot?.running)
+    })
+    assert(panel() && state().serviceConnected, 'Global stop closed the app or service')
+    assert(document.querySelector('.session-preview'), 'Global stop removed retained preview')
+    await choose(first, 0, 'closed')
+    await click(() => row(first, 'Live A'), 'Start new')
+    await until('new work after global stop', async () => {
+      await smoke.reconcileSessions()
+      return state().sessionRecords.some(
+        (r) => r.metadata.projectId === one.id && r.snapshot?.running,
+      )
+    })
+    await choose(first, 0, 'running')
+    // Render the record-before-snapshot state while its real process remains stoppable.
+    smoke.store.setState({
+      sessionRecords: state().sessionRecords.map((r) =>
+        r.id === idsOne[0] ? { ...r, snapshot: undefined, interrupted: false } : r,
+      ),
+    })
+    await until('starting row has enabled Stop', () => {
+      const element = row(first, 'Live A')
+      return (
+        element?.textContent.includes('Starting') &&
+        [...element.querySelectorAll('button')].some(
+          (b) => b.textContent.trim() === 'Stop' && !b.disabled,
+        )
+      )
+    })
+    await click(() => row(first, 'Live A'), 'Stop')
+    await until('starting session stopped', async () => {
+      await smoke.reconcileSessions()
+      return !state().sessionRecords.find((r) => r.id === idsOne[0])?.snapshot?.running
+    })
+    await click(panel, 'Stop all work')
+    await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
+    await until('cleanup completed', () => !globalStop()?.disabled)
     await smoke.report(
-      'PASS sessions: independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, detached running work',
+      'PASS sessions: independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, detached running work, global stop across filters, stopping Starting rows, new work after global stop',
     )
   } catch (error) {
     await smoke.report(`FAIL sessions: ${error.message ?? error}`)

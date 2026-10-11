@@ -300,14 +300,27 @@ struct Run {
 struct Active {
     key: String,
     cancelled: Arc<AtomicBool>,
+    sessions: Vec<String>,
 }
 #[derive(Default)]
 struct State {
     epoch: u64,
     active: Option<Active>,
     stopping: bool,
+    resetting: bool,
     environments: BTreeMap<String, Vec<Run>>,
     environment_components: BTreeMap<String, Vec<String>>,
+}
+
+impl State {
+    fn reset(&mut self) {
+        self.epoch += 1;
+        if let Some(active) = &self.active {
+            active.cancelled.store(true, Ordering::SeqCst);
+        }
+        self.environments.clear();
+        self.environment_components.clear();
+    }
 }
 
 /// Runs one coordinated operation at a time. Groups share managed sessions;
@@ -327,7 +340,7 @@ impl GraphActions {
     ) -> Result<T> {
         let state = self.0.lock().unwrap();
         ensure!(
-            state.active.is_none() && !state.stopping,
+            state.active.is_none() && !state.stopping && !state.resetting,
             "Stop graph actions before changing component folders or removing components"
         );
         ensure!(
@@ -349,7 +362,7 @@ impl GraphActions {
         apply()
     }
 
-    /// The project generation; [`Self::reset`] bumps it. Callers read it
+    /// The project generation; a bulk stop bumps it. Callers read it
     /// before doing slow work so a project switch in between is detected.
     ///
     /// # Panics
@@ -419,7 +432,7 @@ impl GraphActions {
                 "Project changed before action started"
             );
             ensure!(
-                state.active.is_none() && !state.stopping,
+                state.active.is_none() && !state.stopping && !state.resetting,
                 "Another graph action is still running or stopping"
             );
             if environment.is_none() {
@@ -433,6 +446,7 @@ impl GraphActions {
             state.active = Some(Active {
                 key,
                 cancelled: cancelled.clone(),
+                sessions: plan.sessions.clone(),
             });
         }
         let mut launched = Vec::new();
@@ -646,6 +660,51 @@ impl GraphActions {
         result
     }
 
+    /// Exclude launches while stopping a session. Cancel startup only if its
+    /// plan includes this session; individual validators keep their reports and continue.
+    /// Established ownership and the project epoch are unchanged.
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    pub fn with_session_stop_guard<T>(&self, id: &str, stop: impl FnOnce() -> T) -> T {
+        let state = self.0.lock().unwrap();
+        if let Some(active) = &state.active
+            && active.key.starts_with("group:")
+            && active.sessions.iter().any(|session| session == id)
+        {
+            active.cancelled.store(true, Ordering::SeqCst);
+        }
+        stop()
+    }
+
+    /// Lock projects before the service launch lock, then reset actions only
+    /// after preflight succeeds. Exclude new actions until stopping finishes,
+    /// releasing graph locks during the caller's process exit wait.
+    ///
+    /// # Errors
+    /// Returns errors from preflight or stopping without cancelling on a refused preflight.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn with_stop_guards<P, T>(
+        actions: &[Arc<Self>],
+        prepare: impl FnOnce() -> Result<P>,
+        stop: impl FnOnce(P) -> Result<T>,
+    ) -> Result<T> {
+        let mut guards: Vec<_> = actions.iter().map(|a| a.0.lock().unwrap()).collect();
+        let prepared = prepare()?;
+        for state in &mut guards {
+            state.reset();
+            state.resetting = true;
+        }
+        drop(guards);
+        let result = stop(prepared);
+        for action in actions {
+            action.0.lock().unwrap().resetting = false;
+        }
+        result
+    }
+
     /// Stop the running validation: the validator in progress is stopped,
     /// the rest are reported as cancelled. Returns whether one was running.
     ///
@@ -686,7 +745,10 @@ impl GraphActions {
         let runs = {
             let mut state = self.0.lock().unwrap();
             ensure!(state.epoch == epoch, "Project changed before stop started");
-            ensure!(!state.stopping, "An environment is already stopping");
+            ensure!(
+                !state.stopping && !state.resetting,
+                "An environment is already stopping"
+            );
             if let Some(active) = &state.active
                 && active.key == format!("group:{group_id}")
             {
@@ -726,19 +788,9 @@ impl GraphActions {
         Ok(())
     }
 
-    /// Cancel actions and forget environment ownership, before terminals are
-    /// stopped or reset, so delayed workers can't spawn afterwards.
-    ///
-    /// # Panics
-    /// Panics if the internal lock is poisoned.
-    pub fn reset(&self) {
-        let mut state = self.0.lock().unwrap();
-        state.epoch += 1;
-        if let Some(active) = &state.active {
-            active.cancelled.store(true, Ordering::SeqCst);
-        }
-        state.environments.clear();
-        state.environment_components.clear();
+    #[cfg(test)]
+    fn reset(&self) {
+        self.0.lock().unwrap().reset();
     }
 }
 
@@ -871,6 +923,48 @@ mod tests {
         ActionRequest::StartGroup {
             group_id: "dev".into(),
         }
+    }
+
+    #[test]
+    fn stop_guards_preserve_ownership_for_rows_and_refused_shutdowns() {
+        let actions = Arc::new(GraphActions::default());
+        actions.0.lock().unwrap().environments.insert(
+            "established".into(),
+            vec![Run {
+                id: "running".into(),
+                generation: 1,
+            }],
+        );
+        actions.with_session_stop_guard("running", || {});
+        assert!(
+            actions
+                .0
+                .lock()
+                .unwrap()
+                .environments
+                .contains_key("established")
+        );
+        let epoch = actions.epoch();
+        assert!(
+            GraphActions::with_stop_guards(
+                std::slice::from_ref(&actions),
+                || -> Result<()> { bail!("Work is running") },
+                |_| Ok(())
+            )
+            .is_err()
+        );
+        assert_eq!(actions.epoch(), epoch);
+        assert!(
+            actions
+                .0
+                .lock()
+                .unwrap()
+                .environments
+                .contains_key("established")
+        );
+        GraphActions::with_stop_guards(std::slice::from_ref(&actions), || Ok(()), |_| Ok(()))
+            .unwrap();
+        assert!(actions.0.lock().unwrap().environments.is_empty());
     }
 
     #[test]
@@ -1069,6 +1163,34 @@ mod tests {
                 self.0.stop_generation(id, generation)
             }
         }
+        /// Inject a row Stop while group cleanup is in progress.
+        struct RowStopDuringCleanup<'a> {
+            local: Local,
+            actions: &'a GraphActions,
+            fail: bool,
+        }
+        impl Terminals for RowStopDuringCleanup<'_> {
+            fn snapshot(&self, id: &str) -> Option<Snapshot> {
+                self.local.snapshot(id)
+            }
+            fn is_running(&self, id: &str) -> bool {
+                self.local.is_running(id)
+            }
+            fn launch_matches(&self, spec: &SessionSpec) -> bool {
+                self.local.launch_matches(spec)
+            }
+            fn launch(&self, launch: Launch) -> Result<()> {
+                self.local.launch(launch)
+            }
+            fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
+                self.actions.with_session_stop_guard(id, || {});
+                if self.fail {
+                    bail!("Injected cleanup failure");
+                }
+                self.local.stop_generation(id, generation)
+            }
+        }
+
         impl Fixture {
             fn new() -> Self {
                 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1131,6 +1253,104 @@ mod tests {
                 self.pty.reset();
                 let _ = std::fs::remove_dir_all(&self.project.root);
             }
+        }
+
+        #[test]
+        fn routine_stop_between_epoch_capture_and_action_entry_is_allowed() {
+            let f = Fixture::new();
+            let epoch = f.actions.epoch();
+            f.actions.with_session_stop_guard("unrelated", || {});
+            f.actions
+                .execute(
+                    &f.project,
+                    build(&f.project, start()).unwrap(),
+                    epoch,
+                    &Local(f.pty.clone()),
+                )
+                .unwrap();
+            let epoch = f.actions.epoch();
+            f.actions.with_session_stop_guard(&sid("api", "dev"), || {
+                f.pty.stop(&sid("api", "dev"));
+            });
+            f.actions
+                .stop_group("p", "dev", None, epoch, &Local(f.pty.clone()))
+                .unwrap();
+            assert!(
+                f.actions
+                    .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
+                    .is_ok()
+            );
+        }
+
+        #[test]
+        fn row_stop_during_group_stop_releases_scope_or_keeps_retryable_owners() {
+            for fail in [false, true] {
+                let f = Fixture::new();
+                f.run(start()).unwrap();
+                let terminals = RowStopDuringCleanup {
+                    local: Local(f.pty.clone()),
+                    actions: &f.actions,
+                    fail,
+                };
+                let result = f.actions.stop_group("p", "dev", None, 0, &terminals);
+                assert_eq!(result.is_err(), fail);
+                assert_eq!(f.actions.epoch(), 0);
+                assert_eq!(
+                    f.actions
+                        .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
+                        .is_err(),
+                    fail,
+                );
+                if fail {
+                    assert!(!f.actions.0.lock().unwrap().environments["p:dev"].is_empty());
+                    f.actions
+                        .stop_group("p", "dev", None, 0, &Local(f.pty.clone()))
+                        .unwrap();
+                    assert!(
+                        f.actions
+                            .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
+                            .is_ok()
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn row_stop_during_failed_rollback_preserves_ownership_and_scope_for_retry() {
+            let mut f = Fixture::new();
+            f.project.components[0].terminals[0].command = "exit 2".into();
+            f.project.components[0].terminals[0].ready_when = "WEB READY".into();
+            let terminals = RowStopDuringCleanup {
+                local: Local(f.pty.clone()),
+                actions: &f.actions,
+                fail: true,
+            };
+            let error = f
+                .actions
+                .execute(
+                    &f.project,
+                    build(&f.project, start()).unwrap(),
+                    0,
+                    &terminals,
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("rollback incomplete"), "{error}");
+            assert_eq!(f.actions.epoch(), 0);
+            assert!(!f.actions.0.lock().unwrap().environments["p:dev"].is_empty());
+            assert!(
+                f.actions
+                    .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
+                    .is_err()
+            );
+            f.actions
+                .stop_group("p", "dev", None, 0, &Local(f.pty.clone()))
+                .unwrap();
+            assert!(
+                f.actions
+                    .with_maintenance_guard(&[], &["lib".into()], || Ok(()))
+                    .is_ok()
+            );
         }
 
         #[test]
@@ -1260,6 +1480,19 @@ mod tests {
         }
 
         #[test]
+        fn row_stop_guard_cancels_later_stages() {
+            let mut f = Fixture::new();
+            f.project.components[1].terminals[0].command = "sleep 30".into();
+            let worker = f.start_in_thread();
+            f.wait_running(&sid("api", "dev"));
+            f.actions
+                .with_session_stop_guard(&sid("api", "dev"), || f.pty.stop(&sid("api", "dev")));
+            assert!(worker.join().unwrap().is_err());
+            assert!(f.pty.snapshot(&sid("web", "dev")).is_none());
+            assert_eq!(f.actions.epoch(), 0);
+        }
+
+        #[test]
         fn validators_continue_after_failures_and_skip_unconfigured_components() {
             let f = Fixture::new();
             let report = f
@@ -1347,7 +1580,9 @@ mod tests {
                 })
             };
             f.wait_running(&sid("api", "check"));
-            f.pty.kill(&sid("api", "check"));
+            f.actions.with_session_stop_guard(&sid("api", "check"), || {
+                f.pty.stop(&sid("api", "check"));
+            });
             let report = worker.join().unwrap().unwrap();
             assert!(matches!(report.results[0].outcome, TaskOutcome::Stopped));
             assert!(matches!(report.results[1].outcome, TaskOutcome::Passed));
