@@ -90,10 +90,14 @@ const decodeBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.char
 export function listenForTerminals() {
   listening ??= Promise.all([
     onTerminalEvent(handleTerminalEvent),
-    listen<{ connected: boolean; instanceId?: string }>('patchbay://service', (e) => {
-      if (!e.payload.connected) useStore.setState({ serviceConnected: false })
-      else void reconcileSessions().catch(() => {})
-    }),
+    listen<{ connected: boolean; instanceId?: string; error?: string }>(
+      'patchbay://service',
+      (e) => {
+        if (!e.payload.connected)
+          useStore.setState({ serviceConnected: false, serviceError: e.payload.error })
+        else void reconcileSessions().catch(() => {})
+      },
+    ),
   ])
     .then(() => {
       setInterval(() => void reconcileSessions(false).catch(() => {}), 2000)
@@ -688,7 +692,7 @@ export function reconcileSessions(force = true): Promise<void> {
           await hydrateSession(r.id)
         }
       }
-      useStore.setState({ serviceConnected: true })
+      useStore.setState({ serviceConnected: true, serviceError: undefined })
       if (reconnecting) window.dispatchEvent(new Event('patchbay:reconnected'))
     } catch (e) {
       useStore.setState({ serviceConnected: false })

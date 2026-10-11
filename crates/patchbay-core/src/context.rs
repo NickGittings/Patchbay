@@ -845,10 +845,17 @@ fn decorate_agent(
 
 const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.";
 
+pub(crate) const REVIEW_PROMPT: &str = "Review the whole branch described in your Patchbay briefing. Report findings to PATCHBAY_REVIEW_FILE and do not modify the worktree.";
+
 /// Drop only Patchbay's exact trailing kickoff, preserving all provider options.
-pub(crate) fn merge_resume_command(command: &str) -> String {
-    let suffix = format!(" {}", Shell::current().quote(MERGE_PROMPT));
-    command.strip_suffix(&suffix).unwrap_or(command).to_owned()
+pub(crate) fn job_resume_command(command: &str) -> String {
+    for prompt in [MERGE_PROMPT, REVIEW_PROMPT] {
+        let suffix = format!(" {}", Shell::current().quote(prompt));
+        if let Some(command) = command.strip_suffix(&suffix) {
+            return command.to_owned();
+        }
+    }
+    command.to_owned()
 }
 
 /// Build a dedicated agent job without planner or implementation instructions.
@@ -862,6 +869,42 @@ pub fn merge_agent_spec(
     dirs: Vec<PathBuf>,
     policy: &dyn Policy,
 ) -> Result<SessionSpec> {
+    let mut spec = job_agent_spec(
+        project,
+        terminal,
+        text,
+        dirs,
+        crate::model::MERGE_SCOPE,
+        MERGE_PROMPT,
+        BTreeMap::new(),
+        policy,
+    )?;
+    spec.exclusive_cwd = true;
+    Ok(spec)
+}
+
+/// Build an owned briefing and launch command for a review or merge job.
+///
+/// # Errors
+/// Fails for an invalid scope or terminal, briefing I/O, or a rejected policy check.
+#[allow(clippy::too_many_arguments)]
+pub fn job_agent_spec(
+    project: &Project,
+    terminal: &TerminalSpec,
+    text: &str,
+    dirs: Vec<PathBuf>,
+    scope: &str,
+    prompt: &str,
+    extra_env: BTreeMap<String, String>,
+    policy: &dyn Policy,
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        matches!(
+            scope,
+            crate::model::MERGE_SCOPE | crate::model::REVIEW_SCOPE
+        ),
+        "Invalid job scope"
+    );
     anyhow::ensure!(
         terminal.kind == TerminalKind::Agent,
         "Choose an agent preset"
@@ -870,14 +913,17 @@ pub fn merge_agent_spec(
         !terminal.command.trim().is_empty(),
         "Choose an agent command"
     );
-    let scope = crate::model::MERGE_SCOPE;
     // Each pending launch is immutable. Core transport removes it after dispatch;
     // the service retains an independent copy for conversation recovery.
-    let file = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), text)?;
+    let file = context_file(
+        &format!("{}-{}", scope.trim_start_matches('@'), uuid::Uuid::new_v4()),
+        text,
+    )?;
     let mut env = BTreeMap::from([
         (COMPONENT_ENV.into(), scope.into()),
         (CONTEXT_ENV.into(), file.display().to_string()),
     ]);
+    env.extend(extra_env);
     let mut command = terminal.command.trim().to_string();
     let notice = brief_agent(
         &mut command,
@@ -885,12 +931,12 @@ pub fn merge_agent_spec(
             file: &file,
             text,
             dirs: &dirs,
-            prompt: Some(MERGE_PROMPT),
+            prompt: Some(prompt),
         },
         Shell::current(),
         &mut env,
     );
-    let resume_command = merge_resume_command(&command);
+    let resume_command = job_resume_command(&command);
     let components = project.components.iter().collect::<Vec<_>>();
     if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
         remove_owned_briefing_file(&file);
@@ -899,7 +945,7 @@ pub fn merge_agent_spec(
     Ok(SessionSpec {
         resume_command: Some(resume_command),
         owns_briefing: true,
-        exclusive_cwd: true,
+        exclusive_cwd: false,
         merge_source: None,
         // Session service derives the identity from its project metadata.
         id: String::new(),
@@ -932,7 +978,15 @@ pub(crate) fn retain_owned_briefing(spec: &mut SessionSpec) -> Result<()> {
         "Invalid owned briefing path"
     );
     let text = std::fs::read_to_string(&pending)?;
-    let retained = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), &text)?;
+    let prefix = pending
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split('-')
+        .next()
+        .unwrap();
+    let retained = context_file(&format!("{prefix}-{}", uuid::Uuid::new_v4()), &text)?;
     let old = pending.file_name().unwrap().to_str().unwrap();
     let new = retained.file_name().unwrap().to_str().unwrap();
     spec.command = spec.command.replace(old, new);
@@ -961,7 +1015,10 @@ fn is_owned_briefing_file(file: &Path) -> bool {
         && file
             .file_stem()
             .and_then(|s| s.to_str())
-            .and_then(|s| s.strip_prefix("merge-"))
+            .and_then(|s| {
+                s.strip_prefix("merge-")
+                    .or_else(|| s.strip_prefix("review-"))
+            })
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
         && file.extension().is_some_and(|s| s == "md")
 }

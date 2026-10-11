@@ -18,7 +18,7 @@ pub struct MergeRequest {
     pub destination_branch: String,
 }
 
-pub struct MergeJob {
+pub struct AgentJob {
     pub terminal: TerminalSpec,
     pub spec: SessionSpec,
 }
@@ -36,7 +36,7 @@ fn git_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     .collect()
 }
 
-fn check_owned_dirs(dirs: &[PathBuf], root: &Path, common: &Path) -> Result<()> {
+pub(crate) fn check_owned_dirs(dirs: &[PathBuf], root: &Path, common: &Path) -> Result<()> {
     ensure!(
         dirs.len() == 2 && dirs[1] == common,
         "The worktree at {} isn't in this project's repository",
@@ -45,7 +45,7 @@ fn check_owned_dirs(dirs: &[PathBuf], root: &Path, common: &Path) -> Result<()> 
     Ok(())
 }
 
-fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
     let dirs = git_dirs(root)?;
     check_owned_dirs(&dirs, root, common)?;
     Ok(dirs)
@@ -129,7 +129,7 @@ pub fn prepare(
     request: &MergeRequest,
     terminal: &TerminalSpec,
     policy: &dyn Policy,
-) -> Result<MergeJob> {
+) -> Result<AgentJob> {
     let trees = git::worktrees(Path::new(&project.root));
     let mut source = checked_tree(&trees, &request.source, "source")?;
     let mut destination = checked_tree(&trees, &request.destination, "destination")?;
@@ -152,7 +152,7 @@ pub fn prepare(
         "Merge {} → {}",
         request.source_branch, request.destination_branch
     );
-    let text = format!(
+    let mut text = format!(
         "# Patchbay local merge\n\nProject: {}\n\nSource worktree: {}\nSource branch: {}\nSource HEAD: {}\n\nDestination worktree: {}\nDestination branch: {}\nDestination HEAD: {}\n\n\
          Integrate the entire committed source branch into the destination branch. Review's component filters do not limit this job.\n\n\
          Before changing anything, verify both paths still belong to this repository, both branches and HEADs still match the values above, both worktrees are clean (including untracked files), and neither has a merge, rebase, cherry-pick, or revert in progress. Stop and report if a precondition changed.\n\n\
@@ -165,6 +165,13 @@ pub fn prepare(
         request.destination_branch,
         destination.head,
     );
+    if let Some(findings) = crate::reviews::read(Path::new(&project.root), &request.source_branch) {
+        let file = crate::reviews::file(Path::new(&project.root), &request.source_branch)?;
+        text.push_str(&format!(
+            "\n## Review findings\n\nFindings file: {}\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n",
+            file.display(), findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()),
+        ));
+    }
     // Linked worktrees write their private index/HEAD and the shared object/ref store.
     let mut dirs = destination_dirs;
     dirs.sort();
@@ -176,7 +183,7 @@ pub fn prepare(
     scoped.groups.clear();
     let mut spec = context::merge_agent_spec(&scoped, &terminal, &text, dirs, policy)?;
     spec.merge_source = Some(PathBuf::from(&source.path));
-    Ok(MergeJob { terminal, spec })
+    Ok(AgentJob { terminal, spec })
 }
 
 /// Validate only the recorded destination before granting resume access.
@@ -260,7 +267,7 @@ mod tests {
         fn terminal(command: &str) -> TerminalSpec {
             serde_json::from_value(serde_json::json!({"id":"agent", "name":"Agent", "kind":"agent", "command":command})).unwrap()
         }
-        fn prepare(&self) -> Result<MergeJob> {
+        fn prepare(&self) -> Result<AgentJob> {
             prepare(
                 &self.project,
                 &self.request,
@@ -345,6 +352,50 @@ mod tests {
                 .unwrap(),
             git::run(git::git(Path::new(&f.request.source)).args(["rev-parse", "HEAD"])).unwrap()
         );
+    }
+
+    #[test]
+    fn merge_briefing_points_to_review_findings_and_identifies_stale_heads() {
+        let f = Fixture::new();
+        let review = crate::reviews::prepare(
+            &f.project,
+            &crate::reviews::ReviewRequest {
+                worktree: f.request.source.clone(),
+                branch: "feature".into(),
+                base: "main".into(),
+            },
+            &Fixture::terminal("claude"),
+            &AllowAll,
+        )
+        .unwrap();
+        let findings = crate::reviews::file(Path::new(&f.project.root), "feature").unwrap();
+        fs::write(&findings, "P1 file.txt:1: sample finding").unwrap();
+        // Ensure the file postdates the kickoff, including on coarse clocks.
+        fs::File::options()
+            .write(true)
+            .open(&findings)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
+        for current in [true, false] {
+            if !current {
+                git::run(git::git(Path::new(&f.request.source)).args([
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "after review",
+                ]))
+                .unwrap();
+            }
+            let job = f.prepare().unwrap();
+            let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
+            assert!(body.contains(&findings.display().to_string()));
+            assert!(body.contains(&format!("Reviewed HEAD matches source HEAD: {current}")));
+            assert!(body.contains("mention unresolved findings"));
+            assert!(body.contains("Do not fix them unless the merge requires it"));
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+        }
+        context::remove_owned_briefing_file(&context::owned_briefing(&review.spec).unwrap());
     }
 
     #[test]

@@ -43,6 +43,14 @@
         command: `python3 '${parent}/agent.py'`,
       },
     ]
+    devices.push({
+      id: 'review-smoke',
+      name: 'Smoke review agent',
+      kind: 'agent',
+      category: 'agent',
+      source: 'builtin',
+      command: `python3 '${parent}/review.py'`,
+    })
     state().setDevices([])
     await until('session service', () => state().serviceConnected)
     // Existing layouts from before the terminal was added have only the changes panel.
@@ -69,6 +77,105 @@
       form.querySelector('select[aria-label="Destination worktree"]').value === opened.project.root,
       'destination did not default to the open worktree',
     )
+    // Review runs alongside ordinary terminals, and findings survive view/session recovery.
+    click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
+    click(document.querySelector('.review-agent-button'))
+    let reviewForm = await until('review dialog', () =>
+      document.querySelector('form[aria-label="Start review agent"]'),
+    )
+    assert(
+      reviewForm.querySelector('select[aria-label="Base branch"]').value === 'main',
+      'review base did not default to main',
+    )
+    choose(reviewForm.querySelector('select[aria-label="Agent"]'), 'review-smoke')
+    reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    const reviewSid = await until('review session panel', () => {
+      const el = document.querySelector('[aria-label="Review agent terminal"]')
+      return el?.dataset.session
+    })
+    await until('review findings written without modifying the worktree', () =>
+      text(reviewSid).includes('review-verified'),
+    )
+    const findingsFile = text(reviewSid)
+      .split('review-file:')[1]
+      .split(/[\r\n]/)[0]
+    click(
+      [...document.querySelectorAll('.review-merge-terminal button')].find(
+        (b) => b.textContent === 'Findings',
+      ),
+    )
+    await until('saved Findings shown', () =>
+      document.querySelector('.review-findings pre')?.textContent.includes('Smoke review finding'),
+    )
+    await until('Reviewed status', () =>
+      document.querySelector('.review-status')?.textContent.startsWith('Reviewed'),
+    )
+    click(document.querySelector('.review-agent-button'))
+    reviewForm = await until('running review guard', () =>
+      document.querySelector('form[aria-label="Start review agent"]'),
+    )
+    assert(
+      reviewForm.querySelector('button[type="submit"]').disabled,
+      'running review was not blocked',
+    )
+    click([...reviewForm.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
+    await smoke.terminalWrite(reviewSid, '\r')
+    await until(
+      'review exits successfully',
+      () =>
+        state().sessions[reviewSid]?.running === false &&
+        state().sessions[reviewSid]?.exitCode === 0,
+    )
+    click(
+      [...document.querySelectorAll('.review-merge-terminal button')].find(
+        (b) => b.textContent === 'Hide',
+      ),
+    )
+    await until('review panel hidden', () => !document.querySelector('.review-merge-terminal'))
+    state().setView('navigation')
+    await until('left hidden review', () => !document.querySelector('.review-view'))
+    state().setView('review')
+    await until('Review restored', () => document.querySelector('.review-worktree'))
+    assert(!document.querySelector('.review-merge-terminal'), 'hidden review reopened on remount')
+    click(
+      [...document.querySelectorAll('.review-view button')].find(
+        (b) => b.textContent === 'Show agents',
+      ),
+    )
+    await until(
+      'review recovered from record',
+      () => document.querySelector('.review-merge-terminal')?.dataset.session === reviewSid,
+    )
+    assert(!state().dockKept.includes(reviewSid), 'review entered the dock')
+    assert(
+      state().sessionRecords.filter((r) => r.metadata.componentId === '@review').length === 1,
+      'duplicate review launched twice',
+    )
+    choose(document.querySelector('.review-worktree'), `${parent}/feature`)
+    form = await openDialog()
+    await until('merge dialog shows current review', () =>
+      form.querySelector('[aria-label="Source review status"]')?.textContent.includes('current'),
+    )
+    click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
+    await smoke.startTerminal('@task', 'shell', null)
+    const fixtureShell = smoke.sessionId('@task', 'shell', null)
+    await smoke.terminalWrite(
+      fixtureShell,
+      `git -C '${parent}/feature' commit --allow-empty -qm 'After review'; printf "AFTER-REVIEW-FIXTURE\\n"\r`,
+    )
+    await until('fixture commit', () => text(fixtureShell).includes('\nAFTER-REVIEW-FIXTURE\n'))
+    window.dispatchEvent(new Event('focus'))
+    await until(
+      'Changed since review status',
+      () => document.querySelector('.review-status')?.textContent === 'Changed since review',
+    )
+    form = await openDialog()
+    await until('merge dialog shows stale review', () =>
+      form
+        .querySelector('[aria-label="Source review status"]')
+        ?.textContent.includes('changed since review'),
+    )
     // Backend errors remain in the dialog, and do not launch an agent.
     await smoke.startTerminal('@task', 'shell', null)
     const shell = smoke.sessionId('@task', 'shell', null)
@@ -92,7 +199,9 @@
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
     submit()
     submit() // Repeated submit must produce a single launch.
-    await until('merge terminal', () => document.querySelector('.review-merge-terminal'))
+    await until('merge terminal', () =>
+      document.querySelector('[aria-label="Merge agent terminal"]'),
+    )
     let sid = document.querySelector('.review-merge-terminal').dataset.session
     const mergeHeight = () =>
       document.querySelector('.review-merge-terminal')?.getBoundingClientRect().height ?? 0
@@ -108,9 +217,9 @@
       ),
     )
     await until('merge panel collapsed', () => !document.querySelector('.review-merge-terminal'))
-    assert(
-      state().panels['ReviewView-merge']['ReviewView-merge-terminal'] === 0,
-      'hidden merge panel was removed from saved layout',
+    await until(
+      'collapsed merge size saved',
+      () => state().panels['ReviewView-merge']['ReviewView-merge-terminal'] === 0,
     )
     // Hide survives view changes, and an explicit reveal works even when already active.
     state().setView('navigation')
@@ -120,7 +229,7 @@
     assert(!document.querySelector('.review-merge-terminal'), 'hidden merge reopened on remount')
     click(
       [...document.querySelectorAll('.review-view button')].find(
-        (b) => b.textContent === 'Show merge',
+        (b) => b.textContent === 'Show agents',
       ),
     )
     await until(
@@ -142,14 +251,30 @@
       },
     })
     click(
-      await until('attention toolbar button', () => document.querySelector('.attention-button')),
-    )
-    click(
-      await until('merge attention entry', () =>
-        [...document.querySelectorAll('.attention-item')].find((b) =>
+      await until('merge attention entry', () => {
+        // Mounting a restored terminal can move focus and close the synthetic popup.
+        // Session reconciliation can also replace this local stand-in status.
+        if (state().sessions[sid]?.status?.agent?.state !== 'needsInput')
+          state().setSession(sid, {
+            ...state().sessions[sid],
+            status: {
+              ...state().sessions[sid]?.status,
+              agent: {
+                state: 'needsInput',
+                sinceMs: Date.now(),
+                message: 'Smoke input',
+                prompt: null,
+              },
+            },
+          })
+        const entry = [...document.querySelectorAll('.attention-item')].find((b) =>
           b.textContent.includes('Merge agent'),
-        ),
-      ),
+        )
+        if (entry) return entry
+        const trigger = document.querySelector('.attention-button')
+        if (trigger && trigger.getAttribute('aria-expanded') !== 'true') click(trigger)
+        return null
+      }),
     )
     await until('attention reveals the already active merge', () => mergeHeight() > 100)
     assert(!state().dockKept.includes(sid), 'merge was retained in the Navigation dock')
@@ -159,6 +284,7 @@
     await until('clean merge verified', () =>
       text(sid).includes(`merge-verified:${parent}/integration`),
     )
+    assert(text(sid).includes(findingsFile), 'merge briefing did not name the findings file')
     assert(text(sid).includes('merge-result:clean'), 'clean destination did not merge cleanly')
     assert(
       state().sessionRecords.filter((r) => r.metadata.componentId === '@merge').length === 1,
@@ -293,7 +419,7 @@
         return scope.startsWith('@merge') && scope.endsWith(opened.project.root)
       })
       return [...(row?.querySelectorAll('button') ?? [])].find(
-        (b) => b.textContent === 'Review merge',
+        (b) => b.textContent === 'Show in Review',
       )
     })
     click(reviewMerge)
@@ -306,7 +432,7 @@
     assert(!state().dockKept.includes(sid), 'finished merge was retained in the dock')
     await smoke.terminalStop(shell)
     await smoke.report(
-      'PASS merge: dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
+      'PASS merge: review findings/read-only fixture/staleness/recovery, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
     )
   } catch (e) {
     await smoke.report(`FAIL merge: ${e?.message ?? e}`)

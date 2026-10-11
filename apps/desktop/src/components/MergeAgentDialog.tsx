@@ -4,7 +4,9 @@ import {
   mergeDestinations,
   mergeDestinationRunning,
   startMergeAgent,
-} from '../lib/merge'
+} from '../lib/reviewAgents'
+import { useReviewFindings } from '../lib/useReviewFindings'
+import { reviewState } from '../lib/reviewAgents'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
 import type { Worktree } from '../types'
@@ -14,14 +16,18 @@ export default function MergeAgentDialog({
   worktrees,
   close,
   launched,
+  latestChangeMs,
 }: {
   source: Worktree
   worktrees: Worktree[]
   close: () => void
   launched: (sid: string) => void
+  latestChangeMs?: number
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
+  const loaded = useReviewFindings(project.projectId, source.branch)
+  const status = reviewState(loaded?.findings, source, latestChangeMs)
   const devices = useStore((s) => s.devices)
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
@@ -88,6 +94,17 @@ export default function MergeAgentDialog({
           Source branch <strong>{source.branch}</strong>
           <code>{source.path}</code>
         </label>
+        <p className="hint flush" aria-label="Source review status">
+          {loaded?.error
+            ? loaded.error
+            : !loaded
+              ? 'Loading review status…'
+              : status === 'none'
+                ? 'No review findings for this branch.'
+                : status === 'current'
+                  ? 'Review findings are current.'
+                  : 'Review findings exist; changed since review.'}
+        </p>
         <label>
           Destination worktree
           <select

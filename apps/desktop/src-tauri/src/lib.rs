@@ -1372,6 +1372,50 @@ async fn merge_agent_start(
     .await
 }
 
+/// Launch a review agent in a registered worktree.
+#[tauri::command]
+async fn review_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::reviews::ReviewRequest,
+    terminal: TerminalSpec,
+    request_id: String,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let job = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
+            .map_err(err)?;
+        let metadata = service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
+        bridge.start(job.spec, metadata, request_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn review_read(
+    state: State<'_, AppState>,
+    project_id: String,
+    branch: String,
+) -> CmdResult<Option<patchbay_core::reviews::Findings>> {
+    let scoped = state.project(&project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    blocking(move || {
+        patchbay_core::reviews::prune(&root).map_err(err)?;
+        Ok(patchbay_core::reviews::read(&root, &branch))
+    })
+    .await
+}
+
 /// Preview what a graph action would run.
 #[tauri::command]
 async fn graph_action_plan(
@@ -1590,6 +1634,12 @@ async fn session_resume(
                 &record.spec,
             )
             .map_err(err)?
+        } else if record.metadata.component_id == model::REVIEW_SCOPE {
+            patchbay_core::reviews::resume_roots(
+                root.as_deref().ok_or("No project is open")?,
+                &record.spec,
+            )
+            .map_err(err)?
         } else {
             match &record.metadata.task {
                 Some(task) => {
@@ -1602,7 +1652,11 @@ async fn session_resume(
         };
         // Planners and agents with a plan were handed the repo's plans folder,
         // which lies under `.git` (and every worktree shares).
-        roots.extend(root.and_then(|r| patchbay_core::plans::existing_dir(&r)));
+        roots.extend(root.as_deref().and_then(patchbay_core::plans::existing_dir));
+        roots.extend(
+            root.as_deref()
+                .and_then(patchbay_core::reviews::existing_dir),
+        );
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
@@ -1953,6 +2007,8 @@ pub fn run() {
                 plan_read,
                 task_root_start,
                 merge_agent_start,
+                review_agent_start,
+                review_read,
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,
                 agent_commands::proposal_read,

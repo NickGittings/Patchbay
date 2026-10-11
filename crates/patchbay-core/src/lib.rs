@@ -19,6 +19,7 @@ pub mod plans;
 pub mod policy;
 pub mod proposals;
 pub mod pty;
+pub mod reviews;
 pub mod status;
 pub mod tasks;
 pub mod watch;

@@ -255,7 +255,7 @@ fn not_an_option(value: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
-fn check_branch(repo: &Path, branch: &str) -> Result<()> {
+pub(crate) fn check_branch(repo: &Path, branch: &str) -> Result<()> {
     not_an_option(branch, "branch name")?;
     run(git(repo).args(["check-ref-format", "--branch", branch]))
         .map_err(|_| anyhow!("“{branch}” isn't a valid branch name"))?;
@@ -276,7 +276,7 @@ fn on_one_remote(repo: &Path, branch: &str) -> bool {
     })
 }
 
-fn verifies(repo: &Path, rev: &str) -> bool {
+pub(crate) fn verifies(repo: &Path, rev: &str) -> bool {
     run(git(repo).args(["rev-parse", "--verify", "-q", rev])).is_ok()
 }
 
@@ -508,6 +508,9 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     // The plan was for this task only. The task is gone already, so a plan that
     // can't be deleted (held open on Windows) doesn't fail the removal.
     let _ = crate::plans::remove(root, Some(id));
+    if let Some(branch) = &task.branch {
+        let _ = crate::reviews::remove(root, branch);
+    }
     let _ = crate::proposals::remove(root, Some(id));
     Ok(())
 }

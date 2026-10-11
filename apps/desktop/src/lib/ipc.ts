@@ -462,3 +462,20 @@ export const mergeAgentStart = (
     terminal,
     requestId,
   })
+
+export const reviewAgentStart = (
+  project: Project,
+  request: import('../types').ReviewRequest,
+  terminal: TerminalSpec,
+  requestId: string,
+) =>
+  invoke<string>('review_agent_start', {
+    projectId: project.projectId,
+    project,
+    request,
+    terminal,
+    requestId,
+  })
+
+export const reviewRead = (projectId: string, branch: string) =>
+  invoke<import('../types').ReviewFindings | null>('review_read', { projectId, branch })

@@ -54,3 +54,21 @@ print('merge-verified:' + destination, flush=True)
 # Keep the terminal running to exercise duplicate prevention, recovery, and Stop.
 input()
 PY
+
+cat > "$dir/review.py" <<'PYTHON'
+import os
+import pathlib
+import subprocess
+import time
+
+body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
+print(body, flush=True)
+before = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'])
+time.sleep(0.05)  # findings must postdate the kickoff sidecar
+path = pathlib.Path(os.environ['PATCHBAY_REVIEW_FILE'])
+path.write_text('P2 shared.txt:1: Smoke review finding\n')
+assert subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all']) == before
+print('review-file:' + str(path), flush=True)
+print('review-verified', flush=True)
+input()  # exercise the running guard before an ordinary successful exit
+PYTHON

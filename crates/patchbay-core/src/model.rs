@@ -12,6 +12,8 @@ pub const PLAN_SCOPE: &str = "@plan";
 pub const TASK_ROOT_SCOPE: &str = "@task";
 /// Dedicated local merge agent sessions.
 pub const MERGE_SCOPE: &str = "@merge";
+/// Reserved scope for whole-branch review agents.
+pub const REVIEW_SCOPE: &str = "@review";
 /// Reserved component id for changed files under the project root that no
 /// component contains (root files like `README.md`), as git reports them.
 pub const PROJECT_SCOPE: &str = "@project";
@@ -291,8 +293,10 @@ impl Project {
         if self.components.iter().any(|c| c.id == TASK_ROOT_SCOPE) {
             anyhow::bail!("Component id {TASK_ROOT_SCOPE} is reserved for task root sessions");
         }
-        if self.components.iter().any(|c| c.id == MERGE_SCOPE) {
-            anyhow::bail!("Component id {MERGE_SCOPE} is reserved for merge agent sessions");
+        for scope in [MERGE_SCOPE, REVIEW_SCOPE] {
+            if self.components.iter().any(|c| c.id == scope) {
+                anyhow::bail!("Component id {scope} is reserved for job agent sessions");
+            }
         }
         if self.components.iter().any(|c| c.id == PLAN_SCOPE) {
             anyhow::bail!("Component id {PLAN_SCOPE} is reserved for planner sessions");
