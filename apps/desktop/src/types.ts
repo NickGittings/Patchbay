@@ -2,6 +2,15 @@
 
 export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
+export const MERGE_SCOPE = '@merge'
+
+/** A whole-branch merge between existing worktrees of the project repository. */
+export interface MergeRequest {
+  source: string
+  sourceBranch: string
+  destination: string
+  destinationBranch: string
+}
 /** Reserved id for changed files under the project root that no component contains. */
 export const PROJECT_SCOPE = '@project'
 export type View = 'navigation' | 'plan' | 'implementation' | 'review'

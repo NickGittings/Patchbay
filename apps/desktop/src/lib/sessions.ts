@@ -7,6 +7,7 @@ import { emptyTaskWorkspace, projectOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
   PLAN_SCOPE,
+  MERGE_SCOPE,
   TASK_ROOT_SCOPE,
   type Project,
   type RuntimeTerminal,
@@ -626,7 +627,10 @@ export function reconcileSessions(force = true): Promise<void> {
             : state?.taskWorkspaces[r.metadata.task ?? '']?.rootTerminals
           )?.some((t) => t.id === r.metadata.terminalId)
         const mapped = onMap(r) || root
-        if (mapped && useStore.getState().runtimeTerminals[r.id])
+        if (
+          (mapped || r.metadata.componentId === MERGE_SCOPE) &&
+          useStore.getState().runtimeTerminals[r.id]
+        )
           useStore.setState((s) => {
             const runtimeTerminals = { ...s.runtimeTerminals }
             delete runtimeTerminals[r.id]
@@ -634,6 +638,7 @@ export function reconcileSessions(force = true): Promise<void> {
           })
         if (
           r.metadata.componentId !== PLAN_SCOPE &&
+          r.metadata.componentId !== MERGE_SCOPE &&
           !mapped &&
           !useStore.getState().runtimeTerminals[r.id]
         )

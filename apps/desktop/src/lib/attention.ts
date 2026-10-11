@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import {
   PLAN_SCOPE,
+  MERGE_SCOPE,
   TASK_ROOT_SCOPE,
   parseSessionId,
   sessionId,
@@ -31,7 +32,10 @@ type Snapshot = Pick<
   'nodes' | 'sessions' | 'runtimeTerminals' | 'devices' | 'tasks'
 > &
   Partial<
-    Pick<ReturnType<typeof useStore.getState>, 'rootTerminals' | 'taskWorkspaces' | 'activeTask'>
+    Pick<
+      ReturnType<typeof useStore.getState>,
+      'rootTerminals' | 'taskWorkspaces' | 'activeTask' | 'sessionRecords'
+    >
   >
 
 function since(session: SessionState | undefined) {
@@ -79,6 +83,25 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal,
       })),
     ]),
+    // Merge jobs are recovered from records, never registered as component runtimes.
+    ...(s.sessionRecords ?? [])
+      .filter(
+        (r) =>
+          r.metadata.projectId === useStore.getState().project?.id &&
+          r.metadata.componentId === MERGE_SCOPE,
+      )
+      .map((r) => ({
+        sid: r.id,
+        componentId: MERGE_SCOPE,
+        owner: 'Merge agent',
+        task: null,
+        terminal: {
+          id: r.metadata.terminalId,
+          name: r.metadata.name,
+          kind: r.metadata.kind,
+          command: r.spec.command,
+        },
+      })),
     ...Object.entries(s.runtimeTerminals)
       .filter(([, r]) => r.projectId === useStore.getState().project?.id)
       .filter(
@@ -92,7 +115,11 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         componentId: r.componentId,
         owner:
           s.nodes.find((n) => n.id === r.componentId)?.data.name ??
-          (r.componentId === TASK_ROOT_SCOPE ? 'Task root' : r.componentId),
+          (r.componentId === MERGE_SCOPE
+            ? 'Merge agent'
+            : r.componentId === TASK_ROOT_SCOPE
+              ? 'Task root'
+              : r.componentId),
         task: r.taskId ?? sessionTask(sid),
         taskTitle: s.tasks.find((t) => t.id === (r.taskId ?? sessionTask(sid)))?.title,
         terminal: r.terminal,
@@ -174,6 +201,11 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
+  if (item.componentId === MERGE_SCOPE) {
+    s.setActiveSession(item.sid)
+    s.setView('review')
+    return
+  }
   const runtime = s.runtimeTerminals[item.sid]
   const extension = !!(runtime?.extensionId || runtime?.commandId)
   // Extension terminals run in the open worktree and show in any task, so they never switch it.

@@ -795,7 +795,35 @@ impl Service {
         metadata: Metadata,
         spec: SessionSpec,
     ) -> Result<String> {
-        self.start_with_command(request, metadata, spec, None, false)
+        let candidate = (metadata.component_id == crate::model::MERGE_SCOPE).then(|| spec.clone());
+        let result = self.start_with_command(request, metadata, spec, None, false);
+        // A rejected or idempotent launch must not leave its pending briefing behind.
+        if let Some(candidate) = candidate {
+            self.remove_unused_merge_briefing(&candidate);
+        }
+        result
+    }
+    fn remove_unused_merge_briefing(&self, spec: &SessionSpec) {
+        if spec
+            .env
+            .get(crate::context::COMPONENT_ENV)
+            .map(String::as_str)
+            != Some(crate::model::MERGE_SCOPE)
+        {
+            return;
+        }
+        let Some(file) = spec.env.get(crate::context::CONTEXT_ENV) else {
+            return;
+        };
+        if !self
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .any(|record| record.spec.env.get(crate::context::CONTEXT_ENV) == Some(file))
+        {
+            crate::context::remove_merge_briefing(spec);
+        }
     }
     fn start_with_command(
         self: &Arc<Self>,
@@ -845,6 +873,17 @@ impl Service {
             !self.pty.is_running(&id),
             "Terminal is already running; reconnect instead"
         );
+        if metadata.component_id == crate::model::MERGE_SCOPE {
+            let running = self.records.lock().unwrap().values().any(|r| {
+                r.metadata.component_id == crate::model::MERGE_SCOPE
+                    && r.spec.cwd == spec.cwd
+                    && self.pty.is_running(&r.id)
+            });
+            anyhow::ensure!(
+                !running,
+                "A merge agent is already running in this destination worktree"
+            );
+        }
         if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
             let running = self.records.lock().unwrap().values().any(|r| {
                 r.metadata.adapter == Some(adapter)
@@ -899,6 +938,9 @@ impl Service {
                 records.remove(&id);
             }
             return Err(e);
+        }
+        if let Some(previous) = previous {
+            self.remove_unused_merge_briefing(&previous.spec);
         }
         // The serve loop persists shortly; a launch never waits on a full rewrite.
         self.dirty.store(true, Ordering::Release);
@@ -1120,7 +1162,10 @@ impl Service {
                     !self.pty.is_running(&id),
                     "Stop running work before forgetting it"
                 );
-                self.records.lock().unwrap().remove(&id);
+                let forgotten = self.records.lock().unwrap().remove(&id);
+                if let Some(record) = forgotten {
+                    self.remove_unused_merge_briefing(&record.spec);
+                }
                 self.pty.forget(&id);
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
@@ -2177,6 +2222,149 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(lookup("secret").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_briefings_are_retained_for_recovery_and_removed_when_unclaimed() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId":"p", "projectName":"P", "projectRoot":dir,
+            "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge", "name":"Merge",
+            "kind":"agent"
+        }))
+        .unwrap();
+        let project = crate::model::Project {
+            schema_version: crate::model::SCHEMA_VERSION,
+            root: dir.to_string_lossy().into_owned(),
+            name: "P".into(),
+            components: vec![],
+            links: vec![],
+            groups: vec![],
+        };
+        let terminal: crate::model::TerminalSpec = serde_json::from_value(serde_json::json!({
+            "id":"merge", "name":"Merge", "kind":"agent", "command":"sleep 30"
+        }))
+        .unwrap();
+        let make_spec = || {
+            crate::context::merge_agent_spec(
+                &project,
+                &terminal,
+                "Merge briefing",
+                vec![],
+                &crate::policy::AllowAll,
+            )
+            .unwrap()
+        };
+        let file = |spec: &SessionSpec| PathBuf::from(&spec.env[crate::context::CONTEXT_ENV]);
+        let first = make_spec();
+        let first_file = file(&first);
+        let id = service
+            .start("first".into(), metadata.clone(), first)
+            .unwrap();
+        assert!(first_file.exists());
+        let retry = make_spec();
+        let retry_file = file(&retry);
+        assert_eq!(
+            service
+                .start("first".into(), metadata.clone(), retry)
+                .unwrap(),
+            id
+        );
+        assert!(!retry_file.exists());
+        let rejected = make_spec();
+        let rejected_file = file(&rejected);
+        assert!(
+            service
+                .start("second".into(), metadata.clone(), rejected)
+                .is_err()
+        );
+        assert!(!rejected_file.exists());
+        assert!(first_file.exists());
+        service.pty.stop(&id);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&id) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Stop retains the briefing for resume; a new launch supersedes it.
+        assert!(first_file.exists());
+        let next = make_spec();
+        let next_file = file(&next);
+        service.start("next".into(), metadata, next).unwrap();
+        assert!(!first_file.exists());
+        assert!(next_file.exists());
+        service.pty.stop(&id);
+        while service.pty.is_running(&id) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        service.handle("1", Request::Forget { id }).unwrap();
+        assert!(!next_file.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_sessions_serialize_destinations_across_projects_and_allow_retries() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let other = dir.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId":"p", "projectName":"P", "projectRoot":dir,
+            "componentId":crate::model::MERGE_SCOPE, "terminalId":"merge", "name":"Merge",
+            "kind":"agent"
+        }))
+        .unwrap();
+        let spec = SessionSpec {
+            id: "ignored".into(),
+            command: "sleep 30".into(),
+            cwd: dir.clone(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let id = service
+            .start("request".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        assert_eq!(
+            service
+                .start("request".into(), metadata.clone(), spec.clone())
+                .unwrap(),
+            id
+        );
+        let mut second = metadata.clone();
+        second.project_id = "another-project".into();
+        second.terminal_id = "another-agent".into();
+        assert!(
+            service
+                .start("competing".into(), second.clone(), spec.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("merge agent is already running")
+        );
+        let mut other_spec = spec.clone();
+        other_spec.cwd = other;
+        let other_id = service
+            .start("other-destination".into(), second.clone(), other_spec)
+            .unwrap();
+        service.pty.stop(&id);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&id) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        second.terminal_id = "replacement".into();
+        let replacement = service.start("after-stop".into(), second, spec).unwrap();
+        service.pty.stop(&replacement);
+        service.pty.stop(&other_id);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

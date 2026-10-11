@@ -32,6 +32,13 @@ const SCRIPTS = {
     'autosave-fixture.sh',
   ),
   views: smoke('views.js'),
+  merge: smoke(
+    'merge.js',
+    {
+      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/project'),
+    },
+    'merge-fixture.sh',
+  ),
   git: smoke('git.js'),
   actions: smoke(
     'actions.js',

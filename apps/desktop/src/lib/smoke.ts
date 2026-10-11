@@ -38,6 +38,7 @@ import { runGraphAction, stopGroup } from './actions'
 import { graphActionPlan } from './ipc'
 import { createTask, refreshTasks, removeTask } from './tasks'
 
+import { terminalStop } from './ipc'
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
 import {
@@ -56,6 +57,7 @@ import {
   syncRoots,
 } from './ipc'
 const hooks = {
+  terminalStop,
   syncAgentProject,
   saveMap,
   flushMapSaves,

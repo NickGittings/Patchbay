@@ -10,15 +10,10 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
+import { useCollapsed } from './lib/useCollapsed'
 import { listen } from '@tauri-apps/api/event'
-import {
-  Panel,
-  Separator,
-  usePanelRef,
-  type PanelImperativeHandle,
-  type PanelSize,
-} from 'react-resizable-panels'
+import { Panel, Separator } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
@@ -78,43 +73,6 @@ function useRootSync() {
       clearTimeout(timer)
     }
   }, [])
-}
-
-/** Where Navigation's collapsible panels remember their open sizes, in the project's `panels`. */
-const OPEN_SIZES = 'App-open'
-
-function openPanel(p: PanelImperativeHandle, id: string) {
-  p.expand()
-  const size = useStore.getState().panels[OPEN_SIZES]?.[id]
-  if (size) p.resize(`${size}%`)
-}
-
-/**
- * Collapse panel `id` while it has nothing to show and expand it, at the size it had when it was
- * last collapsed, once it does or `reveal` changes. Returns the panel's props and whether it is
- * collapsed, including by the user dragging it shut; `onDragShut` runs then.
- */
-function useCollapsed(id: string, shown: boolean, reveal?: unknown, onDragShut?: () => void) {
-  const panelRef = usePanelRef()
-  const shownRef = useRef(shown)
-  const [collapsed, setCollapsed] = useState(true)
-  useLayoutEffect(() => {
-    shownRef.current = shown
-    const p = panelRef.current
-    if (!p) return
-    if (shown && p.isCollapsed()) openPanel(p, id)
-    else if (!shown && !p.isCollapsed()) {
-      const size = p.getSize().asPercentage
-      const s = useStore.getState()
-      if (size > 0) s.setPanelLayout(OPEN_SIZES, { ...s.panels[OPEN_SIZES], [id]: size })
-      p.collapse()
-    }
-  }, [panelRef, id, shown, reveal])
-  const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
-    setCollapsed(size.asPercentage === 0)
-    if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current) onDragShut?.()
-  }
-  return { props: { panelRef, onResize, collapsible: true }, collapsed }
 }
 
 /**

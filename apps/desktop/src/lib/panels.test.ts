@@ -73,3 +73,21 @@ test('hasDockTabs agrees with dockTabs', () => {
   ])
     expect(hasDockTabs(s)).toBe(dockTabs(s).length > 0)
 })
+
+test('merge and planner sessions never enter Navigation, even when running or retained', () => {
+  for (const componentId of ['@merge', '@plan']) {
+    for (const session of [running, exited]) {
+      const s = state(
+        { merge: session },
+        {
+          dockKept: ['merge'],
+          runtimeTerminals: {
+            merge: { projectId: 'p-1', taskId: null, componentId, terminal: terminal('merge') },
+          },
+        },
+      )
+      expect(dockTabs(s)).toEqual([])
+      expect(hasDockTabs(s)).toBe(false)
+    }
+  }
+})

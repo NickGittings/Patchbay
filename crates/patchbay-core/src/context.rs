@@ -766,6 +766,7 @@ struct Briefing<'a> {
     file: &'a Path,
     text: &'a str,
     dirs: &'a [PathBuf],
+    prompt: Option<&'a str>,
 }
 
 /// Returns false when Codex receives a file pointer instead of the full text.
@@ -781,6 +782,11 @@ fn decorate_agent(
     for dir in briefing.dirs {
         let _ = write!(command, " --add-dir {}", quote_path(shell, dir, env));
     }
+    let prompt = briefing
+        .prompt
+        .map(|prompt| format!(" {}", shell.quote(prompt)))
+        .unwrap_or_default();
+    let mut full_text = true;
     match agent {
         Agent::Claude => {
             // Interactive sessions honour the file flag (checked with Claude Code 2.1.289).
@@ -808,20 +814,106 @@ fn decorate_agent(
             };
             let inline = argument(briefing.text);
             let too_long = match shell {
-                Shell::Windows => cmd_expanded_len(&format!("{command}{inline}"), env) > CMD_BUDGET,
-                Shell::Unix => command.len() + inline.len() > SHELL_ARG_BUDGET,
+                Shell::Windows => {
+                    cmd_expanded_len(&format!("{command}{inline}{prompt}"), env) > CMD_BUDGET
+                }
+                Shell::Unix => command.len() + inline.len() + prompt.len() > SHELL_ARG_BUDGET,
             };
             if too_long {
                 command.push_str(&argument(&format!(
                     "Your Patchbay briefing is in {}; read it before starting.",
                     briefing.file.display()
                 )));
-                return false;
+                full_text = false;
+            } else {
+                command.push_str(&inline);
             }
-            command.push_str(&inline);
         }
     }
-    true
+    command.push_str(&prompt);
+    full_text
+}
+
+/// Build a dedicated agent job without planner or implementation instructions.
+///
+/// # Errors
+/// Fails for a non-agent terminal, briefing I/O, or a rejected policy check.
+pub fn merge_agent_spec(
+    project: &Project,
+    terminal: &TerminalSpec,
+    text: &str,
+    dirs: Vec<PathBuf>,
+    policy: &dyn Policy,
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        terminal.kind == TerminalKind::Agent,
+        "Choose an agent preset"
+    );
+    anyhow::ensure!(
+        !terminal.command.trim().is_empty(),
+        "Choose an agent command"
+    );
+    let scope = crate::model::MERGE_SCOPE;
+    // Each pending launch is immutable. The service removes unclaimed, superseded and
+    // forgotten merge briefings; it retains the current one for conversation recovery.
+    let file = context_file(&format!("merge-{}", uuid::Uuid::new_v4()), text)?;
+    let mut env = BTreeMap::from([
+        (COMPONENT_ENV.into(), scope.into()),
+        (CONTEXT_ENV.into(), file.display().to_string()),
+    ]);
+    let mut command = terminal.command.trim().to_string();
+    let notice = brief_agent(
+        &mut command,
+        &Briefing {
+            file: &file,
+            text,
+            dirs: &dirs,
+            prompt: Some(
+                "Complete the local merge described in your Patchbay briefing. Verify the worktrees, resolve conflicts, run relevant checks, and report the result.",
+            ),
+        },
+        Shell::current(),
+        &mut env,
+    );
+    let components = project.components.iter().collect::<Vec<_>>();
+    if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
+        remove_merge_briefing_file(&file);
+        return Err(anyhow!("blocked by policy: {reason}"));
+    }
+    Ok(SessionSpec {
+        // Session service derives the identity from its project metadata.
+        id: String::new(),
+        command,
+        cwd: PathBuf::from(&project.root),
+        env,
+        ready_when: String::new(),
+        service: false,
+        notice,
+        dirs,
+    })
+}
+
+/// Delete only files in the dedicated merge briefing namespace, never arbitrary env paths.
+pub(crate) fn remove_merge_briefing(spec: &SessionSpec) {
+    if spec.env.get(COMPONENT_ENV).map(String::as_str) == Some(crate::model::MERGE_SCOPE)
+        && let Some(file) = spec.env.get(CONTEXT_ENV)
+    {
+        remove_merge_briefing_file(Path::new(file));
+    }
+}
+
+fn remove_merge_briefing_file(file: &Path) {
+    let dir = std::env::temp_dir().join("patchbay");
+    let owned = file.parent() == Some(dir.as_path())
+        && file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("merge-"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && file.extension().is_some_and(|s| s == "md");
+    if owned {
+        let _ = std::fs::remove_file(file);
+    }
 }
 
 fn brief_agent(
@@ -1008,6 +1100,7 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
+            prompt: None,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1115,6 +1208,7 @@ pub fn session_spec_with(
             file: &file,
             text: &briefing,
             dirs: &context_dirs,
+            prompt: None,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1350,6 +1444,7 @@ mod tests {
             file: Path::new("/tmp/ctx.md"),
             text: "",
             dirs: &[],
+            prompt: None,
         };
         for command in [
             "claude --settings ./team.json",
@@ -1611,7 +1706,12 @@ mod tests {
     }
 
     fn briefing<'a>(file: &'a Path, text: &'a str, dirs: &'a [PathBuf]) -> Briefing<'a> {
-        Briefing { file, text, dirs }
+        Briefing {
+            file,
+            text,
+            dirs,
+            prompt: None,
+        }
     }
 
     #[test]
@@ -2029,6 +2129,70 @@ mod tests {
             &mut env,
         ));
         assert!(expanded.encode_utf16().count() < 1000);
+    }
+
+    #[test]
+    fn merge_briefing_cleanup_never_deletes_arbitrary_files() {
+        let mut spec = merge_agent_spec(
+            &project(),
+            &project().components[0].terminals[0],
+            "merge",
+            vec![],
+            &AllowAll,
+        )
+        .unwrap();
+        let file = PathBuf::from(&spec.env[CONTEXT_ENV]);
+        remove_merge_briefing(&spec);
+        assert!(!file.exists());
+        let unrelated = std::env::temp_dir().join(format!("unrelated-{}.md", uuid::Uuid::new_v4()));
+        std::fs::write(&unrelated, "keep").unwrap();
+        spec.env
+            .insert(CONTEXT_ENV.into(), unrelated.to_string_lossy().into());
+        remove_merge_briefing(&spec);
+        assert!(unrelated.exists());
+        std::fs::remove_file(unrelated).unwrap();
+    }
+
+    #[test]
+    fn codex_counts_the_initial_prompt_before_selecting_inline_instructions() {
+        for (shell, budget, file) in [
+            (
+                Shell::Windows,
+                CMD_BUDGET,
+                Path::new(r"C:\Temp\briefing.md"),
+            ),
+            (Shell::Unix, SHELL_ARG_BUDGET, Path::new("/tmp/briefing.md")),
+        ] {
+            let text = "x".repeat(budget - 200);
+            let mut without_prompt = "codex".to_owned();
+            assert!(decorate_agent(
+                &mut without_prompt,
+                Agent::Codex,
+                &briefing(file, &text, &[]),
+                None,
+                shell,
+                &mut BTreeMap::new()
+            ));
+            let prompt = "p".repeat(250);
+            let with_prompt = Briefing {
+                file,
+                text: &text,
+                dirs: &[],
+                prompt: Some(&prompt),
+            };
+            let mut command = "codex".to_owned();
+            assert!(!decorate_agent(
+                &mut command,
+                Agent::Codex,
+                &with_prompt,
+                None,
+                shell,
+                &mut BTreeMap::new()
+            ));
+            assert!(command.contains("read it before starting"));
+            assert!(command.contains(&prompt));
+            assert!(command.len() < budget);
+        }
     }
 
     #[test]

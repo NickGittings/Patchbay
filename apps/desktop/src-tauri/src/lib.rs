@@ -1351,6 +1351,31 @@ async fn task_root_start(
     .await
 }
 
+/// Launch a merge agent in an existing destination worktree.
+#[tauri::command]
+async fn merge_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::merges::MergeRequest,
+    terminal: TerminalSpec,
+    request_id: String,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        let job = patchbay_core::merges::prepare(&project, &request, &terminal, &AllowAll)
+            .map_err(err)?;
+        let metadata = service::metadata(&project_id, &project, model::MERGE_SCOPE, &job.terminal);
+        bridge.start(job.spec, metadata, request_id)
+    })
+    .await
+}
+
 /// Preview what a graph action would run.
 #[tauri::command]
 async fn graph_action_plan(
@@ -1563,13 +1588,21 @@ async fn session_resume(
             .ok_or("Project unavailable; locate its folder first")?;
         // A task's terminal may only reach the task's worktree, as when it started.
         let root = scoped.access.snapshot().root();
-        let mut roots = match &record.metadata.task {
-            Some(task) => {
-                let root = root.as_deref().ok_or("No project is open")?;
-                let worktree = tasks::stored(root, task).map_err(err)?.worktree;
-                vec![Path::new(&worktree).canonicalize().map_err(err)?]
+        let mut roots = if record.metadata.component_id == model::MERGE_SCOPE {
+            patchbay_core::merges::resume_roots(
+                root.as_deref().ok_or("No project is open")?,
+                &record.spec,
+            )
+            .map_err(err)?
+        } else {
+            match &record.metadata.task {
+                Some(task) => {
+                    let root = root.as_deref().ok_or("No project is open")?;
+                    let worktree = tasks::stored(root, task).map_err(err)?.worktree;
+                    vec![Path::new(&worktree).canonicalize().map_err(err)?]
+                }
+                None => scoped.roots(),
             }
-            None => scoped.roots(),
         };
         // Planners and agents with a plan were handed the repo's plans folder,
         // which lies under `.git` (and every worktree shares).
@@ -1923,6 +1956,7 @@ pub fn run() {
                 plan_context,
                 plan_read,
                 task_root_start,
+                merge_agent_start,
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,
                 agent_commands::proposal_read,

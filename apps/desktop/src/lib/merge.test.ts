@@ -1,0 +1,158 @@
+import { beforeEach, expect, test, vi } from 'vitest'
+import {
+  MERGE_SCOPE,
+  type DeviceManifest,
+  type Project,
+  type SessionRecord,
+  type Worktree,
+} from '../types'
+
+vi.mock('./ipc', () => ({ mergeAgentStart: vi.fn() }))
+vi.mock('./sessions', () => ({ listenForTerminals: vi.fn(), reconcileSessions: vi.fn() }))
+const { mergeAgentStart } = await import('./ipc')
+const { listenForTerminals, reconcileSessions } = await import('./sessions')
+const { defaultMergeDestination, mergeDestinations, mergeRecords, startMergeAgent } =
+  await import('./merge')
+const tree = (path: string, branch: string | undefined, current = false): Worktree => ({
+  path,
+  branch,
+  current,
+  main: current,
+  head: 'abc',
+})
+const source = tree('/feature', 'feature')
+
+beforeEach(() => vi.resetAllMocks())
+
+test('destinations exclude the source, matching branch, and detached worktrees', () => {
+  const trees = [
+    source,
+    tree('/same', 'feature'),
+    tree('/detached', undefined),
+    tree('/main', 'main', true),
+  ]
+  expect(mergeDestinations(source, trees).map((w) => w.path)).toEqual(['/main'])
+  expect(defaultMergeDestination(source, trees)).toBe('/main')
+})
+
+test('reviewing the open worktree requires an explicit destination choice', () => {
+  const main = tree('/main', 'main', true)
+  expect(defaultMergeDestination(main, [main, source])).toBe('')
+  expect(defaultMergeDestination(source, [source, tree('/other', 'other')])).toBe('')
+})
+
+const record = (id: string, projectId: string, componentId: string, startedMs: number) =>
+  ({
+    id,
+    metadata: { projectId, componentId },
+    snapshot: { startedMs },
+    history: [],
+  }) as unknown as SessionRecord
+
+test('merge sessions recover across view remounts and stay in their own project', () => {
+  const records = [
+    record('old', 'p', MERGE_SCOPE, 10),
+    record('other-project', 'q', MERGE_SCOPE, 40),
+    record('implementation', 'p', '@task', 50),
+    record('new', 'p', MERGE_SCOPE, 30),
+  ]
+  expect(mergeRecords(records, 'p').map((r) => r.id)).toEqual(['new', 'old'])
+  expect(records[0].id).toBe('old')
+})
+
+test('launch uses the captured project and whole branch request, subscribes first, then recovers the record', async () => {
+  const project = { projectId: 'captured-project' } as Project
+  const request = {
+    source: '/feature',
+    sourceBranch: 'feature',
+    destination: '/main',
+    destinationBranch: 'main',
+  }
+  const device: DeviceManifest = {
+    id: 'codex',
+    name: 'Codex',
+    command: 'codex',
+    kind: 'agent',
+    adapter: 'codex',
+    category: 'agent',
+    source: 'builtin',
+  }
+  vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  expect(await startMergeAgent(project, request, device, 'request-id')).toBe('sid')
+  expect(mergeAgentStart).toHaveBeenCalledWith(
+    project,
+    request,
+    {
+      id: 'codex',
+      name: 'Codex',
+      command: 'codex',
+      kind: 'agent',
+      adapter: 'codex',
+    },
+    'request-id',
+  )
+  expect(vi.mocked(listenForTerminals).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(mergeAgentStart).mock.invocationCallOrder[0],
+  )
+  expect(vi.mocked(reconcileSessions).mock.invocationCallOrder[0]).toBeGreaterThan(
+    vi.mocked(mergeAgentStart).mock.invocationCallOrder[0],
+  )
+})
+
+test('launch errors reach the dialog without reporting a successful session', async () => {
+  vi.mocked(mergeAgentStart).mockRejectedValue(new Error('source worktree has uncommitted changes'))
+  await expect(
+    startMergeAgent(
+      { projectId: 'p' } as Project,
+      {
+        source: '/feature',
+        sourceBranch: 'feature',
+        destination: '/main',
+        destinationBranch: 'main',
+      },
+      {
+        id: 'codex',
+        name: 'Codex',
+        command: 'codex',
+        kind: 'agent',
+        category: 'agent',
+        source: 'builtin',
+      },
+      'request',
+    ),
+  ).rejects.toThrow('uncommitted changes')
+  expect(reconcileSessions).not.toHaveBeenCalled()
+})
+
+test('merge runtime terminals do not enter the implementation task grid', async () => {
+  const { taskTerminals } = await import('./taskTerminals')
+  expect(
+    taskTerminals(
+      { rootTerminals: [], componentTerminals: [] },
+      [],
+      {
+        merge: {
+          projectId: 'p',
+          taskId: null,
+          componentId: MERGE_SCOPE,
+          terminal: { id: 'merge', name: 'Merge', kind: 'agent', command: 'codex' },
+        },
+      },
+      'p',
+      null,
+      { merge: { running: true } },
+    ),
+  ).toEqual([])
+})
+
+test('a stop event allows another merge despite an older running record snapshot', async () => {
+  const { mergeDestinationRunning } = await import('./merge')
+  const r = {
+    ...record('merge', 'p', MERGE_SCOPE, 10),
+    spec: { cwd: '/main' },
+    snapshot: { running: true },
+  } as SessionRecord
+  expect(mergeDestinationRunning([r], {}, '/main')).toBe(true)
+  expect(mergeDestinationRunning([r], { merge: { running: false } }, '/main')).toBe(false)
+  expect(mergeDestinationRunning([r], { merge: { running: true } }, '/other')).toBe(false)
+})

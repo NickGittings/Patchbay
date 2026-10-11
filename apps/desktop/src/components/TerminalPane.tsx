@@ -134,6 +134,7 @@ export default function TerminalPane({
       {connected &&
         ready &&
         !session &&
+        !existingSessionId &&
         (terminal.kind !== 'shell' || componentId === TASK_ROOT_SCOPE) && (
           <div className="terminal-overlay">
             <button

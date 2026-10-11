@@ -2,7 +2,13 @@ import { expect, test, vi } from 'vitest'
 import type { SessionState, TerminalSpec } from '../types'
 import { PLAN_SCOPE, sessionId, setProjectIdentity } from '../types'
 
-vi.mock('../store', () => ({ useStore: { getState: () => ({ project: { id: 'p-1' } }) } }))
+const revealState = vi.hoisted(() => ({
+  project: { id: 'p-1' },
+  setActiveSession: vi.fn(),
+  setView: vi.fn(),
+  setActiveTask: vi.fn(),
+}))
+vi.mock('../store', () => ({ useStore: { getState: () => revealState } }))
 const { attentionCounts, attentionItems, componentTerminals, mostUrgent } =
   await import('./attention')
 
@@ -90,4 +96,45 @@ test('mostUrgent ignores statuses that ask for nothing', () => {
   const input = { health: 'input', label: 'Needs input', attention: 4 } as const
   expect(mostUrgent([quiet])).toBeNull()
   expect(mostUrgent([fail, input, quiet])).toBe(input)
+})
+
+test('revealing a merge opens Review without switching the source task', async () => {
+  const { revealTerminal } = await import('./attention')
+  revealTerminal({ componentId: '@merge', sid: 'merge-session' })
+  expect(revealState.setView).toHaveBeenCalledWith('review')
+  expect(revealState.setActiveSession).toHaveBeenCalledWith('merge-session')
+  expect(revealState.setActiveTask).not.toHaveBeenCalled()
+})
+
+test('recorded merges ask for attention without becoming generic runtime terminals', () => {
+  const records = [
+    {
+      id: 'merge',
+      metadata: {
+        projectId: 'p-1',
+        componentId: '@merge',
+        terminalId: 'merge',
+        name: 'Merge feature',
+        kind: 'agent',
+      },
+      spec: { command: 'codex' },
+    },
+    {
+      id: 'other',
+      metadata: {
+        projectId: 'p-2',
+        componentId: '@merge',
+        terminalId: 'other',
+        name: 'Other merge',
+        kind: 'agent',
+      },
+      spec: { command: 'codex' },
+    },
+  ]
+  const items = attentionItems(
+    snapshot({ merge: needsInput(1), other: needsInput(1) }, { sessionRecords: records }),
+  )
+  expect(items.map((item) => [item.sid, item.owner, item.task])).toEqual([
+    ['merge', 'Merge agent', null],
+  ])
 })
