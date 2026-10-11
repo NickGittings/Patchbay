@@ -142,7 +142,10 @@ function captureLaunch(
     projectId: id,
     task: scope,
     project,
-    highlighted: [...(workspace?.highlighted ?? [])],
+    // Saved task layouts can name components removed from the map since; the backend rejects those.
+    highlighted: (workspace?.highlighted ?? []).filter((c) =>
+      project.components.some((n) => n.id === c),
+    ),
     rootTerminal:
       componentId === TASK_ROOT_SCOPE
         ? workspace?.rootTerminals.find((t) => t.id === terminalId)

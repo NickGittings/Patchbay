@@ -35,19 +35,13 @@ test('pills and groups retain one order when toggled through Plan', () => {
   s.toggleHighlight('b')
   expect(useStore.getState().highlighted).toEqual(['b', 'a'])
 })
-test('entering Implementation restores the selection after hide or removal', () => {
+test('entering Implementation leaves highlights, the task scope, alone', () => {
   const s = useStore.getState()
   s.setImplementationScope([])
   s.select('c')
   s.setView('implementation')
-  expect(useStore.getState().implementationComponents).toEqual([{ id: 'c', visible: true }])
-  s.clearHighlights()
   expect(useStore.getState().highlighted).toEqual([])
-  s.setView('navigation')
-  s.select('b')
-  s.setView('implementation')
-  expect(useStore.getState().highlighted).toEqual(['b'])
-  expect(useStore.getState().implementationComponents?.[0]).toEqual({ id: 'c', visible: false })
+  expect(useStore.getState().implementationComponents).toEqual([])
 })
 test('workspace round-trip preserves hidden entries, removal, order and visibility', () => {
   const components = [

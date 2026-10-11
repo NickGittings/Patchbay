@@ -25,6 +25,10 @@ const LIMIT: u64 = 2 * 1024 * 1024;
 pub const ENDPOINT_ENV: &str = "PATCHBAY_AGENT_ENDPOINT";
 pub const TOKEN_ENV: &str = "PATCHBAY_AGENT_TOKEN";
 pub const CLI_ENV: &str = "PATCHBAY_CLI";
+pub const PROJECT_ENV: &str = "PATCHBAY_PROJECT_ID";
+pub const TASK_ENV: &str = "PATCHBAY_TASK_ID";
+/// Every variable `inject` sets; only the session it was injected for may carry them.
+pub const BRIDGE_ENV: [&str; 5] = [ENDPOINT_ENV, TOKEN_ENV, CLI_ENV, PROJECT_ENV, TASK_ENV];
 
 /// Explain missing commands in the terminal banner and retained output.
 pub fn unavailable(spec: &mut crate::pty::SessionSpec, reason: &str) {
@@ -181,8 +185,8 @@ impl Server {
         env.insert(ENDPOINT_ENV.into(), self.endpoint.display().to_string());
         env.insert(TOKEN_ENV.into(), new_id());
         env.insert(CLI_ENV.into(), cli.display().to_string());
-        env.insert("PATCHBAY_PROJECT_ID".into(), project_id.into());
-        env.insert("PATCHBAY_TASK_ID".into(), task.unwrap_or_default().into());
+        env.insert(PROJECT_ENV.into(), project_id.into());
+        env.insert(TASK_ENV.into(), task.unwrap_or_default().into());
     }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);

@@ -622,8 +622,13 @@ pub fn plan_context(
 /// How implementation agents run checks and environments, in the syntax of the shell they use.
 fn implementation_actions(shell: Shell) -> String {
     format!(
-        "\nAfter changing a component, run its configured affected-component checks with {}. Report missing validators explicitly. Start configured environments when needed with agent environment start <groupId>, and stop them with agent environment stop <groupId>. Use agent context, status and logs <sessionId> for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
-        shell.agent_command("validate <componentId>")
+        "\nAfter changing a component, run its configured affected-component checks with {}. Report missing validators explicitly. Start configured environments when needed with {}, and stop them with {}. Use {}, {} and {} for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
+        shell.agent_command("validate <componentId>"),
+        shell.agent_command("environment start <groupId>"),
+        shell.agent_command("environment stop <groupId>"),
+        shell.agent_command("context"),
+        shell.agent_command("status"),
+        shell.agent_command("logs <sessionId>"),
     )
 }
 
@@ -1172,6 +1177,20 @@ mod tests {
         assert!(windows.contains("`& $env:PATCHBAY_CLI agent validate <componentId>`"));
         assert!(windows.contains("`\"%PATCHBAY_CLI%\" agent validate <componentId>`"));
         assert!(!windows.contains("\"$PATCHBAY_CLI\""));
+        // No bare `agent …` invocation: there is no `agent` program on PATH.
+        for args in [
+            "environment start <groupId>",
+            "environment stop <groupId>",
+            "context`",
+            "status`",
+            "logs <sessionId>",
+        ] {
+            assert!(
+                unix.contains(&format!("\"$PATCHBAY_CLI\" agent {args}")),
+                "{args}"
+            );
+        }
+        assert!(!unix.contains(" with agent "));
     }
     use crate::model::{Component, ComponentKind, Link, TerminalSpec};
     use crate::policy::AllowAll;

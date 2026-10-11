@@ -776,17 +776,8 @@ export const useStore = create<State>((set, get) => ({
       dirty: true,
     })),
 
-  setView: (view) =>
-    set((s) => {
-      if (view !== 'implementation' || s.highlighted.length) return { view }
-      const fallback = s.nodes.find((n) => n.id === s.selectedId) ?? s.nodes[0]
-      if (!fallback) return { view }
-      const components = s.implementationComponents ?? []
-      const implementationComponents = components.some((c) => c.id === fallback.id)
-        ? components.map((c) => (c.id === fallback.id ? { ...c, visible: true } : c))
-        : [...components, { id: fallback.id, visible: true }]
-      return { view, implementationComponents, highlighted: [fallback.id] }
-    }),
+  // Highlights are the active task's saved scope, so switching views never changes them.
+  setView: (view) => set({ view }),
   toggleHighlight: (id) =>
     set((s) => {
       if (!s.nodes.some((n) => n.id === id)) return {}

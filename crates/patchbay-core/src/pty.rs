@@ -749,6 +749,11 @@ impl PtyManager {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // A terminal started from inside an agent session would otherwise inherit its token
+        // and act as that agent; only `spec.env` (set by `inject`) may provide these.
+        for key in crate::agent_bridge::BRIDGE_ENV {
+            cmd.env_remove(key);
+        }
         // User launch options cannot redirect the private reporter transport.
         for (k, v) in spec.env.iter().filter(|(k, _)| {
             !k.eq_ignore_ascii_case(COMMAND_ENV)
