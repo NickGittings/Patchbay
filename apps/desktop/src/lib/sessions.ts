@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { releaseMapEdit, sessionsList, terminalCloseGuard } from './ipc'
+import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { emptyTaskWorkspace, projectOf, useStore } from '../store'
@@ -266,6 +266,37 @@ function markPlanStarted(projectId: string, sid: string, ids: string[]) {
 
 export const stopTerminal = (sessionId: string) =>
   void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
+
+/**
+ * Take a terminal out of the active task. A root or retained terminal is also stopped and its
+ * service record forgotten, or the next reconcile would bring it back as a retained tile; a saved
+ * component terminal just stops and stays on the map.
+ */
+export async function removeTaskTerminal(componentId: string, terminalId: string, sid: string) {
+  const s = useStore.getState()
+  const saved = s.nodes.some(
+    (n) => n.id === componentId && n.data.terminals.some((t) => t.id === terminalId),
+  )
+  s.removeTaskTerminal(componentId, terminalId)
+  useStore.setState((state) => {
+    if (!state.runtimeTerminals[sid]) return {}
+    const runtimeTerminals = { ...state.runtimeTerminals }
+    delete runtimeTerminals[sid]
+    return { runtimeTerminals }
+  })
+  try {
+    if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
+    if (saved) return
+    const deadline = Date.now() + 10000
+    while ((await terminalSnapshot(sid))?.running) {
+      if (Date.now() >= deadline) throw new Error('Terminal is still stopping; remove it again.')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    if (sessionMetadata.has(sid)) await sessionForget(sid)
+  } catch (e) {
+    useStore.getState().setMessage(String(e))
+  }
+}
 
 /** Stop every worktree copy, including launches still waiting for a started event. */
 export async function closeTerminal(componentId: string, terminalId: string) {

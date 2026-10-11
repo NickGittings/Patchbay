@@ -170,11 +170,14 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
 /**
  * Show a terminal: its tab in the planner, its tile in Implementation, or (for terminals an
  * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
- * session's task first.
+ * session's task first, except for extension terminals.
  */
 export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
   const s = useStore.getState()
-  s.setActiveTask(sessionTask(item.sid))
+  const runtime = s.runtimeTerminals[item.sid]
+  const extension = !!(runtime?.extensionId || runtime?.commandId)
+  // Extension terminals run in the open worktree and show in any task, so they never switch it.
+  if (!extension) s.setActiveTask(sessionTask(item.sid))
   if (item.componentId === PLAN_SCOPE) {
     const { terminalId } = parseSessionId(item.sid)
     if (!terminalId) return
@@ -192,7 +195,7 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   s.setMaximizedTerminal(null)
   s.select(item.componentId)
   s.setActiveSession(item.sid)
-  if (s.runtimeTerminals[item.sid]) {
+  if (extension) {
     s.setView('navigation')
     return
   }

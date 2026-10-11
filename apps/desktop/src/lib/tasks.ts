@@ -5,7 +5,7 @@ import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../type
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import {
-  graphGroupStop,
+  graphTaskStop,
   taskActivate,
   taskAttach,
   taskCheckRemovable,
@@ -163,8 +163,7 @@ export async function attachTask(
 
 /** Stop a project's task terminals and wait (up to 10s) for them to exit. */
 async function stopTaskSessions(projectId: string, id: string) {
-  const project = projectOf(projectId)
-  for (const group of project?.groups ?? []) await graphGroupStop(group.id, id, projectId)
+  await graphTaskStop(id, projectId)
   const sids = Object.entries(useStore.getState().sessions)
     .filter(
       ([sid, session]) =>

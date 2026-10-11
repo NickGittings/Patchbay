@@ -815,7 +815,6 @@ async fn plan_start(
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        let launch_project = project.clone();
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let sections = briefing_sections(
             &extensions.get(),
@@ -837,22 +836,7 @@ async fn plan_start(
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
-            agent_commands::inject(
-                agent_server,
-                patchbay_core::agent_bridge::LaunchContext {
-                    project_id: project_id.clone(),
-                    project: launch_project,
-                    task: task.clone(),
-                    agent_session: model::task_session_id(
-                        &project_id,
-                        &metadata.component_id,
-                        &terminal.id,
-                        task.as_deref(),
-                    ),
-                    planner: true,
-                },
-                &mut spec,
-            )?;
+            agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
@@ -1269,7 +1253,6 @@ async fn terminal_start(
     blocking(move || {
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
-        let launch_project = project.clone();
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let terminal = project
             .component(&component_id)
@@ -1302,22 +1285,7 @@ async fn terminal_start(
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
-            agent_commands::inject(
-                agent_server,
-                patchbay_core::agent_bridge::LaunchContext {
-                    project_id: project_id.clone(),
-                    project: launch_project,
-                    task: task.clone(),
-                    agent_session: model::task_session_id(
-                        &project_id,
-                        &metadata.component_id,
-                        &terminal.id,
-                        task.as_deref(),
-                    ),
-                    planner: false,
-                },
-                &mut spec,
-            )?;
+            agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
@@ -1346,7 +1314,6 @@ async fn task_root_start(
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
-        let launch_project = project.clone();
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let selected = if component_ids.is_empty() {
             project.components.iter().map(|c| c.id.clone()).collect()
@@ -1383,22 +1350,7 @@ async fn task_root_start(
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
-            agent_commands::inject(
-                agent_server,
-                patchbay_core::agent_bridge::LaunchContext {
-                    project_id: project_id.clone(),
-                    project: launch_project,
-                    task: task.clone(),
-                    agent_session: model::task_session_id(
-                        &project_id,
-                        model::TASK_ROOT_SCOPE,
-                        &terminal.id,
-                        task.as_deref(),
-                    ),
-                    planner: false,
-                },
-                &mut spec,
-            )?;
+            agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
         bridge.start(spec, metadata, request_id)
     })
@@ -1440,6 +1392,7 @@ async fn graph_action_run(
     state.project(&project_id)?;
     blocking(move || {
         agent_commands::run_action(&app, &project_id, project, request, task.as_deref(), "User")
+            .map(|(report, _)| report)
     })
     .await
 }
@@ -1450,24 +1403,28 @@ async fn graph_group_stop(
     project_id: String,
     window: WebviewWindow,
     state: State<'_, AppState>,
-    project: Project,
     group_id: String,
     task: Option<String>,
 ) -> CmdResult<()> {
     main_only(&window)?;
-    let access = state.project(&project_id)?.access.snapshot();
+    let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || {
-        let project = access.restrict(project, &[]).map_err(err)?;
-        agent_commands::stop_group(
-            &app,
-            &project_id,
-            &project,
-            &group_id,
-            task.as_deref(),
-            "User",
-        )
+        agent_commands::stop_group(&app, &project_id, &root, &group_id, task.as_deref(), "User")
     })
     .await
+}
+
+/// Stop every environment started in a task's worktree, before the task is removed.
+#[tauri::command]
+async fn graph_task_stop(
+    project_id: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    task: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    state.project(&project_id)?;
+    service(&state, Request::ActionStopTask { project_id, task }).await
 }
 
 /// Stop the running validation; it still reports the validators that ran.
@@ -2003,6 +1960,7 @@ pub fn run() {
                 graph_action_plan,
                 graph_action_run,
                 graph_group_stop,
+                graph_task_stop,
                 graph_validation_cancel,
                 terminal_write,
                 terminal_resize,

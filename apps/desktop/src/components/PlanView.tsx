@@ -3,7 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
-import { planContext, planRead, planWrite, proposalRead, proposalApply } from '../lib/ipc'
+import {
+  onProposal,
+  planContext,
+  planRead,
+  planWrite,
+  proposalRead,
+  proposalApply,
+} from '../lib/ipc'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { refreshTasks, seedNewTask } from '../lib/tasks'
@@ -94,10 +101,13 @@ export default function PlanView() {
           if (!disposed) setProposalError(String(e))
         })
     void load()
-    const timer = setInterval(() => void load(), 2000)
+    // A planner's submission is the only other writer of the pending proposal.
+    const unlisten = onProposal((event) => {
+      if (event.projectId === projectId && (event.task ?? null) === (task ?? null)) void load()
+    })
     return () => {
       disposed = true
-      clearInterval(timer)
+      void unlisten.then((stop) => stop())
     }
   }, [projectId, task, proposalKey])
   const applyProposal = async () => {

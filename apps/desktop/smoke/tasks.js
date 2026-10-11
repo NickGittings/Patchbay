@@ -436,6 +436,8 @@
     state().addGroup('Smoke environment', ['web'])
     const group = state().groups.find((g) => g.name === 'Smoke environment')
     state().updateGroup(group.id, { orderedStartup: true })
+    // The app syncs the map to agents once edits settle; don't race that here.
+    await smoke.syncAgentProject(state().toProject())
     const checkSid = smoke.sessionId('web', 'check', task.id)
     const worker = {
       id: 'smoke-worker',
@@ -532,6 +534,7 @@
     state().updateGroup(group.id, { componentIds: ['web'] })
     // Existing agents use current configured commands, while their launch task remains fixed.
     state().updateTerminal('web', 'check', { command: 'printf live-validator; exit 7' })
+    await smoke.syncAgentProject(state().toProject())
     await smoke.terminalWrite(
       rootAgentSid,
       '"$PATCHBAY_CLI" agent validate web; printf "live-config-finished\\n"\r',
@@ -543,6 +546,7 @@
         textOf(rootAgentSid).includes('"exitCode":7'),
     )
     state().updateTerminal('web', 'check', { command: 'sleep 1; exit 0' })
+    await smoke.syncAgentProject(state().toProject())
     await smoke.terminalWrite(
       rootAgentSid,
       '"$PATCHBAY_CLI" agent validate web & "$PATCHBAY_CLI" agent validate web; wait; printf "contention-finished\\n"\r',
@@ -579,6 +583,7 @@
     )
     await smoke.stopGroup(group.id)
     state().removeGroup(group.id)
+    await smoke.syncAgentProject(state().toProject())
     await smoke.terminalWrite(
       rootAgentSid,
       `"$PATCHBAY_CLI" agent environment start ${group.id}; printf "removed-group-finished\\n"\r`,

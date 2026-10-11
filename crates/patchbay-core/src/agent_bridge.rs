@@ -1,32 +1,35 @@
 //! Authenticated loopback command channel. A capability fixes launch context;
 //! callers cannot supply a different project, checkout, or arbitrary command.
-use crate::{Project, proposals::Proposal};
+use crate::proposals::Proposal;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 
+/// A random id for activities and command tokens.
+#[must_use]
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
 const LIMIT: u64 = 2 * 1024 * 1024;
-pub const ADDRESS_ENV: &str = "PATCHBAY_AGENT_ADDRESS";
+/// Names the file holding the desktop's current address, which changes when it restarts.
+pub const ENDPOINT_ENV: &str = "PATCHBAY_AGENT_ENDPOINT";
 pub const TOKEN_ENV: &str = "PATCHBAY_AGENT_TOKEN";
 pub const CLI_ENV: &str = "PATCHBAY_CLI";
 
+/// What a token was launched for, looked up from the session that holds it.
 #[derive(Clone)]
 pub struct LaunchContext {
     pub project_id: String,
-    pub project: Project,
     pub task: Option<String>,
     pub agent_session: String,
     pub planner: bool,
@@ -75,6 +78,7 @@ pub struct Response {
     pub error: Option<String>,
 }
 impl Response {
+    #[must_use]
     pub fn from_result(result: Result<Value>) -> Self {
         match result {
             Ok(value) => Self {
@@ -93,24 +97,34 @@ impl Response {
     }
 }
 
+type Authenticate = dyn Fn(&str) -> Option<LaunchContext> + Send + Sync;
 type Handler = dyn Fn(&LaunchContext, Action) -> Result<Value> + Send + Sync;
+/// Tokens aren't kept here: `authenticate` resolves each one to the running session
+/// launched with it, so they survive a desktop restart and end with their process.
 pub struct Server {
-    address: SocketAddr,
-    contexts: Mutex<HashMap<String, LaunchContext>>,
+    endpoint: PathBuf,
     stopped: AtomicBool,
 }
 impl Server {
+    /// Listens on a loopback port and records its address in `endpoint`.
+    ///
+    /// # Errors
+    /// Fails if no port can be bound or the endpoint file can't be written.
     pub fn start(
+        endpoint: PathBuf,
+        authenticate: impl Fn(&str) -> Option<LaunchContext> + Send + Sync + 'static,
         handler: impl Fn(&LaunchContext, Action) -> Result<Value> + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        crate::workspace::atomic_write(&endpoint, address.to_string().as_bytes())?;
         let server = Arc::new(Self {
-            address: listener.local_addr()?,
-            contexts: Mutex::default(),
+            endpoint,
             stopped: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&server);
+        let authenticate: Arc<Authenticate> = Arc::new(authenticate);
         let handler: Arc<Handler> = Arc::new(handler);
         std::thread::spawn(move || {
             while let Some(server) = weak.upgrade() {
@@ -119,13 +133,14 @@ impl Server {
                 }
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        let authenticate = authenticate.clone();
                         let handler = handler.clone();
                         std::thread::spawn(move || {
-                            let _ = server.serve(stream, &*handler);
+                            let _ = server.serve(stream, &*authenticate, &*handler);
                         });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(50))
+                        std::thread::sleep(Duration::from_millis(50));
                     }
                     Err(_) => break,
                 }
@@ -133,29 +148,29 @@ impl Server {
         });
         Ok(server)
     }
-    pub fn inject(&self, launch: LaunchContext, cli: &Path, env: &mut BTreeMap<String, String>) {
-        let token = uuid::Uuid::new_v4().to_string();
-        env.insert(ADDRESS_ENV.into(), self.address.to_string());
-        env.insert(TOKEN_ENV.into(), token.clone());
+    /// Adds a fresh token to an agent's environment; record it with the session.
+    pub fn inject(
+        &self,
+        project_id: &str,
+        task: Option<&str>,
+        cli: &Path,
+        env: &mut BTreeMap<String, String>,
+    ) {
+        env.insert(ENDPOINT_ENV.into(), self.endpoint.display().to_string());
+        env.insert(TOKEN_ENV.into(), new_id());
         env.insert(CLI_ENV.into(), cli.display().to_string());
-        env.insert("PATCHBAY_PROJECT_ID".into(), launch.project_id.clone());
-        env.insert(
-            "PATCHBAY_TASK_ID".into(),
-            launch.task.clone().unwrap_or_default(),
-        );
-        self.contexts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(token, launch);
+        env.insert("PATCHBAY_PROJECT_ID".into(), project_id.into());
+        env.insert("PATCHBAY_TASK_ID".into(), task.unwrap_or_default().into());
     }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        self.contexts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
     }
-    fn serve(&self, mut stream: TcpStream, handler: &Handler) -> Result<()> {
+    fn serve(
+        &self,
+        mut stream: TcpStream,
+        authenticate: &Authenticate,
+        handler: &Handler,
+    ) -> Result<()> {
         // macOS can inherit the listener's nonblocking flag on accepted sockets.
         stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -173,13 +188,8 @@ impl Server {
                 !self.stopped.load(Ordering::Acquire),
                 "Desktop disconnected"
             );
-            let context = self
-                .contexts
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&request.token)
-                .cloned()
-                .context("Authentication failed")?;
+            let context = authenticate(&request.token)
+                .context("Authentication failed; the agent session has ended or restarted")?;
             handler(&context, request.action)
         })());
         serde_json::to_writer(&mut stream, &response)?;
@@ -188,8 +198,14 @@ impl Server {
     }
 }
 
+/// Sends one request to the desktop at `address`.
+///
+/// # Errors
+/// Fails if the address isn't loopback, the desktop can't be reached, or it
+/// answers with something other than a version 1 response.
 pub fn call(address: &str, token: &str, action: Action) -> Result<Response> {
     let address: SocketAddr = address
+        .trim()
         .parse()
         .context("Invalid desktop connection address")?;
     ensure!(address.ip().is_loopback(), "Desktop bridge must be local");
@@ -218,62 +234,144 @@ pub fn call(address: &str, token: &str, action: Action) -> Result<Response> {
     Ok(response)
 }
 
+/// [`call`] with the endpoint and token an agent terminal was launched with.
+///
+/// # Errors
+/// Fails outside a Patchbay agent terminal, when the desktop isn't running, or as [`call`].
 pub fn call_from_env(action: Action) -> Result<Response> {
-    let address =
-        std::env::var(ADDRESS_ENV).context("Run agent commands from a Patchbay agent terminal")?;
+    let endpoint =
+        std::env::var(ENDPOINT_ENV).context("Run agent commands from a Patchbay agent terminal")?;
     let token = std::env::var(TOKEN_ENV).context("Missing Patchbay agent capability")?;
-    call(&address, &token, action)
+    call_endpoint(Path::new(&endpoint), &token, action)
+}
+
+fn call_endpoint(endpoint: &Path, token: &str, action: Action) -> Result<Response> {
+    let address = std::fs::read_to_string(endpoint)
+        .context("Desktop disconnected; open the launch project in Patchbay")?;
+    call(&address, token, action)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn launch(task: &str) -> LaunchContext {
-        LaunchContext {
-            project_id: "p".into(),
-            project: serde_json::from_value(
-                serde_json::json!({"name":"demo","root":".","components":[]}),
-            )
-            .unwrap(),
-            task: Some(task.into()),
-            agent_session: task.into(),
-            planner: false,
-        }
+    use std::sync::Mutex;
+
+    /// A server whose tokens map to tasks in `tokens`, as the session service would.
+    fn server(
+        tokens: Arc<Mutex<BTreeMap<String, String>>>,
+        handler: impl Fn(&LaunchContext, Action) -> Result<Value> + Send + Sync + 'static,
+    ) -> (Arc<Server>, PathBuf) {
+        let endpoint = std::env::temp_dir()
+            .join(format!("patchbay-bridge-{}", new_id()))
+            .join("endpoint");
+        let server = Server::start(
+            endpoint.clone(),
+            move |token| {
+                let task = tokens.lock().unwrap().get(token).cloned()?;
+                Some(LaunchContext {
+                    project_id: "p".into(),
+                    agent_session: task.clone(),
+                    task: Some(task),
+                    planner: false,
+                })
+            },
+            handler,
+        )
+        .unwrap();
+        (server, endpoint)
     }
+    fn launch(
+        server: &Server,
+        tokens: &Mutex<BTreeMap<String, String>>,
+        task: &str,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        server.inject("p", Some(task), Path::new("patchbay"), &mut env);
+        tokens
+            .lock()
+            .unwrap()
+            .insert(env[TOKEN_ENV].clone(), task.into());
+        env
+    }
+    fn address(env: &BTreeMap<String, String>) -> String {
+        std::fs::read_to_string(&env[ENDPOINT_ENV]).unwrap()
+    }
+
     #[test]
     fn authenticates_and_binds_requests_to_launch_context() {
-        let server =
-            Server::start(|context, _| Ok(serde_json::json!({"task":context.task}))).unwrap();
-        let mut first = BTreeMap::new();
-        let mut second = BTreeMap::new();
-        server.inject(launch("one"), Path::new("patchbay"), &mut first);
-        server.inject(launch("two"), Path::new("patchbay"), &mut second);
+        let tokens = Arc::default();
+        let (server, endpoint) = server(Arc::clone(&tokens), |context, _| {
+            Ok(serde_json::json!({"task":context.task}))
+        });
+        let first = launch(&server, &tokens, "one");
+        let second = launch(&server, &tokens, "two");
         let request = |env: &BTreeMap<String, String>| {
-            call(&env[ADDRESS_ENV], &env[TOKEN_ENV], Action::Context {}).unwrap()
+            call(&address(env), &env[TOKEN_ENV], Action::Context {}).unwrap()
         };
         assert_eq!(request(&first).result.unwrap()["task"], "one");
         assert_eq!(request(&second).result.unwrap()["task"], "two");
         assert!(
-            !call(&first[ADDRESS_ENV], "wrong", Action::Status {})
+            !call(&address(&first), "wrong", Action::Status {})
                 .unwrap()
                 .ok
         );
+        // A token the session no longer holds (exited or restarted) stops working.
+        tokens.lock().unwrap().remove(&first[TOKEN_ENV]);
+        assert!(!request(&first).ok);
         // Unknown context/command fields cannot enter the protocol.
         assert!(
             serde_json::from_value::<Action>(serde_json::json!({"kind":"context","task":"two"}))
                 .is_err()
         );
         server.stop();
-        let disconnected = call(&first[ADDRESS_ENV], &first[TOKEN_ENV], Action::Status {});
+        let disconnected = call(&address(&second), &second[TOKEN_ENV], Action::Status {});
         assert!(disconnected.is_err() || !disconnected.unwrap().ok);
+        let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
     }
+
+    #[test]
+    fn a_restarted_desktop_serves_existing_agents_at_its_new_address() {
+        let tokens = Arc::default();
+        let ok = |context: &LaunchContext, _| Ok(serde_json::json!({"task":context.task}));
+        let (first, endpoint) = server(Arc::clone(&tokens), ok);
+        let env = launch(&first, &tokens, "one");
+        first.stop();
+        drop(first);
+        let tokens_again = Arc::clone(&tokens);
+        let second = Server::start(
+            endpoint.clone(),
+            move |token| {
+                let task = tokens_again.lock().unwrap().get(token).cloned()?;
+                Some(LaunchContext {
+                    project_id: "p".into(),
+                    agent_session: task.clone(),
+                    task: Some(task),
+                    planner: false,
+                })
+            },
+            ok,
+        )
+        .unwrap();
+        // The agent's environment is unchanged; the endpoint file follows the desktop.
+        let response = call_endpoint(
+            Path::new(&env[ENDPOINT_ENV]),
+            &env[TOKEN_ENV],
+            Action::Context {},
+        )
+        .unwrap();
+        assert_eq!(response.result.unwrap()["task"], "one");
+        second.stop();
+        let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
+    }
+
     #[test]
     fn waits_for_a_request_on_an_accepted_socket() {
-        let server =
-            Server::start(|context, _| Ok(serde_json::json!({"task":context.task}))).unwrap();
-        let mut env = BTreeMap::new();
-        server.inject(launch("one"), Path::new("patchbay"), &mut env);
-        let mut stream = TcpStream::connect(&env[ADDRESS_ENV]).unwrap();
+        let tokens = Arc::default();
+        let (server, endpoint) = server(Arc::clone(&tokens), |context, _| {
+            Ok(serde_json::json!({"task":context.task}))
+        });
+        let env = launch(&server, &tokens, "one");
+        let mut stream = TcpStream::connect(address(&env)).unwrap();
         std::thread::sleep(Duration::from_millis(150));
         serde_json::to_writer(
             &mut stream,
@@ -289,15 +387,18 @@ mod tests {
         BufReader::new(stream).read_line(&mut text).unwrap();
         assert!(serde_json::from_str::<Response>(&text).unwrap().ok);
         server.stop();
+        let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
     }
 
     #[test]
     fn failures_are_json_results_and_connection_loss_is_reported() {
-        let server = Server::start(|_, _| anyhow::bail!("Configured action is busy")).unwrap();
-        let mut env = BTreeMap::new();
-        server.inject(launch("one"), Path::new("patchbay"), &mut env);
+        let tokens = Arc::default();
+        let (server, endpoint) = server(Arc::clone(&tokens), |_, _| {
+            anyhow::bail!("Configured action is busy")
+        });
+        let env = launch(&server, &tokens, "one");
         let response = call(
-            &env[ADDRESS_ENV],
+            &address(&env),
             &env[TOKEN_ENV],
             Action::Validate {
                 component_id: "web".into(),
@@ -308,5 +409,6 @@ mod tests {
         assert!(response.error.unwrap().contains("busy"));
         assert!(call("192.0.2.1:1234", "x", Action::Status {}).is_err());
         server.stop();
+        let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
     }
 }

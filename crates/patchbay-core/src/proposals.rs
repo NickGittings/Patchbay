@@ -23,6 +23,10 @@ pub struct Proposal {
 
 impl Proposal {
     /// Validate against the accessible, mapped project, including stable IDs.
+    ///
+    /// # Errors
+    /// Fails for another version, an empty or oversized plan or assignment, or an
+    /// unknown or repeated component.
     pub fn validate(&self, project: &Project) -> Result<()> {
         ensure!(self.version == 1, "Unsupported proposal version");
         ensure!(
@@ -103,6 +107,11 @@ fn save(root: &Path, task: Option<&str>, proposal: &Proposal, applied: bool) -> 
     Ok(())
 }
 
+/// The pending proposal, or with `applied` the applied one while the plan it wrote
+/// is unchanged.
+///
+/// # Errors
+/// Fails if the task id is invalid or the file can't be read or parsed.
 pub fn read(root: &Path, task: Option<&str>, applied: bool) -> Result<Option<Proposal>> {
     match std::fs::read(file(root, task, applied)?) {
         Ok(bytes) if applied => {
@@ -118,6 +127,10 @@ pub fn read(root: &Path, task: Option<&str>, applied: bool) -> Result<Option<Pro
     }
 }
 
+/// Save a planner's proposal for review, replacing any pending one.
+///
+/// # Errors
+/// Fails if the proposal is invalid for `project`, the task is unknown, or it can't be saved.
 pub fn submit(project: &Project, task: Option<&str>, proposal: &Proposal) -> Result<()> {
     let _guard = SUBMISSIONS
         .lock()
@@ -130,6 +143,10 @@ pub fn submit(project: &Project, task: Option<&str>, proposal: &Proposal) -> Res
 }
 
 /// Apply exactly the reviewed artifact; a newer submission requires review again.
+///
+/// # Errors
+/// Fails if the proposal is invalid or no longer pending, the task is unknown, or the
+/// task, plan or applied record can't be written.
 pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Result<Vec<String>> {
     let _guard = SUBMISSIONS
         .lock()
@@ -160,6 +177,10 @@ pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Resu
     Ok(ids)
 }
 
+/// Forget the applied assignments, once the plan they came with changed.
+///
+/// # Errors
+/// Fails if the task id is invalid or the file exists but can't be removed.
 pub fn invalidate(root: &Path, task: Option<&str>) -> Result<()> {
     match std::fs::remove_file(file(root, task, true)?) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
@@ -167,6 +188,10 @@ pub fn invalidate(root: &Path, task: Option<&str>) -> Result<()> {
     }
 }
 
+/// Forget the task's pending and applied proposals.
+///
+/// # Errors
+/// As [`invalidate`].
 pub fn remove(root: &Path, task: Option<&str>) -> Result<()> {
     invalidate(root, task)?;
     match std::fs::remove_file(file(root, task, false)?) {

@@ -2,7 +2,7 @@
 use crate::{AppState, CmdResult, Project, blocking, err, for_task};
 use patchbay_core::actions::{ActionPlan, ActionReport, ActionRequest};
 use patchbay_core::agent_bridge::{Action, LaunchContext, Server};
-use patchbay_core::session::{PreviewScan, Record, Request};
+use patchbay_core::session::{AgentSession, PreviewScan, Record, Request};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -23,7 +23,32 @@ pub struct Activity {
 }
 
 pub fn start(app: AppHandle) -> anyhow::Result<std::sync::Arc<Server>> {
-    Server::start(move |launch, action| dispatch(&app, launch, action).map_err(anyhow::Error::msg))
+    let endpoint = patchbay_core::workspace::home()?.join("agent-endpoint");
+    let lookup = app.clone();
+    Server::start(
+        endpoint,
+        move |token| authenticate(&lookup, token),
+        move |launch, action| dispatch(&app, launch, action).map_err(anyhow::Error::msg),
+    )
+}
+
+/// The running session a token was launched with; the service keeps it with the session,
+/// so tokens outlive a desktop restart but not their process.
+fn authenticate(app: &AppHandle, token: &str) -> Option<LaunchContext> {
+    let state = app.state::<AppState>();
+    let session: Option<AgentSession> = state
+        .service
+        .call(Request::AgentSession {
+            token: token.into(),
+        })
+        .ok()?;
+    let session = session?;
+    Some(LaunchContext {
+        planner: session.metadata.component_id == patchbay_core::model::PLAN_SCOPE,
+        project_id: session.metadata.project_id,
+        task: session.metadata.task,
+        agent_session: session.id,
+    })
 }
 
 pub fn cli() -> CmdResult<PathBuf> {
@@ -35,19 +60,31 @@ pub fn cli() -> CmdResult<PathBuf> {
             "patchbay"
         });
     if !path.is_file() {
-        return Err("Packaged Patchbay CLI is unavailable; run prepare:sessiond".into());
+        return Err("the packaged Patchbay CLI is missing; run prepare:sessiond".into());
     }
     path.canonicalize().map_err(err)
 }
 
+/// Give an agent its command token; without the bridge or CLI it still starts, with a notice.
 pub fn inject(
     server: Option<std::sync::Arc<Server>>,
-    launch: LaunchContext,
+    project_id: &str,
+    task: Option<&str>,
     spec: &mut patchbay_core::pty::SessionSpec,
-) -> CmdResult<()> {
-    let server = server.ok_or("Desktop agent bridge is unavailable")?;
-    server.inject(launch, &cli()?, &mut spec.env);
-    Ok(())
+) {
+    let reason = match (server, cli()) {
+        (Some(server), Ok(cli)) => {
+            server.inject(project_id, task, &cli, &mut spec.env);
+            return;
+        }
+        (None, _) => "the desktop bridge didn't start".to_string(),
+        (_, Err(e)) => e,
+    };
+    let notice = format!("Patchbay agent commands are unavailable: {reason}.");
+    spec.notice = Some(match spec.notice.take() {
+        Some(previous) => format!("{previous}\n{notice}"),
+        None => notice,
+    });
 }
 
 fn records(state: &AppState, launch: &LaunchContext) -> CmdResult<Vec<Record>> {
@@ -94,6 +131,8 @@ fn emit(app: &AppHandle, activity: &Activity) {
     let _ = app.emit("patchbay://task-activity", activity);
 }
 
+/// Run a graph action, recorded as task activity. Returns the report and the preview URLs
+/// its sessions printed.
 pub fn run_action(
     app: &AppHandle,
     project_id: &str,
@@ -101,7 +140,7 @@ pub fn run_action(
     request: ActionRequest,
     task: Option<&str>,
     initiator: &str,
-) -> CmdResult<ActionReport> {
+) -> CmdResult<(ActionReport, Vec<String>)> {
     let action = match &request {
         ActionRequest::StartGroup { group_id } => Action::EnvironmentStart {
             group_id: group_id.clone(),
@@ -137,29 +176,20 @@ pub fn run_action(
             plan: Box::new(plan),
         })
     })();
+    let result = result.map(|report| {
+        let urls = previews(&state, report.session_ids()).unwrap_or_default();
+        (report, urls)
+    });
     match &result {
-        Ok(report) => {
-            activity.state =
-                if (matches!(report.plan.request, ActionRequest::ValidateAffected { .. })
-                    && !report.plan.skipped.is_empty())
-                    || report.results.iter().any(|r| {
-                        !matches!(
-                            r.outcome,
-                            patchbay_core::actions::TaskOutcome::Passed
-                                | patchbay_core::actions::TaskOutcome::Started
-                                | patchbay_core::actions::TaskOutcome::Reused
-                        )
-                    })
-                {
-                    "failed"
-                } else {
-                    "finished"
-                }
-                .into();
+        Ok((report, urls)) => {
+            activity.state = if report.succeeded() {
+                "finished"
+            } else {
+                "failed"
+            }
+            .into();
             activity.report = Some(report.clone());
-            activity.preview_urls =
-                previews(&state, report.results.iter().map(|r| r.session_id.clone()))
-                    .unwrap_or_default();
+            activity.preview_urls.clone_from(urls);
         }
         Err(error) => {
             activity.state = "failed".into();
@@ -170,10 +200,12 @@ pub fn run_action(
     result
 }
 
+/// Stops by id rather than by the map, so an environment whose group was renamed or
+/// deleted can still be stopped.
 pub fn stop_group(
     app: &AppHandle,
     project_id: &str,
-    project: &Project,
+    root: &std::path::Path,
     group_id: &str,
     task: Option<&str>,
     initiator: &str,
@@ -195,11 +227,8 @@ pub fn stop_group(
     let state = app.state::<AppState>();
     let result = (|| {
         state.project(project_id)?;
-        if !project.groups.iter().any(|g| g.id == group_id) {
-            return Err("Unknown configured environment group".into());
-        }
         if let Some(task) = task {
-            patchbay_core::tasks::stored(std::path::Path::new(&project.root), task).map_err(err)?;
+            patchbay_core::tasks::stored(root, task).map_err(err)?;
         }
         state.service.call(Request::ActionStopGroup {
             project_id: project_id.into(),
@@ -222,7 +251,7 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
-        .unwrap_or_else(|| launch.project.clone());
+        .ok_or("Open the launch project in Patchbay")?;
     access.trust(&mut project).map_err(err)?;
     // Context may omit inaccessible folders, but actions must plan over the full graph.
     let readable = access.restrict(project.clone(), &[]).map_err(err)?;
@@ -302,7 +331,7 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
             stop_group(
                 app,
                 &launch.project_id,
-                &project,
+                std::path::Path::new(&project.root),
                 &group_id,
                 launch.task.as_deref(),
                 &launch.agent_session,
@@ -313,7 +342,7 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
             if launch.planner {
                 return Err("Switch to implementation before starting environments".into());
             }
-            let report = run_action(
+            let (report, urls) = run_action(
                 app,
                 &launch.project_id,
                 project,
@@ -321,16 +350,13 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
                 launch.task.as_deref(),
                 &launch.agent_session,
             )?;
-            let urls = previews(&state, report.results.iter().map(|r| r.session_id.clone()))?;
-            Ok(
-                json!({"report":report,"sessionIds":report.results.iter().map(|r| &r.session_id).collect::<Vec<_>>(),"previewUrls":urls}),
-            )
+            Ok(json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls}))
         }
         Action::Validate { component_id } => {
             if launch.planner {
                 return Err("Switch to implementation before running checks".into());
             }
-            let report = run_action(
+            let (report, urls) = run_action(
                 app,
                 &launch.project_id,
                 project,
@@ -338,13 +364,8 @@ fn dispatch(app: &AppHandle, launch: &LaunchContext, action: Action) -> CmdResul
                 launch.task.as_deref(),
                 &launch.agent_session,
             )?;
-            let passed = report.plan.skipped.is_empty()
-                && report
-                    .results
-                    .iter()
-                    .all(|r| matches!(r.outcome, patchbay_core::actions::TaskOutcome::Passed));
             Ok(
-                json!({"passed":passed,"missingValidators":report.plan.skipped,"sessionIds":report.results.iter().map(|r| &r.session_id).collect::<Vec<_>>(),"report":report,"previewUrls":previews(&state, report.results.iter().map(|r| r.session_id.clone()))?}),
+                json!({"passed":report.succeeded(),"missingValidators":report.plan.skipped,"sessionIds":report.session_ids(),"report":report,"previewUrls":urls}),
             )
         }
     }

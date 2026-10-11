@@ -36,7 +36,7 @@ import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
-import { useStore } from './store'
+import { projectOf, useStore } from './store'
 
 /** Refresh on project changes, file mutations and focus in any app window. */
 function useGitRefresh() {
@@ -177,31 +177,45 @@ export default function App() {
   }, [])
   useEffect(() => {
     const signatures = new Map<string, string>()
+    const pending = new Set<string>()
+    let timer: ReturnType<typeof setTimeout> | undefined
     const sync = () => {
-      const s = useStore.getState()
-      if (!s.project) return
-      const project = s.toProject()
-      const signature = JSON.stringify({
-        ...project,
-        components: project.components.map(({ position: _position, ...component }) => component),
-      })
-      if (signatures.get(s.project.id) === signature) return
-      signatures.set(s.project.id, signature)
-      void syncAgentProject(project).catch((e) => {
-        if (useStore.getState().project?.id === project.projectId)
-          useStore.getState().setMessage(String(e))
-      })
+      timer = undefined
+      for (const id of pending) {
+        const project = projectOf(id)
+        if (!project) continue
+        const signature = JSON.stringify({
+          ...project,
+          components: project.components.map(({ position: _position, ...component }) => component),
+        })
+        if (signatures.get(id) === signature) continue
+        signatures.set(id, signature)
+        void syncAgentProject(project).catch((e) => {
+          if (useStore.getState().project?.id === project.projectId)
+            useStore.getState().setMessage(String(e))
+        })
+      }
+      pending.clear()
     }
-    sync()
-    return useStore.subscribe((s, prev) => {
-      if (
-        s.project !== prev.project ||
-        s.nodes !== prev.nodes ||
-        s.edges !== prev.edges ||
-        s.groups !== prev.groups
-      )
-        sync()
+    const schedule = (id: string | undefined, delay: number) => {
+      if (!id) return
+      pending.add(id)
+      clearTimeout(timer)
+      timer = setTimeout(sync, delay)
+    }
+    schedule(useStore.getState().project?.id, 0)
+    // Edits arrive per keystroke and drag frame, so agents get the map once they settle.
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.project !== prev.project) {
+        schedule(prev.project?.id, 0)
+        schedule(s.project?.id, 0)
+      } else if (s.nodes !== prev.nodes || s.edges !== prev.edges || s.groups !== prev.groups)
+        schedule(s.project?.id, 250)
     })
+    return () => {
+      unsubscribe()
+      clearTimeout(timer)
+    }
   }, [])
   // Tasks belong to the repo, so each project loads its own when its tab opens.
   useEffect(() => {

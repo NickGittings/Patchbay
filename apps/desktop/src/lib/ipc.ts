@@ -1,7 +1,7 @@
 import { extraContext } from '../extensions/context'
 import type { ExtensionRegistry } from '../types'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
-import { projectOf, useStore } from '../store'
+import { useStore } from '../store'
 import type { OpenedProject, PlanText, SessionRecord, WorkspaceDocument } from '../types'
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   return tauriInvoke<T>(command, { projectId: useStore.getState().project?.id, ...args })
@@ -103,13 +103,10 @@ export const graphGroupStop = (
   groupId: string,
   task?: string,
   projectId = useStore.getState().project?.id,
-) =>
-  invoke<void>('graph_group_stop', {
-    groupId,
-    task,
-    projectId,
-    project: projectId ? projectOf(projectId) : undefined,
-  })
+) => invoke<void>('graph_group_stop', { groupId, task, projectId })
+/** Stop every environment started in the task's worktree, groups since removed included. */
+export const graphTaskStop = (task: string, projectId = useStore.getState().project?.id) =>
+  invoke<void>('graph_task_stop', { task, projectId })
 /** Stop the running validation; `false` if none was running. */
 export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
   invoke<boolean>('graph_validation_cancel', { projectId })
@@ -422,6 +419,12 @@ export const taskRootStart = async (
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
   })
+/** A planner submitted a proposal (`agent_commands.rs` emits it). */
+export const PROPOSAL_EVENT = 'patchbay://proposal'
+export const onProposal = (
+  handler: (event: { projectId: string; task: string | null }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ projectId: string; task: string | null }>(PROPOSAL_EVENT, (e) => handler(e.payload))
 export const proposalRead = (projectId: string, task?: string) =>
   invoke<import('../types').PlannerProposal | null>('proposal_read', { projectId, task })
 export const proposalApply = (

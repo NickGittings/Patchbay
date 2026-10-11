@@ -16,8 +16,8 @@ export interface TaskTerminal {
 }
 /**
  * A task's terminals: its own root terminals, the saved component terminals added to it, then
- * any other session running in its worktree (started by an environment, validation or an agent)
- * so nothing it runs is out of sight.
+ * any other session running in its worktree (started by an environment, validation or an agent,
+ * or no longer on the map) so nothing it runs is out of sight.
  */
 export function taskTerminals(
   workspace: Pick<TaskWorkspace, 'rootTerminals' | 'componentTerminals'>,
@@ -54,20 +54,29 @@ export function taskTerminals(
     }
   for (const [sid, runtime] of Object.entries(runtimes)) {
     if (
+      !sessions[sid]?.running ||
       runtime.projectId !== projectId ||
       (runtime.taskId ?? null) !== task ||
       entries.some((e) => e.sid === sid)
     )
       continue
-    entries.push({
-      componentId: runtime.componentId,
-      label: nodes.find((n) => n.id === runtime.componentId)?.data.name ?? 'Task root',
-      terminal: runtime.terminal,
-      sid,
-      retained: true,
-    })
+    entries.push(retainedTerminal(sid, runtime, nodes))
   }
   return entries
+}
+/** A session the map no longer names, shown with what its record says it ran. */
+export function retainedTerminal(
+  sid: string,
+  runtime: RuntimeTerminal,
+  nodes: FlowNode[],
+): TaskTerminal {
+  return {
+    componentId: runtime.componentId,
+    label: nodes.find((n) => n.id === runtime.componentId)?.data.name ?? 'Task root',
+    terminal: runtime.terminal,
+    sid,
+    retained: true,
+  }
 }
 /** With a maximized terminal, only that one. */
 export function shownTaskTerminals(entries: TaskTerminal[], maximized: string | null) {

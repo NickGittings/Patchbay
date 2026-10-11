@@ -285,10 +285,18 @@ test('a task lists its own and added terminals, plus sessions running in its wor
       extra: runtime,
       other: { ...runtime, taskId: 'two' },
       foreign: { ...runtime, projectId: 'q' },
+      exited: runtime,
     },
     'p',
     'one',
+    {
+      extra: { running: true } as never,
+      other: { running: true } as never,
+      foreign: { running: true } as never,
+      exited: { running: false } as never,
+    },
   )
+  // A session the map no longer names shows only while it runs, or it would never go away.
   expect(entries.map((e) => e.sid)).toEqual([rootSid, sid, 'extra'])
   expect(shownTaskTerminals(entries, rootSid).map((e) => e.sid)).toEqual([rootSid])
   expect(shownTaskTerminals(entries, 'gone')).toEqual(entries)
@@ -311,4 +319,13 @@ test('adding and removing task terminals keeps the map and clears a removed maxi
   s.removeTaskTerminal(TASK_ROOT_SCOPE, root)
   expect(useStore.getState().rootTerminals.map((t) => t.id)).toEqual(['shell'])
   expect(useStore.getState().dirty).toBe(false)
+})
+test('a removed task no longer keeps its saved workspace', () => {
+  const s = useStore.getState()
+  s.setActiveTask('one')
+  s.setActiveTask('two')
+  s.setActiveTask(null)
+  expect(Object.keys(useStore.getState().taskWorkspaces).sort()).toEqual(['', 'one', 'two'])
+  s.setTasks([task('two', [])])
+  expect(Object.keys(useStore.getState().taskWorkspaces).sort()).toEqual(['', 'two'])
 })

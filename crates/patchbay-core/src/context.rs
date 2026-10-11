@@ -77,7 +77,7 @@ pub fn component_context(
             out.push('\n');
         }
     }
-    out.push_str(IMPLEMENTATION_ACTIONS);
+    out.push_str(&implementation_actions(Shell::current()));
     out.push_str(
         "\nStay focused on this component. Read related components for context, but only \
          change them when asked.\n",
@@ -125,6 +125,16 @@ impl Shell {
         match self {
             Self::Unix => "$PATCHBAY_CONTEXT_FILE",
             Self::Windows => "%PATCHBAY_CONTEXT_FILE%",
+        }
+    }
+    /// An agent command for briefings, run through the CLI named by `PATCHBAY_CLI`.
+    /// Windows agents may run PowerShell or cmd, so both spellings are given.
+    fn agent_command(self, args: &str) -> String {
+        match self {
+            Self::Unix => format!("`\"$PATCHBAY_CLI\" agent {args}`"),
+            Self::Windows => format!(
+                "`& $env:PATCHBAY_CLI agent {args}` (in cmd, `\"%PATCHBAY_CLI%\" agent {args}`)"
+            ),
         }
     }
 }
@@ -600,12 +610,22 @@ pub fn plan_context(
              `$PATCHBAY_PLAN_FILE`: implementation agents receive it in their briefing.",
         );
     }
-    out.push_str("\nTo propose scope and assignments, write JSON {\"version\":1,\"plan\":\"agreed Markdown\",\"assignments\":[{\"componentId\":\"stable ID above\",\"assignment\":\"specific work\"}]} and run \"$PATCHBAY_CLI\" agent propose --file <json>. Order assignments deliberately. Submission waits for the user to Apply selection; it never changes scope or starts agents. Markdown-only plans remain supported.\n");
+    let _ = writeln!(
+        out,
+        "\nTo propose scope and assignments, write JSON {{\"version\":1,\"plan\":\"agreed Markdown\",\"assignments\":[{{\"componentId\":\"stable ID above\",\"assignment\":\"specific work\"}}]}} and run {}. Order assignments deliberately. Submission waits for the user to Apply selection; it never changes scope or starts agents. Markdown-only plans remain supported.",
+        Shell::current().agent_command("propose --file <json>")
+    );
     append_sections(&mut out, sections);
     out
 }
 
-const IMPLEMENTATION_ACTIONS: &str = "\nAfter changing a component, run its configured affected-component checks with \"$PATCHBAY_CLI\" agent validate <componentId>. Report missing validators explicitly. Start configured environments when needed with agent environment start <groupId>, and stop them with agent environment stop <groupId>. Use agent context, status and logs <sessionId> for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n";
+/// How implementation agents run checks and environments, in the syntax of the shell they use.
+fn implementation_actions(shell: Shell) -> String {
+    format!(
+        "\nAfter changing a component, run its configured affected-component checks with {}. Report missing validators explicitly. Start configured environments when needed with agent environment start <groupId>, and stop them with agent environment stop <groupId>. Use agent context, status and logs <sessionId> for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
+        shell.agent_command("validate <componentId>")
+    )
+}
 
 /// Implementation instructions for one agent coordinating the complete selected scope.
 #[must_use]
@@ -622,7 +642,7 @@ pub fn implementation_context(
         describe_component(&mut out, project, component);
     }
     out.push_str("\nCoordinate and implement the complete selected scope, using the saved plan and applied assignments below.\n");
-    out.push_str(IMPLEMENTATION_ACTIONS);
+    out.push_str(&implementation_actions(Shell::current()));
     append_sections(&mut out, sections);
     out
 }
@@ -885,6 +905,9 @@ pub fn plan_session_spec_for(
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
+///
+/// # Errors
+/// As [`plan_session_spec`].
 pub fn task_root_session_spec(
     project: &Project,
     component_ids: &[String],
@@ -1140,6 +1163,16 @@ pub(crate) fn quote_argument(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_commands_are_spelled_for_the_agents_shell() {
+        let unix = implementation_actions(Shell::Unix);
+        assert!(unix.contains("`\"$PATCHBAY_CLI\" agent validate <componentId>`"));
+        let windows = implementation_actions(Shell::Windows);
+        assert!(windows.contains("`& $env:PATCHBAY_CLI agent validate <componentId>`"));
+        assert!(windows.contains("`\"%PATCHBAY_CLI%\" agent validate <componentId>`"));
+        assert!(!windows.contains("\"$PATCHBAY_CLI\""));
+    }
     use crate::model::{Component, ComponentKind, Link, TerminalSpec};
     use crate::policy::AllowAll;
 

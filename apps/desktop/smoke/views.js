@@ -281,7 +281,7 @@
     state().toggleHighlight('alpha')
     assertScope(['beta'])
     assert(!tiles('beta').length, 'highlighting added terminals')
-    addTerminal('component\nbeta\ntask')
+    await addTerminal('beta', 'saved\ntask')
     await until('beta added', () => tiles('beta').length)
     click(viewButton('Plan'))
     await until('shared Plan scope', () => nodeElement('beta')?.querySelector('.highlighted'))
@@ -346,8 +346,9 @@
         state().nodes.find((n) => n.id === 'beta').selected,
       'merge loses session, planner, or canvas selection state',
     )
-    await until('implementation still on beta', () =>
-      document.querySelector('.implementation-view .terminal-tile')?.textContent.includes('Task'),
+    await until(
+      'implementation still on beta',
+      () => tiles('beta')[0]?.querySelector('.terminal-tile-header strong')?.textContent === 'Task',
     )
     state().selectEdge('ab')
     state().onEdgesChange([{ type: 'select', id: 'ab', selected: true }])
@@ -527,17 +528,18 @@
       !document.querySelector('.terminal-tile.maximized'),
       'attention reveal left another tile maximized',
     )
-    assert(tiles('unrelated').length === 2, 'running agent and server are not visible')
+    await until('running agent and server visible', () => tiles('unrelated').length === 2)
     smoke.stopTerminal(smoke.sessionId('unrelated', 'server'))
     await until('stopped server', () => {
       const server = state().sessions[smoke.sessionId('unrelated', 'server')]
       return server && !server.running && server.status?.stopped
     })
+    // Background sessions are tiled only while they run; one still shown must read Stopped.
+    const serverTile = tiles('unrelated').find((tile) => tile.textContent.includes('Server'))
     assert(
       !document.querySelector('.attention-button')?.textContent.includes('failed') &&
-        tiles('unrelated')
-          .find((tile) => tile.textContent.includes('Server'))
-          ?.querySelector('.status-label.health-idle')?.textContent === 'Stopped',
+        (!serverTile ||
+          serverTile.querySelector('.status-label.health-idle')?.textContent === 'Stopped'),
       'a stopped task counts as failed',
     )
 

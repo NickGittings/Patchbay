@@ -1,4 +1,4 @@
-import { shownTaskTerminals, taskTerminals } from '../lib/taskTerminals'
+import { retainedTerminal, shownTaskTerminals, taskTerminals } from '../lib/taskTerminals'
 import { useStore } from '../store'
 import { parseSessionId } from '../types'
 import EmptyState from './EmptyState'
@@ -31,6 +31,8 @@ export default function ImplementationView() {
     )
     if (node && terminal)
       entries.push({ componentId: node.id, label: node.data.name, terminal, sid: revealed.sid })
+    else if (runtimes[revealed.sid])
+      entries.push(retainedTerminal(revealed.sid, runtimes[revealed.sid], nodes))
   }
   const shown = shownTaskTerminals(entries, maximized)
   return (

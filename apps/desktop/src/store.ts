@@ -348,11 +348,13 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   const closable = new Set(tasks.filter((t) => !t.current).map((t) => t.id))
   const closedTaskIds = s.closedTaskIds.filter((id) => closable.has(id))
   const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
-  return {
-    tasks,
-    closedTaskIds,
-    ...switchTaskWorkspace({ ...s, tasks, closedTaskIds }, keep ? s.activeTask : null),
-  }
+  const switched = switchTaskWorkspace({ ...s, tasks, closedTaskIds }, keep ? s.activeTask : null)
+  // Removed tasks' layouts would otherwise stay in the saved workspace for good.
+  const known = new Set(['', ...tasks.map((t) => t.id)])
+  const taskWorkspaces = Object.fromEntries(
+    Object.entries(switched.taskWorkspaces ?? s.taskWorkspaces).filter(([id]) => known.has(id)),
+  )
+  return { tasks, closedTaskIds, ...switched, taskWorkspaces }
 }
 
 export const useStore = create<State>((set, get) => ({

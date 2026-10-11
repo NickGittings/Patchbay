@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { describeTerminal, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
-import { startTerminal, stopTerminal } from '../lib/sessions'
+import { removeTaskTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import type { TaskTerminal } from '../lib/taskTerminals'
 import { TASK_ROOT_SCOPE } from '../types'
 import { useStore } from '../store'
@@ -71,8 +71,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
             onClick={() => {
               if (session?.running && !window.confirm(`Stop ${terminal.name} and remove it?`))
                 return
-              if (session?.running) stopTerminal(sid)
-              s.removeTaskTerminal(componentId, terminal.id)
+              void removeTaskTerminal(componentId, terminal.id, sid)
             }}
           >
             ×
