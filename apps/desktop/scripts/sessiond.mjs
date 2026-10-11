@@ -21,7 +21,7 @@ execFileSync('cargo', args, { cwd: root, stdio: 'inherit' })
 const extension = target.includes('windows') ? '.exe' : ''
 const directory = resolve(import.meta.dirname, '../src-tauri/binaries')
 mkdirSync(directory, { recursive: true })
-for (const binary of ['patchbay-sessiond', 'patchbay']) {
+for (const binary of ['patchbay-sessiond', 'patchbay-cli']) {
   const source = resolve(
     root,
     process.env.CARGO_TARGET_DIR || 'target',

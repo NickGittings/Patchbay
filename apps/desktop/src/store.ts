@@ -35,6 +35,7 @@ import type {
 import {
   TASK_ROOT_SCOPE,
   sessionId,
+  sessionTask,
   sessionMetadata,
   setProjectIdentity,
   type SessionRecord,
@@ -262,7 +263,7 @@ interface State {
   /** Task tabs hidden by the user; their workspaces and processes are retained. */
   closedTaskIds: string[]
   setTasks: (tasks: Task[]) => void
-  setActiveTask: (id: string | null) => void
+  setActiveTask: (id: string | null, exact?: boolean) => void
   closeTaskTab: (id: string) => void
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
@@ -329,8 +330,11 @@ type TaskState = Pick<
 export function switchTaskWorkspace(
   s: TaskState,
   requested: string | null,
+  exact = false,
 ): Partial<ProjectState> & { revealed?: null } {
-  const activeTask = requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null
+  const activeTask = exact
+    ? requested
+    : (requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null)
   const task = s.tasks.find((t) => t.id === activeTask)
   if (activeTask && (!task || task.missing)) return {}
   const reopened =
@@ -348,7 +352,11 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   const closable = new Set(tasks.filter((t) => !t.current).map((t) => t.id))
   const closedTaskIds = s.closedTaskIds.filter((id) => closable.has(id))
   const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
-  const switched = switchTaskWorkspace({ ...s, tasks, closedTaskIds }, keep ? s.activeTask : null)
+  const switched = switchTaskWorkspace(
+    { ...s, tasks, closedTaskIds },
+    keep ? s.activeTask : null,
+    s.activeTask === null && !!s.activeSession && sessionTask(s.activeSession) === null,
+  )
   // Removed tasks' layouts would otherwise stay in the saved workspace for good.
   const known = new Set(['', ...tasks.map((t) => t.id)])
   const taskWorkspaces = Object.fromEntries(
@@ -578,7 +586,7 @@ export const useStore = create<State>((set, get) => ({
   activeTask: null,
   closedTaskIds: [],
   setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
-  setActiveTask: (id) => set((s) => switchTaskWorkspace(s, id)),
+  setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
   closeTaskTab: (id) =>
     set((s) => {
       const task = s.tasks.find((t) => t.id === id)

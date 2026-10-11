@@ -211,6 +211,10 @@ pub enum Request {
     PreviewUrls {
         id: String,
     },
+    /// Scan selected session outputs in one service request, deduplicating URLs.
+    PreviewUrlsBatch {
+        ids: Vec<String>,
+    },
     History {
         id: String,
         incarnation: usize,
@@ -943,6 +947,19 @@ impl Service {
                     running: s.running,
                     urls: crate::extensions::preview_urls(&s.data),
                 }))?
+            }
+            Request::PreviewUrlsBatch { ids } => {
+                let mut urls = Vec::new();
+                for id in ids {
+                    if let Some(snapshot) = self.snapshot(&id) {
+                        for url in crate::extensions::preview_urls(&snapshot.data) {
+                            if !urls.contains(&url) {
+                                urls.push(url);
+                            }
+                        }
+                    }
+                }
+                serde_json::to_value(urls)?
             }
             Request::Attach { id, viewer, claim } => {
                 self.claim(client, id.clone(), viewer, claim);

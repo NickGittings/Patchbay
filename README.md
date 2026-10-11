@@ -80,7 +80,7 @@ scope. Users can then adjust the scope. Editing the shared Markdown invalidates 
 until a proposal is applied again. Implementation receives saved artifacts, separately from the
 planner session and its conversation.
 
-Agent sessions receive the packaged CLI path and an authenticated local desktop connection:
+Agent sessions receive the packaged `patchbay-cli` path and an authenticated local desktop connection:
 
 ```sh
 "$PATCHBAY_CLI" agent context
@@ -247,14 +247,14 @@ Needs input, Ready for review, Idle, and Ended, including quiet working turns. S
 
 ```sh
 cargo build -p patchbay-cli -p patchbay-sessiond
-./target/debug/patchbay sessions list
-./target/debug/patchbay sessions attach SESSION_ID   # Ctrl+] detaches
-./target/debug/patchbay sessions stop SESSION_ID
-./target/debug/patchbay sessions set-conversation SESSION_ID PROVIDER_ID
-./target/debug/patchbay sessions resume SESSION_ID
-./target/debug/patchbay sessions forget SESSION_ID
-./target/debug/patchbay sessions shutdown            # refuses if work is running
-./target/debug/patchbay sessions shutdown --stop-running
+./target/debug/patchbay-cli sessions list
+./target/debug/patchbay-cli sessions attach SESSION_ID   # Ctrl+] detaches
+./target/debug/patchbay-cli sessions stop SESSION_ID
+./target/debug/patchbay-cli sessions set-conversation SESSION_ID PROVIDER_ID
+./target/debug/patchbay-cli sessions resume SESSION_ID
+./target/debug/patchbay-cli sessions forget SESSION_ID
+./target/debug/patchbay-cli sessions shutdown            # refuses if work is running
+./target/debug/patchbay-cli sessions shutdown --stop-running
 ```
 
 Development and Tauri packaging build and copy the helper automatically. Standalone CLI

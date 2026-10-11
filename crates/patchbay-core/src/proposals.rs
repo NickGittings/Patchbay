@@ -89,8 +89,6 @@ fn plan_stamp(root: &Path, task: Option<&str>) -> Result<u64> {
 
 fn save(root: &Path, task: Option<&str>, proposal: &Proposal, applied: bool) -> Result<()> {
     let path = file(root, task, applied)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let bytes = if applied {
         serde_json::to_vec_pretty(&Applied {
             proposal: proposal.clone(),
@@ -99,12 +97,7 @@ fn save(root: &Path, task: Option<&str>, proposal: &Proposal, applied: bool) -> 
     } else {
         serde_json::to_vec_pretty(proposal)?
     };
-    std::fs::write(&tmp, bytes)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(tmp);
-        return Err(e.into());
-    }
-    Ok(())
+    crate::workspace::atomic_write(&path, &bytes)
 }
 
 /// The pending proposal, or with `applied` the applied one while the plan it wrote
@@ -113,13 +106,19 @@ fn save(root: &Path, task: Option<&str>, proposal: &Proposal, applied: bool) -> 
 /// # Errors
 /// Fails if the task id is invalid or the file can't be read or parsed.
 pub fn read(root: &Path, task: Option<&str>, applied: bool) -> Result<Option<Proposal>> {
+    let _guard = applied.then(|| {
+        plans::WRITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
     match std::fs::read(file(root, task, applied)?) {
         Ok(bytes) if applied => {
             let saved: Applied = serde_json::from_slice(&bytes)?;
-            Ok(
-                (plan_stamp(root, task).ok() == Some(saved.plan_modified_ns))
-                    .then_some(saved.proposal),
-            )
+            let plan = plans::read(root, task)?;
+            Ok((!plan.cut
+                && plan.text == saved.proposal.plan
+                && plan_stamp(root, task).ok() == Some(saved.plan_modified_ns))
+            .then_some(saved.proposal))
         }
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -153,7 +152,10 @@ pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Resu
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     expected.validate(project)?;
     let root = Path::new(&project.root);
-    if read(root, task, false)?.as_ref() != Some(expected) {
+    let pending = read(root, task, false)?.ok_or_else(|| {
+        anyhow::anyhow!("This proposal is no longer pending; refresh before applying")
+    })?;
+    if &pending != expected {
         bail!("The planner submitted a newer proposal; refresh before applying");
     }
     let ids = expected
@@ -172,8 +174,12 @@ pub fn apply(project: &Project, task: Option<&str>, expected: &Proposal) -> Resu
             },
         )?;
     }
-    plans::write(root, task, &expected.plan)?;
+    let _plan_guard = plans::WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    plans::write_locked(root, task, &expected.plan)?;
     save(root, task, expected, true)?;
+    std::fs::remove_file(file(root, task, false)?)?;
     Ok(ids)
 }
 
@@ -279,6 +285,8 @@ mod tests {
         assert!(plans::read(&root, None).unwrap().text.is_empty());
         assert!(section(&p, None, &["web".into()]).is_none());
         assert_eq!(apply(&p, None, &proposed).unwrap(), ["web"]);
+        assert!(read(&root, None, false).unwrap().is_none());
+        assert!(apply(&p, None, &proposed).is_err());
         assert!(
             section(&p, None, &["web".into()])
                 .unwrap()
@@ -286,12 +294,28 @@ mod tests {
                 .contains("Add button")
         );
         assert!(section(&p, None, &[]).is_none());
+        // Coarse/preserved timestamps must not make changed text look applied.
+        let path = plans::plan_file(&root, None).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, "Changed text").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(read(&root, None, true).unwrap().is_none());
+        submit(&p, None, &proposed).unwrap();
+        apply(&p, None, &proposed).unwrap();
         // Direct planner/editor file writes invalidate assignments even if the old text is restored.
         std::thread::sleep(std::time::Duration::from_millis(2));
         std::fs::write(plans::plan_file(&root, None).unwrap(), &proposed.plan).unwrap();
         assert!(section(&p, None, &["web".into()]).is_none());
+        submit(&p, None, &proposed).unwrap();
         apply(&p, None, &proposed).unwrap();
         plans::write(&root, None, "edited").unwrap();
+        assert!(apply(&p, None, &proposed).is_err());
+        assert_eq!(plans::read(&root, None).unwrap().text, "edited");
         assert!(section(&p, None, &["web".into()]).is_none());
         plans::write(&root, None, &proposed.plan).unwrap();
         assert!(section(&p, None, &["web".into()]).is_none());

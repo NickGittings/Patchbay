@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
-    name = "patchbay",
+    name = "patchbay-cli",
     about = "Inspect Patchbay component maps from the command line"
 )]
 struct Cli {
@@ -130,7 +130,7 @@ mod tests {
     fn plan_ids_are_positional_and_directory_is_a_flag() {
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan", "api", "web"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan", "api", "web"]).unwrap()
         else {
             panic!("expected plan command")
         };
@@ -139,7 +139,7 @@ mod tests {
 
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan", "api", "--dir", "../shop"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan", "api", "--dir", "../shop"]).unwrap()
         else {
             panic!("expected plan command")
         };
@@ -150,21 +150,27 @@ mod tests {
     #[test]
     fn agent_commands_accept_configured_ids_and_require_proposal_files() {
         for args in [
-            vec!["patchbay", "agent", "context"],
-            vec!["patchbay", "agent", "status"],
-            vec!["patchbay", "agent", "validate", "web"],
-            vec!["patchbay", "agent", "environment", "start", "dev"],
-            vec!["patchbay", "agent", "environment", "stop", "dev"],
-            vec!["patchbay", "agent", "logs", "s-1"],
-            vec!["patchbay", "agent", "propose", "--file", "proposal.json"],
+            vec!["patchbay-cli", "agent", "context"],
+            vec!["patchbay-cli", "agent", "status"],
+            vec!["patchbay-cli", "agent", "validate", "web"],
+            vec!["patchbay-cli", "agent", "environment", "start", "dev"],
+            vec!["patchbay-cli", "agent", "environment", "stop", "dev"],
+            vec!["patchbay-cli", "agent", "logs", "s-1"],
+            vec![
+                "patchbay-cli",
+                "agent",
+                "propose",
+                "--file",
+                "proposal.json",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
-        assert!(Cli::try_parse_from(["patchbay", "agent", "validate"]).is_err());
-        assert!(Cli::try_parse_from(["patchbay", "agent", "propose"]).is_err());
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "validate"]).is_err());
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose"]).is_err());
         assert!(
             Cli::try_parse_from([
-                "patchbay",
+                "patchbay-cli",
                 "agent",
                 "environment",
                 "start",
@@ -191,7 +197,7 @@ mod tests {
     fn plan_without_ids_uses_the_current_project() {
         let Cli {
             cmd: Cmd::Plan { dir, component_ids },
-        } = Cli::try_parse_from(["patchbay", "plan"]).unwrap()
+        } = Cli::try_parse_from(["patchbay-cli", "plan"]).unwrap()
         else {
             panic!("expected plan command")
         };

@@ -177,7 +177,8 @@ export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>)
   const runtime = s.runtimeTerminals[item.sid]
   const extension = !!(runtime?.extensionId || runtime?.commandId)
   // Extension terminals run in the open worktree and show in any task, so they never switch it.
-  if (!extension) s.setActiveTask(sessionTask(item.sid))
+  if (!extension) s.setActiveTask(sessionTask(item.sid), true)
+  s.setActiveSession(item.sid)
   if (item.componentId === PLAN_SCOPE) {
     const { terminalId } = parseSessionId(item.sid)
     if (!terminalId) return

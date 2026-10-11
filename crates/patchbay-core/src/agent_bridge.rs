@@ -26,6 +26,15 @@ pub const ENDPOINT_ENV: &str = "PATCHBAY_AGENT_ENDPOINT";
 pub const TOKEN_ENV: &str = "PATCHBAY_AGENT_TOKEN";
 pub const CLI_ENV: &str = "PATCHBAY_CLI";
 
+/// Explain missing commands in the terminal banner and retained output.
+pub fn unavailable(spec: &mut crate::pty::SessionSpec, reason: &str) {
+    let notice = format!("Patchbay agent commands are unavailable: {reason}.");
+    spec.notice = Some(match spec.notice.take() {
+        Some(previous) => format!("{previous}\n{notice}"),
+        None => notice,
+    });
+}
+
 /// What a token was launched for, looked up from the session that holds it.
 #[derive(Clone)]
 pub struct LaunchContext {
@@ -127,26 +136,39 @@ impl Server {
         let authenticate: Arc<Authenticate> = Arc::new(authenticate);
         let handler: Arc<Handler> = Arc::new(handler);
         std::thread::spawn(move || {
-            while let Some(server) = weak.upgrade() {
-                if server.stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let authenticate = authenticate.clone();
-                        let handler = handler.clone();
-                        std::thread::spawn(move || {
-                            let _ = server.serve(stream, &*authenticate, &*handler);
-                        });
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(_) => break,
-                }
-            }
+            Self::listen(weak, authenticate, handler, || {
+                listener.accept().map(|(stream, _)| stream)
+            });
         });
         Ok(server)
+    }
+    fn listen(
+        weak: std::sync::Weak<Self>,
+        authenticate: Arc<Authenticate>,
+        handler: Arc<Handler>,
+        mut accept: impl FnMut() -> std::io::Result<TcpStream>,
+    ) {
+        while let Some(server) = weak.upgrade() {
+            if server.stopped.load(Ordering::Acquire) {
+                break;
+            }
+            match accept() {
+                Ok(stream) => {
+                    let authenticate = authenticate.clone();
+                    let handler = handler.clone();
+                    std::thread::spawn(move || {
+                        let _ = server.serve(stream, &*authenticate, &*handler);
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                // Interrupted accepts retry immediately; resource pressure and other
+                // failures back off, keeping the endpoint usable once they clear.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
     }
     /// Adds a fresh token to an agent's environment; record it with the session.
     pub fn inject(
@@ -295,6 +317,44 @@ mod tests {
     }
     fn address(env: &BTreeMap<String, String>) -> String {
         std::fs::read_to_string(&env[ENDPOINT_ENV]).unwrap()
+    }
+
+    #[test]
+    fn listener_recovers_after_interrupted_and_resource_errors() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = Arc::new(Server {
+            endpoint: PathBuf::new(),
+            stopped: AtomicBool::new(false),
+        });
+        let weak = Arc::downgrade(&server);
+        let thread = std::thread::spawn(move || {
+            let mut errors =
+                [std::io::ErrorKind::Interrupted, std::io::ErrorKind::Other].into_iter();
+            Server::listen(
+                weak,
+                Arc::new(|_| {
+                    Some(LaunchContext {
+                        project_id: "p".into(),
+                        task: None,
+                        agent_session: "one".into(),
+                        planner: false,
+                    })
+                }),
+                Arc::new(|_, _| Ok(serde_json::json!({"recovered":true}))),
+                || {
+                    if let Some(kind) = errors.next() {
+                        return Err(std::io::Error::from(kind));
+                    }
+                    listener.accept().map(|(stream, _)| stream)
+                },
+            );
+        });
+        let result = call(&address.to_string(), "token", Action::Status {}).unwrap();
+        assert_eq!(result.result.unwrap()["recovered"], true);
+        server.stop();
+        thread.join().unwrap();
     }
 
     #[test]

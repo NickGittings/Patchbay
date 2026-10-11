@@ -191,6 +191,7 @@ export default function App() {
         if (signatures.get(id) === signature) continue
         signatures.set(id, signature)
         void syncAgentProject(project).catch((e) => {
+          if (signatures.get(id) === signature) signatures.delete(id)
           if (useStore.getState().project?.id === project.projectId)
             useStore.getState().setMessage(String(e))
         })
@@ -203,9 +204,11 @@ export default function App() {
       clearTimeout(timer)
       timer = setTimeout(sync, delay)
     }
-    schedule(useStore.getState().project?.id, 0)
+    for (const id of Object.keys(useStore.getState().captureProjects())) schedule(id, 0)
     // Edits arrive per keystroke and drag frame, so agents get the map once they settle.
     const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.projects !== prev.projects || (prev.restoring && !s.restoring))
+        for (const id of Object.keys(s.captureProjects())) schedule(id, 0)
       if (s.project !== prev.project) {
         schedule(prev.project?.id, 0)
         schedule(s.project?.id, 0)

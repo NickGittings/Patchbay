@@ -51,7 +51,7 @@ export default function TaskTabs() {
       counts[activity.task ?? ''] = (counts[activity.task ?? ''] ?? 0) + 1
   }
   const tabs = [
-    ...(tasks.some((t) => t.current && !t.missing)
+    ...(active !== null && tasks.some((t) => t.current && !t.missing)
       ? []
       : [{ id: null, title: 'Main worktree', missing: false, worktree: '', current: true }]),
     ...tasks.filter((task) => task.current || !closedTaskIds.includes(task.id)),
@@ -73,7 +73,7 @@ export default function TaskTabs() {
               title={task.missing ? `${task.title}: worktree unavailable` : task.worktree}
               onClick={() => {
                 const s = useStore.getState()
-                s.setActiveTask(task.id)
+                s.setActiveTask(task.id, true)
                 useStore.setState({
                   seenActivities: [
                     ...new Set([

@@ -407,6 +407,10 @@
           .tasks.find((t) => t.id === task.id)
           ?.components.join(',') === 'web',
     )
+    await until(
+      'applied proposal leaves the pending panel',
+      () => !document.querySelector('.proposed-scope'),
+    )
     assert(
       !state().rootTerminals.some((t) => t.kind === 'agent'),
       'proposal started an implementation agent',
@@ -507,6 +511,42 @@
         activities.some((a) => a.previewUrls.includes('http://localhost:19991/')),
       'agent activity or preview URL missing',
     )
+    // Implementation saves an editor draft before briefing its agent, even after leaving Plan.
+    click(viewButton('Plan'))
+    const savedPlan = await until('saved plan editor', () => document.querySelector('.plan-file'))
+    if (!savedPlan.open) click(savedPlan.querySelector('summary'))
+    const planEditor = await until('loaded applied plan', () => {
+      const el = savedPlan.querySelector('textarea')
+      return el && !el.disabled && el.value === proposal.plan ? el : null
+    })
+    const editedPlan = '# Edited implementation plan\nUse the draft from the Plan editor.'
+    edit(planEditor, editedPlan)
+    await until(
+      'plan draft retained',
+      () => button(savedPlan, 'Save') && !button(savedPlan, 'Save').disabled,
+    )
+    click(viewButton('Implementation'))
+    const draftTerminal = state().addRootTerminal({
+      ...worker,
+      id: 'draft-probe',
+      name: 'Draft probe',
+      command:
+        'cat "$PATCHBAY_CONTEXT_FILE"; "$PATCHBAY_CLI" agent context; printf "draft-probe-ready\\n"; exec cat',
+    })
+    const draftSid = smoke.sessionId('@task', draftTerminal, task.id)
+    await smoke.startTerminal('@task', draftTerminal, task.id)
+    await until('draft reaches implementation briefing', () =>
+      textOf(draftSid).includes('draft-probe-ready'),
+    )
+    assert(
+      textOf(draftSid).includes('UsethedraftfromthePlaneditor.'),
+      'implementation received the old saved plan',
+    )
+    assert(
+      textOf(draftSid).includes('"assignments":null'),
+      'edited plan retained stale assignments',
+    )
+
     // Required inaccessible consumers and environment members must never disappear from plans.
     const originalDocsPath = state().nodes.find((n) => n.id === 'docs').data.path
     state().updateComponent('docs', { path: 'missing-required-folder' })

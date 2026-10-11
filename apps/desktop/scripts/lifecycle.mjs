@@ -47,7 +47,17 @@ writeFileSync(
     activationEvents: ['onStartup'],
     permissions: ['project:read', 'terminals'],
     contributes: {
-      commands: [{ id: 'fixture.continuity.run', title: 'Continuity probe' }],
+      commands: [
+        { id: 'fixture.continuity.run', title: 'Continuity probe' },
+        {
+          id: 'fixture.continuity.agent',
+          title: 'CLI probe',
+          run: {
+            kind: 'agent',
+            command: '"$PATCHBAY_CLI" agent context; printf "extension-agent-ready\\n"; exec sh',
+          },
+        },
+      ],
       views: [{ id: 'fixture.continuity.panel', title: 'Continuity', location: 'inspector' }],
     },
   }),

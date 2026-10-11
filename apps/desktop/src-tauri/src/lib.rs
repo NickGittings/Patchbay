@@ -52,7 +52,7 @@ struct AppState {
     layout_dirty: std::sync::atomic::AtomicBool,
     service: Arc<service::Bridge>,
     agent_commands: Mutex<Option<Arc<patchbay_core::agent_bridge::Server>>>,
-    activities: Mutex<Vec<agent_commands::Activity>>,
+    activities: patchbay_core::agent_commands::ActivityLog,
     projects: RwLock<HashMap<String, Arc<ProjectAccess>>>,
     workspace: Mutex<Workspace>,
     workspace_ready: std::sync::atomic::AtomicBool,
@@ -402,6 +402,7 @@ async fn open_project(
             }
             let _ = app.emit(FILE_ACCESS_EVENT, ());
         }
+        *scoped.agent_project.write().unwrap() = Some(loaded.project.clone());
         rewatch(&app, &loaded.id);
         Ok(Some(to_opened(loaded, &access.snapshot())))
     })
@@ -873,14 +874,7 @@ fn for_task(
     required: &[String],
     roots: Vec<PathBuf>,
 ) -> CmdResult<(Project, Vec<PathBuf>, Option<context::ContextSection>)> {
-    let Some(id) = task else {
-        return Ok((project, roots, None));
-    };
-    let task = tasks::stored(Path::new(&project.root), id).map_err(err)?;
-    let (moved, dropped) = tasks::project_in(&project, &task, required).map_err(err)?;
-    let section = tasks::context_section(&moved, &task, &dropped);
-    let roots = vec![PathBuf::from(&moved.root)];
-    Ok((moved, roots, Some(section)))
+    patchbay_core::agent_commands::for_task(project, task, required, roots).map_err(err)
 }
 
 /// A briefing's sections: the backend's own (`own`: the task, plan and peers),
@@ -1879,7 +1873,9 @@ pub fn run() {
             main.build()?;
             app.state::<AppState>().service.run(app.handle().clone());
             *app.state::<AppState>().agent_commands.lock().unwrap() =
-                Some(agent_commands::start(app.handle().clone())?);
+                agent_commands::start(app.handle().clone())
+                    .map_err(|e| eprintln!("Patchbay agent commands are unavailable: {e}"))
+                    .ok();
             Ok(())
         })
         .invoke_handler(|invoke| {
@@ -2151,6 +2147,7 @@ async fn launch_extension_terminal(
     let roots = scoped.roots();
     let extensions = state.extensions.clone();
     let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let registry = extensions.get();
         let (terminal, extension_id, command_id, key) = terminal(&registry)?;
@@ -2165,9 +2162,13 @@ async fn launch_extension_terminal(
         metadata.extension_id = Some(extension_id);
         metadata.command_id = command_id;
         metadata.key = key;
-        let spec =
+        let agent = terminal.kind == patchbay_core::TerminalKind::Agent;
+        let mut spec =
             context::extra_session_spec(project, &component_id, terminal, &AllowAll, &sections)
                 .map_err(err)?;
+        if agent {
+            agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
+        }
         let id = bridge.start(spec, metadata, request_id)?;
         Ok(id)
     })
@@ -2381,6 +2382,7 @@ async fn workspace_load(
                 // External grants are revalidated by trusted pickers; restoration cannot
                 // grant them. Opening the project again asks for them.
                 let id = loaded.id.clone();
+                *scoped.agent_project.write().unwrap() = Some(loaded.project.clone());
                 let restored = to_opened(loaded, &scoped.access.snapshot());
                 app.state::<AppState>()
                     .projects

@@ -27,6 +27,7 @@ pub use model::{Component, ComponentKind, Link, Project, TerminalKind, TerminalS
 
 pub mod adapters;
 pub mod agent_bridge;
+pub mod agent_commands;
 pub mod agent_hooks;
 pub mod session;
 pub mod workspace;

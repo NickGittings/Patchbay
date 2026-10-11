@@ -329,3 +329,20 @@ test('a removed task no longer keeps its saved workspace', () => {
   s.setTasks([task('two', [])])
   expect(Object.keys(useStore.getState().taskWorkspaces).sort()).toEqual(['', 'two'])
 })
+
+test('Attention reveals a session predating the current task in its original workspace', async () => {
+  const { revealTerminal } = await import('./attention')
+  const sid = sessionId('web', 'dev', null)
+  useStore.getState().setSession(sid, { running: true })
+  useStore.getState().setTasks([{ ...task('current'), current: true }])
+  expect(useStore.getState().activeTask).toBe('current')
+  revealTerminal({ sid, componentId: 'web' })
+  const s = useStore.getState()
+  expect(s.activeTask).toBeNull()
+  expect(s.view).toBe('implementation')
+  expect(
+    taskTerminals(s, s.nodes, s.runtimeTerminals, 'p', s.activeTask, s.sessions).map((t) => t.sid),
+  ).toContain(sid)
+  s.setTasks([{ ...task('current'), current: true }])
+  expect(useStore.getState().activeTask).toBeNull()
+})

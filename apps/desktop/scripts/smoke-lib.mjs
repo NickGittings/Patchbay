@@ -33,7 +33,8 @@ export function launchApp(env, config) {
 export function stopService(env) {
   const shutdown = ['sessions', 'shutdown', '--stop-running']
   try {
-    if (prebuilt) execFileSync(binary('patchbay'), shutdown, { cwd: root, env, stdio: 'inherit' })
+    if (prebuilt)
+      execFileSync(binary('patchbay-cli'), shutdown, { cwd: root, env, stdio: 'inherit' })
     else
       execFileSync('cargo', ['run', '-q', '-p', 'patchbay-cli', '--', ...shutdown], {
         cwd: root,

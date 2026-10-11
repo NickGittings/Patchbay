@@ -89,6 +89,32 @@ export function followActiveTask() {
   // The task last sent to each project's backend, so a slow earlier call can't leave the
   // watcher on a worktree the user already switched away from.
   const scopeWrites = new Map<string, Promise<unknown>>()
+  const scopeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const pendingScopes = new Map<string, { projectId: string; task: string; components: string[] }>()
+  const flushScope = (key: string) => {
+    clearTimeout(scopeTimers.get(key))
+    scopeTimers.delete(key)
+    const pending = pendingScopes.get(key)
+    if (!pending) return
+    pendingScopes.delete(key)
+    const { projectId, task, components } = pending
+    const write = (scopeWrites.get(key) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => taskUpdate(task, { components }, projectId))
+      .then((updated) => {
+        const state = useStore.getState().captureProjects()[projectId]?.state
+        if (state)
+          applyTasks(
+            projectId,
+            state.tasks.map((t) => (t.id === task ? updated : t)),
+          )
+      })
+      .catch((e) => useStore.getState().setMessage(String(e)))
+      .finally(() => {
+        if (scopeWrites.get(key) === write) scopeWrites.delete(key)
+      })
+    scopeWrites.set(key, write)
+  }
   const sent = new Map<string, string | null>()
   const activating = new Map<string, Promise<void>>()
   const activate = (projectId: string): Promise<void> => {
@@ -119,12 +145,12 @@ export function followActiveTask() {
       const task = s.activeTask
       const components = [...s.highlighted]
       const key = `${id}/${task}`
-      const write = (scopeWrites.get(key) ?? Promise.resolve())
-        .catch(() => {})
-        .then(() => taskUpdate(task, { components }, id))
-        .then(() => refreshTasks(id))
-        .catch((e) => useStore.getState().setMessage(String(e)))
-      scopeWrites.set(key, write)
+      pendingScopes.set(key, { projectId: id, task, components })
+      clearTimeout(scopeTimers.get(key))
+      scopeTimers.set(
+        key,
+        setTimeout(() => flushScope(key), 250),
+      )
     }
     // Also covers a task restored with the workspace, which the backend hasn't heard of.
     if ((sent.get(id) ?? null) !== s.activeTask) void activate(id)
@@ -135,6 +161,7 @@ export function followActiveTask() {
   })
   return () => {
     unsubscribe()
+    for (const key of pendingScopes.keys()) flushScope(key)
     void listener.then((unlisten) => unlisten())
   }
 }

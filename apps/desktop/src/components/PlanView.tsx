@@ -21,12 +21,7 @@ import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import WorktreePicker from './tasks/WorktreePicker'
 
-/**
- * Unsaved Saved-plan edits per project and task, kept outside the component so leaving the view or
- * switching task doesn't discard them; `overwrite` remembers that the planner's newer file may be
- * replaced.
- */
-const planDrafts = new Map<string, { text: string; base: string; overwrite: boolean }>()
+import { planDrafts } from '../lib/planDrafts'
 
 export default function PlanView() {
   const project = useStore((s) => s.project)
@@ -118,6 +113,7 @@ export default function PlanView() {
     setProposalError('')
     try {
       const ids = await proposalApply(map, targetTask ?? undefined, proposal)
+      setProposalResult({ key: proposalKey, value: null })
       useStore.getState().patchTask(projectId, targetTask, {
         highlighted: ids,
         implementationComponents: ids.map((id) => ({ id, visible: true })),

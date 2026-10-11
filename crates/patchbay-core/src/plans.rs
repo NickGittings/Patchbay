@@ -145,8 +145,8 @@ pub fn read(root: &Path, task: Option<&str>) -> Result<Plan> {
     ))
 }
 
-/// Serializes [`write_if`]'s check and replace within this process.
-static WRITING: Mutex<()> = Mutex::new(());
+/// Serializes editor saves and proposal plan/assignment transactions within this process.
+pub(crate) static WRITING: Mutex<()> = Mutex::new(());
 
 /// Save the plan as [`write`] does, but only while the file still holds
 /// `expected` (as [`read`] returned it, and not cut); `None` saves regardless.
@@ -169,7 +169,7 @@ pub fn write_if(
             return Ok(false);
         }
     }
-    write(root, task, text)?;
+    write_locked(root, task, text)?;
     Ok(true)
 }
 
@@ -178,6 +178,13 @@ pub fn write_if(
 /// # Errors
 /// Fails as [`plan_file`], for a plan over [`PLAN_LIMIT`], or on I/O errors.
 pub fn write(root: &Path, task: Option<&str>, text: &str) -> Result<()> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    write_locked(root, task, text)
+}
+
+pub(crate) fn write_locked(root: &Path, task: Option<&str>, text: &str) -> Result<()> {
     if text.len() > PLAN_LIMIT {
         bail!("The plan is longer than {} KiB", PLAN_LIMIT / 1024);
     }

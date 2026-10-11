@@ -26,6 +26,7 @@ import {
   terminalStop,
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
+import { savePlanDraft } from './planDrafts'
 import { requestGitRefresh } from './git'
 import {
   disposeAll,
@@ -194,6 +195,14 @@ function launchTerminal(launch: Launch): Promise<void> {
         return
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
+      const terminal =
+        launch.rootTerminal ??
+        runtime?.terminal ??
+        project.components
+          .find((c) => c.id === componentId)
+          ?.terminals.find((t) => t.id === terminalId)
+      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
+        await savePlanDraft(launch.projectId, launch.task)
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
         await taskRootStart(project, launch.highlighted, launch.rootTerminal, task, requestId)
