@@ -1044,32 +1044,35 @@ impl PtyManager {
         !self.sessions.lock().unwrap().is_empty() || !self.starting.lock().unwrap().is_empty()
     }
 
-    /// Stop every session, waiting up to the reset grace for them to exit.
-    ///
-    /// # Panics
-    /// Panics if an internal lock is poisoned.
-    pub fn stop_all(&self) {
-        let runs = self.begin_stop_all();
-        self.finish_stop_all(&runs);
-    }
-
-    /// Signal one batch while the service excludes launches. Waiting happens
-    /// after the service releases its launch lock.
+    /// Signal one batch while the service excludes launches. Release the
+    /// sessions lock before updating status so terminal input stays responsive.
     pub(crate) fn begin_stop_all(&self) -> Vec<(String, u64)> {
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions
-            .iter_mut()
-            .map(|(id, session)| {
-                session.process.hang_up();
-                if let Some(backlog) = self.backlogs.lock().unwrap().get(id) {
-                    backlog.lock().unwrap().tracker.on_stop();
-                }
-                (id.clone(), session.generation)
-            })
-            .collect()
+        let runs: Vec<_> = {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions
+                .iter_mut()
+                .map(|(id, session)| {
+                    session.process.hang_up();
+                    (id.clone(), session.generation)
+                })
+                .collect()
+        };
+        let backlogs: Vec<_> = {
+            let backlogs = self.backlogs.lock().unwrap();
+            runs.iter()
+                .filter_map(|(id, generation)| backlogs.get(id).map(|b| (b.clone(), *generation)))
+                .collect()
+        };
+        for (backlog, generation) in backlogs {
+            let mut backlog = backlog.lock().unwrap();
+            if backlog.generation == generation {
+                backlog.tracker.on_stop();
+            }
+        }
+        runs
     }
 
-    pub(crate) fn finish_stop_all(&self, runs: &[(String, u64)]) {
+    pub(crate) fn finish_stop_all(&self, runs: &[(String, u64)]) -> Result<()> {
         let deadline = Instant::now() + RESET_GRACE;
         let final_deadline = deadline + RESET_GRACE;
         let mut forced = false;
@@ -1080,8 +1083,32 @@ impl PtyManager {
                 self.snapshot_with(id, 0)
                     .is_some_and(|s| s.generation == *generation && s.running)
             });
-            if !running || Instant::now() >= final_deadline {
-                return;
+            let process_running = {
+                let sessions = self.sessions.lock().unwrap();
+                runs.iter().any(|(id, generation)| {
+                    sessions
+                        .get(id)
+                        .is_some_and(|s| s.generation == *generation)
+                })
+            };
+            if !running && !process_running {
+                let mut failures = Vec::new();
+                let backlogs = self.backlogs.lock().unwrap();
+                for (id, generation) in runs {
+                    if let Some(backlog) = backlogs.get(id) {
+                        let mut backlog = backlog.lock().unwrap();
+                        if backlog.generation == *generation
+                            && let Some(error) = backlog.cleanup_error.take()
+                        {
+                            failures.push(format!("Terminal {id}: {error}"));
+                        }
+                    }
+                }
+                anyhow::ensure!(failures.is_empty(), "{}", failures.join("; "));
+                return Ok(());
+            }
+            if Instant::now() >= final_deadline {
+                bail!("Sessions did not finish stopping after hangup and force-kill");
             }
             if !forced && Instant::now() >= deadline {
                 let mut sessions = self.sessions.lock().unwrap();
@@ -1199,6 +1226,38 @@ mod tests {
                 .collect();
             String::from_utf8_lossy(&bytes).into_owned()
         }
+    }
+
+    #[test]
+    fn bulk_stop_reports_unfinished_lifecycle_and_cleanup_failures() {
+        let pty = PtyManager::new();
+        let backlog = Arc::new(Mutex::new(Backlog {
+            generation: 1,
+            running: true,
+            ..Backlog::default()
+        }));
+        pty.backlogs
+            .lock()
+            .unwrap()
+            .insert("stuck".into(), backlog.clone());
+        let runs = vec![("stuck".into(), 1)];
+        let error = pty.finish_stop_all(&runs).unwrap_err();
+        assert!(error.to_string().contains("did not finish stopping"));
+        {
+            let mut backlog = backlog.lock().unwrap();
+            backlog.running = false;
+            backlog.cleanup_error = Some("worker cleanup failed".into());
+        }
+        let error = pty.finish_stop_all(&runs).unwrap_err();
+        assert!(error.to_string().contains("worker cleanup failed"));
+        pty.finish_stop_all(&runs).unwrap();
+        // A newer running incarnation is outside this batch.
+        {
+            let mut backlog = backlog.lock().unwrap();
+            backlog.generation = 2;
+            backlog.running = true;
+        }
+        pty.finish_stop_all(&runs).unwrap();
     }
 
     #[test]

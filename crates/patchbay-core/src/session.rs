@@ -17,7 +17,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -487,6 +487,7 @@ pub struct Service {
     confirmed: Mutex<Vec<(String, u64, Adapter, String)>>,
     maintenance: Mutex<HashMap<String, MaintenanceLease>>,
     operation: Mutex<()>,
+    bulk_stop: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
     dir: PathBuf,
@@ -558,6 +559,7 @@ impl Service {
             confirmed: Mutex::default(),
             maintenance: Mutex::default(),
             operation: Mutex::new(()),
+            bulk_stop: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
             dir: dir.into(),
@@ -570,62 +572,36 @@ impl Service {
         }))
     }
     fn stop_all(&self, shutdown: bool, stop_running: bool) -> Result<()> {
-        // Registry -> graph -> launch lock, matching coordinated startup.
-        let registry = self.actions.lock().unwrap();
-        let actions: Vec<_> = registry.values().cloned().collect();
-        GraphActions::with_stop_guards(
-            &actions,
-            || {
-                let operation = self.operation.lock().unwrap();
-                anyhow::ensure!(
-                    !self.stopping.load(Ordering::Acquire),
-                    "Sessions are already stopping"
-                );
-                anyhow::ensure!(
-                    stop_running || !self.pty.has_running(),
-                    "Work is running; shutdown requires --stop-running"
-                );
-                Ok(operation)
-            },
-            |operation| {
-                self.stopping.store(true, Ordering::Release);
-                let runs = if stop_running {
-                    self.pty.begin_stop_all()
-                } else {
-                    Vec::new()
-                };
-                self.mark_unspawned_stopped(None);
-                drop(operation);
-                drop(registry);
-                self.pty.finish_stop_all(&runs);
-                let _operation = self.operation.lock().unwrap();
-                let result = if shutdown {
-                    self.persist()
-                        .map(|()| self.shutdown.store(true, Ordering::Release))
-                } else {
-                    Ok(())
-                };
-                self.stopping.store(false, Ordering::Release);
-                result
-            },
-        )
-    }
-    fn mark_unspawned_stopped(&self, id: Option<&str>) {
-        let mut records = self.records.lock().unwrap();
-        let mut changed = false;
-        for record in records.values_mut() {
-            if id.is_none_or(|id| record.id == id)
-                && !record.interrupted
-                && record.snapshot.is_none()
-                && self.pty.snapshot_with(&record.id, 0).is_none()
-            {
-                record.interrupted = true;
-                changed = true;
+        // Serialize bulk requests without holding locks needed by launches or rollback.
+        let _bulk_stop = self.bulk_stop.lock().unwrap();
+        {
+            let _operation = self.operation.lock().unwrap();
+            anyhow::ensure!(
+                stop_running || !self.pty.has_running(),
+                "Work is running; shutdown requires --stop-running"
+            );
+            self.stopping.store(true, Ordering::Release);
+        }
+        // Launches now fail under the operation lock. Never hold that lock (or
+        // the registry lock) while acquiring a project's graph lock.
+        let actions: Vec<_> = self.actions.lock().unwrap().values().cloned().collect();
+        for action in actions {
+            action.reset();
+        }
+        let result = (|| {
+            if stop_running {
+                let runs = self.pty.begin_stop_all();
+                self.pty.finish_stop_all(&runs)?;
             }
-        }
-        if changed {
-            self.dirty.store(true, Ordering::Release);
-        }
+            if shutdown {
+                self.persist()?;
+                self.shutdown.store(true, Ordering::Release);
+            }
+            Ok(())
+        })();
+        let _operation = self.operation.lock().unwrap();
+        self.stopping.store(false, Ordering::Release);
+        result
     }
     fn check_maintenance_block(&self, project_id: &str, components: &[String]) -> Result<()> {
         let mut leases = self.maintenance.lock().unwrap();
@@ -1020,7 +996,6 @@ impl Service {
                 let stop = || {
                     let _operation = self.operation.lock().unwrap();
                     self.pty.stop(&id);
-                    self.mark_unspawned_stopped(Some(&id));
                 };
                 let actions =
                     project.and_then(|project| self.actions.lock().unwrap().get(&project).cloned());
@@ -1188,10 +1163,6 @@ impl Service {
                 self.check_maintenance_block(&plan.project_id, &plan.component_ids())?;
                 let actions = self.actions_for(&plan.project_id);
                 let epoch = actions.epoch();
-                anyhow::ensure!(
-                    !self.stopping.load(Ordering::Acquire),
-                    "Sessions are stopping; retry after they finish"
-                );
                 let project_id = plan.project_id.clone();
                 let terminals = ServiceTerminals {
                     service: self.clone(),
@@ -1213,10 +1184,6 @@ impl Service {
                 };
                 let actions = self.actions_for(&project_id);
                 let epoch = actions.epoch();
-                anyhow::ensure!(
-                    !self.stopping.load(Ordering::Acquire),
-                    "Sessions are stopping; retry after they finish"
-                );
                 actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
                 serde_json::Value::Null
             }
@@ -1877,7 +1844,17 @@ mod tests {
                 error.to_string().contains("Sessions are stopping"),
                 "{error}"
             );
+            let service = f.service.clone();
+            let second_stop =
+                std::thread::spawn(move || service.handle("desktop", Request::StopAll));
+            let service = f.service.clone();
+            let shutdown = std::thread::spawn(move || {
+                service.handle("desktop", Request::Shutdown { stop_running: true })
+            });
             worker.join().unwrap().unwrap();
+            second_stop.join().unwrap().unwrap();
+            shutdown.join().unwrap().unwrap();
+            assert!(f.service.shutdown.load(Ordering::Acquire));
             assert!(!f.service.pty.is_running(&id));
         }
     }
@@ -1947,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_marks_snapshotless_records_interrupted() {
+    fn load_marks_snapshotless_records_interrupted() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
@@ -1966,35 +1943,6 @@ mod tests {
             .lock()
             .unwrap()
             .insert(record.id.clone(), record.clone());
-        service.dirty.store(false, Ordering::Release);
-        service
-            .handle(
-                "desktop",
-                Request::Stop {
-                    id: record.id.clone(),
-                },
-            )
-            .unwrap();
-        assert!(service.list()[0].interrupted);
-        assert!(service.dirty.swap(false, Ordering::AcqRel));
-        assert!(service.actions.lock().unwrap().is_empty());
-        service
-            .handle(
-                "desktop",
-                Request::Stop {
-                    id: record.id.clone(),
-                },
-            )
-            .unwrap();
-        service.handle("desktop", Request::StopAll).unwrap();
-        assert!(!service.dirty.load(Ordering::Acquire));
-        service
-            .records
-            .lock()
-            .unwrap()
-            .insert(record.id.clone(), record);
-        service.handle("desktop", Request::StopAll).unwrap();
-        assert!(service.list()[0].interrupted);
         service.persist().unwrap();
         assert!(Service::load(&dir).unwrap().list()[0].interrupted);
         std::fs::remove_dir_all(dir).unwrap();

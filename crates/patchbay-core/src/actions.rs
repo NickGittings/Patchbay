@@ -307,7 +307,6 @@ struct State {
     epoch: u64,
     active: Option<Active>,
     stopping: bool,
-    resetting: bool,
     environments: BTreeMap<String, Vec<Run>>,
     environment_components: BTreeMap<String, Vec<String>>,
 }
@@ -340,7 +339,7 @@ impl GraphActions {
     ) -> Result<T> {
         let state = self.0.lock().unwrap();
         ensure!(
-            state.active.is_none() && !state.stopping && !state.resetting,
+            state.active.is_none() && !state.stopping,
             "Stop graph actions before changing component folders or removing components"
         );
         ensure!(
@@ -432,7 +431,7 @@ impl GraphActions {
                 "Project changed before action started"
             );
             ensure!(
-                state.active.is_none() && !state.stopping && !state.resetting,
+                state.active.is_none() && !state.stopping,
                 "Another graph action is still running or stopping"
             );
             if environment.is_none() {
@@ -660,7 +659,7 @@ impl GraphActions {
         result
     }
 
-    /// Exclude launches while stopping a session. Cancel startup only if its
+    /// Cancel startup before stopping a session, only if its
     /// plan includes this session; individual validators keep their reports and continue.
     /// Established ownership and the project epoch are unchanged.
     ///
@@ -674,35 +673,8 @@ impl GraphActions {
         {
             active.cancelled.store(true, Ordering::SeqCst);
         }
+        drop(state);
         stop()
-    }
-
-    /// Lock projects before the service launch lock, then reset actions only
-    /// after preflight succeeds. Exclude new actions until stopping finishes,
-    /// releasing graph locks during the caller's process exit wait.
-    ///
-    /// # Errors
-    /// Returns errors from preflight or stopping without cancelling on a refused preflight.
-    ///
-    /// # Panics
-    /// Panics if an internal lock is poisoned.
-    pub fn with_stop_guards<P, T>(
-        actions: &[Arc<Self>],
-        prepare: impl FnOnce() -> Result<P>,
-        stop: impl FnOnce(P) -> Result<T>,
-    ) -> Result<T> {
-        let mut guards: Vec<_> = actions.iter().map(|a| a.0.lock().unwrap()).collect();
-        let prepared = prepare()?;
-        for state in &mut guards {
-            state.reset();
-            state.resetting = true;
-        }
-        drop(guards);
-        let result = stop(prepared);
-        for action in actions {
-            action.0.lock().unwrap().resetting = false;
-        }
-        result
     }
 
     /// Stop the running validation: the validator in progress is stopped,
@@ -745,10 +717,7 @@ impl GraphActions {
         let runs = {
             let mut state = self.0.lock().unwrap();
             ensure!(state.epoch == epoch, "Project changed before stop started");
-            ensure!(
-                !state.stopping && !state.resetting,
-                "An environment is already stopping"
-            );
+            ensure!(!state.stopping, "An environment is already stopping");
             if let Some(active) = &state.active
                 && active.key == format!("group:{group_id}")
             {
@@ -788,8 +757,7 @@ impl GraphActions {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn reset(&self) {
+    pub(crate) fn reset(&self) {
         self.0.lock().unwrap().reset();
     }
 }
@@ -926,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_guards_preserve_ownership_for_rows_and_refused_shutdowns() {
+    fn individual_stop_preserves_ownership_and_bulk_reset_clears_it() {
         let actions = Arc::new(GraphActions::default());
         actions.0.lock().unwrap().environments.insert(
             "established".into(),
@@ -935,7 +903,9 @@ mod tests {
                 generation: 1,
             }],
         );
-        actions.with_session_stop_guard("running", || {});
+        actions.with_session_stop_guard("running", || {
+            assert!(actions.0.try_lock().is_ok());
+        });
         assert!(
             actions
                 .0
@@ -944,26 +914,7 @@ mod tests {
                 .environments
                 .contains_key("established")
         );
-        let epoch = actions.epoch();
-        assert!(
-            GraphActions::with_stop_guards(
-                std::slice::from_ref(&actions),
-                || -> Result<()> { bail!("Work is running") },
-                |_| Ok(())
-            )
-            .is_err()
-        );
-        assert_eq!(actions.epoch(), epoch);
-        assert!(
-            actions
-                .0
-                .lock()
-                .unwrap()
-                .environments
-                .contains_key("established")
-        );
-        GraphActions::with_stop_guards(std::slice::from_ref(&actions), || Ok(()), |_| Ok(()))
-            .unwrap();
+        actions.reset();
         assert!(actions.0.lock().unwrap().environments.is_empty());
     }
 
