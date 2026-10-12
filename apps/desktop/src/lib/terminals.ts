@@ -25,7 +25,7 @@ function terminalTheme(): ITheme {
   return {
     background: color('--bg'),
     foreground: color('--text'),
-    cursor: color('--accent'),
+    cursor: color('--text'),
     cursorAccent: color('--bg'),
     selectionBackground: color('--terminal-selection'),
     black: color('--hover'),
@@ -139,9 +139,20 @@ function entry(sessionId: string): Entry {
     const term = new Terminal({
       fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
       fontSize: 12.5,
-      cursorBlink: true,
+      cursorBlink: false,
       scrollback: 10000,
       theme: terminalTheme(),
+    })
+    // The cursor never blinks: honour an app's cursor shape (DECSCUSR) but not its blink, and
+    // undo the blink mode (`?12h`) after xterm applies the rest of the sequence.
+    term.parser.registerCsiHandler({ intermediates: ' ', final: 'q' }, (params) => {
+      const style = Number(params[0]) || 0
+      term.options.cursorStyle = style <= 2 ? 'block' : style <= 4 ? 'underline' : 'bar'
+      return true
+    })
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (params.includes(12)) queueMicrotask(() => (term.options.cursorBlink = false))
+      return false
     })
     term.registerLinkProvider({
       provideLinks(line, callback) {
@@ -231,6 +242,20 @@ export function restoreOutput(
   })
 }
 
+/**
+ * Undo the modes a killed TUI left on (alternate screen, scroll region, mouse tracking, hidden
+ * cursor, key modes, colors) so the next run draws cleanly, keeping earlier scrollback.
+ */
+export function restoreModes(sessionId: string) {
+  const e = entry(sessionId)
+  e.term.write('', () => (e.replaying = true))
+  e.term.write(
+    '\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l' +
+      '\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m\r',
+    () => (e.replaying = false),
+  )
+}
+
 export function writeNote(sessionId: string, text: string) {
   entry(sessionId).term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
 }
@@ -244,6 +269,9 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
   refreshTheme()
   if (!e.opened) {
     e.term.open(e.el)
+    // WebKit offers Writing Tools / inline predictions on editable fields; a PTY can't use them.
+    e.term.textarea?.setAttribute('writingsuggestions', 'false')
+    e.term.textarea?.setAttribute('autocomplete', 'off')
     e.opened = true
   }
   fit(sessionId)

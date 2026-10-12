@@ -2762,6 +2762,8 @@ name = "patchbay-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "objc2",
+ "objc2-web-kit",
  "patchbay-core",
  "percent-encoding",
  "serde",

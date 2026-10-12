@@ -7,13 +7,6 @@ import {
 } from '@tauri-apps/api/webviewWindow'
 import { projectFrom, useStore } from '../store'
 import type { Task } from '../types'
-import type { BackgroundThrottlingPolicy } from '@tauri-apps/api/window'
-
-/** Debug smoke runs keep windows unfocused, where WebKit would throttle them (`smoke.rs`). */
-const smokeOptions =
-  import.meta.env.DEV && '__PATCHBAY_SMOKE__' in window
-    ? { backgroundThrottling: 'disabled' as BackgroundThrottlingPolicy }
-    : {}
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -112,25 +105,8 @@ export function openComponentWindow(
     }
     const project = useStore.getState().captureProjects()[projectId]
     if (!project) return
-    const geometry = await invoke<Record<string, number | boolean>>('window_register', {
-      label,
-      projectId,
-      componentId,
-    })
-    const popout = new WebviewWindow(label, {
-      url: `index.html?component=${encodeURIComponent(componentId)}&project=${encodeURIComponent(projectId)}`,
-      title: `${project.name} · ${name}`,
-      width: 1100,
-      height: 700,
-      minWidth: 600,
-      minHeight: 400,
-      ...geometry,
-      ...smokeOptions,
-    })
-    await new Promise<void>((resolve, reject) => {
-      void popout.once('tauri://created', () => resolve())
-      void popout.once('tauri://error', (e) => reject(e.payload))
-    })
+    // Built by the backend so macOS can turn Writing Tools off first (`writing_tools.rs`).
+    await invoke('window_open', { projectId, componentId, title: `${project.name} · ${name}` })
   })()
     .catch((e) => useStore.getState().setMessage(String(e)))
     .finally(() => opening.delete(label))

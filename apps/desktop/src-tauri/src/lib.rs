@@ -20,6 +20,8 @@ use std::collections::HashMap;
 mod agent_commands;
 mod layout;
 mod service;
+#[cfg(target_os = "macos")]
+mod writing_tools;
 use patchbay_core::{Project, context, detect, git, maintenance, watch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1981,9 +1983,13 @@ pub fn run() {
             let config = app.config().app.windows.first().cloned();
             let config = config.ok_or("tauri.conf.json defines no main window")?;
             let main = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+            #[cfg(target_os = "macos")]
+            let main = writing_tools::disable(main);
             #[cfg(debug_assertions)]
-            let main = smoke::main_window(main);
-            main.build()?;
+            let main = smoke::window(main);
+            let _main = main.build()?;
+            #[cfg(target_os = "macos")]
+            writing_tools::hide_affordance(&_main);
             app.state::<AppState>().service.run(app.handle().clone());
             *app.state::<AppState>().agent_commands.lock().unwrap() =
                 agent_commands::start(app.handle().clone())
@@ -2064,7 +2070,7 @@ pub fn run() {
                 service_status,
                 project_fingerprint,
                 project_close,
-                window_register,
+                window_open,
                 window_layout,
                 window_tab,
                 window_panels,
@@ -2634,16 +2640,65 @@ fn project_close(state: State<AppState>, project_id: String) {
         project.watcher.stop();
     }
 }
+/// Opens a component pop-out. Built here rather than by the webview so macOS can switch
+/// Writing Tools off before WebKit creates it (`writing_tools.rs`).
 #[tauri::command]
-fn window_register(
+async fn window_open(
     window: WebviewWindow,
-    state: State<AppState>,
-    label: String,
+    state: State<'_, AppState>,
     project_id: String,
     component_id: String,
+    title: String,
+) -> CmdResult<()> {
+    let label = component_window_label(&project_id, &component_id);
+    let geometry = window_register(&window, &state, &label, &project_id, &component_id)?;
+    let number = |key: &str| geometry[key].as_f64().unwrap_or_default();
+    let (x, y, width, height) = (number("x"), number("y"), number("width"), number("height"));
+    let maximized = geometry["maximized"].as_bool().unwrap_or(false);
+    let encode = |s: &str| {
+        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    };
+    let url = format!(
+        "index.html?component={}&project={}",
+        encode(&component_id),
+        encode(&project_id)
+    );
+    let app = window.app_handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // macOS webview configurations are main-thread objects.
+    app.clone()
+        .run_on_main_thread(move || {
+            let builder =
+                tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(url.into()))
+                    .title(title)
+                    .inner_size(width, height)
+                    .min_inner_size(600.0, 400.0)
+                    .position(x, y)
+                    .maximized(maximized);
+            #[cfg(target_os = "macos")]
+            let builder = writing_tools::disable(builder);
+            #[cfg(debug_assertions)]
+            let builder = smoke::window(builder);
+            let built = builder.build();
+            #[cfg(target_os = "macos")]
+            if let Ok(popout) = &built {
+                writing_tools::hide_affordance(popout);
+            }
+            let _ = tx.send(built.map(drop).map_err(err));
+        })
+        .map_err(err)?;
+    blocking(move || rx.recv().map_err(err)?).await
+}
+
+fn window_register(
+    window: &WebviewWindow,
+    state: &AppState,
+    label: &str,
+    project_id: &str,
+    component_id: &str,
 ) -> CmdResult<serde_json::Value> {
-    main_only(&window)?;
-    state.project(&project_id)?;
+    main_only(window)?;
+    state.project(project_id)?;
     let mut document = state.workspace.lock().unwrap();
     if !document.windows.is_object() {
         document.windows = serde_json::json!({});
@@ -2652,11 +2707,11 @@ fn window_register(
         .windows
         .as_object_mut()
         .unwrap()
-        .entry(label)
+        .entry(label.to_owned())
         .or_insert_with(|| serde_json::json!({}));
     entry["projectId"] = serde_json::json!(project_id);
     entry["componentId"] = serde_json::json!(component_id);
-    let geometry = layout::clamp(&window, entry, false)?;
+    let geometry = layout::clamp(window, entry, false)?;
     state
         .layout_dirty
         .store(true, std::sync::atomic::Ordering::Release);

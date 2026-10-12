@@ -26,11 +26,7 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     #[cfg(target_os = "macos")]
     let builder = builder.activate_ignoring_other_apps(false);
 
-    let flag = tauri::plugin::Builder::<Wry>::new("patchbay-smoke")
-        .js_init_script("window.__PATCHBAY_SMOKE__ = true")
-        .build();
-
-    builder.plugin(flag).on_page_load(move |webview, payload| {
+    builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
             let _ = webview.eval(&script);
         }
@@ -49,8 +45,8 @@ pub fn project_root(second: bool) -> Option<std::path::PathBuf> {
 }
 
 /// Smoke windows run in the background (see [`setup`]), where WebKit would otherwise throttle
-/// or suspend their timers. Pop-outs read `__PATCHBAY_SMOKE__` (set by [`install`]) to do the same.
-pub fn main_window<'a>(
+/// or suspend their timers. Applied to the main window and every pop-out.
+pub fn window<'a>(
     builder: tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle>,
 ) -> tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle> {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {

@@ -1,6 +1,12 @@
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
+import {
+  releaseMapEdit,
+  sessionForget,
+  sessionResume,
+  sessionsList,
+  terminalCloseGuard,
+} from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
@@ -34,6 +40,7 @@ import {
   disposeAll,
   markOutputGeneration,
   replayOutput,
+  restoreModes,
   restoreOutput,
   writeNote,
   writeOutput,
@@ -220,7 +227,9 @@ function launchTerminal(launch: Launch): Promise<void> {
           ?.terminals.find((t) => t.id === terminalId)
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
         await savePlanDraft(launch.projectId, launch.task)
-      if (componentId === TASK_ROOT_SCOPE) {
+      if (!runtime && !launch.implementPlan && (await resumeConversation(sid))) {
+        // Continued the agent's earlier conversation; `/clear` in the agent starts over.
+      } else if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
         await taskRootStart(
           project,
@@ -272,6 +281,27 @@ function launchTerminal(launch: Launch): Promise<void> {
   })
   starting.set(sid, request)
   return request
+}
+
+/** The session's agent conversation, when the service captured one. */
+async function conversationOf(sid: string) {
+  const record = (await sessionsList()).find((r) => r.id === sid)
+  return { agent: !!record?.metadata.adapter, resumable: !!record?.metadata.conversationId }
+}
+
+/**
+ * Restart an agent where it left off. Resume refuses before spawning (no conversation, briefing
+ * cleaned up, folders locked again), so a refusal falls back to a fresh start.
+ */
+async function resumeConversation(sid: string): Promise<boolean> {
+  try {
+    const { agent, resumable } = await conversationOf(sid)
+    if (!agent || !resumable) return false
+    await sessionResume(sid)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Record what a planner started with, in its own project even if another tab is active now. */
@@ -418,6 +448,15 @@ export function restartTerminal(
           throw new Error('Terminal is still stopping. Try Restart again.')
         await new Promise((resolve) => setTimeout(resolve, 100))
       }
+      // The service reads an agent's conversation from its exit shortly after the process ends.
+      for (let tries = 10; tries > 0; tries--) {
+        const { agent, resumable } = await conversationOf(launch.sid).catch(() => ({
+          agent: false,
+          resumable: false,
+        }))
+        if (!agent || resumable || requestedEpoch !== epoch || isClosing(launch)) break
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
       if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
     } catch (e) {
       if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
@@ -459,6 +498,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         startedMs: e.startedMs,
         notice: e.notice ?? undefined,
       })
+      restoreModes(e.sessionId)
       writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
       break
     case 'output': {
@@ -478,6 +518,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         exitCode: e.exitCode,
         exitedMs: e.exitedMs,
       })
+      restoreModes(e.sessionId)
       writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
       // A failure, or the run being watched, stays in Navigation's dock so its output can be read.
       if (

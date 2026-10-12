@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('./ipc', () => ({
   sessionsList: vi.fn(async () => []),
+  sessionResume: vi.fn(async () => ''),
   terminalStart: vi.fn(async () => ''),
   terminalStop: vi.fn(async () => {}),
   terminalSnapshot: vi.fn(async () => null),
@@ -24,6 +25,7 @@ vi.mock('./terminals', () => ({
   disposeAll: vi.fn(),
   markOutputGeneration: vi.fn(),
   replayOutput: vi.fn(),
+  restoreModes: vi.fn(),
   restoreOutput: vi.fn(),
   writeNote: vi.fn(),
   writeOutput: vi.fn(),
@@ -204,4 +206,25 @@ test('a post-launch reconcile waits for an older list before selecting and revea
   useStore.getState().setActiveSession(record.id)
   expect(useStore.getState().reviewAgents.p).toEqual({ sid: record.id, hidden: false })
   expect(useStore.getState().dockKept).not.toContain(record.id)
+})
+test('restart resumes an agent conversation the service captured', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  vi.mocked(ipc.sessionsList).mockResolvedValue([
+    { id: sid, metadata: { adapter: 'claude', conversationId: 'abc' } } as never,
+  ])
+  await restartTerminal('web', 'dev')
+  expect(ipc.sessionResume).toHaveBeenCalledWith(sid)
+  expect(ipc.terminalStart).not.toHaveBeenCalled()
+  vi.mocked(ipc.sessionsList).mockResolvedValue([])
+})
+test('a refused resume falls back to a fresh start', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  vi.mocked(ipc.sessionsList).mockResolvedValue([
+    { id: sid, metadata: { adapter: 'claude', conversationId: 'abc' } } as never,
+  ])
+  vi.mocked(ipc.sessionResume).mockRejectedValueOnce(new Error('briefing is gone'))
+  await restartTerminal('web', 'dev')
+  expect(ipc.terminalStart).toHaveBeenCalledTimes(1)
+  expect(useStore.getState().message ?? '').not.toContain('briefing is gone')
+  vi.mocked(ipc.sessionsList).mockResolvedValue([])
 })
