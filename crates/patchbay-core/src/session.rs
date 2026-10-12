@@ -380,6 +380,7 @@ impl Client {
         startup.lock()?;
         let until = Instant::now() + Duration::from_secs(10);
         let mut spawned: Option<Instant> = None;
+        let mut retired = false;
         loop {
             let error = match Self::connect_as(dir, client) {
                 Ok(client) => return Ok(client),
@@ -397,14 +398,20 @@ impl Client {
                 spawn_helper(dir, helper)?;
                 spawned = Some(Instant::now());
             } else if spawned.is_none()
+                && !retired
                 && let Ok(bytes) = std::fs::read(dir.join("endpoint.json"))
                 && let Ok(endpoint) = serde_json::from_slice::<Endpoint>(&bytes)
                 && endpoint.protocol != PROTOCOL
             {
-                bail!(
-                    "Session service protocol mismatch (service {}, this build {PROTOCOL}); running work was preserved. Use the matching Patchbay version.",
-                    endpoint.protocol
-                );
+                // An idle service of another version is retired so this one can
+                // start; one with running work is left alone until the user decides.
+                if let Err(e) = retire(&endpoint, false) {
+                    bail!(
+                        "Session service protocol mismatch (service {}, this build {PROTOCOL}): an older Patchbay session service is still running work, which was preserved ({e}).",
+                        endpoint.protocol
+                    );
+                }
+                retired = true;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -455,6 +462,53 @@ impl Client {
         }
         Ok(serde_json::from_value(response.result)?)
     }
+}
+
+/// Shut down a running service of another protocol version, so this build can
+/// start its own. Its records are persisted as on any shutdown. Returns the
+/// protocol it spoke, or `None` when no such service is running.
+///
+/// # Errors
+/// Fails if the service refuses (work is running and `stop_running` is false)
+/// or can't be reached.
+pub fn retire_outdated(dir: &Path, stop_running: bool) -> Result<Option<u32>> {
+    let Ok(bytes) = std::fs::read(dir.join("endpoint.json")) else {
+        return Ok(None);
+    };
+    let endpoint: Endpoint = serde_json::from_slice(&bytes)?;
+    if endpoint.protocol == PROTOCOL || service_stopped(dir)? {
+        return Ok(None);
+    }
+    retire(&endpoint, stop_running)?;
+    Ok(Some(endpoint.protocol))
+}
+/// Speak the service's own protocol for the two frames every version shares:
+/// the `Hello` handshake and `Request::Shutdown`. Keep both wire formats stable
+/// (`retire_wire_format_is_stable`), or newer builds can't retire older services.
+fn retire(endpoint: &Endpoint, stop_running: bool) -> Result<()> {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
+    write_frame(
+        &mut stream,
+        &Hello {
+            protocol: endpoint.protocol,
+            token: endpoint.token.clone(),
+            client: None,
+        },
+    )?;
+    let response: Response = read_frame(&mut stream)?;
+    if let Some(error) = response.error {
+        bail!("{error}");
+    }
+    stream.set_read_timeout(Some(SLOW_TIMEOUT))?;
+    write_frame(&mut stream, &Request::Shutdown { stop_running })?;
+    let response: Response = read_frame(&mut stream)?;
+    if let Some(error) = response.error {
+        bail!("{error}");
+    }
+    Ok(())
 }
 
 /// True when no service process holds the lifetime lock.
@@ -1788,6 +1842,82 @@ mod tests {
     fn rejects_unbounded_or_malformed_protocol_frames() {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
         assert!(read_frame::<Request>(&mut &[0, 0, 0, 2, b'[', b']'][..]).is_err());
+    }
+    #[test]
+    fn retire_wire_format_is_stable() {
+        // Every protocol since 1 reads these frames; newer builds retire older
+        // services with them, so they must never change shape.
+        let hello = Hello {
+            protocol: 4,
+            token: "t".into(),
+            client: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&hello).unwrap(),
+            serde_json::json!({"protocol": 4, "token": "t", "client": null})
+        );
+        assert_eq!(
+            serde_json::to_value(Request::Shutdown { stop_running: true }).unwrap(),
+            serde_json::json!({"op": "shutdown", "stop_running": true})
+        );
+        let reply: Response =
+            serde_json::from_value(serde_json::json!({"result": null, "error": "no"})).unwrap();
+        assert_eq!(reply.error.as_deref(), Some("no"));
+    }
+    #[test]
+    fn retires_a_service_of_another_protocol_in_its_own_protocol() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        assert_eq!(retire_outdated(&dir, false).unwrap(), None);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let old = PROTOCOL - 1;
+        let endpoint = Endpoint {
+            protocol: old,
+            port: listener.local_addr().unwrap().port(),
+            token: "secret".into(),
+            instance: "old".into(),
+        };
+        atomic_write(
+            &dir.join("endpoint.json"),
+            &serde_json::to_vec(&endpoint).unwrap(),
+        )
+        .unwrap();
+        // A stale endpoint whose service is gone is left for `ensure` to replace.
+        assert_eq!(retire_outdated(&dir, false).unwrap(), None);
+        let lifetime = lock(&dir.join("service.lock")).unwrap();
+        lifetime.try_lock().unwrap();
+        // The old service refuses while work runs, then accepts `stop_running`.
+        let server = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello: serde_json::Value = read_frame(&mut stream).unwrap();
+                assert_eq!(hello["protocol"], old);
+                assert_eq!(hello["token"], "secret");
+                write_frame(
+                    &mut stream,
+                    &serde_json::json!({"result": null, "error": null}),
+                )
+                .unwrap();
+                let request: serde_json::Value = read_frame(&mut stream).unwrap();
+                assert_eq!(request["op"], "shutdown");
+                let stop_running = request["stop_running"].as_bool().unwrap();
+                asked.push(stop_running);
+                let error = (!stop_running).then_some("Work is running");
+                write_frame(
+                    &mut stream,
+                    &serde_json::json!({"result": null, "error": error}),
+                )
+                .unwrap();
+            }
+            asked
+        });
+        let refused = retire_outdated(&dir, false).unwrap_err().to_string();
+        assert!(refused.contains("Work is running"), "{refused}");
+        assert_eq!(retire_outdated(&dir, true).unwrap(), Some(old));
+        assert_eq!(server.join().unwrap(), [false, true]);
+        drop(lifetime);
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[cfg(unix)]
     #[test]

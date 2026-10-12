@@ -269,6 +269,8 @@ export const sessionsStopAll = () => invoke<void>('sessions_stop_all')
 export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen', { sessionId })
 /** Stop every session, retaining output; returns the highest observed generation. */
 export const terminalReset = () => invoke<number>('terminal_reset')
+/** Stop an older Patchbay version's session service, ending its running work. */
+export const serviceRetire = () => invoke<void>('service_retire')
 
 /** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
 export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
