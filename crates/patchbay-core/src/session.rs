@@ -940,24 +940,27 @@ impl Service {
         {
             metadata.task_title = Some(task.title);
         }
-        let previous = self.records.lock().unwrap().get(&id).cloned();
+        let snapshot = self.snapshot(&id);
+        let mut records = self.records.lock().unwrap();
+        let mut previous = records.remove(&id);
+        // Move retained output into the new record; keep enough to undo a failed spawn.
         let mut history = previous
-            .as_ref()
-            .map_or_else(Vec::new, |r| r.history.clone());
-        if let Some(mut snapshot) = self.snapshot(&id) {
+            .as_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.history));
+        let previous_history_len = history.len();
+        if let Some(mut snapshot) = snapshot {
             if snapshot.launch_directory.is_none() {
                 snapshot.launch_directory = previous.as_ref().map(|r| r.spec.cwd.clone());
             }
             history.push(snapshot);
         }
-        trim_history(&mut history);
         let mut requests = previous
             .as_ref()
             .map_or_else(Vec::new, |r| r.request_ids.clone());
         requests.push(request);
         // Only recent launches can be retried; older request ids are useless.
         requests.drain(..requests.len().saturating_sub(16));
-        self.records.lock().unwrap().insert(
+        records.insert(
             id.clone(),
             Record {
                 id: id.clone(),
@@ -971,6 +974,7 @@ impl Service {
                 request_ids: requests,
             },
         );
+        drop(records);
         let spawned = if managed {
             self.pty.spawn_managed(spec, self.clone())
         } else {
@@ -978,12 +982,17 @@ impl Service {
         };
         if let Err(e) = spawned {
             let mut records = self.records.lock().unwrap();
-            if let Some(r) = previous {
+            let failed = records.remove(&id).unwrap();
+            if let Some(mut r) = previous {
+                r.history = failed.history;
+                r.history.truncate(previous_history_len);
                 records.insert(id, r);
-            } else {
-                records.remove(&id);
             }
             return Err(e);
+        }
+        // Trim only after success so a rejected launch preserves all of the old history.
+        if let Some(r) = self.records.lock().unwrap().get_mut(&id) {
+            trim_history(&mut r.history);
         }
         if let Some(previous) = previous
             && let Some(file) = crate::context::owned_briefing(&previous.spec)
@@ -1014,7 +1023,7 @@ impl Service {
                 r.restart_context.clone(),
             )
         });
-        let Some((retried, original)) = known else {
+        let Some((retried, recorded_context)) = known else {
             return self.start(request_id, metadata, spec);
         };
         if retried {
@@ -1025,7 +1034,7 @@ impl Service {
         if metadata.kind == TerminalKind::Agent
             && metadata.adapter.is_some()
             && context.is_some()
-            && context == original
+            && context == recorded_context
         {
             // Read the final native hooks and output only for a matching restart.
             self.refresh_restart_conversation(&id);
@@ -1042,31 +1051,36 @@ impl Service {
                 })
                 .context("Unknown session")?;
             // Resume the conversation with this launch's credentials, briefing and names.
-            let mut metadata = metadata.clone();
-            if !metadata.conversation_pinned {
-                metadata.conversation_id = conversation_id;
-                metadata.conversation_pinned = conversation_pinned;
+            let mut resume_metadata = metadata.clone();
+            if !resume_metadata.conversation_pinned {
+                resume_metadata.conversation_id = conversation_id;
+                resume_metadata.conversation_pinned = conversation_pinned;
             }
             let mut resumed = spec.clone();
             crate::context::retain_owned_briefing(&mut resumed)?;
             let candidate = crate::context::owned_briefing(&resumed);
             let launch_command = resumed.command.clone();
-            let result = prepare_resume(&metadata, &mut resumed, &launch_command).map(|original| {
-                // Return launch errors: a lost reply must never cause a fresh launch.
-                self.start_with_command(
-                    request_id.clone(),
-                    metadata,
-                    resumed,
-                    Some(original),
-                    false,
-                    context.clone(),
-                )
-            });
-            if let Some(file) = candidate {
-                self.remove_unused_briefing(&file);
-            }
-            if let Ok(started) = result {
-                return started;
+            match prepare_resume(&resume_metadata, &mut resumed, &launch_command) {
+                Ok(original_command) => {
+                    // Return launch errors: a lost reply must never cause a fresh launch.
+                    let result = self.start_with_command(
+                        request_id,
+                        resume_metadata,
+                        resumed,
+                        Some(original_command),
+                        false,
+                        context,
+                    );
+                    if let Some(file) = candidate {
+                        self.remove_unused_briefing(&file);
+                    }
+                    return result;
+                }
+                Err(_) => {
+                    if let Some(file) = candidate {
+                        self.remove_unused_briefing(&file);
+                    }
+                }
             }
         }
         self.start_fresh(request_id, metadata, spec, context)
@@ -1097,25 +1111,28 @@ impl Service {
         }
     }
     fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
-        let mut r = self
-            .records
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .context("Unknown session")?;
-        if r.request_ids.contains(&request_id) {
-            return Ok(id.into());
-        }
-        let original = prepare_resume(&r.metadata, &mut r.spec, &r.launch_command)?;
+        let (metadata, mut spec, launch_command, restart_context) = {
+            let records = self.records.lock().unwrap();
+            let r = records.get(id).context("Unknown session")?;
+            if r.request_ids.contains(&request_id) {
+                return Ok(id.into());
+            }
+            (
+                r.metadata.clone(),
+                r.spec.clone(),
+                r.launch_command.clone(),
+                r.restart_context.clone(),
+            )
+        };
+        let original = prepare_resume(&metadata, &mut spec, &launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
         self.start_with_command(
             request_id,
-            r.metadata,
-            r.spec,
+            metadata,
+            spec,
             Some(original),
             false,
-            r.restart_context,
+            restart_context,
         )
     }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
@@ -3306,6 +3323,67 @@ mod tests {
             assert!(String::from_utf8_lossy(&snapshot.data).contains("launched"));
             assert!(service.list()[0].restart_context.is_none());
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_stores_current_fingerprint_when_resume_is_refused() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (mut metadata, mut spec) = restart_fixture(&dir, "printf first");
+        // No conversation guarantees refusal without depending on provider history or PATH.
+        metadata.conversation_id = None;
+        let id = service
+            .start("first".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let first = wait_for_exit(&service, &id);
+        // The prepared command can change without changing the recorded launch settings.
+        spec.command = "printf fresh".into();
+        let expected = restart_context(&metadata, &spec).unwrap();
+        assert!(expected.is_some());
+        assert_eq!(service.list()[0].restart_context, expected);
+        assert!(prepare_resume(&metadata, &mut spec.clone(), &spec.command).is_err());
+
+        assert_eq!(
+            service.restart("restart".into(), metadata, spec).unwrap(),
+            id
+        );
+        let snapshot = wait_for_exit(&service, &id);
+        assert!(snapshot.generation > first.generation);
+        assert!(String::from_utf8_lossy(&snapshot.data).contains("fresh"));
+        let record = service.list().pop().unwrap();
+        assert_eq!(record.spec.command, "printf fresh");
+        assert_eq!(record.launch_command, "printf fresh");
+        assert_eq!(record.restart_context, expected);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_spawn_restores_the_record_and_all_retained_history() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (metadata, mut spec) = restart_fixture(&dir, "printf output");
+        let id = crate::model::task_session_id("p", "web", "agent", None);
+        for launch in 0..=MAX_HISTORY {
+            service
+                .start(format!("launch-{launch}"), metadata.clone(), spec.clone())
+                .unwrap();
+            wait_for_exit(&service, &id);
+        }
+        let before = service.list().pop().unwrap();
+        assert_eq!(before.history.len(), MAX_HISTORY);
+        // A NUL in a shell argument fails process creation after the record is replaced.
+        spec.command = "\0".into();
+        assert!(service.start("failed".into(), metadata, spec).is_err());
+        let after = service.list().pop().unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

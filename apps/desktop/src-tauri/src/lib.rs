@@ -2704,8 +2704,9 @@ async fn window_open(
         writing_tools::hide_affordance(&_popout);
         Ok(())
     };
-    // macOS webview configurations are main-thread objects. Elsewhere build here: on Windows,
-    // creating a webview from the main thread's event handlers deadlocks WebView2.
+    // macOS webview configurations are main-thread objects. Elsewhere build on a blocking
+    // worker: creating a webview from the main thread's event handlers deadlocks WebView2
+    // on Windows, and waiting for webview creation must not block the async runtime.
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2717,7 +2718,7 @@ async fn window_open(
         blocking(move || rx.recv().map_err(err)?).await
     }
     #[cfg(not(target_os = "macos"))]
-    build()
+    blocking(build).await
 }
 
 fn window_register(
