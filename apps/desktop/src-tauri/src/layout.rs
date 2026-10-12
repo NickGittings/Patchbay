@@ -63,6 +63,14 @@ pub fn event(window: &Window, event: &WindowEvent) {
 }
 pub fn clamp(window: &WebviewWindow, geometry: &Value, main: bool) -> CmdResult<Value> {
     let monitors = window.available_monitors().map_err(err)?;
+    clamp_to_monitors(&monitors, geometry, main)
+}
+
+pub fn clamp_to_monitors(
+    monitors: &[tauri::Monitor],
+    geometry: &Value,
+    main: bool,
+) -> CmdResult<Value> {
     let finite = |key: &str| {
         geometry
             .get(key)

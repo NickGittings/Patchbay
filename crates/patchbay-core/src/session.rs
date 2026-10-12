@@ -710,7 +710,7 @@ impl Service {
                         .or_else(|| r.snapshot.as_ref().map(bare)),
                     history: r.history.iter().map(bare).collect(),
                     launch_command: String::new(),
-                    restart_context: r.restart_context.clone(),
+                    restart_context: None,
                     interrupted: r.interrupted,
                     request_ids: Vec::new(),
                 }
@@ -823,9 +823,10 @@ impl Service {
         mut spec: SessionSpec,
     ) -> Result<String> {
         let _pending = briefing::PendingBriefing::new(&spec);
+        // An unreadable fingerprint disables automatic resume without blocking launch.
+        let restart_context = restart_context(&metadata, &spec).ok().flatten();
         // Keep a service-owned copy before spawning. A timed-out sender can always remove
         // its pending file without invalidating a launch that the service accepted.
-        let restart_context = restart_context(&metadata, &spec)?;
         crate::context::retain_owned_briefing(&mut spec)?;
         let candidate = crate::context::owned_briefing(&spec);
         let result = self.start_with_command(request, metadata, spec, None, false, restart_context);
@@ -996,30 +997,55 @@ impl Service {
             &metadata.terminal_id,
             metadata.task.as_deref(),
         );
-        let context = restart_context(&metadata, &spec)?;
-        // The final PTY snapshot includes the last native hooks and output. Do not wait for
-        // the persistence loop, or let an ID captured before /clear select the conversation.
-        self.refresh_restart_conversation(&id);
         let record = self.records.lock().unwrap().get(&id).cloned();
-        if let Some(mut record) = record {
+        if let Some(record) = record {
             if record.request_ids.contains(&request_id) {
                 return Ok(id);
             }
+            let context = restart_context(&metadata, &spec).ok().flatten();
             if metadata.kind == TerminalKind::Agent
                 && metadata.adapter.is_some()
                 && context.is_some()
                 && context == record.restart_context
-                && let Ok(original) = prepare_resume(&mut record)
             {
-                // Return launch errors: a lost reply must never cause a second, fresh launch.
-                return self.start_with_command(
-                    request_id,
-                    record.metadata,
-                    record.spec,
-                    Some(original),
-                    false,
-                    record.restart_context,
-                );
+                // Read the final native hooks and output only for a matching restart.
+                self.refresh_restart_conversation(&id);
+                let mut record = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .context("Unknown session")?;
+                let mut metadata = metadata.clone();
+                if !metadata.conversation_pinned {
+                    metadata.conversation_id = record.metadata.conversation_id;
+                    metadata.conversation_pinned = record.metadata.conversation_pinned;
+                }
+                // Resume the conversation with this launch's credentials, briefing and names.
+                record.metadata = metadata;
+                record.spec = spec.clone();
+                crate::context::retain_owned_briefing(&mut record.spec)?;
+                let candidate = crate::context::owned_briefing(&record.spec);
+                record.launch_command.clone_from(&record.spec.command);
+                if let Ok(original) = prepare_resume(&mut record) {
+                    // Return launch errors: a lost reply must never cause a fresh launch.
+                    let result = self.start_with_command(
+                        request_id,
+                        record.metadata,
+                        record.spec,
+                        Some(original),
+                        false,
+                        context,
+                    );
+                    if let Some(file) = candidate {
+                        self.remove_unused_briefing(&file);
+                    }
+                    return result;
+                }
+                if let Some(file) = candidate {
+                    self.remove_unused_briefing(&file);
+                }
             }
         }
         self.start(request_id, metadata, spec)
@@ -1042,9 +1068,10 @@ impl Service {
         let Some(adapter) = record.metadata.adapter else {
             return;
         };
-        let conversation = restart_conversation(adapter, &snapshot);
-        if record.metadata.conversation_id != conversation {
-            record.metadata.conversation_id = conversation;
+        if let Some(conversation) = restart_conversation(adapter, &snapshot)
+            && record.metadata.conversation_id.as_ref() != Some(&conversation)
+        {
+            record.metadata.conversation_id = Some(conversation);
             self.dirty.store(true, Ordering::Release);
         }
     }
@@ -1486,8 +1513,8 @@ impl Terminals for ServiceTerminals<'_> {
     }
 }
 
-/// Prefer the final native conversation, then the provider's exit hint. An old record is
-/// not evidence that this run still belongs to that conversation after `/clear`.
+/// Prefer the final native conversation, then the provider's exit hint, so new evidence
+/// after `/clear` replaces the stored ID. Without a hint, callers retain the known ID.
 fn restart_conversation(adapter: Adapter, snapshot: &Snapshot) -> Option<String> {
     let agent = snapshot
         .status
@@ -1539,6 +1566,15 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
         .env
         .get(crate::context::CONTEXT_ENV)
         .map(std::fs::read_to_string)
+        .transpose()?;
+    let briefing = briefing
+        .map(|text| {
+            crate::plans::restart_briefing(
+                &text,
+                Path::new(&metadata.project_root),
+                metadata.task.as_deref(),
+            )
+        })
         .transpose()?;
     let settings = serde_json::to_string(&(
         &metadata.command,
@@ -3154,7 +3190,271 @@ mod tests {
         assert_eq!(before, restart_context(&metadata, &changed_spec).unwrap());
         std::fs::write(&file, "Changed highlights, peers, and plan").unwrap();
         assert_ne!(before, restart_context(&metadata, &spec).unwrap());
+
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(&dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+        crate::plans::write(&dir, None, "Implement the change").unwrap();
+        let section = crate::plans::section(&dir, None).unwrap();
+        let briefing = format!(
+            "## {}\n\n{}\n\n## Peers\n\nKeep these",
+            section.title, section.body
+        );
+        std::fs::write(&file, &briefing).unwrap();
+        let before = restart_context(&metadata, &spec).unwrap();
+        std::fs::write(
+            &file,
+            briefing.replace("saved just now", "saved 2 minutes ago"),
+        )
+        .unwrap();
+        assert_eq!(before, restart_context(&metadata, &spec).unwrap());
+        let plan = crate::plans::plan_file(&dir, None).unwrap();
+        let handle = std::fs::File::options().write(true).open(&plan).unwrap();
+        let modified = handle.metadata().unwrap().modified().unwrap();
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(modified + Duration::from_secs(60)))
+            .unwrap();
+        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(before, restart_context(&metadata, &spec).unwrap());
+        crate::plans::write(&dir, None, "A different plan").unwrap();
+        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
+        crate::plans::remove(&dir, None).unwrap();
+        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn restart_fixture(dir: &Path, command: &str) -> (Metadata, SessionSpec) {
+        let metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "web", "terminalId": "agent", "name": "Agent",
+            "kind": "agent", "adapter": "claude", "command": command,
+            "conversationId": "12345678-aaaa-1234-bbbb-123456789abc"
+        }))
+        .unwrap();
+        let spec = serde_json::from_value(serde_json::json!({
+            "id": "ignored", "command": command, "cwd": dir,
+            "env": {}, "ready_when": "", "service": false, "notice": null
+        }))
+        .unwrap();
+        (metadata, spec)
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(service: &Service, id: &str) -> Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = service.snapshot(id).unwrap();
+            if !snapshot.running {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "terminal did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_start_tolerates_missing_and_unreadable_fingerprint_briefings() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (metadata, mut spec) = restart_fixture(&dir, "printf launched");
+        for (index, file) in [dir.join("missing.md"), dir.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            spec.env.insert(
+                crate::context::CONTEXT_ENV.into(),
+                file.display().to_string(),
+            );
+            let id = service
+                .start(format!("launch-{index}"), metadata.clone(), spec.clone())
+                .unwrap();
+            let snapshot = wait_for_exit(&service, &id);
+            assert!(String::from_utf8_lossy(&snapshot.data).contains("launched"));
+            assert!(service.list()[0].restart_context.is_none());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_retains_known_conversations_and_skips_refresh_for_retries_and_mismatches() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (metadata, spec) = restart_fixture(&dir, "printf quiet");
+        let id = service
+            .start("launch".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        wait_for_exit(&service, &id);
+        service.dirty.store(false, Ordering::Release);
+        service.refresh_restart_conversation(&id);
+        assert_eq!(
+            service.list()[0].metadata.conversation_id,
+            metadata.conversation_id
+        );
+        assert!(!service.dirty.load(Ordering::Acquire));
+        let context = service.list()[0].restart_context.clone();
+        assert!(context.is_some());
+        assert!(service.summaries()[0].restart_context.is_none());
+        service.persist().unwrap();
+        assert_eq!(
+            Service::load(&dir).unwrap().list()[0].restart_context,
+            context
+        );
+
+        let mut hinted = spec;
+        hinted.command = "printf 'claude --resume 87654321-bbbb-4321-aaaa-123456789abc'".into();
+        service
+            .start("hinted".into(), metadata.clone(), hinted.clone())
+            .unwrap();
+        let snapshot = wait_for_exit(&service, &id);
+        assert!(restart_conversation(Adapter::Claude, &snapshot).is_some());
+        service.dirty.store(false, Ordering::Release);
+        let mut missing = hinted;
+        missing.cwd = dir.join("missing");
+        missing.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            dir.join("gone.md").display().to_string(),
+        );
+        assert_eq!(
+            service
+                .restart("hinted".into(), metadata.clone(), missing.clone())
+                .unwrap(),
+            id
+        );
+        assert!(!service.dirty.load(Ordering::Acquire));
+        missing.env.remove(crate::context::CONTEXT_ENV);
+        assert!(
+            service
+                .restart("mismatch".into(), metadata.clone(), missing)
+                .is_err()
+        );
+        assert!(!service.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            service.list()[0].metadata.conversation_id,
+            metadata.conversation_id
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_resumes_with_current_launch_settings() {
+        use std::os::unix::fs::PermissionsExt;
+        // Provider history is selected through process-wide environment variables.
+        // Use a child test process so this fixture cannot affect concurrent tests.
+        let marker = "PATCHBAY_RESTART_TEST_DIR";
+        let Ok(dir) = std::env::var(marker) else {
+            let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            private_dir(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::tests::restart_resumes_with_current_launch_settings",
+                    "--nocapture",
+                ])
+                .env(marker, &dir)
+                .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let history = dir.join("claude-config/projects");
+        std::fs::create_dir_all(&history).unwrap();
+        let conversation = "12345678-aaaa-1234-bbbb-123456789abc";
+        std::fs::write(history.join(format!("{conversation}.jsonl")), "{}\n").unwrap();
+        let executable = dir.join("claude");
+        std::fs::write(&executable, "#!/bin/sh\nprintf 'args:%s token:%s cli:%s\\n' \"$*\" \"$PATCHBAY_AGENT_TOKEN\" \"$PATCHBAY_CLI\"\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = crate::context::quote_argument(&executable.display().to_string());
+        let (mut metadata, mut spec) = restart_fixture(&dir, &command);
+        metadata.task = Some("t1".into());
+        metadata.task_title = Some("Old task".into());
+        let file = dir.join("briefing.md");
+        std::fs::write(&file, "Same briefing").unwrap();
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            file.display().to_string(),
+        );
+        spec.env
+            .insert(crate::agent_bridge::TOKEN_ENV.into(), "old-token".into());
+        let service = Service::load(&dir).unwrap();
+        let id = service
+            .start("first".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        wait_for_exit(&service, &id);
+        let context = service.list()[0].restart_context.clone();
+        let next_file = dir.join("new-briefing.md");
+        std::fs::write(&next_file, "Same briefing").unwrap();
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            next_file.display().to_string(),
+        );
+        spec.env
+            .insert(crate::agent_bridge::TOKEN_ENV.into(), "new-token".into());
+        spec.env.insert("PATCHBAY_CLI".into(), "new-cli".into());
+        spec.notice = Some("Current launch notice".into());
+        metadata.project_name = "Renamed project".into();
+        metadata.task_title = Some("Renamed task".into());
+        metadata.name = "Renamed agent".into();
+        metadata.conversation_id = None;
+        assert_eq!(
+            service.restart("restart".into(), metadata, spec).unwrap(),
+            id
+        );
+        let snapshot = wait_for_exit(&service, &id);
+        let output = String::from_utf8_lossy(&snapshot.data);
+        assert!(
+            output.contains(&format!("args:--resume {conversation}")),
+            "{output}"
+        );
+        assert!(output.contains("token:new-token cli:new-cli"), "{output}");
+        let record = service.list().pop().unwrap();
+        assert_eq!(record.metadata.project_name, "Renamed project");
+        assert_eq!(record.metadata.task_title.as_deref(), Some("Renamed task"));
+        assert_eq!(record.metadata.name, "Renamed agent");
+        assert_eq!(
+            record.metadata.conversation_id.as_deref(),
+            Some(conversation)
+        );
+        assert_eq!(
+            record.spec.env[crate::context::CONTEXT_ENV],
+            next_file.display().to_string()
+        );
+        assert_eq!(record.spec.notice.as_deref(), Some("Current launch notice"));
+        assert_eq!(record.launch_command, command);
+        assert_eq!(record.restart_context, context);
+        service.dirty.store(false, Ordering::Release);
+        assert_eq!(
+            service
+                .restart("restart".into(), record.metadata, record.spec)
+                .unwrap(),
+            id
+        );
+        assert_eq!(
+            service.snapshot(&id).unwrap().generation,
+            snapshot.generation
+        );
+        assert!(!service.dirty.load(Ordering::Acquire));
     }
 
     #[test]

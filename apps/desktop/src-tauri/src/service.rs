@@ -122,7 +122,17 @@ impl Bridge {
         metadata: Metadata,
         request_id: String,
     ) -> Result<String, String> {
-        self.start_reporting(spec, metadata, request_id)
+        self.launch(spec, metadata, request_id, false)
+    }
+    /// Sends one idempotent launch request; Restart selects resume or fresh launch.
+    pub fn launch(
+        &self,
+        spec: SessionSpec,
+        metadata: Metadata,
+        request_id: String,
+        resume: bool,
+    ) -> Result<String, String> {
+        self.launch_reporting(spec, metadata, request_id, resume)
             .map_err(|(e, _)| e)
     }
     /// Like `start`; an error also says whether the session may have started anyway
@@ -136,28 +146,31 @@ impl Bridge {
         metadata: Metadata,
         request_id: String,
     ) -> Result<String, (String, bool)> {
-        let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
-        let id: String = self.call_reporting(Request::Start {
-            request_id,
-            metadata: Box::new(metadata),
-            spec,
-        })?;
-        self.routes.lock().unwrap().insert(id.clone(), label);
-        Ok(id)
+        self.launch_reporting(spec, metadata, request_id, false)
     }
-    /// Sends one idempotent restart request; the service selects resume or fresh launch.
-    pub fn restart(
+    fn launch_reporting(
         &self,
         spec: SessionSpec,
         metadata: Metadata,
         request_id: String,
-    ) -> Result<String, String> {
+        resume: bool,
+    ) -> Result<String, (String, bool)> {
         let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
-        let id: String = self.call(Request::Restart {
-            request_id,
-            metadata: Box::new(metadata),
-            spec,
-        })?;
+        let metadata = Box::new(metadata);
+        let request = if resume {
+            Request::Restart {
+                request_id,
+                metadata,
+                spec,
+            }
+        } else {
+            Request::Start {
+                request_id,
+                metadata,
+                spec,
+            }
+        };
+        let id: String = self.call_reporting(request)?;
         self.routes.lock().unwrap().insert(id.clone(), label);
         Ok(id)
     }

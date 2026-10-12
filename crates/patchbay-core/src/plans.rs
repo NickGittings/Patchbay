@@ -321,6 +321,30 @@ fn ago(then: SystemTime) -> String {
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
+const SECTION_PREFIX: &str = "The planner agreed this plan for the change";
+const SECTION_SUFFIX: &str = "; the selected scope";
+
+/// Replace only the generated plan age with the saved text and modification time.
+/// Other briefing content, including the plan body, still participates in Restart.
+pub(crate) fn restart_briefing(text: &str, root: &Path, task: Option<&str>) -> Result<String> {
+    let prefix = format!("## Shared plan\n\n{SECTION_PREFIX}");
+    let Some((before, rest)) = text.split_once(&prefix) else {
+        return Ok(text.into());
+    };
+    let Some((age, after)) = rest.split_once(SECTION_SUFFIX) else {
+        return Ok(text.into());
+    };
+    if !age.is_empty() && !(age.starts_with(" (saved ") && age.ends_with(')')) {
+        return Ok(text.into());
+    }
+    let saved = load(root, task)?;
+    let identity = saved.map(|s| (s.text, s.cut, s.modified));
+    Ok(format!(
+        "{before}{prefix}{}{SECTION_SUFFIX}{after}",
+        serde_json::to_string(&identity)?
+    ))
+}
+
 /// The briefing section carrying a saved plan; `None` for a missing or blank one.
 /// It says when the plan was saved, so an agent can tell an old one from the
 /// change it was started for, and whether the plan was cut.
@@ -348,7 +372,7 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
     Some(ContextSection {
         title: "Shared plan".into(),
         body: format!(
-            "The planner agreed this plan for the change{when}; the selected scope \
+            "{SECTION_PREFIX}{when}{SECTION_SUFFIX} \
              is yours to implement. If it doesn't match the change you were started for, \
              ask before acting on it.\n\n{text}{cut}"
         ),

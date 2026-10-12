@@ -832,11 +832,7 @@ async fn plan_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, None, &mut spec);
         }
-        let id = if resume.unwrap_or(false) {
-            bridge.restart(spec, metadata, request_id)
-        } else {
-            bridge.start(spec, metadata, request_id)
-        }?;
+        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
         Ok(id)
     })
     .await
@@ -1293,11 +1289,7 @@ async fn terminal_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        let id = if resume.unwrap_or(false) {
-            bridge.restart(spec, metadata, request_id)
-        } else {
-            bridge.start(spec, metadata, request_id)
-        }?;
+        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
         Ok(id)
     })
     .await
@@ -1369,11 +1361,7 @@ async fn task_root_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        if resume.unwrap_or(false) {
-            bridge.restart(spec, metadata, request_id)
-        } else {
-            bridge.start(spec, metadata, request_id)
-        }
+        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
     })
     .await
 }
@@ -2714,6 +2702,8 @@ fn window_register(
 ) -> CmdResult<serde_json::Value> {
     main_only(window)?;
     state.project(project_id)?;
+    // Monitor queries wait on the main thread, whose window events take workspace.
+    let monitors = window.available_monitors().map_err(err)?;
     let mut document = state.workspace.lock().unwrap();
     if !document.windows.is_object() {
         document.windows = serde_json::json!({});
@@ -2726,7 +2716,7 @@ fn window_register(
         .or_insert_with(|| serde_json::json!({}));
     entry["projectId"] = serde_json::json!(project_id);
     entry["componentId"] = serde_json::json!(component_id);
-    let geometry = layout::clamp(window, entry, false)?;
+    let geometry = layout::clamp_to_monitors(&monitors, entry, false)?;
     state
         .layout_dirty
         .store(true, std::sync::atomic::Ordering::Release);
