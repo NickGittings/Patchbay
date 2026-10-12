@@ -413,14 +413,27 @@
       'finished hidden merge reopened on remount',
     )
     smoke.store.setState({ sessionsPanelOpen: true })
-    const reviewMerge = await until('Review merge action for finished destination', () => {
-      const row = [...document.querySelectorAll('.session-row')].find((r) => {
+    // Only once it has ended: a running row has neither Show in Review nor (without an
+    // adapter) a menu.
+    const mergeRow = await until('finished destination session row', () =>
+      [...document.querySelectorAll('.session-row')].find((r) => {
         const scope = r.querySelector('small')?.textContent ?? ''
-        return scope.startsWith('@merge') && scope.endsWith(opened.project.root)
-      })
-      return [...(row?.querySelectorAll('button') ?? [])].find(
-        (b) => b.textContent === 'Show in Review',
-      )
+        const state = r.querySelector(':scope > span')?.textContent
+        return (
+          scope.startsWith('@merge') &&
+          scope.endsWith(opened.project.root) &&
+          (state === 'Ended' || state === 'Interrupted')
+        )
+      }),
+    )
+    // Inline when the row has room (no Resume), otherwise in the row's menu.
+    const showInReview = (scope) =>
+      [...scope.querySelectorAll('button')].find((b) => b.textContent === 'Show in Review')
+    // Present but briefly disabled (busy) still means inline: only open the menu when absent.
+    if (!showInReview(mergeRow)) click(mergeRow.querySelector('.session-menu .menu-trigger'))
+    const reviewMerge = await until('Review merge action for finished destination', () => {
+      const button = showInReview(document.body)
+      return button && !button.disabled && button
     })
     click(reviewMerge)
     await until(

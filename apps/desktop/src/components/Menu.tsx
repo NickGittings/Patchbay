@@ -3,8 +3,9 @@ import { useContext, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { CloseMenu } from './menuContext'
 import Popover, { type PopoverProps } from './Popover'
 
+/** Enabled items only: focus can't land on a disabled one, so arrows would stop there. */
 const items = (list: HTMLElement | null) =>
-  Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
+  Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])
 
 /** Focus the next item in `step`'s direction, wrapping; from outside, down starts first, up last. */
 const move = (all: HTMLButtonElement[], step: 1 | -1) => {

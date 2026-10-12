@@ -23,12 +23,58 @@
   const names = (name) => rows(name).map((row) => row.querySelector('strong')?.textContent)
   const row = (project, name) =>
     rows(project).find((element) => element.querySelector('strong')?.textContent === name)
-  const click = async (scope, label) => {
-    const button = await until(`${label} button`, () =>
-      [...(scope()?.querySelectorAll('button') ?? [])].find(
-        (element) => element.textContent.trim() === label && !element.disabled,
-      ),
+  const sessionMenu = () =>
+    document.body.querySelector('[role="menu"][aria-label="More session actions"]')
+  // Smoke windows never blur, so opening one menu doesn't close another; close it explicitly,
+  // leaving at most one open for `sessionMenu`.
+  const openOnly = (trigger) => {
+    for (const other of document.querySelectorAll(
+      '.session-menu .menu-trigger[aria-expanded="true"]',
+    ))
+      if (other !== trigger) other.click()
+    if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
+  }
+  const openMenu = async (scope) => {
+    const trigger = await until('session menu trigger', () =>
+      scope()?.querySelector('.session-menu .menu-trigger'),
     )
+    openOnly(trigger)
+    return until(
+      'session menu open',
+      () => trigger.getAttribute('aria-expanded') === 'true' && sessionMenu(),
+    )
+  }
+  const menuItem = (label) =>
+    [...(sessionMenu()?.querySelectorAll('[role="menuitem"]') ?? [])].find(
+      (element) => element.textContent.trim() === label,
+    )
+  const closeMenu = async (scope) => {
+    scope().querySelector('.session-menu .menu-trigger').click()
+    await until('session menu closed', () => !sessionMenu())
+  }
+  const click = async (scope, label) => {
+    let opened
+    const button = await until(`${label} button`, () => {
+      const element = [...(scope()?.querySelectorAll('button') ?? [])].find(
+        (element) => element.textContent.trim() === label,
+      )
+      if (element) {
+        // The label turned up inline after all: close the menu this helper opened.
+        if (opened?.getAttribute('aria-expanded') === 'true') opened.click()
+        opened = undefined
+        return !element.disabled && element
+      }
+      // Only a row's own menu: opening one elsewhere would leave it grabbing focus and presses.
+      if (!scope()?.classList.contains('session-row')) return undefined
+      const trigger = scope().querySelector('.session-menu .menu-trigger')
+      if (!trigger) return undefined
+      if (trigger.getAttribute('aria-expanded') !== 'true') {
+        openOnly(trigger)
+        opened = trigger
+      }
+      const item = menuItem(label)
+      return item && !item.disabled && item
+    })
     button.click()
   }
   // Callers wait for the rows they expect; the select's own value proves nothing rendered.
@@ -161,6 +207,90 @@
         }),
         'Activity timestamps lack relative text or exact tooltip',
       )
+    }
+    assert(
+      [first, second].every((name) =>
+        rows(name).every((element) => element.querySelectorAll(':scope > button').length <= 2),
+      ),
+      'Session rows have more than two inline actions',
+    )
+    assert(
+      !row(first, 'Live A').querySelector('.session-menu'),
+      'Live non-agent session has an empty menu',
+    )
+    const menuTrigger = row(first, 'Done A').querySelector('.session-menu .menu-trigger')
+    menuTrigger.focus()
+    menuTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await until(
+      'keyboard opens session menu with first item focused',
+      () => menuItem('Start new') === document.activeElement,
+    )
+    await until('portalled menu receives pointer input above the dialog', () => {
+      const item = menuItem('Start new')
+      const rect = item.getBoundingClientRect()
+      return item.contains(
+        document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+      )
+    })
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+    await until('keyboard moves to Forget', () => menuItem('Forget') === document.activeElement)
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    await until(
+      'Escape closes menu and restores trigger focus',
+      () => !sessionMenu() && document.activeElement === menuTrigger,
+    )
+    // Render agent controls on real session rows without launching an external provider.
+    const renderAgentRows = () => {
+      const records = state().sessionRecords
+      if (records.some((r) => [idsOne[0], idsOne[2]].includes(r.id) && !r.metadata.adapter))
+        smoke.store.setState({
+          sessionRecords: records.map((r) =>
+            [idsOne[0], idsOne[2]].includes(r.id)
+              ? { ...r, metadata: { ...r.metadata, adapter: 'claude' } }
+              : r,
+          ),
+        })
+    }
+    // Keep these UI fixtures in place across the real service's periodic reconciliation.
+    const unsubscribeAgentRows = smoke.store.subscribe(renderAgentRows)
+    renderAgentRows()
+    try {
+      await until('ended agent has View output and Resume inline', () => {
+        const buttons = row(first, 'Done A').querySelectorAll(':scope > button')
+        return [...buttons].map((button) => button.textContent).join('|') === 'View output|Resume'
+      })
+      await openMenu(() => row(first, 'Live A'))
+      assert(
+        sessionMenu().querySelectorAll('[role="menuitem"]').length === 1 &&
+          menuItem('Set conversation ID…'),
+        'Live agent menu has incorrect actions',
+      )
+      await click(() => row(first, 'Live A'), 'Set conversation ID…')
+      await until('conversation ID form opened', () => panel().querySelector('form input'))
+      await click(() => panel().querySelector('form'), 'Cancel')
+      await openMenu(() => row(first, 'Done A'))
+      assert(
+        [...sessionMenu().querySelectorAll('[role="menuitem"]')]
+          .map((item) => item.textContent)
+          .join('|') === 'Start new|Set conversation ID…|Forget' &&
+          sessionMenu().querySelector('[role="separator"]'),
+        'Ended agent menu has incorrect actions',
+      )
+      await closeMenu(() => row(first, 'Done A'))
+    } finally {
+      unsubscribeAgentRows()
+      // Strip only the fake adapter: the service may have reconciled these records meanwhile.
+      smoke.store.setState({
+        sessionRecords: state().sessionRecords.map((r) => {
+          if (![idsOne[0], idsOne[2]].includes(r.id)) return r
+          const { adapter: _adapter, ...metadata } = r.metadata
+          return { ...r, metadata }
+        }),
+      })
     }
     await choose(first, 0, 'running')
     await choose(first, 1, 'oldest')
@@ -304,6 +434,26 @@
     await click(panel, 'Stop all work')
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('cleanup completed', () => !globalStop()?.disabled)
+    await choose(first, 0, 'closed')
+    await click(() => row(first, 'Live A'), 'View output')
+    const runSelect = await until('run history selector', () =>
+      document.querySelector('.session-preview select[aria-label="Run"]'),
+    )
+    assert(runSelect.options[0].textContent === 'Current run', 'Missing current run option')
+    assert(runSelect.options[1].textContent === 'Run 1', 'Missing numbered history option')
+    runSelect.value = '0'
+    runSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await until('selected history output', () =>
+      document.querySelector('.session-preview pre')?.textContent.includes('live-output'),
+    )
+    runSelect.value = ''
+    runSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await until(
+      'current run restored',
+      () =>
+        !document.querySelector('.session-preview pre') &&
+        document.querySelector('.session-preview .xterm-host'),
+    )
     // Newer worktree sessions stay beneath their worktree, after the main worktree's rows.
     const zebra = await smoke.createTask({
       title: 'Zebra work',
@@ -401,17 +551,16 @@
       '.session-worktree-heading small',
     ).textContent
     state().closeProject(one.id)
-    await until('closed project labels and disabled Start new', () => {
-      const starts = [...(group(first)?.querySelectorAll('button') ?? [])].filter(
-        (button) => button.textContent.trim() === 'Start new',
-      )
-      return (
-        worktree('Alpha work') &&
-        worktree('Zebra work') &&
-        starts.length &&
-        starts.every((b) => b.disabled)
-      )
-    })
+    await until('closed project labels', () => worktree('Alpha work') && worktree('Zebra work'))
+    const endedNames = rows(first)
+      .filter((element) => element.querySelector('button')?.textContent === 'View output')
+      .map((element) => element.querySelector('strong').textContent)
+    assert(endedNames.length, 'No ended sessions to check Start new')
+    for (const name of endedNames) {
+      await openMenu(() => row(first, name))
+      await until('closed project disables Start new', () => menuItem('Start new')?.disabled)
+      await closeMenu(() => row(first, name))
+    }
     assert(
       worktree('Alpha work').querySelector('.session-worktree-heading small').textContent ===
         alphaPath,
@@ -419,11 +568,12 @@
     )
     smoke.acceptOpened(await smoke.openProject())
     state().activateProject(two.id)
-    await until('reopened project enables Start new', () =>
-      [...(group(first)?.querySelectorAll('button') ?? [])].some(
-        (b) => b.textContent.trim() === 'Start new' && !b.disabled,
-      ),
-    )
+    await openMenu(() => row(first, endedNames[0]))
+    await until('reopened project enables Start new', () => {
+      const item = menuItem('Start new')
+      return item && !item.disabled
+    })
+    await closeMenu(() => row(first, endedNames[0]))
     await choose(first, 0, 'running')
     await until(
       'empty main worktree hidden',
@@ -446,7 +596,7 @@
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('worktree cleanup completed', () => !globalStop()?.disabled)
     result =
-      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
+      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
   } catch (error) {
     failure = error.message ?? String(error)
   } finally {
