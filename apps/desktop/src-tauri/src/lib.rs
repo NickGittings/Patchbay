@@ -2687,30 +2687,38 @@ async fn window_open(
         encode(&project_id)
     );
     let app = window.app_handle().clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    // macOS webview configurations are main-thread objects.
-    app.clone()
-        .run_on_main_thread(move || {
-            let builder =
-                tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(url.into()))
-                    .title(title)
-                    .inner_size(width, height)
-                    .min_inner_size(600.0, 400.0)
-                    .position(x, y)
-                    .maximized(maximized);
-            #[cfg(target_os = "macos")]
-            let builder = writing_tools::disable(builder);
-            #[cfg(debug_assertions)]
-            let builder = smoke::window(builder);
-            let built = builder.build();
-            #[cfg(target_os = "macos")]
-            if let Ok(popout) = &built {
-                writing_tools::hide_affordance(popout);
-            }
-            let _ = tx.send(built.map(drop).map_err(err));
-        })
-        .map_err(err)?;
-    blocking(move || rx.recv().map_err(err)?).await
+    let build = move || -> CmdResult<()> {
+        let builder =
+            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(url.into()))
+                .title(title)
+                .inner_size(width, height)
+                .min_inner_size(600.0, 400.0)
+                .position(x, y)
+                .maximized(maximized);
+        #[cfg(target_os = "macos")]
+        let builder = writing_tools::disable(builder);
+        #[cfg(debug_assertions)]
+        let builder = smoke::window(builder);
+        let _popout = builder.build().map_err(err)?;
+        #[cfg(target_os = "macos")]
+        writing_tools::hide_affordance(&_popout);
+        Ok(())
+    };
+    // macOS webview configurations are main-thread objects. Elsewhere build on a blocking
+    // worker: creating a webview from the main thread's event handlers deadlocks WebView2
+    // on Windows, and waiting for webview creation must not block the async runtime.
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(build());
+            })
+            .map_err(err)?;
+        blocking(move || rx.recv().map_err(err)?).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    blocking(build).await
 }
 
 fn window_register(

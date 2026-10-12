@@ -1,6 +1,12 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { PLAN_SCOPE, TASK_ROOT_SCOPE, sessionId, type Project } from '../types'
+import {
+  PLAN_SCOPE,
+  TASK_ROOT_SCOPE,
+  sessionId,
+  type Project,
+  type TerminalSnapshot,
+} from '../types'
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async () => ({ connected: true, instanceId: 'test' })),
 }))
@@ -31,7 +37,15 @@ vi.mock('./terminals', () => ({
   writeOutput: vi.fn(),
 }))
 const ipc = await import('./ipc')
-const { closeTerminal, startTerminal, restartTerminal, resetSessions } = await import('./sessions')
+const terminals = await import('./terminals')
+const {
+  closeTerminal,
+  handleTerminalEvent,
+  hydrateSession,
+  startTerminal,
+  restartTerminal,
+  resetSessions,
+} = await import('./sessions')
 const project: Project = {
   schemaVersion: 4,
   projectId: 'p',
@@ -318,4 +332,74 @@ test('an uncertain restart reply never triggers a second launch', async () => {
   expect(ipc.terminalStart).toHaveBeenCalledTimes(1)
   expect(ipc.sessionResume).not.toHaveBeenCalled()
   expect(useStore.getState().message).toContain('Reply lost')
+})
+
+function snapshot(running: boolean, generation = 3): TerminalSnapshot {
+  return {
+    data: '',
+    end: 0,
+    generation,
+    running,
+    truncated: false,
+    startedMs: 1,
+    exitedMs: running ? null : 2,
+    exitCode: running ? null : 0,
+    status: {
+      lastOutputMs: null,
+      active: false,
+      agent: null,
+      url: null,
+      ready: false,
+      healthy: null,
+      stopped: false,
+      seenMs: null,
+    },
+    notice: null,
+  }
+}
+
+test('hydrating a finished run resets the modes it left on, a running one keeps them', async () => {
+  const ended = sessionId('web', 'dev', null, 'p')
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(false))
+  await hydrateSession(ended)
+  expect(terminals.restoreModes).toHaveBeenCalledWith(ended)
+  vi.mocked(terminals.restoreModes).mockClear()
+  const running = sessionId('web', 'dev', 'task', 'p')
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: running,
+    generation: 3,
+    startedMs: 1,
+    notice: null,
+  })
+  vi.mocked(terminals.restoreModes).mockClear()
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(true))
+  await hydrateSession(running)
+  expect(terminals.restoreModes).not.toHaveBeenCalled()
+  expect(useStore.getState().sessions[running].running).toBe(true)
+})
+
+test('hydrating an older finished snapshot preserves the live run and its terminal modes', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 4,
+    startedMs: 4,
+    notice: 'Current run',
+  })
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 4, seq: 0, data: [65] })
+  const current = useStore.getState().sessions[sid]
+  vi.mocked(terminals.restoreModes).mockClear()
+  vi.mocked(terminals.writeOutput).mockClear()
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(false))
+
+  await hydrateSession(sid)
+
+  expect(terminals.restoreModes).not.toHaveBeenCalled()
+  expect(terminals.restoreOutput).not.toHaveBeenCalled()
+  expect(terminals.replayOutput).not.toHaveBeenCalled()
+  expect(useStore.getState().sessions[sid]).toEqual(current)
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 4, seq: 1, data: [66] })
+  expect(terminals.writeOutput).toHaveBeenCalledWith(sid, [66])
 })

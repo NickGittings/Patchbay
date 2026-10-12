@@ -522,8 +522,9 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
       await listenForTerminals()
       const snapshot = await terminalSnapshot(sid)
       if (started !== epoch) return null
-      if (snapshot) {
-        await applySnapshot(sid, snapshot)
+      if (snapshot && (await applySnapshot(sid, snapshot))) {
+        // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
+        if (!snapshot.running) restoreModes(sid)
         useStore.getState().setSession(sid, {
           running: snapshot.running,
           exitCode: snapshot.exitCode ?? undefined,
@@ -565,21 +566,22 @@ export async function refreshSession(sid: string): Promise<TerminalSnapshot | nu
  * Bring the xterm up to date with a snapshot. If it already holds this run from the start,
  * append only the missing tail so earlier runs and notes stay in the scrollback.
  */
-async function applySnapshot(sid: string, snapshot: TerminalSnapshot) {
+async function applySnapshot(sid: string, snapshot: TerminalSnapshot): Promise<boolean> {
   let bytes = decodeBase64(snapshot.data)
   const start = snapshot.end - bytes.length
   const cursor = lastSeq.get(sid)
-  if (cursor && cursor.generation > snapshot.generation) return
+  if (cursor && cursor.generation > snapshot.generation) return false
   if (cursor?.complete && cursor.generation === snapshot.generation && cursor.end >= start) {
     const from = cursor.end - start
     if (from < bytes.length) replayOutput(sid, bytes.subarray(from))
     cursor.end = Math.max(cursor.end, snapshot.end)
-    return
+    return true
   }
   // A truncated backlog can begin mid escape sequence or character; start at a line.
   if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
   await restoreOutput(sid, bytes, snapshot.generation)
   lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
+  return true
 }
 
 /** Whether this window's xterm lacks output the service has, e.g. after a gap in events. */

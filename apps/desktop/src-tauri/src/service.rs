@@ -125,6 +125,9 @@ impl Bridge {
         self.launch(spec, metadata, request_id, false)
     }
     /// Sends one idempotent launch request; Restart selects resume or fresh launch.
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the launch or its reply is lost.
     pub fn launch(
         &self,
         spec: SessionSpec,
