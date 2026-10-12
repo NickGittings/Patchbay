@@ -16,6 +16,7 @@ vi.mock('./ipc', () => ({
   sessionResume: vi.fn(async () => ''),
   terminalStart: vi.fn(async () => ''),
   terminalStop: vi.fn(async () => {}),
+  serviceRetire: vi.fn(async () => {}),
   terminalSnapshot: vi.fn(async () => null),
   terminalCloseGuard: vi.fn(async () => 'lease'),
   releaseMapEdit: vi.fn(async () => {}),
@@ -45,6 +46,7 @@ const {
   startTerminal,
   restartTerminal,
   resetSessions,
+  retireOlderService,
 } = await import('./sessions')
 const project: Project = {
   schemaVersion: 4,
@@ -402,4 +404,50 @@ test('hydrating an older finished snapshot preserves the live run and its termin
   expect(useStore.getState().sessions[sid]).toEqual(current)
   handleTerminalEvent({ type: 'output', sessionId: sid, generation: 4, seq: 1, data: [66] })
   expect(terminals.writeOutput).toHaveBeenCalledWith(sid, [66])
+})
+
+test('all tiles share a stop that stays disabled until reconciliation', async () => {
+  const stop = deferred()
+  useStore.setState({ serviceConnected: false })
+  vi.mocked(ipc.serviceRetire).mockImplementationOnce(() => stop.promise)
+  const first = retireOlderService()
+  expect(useStore.getState().serviceRetirement).toBe('stopping')
+  await retireOlderService()
+  expect(ipc.serviceRetire).toHaveBeenCalledTimes(1)
+  stop.resolve()
+  await first
+  expect(useStore.getState().serviceRetirement).toBe('reconnecting')
+  await retireOlderService()
+  expect(ipc.serviceRetire).toHaveBeenCalledTimes(1)
+})
+
+test('a failed stop enables retry and shares its error', async () => {
+  useStore.setState({ serviceConnected: false })
+  vi.mocked(ipc.serviceRetire).mockRejectedValueOnce('connection lost')
+  await retireOlderService()
+  expect(useStore.getState().serviceRetirement).toBe('idle')
+  expect(useStore.getState().serviceRetirementError).toBe('connection lost')
+  await retireOlderService()
+  expect(ipc.serviceRetire).toHaveBeenCalledTimes(2)
+  expect(useStore.getState().serviceRetirement).toBe('reconnecting')
+  expect(useStore.getState().serviceRetirementError).toBeUndefined()
+})
+
+test('a stale status reply cannot enable a stop before reconnection', async () => {
+  const { invoke } = await import('@tauri-apps/api/core')
+  const { reconcileSessions } = await import('./sessions')
+  const status = deferred()
+  vi.mocked(invoke).mockImplementationOnce(async () => {
+    await status.promise
+    return { connected: false, instanceId: '', retirement: { state: 'idle' } }
+  })
+  useStore.setState({ serviceConnected: false })
+  const polling = reconcileSessions()
+  await retireOlderService()
+  expect(useStore.getState().serviceRetirement).toBe('reconnecting')
+  status.resolve()
+  await polling
+  expect(useStore.getState().serviceRetirement).toBe('reconnecting')
+  await retireOlderService()
+  expect(ipc.serviceRetire).toHaveBeenCalledTimes(1)
 })

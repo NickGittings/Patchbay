@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -33,6 +33,61 @@ const CAPTURE_TAIL: usize = 4096;
 /// Reply timeout for quick requests; slow ones (spawning, stopping, resuming) get `SLOW_TIMEOUT`.
 const TIMEOUT: Duration = Duration::from_secs(10);
 const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
+const SHUTDOWN_REFUSED: &str = "Work is running; shutdown requires --stop-running";
+
+/// A confirmed refusal, distinct from a lost reply or another service error.
+#[derive(Debug, Clone)]
+struct RetirementRefused {
+    protocol: u32,
+}
+impl std::fmt::Display for RetirementRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Session service protocol mismatch (service {}, this build {PROTOCOL}): an older Patchbay session service is still running work, which was preserved",
+            self.protocol
+        )
+    }
+}
+impl std::error::Error for RetirementRefused {}
+
+/// Only cache confirmed refusals, keyed by runtime directory and service instance.
+/// A restarted service gets a fresh attempt; explicit retirement bypasses the cache.
+static RETIREMENT_REFUSALS: OnceLock<Mutex<HashMap<PathBuf, (String, RetirementRefused)>>> =
+    OnceLock::new();
+
+/// Every read/write shares one deadline, including partial frames and handshakes.
+struct DeadlineStream<'a> {
+    stream: &'a mut TcpStream,
+    until: Instant,
+}
+fn remaining(until: Instant) -> std::io::Result<Duration> {
+    until
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Session service deadline expired",
+            )
+        })
+}
+impl Read for DeadlineStream<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(remaining(self.until)?))?;
+        self.stream.read(bytes)
+    }
+}
+impl Write for DeadlineStream<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream
+            .set_write_timeout(Some(remaining(self.until)?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Endpoint {
     pub protocol: u32,
@@ -328,41 +383,29 @@ impl Client {
     /// # Errors
     /// Fails if no service is running, its protocol differs, or authentication fails.
     pub fn connect_as(dir: &Path, client: Option<&str>) -> Result<Self> {
+        Self::connect_until(dir, client, Instant::now() + TIMEOUT)
+    }
+    fn connect_until(dir: &Path, client: Option<&str>, until: Instant) -> Result<Self> {
         let endpoint: Endpoint =
             serde_json::from_slice(&std::fs::read(dir.join("endpoint.json"))?)?;
         anyhow::ensure!(
             endpoint.protocol == PROTOCOL,
-            "Session service protocol mismatch (service {}, this build {PROTOCOL}). Running work was preserved. Install a matching Patchbay version, or explicitly stop work with the matching CLI before upgrading.",
+            "Session service protocol mismatch (service {}, this build {PROTOCOL}). Use a matching Patchbay version. A newer build can replace an idle older service, or offer to stop its running sessions.",
             endpoint.protocol
         );
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
-        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-        stream.set_read_timeout(Some(TIMEOUT))?;
-        stream.set_write_timeout(Some(TIMEOUT))?;
-        stream.set_nodelay(true)?;
-        write_frame(
-            &mut stream,
-            &Hello {
-                protocol: PROTOCOL,
-                token: endpoint.token,
-                client: client.map(Into::into),
-            },
-        )?;
-        let response: Response = read_frame(&mut stream)?;
-        if let Some(error) = response.error {
-            bail!("{error}");
-        }
+        let stream = connect_endpoint(&endpoint, client, until)?;
         Ok(Self {
             stream,
             instance: endpoint.instance,
             broken: false,
         })
     }
-    /// Connect, starting the helper first if no service is running.
+    /// Connect, starting the helper if needed and retiring an idle older service.
+    /// A newer service is never retired; running older work requires explicit retirement.
     ///
     /// # Errors
-    /// Fails if a service of another protocol is running, the helper is missing,
-    /// or no service answers within 10 seconds.
+    /// Fails if an older service refuses retirement, a newer protocol is running,
+    /// the helper is missing, or startup (including waiting for its lock) exceeds 10 seconds.
     pub fn ensure(dir: &Path, helper: &Path) -> Result<Self> {
         Self::ensure_as(dir, helper, None)
     }
@@ -371,42 +414,57 @@ impl Client {
     /// # Errors
     /// As for `ensure`.
     pub fn ensure_as(dir: &Path, helper: &Path, client: Option<&str>) -> Result<Self> {
-        if let Ok(client) = Self::connect_as(dir, client) {
+        Self::ensure_until(dir, helper, client, Instant::now() + TIMEOUT)
+    }
+    fn ensure_until(
+        dir: &Path,
+        helper: &Path,
+        client: Option<&str>,
+        until: Instant,
+    ) -> Result<Self> {
+        if let Ok(client) = Self::connect_until(dir, client, until) {
             return Ok(client);
         }
         private_dir(dir)?;
-        // A separate OS lock serializes launcher clients. Service lifetime uses service.lock.
+        // Waiting for other launchers also consumes the startup budget.
         let startup = lock(&dir.join("startup.lock"))?;
-        startup.lock()?;
-        let until = Instant::now() + Duration::from_secs(10);
-        let mut spawned: Option<Instant> = None;
         loop {
-            let error = match Self::connect_as(dir, client) {
+            match startup.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    remaining(until).context("Session service startup lock unavailable")?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let mut spawned: Option<Instant> = None;
+        let mut retired = false;
+        loop {
+            let error = match Self::connect_until(dir, client, until) {
                 Ok(client) => return Ok(client),
                 Err(e) => e,
             };
             if Instant::now() >= until {
                 return Err(error.context("Session service unavailable; no work was restarted"));
             }
-            // No live service holds the lifetime lock: whatever endpoint.json says is
-            // stale (an older version's, or one that exited while we connected).
-            // Start one, again if the last one we started has since gone idle.
             if service_stopped(dir)?
                 && spawned.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
             {
                 spawn_helper(dir, helper)?;
                 spawned = Some(Instant::now());
-            } else if spawned.is_none()
-                && let Ok(bytes) = std::fs::read(dir.join("endpoint.json"))
-                && let Ok(endpoint) = serde_json::from_slice::<Endpoint>(&bytes)
-                && endpoint.protocol != PROTOCOL
-            {
-                bail!(
-                    "Session service protocol mismatch (service {}, this build {PROTOCOL}); running work was preserved. Use the matching Patchbay version.",
-                    endpoint.protocol
-                );
+            } else if spawned.is_none() && !retired {
+                // Transport failures may mean shutdown succeeded but its reply was lost.
+                // Retry startup; only a confirmed running-work refusal warrants a prompt.
+                match retire_outdated_until(dir, false, until) {
+                    Ok(protocol) => retired = protocol.is_some(),
+                    Err(e) if e.is::<RetirementRefused>() => return Err(e),
+                    Err(_) => {}
+                }
             }
-            std::thread::sleep(Duration::from_millis(100));
+            if let Some(wait) = until.checked_duration_since(Instant::now()) {
+                std::thread::sleep(Duration::from_millis(100).min(wait));
+            }
         }
     }
     /// Whether a transport error or timeout made this connection unusable.
@@ -455,6 +513,112 @@ impl Client {
         }
         Ok(serde_json::from_value(response.result)?)
     }
+}
+
+/// Shut down a running service with a lower protocol, persisting its records.
+/// Returns its protocol, or `None` if it is gone, current, or newer than this build.
+/// Legacy services refuse only for running work: connected apps with exited
+/// terminals do not prevent retirement. Close older apps before upgrading.
+///
+/// # Errors
+/// Fails on a confirmed running-work refusal, another service error, or transport failure.
+pub fn retire_outdated(dir: &Path, stop_running: bool) -> Result<Option<u32>> {
+    let timeout = if stop_running { SLOW_TIMEOUT } else { TIMEOUT };
+    retire_outdated_until(dir, stop_running, Instant::now() + timeout)
+}
+fn retire_outdated_until(dir: &Path, stop_running: bool, until: Instant) -> Result<Option<u32>> {
+    let refusals = RETIREMENT_REFUSALS.get_or_init(Mutex::default);
+    let Ok(bytes) = std::fs::read(dir.join("endpoint.json")) else {
+        refusals.lock().unwrap().remove(dir);
+        return Ok(None);
+    };
+    let endpoint: Endpoint = serde_json::from_slice(&bytes)?;
+    if endpoint.protocol >= PROTOCOL || service_stopped(dir)? {
+        refusals.lock().unwrap().remove(dir);
+        return Ok(None);
+    }
+    {
+        let mut cached = refusals.lock().unwrap();
+        if let Some((instance, refusal)) = cached.get(dir) {
+            if instance == &endpoint.instance && !stop_running {
+                return Err(refusal.clone().into());
+            }
+            if instance != &endpoint.instance {
+                cached.remove(dir);
+            }
+        }
+    }
+    match retire(&endpoint, stop_running, until) {
+        Ok(()) => {
+            refusals.lock().unwrap().remove(dir);
+            Ok(Some(endpoint.protocol))
+        }
+        Err(e) => {
+            if let Some(refusal) = e.downcast_ref::<RetirementRefused>() {
+                refusals
+                    .lock()
+                    .unwrap()
+                    .insert(dir.into(), (endpoint.instance, refusal.clone()));
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Authenticate using the endpoint's protocol. Normal clients first require a
+/// matching protocol; retirement uses the older service's stable handshake.
+fn connect_endpoint(
+    endpoint: &Endpoint,
+    client: Option<&str>,
+    until: Instant,
+) -> Result<TcpStream> {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+    let mut stream =
+        TcpStream::connect_timeout(&address, remaining(until)?.min(Duration::from_secs(2)))?;
+    stream.set_nodelay(true)?;
+    {
+        let mut wire = DeadlineStream {
+            stream: &mut stream,
+            until,
+        };
+        write_frame(
+            &mut wire,
+            &Hello {
+                protocol: endpoint.protocol,
+                token: endpoint.token.clone(),
+                client: client.map(Into::into),
+            },
+        )?;
+        let response: Response = read_frame(&mut wire)?;
+        if let Some(error) = response.error {
+            bail!("{error}");
+        }
+    }
+    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
+    Ok(stream)
+}
+/// The handshake and Shutdown wire formats are shared by every protocol version
+/// (`retire_wire_format_is_stable`). The automatic path uses the startup deadline;
+/// only explicit stopping gets the longer grace period.
+fn retire(endpoint: &Endpoint, stop_running: bool, until: Instant) -> Result<()> {
+    let mut stream = connect_endpoint(endpoint, None, until)?;
+    let mut wire = DeadlineStream {
+        stream: &mut stream,
+        until,
+    };
+    write_frame(&mut wire, &Request::Shutdown { stop_running })?;
+    let response: Response = read_frame(&mut wire)?;
+    if let Some(error) = response.error {
+        if error == SHUTDOWN_REFUSED {
+            return Err(RetirementRefused {
+                protocol: endpoint.protocol,
+            }
+            .into());
+        }
+        bail!("{error}");
+    }
+    Ok(())
 }
 
 /// True when no service process holds the lifetime lock.
@@ -622,10 +786,7 @@ impl Service {
         let _bulk_stop = self.bulk_stop.lock().unwrap();
         {
             let _operation = self.operation.lock().unwrap();
-            anyhow::ensure!(
-                stop_running || !self.pty.has_running(),
-                "Work is running; shutdown requires --stop-running"
-            );
+            anyhow::ensure!(stop_running || !self.pty.has_running(), SHUTDOWN_REFUSED);
             self.stopping.store(true, Ordering::Release);
         }
         // Launches now fail under the operation lock. Never hold that lock (or
@@ -1829,6 +1990,328 @@ mod tests {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
         assert!(read_frame::<Request>(&mut &[0, 0, 0, 2, b'[', b']'][..]).is_err());
     }
+    #[test]
+    fn retire_wire_format_is_stable() {
+        // Every protocol since 1 reads these frames; newer builds retire older
+        // services with them, so they must never change shape.
+        let hello = Hello {
+            protocol: 4,
+            token: "t".into(),
+            client: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&hello).unwrap(),
+            serde_json::json!({"protocol": 4, "token": "t", "client": null})
+        );
+        assert_eq!(
+            serde_json::to_value(Request::Shutdown { stop_running: true }).unwrap(),
+            serde_json::json!({"op": "shutdown", "stop_running": true})
+        );
+        let reply: Response =
+            serde_json::from_value(serde_json::json!({"result": null, "error": "no"})).unwrap();
+        assert_eq!(reply.error.as_deref(), Some("no"));
+    }
+    #[test]
+    fn retires_only_an_older_service_in_its_own_protocol() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        assert_eq!(retire_outdated(&dir, false).unwrap(), None);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let old = PROTOCOL - 1;
+        let endpoint = Endpoint {
+            protocol: old,
+            port: listener.local_addr().unwrap().port(),
+            token: "secret".into(),
+            instance: "old".into(),
+        };
+        atomic_write(
+            &dir.join("endpoint.json"),
+            &serde_json::to_vec(&endpoint).unwrap(),
+        )
+        .unwrap();
+        // A stale endpoint whose service is gone is left for `ensure` to replace.
+        assert_eq!(retire_outdated(&dir, false).unwrap(), None);
+        let lifetime = lock(&dir.join("service.lock")).unwrap();
+        lifetime.try_lock().unwrap();
+        // The old service refuses while work runs, then accepts `stop_running`.
+        let server = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello: serde_json::Value = read_frame(&mut stream).unwrap();
+                assert_eq!(hello["protocol"], old);
+                assert_eq!(hello["token"], "secret");
+                write_frame(
+                    &mut stream,
+                    &serde_json::json!({"result": null, "error": null}),
+                )
+                .unwrap();
+                let request: serde_json::Value = read_frame(&mut stream).unwrap();
+                assert_eq!(request["op"], "shutdown");
+                let stop_running = request["stop_running"].as_bool().unwrap();
+                asked.push(stop_running);
+                let error = (!stop_running).then_some(SHUTDOWN_REFUSED);
+                write_frame(
+                    &mut stream,
+                    &serde_json::json!({"result": null, "error": error}),
+                )
+                .unwrap();
+            }
+            asked
+        });
+        let refused = retire_outdated(&dir, false).unwrap_err().to_string();
+        assert!(refused.contains("still running work"), "{refused}");
+        // Reconnects do not keep asking this instance to shut down.
+        assert!(
+            retire_outdated(&dir, false)
+                .unwrap_err()
+                .is::<RetirementRefused>()
+        );
+        assert!(
+            Client::ensure(&dir, Path::new("missing helper"))
+                .err()
+                .unwrap()
+                .is::<RetirementRefused>()
+        );
+        assert_eq!(retire_outdated(&dir, true).unwrap(), Some(old));
+        assert_eq!(server.join().unwrap(), [false, true]);
+        drop(lifetime);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    struct RetirementFixture {
+        dir: PathBuf,
+        endpoint: Endpoint,
+        listener: TcpListener,
+        _lifetime: std::fs::File,
+    }
+    impl RetirementFixture {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            private_dir(&dir).unwrap();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let endpoint = Endpoint {
+                protocol: PROTOCOL - 1,
+                port: listener.local_addr().unwrap().port(),
+                token: "secret".into(),
+                instance: "older".into(),
+            };
+            let lifetime = lock(&dir.join("service.lock")).unwrap();
+            lifetime.try_lock().unwrap();
+            let fixture = Self {
+                dir,
+                endpoint,
+                listener,
+                _lifetime: lifetime,
+            };
+            fixture.save_endpoint();
+            fixture
+        }
+        fn save_endpoint(&self) {
+            atomic_write(
+                &self.dir.join("endpoint.json"),
+                &serde_json::to_vec(&self.endpoint).unwrap(),
+            )
+            .unwrap();
+        }
+        fn accept(listener: &TcpListener, protocol: u32) -> TcpStream {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let hello: Hello = read_frame(&mut stream).unwrap();
+            assert_eq!(hello.protocol, protocol);
+            assert_eq!(hello.token, "secret");
+            write_frame(&mut stream, &Response::result(Ok(serde_json::Value::Null))).unwrap();
+            stream
+        }
+    }
+    impl Drop for RetirementFixture {
+        fn drop(&mut self) {
+            if let Some(cache) = RETIREMENT_REFUSALS.get() {
+                cache.lock().unwrap().remove(&self.dir);
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn never_retires_current_or_newer_protocols_even_when_forced() {
+        let mut f = RetirementFixture::new();
+        for protocol in [PROTOCOL, PROTOCOL + 1] {
+            f.endpoint.protocol = protocol;
+            f.save_endpoint();
+            for forced in [false, true] {
+                assert_eq!(retire_outdated(&f.dir, forced).unwrap(), None);
+            }
+        }
+        let error = Client::ensure_until(
+            &f.dir,
+            Path::new("missing helper"),
+            None,
+            Instant::now() + Duration::from_millis(80),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("unavailable"), "{error}");
+        // No connection, and in particular no Shutdown, was sent to the newer service.
+        f.listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            f.listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let saved: Endpoint =
+            serde_json::from_slice(&std::fs::read(f.dir.join("endpoint.json")).unwrap()).unwrap();
+        assert_eq!(saved.protocol, PROTOCOL + 1);
+    }
+
+    #[test]
+    fn a_replacement_instance_gets_a_fresh_retirement_attempt() {
+        let mut f = RetirementFixture::new();
+        let listener = f.listener.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let mut stream = RetirementFixture::accept(&listener, PROTOCOL - 1);
+                assert!(matches!(
+                    read_frame::<Request>(&mut stream).unwrap(),
+                    Request::Shutdown {
+                        stop_running: false
+                    }
+                ));
+                write_frame(
+                    &mut stream,
+                    &Response::result(Err(anyhow::anyhow!(SHUTDOWN_REFUSED))),
+                )
+                .unwrap();
+            }
+        });
+        assert!(
+            retire_outdated(&f.dir, false)
+                .unwrap_err()
+                .is::<RetirementRefused>()
+        );
+        f.endpoint.instance = "replacement".into();
+        f.save_endpoint();
+        assert!(
+            retire_outdated(&f.dir, false)
+                .unwrap_err()
+                .is::<RetirementRefused>()
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn other_service_errors_are_not_running_work_refusals_or_cached() {
+        let f = RetirementFixture::new();
+        let listener = f.listener.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let mut stream = RetirementFixture::accept(&listener, PROTOCOL - 1);
+                let _: Request = read_frame(&mut stream).unwrap();
+                write_frame(
+                    &mut stream,
+                    &Response::result(Err(anyhow::anyhow!("Persistence failed"))),
+                )
+                .unwrap();
+            }
+        });
+        for _ in 0..2 {
+            let error = retire_outdated(&f.dir, false).unwrap_err();
+            assert!(!error.is::<RetirementRefused>());
+            assert_eq!(error.to_string(), "Persistence failed");
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn startup_retries_after_a_successful_shutdown_loses_its_reply() {
+        let f = RetirementFixture::new();
+        let listener = f.listener.try_clone().unwrap();
+        let dir = f.dir.clone();
+        let server = std::thread::spawn(move || {
+            let mut stream = RetirementFixture::accept(&listener, PROTOCOL - 1);
+            assert!(matches!(
+                read_frame::<Request>(&mut stream).unwrap(),
+                Request::Shutdown {
+                    stop_running: false
+                }
+            ));
+            // The replacement is ready, but the retiring service's reply was lost.
+            atomic_write(
+                &dir.join("endpoint.json"),
+                &serde_json::to_vec(&Endpoint {
+                    protocol: PROTOCOL,
+                    port: listener.local_addr().unwrap().port(),
+                    token: "secret".into(),
+                    instance: "replacement".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            drop(stream);
+            let _stream = RetirementFixture::accept(&listener, PROTOCOL);
+        });
+        let client = Client::ensure_until(
+            &f.dir,
+            Path::new("missing helper"),
+            None,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(client.instance, "replacement");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn startup_deadline_bounds_slow_handshake_and_shutdown() {
+        for handshake in [true, false] {
+            let f = RetirementFixture::new();
+            let listener = f.listener.try_clone().unwrap();
+            let (done, wait) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _: Hello = read_frame(&mut stream).unwrap();
+                if !handshake {
+                    write_frame(&mut stream, &Response::result(Ok(serde_json::Value::Null)))
+                        .unwrap();
+                    let _: Request = read_frame(&mut stream).unwrap();
+                }
+                wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            });
+            let start = Instant::now();
+            let error = Client::ensure_until(
+                &f.dir,
+                Path::new("missing helper"),
+                None,
+                start + Duration::from_millis(120),
+            )
+            .err()
+            .unwrap();
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert!(!error.is::<RetirementRefused>());
+            assert!(!error.to_string().contains("still running work"));
+            done.send(()).unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn startup_deadline_includes_waiting_for_another_launcher() {
+        let f = RetirementFixture::new();
+        let startup = lock(&f.dir.join("startup.lock")).unwrap();
+        startup.lock().unwrap();
+        let start = Instant::now();
+        let error = Client::ensure_until(
+            &f.dir,
+            Path::new("missing helper"),
+            None,
+            start + Duration::from_millis(80),
+        )
+        .err()
+        .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.to_string().contains("startup lock"), "{error}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn terminal_close_guard_stops_every_worktree_and_blocks_late_launches() {

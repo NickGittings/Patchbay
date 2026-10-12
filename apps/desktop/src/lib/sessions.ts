@@ -26,6 +26,7 @@ import {
   terminalSnapshot,
   terminalStart,
   terminalStop,
+  serviceRetire,
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
 import { savePlanDraft } from './planDrafts'
@@ -87,10 +88,45 @@ export function resetSessions(generationFloor: number) {
 
 const decodeBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
 
+interface ServiceRetirement {
+  state: 'idle' | 'stopping' | 'reconnecting'
+  error?: string | null
+}
+function applyRetirement(retirement: ServiceRetirement) {
+  const current = useStore.getState()
+  // A status request made before the click can arrive after it. Only a failure
+  // or completed reconciliation can enable another stop while disconnected.
+  if (
+    retirement.state === 'idle' &&
+    !retirement.error &&
+    current.serviceRetirement !== 'idle' &&
+    !current.serviceConnected
+  )
+    return
+  useStore.setState({
+    serviceRetirement: retirement.state,
+    serviceRetirementError: retirement.error ?? undefined,
+  })
+}
+
+/** Shared in this window; the backend also deduplicates calls across webviews. */
+export async function retireOlderService(): Promise<void> {
+  if (useStore.getState().serviceRetirement !== 'idle') return
+  applyRetirement({ state: 'stopping' })
+  try {
+    await serviceRetire()
+    // An event or reconciliation may already have observed the new service.
+    if (!useStore.getState().serviceConnected) applyRetirement({ state: 'reconnecting' })
+  } catch (e) {
+    applyRetirement({ state: 'idle', error: String(e) })
+  }
+}
+
 /** Each webview keeps one listener for its lifetime, including React StrictMode remounts. */
 export function listenForTerminals() {
   listening ??= Promise.all([
     onTerminalEvent(handleTerminalEvent),
+    listen<ServiceRetirement>('patchbay://service-retirement', (e) => applyRetirement(e.payload)),
     listen<{ connected: boolean; instanceId?: string; error?: string }>(
       'patchbay://service',
       (e) => {
@@ -617,7 +653,12 @@ export async function reconcileFreshSessions(): Promise<void> {
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
-      const status = await invoke<{ connected: boolean; instanceId: string }>('service_status')
+      const status = await invoke<{
+        connected: boolean
+        instanceId: string
+        retirement?: ServiceRetirement
+      }>('service_status')
+      if (status.retirement) applyRetirement(status.retirement)
       if (!status.connected) {
         useStore.setState({ serviceConnected: false })
         return
@@ -705,7 +746,12 @@ export function reconcileSessions(force = true): Promise<void> {
           await hydrateSession(r.id)
         }
       }
-      useStore.setState({ serviceConnected: true, serviceError: undefined })
+      useStore.setState({
+        serviceConnected: true,
+        serviceError: undefined,
+        serviceRetirement: 'idle',
+        serviceRetirementError: undefined,
+      })
       if (reconnecting) window.dispatchEvent(new Event('patchbay:reconnected'))
     } catch (e) {
       useStore.setState({ serviceConnected: false })

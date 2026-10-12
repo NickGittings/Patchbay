@@ -2090,6 +2090,7 @@ pub fn run() {
                 session_forget,
                 quit_patchbay,
                 service_status,
+                service_retire,
                 project_fingerprint,
                 project_close,
                 window_open,
@@ -2646,6 +2647,13 @@ async fn project_relink(
 #[tauri::command]
 fn service_status(state: State<AppState>) -> serde_json::Value {
     state.service.status()
+}
+/// Stop a session service left running by another Patchbay version, ending its
+/// running work, so this build's service can start (the bridge reconnects).
+#[tauri::command]
+async fn service_retire(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let bridge = state.service.clone();
+    blocking(move || bridge.retire(&app)).await
 }
 #[tauri::command]
 fn project_fingerprint(state: State<AppState>, project_id: String) -> CmdResult<String> {

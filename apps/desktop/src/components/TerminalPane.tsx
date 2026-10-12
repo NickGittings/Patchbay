@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { terminalStatus } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
-import { hydrateSession, startTerminal } from '../lib/sessions'
+import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
@@ -112,9 +112,13 @@ export default function TerminalPane({
     <div className="terminal-area">
       {!connected && (
         <div className="terminal-notice" role="status">
-          {serviceError?.includes('protocol mismatch')
-            ? 'An older Patchbay session service is still running (its work is preserved). Stop it with `patchbay-cli sessions shutdown` from the matching version (add `--stop-running` to end its running work); Patchbay then starts a new one.'
-            : 'Disconnected · reconnecting to session service…'}
+          {serviceError?.includes('still running work') ? (
+            <OutdatedService />
+          ) : serviceError?.includes('protocol mismatch') ? (
+            serviceError
+          ) : (
+            'Disconnected · reconnecting to session service…'
+          )}
         </div>
       )}
       {session?.truncated && (
@@ -154,5 +158,37 @@ export default function TerminalPane({
           </div>
         )}
     </div>
+  )
+}
+
+/** An older Patchbay version's service still runs work; offer to end it so this one can start. */
+function OutdatedService() {
+  const retirement = useStore((s) => s.serviceRetirement)
+  const error = useStore((s) => s.serviceRetirementError)
+  const stop = () => {
+    if (useStore.getState().serviceRetirement !== 'idle') return
+    if (
+      !window.confirm(
+        'Stop the sessions still running from an older Patchbay version? Their running work ends; their history is kept.',
+      )
+    )
+      return
+    void retireOlderService()
+  }
+  return (
+    <>
+      <span>
+        Sessions from an older Patchbay version are still running, so this version can't start its
+        session service yet. They were left running.
+        {error && ` Stopping them failed: ${error}`}
+      </span>
+      <button disabled={retirement !== 'idle'} onClick={stop}>
+        {retirement === 'stopping'
+          ? 'Stopping…'
+          : retirement === 'reconnecting'
+            ? 'Reconnecting…'
+            : 'Stop older sessions'}
+      </button>
+    </>
   )
 }

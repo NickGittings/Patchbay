@@ -240,6 +240,12 @@ fn sessions(command: SessionsCmd) -> Result<()> {
     } else {
         "patchbay-sessiond"
     });
+    if let SessionsCmd::Shutdown { stop_running } = command
+        && let Some(protocol) = patchbay_core::session::retire_outdated(&dir, stop_running)?
+    {
+        eprintln!("Shut down an older session service (protocol {protocol}).");
+        return Ok(());
+    }
     let mut client = match command {
         SessionsCmd::Shutdown { .. } => Client::connect(&dir)?,
         _ => Client::ensure(&dir, &helper)?,

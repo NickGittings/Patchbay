@@ -192,6 +192,8 @@ interface State {
   serviceConnected: boolean
   /** Why the last connection to the session service failed, if it did. */
   serviceError?: string
+  serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
+  serviceRetirementError?: string
   sessionsPanelOpen: boolean
   activityPanelOpen: boolean
   /**
@@ -457,6 +459,7 @@ export const useStore = create<State>((set, get) => ({
   sessionRecords: [],
   serviceInstance: '',
   serviceConnected: false,
+  serviceRetirement: 'idle',
   sessionsPanelOpen: false,
   activityPanelOpen: false,
   dockKept: [],
