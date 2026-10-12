@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { terminalStatus } from '../lib/display'
-import { serviceRetire, terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
-import { hydrateSession, startTerminal } from '../lib/sessions'
+import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
+import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
@@ -112,8 +112,10 @@ export default function TerminalPane({
     <div className="terminal-area">
       {!connected && (
         <div className="terminal-notice" role="status">
-          {serviceError?.includes('protocol mismatch') ? (
+          {serviceError?.includes('still running work') ? (
             <OutdatedService />
+          ) : serviceError?.includes('protocol mismatch') ? (
+            serviceError
           ) : (
             'Disconnected · reconnecting to session service…'
           )}
@@ -161,20 +163,17 @@ export default function TerminalPane({
 
 /** An older Patchbay version's service still runs work; offer to end it so this one can start. */
 function OutdatedService() {
-  const [stopping, setStopping] = useState(false)
-  const [error, setError] = useState<string>()
+  const retirement = useStore((s) => s.serviceRetirement)
+  const error = useStore((s) => s.serviceRetirementError)
   const stop = () => {
+    if (useStore.getState().serviceRetirement !== 'idle') return
     if (
       !window.confirm(
         'Stop the sessions still running from an older Patchbay version? Their running work ends; their history is kept.',
       )
     )
       return
-    setStopping(true)
-    setError(undefined)
-    serviceRetire()
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setStopping(false))
+    void retireOlderService()
   }
   return (
     <>
@@ -183,8 +182,12 @@ function OutdatedService() {
         session service yet. They were left running.
         {error && ` Stopping them failed: ${error}`}
       </span>
-      <button disabled={stopping} onClick={stop}>
-        {stopping ? 'Stopping…' : 'Stop older sessions'}
+      <button disabled={retirement !== 'idle'} onClick={stop}>
+        {retirement === 'stopping'
+          ? 'Stopping…'
+          : retirement === 'reconnecting'
+            ? 'Reconnecting…'
+            : 'Stop older sessions'}
       </button>
     </>
   )

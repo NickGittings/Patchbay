@@ -2651,13 +2651,9 @@ fn service_status(state: State<AppState>) -> serde_json::Value {
 /// Stop a session service left running by another Patchbay version, ending its
 /// running work, so this build's service can start (the bridge reconnects).
 #[tauri::command]
-async fn service_retire() -> CmdResult<()> {
-    blocking(|| {
-        let dir = patchbay_core::session::runtime_dir().map_err(err)?;
-        patchbay_core::session::retire_outdated(&dir, true).map_err(err)?;
-        Ok(())
-    })
-    .await
+async fn service_retire(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let bridge = state.service.clone();
+    blocking(move || bridge.retire(&app)).await
 }
 #[tauri::command]
 fn project_fingerprint(state: State<AppState>, project_id: String) -> CmdResult<String> {

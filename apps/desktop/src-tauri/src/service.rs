@@ -36,6 +36,20 @@ pub struct Bridge {
     /// Session id → the label of the pop-out that shows it.
     routes: Mutex<HashMap<String, String>>,
     stopped: AtomicBool,
+    retirement: Mutex<Retirement>,
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum RetirementState {
+    #[default]
+    Idle,
+    Stopping,
+    Reconnecting,
+}
+#[derive(Default, serde::Serialize)]
+struct Retirement {
+    state: RetirementState,
+    error: Option<String>,
 }
 impl Default for Bridge {
     fn default() -> Self {
@@ -49,6 +63,7 @@ impl Default for Bridge {
             writes: Mutex::default(),
             routes: Mutex::default(),
             stopped: AtomicBool::new(false),
+            retirement: Mutex::default(),
         }
     }
 }
@@ -190,7 +205,54 @@ impl Bridge {
     }
     pub fn status(&self) -> serde_json::Value {
         let instance = self.instance.lock().unwrap().clone();
-        serde_json::json!({"connected": instance.is_some(), "instanceId": instance.unwrap_or_default()})
+        let retirement = self.retirement.lock().unwrap();
+        serde_json::json!({"connected": instance.is_some(), "instanceId": instance.unwrap_or_default(), "retirement": *retirement})
+    }
+    /// One stop action is shared by all tiles and webviews until reconnection.
+    pub fn retire(&self, app: &AppHandle) -> Result<(), String> {
+        self.retire_with(
+            |status| {
+                let _ = app.emit("patchbay://service-retirement", status);
+            },
+            || {
+                let dir = session::runtime_dir().map_err(|e| e.to_string())?;
+                session::retire_outdated(&dir, true).map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )
+    }
+    fn retire_with(
+        &self,
+        notify: impl Fn(serde_json::Value),
+        stop: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        {
+            let mut retirement = self.retirement.lock().unwrap();
+            if retirement.state != RetirementState::Idle || self.instance.lock().unwrap().is_some()
+            {
+                return Ok(());
+            }
+            retirement.state = RetirementState::Stopping;
+            retirement.error = None;
+            notify(serde_json::to_value(&*retirement).unwrap());
+        }
+        let result = stop();
+        let mut retirement = self.retirement.lock().unwrap();
+        retirement.state = if result.is_ok() && self.instance.lock().unwrap().is_none() {
+            RetirementState::Reconnecting
+        } else {
+            RetirementState::Idle
+        };
+        retirement.error = result.as_ref().err().cloned();
+        notify(serde_json::to_value(&*retirement).unwrap());
+        result
+    }
+    fn connected(&self, instance: &str) {
+        // The same lock keeps a completed stop from restoring Reconnecting after
+        // the poller has already connected to the replacement service.
+        let mut retirement = self.retirement.lock().unwrap();
+        *self.instance.lock().unwrap() = Some(instance.into());
+        *retirement = Retirement::default();
     }
     fn disconnected(&self) {
         self.instance.lock().unwrap().take();
@@ -258,7 +320,7 @@ impl Bridge {
                                 after = batch.end;
                                 bridge.learn(&records);
                                 bridge.pool.lock().unwrap().clear();
-                                *bridge.instance.lock().unwrap() = Some(client.instance.clone());
+                                bridge.connected(&client.instance);
                                 let _ = app.emit("patchbay://service", serde_json::json!({"connected": true, "instanceId": client.instance, "records": records}));
                                 poller = Some(client);
                                 delay = 100;
@@ -369,5 +431,57 @@ pub fn metadata(
         key: None,
         branch: None,
         command: terminal.command.clone(),
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_stops_are_ignored_until_reconnection() {
+        let bridge = Bridge::default();
+        bridge
+            .retire_with(
+                |_| {},
+                || {
+                    // Another webview calls while the first stop is in flight.
+                    bridge.retire_with(|_| {}, || panic!("duplicate stop"))?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(bridge.status()["retirement"]["state"], "reconnecting");
+        bridge
+            .retire_with(|_| {}, || panic!("stop before reconnect"))
+            .unwrap();
+        bridge.connected("replacement");
+        assert_eq!(bridge.status()["retirement"]["state"], "idle");
+        bridge
+            .retire_with(|_| {}, || panic!("stop after reconnect"))
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_stop_can_retry_and_early_reconnect_clears_stopping() {
+        let bridge = Bridge::default();
+        assert!(
+            bridge
+                .retire_with(|_| {}, || Err("failure".into()))
+                .is_err()
+        );
+        assert_eq!(bridge.status()["retirement"]["state"], "idle");
+        assert_eq!(bridge.status()["retirement"]["error"], "failure");
+        bridge
+            .retire_with(
+                |_| {},
+                || {
+                    bridge.connected("replacement");
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(bridge.status()["retirement"]["state"], "idle");
+        assert!(bridge.status()["retirement"]["error"].is_null());
     }
 }
