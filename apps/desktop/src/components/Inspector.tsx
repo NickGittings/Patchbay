@@ -11,6 +11,7 @@ import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../li
 import { useClockTick } from '../lib/clock'
 import { peersFor } from '../lib/plan'
 import AddTerminalSelect from './AddTerminalSelect'
+import FileTree from './FileTree'
 import { componentContext, pickComponentFolder } from '../lib/ipc'
 import { repairComponentPath, provenanceLabel, useMaintenance } from '../lib/maintenance'
 import { startTerminal, stopTerminal } from '../lib/sessions'
@@ -432,6 +433,10 @@ export default function Inspector() {
   const node = useStore((s) => s.nodes.find((n) => n.id === s.selectedId))
   const edgeId = useStore((s) => s.selectedEdgeId)
   const project = useStore((s) => s.project)
+  const scope = JSON.stringify([project?.id, node?.id])
+  const [filesTab, setFilesTab] = useState({ scope, selected: false })
+  if (filesTab.scope !== scope) setFilesTab({ scope, selected: false })
+  const showFiles = filesTab.selected && !!node
 
   return (
     <div className="panel inspector">
@@ -446,27 +451,46 @@ export default function Inspector() {
           ×
         </button>
       </div>
-      {extensionViews.views.length > 0 && (
+      {(node || extensionViews.views.length > 0) && (
         <div className="tabs">
           <button
-            className={!extensionViews.selected ? 'active' : ''}
-            onClick={() => extensionViews.setSelected(null)}
+            className={!showFiles && !extensionViews.selected ? 'active' : ''}
+            onClick={() => {
+              setFilesTab({ scope, selected: false })
+              extensionViews.setSelected(null)
+            }}
           >
             Component
           </button>
+          {node && (
+            <button
+              className={showFiles ? 'active' : ''}
+              onClick={() => {
+                setFilesTab({ scope, selected: true })
+                extensionViews.setSelected(null)
+              }}
+            >
+              Files
+            </button>
+          )}
           {extensionViews.views.map((view) => (
             <button
               key={view.id}
               data-extension-view-tab={view.id}
               className={extensionViews.selected === view.id ? 'active' : ''}
-              onClick={() => extensionViews.setSelected(view.id)}
+              onClick={() => {
+                setFilesTab({ scope, selected: false })
+                extensionViews.setSelected(view.id)
+              }}
             >
               {view.title}
             </button>
           ))}
         </div>
       )}
-      {extensionViews.selected ? (
+      {showFiles && node ? (
+        <FileTree key={scope} root={project?.root ?? node.data.path} path={node.data.path} />
+      ) : extensionViews.selected ? (
         <ExtensionView id={extensionViews.selected} />
       ) : node ? (
         <ComponentInspector key={`${project?.id}:${node.id}`} node={node} />

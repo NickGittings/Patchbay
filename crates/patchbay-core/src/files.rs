@@ -1,7 +1,7 @@
 //! Read-only directory listings contained within a project's folders: the
 //! project root plus any repos on the map that live outside it.
 
-use crate::model::relative_path;
+use crate::model::{plain_path, relative_path};
 use anyhow::{Result, bail};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,15 @@ fn inside(path: &Path, roots: &[PathBuf]) -> bool {
 /// Fails if a path does not exist or `rel` resolves outside every root.
 pub fn resolve(roots: &[PathBuf], rel: &Path) -> Result<PathBuf> {
     resolve_in(&canonical_roots(roots)?, rel)
+}
+
+/// The absolute path [`resolve`] finds for `rel`, with `/` separators and without Windows'
+/// verbatim prefix, for showing or copying.
+///
+/// # Errors
+/// Fails like [`resolve`].
+pub fn absolute(roots: &[PathBuf], rel: &Path) -> Result<String> {
+    Ok(plain_path(&resolve(roots, rel)?.to_string_lossy()))
 }
 
 /// [`resolve`] against roots already passed through `canonical_roots`.
@@ -179,6 +188,19 @@ mod tests {
         assert!(list_dir(fixture.roots(), &env::temp_dir()).is_err());
         assert!(resolve(fixture.roots(), Path::new("..")).is_err());
         assert_eq!(resolve(fixture.roots(), Path::new(".")).unwrap(), fixture.0);
+    }
+
+    #[test]
+    fn absolute_paths_stay_inside_the_roots() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("app")).unwrap();
+        let root = plain_path(&fixture.0.to_string_lossy());
+        assert_eq!(
+            absolute(fixture.roots(), Path::new("app")).unwrap(),
+            format!("{root}/app")
+        );
+        assert!(absolute(fixture.roots(), Path::new("..")).is_err());
+        assert!(absolute(fixture.roots(), Path::new("missing")).is_err());
     }
 
     #[cfg(unix)]

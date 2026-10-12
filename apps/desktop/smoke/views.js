@@ -600,8 +600,140 @@
       'opaque planner attention navigation',
       () => state().view === 'plan' && state().planActive === secondary.id,
     )
+    // Check Navigation handoffs with the real fixture after the planner checks.
+    const fixture = detected.components.find((c) => c.path === 'app')
+    assert(fixture, 'missing fixture component')
+    const navigationProject = {
+      ...detected,
+      components: [
+        ...detected.components,
+        ...Array.from({ length: 5 }, (_, i) => ({
+          ...fixture,
+          id: `filter-${i}`,
+          name: `Filter ${i}`,
+          path: '.',
+          position: { x: (i + 1) * 320, y: 0 },
+          terminals: [],
+        })),
+      ],
+    }
+    state().setView('navigation')
+    state().syncProject(navigationProject)
+    state().select(fixture.id)
+    const inspectorTab = (name) =>
+      [...document.querySelectorAll('.inspector .tabs button')].find(
+        (button) => button.textContent === name,
+      )
+    click(await until('Files tab', () => inspectorTab('Files')))
+    await until('fixture entries in Inspector', () => {
+      const names = [...document.querySelectorAll('.inspector .file-tree-name')].map(
+        (el) => el.textContent,
+      )
+      return names.includes('index.ts') && names.includes('package.json')
+    })
+    const filter = await until('hierarchy filter', () =>
+      document.querySelector('input[aria-label="Filter components"]'),
+    )
+    choose(filter, 'filter 3')
+    await until('filtered hierarchy', () => {
+      const rows = [...document.querySelectorAll('.hierarchy-item')]
+      return rows.length === 1 && rows[0].textContent.includes('Filter 3')
+    })
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await until('highlighted filter row', () =>
+      document.querySelector('.hierarchy-item.highlighted'),
+    )
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await until('keyboard focus from filter', () => state().selectedId === 'filter-3')
+    await until('Files tab reset', () => inspectorTab('Component')?.classList.contains('active'))
+    choose(filter, 'no such component')
+    await until('no filter matches', () =>
+      document.querySelector('.hierarchy').textContent.includes('No matches'),
+    )
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until(
+      'filter cleared',
+      () =>
+        document.querySelectorAll('.hierarchy-item').length === navigationProject.components.length,
+    )
+
+    const context = (el) =>
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 120 }))
+    const dismissMenu = async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await until('context menu dismissed', () => !document.querySelector('.node-menu-overlay'))
+    }
+    context(nodeElement(fixture.id).querySelector('.component-node'))
+    const menu = await until('node actions menu', () =>
+      document.querySelector('.node-extension-menu'),
+    )
+    for (const label of ['Open in editor', 'Copy path', 'Open in window', 'Start Shell'])
+      assert(menu.textContent.includes(label), `node menu missing ${label}`)
+    await dismissMenu()
+    context(document.getElementById(`hierarchy-${fixture.id}`))
+    await until('hierarchy actions menu', () => document.querySelector('.node-extension-menu'))
+    assert(state().selectedId === fixture.id, 'context menu did not select the row')
+    // Edit the runner's disposable fixture. A root change gives Review a second filter chip.
+    const shell = fixture.terminals.find((t) => t.kind === 'shell')
+    assert(shell, 'missing fixture shell')
+    const fixtureSid = smoke.sessionId(fixture.id, shell.id)
+    click(
+      [...document.querySelectorAll('.node-extension-menu button')].find(
+        (button) => button.textContent === `Start ${shell.name}`,
+      ),
+    )
+    await until('fixture shell running', () => state().sessions[fixtureSid]?.running)
+    assert(state().activeSession === fixtureSid, 'Start did not activate the terminal')
+    context(nodeElement(fixture.id).querySelector('.component-node'))
+    await until('Show terminal action', () =>
+      [...document.querySelectorAll('.node-extension-menu button')].some(
+        (button) => button.textContent === `Show ${shell.name}`,
+      ),
+    )
+    await dismissMenu()
+    await smoke.terminalWrite(
+      fixtureSid,
+      "printf '\\n' >> index.ts; printf navigation > ../navigation-smoke.txt\r",
+    )
+    await until('fixture changes badge', async () => {
+      await smoke.requestGitRefresh()
+      return nodeElement(fixture.id)?.querySelector('.changes-badge .git-badge')
+    })
+    state().select('filter-3')
+    await until('selection before badge', () =>
+      document.querySelector('.hierarchy-item.active')?.textContent.includes('Filter 3'),
+    )
+    click(nodeElement(fixture.id).querySelector('.changes-badge .git-badge'))
+    await until('changed fixture in popover', () =>
+      document.querySelector('.changes-popover .change-row[title$="app/index.ts"]'),
+    )
+    assert(state().selectedId === 'filter-3', 'changes badge changed selection')
+    click(document.querySelector('.changes-popover-footer'))
+    await until(
+      'Review component filter active',
+      () =>
+        state().view === 'review' &&
+        [...document.querySelectorAll('.review-filter .filter-chip.on')].some((chip) =>
+          chip.textContent.includes(fixture.name),
+        ),
+    )
+    assert(state().reviewFocus === null, 'Review did not consume the one-shot focus')
+    await smoke.terminalWrite(
+      fixtureSid,
+      'git restore -- index.ts; rm -f ../navigation-smoke.txt\r',
+    )
+    await until('fixture restored', async () => {
+      await smoke.requestGitRefresh()
+      return !state().gitChanges[fixture.id]
+    })
+    smoke.stopTerminal(fixtureSid)
+    await until('fixture shell stopped', () => !state().sessions[fixtureSid]?.running)
+    state().setView('navigation')
+    state().select(null)
+    state().setActiveSession(null)
+    smoke.store.setState({ inspector: null })
     await smoke.report(
-      'PASS views: scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
+      'PASS views: navigation actions, inspector files, hierarchy filter, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e}`)

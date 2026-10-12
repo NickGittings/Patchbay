@@ -1,6 +1,6 @@
-import { createPortal } from 'react-dom'
 import ExtensionBadges from '../../extensions/Badges'
-import ExtensionMenu from '../../extensions/ExtensionMenu'
+import { ComponentMenuItems, ContextMenu } from '../ComponentActions'
+import ChangesPopover from '../changes/ChangesPopover'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { memo, useState, type CSSProperties } from 'react'
 import { nearbyIds } from '../../lib/plan'
@@ -80,24 +80,17 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       }}
       style={{ '--kind': color } as CSSProperties}
     >
-      {menu &&
-        createPortal(
-          <div
-            className="node-menu-overlay nodrag"
-            onClick={(e) => {
-              e.stopPropagation()
-              setMenu(null)
-            }}
-          >
-            <div className="node-extension-menu" style={{ left: menu.x, top: menu.y }}>
-              <ExtensionMenu slot="component/actions" componentId={id} />
-              <button onClick={() => void openComponentWindow(id, data.name)}>
-                Open in window
-              </button>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {menu && (
+        <ContextMenu at={menu} onClose={() => setMenu(null)}>
+          <ComponentMenuItems
+            id={id}
+            name={data.name}
+            path={data.path}
+            terminals={data.terminals}
+            onDone={() => setMenu(null)}
+          />
+        </ContextMenu>
+      )}
       <Handle type="target" position={Position.Left} className="link-handle" />
       <div className="component-header">
         <span className="kind-badge">{data.kind}</span>
@@ -112,11 +105,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
             {repo}
           </span>
         )}
-        {changes > 0 && (
-          <span className="git-badge" title={`${changes} uncommitted change(s)`}>
-            ±{changes}
-          </span>
-        )}
+        {changes > 0 && <ChangesPopover componentId={id} />}
         <AttentionPill status={attention} />
         <ExtensionBadges componentId={id} />
         <button

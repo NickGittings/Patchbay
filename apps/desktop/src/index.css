@@ -566,14 +566,34 @@ input[type='radio'] {
   border: 1px solid transparent;
   background: transparent;
   text-align: left;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
-.hierarchy-item:hover:not(:disabled) {
-  border-color: transparent;
+.hierarchy-item.active,
+.hierarchy-item.highlighted,
+.hierarchy-item:hover {
+  background: var(--hover);
 }
 .hierarchy-item.active {
-  background: var(--hover);
-  border-color: transparent;
   box-shadow: inset 2px 0 0 var(--accent);
+}
+.hierarchy-select {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  text-align: left;
+}
+.hierarchy-select:hover:not(:disabled) {
+  background: transparent;
+}
+.hierarchy-filter {
+  width: calc(100% - 24px);
+  margin: 0 12px 8px;
 }
 .kind-dot {
   width: 8px;
@@ -1908,6 +1928,31 @@ button.review-name:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+}
+.node-extension-menu hr {
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.changes-badge {
+  flex: none;
+}
+.changes-badge .menu-trigger {
+  padding: 1px 5px;
+}
+.changes-popover {
+  width: min(420px, calc(100vw - 16px));
+}
+.changes-popover .change-list {
+  height: auto;
+  max-height: 40vh;
+}
+.changes-popover-footer {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
 }
 
 .project-tabs {
