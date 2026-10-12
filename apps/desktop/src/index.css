@@ -1986,6 +1986,10 @@ button.review-name:hover:not(:disabled) {
   flex: 1;
   min-width: 200px;
 }
+.session-row > .session-menu {
+  flex: none;
+  min-width: 0;
+}
 .session-row small {
   display: block;
   color: var(--muted);
@@ -2607,7 +2611,8 @@ kbd {
   color: var(--muted);
   font-size: 16px;
 }
-.task-tabs .task-menu .menu-trigger {
+.task-tabs .task-menu .menu-trigger,
+.session-row .session-menu .menu-trigger {
   width: 28px;
   height: 28px;
   padding: 0;

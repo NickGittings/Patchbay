@@ -234,9 +234,10 @@ directory and provider history.
 
 Agent terminals/devices accept `"adapter": "claude"` or `"adapter": "codex"`. Recognized direct
 provider commands get defaults; select an adapter for a custom command. **Reconnect**
-attaches to a live process. **Resume conversation** explicitly resumes an ended conversation
-by its stored provider ID, separately from its PTY ID and process generation. Recognized
-resume instructions capture an exact ID; otherwise use **Set conversation ID**. Patchbay
+attaches to a live process. **Resume** explicitly resumes an ended conversation by its stored
+provider ID, separately from its PTY ID and process generation. Recognized resume instructions
+capture an exact ID; otherwise use **Set conversation ID…** in the row's **⋯** menu, which also
+holds **Start new** and **Forget** for ended sessions. Patchbay
 never selects the newest conversation in a directory. Resume preserves launch options and
 Patchbay context. Unsupported compound/wrapper commands report an error when their options
 cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)

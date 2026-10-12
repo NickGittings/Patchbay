@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { projectStateOf, useStore } from '../store'
 import {
@@ -25,6 +25,7 @@ import {
 } from '../lib/sessionList'
 import { sessionView, type SessionRecord, type Task } from '../types'
 import { revealTerminal } from '../lib/attention'
+import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
 
 const EMPTY: Record<SessionFilter, string> = {
@@ -161,6 +162,31 @@ function SessionList({
                     const live = sessionLive(r)
                     // Recorded but not spawned yet: output is not available to reconnect to.
                     const starting = live && !r.snapshot
+                    const review = sessionView(r.metadata.componentId) === 'review'
+                    const unavailable = !connected || busy
+                    // Review sessions are reopened in Review rather than started again.
+                    const reopen = {
+                      label: review ? 'Show in Review' : 'Start new',
+                      // Both need the project open: Review reveals in the active project.
+                      disabled: unavailable || projectTasks[projectId] === undefined,
+                      onClick: () =>
+                        void perform(async () => {
+                          useStore.getState().activateProject(r.metadata.projectId)
+                          if (review) {
+                            onReveal(r)
+                            return
+                          }
+                          await startTerminal(
+                            r.metadata.componentId,
+                            r.metadata.terminalId,
+                            r.metadata.task ?? null,
+                            r.metadata.projectId,
+                          )
+                        }),
+                    }
+                    // Two inline actions at most; a finished review without Resume shows its way
+                    // back inline, since that is the row's main action.
+                    const reviewInline = review && !live && !r.metadata.adapter
                     return (
                       <div className="session-row" key={r.id}>
                         <div>
@@ -182,7 +208,7 @@ function SessionList({
                         </span>
                         <small>{time !== undefined && <Ago ms={time} />}</small>
                         <button
-                          disabled={!connected || busy || starting}
+                          disabled={unavailable || starting}
                           onClick={() =>
                             void perform(async () => {
                               await hydrateSession(r.id)
@@ -195,63 +221,66 @@ function SessionList({
                         {live ? (
                           <button
                             title="Stop this session; cancel startup if its plan includes this session"
-                            disabled={!connected || busy}
+                            disabled={unavailable}
                             onClick={() => void perform(() => terminalStop(r.id))}
                           >
                             Stop
                           </button>
-                        ) : (
-                          <>
-                            {r.metadata.adapter && (
-                              <button
-                                disabled={!connected || busy}
-                                onClick={() => void perform(() => sessionResume(r.id))}
-                              >
-                                Resume conversation
-                              </button>
-                            )}
-                            <button
-                              disabled={!connected || busy || projectTasks[projectId] === undefined}
-                              onClick={() =>
-                                void perform(async () => {
-                                  useStore.getState().activateProject(r.metadata.projectId)
-                                  if (sessionView(r.metadata.componentId) === 'review') {
-                                    onReveal(r)
-                                    return
-                                  }
-                                  await startTerminal(
-                                    r.metadata.componentId,
-                                    r.metadata.terminalId,
-                                    r.metadata.task ?? null,
-                                    r.metadata.projectId,
-                                  )
-                                })
-                              }
-                            >
-                              {sessionView(r.metadata.componentId) === 'review'
-                                ? 'Show in Review'
-                                : 'Start new'}
-                            </button>
-                            <button
-                              disabled={!connected || busy}
-                              onClick={() => void perform(() => sessionForget(r.id))}
-                            >
-                              Forget
-                            </button>
-                          </>
-                        )}
-                        {r.metadata.adapter && (
+                        ) : r.metadata.adapter ? (
                           <button
-                            disabled={!connected || busy}
-                            onClick={() =>
-                              onConversation({
-                                id: r.id,
-                                value: r.metadata.conversationId ?? '',
-                              })
-                            }
+                            disabled={unavailable}
+                            onClick={() => void perform(() => sessionResume(r.id))}
                           >
-                            Set conversation ID
+                            Resume
                           </button>
+                        ) : (
+                          reviewInline && (
+                            <button disabled={reopen.disabled} onClick={reopen.onClick}>
+                              {reopen.label}
+                            </button>
+                          )
+                        )}
+                        {(!live || r.metadata.adapter) && (
+                          <Menu
+                            label="⋯"
+                            title="More session actions"
+                            triggerLabel={`More actions for ${r.metadata.name}`}
+                            caret={false}
+                            portal
+                            align="right"
+                            className="session-menu"
+                            listClassName="session-menu-list"
+                          >
+                            {!live && !reviewInline && (
+                              <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
+                                {reopen.label}
+                              </MenuItem>
+                            )}
+                            {r.metadata.adapter && (
+                              <MenuItem
+                                disabled={unavailable}
+                                onClick={() =>
+                                  onConversation({
+                                    id: r.id,
+                                    value: r.metadata.conversationId ?? '',
+                                  })
+                                }
+                              >
+                                Set conversation ID…
+                              </MenuItem>
+                            )}
+                            {!live && (
+                              <>
+                                {!reviewInline && <MenuSeparator />}
+                                <MenuItem
+                                  disabled={unavailable}
+                                  onClick={() => void perform(() => sessionForget(r.id))}
+                                >
+                                  Forget
+                                </MenuItem>
+                              </>
+                            )}
+                          </Menu>
                         )}
                       </div>
                     )
@@ -279,6 +308,10 @@ export default function SessionsPanel() {
   const [conversation, setConversation] = useState<{ id: string; value: string }>()
   const [historyOutput, setHistoryOutput] = useState('')
   const [history, setHistory] = useState<number | null>(null)
+  // The run chosen in the select, ahead of its output loading; `history` follows once it has.
+  const [requested, setRequested] = useState<number | null>(null)
+  // Bumped per choice, so a slower earlier fetch can't replace a later choice's output.
+  const historyRequest = useRef(0)
   const [busy, setBusy] = useState(false)
   const [confirmStopAll, setConfirmStopAll] = useState(false)
   const perform = async (action: () => Promise<unknown>) => {
@@ -353,8 +386,10 @@ export default function SessionsPanel() {
           busy={busy}
           perform={perform}
           onSelect={(record) => {
+            historyRequest.current++
             setSelected(record)
             setHistory(null)
+            setRequested(null)
           }}
           onReveal={(r) => {
             revealTerminal({ sid: r.id, componentId: r.metadata.componentId })
@@ -364,6 +399,8 @@ export default function SessionsPanel() {
         />
         {conversation && (
           <form
+            // Remounts per session, so choosing another row's menu item focuses its input again.
+            key={conversation.id}
             className="row"
             onSubmit={(e) => {
               e.preventDefault()
@@ -376,6 +413,8 @@ export default function SessionsPanel() {
             <label>
               Exact provider conversation ID{' '}
               <input
+                // Opened from a row's menu, possibly far above this form in a scrolling list.
+                autoFocus
                 value={conversation.value}
                 onChange={(e) => setConversation({ ...conversation, value: e.target.value })}
               />
@@ -390,33 +429,49 @@ export default function SessionsPanel() {
           <section className="session-preview">
             <div className="row">
               <strong>{selected.metadata.name}</strong>
-              <button
-                onClick={() => {
-                  setHistory(null)
-                }}
-              >
-                Current run
-              </button>
-              {selected.history.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() =>
-                    void perform(async () => {
-                      const output = await sessionHistory(selected.id, i)
-                      setHistory(i)
-                      setHistoryOutput(
-                        output
-                          ? new TextDecoder().decode(
-                              Uint8Array.from(atob(output.data), (c) => c.charCodeAt(0)),
-                            )
-                          : 'History unavailable',
-                      )
-                    })
-                  }
+              {!!selected.history.length && (
+                <select
+                  aria-label="Run"
+                  value={requested ?? ''}
+                  onChange={(e) => {
+                    const request = ++historyRequest.current
+                    if (e.target.value === '') {
+                      setRequested(null)
+                      setHistory(null)
+                      return
+                    }
+                    const i = Number(e.target.value)
+                    const shown = history
+                    setRequested(i)
+                    // A read only: no `perform`, so row actions stay enabled and nothing reconciles.
+                    void sessionHistory(selected.id, i).then(
+                      (output) => {
+                        if (request !== historyRequest.current) return
+                        setHistory(i)
+                        setHistoryOutput(
+                          output
+                            ? new TextDecoder().decode(
+                                Uint8Array.from(atob(output.data), (c) => c.charCodeAt(0)),
+                              )
+                            : 'History unavailable',
+                        )
+                      },
+                      (error: unknown) => {
+                        // Show the run still on screen, so choosing the failed one again retries.
+                        if (request === historyRequest.current) setRequested(shown)
+                        useStore.getState().setMessage(String(error))
+                      },
+                    )
+                  }}
                 >
-                  Run {i + 1}
-                </button>
-              ))}
+                  <option value="">Current run</option>
+                  {selected.history.map((_, i) => (
+                    <option key={i} value={i}>
+                      Run {i + 1}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button onClick={() => setSelected(undefined)}>Hide</button>
             </div>
             <p className="hint">

@@ -14,13 +14,18 @@ import { CloseMenu, MenuOpens } from './menuContext'
 export type PopoverProps = {
   label: ReactNode
   title?: string
+  /** The trigger's accessible name, when `title` alone doesn't say which item it acts on. */
+  triggerLabel?: string
   align?: 'left' | 'right'
   className?: string
   triggerClassName?: string
   listClassName?: string
   caret?: boolean
   keepMounted?: boolean
-  /** Render outside scrollable panels, positioning the list beside its trigger. */
+  /**
+   * Render outside scrollable panels, positioning the list beside its trigger. Inside a modal
+   * dialog the list stays in that dialog, so assistive tech doesn't treat it as inert.
+   */
   portal?: boolean
   children: ReactNode
 }
@@ -32,9 +37,28 @@ export type PopoverProps = {
  * moving away just closes it. With `keepMounted` the popup stays rendered (hidden) while closed,
  * so content that loads state is ready when it opens. `Menu` adds list keyboard handling on top.
  */
+/**
+ * The enclosing modal dialog, so assistive tech doesn't treat the popup as inert behind it, unless
+ * that dialog is the containing block for fixed elements: its overflow would then clip the popup.
+ */
+function portalTarget(from: HTMLElement | null): HTMLElement {
+  const modal = from?.closest<HTMLElement>('[aria-modal="true"]')
+  if (!modal) return document.body
+  const style = getComputedStyle(modal)
+  const contains =
+    style.transform !== 'none' ||
+    style.filter !== 'none' ||
+    style.backdropFilter !== 'none' ||
+    style.perspective !== 'none' ||
+    /paint|layout|strict|content/.test(style.contain) ||
+    /transform|filter|perspective/.test(style.willChange)
+  return contains ? document.body : modal
+}
+
 export default function Popover({
   label,
   title,
+  triggerLabel,
   align = 'left',
   className = '',
   triggerClassName = '',
@@ -65,6 +89,9 @@ export default function Popover({
   // this is read once at open time.
   const previous = useRef<HTMLElement | null>(null)
   const [opens, setOpens] = useState(0)
+  // Where a portalled popup renders, resolved before first paint (undefined until then) so a
+  // `keepMounted` popup mounts once, in place.
+  const [container, setContainer] = useState<HTMLElement>()
   const [position, setPosition] = useState({ left: 0, top: 0 })
   const contains = (active: Node | null) =>
     !!active && (!!root.current?.contains(active) || !!list.current?.contains(active))
@@ -76,16 +103,22 @@ export default function Popover({
     let frame = 0
     const place = () => {
       const anchor = trigger.current?.getBoundingClientRect()
-      const popup = list.current?.getBoundingClientRect()
-      if (anchor && popup) {
-        const left = Math.max(
-          8,
-          Math.min(
-            align === 'right' ? anchor.right - popup.width : anchor.left,
-            window.innerWidth - popup.width - 8,
-          ),
-        )
-        const top = Math.max(8, Math.min(anchor.bottom + 4, window.innerHeight - popup.height - 8))
+      const el = list.current
+      const popup = el?.getBoundingClientRect()
+      if (anchor && el && popup) {
+        // A filtered or transformed ancestor (a dialog's overlay) offsets fixed positioning.
+        const originX = popup.left - (parseFloat(el.style.left) || 0)
+        const originY = popup.top - (parseFloat(el.style.top) || 0)
+        const left =
+          Math.max(
+            8,
+            Math.min(
+              align === 'right' ? anchor.right - popup.width : anchor.left,
+              window.innerWidth - popup.width - 8,
+            ),
+          ) - originX
+        const top =
+          Math.max(8, Math.min(anchor.bottom + 4, window.innerHeight - popup.height - 8)) - originY
         setPosition((old) => (old.left === left && old.top === top ? old : { left, top }))
       }
       frame = requestAnimationFrame(place)
@@ -93,6 +126,10 @@ export default function Popover({
     place()
     return () => cancelAnimationFrame(frame)
   }, [open, portal, align])
+
+  useLayoutEffect(() => {
+    if (portal) setContainer(portalTarget(root.current))
+  }, [portal])
 
   const openPopup = (keyboard: boolean) => {
     const active = document.activeElement
@@ -208,6 +245,7 @@ export default function Popover({
         className={`menu-trigger ${triggerClassName}`}
         aria-haspopup={role}
         aria-expanded={!!open}
+        aria-label={triggerLabel}
         title={title}
         // Keep focus where it is (a terminal, say) so it can be handed back on close.
         onMouseDown={(e) => e.preventDefault()}
@@ -221,7 +259,7 @@ export default function Popover({
           </span>
         )}
       </button>
-      {(open || keepMounted) && (portal ? createPortal(popup, document.body) : popup)}
+      {(open || keepMounted) && (portal ? container && createPortal(popup, container) : popup)}
     </div>
   )
 }
