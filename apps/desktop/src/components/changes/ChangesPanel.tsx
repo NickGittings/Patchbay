@@ -1,51 +1,25 @@
 import PersistedGroup from '../PersistedGroup'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
-import { componentPaths } from '../../lib/git'
-import { gitChanges } from '../../lib/ipc'
 import { latestChange, lineTotals } from '../../lib/review'
 import { activeWorktree } from '../../lib/tasks'
 import { useStore } from '../../store'
-import type { ChangedFile } from '../../types'
 import ChangeList from './ChangeList'
 import DiffStat from './DiffStat'
 import DiffView from './DiffView'
 import ValidationChips from './ValidationChips'
+import { useComponentChanges } from './useComponentChanges'
 import EmptyState from '../EmptyState'
 
 /** One component's uncommitted changes, its validation status, and the selected file's diff. */
 export default function ChangesPanel({ componentId }: { componentId: string }) {
-  // A new object on every Git refresh (pop-outs get it over `patchbay://git`), so the list
-  // also reloads when an edit leaves the change count as it was.
-  const revision = useStore((s) => s.gitChanges)
   const name = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.name ?? componentId)
-  const base = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.path ?? '.')
-  const [loaded, setLoaded] = useState<{ scope: string; files: ChangedFile[] }>()
-  const [error, setError] = useState('')
   const [selected, setSelected] = useState<string>()
   const [refresh, setRefresh] = useState(0)
-  const task = useStore((s) => s.activeTask)
+  // `revision` is a new object on every Git refresh (pop-outs get it over `patchbay://git`), so
+  // the list also reloads when an edit leaves the change count as it was.
+  const { files, error, base, task, revision } = useComponentChanges(componentId, refresh)
   const worktree = useStore(activeWorktree)
-  const projectId = useStore((s) => s.project?.id)
-  const scope = JSON.stringify([projectId, componentId, base, task])
-  const files = loaded?.scope === scope ? loaded.files : null
-
-  useEffect(() => {
-    let disposed = false
-    void gitChanges(componentPaths(), componentId, task ?? undefined)
-      .then((list) => {
-        if (!disposed) {
-          setLoaded({ scope, files: list })
-          setError('')
-        }
-      })
-      .catch((e) => {
-        if (!disposed) setError(String(e))
-      })
-    return () => {
-      disposed = true
-    }
-  }, [componentId, base, revision, refresh, task, scope])
 
   const file = files?.find((f) => f.path === selected) ?? files?.[0] ?? null
   return (

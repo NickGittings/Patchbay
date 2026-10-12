@@ -60,7 +60,12 @@ export default function ReviewView() {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<{ componentId: string; path: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const [filter, setFilter] = useState<string[]>([])
+  // "Open in Review" (outside Review, so this mounts afterwards) asks to start with one component.
+  const reviewFocus = useStore((s) => s.reviewFocus)
+  const [filter, setFilter] = useState<string[]>(reviewFocus ? [reviewFocus] : [])
+  useEffect(() => {
+    if (reviewFocus) useStore.setState({ reviewFocus: null })
+  }, [reviewFocus])
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)

@@ -1814,6 +1814,22 @@ async fn reveal_path(
     })
     .await
 }
+/// The absolute path of `path` (relative to the project root) in the open folder or the task's
+/// worktree, where Reveal and the editor find it.
+#[tauri::command]
+async fn resolve_path(
+    project_id: String,
+    state: State<'_, AppState>,
+    path: String,
+    task: Option<String>,
+) -> CmdResult<String> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), None)?;
+        files::absolute(&roots, Path::new(&path)).map_err(err)
+    })
+    .await
+}
 #[tauri::command]
 async fn editor_preferences() -> CmdResult<EditorPreferences> {
     blocking(|| navigation::preferences().map_err(err)).await
@@ -2098,6 +2114,7 @@ pub fn run() {
                 terminal_snapshot,
                 list_dir,
                 reveal_path,
+                resolve_path,
                 editor_preferences,
                 editor_save_preferences,
                 editor_discover,

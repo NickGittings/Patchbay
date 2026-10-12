@@ -293,6 +293,13 @@ export const revealPath = (
   projectId = useStore.getState().project?.id,
   task: string | null = useStore.getState().activeTask,
 ) => invoke<void>('reveal_path', { path, projectId, task, worktree })
+/** The absolute path of `path` (relative to the project root) in the task's worktree, or the open
+ * folder without one. */
+export const resolvePath = (
+  path: string,
+  projectId = useStore.getState().project?.id,
+  task: string | null = useStore.getState().activeTask,
+) => invoke<string>('resolve_path', { path, projectId, task })
 export const editorPreferences = () => invoke<EditorPreferences>('editor_preferences')
 export const editorSavePreferences = (preferences: EditorPreferences) =>
   invoke<void>('editor_save_preferences', { preferences })

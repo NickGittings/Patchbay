@@ -484,7 +484,8 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
 /// A path for display and storage with `/` separators, dropping the Windows
 /// verbatim prefix that `canonicalize` adds: `\\?\D:\x` becomes `D:/x` and
 /// `\\?\UNC\host\share` becomes `//host/share`, which Windows parses again.
-fn plain_path(path: &str) -> String {
+#[must_use]
+pub fn plain_path(path: &str) -> String {
     let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{unc}")
     } else {

@@ -201,6 +201,8 @@ interface State {
   dockKept: string[]
   /** Explicit merge selection and Hide state survive Review remounts, per project. */
   reviewAgents: Record<string, { sid: string; hidden: boolean }>
+  /** One-shot component filter for Review (UI only, never saved). */
+  reviewFocus: string | null
   hideReviewAgent: (sid: string) => void
   keepInDock: (id: string) => void
   dropFromDock: (id: string) => void
@@ -459,6 +461,7 @@ export const useStore = create<State>((set, get) => ({
   activityPanelOpen: false,
   dockKept: [],
   reviewAgents: {},
+  reviewFocus: null,
   hideReviewAgent: (sid) =>
     set((s) =>
       s.project
