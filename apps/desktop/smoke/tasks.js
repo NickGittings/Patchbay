@@ -186,14 +186,15 @@
     const taskRow = await until('Navigation task row', () =>
       navOverview.querySelector('.worktree-row.active'),
     )
-    // Only the row's switch button switches, so selecting the path text doesn't.
-    click(taskRow.querySelector('.worktree-path'))
+    // Clicking the active card leaves the picker open.
+    click(taskRow.querySelector('.worktree-detail'))
     await sleep(100)
     assert(
       state().activeTask === task.id && document.querySelector('.worktree-popover'),
-      'clicking the worktree path switched or closed the picker',
+      'clicking the active worktree card switched or closed the picker',
     )
-    click(navOverview.querySelector('.worktree-row:not(.active) .worktree-row-switch'))
+    // Clicking the card outside its controls switches.
+    click(navOverview.querySelector('.worktree-row:not(.active) .worktree-detail'))
     await until(
       'main worktree active',
       () => state().activeTask === null && !document.querySelector('.worktree-popover'),
@@ -205,7 +206,17 @@
       return row?.textContent.includes('main') && row
     })
     assert(projectRow.textContent.includes('Main worktree'), 'main worktree label missing')
-    click(overview.querySelector('.worktree-row:not(.active) .worktree-row-switch'))
+    // Another card's own controls and its path (kept for copying) don't switch.
+    const otherRow = overview.querySelector('.worktree-row:not(.active)')
+    for (const selector of ['.worktree-path', '.worktree-notes-detail summary']) {
+      click(otherRow.querySelector(selector))
+      await sleep(100)
+      assert(
+        state().activeTask === null && document.querySelector('.worktree-popover'),
+        `clicking ${selector} on another worktree switched or closed the picker`,
+      )
+    }
+    click(otherRow.querySelector('.worktree-row-switch'))
     await until(
       'worktree selected',
       () => state().activeTask === task.id && !document.querySelector('.worktree-popover'),
