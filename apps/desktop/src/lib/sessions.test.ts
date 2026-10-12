@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, sessionId, type Project } from '../types'
+import { PLAN_SCOPE, TASK_ROOT_SCOPE, sessionId, type Project } from '../types'
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async () => ({ connected: true, instanceId: 'test' })),
 }))
@@ -207,24 +207,115 @@ test('a post-launch reconcile waits for an older list before selecting and revea
   expect(useStore.getState().reviewAgents.p).toEqual({ sid: record.id, hidden: false })
   expect(useStore.getState().dockKept).not.toContain(record.id)
 })
-test('restart resumes an agent conversation the service captured', async () => {
+test('Start new launches fresh even when a recorded conversation exists', async () => {
+  useStore.getState().updateTerminal('web', 'dev', { kind: 'agent', command: 'claude' })
   const sid = sessionId('web', 'dev', null, 'p')
-  vi.mocked(ipc.sessionsList).mockResolvedValue([
-    { id: sid, metadata: { adapter: 'claude', conversationId: 'abc' } } as never,
-  ])
-  await restartTerminal('web', 'dev')
-  expect(ipc.sessionResume).toHaveBeenCalledWith(sid)
-  expect(ipc.terminalStart).not.toHaveBeenCalled()
-  vi.mocked(ipc.sessionsList).mockResolvedValue([])
+  useStore.setState({
+    sessionRecords: [{ id: sid, metadata: { adapter: 'claude', conversationId: 'abc' } } as never],
+  })
+  await startTerminal('web', 'dev')
+  expect(ipc.terminalStart).toHaveBeenCalledWith(
+    expect.anything(),
+    'web',
+    'dev',
+    undefined,
+    undefined,
+    expect.any(String),
+    undefined,
+    false,
+  )
+  expect(ipc.sessionResume).not.toHaveBeenCalled()
+  expect(ipc.sessionsList).not.toHaveBeenCalled()
 })
-test('a refused resume falls back to a fresh start', async () => {
-  const sid = sessionId('web', 'dev', null, 'p')
-  vi.mocked(ipc.sessionsList).mockResolvedValue([
-    { id: sid, metadata: { adapter: 'claude', conversationId: 'abc' } } as never,
-  ])
-  vi.mocked(ipc.sessionResume).mockRejectedValueOnce(new Error('briefing is gone'))
+
+test('restart sends an agent its current command and peers for service comparison', async () => {
+  useStore.setState(useStore.getInitialState())
+  useStore.getState().loadProject({
+    ...project,
+    components: [
+      ...project.components,
+      { ...project.components[0], id: 'api', name: 'API', terminals: [] },
+    ],
+  })
+  useStore.getState().updateTerminal('web', 'dev', { kind: 'agent', command: 'claude --model new' })
+  useStore.setState({ serviceConnected: true, highlighted: ['web', 'api'] })
+  await restartTerminal('web', 'dev')
+  expect(ipc.terminalStart).toHaveBeenCalledWith(
+    expect.objectContaining({
+      components: expect.arrayContaining([
+        expect.objectContaining({
+          terminals: [expect.objectContaining({ command: 'claude --model new', kind: 'agent' })],
+        }),
+      ]),
+    }),
+    'web',
+    'dev',
+    undefined,
+    undefined,
+    expect.any(String),
+    ['web', 'api'],
+    true,
+  )
+  expect(ipc.sessionsList).not.toHaveBeenCalled()
+  expect(ipc.sessionResume).not.toHaveBeenCalled()
+})
+
+test('restarting a non-agent requests a fresh launch without conversation lookup', async () => {
+  await restartTerminal('web', 'dev')
+  expect(ipc.terminalStart).toHaveBeenCalledWith(
+    expect.anything(),
+    'web',
+    'dev',
+    undefined,
+    undefined,
+    expect.any(String),
+    undefined,
+    false,
+  )
+  expect(ipc.sessionsList).not.toHaveBeenCalled()
+})
+
+test('planner restart applies the current highlights and clears the scope warning', async () => {
+  useStore.setState({ highlighted: ['web'] })
+  await restartTerminal(PLAN_SCOPE, 'claude')
+  expect(ipc.planStart).toHaveBeenCalledWith(
+    expect.anything(),
+    ['web'],
+    expect.objectContaining({ kind: 'agent' }),
+    expect.any(String),
+    true,
+  )
+  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  expect(useStore.getState().planStartedWith[sid]).toBe('web')
+})
+
+test('root agent restart prepares the current scope through taskRootStart', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  useStore.setState({ highlighted: ['web'] })
+  await restartTerminal(TASK_ROOT_SCOPE, terminalId)
+  expect(ipc.taskRootStart).toHaveBeenCalledWith(
+    expect.anything(),
+    ['web'],
+    expect.objectContaining({ kind: 'agent' }),
+    undefined,
+    expect.any(String),
+    undefined,
+    true,
+  )
+})
+
+test('an uncertain restart reply never triggers a second launch', async () => {
+  useStore.getState().updateTerminal('web', 'dev', { kind: 'agent', command: 'claude' })
+  vi.mocked(ipc.terminalStart).mockRejectedValueOnce(new Error('Reply lost'))
   await restartTerminal('web', 'dev')
   expect(ipc.terminalStart).toHaveBeenCalledTimes(1)
-  expect(useStore.getState().message ?? '').not.toContain('briefing is gone')
-  vi.mocked(ipc.sessionsList).mockResolvedValue([])
+  expect(ipc.sessionResume).not.toHaveBeenCalled()
+  expect(useStore.getState().message).toContain('Reply lost')
 })

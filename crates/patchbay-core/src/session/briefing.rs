@@ -21,7 +21,9 @@ impl Drop for PendingBriefing {
 /// Accepted launches retain their own copy, so cleanup is safe even if a reply is lost.
 pub fn with_pending_briefing<T>(request: Request, dispatch: impl FnOnce(Request) -> T) -> T {
     let _pending = match &request {
-        Request::Start { spec, .. } => Some(PendingBriefing::new(spec)),
+        Request::Start { spec, .. } | Request::Restart { spec, .. } => {
+            Some(PendingBriefing::new(spec))
+        }
         _ => None,
     };
     dispatch(request)

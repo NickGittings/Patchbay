@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -130,6 +130,9 @@ pub struct Record {
     pub history: Vec<Snapshot>,
     #[serde(default)]
     pub launch_command: String,
+    /// Digest of the original settings and briefing, retained across conversation resumes.
+    #[serde(default)]
+    pub restart_context: Option<String>,
     pub interrupted: bool,
     pub request_ids: Vec<String>,
 }
@@ -174,6 +177,12 @@ pub enum Request {
         token: String,
     },
     Start {
+        request_id: String,
+        metadata: Box<Metadata>,
+        spec: SessionSpec,
+    },
+    /// A restart may continue only when the newly prepared settings and briefing match.
+    Restart {
         request_id: String,
         metadata: Box<Metadata>,
         spec: SessionSpec,
@@ -419,6 +428,7 @@ impl Client {
             // Validators and readiness gates take as long as they take.
             Request::ActionRun { .. } => None,
             Request::Start { .. }
+            | Request::Restart { .. }
             | Request::Resume { .. }
             | Request::Stop { .. }
             | Request::StopAll
@@ -700,6 +710,7 @@ impl Service {
                         .or_else(|| r.snapshot.as_ref().map(bare)),
                     history: r.history.iter().map(bare).collect(),
                     launch_command: String::new(),
+                    restart_context: r.restart_context.clone(),
                     interrupted: r.interrupted,
                     request_ids: Vec::new(),
                 }
@@ -814,9 +825,10 @@ impl Service {
         let _pending = briefing::PendingBriefing::new(&spec);
         // Keep a service-owned copy before spawning. A timed-out sender can always remove
         // its pending file without invalidating a launch that the service accepted.
+        let restart_context = restart_context(&metadata, &spec)?;
         crate::context::retain_owned_briefing(&mut spec)?;
         let candidate = crate::context::owned_briefing(&spec);
-        let result = self.start_with_command(request, metadata, spec, None, false);
+        let result = self.start_with_command(request, metadata, spec, None, false, restart_context);
         // A rejected or idempotent launch must not leave its pending briefing behind.
         if let Some(file) = candidate {
             self.remove_unused_briefing(&file);
@@ -841,6 +853,7 @@ impl Service {
         mut spec: SessionSpec,
         original_command: Option<String>,
         managed: bool,
+        restart_context: Option<String>,
     ) -> Result<String> {
         anyhow::ensure!(!request.is_empty(), "Launch request ID required");
         let id = crate::model::task_session_id(
@@ -943,6 +956,7 @@ impl Service {
                 history,
                 launch_command: original_command.unwrap_or_else(|| spec.command.clone()),
                 interrupted: false,
+                restart_context,
                 request_ids: requests,
             },
         );
@@ -969,6 +983,71 @@ impl Service {
         self.dirty.store(true, Ordering::Release);
         Ok(id)
     }
+    fn restart(
+        self: &Arc<Self>,
+        request_id: String,
+        metadata: Metadata,
+        spec: SessionSpec,
+    ) -> Result<String> {
+        let _pending = briefing::PendingBriefing::new(&spec);
+        let id = crate::model::task_session_id(
+            &metadata.project_id,
+            &metadata.component_id,
+            &metadata.terminal_id,
+            metadata.task.as_deref(),
+        );
+        let context = restart_context(&metadata, &spec)?;
+        // The final PTY snapshot includes the last native hooks and output. Do not wait for
+        // the persistence loop, or let an ID captured before /clear select the conversation.
+        self.refresh_restart_conversation(&id);
+        let record = self.records.lock().unwrap().get(&id).cloned();
+        if let Some(mut record) = record {
+            if record.request_ids.contains(&request_id) {
+                return Ok(id);
+            }
+            if metadata.kind == TerminalKind::Agent
+                && metadata.adapter.is_some()
+                && context.is_some()
+                && context == record.restart_context
+                && let Ok(original) = prepare_resume(&mut record)
+            {
+                // Return launch errors: a lost reply must never cause a second, fresh launch.
+                return self.start_with_command(
+                    request_id,
+                    record.metadata,
+                    record.spec,
+                    Some(original),
+                    false,
+                    record.restart_context,
+                );
+            }
+        }
+        self.start(request_id, metadata, spec)
+    }
+
+    fn refresh_restart_conversation(&self, id: &str) {
+        let Some(snapshot) = self.pty.snapshot_with(id, CAPTURE_TAIL) else {
+            return;
+        };
+        if snapshot.running {
+            return;
+        }
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(id) else {
+            return;
+        };
+        if record.metadata.conversation_pinned {
+            return;
+        }
+        let Some(adapter) = record.metadata.adapter else {
+            return;
+        };
+        let conversation = restart_conversation(adapter, &snapshot);
+        if record.metadata.conversation_id != conversation {
+            record.metadata.conversation_id = conversation;
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
     fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
         let mut r = self
             .records
@@ -980,32 +1059,16 @@ impl Service {
         if r.request_ids.contains(&request_id) {
             return Ok(id.into());
         }
-        let adapter = r
-            .metadata
-            .adapter
-            .context("Select an adapter to resume this conversation")?;
-        let conversation = r
-            .metadata
-            .conversation_id
-            .as_ref()
-            .context("Set conversation ID before resuming")?;
-        // The recorded command points at its briefing; never resume without it.
-        if let Some(file) = r.spec.env.get(crate::context::CONTEXT_ENV) {
-            anyhow::ensure!(
-                Path::new(file).is_file(),
-                "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
-            );
-        }
-        let original = if r.launch_command.is_empty() {
-            r.spec.command.clone()
-        } else {
-            r.launch_command.clone()
-        };
-        let resume_command = r.spec.resume_command.as_deref().unwrap_or(&original);
-        r.spec.command = adapter.resume(resume_command, conversation, &r.spec.cwd)?;
-        crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
+        let original = prepare_resume(&mut r)?;
         // Keep the original launch command for later resumes; context environment persists.
-        self.start_with_command(request_id, r.metadata, r.spec, Some(original), false)
+        self.start_with_command(
+            request_id,
+            r.metadata,
+            r.spec,
+            Some(original),
+            false,
+            r.restart_context,
+        )
     }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
@@ -1048,6 +1111,11 @@ impl Service {
                 metadata,
                 spec,
             } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
+            Request::Restart {
+                request_id,
+                metadata,
+                spec,
+            } => serde_json::to_value(self.restart(request_id, *metadata, spec)?)?,
             Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
             Request::PreviewUrls { id } => {
                 serde_json::to_value(self.snapshot(&id).map(|s| PreviewScan {
@@ -1408,6 +1476,7 @@ impl Terminals for ServiceTerminals<'_> {
             spec,
             None,
             true,
+            None,
         )?;
         anyhow::ensure!(started == id, "Graph action session id mismatch for {id}");
         Ok(())
@@ -1415,6 +1484,74 @@ impl Terminals for ServiceTerminals<'_> {
     fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
         self.service.pty.stop_generation(id, generation)
     }
+}
+
+/// Prefer the final native conversation, then the provider's exit hint. An old record is
+/// not evidence that this run still belongs to that conversation after `/clear`.
+fn restart_conversation(adapter: Adapter, snapshot: &Snapshot) -> Option<String> {
+    let agent = snapshot
+        .status
+        .agent
+        .as_ref()
+        .filter(|a| a.provider == Some(adapter));
+    agent
+        .filter(|a| a.authoritative)
+        .and_then(|a| a.conversation_id.clone())
+        .or_else(|| adapter.capture(&String::from_utf8_lossy(&snapshot.data)))
+        .or_else(|| agent.and_then(|a| a.conversation_id.clone()))
+}
+
+/// Validate and prepare before spawning, so a definite refusal may safely start fresh.
+fn prepare_resume(r: &mut Record) -> Result<String> {
+    let adapter = r
+        .metadata
+        .adapter
+        .context("Select an adapter to resume this conversation")?;
+    let conversation = r
+        .metadata
+        .conversation_id
+        .as_ref()
+        .context("Set conversation ID before resuming")?;
+    // The recorded command points at its briefing; never resume without it.
+    if let Some(file) = r.spec.env.get(crate::context::CONTEXT_ENV) {
+        anyhow::ensure!(
+            Path::new(file).is_file(),
+            "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
+        );
+    }
+    let original = if r.launch_command.is_empty() {
+        r.spec.command.clone()
+    } else {
+        r.launch_command.clone()
+    };
+    let resume_command = r.spec.resume_command.as_deref().unwrap_or(&original);
+    r.spec.command = adapter.resume(resume_command, conversation, &r.spec.cwd)?;
+    crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
+    Ok(original)
+}
+
+/// A stable digest: temporary bridge credentials and decorated resume commands are excluded.
+fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<String>> {
+    if metadata.kind != TerminalKind::Agent {
+        return Ok(None);
+    }
+    let briefing = spec
+        .env
+        .get(crate::context::CONTEXT_ENV)
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let settings = serde_json::to_string(&(
+        &metadata.command,
+        metadata.kind,
+        metadata.adapter,
+        &spec.cwd,
+        &spec.dirs,
+        &spec.ready_when,
+        spec.service,
+        &spec.resume_command,
+        &briefing,
+    ))?;
+    Ok(Some(crate::workspace::session_id("restart", &settings, "")))
 }
 
 /// Keep the newest `MAX_HISTORY` incarnations.
@@ -2969,6 +3106,96 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn restart_context_tracks_settings_and_briefing_but_not_bridge_credentials() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("briefing.md");
+        std::fs::write(&file, "Original highlights, peers, and plan").unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "web", "terminalId": "agent", "name": "Agent",
+            "kind": "agent", "adapter": "claude", "command": "claude --model first"
+        }))
+        .unwrap();
+        let spec = SessionSpec {
+            id: "s".into(),
+            command: "claude --model first".into(),
+            resume_command: None,
+            owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
+            cwd: dir.clone(),
+            env: BTreeMap::from([(
+                crate::context::CONTEXT_ENV.into(),
+                file.display().to_string(),
+            )]),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: vec![],
+        };
+        let before = restart_context(&metadata, &spec).unwrap();
+        assert!(before.is_some());
+        let mut changed = metadata.clone();
+        changed.command = "claude --model edited".into();
+        assert_ne!(before, restart_context(&changed, &spec).unwrap());
+        changed = metadata.clone();
+        changed.adapter = Some(Adapter::Codex);
+        assert_ne!(before, restart_context(&changed, &spec).unwrap());
+        changed.kind = TerminalKind::Task;
+        assert_eq!(restart_context(&changed, &spec).unwrap(), None);
+        let mut changed_spec = spec.clone();
+        changed_spec.dirs.push(dir.join("peer"));
+        assert_ne!(before, restart_context(&metadata, &changed_spec).unwrap());
+        changed_spec = spec.clone();
+        changed_spec
+            .env
+            .insert(crate::agent_bridge::TOKEN_ENV.into(), "new-token".into());
+        assert_eq!(before, restart_context(&metadata, &changed_spec).unwrap());
+        std::fs::write(&file, "Changed highlights, peers, and plan").unwrap();
+        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restart_uses_the_final_conversation_after_clear_without_waiting_for_capture() {
+        let mut snapshot = Snapshot {
+            launch_directory: None,
+            truncated: false,
+            data: vec![],
+            end: 0,
+            generation: 1,
+            running: false,
+            exit_code: Some(0),
+            started_ms: 0,
+            exited_ms: Some(1),
+            status: crate::status::SessionStatus::default(),
+            notice: None,
+        };
+        assert_eq!(restart_conversation(Adapter::Claude, &snapshot), None);
+        snapshot.status.agent = Some(crate::status::AgentReport {
+            state: crate::status::AgentState::Ended,
+            since_ms: 0,
+            message: None,
+            prompt: None,
+            provider: Some(Adapter::Claude),
+            conversation_id: Some("after-clear".into()),
+            turn_id: None,
+            authoritative: true,
+        });
+        assert_eq!(
+            restart_conversation(Adapter::Claude, &snapshot).as_deref(),
+            Some("after-clear")
+        );
+        snapshot.status.agent.as_mut().unwrap().authoritative = false;
+        snapshot.data = b"claude --resume 12345678-aaaa-1234-bbbb-123456789abc".to_vec();
+        assert_eq!(
+            restart_conversation(Adapter::Claude, &snapshot).as_deref(),
+            Some("12345678-aaaa-1234-bbbb-123456789abc")
+        );
+    }
+
+    #[test]
     fn history_is_bounded() {
         let snapshot = |generation| Snapshot {
             launch_directory: None,
@@ -3052,6 +3279,7 @@ mod tests {
             snapshot: None,
             history: vec![],
             launch_command: String::new(),
+            restart_context: None,
             interrupted: false,
             request_ids: vec![],
         };

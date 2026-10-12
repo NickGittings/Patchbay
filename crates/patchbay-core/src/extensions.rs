@@ -1011,6 +1011,7 @@ mod tests {
             }),
             history: vec![],
             launch_command: String::new(),
+            restart_context: None,
             interrupted: false,
             request_ids: vec![],
         };

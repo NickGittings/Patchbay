@@ -154,6 +154,11 @@ function entry(sessionId: string): Entry {
       if (params.includes(12)) queueMicrotask(() => (term.options.cursorBlink = false))
       return false
     })
+    // xterm restores its saved cursor even when 1049l is sent in the normal buffer.
+    // Check at parse time so queued output that switches buffers is handled in order.
+    term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+      return params.length === 1 && params[0] === 1049 && term.buffer.active.type === 'normal'
+    })
     term.registerLinkProvider({
       provideLinks(line, callback) {
         callback(terminalFileLinks(term, sessionId, line))
@@ -247,13 +252,8 @@ export function restoreOutput(
  * cursor, key modes, colors) so the next run draws cleanly, keeping earlier scrollback.
  */
 export function restoreModes(sessionId: string) {
-  const e = entry(sessionId)
-  e.term.write('', () => (e.replaying = true))
-  e.term.write(
-    '\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l' +
-      '\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m\r',
-    () => (e.replaying = false),
-  )
+  const { term } = entry(sessionId)
+  term.write('\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1006l\x1b[2 q\r')
 }
 
 export function writeNote(sessionId: string, text: string) {

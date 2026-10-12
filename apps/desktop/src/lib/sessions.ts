@@ -1,12 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import {
-  releaseMapEdit,
-  sessionForget,
-  sessionResume,
-  sessionsList,
-  terminalCloseGuard,
-} from './ipc'
+import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
@@ -128,6 +122,7 @@ interface Launch {
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
   implementPlan?: boolean
+  restart?: boolean
 }
 
 /**
@@ -227,9 +222,8 @@ function launchTerminal(launch: Launch): Promise<void> {
           ?.terminals.find((t) => t.id === terminalId)
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
         await savePlanDraft(launch.projectId, launch.task)
-      if (!runtime && !launch.implementPlan && (await resumeConversation(sid))) {
-        // Continued the agent's earlier conversation; `/clear` in the agent starts over.
-      } else if (componentId === TASK_ROOT_SCOPE) {
+      const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
+      if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
         await taskRootStart(
           project,
@@ -238,6 +232,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           task,
           requestId,
           launch.implementPlan,
+          resume,
         )
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
@@ -254,7 +249,7 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, requestId)
+        await planStart(project, ids, terminal, requestId, !!launch.restart)
         if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
         await terminalStart(
@@ -265,6 +260,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           task,
           requestId,
           peersFor(componentId, launch.highlighted),
+          resume,
         )
       }
       launchRequests.delete(sid)
@@ -281,27 +277,6 @@ function launchTerminal(launch: Launch): Promise<void> {
   })
   starting.set(sid, request)
   return request
-}
-
-/** The session's agent conversation, when the service captured one. */
-async function conversationOf(sid: string) {
-  const record = (await sessionsList()).find((r) => r.id === sid)
-  return { agent: !!record?.metadata.adapter, resumable: !!record?.metadata.conversationId }
-}
-
-/**
- * Restart an agent where it left off. Resume refuses before spawning (no conversation, briefing
- * cleaned up, folders locked again), so a refusal falls back to a fresh start.
- */
-async function resumeConversation(sid: string): Promise<boolean> {
-  try {
-    const { agent, resumable } = await conversationOf(sid)
-    if (!agent || !resumable) return false
-    await sessionResume(sid)
-    return true
-  } catch {
-    return false
-  }
 }
 
 /** Record what a planner started with, in its own project even if another tab is active now. */
@@ -448,15 +423,7 @@ export function restartTerminal(
           throw new Error('Terminal is still stopping. Try Restart again.')
         await new Promise((resolve) => setTimeout(resolve, 100))
       }
-      // The service reads an agent's conversation from its exit shortly after the process ends.
-      for (let tries = 10; tries > 0; tries--) {
-        const { agent, resumable } = await conversationOf(launch.sid).catch(() => ({
-          agent: false,
-          resumable: false,
-        }))
-        if (!agent || resumable || requestedEpoch !== epoch || isClosing(launch)) break
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
+      launch.restart = true
       if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
     } catch (e) {
       if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))

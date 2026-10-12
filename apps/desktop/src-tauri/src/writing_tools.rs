@@ -10,7 +10,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Imp, NSObjectProtocol, Sel};
-use objc2::{MainThreadMarker, msg_send, sel};
+use objc2::{Encode, MainThreadMarker, msg_send, sel};
 use objc2_web_kit::WKWebViewConfiguration;
 
 /// `NSWritingToolsBehaviorNone`.
@@ -53,19 +53,20 @@ pub fn hide_affordance<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
             return;
         };
         let class = view.class();
-        // SAFETY: the function matches the `B@:` encoding (`BOOL` return, `self`, `_cmd`);
+        // SAFETY: the function matches the platform BOOL encoding, followed by `self`, `_cmd`;
         // `Imp` is the untyped form the runtime stores, cast back by `objc_msgSend` callers.
         let imp = unsafe {
             std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> Bool, Imp>(disallow)
         };
         // SAFETY: adding a method to a registered class; `class_addMethod` refuses (returns NO)
         // if the class already defines it, so repeated calls change nothing.
+        let encoding = std::ffi::CString::new(format!("{}@:", Bool::ENCODING)).unwrap();
         unsafe {
             objc2::ffi::class_addMethod(
                 std::ptr::from_ref(class).cast_mut(),
                 sel!(allowsWritingToolsAffordance),
                 imp,
-                c"B@:".as_ptr(),
+                encoding.as_ptr(),
             );
         }
     });

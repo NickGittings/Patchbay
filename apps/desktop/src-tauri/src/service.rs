@@ -145,6 +145,22 @@ impl Bridge {
         self.routes.lock().unwrap().insert(id.clone(), label);
         Ok(id)
     }
+    /// Sends one idempotent restart request; the service selects resume or fresh launch.
+    pub fn restart(
+        &self,
+        spec: SessionSpec,
+        metadata: Metadata,
+        request_id: String,
+    ) -> Result<String, String> {
+        let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
+        let id: String = self.call(Request::Restart {
+            request_id,
+            metadata: Box::new(metadata),
+            spec,
+        })?;
+        self.routes.lock().unwrap().insert(id.clone(), label);
+        Ok(id)
+    }
     pub fn list(&self) -> Result<Vec<Record>, String> {
         let records: Vec<Record> = self.call(Request::List)?;
         self.learn(&records);

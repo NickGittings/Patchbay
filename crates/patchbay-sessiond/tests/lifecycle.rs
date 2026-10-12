@@ -163,44 +163,53 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
         std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = '{invocation}' ]; then\n  printf 'resumed:%s options:%s %s argc:%s\\n' \"$2\" \"$3\" \"$4\" \"$#\"\n  sleep 2\nelse\n  echo '{name} {invocation} {conversation}'\nfi\n")).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let command = format!("'{}' --model fixture", executable.display());
-        let id: String = client
-            .call(Request::Start {
-                request_id: format!("start-{name}"),
-                metadata: Box::new(Metadata {
-                    project_id: "fixture".into(),
-                    project_name: "Fixture".into(),
-                    project_root: root.display().to_string(),
-                    component_id: "shared".into(),
-                    terminal_id: name.into(),
-                    task: None,
-                    task_title: None,
-                    name: name.into(),
-                    kind: TerminalKind::Agent,
-                    adapter: Some(adapter),
-                    conversation_id: None,
-                    conversation_pinned: false,
-                    extension_id: None,
-                    command_id: None,
-                    key: None,
-                    branch: None,
-                    command: command.clone(),
-                }),
-                spec: SessionSpec {
-                    resume_command: Some(command.clone()),
-                    owns_briefing: false,
-                    exclusive_cwd: false,
-                    merge_source: None,
-                    id: "discard".into(),
-                    command: format!("{command} 'kickoff merge'"),
-                    cwd: root.clone(),
-                    env: BTreeMap::new(),
-                    ready_when: String::new(),
-                    service: false,
-                    notice: None,
-                    dirs: Vec::new(),
-                },
-            })
-            .unwrap();
+        let briefing = root.join(format!("{name}-briefing.md"));
+        std::fs::write(&briefing, "Original scope and plan").unwrap();
+        let launch = Request::Start {
+            request_id: format!("start-{name}"),
+            metadata: Box::new(Metadata {
+                project_id: "fixture".into(),
+                project_name: "Fixture".into(),
+                project_root: root.display().to_string(),
+                component_id: "shared".into(),
+                terminal_id: name.into(),
+                task: None,
+                task_title: None,
+                name: name.into(),
+                kind: TerminalKind::Agent,
+                adapter: Some(adapter),
+                conversation_id: None,
+                conversation_pinned: false,
+                extension_id: None,
+                command_id: None,
+                key: None,
+                branch: None,
+                command: command.clone(),
+            }),
+            spec: SessionSpec {
+                resume_command: Some(command.clone()),
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
+                id: "discard".into(),
+                command: format!("{command} 'kickoff merge'"),
+                cwd: root.clone(),
+                env: BTreeMap::from([(
+                    patchbay_core::context::CONTEXT_ENV.into(),
+                    briefing.display().to_string(),
+                )]),
+                ready_when: String::new(),
+                service: false,
+                notice: None,
+                dirs: Vec::new(),
+            },
+        };
+        let Request::Start { metadata, spec, .. } = &launch else {
+            unreachable!()
+        };
+        let metadata = metadata.clone();
+        let spec = spec.clone();
+        let id: String = client.call(launch).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let initial = loop {
             let snapshot: Option<Snapshot> =
@@ -229,14 +238,16 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
         };
         assert_eq!(captured.as_deref(), Some(conversation));
         client
-            .call::<String>(Request::Resume {
-                id: id.clone(),
+            .call::<String>(Request::Restart {
+                metadata: metadata.clone(),
+                spec: spec.clone(),
                 request_id: format!("resume-{name}"),
             })
             .unwrap();
         client
-            .call::<String>(Request::Resume {
-                id: id.clone(),
+            .call::<String>(Request::Restart {
+                metadata: metadata.clone(),
+                spec: spec.clone(),
                 request_id: format!("resume-{name}"),
             })
             .unwrap();
@@ -293,8 +304,58 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
                 })
                 .is_err()
         );
-        let unchanged: Option<Snapshot> = client.call(Request::Snapshot { id }).unwrap();
+        let unchanged: Option<Snapshot> =
+            client.call(Request::Snapshot { id: id.clone() }).unwrap();
         assert_eq!(unchanged.unwrap().generation, resumed.generation);
+        // A regenerated scope/plan must start fresh even with a pinned, unavailable conversation.
+        std::fs::write(&briefing, "Changed highlights, peers, and plan").unwrap();
+        client
+            .call::<String>(Request::Restart {
+                request_id: format!("new-context-{name}"),
+                metadata: metadata.clone(),
+                spec: spec.clone(),
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot: Option<Snapshot> =
+                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            if let Some(s) = snapshot
+                && !s.running
+            {
+                assert!(s.generation > resumed.generation);
+                assert!(!String::from_utf8_lossy(&s.data).contains("resumed:"));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // Editing a former agent into a task must run the edited command.
+        let mut metadata = metadata;
+        metadata.kind = TerminalKind::Task;
+        metadata.command = "printf edited-task".into();
+        let mut spec = spec;
+        spec.command = metadata.command.clone();
+        client
+            .call::<String>(Request::Restart {
+                request_id: format!("edited-task-{name}"),
+                metadata,
+                spec,
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot: Option<Snapshot> =
+                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            if let Some(s) = snapshot
+                && !s.running
+            {
+                assert!(String::from_utf8_lossy(&s.data).contains("edited-task"));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
     client
         .call::<()>(Request::Shutdown { stop_running: true })

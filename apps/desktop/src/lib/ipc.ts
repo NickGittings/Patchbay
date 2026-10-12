@@ -188,6 +188,7 @@ export const planStart = async (
   componentIds: string[],
   terminal: TerminalSpec,
   requestId: string = crypto.randomUUID(),
+  resume = false,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -195,6 +196,7 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
+    resume,
     extraContext: await extraContext(project, componentIds),
   })
 
@@ -237,6 +239,7 @@ export const terminalStart = async (
   task?: string,
   requestId: string = crypto.randomUUID(),
   peers?: string[],
+  resume = false,
 ) => {
   const terminal = project.components
     .find((c) => c.id === componentId)
@@ -247,6 +250,7 @@ export const terminalStart = async (
     componentId,
     terminalId,
     requestId,
+    resume,
     extraContext:
       terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
@@ -409,6 +413,7 @@ export const taskRootStart = async (
   task?: string,
   requestId: string = crypto.randomUUID(),
   implementPlan = false,
+  resume = false,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -417,6 +422,7 @@ export const taskRootStart = async (
     terminal,
     task,
     requestId,
+    resume,
     implementPlan,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],

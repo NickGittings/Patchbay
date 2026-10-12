@@ -800,6 +800,7 @@ async fn plan_context(
 #[tauri::command]
 async fn plan_start(
     request_id: String,
+    resume: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -831,7 +832,11 @@ async fn plan_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, None, &mut spec);
         }
-        let id = bridge.start(spec, metadata, request_id)?;
+        let id = if resume.unwrap_or(false) {
+            bridge.restart(spec, metadata, request_id)
+        } else {
+            bridge.start(spec, metadata, request_id)
+        }?;
         Ok(id)
     })
     .await
@@ -1235,6 +1240,7 @@ fn save_device(device: DeviceManifest) -> CmdResult<String> {
 #[tauri::command]
 async fn terminal_start(
     request_id: String,
+    resume: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1287,7 +1293,11 @@ async fn terminal_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        let id = bridge.start(spec, metadata, request_id)?;
+        let id = if resume.unwrap_or(false) {
+            bridge.restart(spec, metadata, request_id)
+        } else {
+            bridge.start(spec, metadata, request_id)
+        }?;
         Ok(id)
     })
     .await
@@ -1298,6 +1308,7 @@ async fn terminal_start(
 #[tauri::command]
 async fn task_root_start(
     request_id: String,
+    resume: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1358,7 +1369,11 @@ async fn task_root_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        bridge.start(spec, metadata, request_id)
+        if resume.unwrap_or(false) {
+            bridge.restart(spec, metadata, request_id)
+        } else {
+            bridge.start(spec, metadata, request_id)
+        }
     })
     .await
 }
