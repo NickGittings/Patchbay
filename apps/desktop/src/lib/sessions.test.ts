@@ -31,7 +31,9 @@ vi.mock('./terminals', () => ({
   writeOutput: vi.fn(),
 }))
 const ipc = await import('./ipc')
-const { closeTerminal, startTerminal, restartTerminal, resetSessions } = await import('./sessions')
+const terminals = await import('./terminals')
+const { closeTerminal, hydrateSession, startTerminal, restartTerminal, resetSessions } =
+  await import('./sessions')
 const project: Project = {
   schemaVersion: 4,
   projectId: 'p',
@@ -318,4 +320,31 @@ test('an uncertain restart reply never triggers a second launch', async () => {
   expect(ipc.terminalStart).toHaveBeenCalledTimes(1)
   expect(ipc.sessionResume).not.toHaveBeenCalled()
   expect(useStore.getState().message).toContain('Reply lost')
+})
+
+test('hydrating a finished run resets the modes it left on, a running one keeps them', async () => {
+  const snapshot = (running: boolean) => ({
+    data: '',
+    end: 0,
+    generation: 3,
+    running,
+    truncated: false,
+    startedMs: 1,
+    exitedMs: running ? null : 2,
+    exitCode: running ? null : 0,
+    status: {},
+    notice: null,
+  })
+  const ended = sessionId('web', 'dev', null, 'p')
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(
+    snapshot(false) as unknown as Awaited<ReturnType<typeof ipc.terminalSnapshot>>,
+  )
+  await hydrateSession(ended)
+  expect(terminals.restoreModes).toHaveBeenCalledWith(ended)
+  vi.mocked(terminals.restoreModes).mockClear()
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(
+    snapshot(true) as unknown as Awaited<ReturnType<typeof ipc.terminalSnapshot>>,
+  )
+  await hydrateSession(sessionId('web', 'dev', 'task', 'p'))
+  expect(terminals.restoreModes).not.toHaveBeenCalled()
 })

@@ -66,6 +66,10 @@ pub fn clamp(window: &WebviewWindow, geometry: &Value, main: bool) -> CmdResult<
     clamp_to_monitors(&monitors, geometry, main)
 }
 
+/// Fits saved window geometry onto one of `monitors` (the one holding its origin, else the first).
+///
+/// # Errors
+/// Fails when no monitor is available.
 pub fn clamp_to_monitors(
     monitors: &[tauri::Monitor],
     geometry: &Value,

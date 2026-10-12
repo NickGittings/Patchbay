@@ -524,6 +524,8 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
       if (started !== epoch) return null
       if (snapshot) {
         await applySnapshot(sid, snapshot)
+        // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
+        if (!snapshot.running) restoreModes(sid)
         useStore.getState().setSession(sid, {
           running: snapshot.running,
           exitCode: snapshot.exitCode ?? undefined,

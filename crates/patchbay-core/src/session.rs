@@ -820,11 +820,21 @@ impl Service {
         self: &Arc<Self>,
         request: String,
         metadata: Metadata,
-        mut spec: SessionSpec,
+        spec: SessionSpec,
     ) -> Result<String> {
-        let _pending = briefing::PendingBriefing::new(&spec);
         // An unreadable fingerprint disables automatic resume without blocking launch.
         let restart_context = restart_context(&metadata, &spec).ok().flatten();
+        self.start_fresh(request, metadata, spec, restart_context)
+    }
+    /// [`Self::start`] with its restart fingerprint already computed.
+    fn start_fresh(
+        self: &Arc<Self>,
+        request: String,
+        metadata: Metadata,
+        mut spec: SessionSpec,
+        restart_context: Option<String>,
+    ) -> Result<String> {
+        let _pending = briefing::PendingBriefing::new(&spec);
         // Keep a service-owned copy before spawning. A timed-out sender can always remove
         // its pending file without invalidating a launch that the service accepted.
         crate::context::retain_owned_briefing(&mut spec)?;
@@ -997,58 +1007,69 @@ impl Service {
             &metadata.terminal_id,
             metadata.task.as_deref(),
         );
-        let record = self.records.lock().unwrap().get(&id).cloned();
-        if let Some(record) = record {
-            if record.request_ids.contains(&request_id) {
-                return Ok(id);
+        // Read only what Restart needs; records also carry earlier runs' output.
+        let known = self.records.lock().unwrap().get(&id).map(|r| {
+            (
+                r.request_ids.contains(&request_id),
+                r.restart_context.clone(),
+            )
+        });
+        let Some((retried, original)) = known else {
+            return self.start(request_id, metadata, spec);
+        };
+        if retried {
+            return Ok(id);
+        }
+        // An unreadable fingerprint disables automatic resume without blocking launch.
+        let context = restart_context(&metadata, &spec).ok().flatten();
+        if metadata.kind == TerminalKind::Agent
+            && metadata.adapter.is_some()
+            && context.is_some()
+            && context == original
+        {
+            // Read the final native hooks and output only for a matching restart.
+            self.refresh_restart_conversation(&id);
+            let (conversation_id, conversation_pinned) = self
+                .records
+                .lock()
+                .unwrap()
+                .get(&id)
+                .map(|r| {
+                    (
+                        r.metadata.conversation_id.clone(),
+                        r.metadata.conversation_pinned,
+                    )
+                })
+                .context("Unknown session")?;
+            // Resume the conversation with this launch's credentials, briefing and names.
+            let mut metadata = metadata.clone();
+            if !metadata.conversation_pinned {
+                metadata.conversation_id = conversation_id;
+                metadata.conversation_pinned = conversation_pinned;
             }
-            let context = restart_context(&metadata, &spec).ok().flatten();
-            if metadata.kind == TerminalKind::Agent
-                && metadata.adapter.is_some()
-                && context.is_some()
-                && context == record.restart_context
-            {
-                // Read the final native hooks and output only for a matching restart.
-                self.refresh_restart_conversation(&id);
-                let mut record = self
-                    .records
-                    .lock()
-                    .unwrap()
-                    .get(&id)
-                    .cloned()
-                    .context("Unknown session")?;
-                let mut metadata = metadata.clone();
-                if !metadata.conversation_pinned {
-                    metadata.conversation_id = record.metadata.conversation_id;
-                    metadata.conversation_pinned = record.metadata.conversation_pinned;
-                }
-                // Resume the conversation with this launch's credentials, briefing and names.
-                record.metadata = metadata;
-                record.spec = spec.clone();
-                crate::context::retain_owned_briefing(&mut record.spec)?;
-                let candidate = crate::context::owned_briefing(&record.spec);
-                record.launch_command.clone_from(&record.spec.command);
-                if let Ok(original) = prepare_resume(&mut record) {
-                    // Return launch errors: a lost reply must never cause a fresh launch.
-                    let result = self.start_with_command(
-                        request_id,
-                        record.metadata,
-                        record.spec,
-                        Some(original),
-                        false,
-                        context,
-                    );
-                    if let Some(file) = candidate {
-                        self.remove_unused_briefing(&file);
-                    }
-                    return result;
-                }
-                if let Some(file) = candidate {
-                    self.remove_unused_briefing(&file);
-                }
+            let mut resumed = spec.clone();
+            crate::context::retain_owned_briefing(&mut resumed)?;
+            let candidate = crate::context::owned_briefing(&resumed);
+            let launch_command = resumed.command.clone();
+            let result = prepare_resume(&metadata, &mut resumed, &launch_command).map(|original| {
+                // Return launch errors: a lost reply must never cause a fresh launch.
+                self.start_with_command(
+                    request_id.clone(),
+                    metadata,
+                    resumed,
+                    Some(original),
+                    false,
+                    context.clone(),
+                )
+            });
+            if let Some(file) = candidate {
+                self.remove_unused_briefing(&file);
+            }
+            if let Ok(started) = result {
+                return started;
             }
         }
-        self.start(request_id, metadata, spec)
+        self.start_fresh(request_id, metadata, spec, context)
     }
 
     fn refresh_restart_conversation(&self, id: &str) {
@@ -1086,7 +1107,7 @@ impl Service {
         if r.request_ids.contains(&request_id) {
             return Ok(id.into());
         }
-        let original = prepare_resume(&mut r)?;
+        let original = prepare_resume(&r.metadata, &mut r.spec, &r.launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
         self.start_with_command(
             request_id,
@@ -1529,31 +1550,33 @@ fn restart_conversation(adapter: Adapter, snapshot: &Snapshot) -> Option<String>
 }
 
 /// Validate and prepare before spawning, so a definite refusal may safely start fresh.
-fn prepare_resume(r: &mut Record) -> Result<String> {
-    let adapter = r
-        .metadata
+fn prepare_resume(
+    metadata: &Metadata,
+    spec: &mut SessionSpec,
+    launch_command: &str,
+) -> Result<String> {
+    let adapter = metadata
         .adapter
         .context("Select an adapter to resume this conversation")?;
-    let conversation = r
-        .metadata
+    let conversation = metadata
         .conversation_id
         .as_ref()
         .context("Set conversation ID before resuming")?;
     // The recorded command points at its briefing; never resume without it.
-    if let Some(file) = r.spec.env.get(crate::context::CONTEXT_ENV) {
+    if let Some(file) = spec.env.get(crate::context::CONTEXT_ENV) {
         anyhow::ensure!(
             Path::new(file).is_file(),
             "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
         );
     }
-    let original = if r.launch_command.is_empty() {
-        r.spec.command.clone()
+    let original = if launch_command.is_empty() {
+        spec.command.clone()
     } else {
-        r.launch_command.clone()
+        launch_command.to_owned()
     };
-    let resume_command = r.spec.resume_command.as_deref().unwrap_or(&original);
-    r.spec.command = adapter.resume(resume_command, conversation, &r.spec.cwd)?;
-    crate::adapters::require_executable(&r.spec.command, &r.spec.cwd, &r.spec.env)?;
+    let resume_command = spec.resume_command.as_deref().unwrap_or(&original);
+    spec.command = adapter.resume(resume_command, conversation, &spec.cwd)?;
+    crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
     Ok(original)
 }
 
