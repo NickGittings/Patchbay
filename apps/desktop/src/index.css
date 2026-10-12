@@ -2147,6 +2147,20 @@ button.review-name:hover:not(:disabled) {
 .worktree-row.missing {
   opacity: 0.6;
 }
+.worktree-row:not(.missing, .active) {
+  cursor: pointer;
+}
+.worktree-row:not(.missing, .active):hover {
+  border-color: color-mix(in srgb, var(--task) 40%, var(--border));
+}
+.worktree-row textarea,
+.worktree-row input,
+.worktree-row .worktree-path,
+.worktree-row .worktree-confirm,
+.worktree-row .file-tree-error,
+.worktree-row span.chip {
+  cursor: auto;
+}
 .worktree-row-switch {
   display: flex;
   align-items: center;

@@ -133,6 +133,10 @@ function saveNotes(pending: RefObject<{ id: string; notes: string; projectId?: s
     .catch((e) => useStore.getState().setMessage(String(e)))
 }
 
+const ROW_CONTROLS =
+  'button, a, input, textarea, select, summary, form, details[open] > :not(summary), .chip, ' +
+  '.worktree-path, .worktree-confirm, .file-tree-error'
+
 /** One worktree's summary and its rename, notes and remove controls. */
 export function WorktreeRow({
   task,
@@ -262,7 +266,17 @@ export function WorktreeRow({
   }
 
   return (
-    <section className={`worktree-row ${active ? 'active' : ''} ${task?.missing ? 'missing' : ''}`}>
+    // Another worktree's whole card switches, except its own controls, chips, the path and error
+    // (kept for copying) and the remove confirmation; the title button stays the keyboard and
+    // screen-reader way in, and its click is excluded here.
+    <section
+      className={`worktree-row ${active ? 'active' : ''} ${task?.missing ? 'missing' : ''}`}
+      onClick={(e) => {
+        if (active || (e.target as Element).closest(ROW_CONTROLS)) return
+        if (window.getSelection()?.toString()) return
+        switchTo()
+      }}
+    >
       <header className="worktree-row-header">
         <button
           className="worktree-row-switch"
