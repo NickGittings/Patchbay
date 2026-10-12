@@ -197,7 +197,9 @@ function launchTerminal(launch: Launch): Promise<void> {
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing) return existing
-  const requestId = launchRequests.get(sid) ?? crypto.randomUUID()
+  // A retry reuses its request ID so a lost reply can't launch twice; Restart follows a stop,
+  // so an earlier request is spent and would be answered as a duplicate without relaunching.
+  const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
   launchRequests.set(sid, requestId)
   const request = (async () => {
     const requestedEpoch = epoch
@@ -267,6 +269,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     } catch (e) {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
+      if (snapshot?.running) launchRequests.delete(sid)
       if (requestedEpoch === epoch && !snapshot?.running) {
         useStore.getState().setMessage(String(e))
         if (launch.implementPlan) throw e

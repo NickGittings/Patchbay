@@ -897,7 +897,10 @@ fn handoff_sections(
     peers: Option<Vec<String>>,
 ) -> (Vec<ContextSection>, Vec<PathBuf>) {
     let root = Path::new(&project.root);
-    let peers = peers.unwrap_or_default();
+    // Highlight order is incidental; a stable order keeps Restart's fingerprint matching.
+    let mut peers = peers.unwrap_or_default();
+    peers.sort();
+    peers.dedup();
     let plan = patchbay_core::plans::section(root, task);
     let mut dirs: Vec<PathBuf> = peers
         .iter()
