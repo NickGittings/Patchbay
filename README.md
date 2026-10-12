@@ -2,6 +2,13 @@
 
 See your application one component at a time. Patchbay maps a repo's main parts (frontend, API, libraries, services) as nodes on a canvas. Each node has its own live terminals (shell, dev server, tests, an AI agent) plus health at a glance. Links show what depends on what, and agents get that as context.
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+![Patchbay showing a component map, a running dev server and the component inspector](docs/screenshots/graph-actions.png)
+
+> **Status:** early (0.1.0). Patchbay is developed and tested mainly on macOS; the Linux and
+> Windows code paths exist but are less exercised. Expect rough edges, and please report them.
+
 ## Layout
 
 | Path                       | What                                                                                                                 |
@@ -12,15 +19,22 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 | `apps/desktop`             | Tauri 2 + React app (React Flow canvas, xterm.js terminals)                                                          |
 | `devices/`                 | Built-in terminal presets (same format as user devices)                                                              |
 
-## Develop
+## Getting started
 
-Prerequisites: Rust 1.89+ (rustup), Node 20+.
+There are no prebuilt releases yet, so build Patchbay from source.
+
+Prerequisites: Rust 1.89+ (via [rustup](https://rustup.rs)), Node 20+, Git, and the
+[Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform.
 
 ```sh
-cd apps/desktop
+git clone https://github.com/NickGittings/Patchbay.git
+cd Patchbay/apps/desktop
 npm install
-npm run tauri dev        # desktop app
+npm run tauri dev        # run the desktop app
+npm run tauri build      # or build a local app bundle
 ```
+
+The CLI exercises the same core without the UI:
 
 ```sh
 cargo run -p patchbay-cli -- detect .                       # suggested component map
@@ -29,11 +43,14 @@ cargo run -p patchbay-cli -- context patchbay-core          # what an agent on t
 
 ## Checks
 
+Run these before opening a pull request:
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-(cd apps/desktop && npm run check)   # tsc + oxlint + prettier
+cargo test --workspace                 # or: cargo nextest run --workspace
+(cd apps/desktop && npm run check)     # tsc + oxlint + prettier + vitest
+(cd apps/desktop && npm run smoke:all) # end-to-end smoke scripts (stop `tauri dev` first)
 ```
 
 ## Concepts
@@ -308,3 +325,16 @@ repository fails before anything launches.
 
 `npm run smoke:actions` exercises task roles, group configuration, ordered startup, readiness,
 shutdown, affected validation, terminal results, planner reuse and project reset in the app.
+
+## Contributing
+
+Issues and pull requests are welcome. For anything larger than a small fix, please open an issue
+first to discuss the approach. Run the [checks](#checks) before submitting. [`CLAUDE.md`](CLAUDE.md)
+describes the architecture, the Rust ↔ TypeScript types that must stay in sync, and the test
+setup, and is a good map of the codebase for humans and agents alike.
+
+By contributing, you agree that your contributions are licensed under the project's MIT license.
+
+## License
+
+Patchbay is released under the [MIT License](LICENSE).

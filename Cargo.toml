@@ -5,7 +5,9 @@ members = ["crates/patchbay-core", "crates/patchbay-cli", "crates/patchbay-sessi
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "UNLICENSED"
+license = "MIT"
+authors = ["Nick Gittings"]
+repository = "https://github.com/NickGittings/Patchbay"
 
 [workspace.dependencies]
 patchbay-core = { path = "crates/patchbay-core" }
