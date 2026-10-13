@@ -481,11 +481,11 @@
     // adapter) a menu.
     const mergeRow = await until('finished destination session row', () =>
       [...document.querySelectorAll('.session-row')].find((r) => {
-        const scope = r.querySelector('small')?.textContent ?? ''
+        const cwd = r.querySelector('small.mono')?.textContent ?? ''
         const state = r.querySelector(':scope > span')?.textContent
         return (
-          scope.startsWith('@merge') &&
-          scope.endsWith(opened.project.root) &&
+          !!r.querySelector('.session-role.merge') &&
+          cwd === opened.project.root &&
           (state === 'Ended' || state === 'Interrupted')
         )
       }),
