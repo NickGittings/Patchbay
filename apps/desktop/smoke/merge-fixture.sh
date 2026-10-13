@@ -73,7 +73,7 @@ assert subprocess.check_output(['git', 'status', '--porcelain', '--untracked-fil
 print('review-file:' + str(path), flush=True)
 print('review-verified', flush=True)
 input()  # exercise the running guard while working
-status.write_text('idle\n')
+status.write_text('review\n')
 print('review-idle', flush=True)
 input()  # settled at its prompt, like an interactive agent, before an ordinary exit
 PYTHON

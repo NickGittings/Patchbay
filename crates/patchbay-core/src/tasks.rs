@@ -212,6 +212,20 @@ pub fn stored(root: &Path, id: &str) -> Result<Task> {
         .ok_or_else(|| anyhow!("There is no task {id}"))
 }
 
+/// The stored task holding the canonical `worktree`, without asking git; for
+/// callers that checked the worktree themselves.
+///
+/// # Errors
+/// Fails if the store can't be read.
+pub fn stored_at(root: &Path, worktree: &Path) -> Result<Option<Task>> {
+    let file = store_file(root)?;
+    let _guard = lock();
+    Ok(load(&file)?
+        .tasks
+        .into_iter()
+        .find(|t| Path::new(&t.worktree) == worktree))
+}
+
 /// One task whose worktree exists.
 ///
 /// # Errors

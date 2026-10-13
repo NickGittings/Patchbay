@@ -221,16 +221,25 @@ export function startTerminal(
     launch = captureLaunch(componentId, terminalId, task, projectId)
     launch.kickoff = kickoff
   } catch (e) {
-    useStore.getState().setMessage(String(e))
     if (kickoff) return Promise.reject(e)
+    useStore.getState().setMessage(String(e))
     return Promise.resolve()
   }
+  // A review covers the whole branch, so its fix is briefed over the whole map.
+  if (kickoff?.kind === 'fixFindings') launch.highlighted = []
   return launchTerminal(launch)
+}
+
+/** A handoff's launch stopped before reaching the backend, so its agent isn't running. */
+class LaunchCancelled extends Error {
+  constructor() {
+    super('The launch was cancelled')
+  }
 }
 
 /** A handoff must learn its agent didn't start, where other launches just stop quietly. */
 const cancelled = (launch: Launch) =>
-  launch.kickoff ? Promise.reject(new Error('The launch was cancelled')) : Promise.resolve()
+  launch.kickoff ? Promise.reject(new LaunchCancelled()) : Promise.resolve()
 
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
@@ -308,13 +317,15 @@ function launchTerminal(launch: Launch): Promise<void> {
       }
       launchRequests.delete(sid)
     } catch (e) {
+      // Nothing was requested, so there is nothing to check; the handoff reports it.
+      if (e instanceof LaunchCancelled) throw e
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       if (snapshot?.running) launchRequests.delete(sid)
       if (!snapshot?.running) {
-        // Sessions were reset since; the error is stale for everyone but a waiting handoff.
-        if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+        // A handoff reports its own failure; otherwise skip errors made stale by a reset.
         if (launch.kickoff) throw e
+        if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
       }
     }
   })().finally(() => {

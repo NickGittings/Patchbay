@@ -5,8 +5,10 @@ import { REVIEW_SCOPE, TASK_ROOT_SCOPE, type DeviceManifest, type SessionRecord 
 vi.mock('../store', () => ({ useStore: { getState: vi.fn() } }))
 vi.mock('./ipc', () => ({ reviewFixTask: vi.fn() }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
+vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
 const { reviewFixTask } = await import('./ipc')
 const { startTerminal } = await import('./sessions')
+const { refreshTasks } = await import('./tasks')
 const { fixReviewFindings } = await import('./reviewHandoff')
 const claude: DeviceManifest = {
   id: 'claude',
@@ -47,11 +49,13 @@ const fix = { kind: 'fixFindings', reviewSession: 'review' }
 const state = {
   project: { id: 'p', root: '/p' },
   activeTask: null as string | null,
+  tasks: [{ id: 'feature' }],
   devices: [claude, codex],
   setActiveTask: vi.fn((task: string | null, _exact?: boolean) => {
     state.activeTask = task
   }),
   addRootTerminal: vi.fn(() => 'fix-agent'),
+  removeTaskTerminal: vi.fn(),
   setView: vi.fn(),
 }
 
@@ -61,6 +65,7 @@ beforeEach(() => {
   vi.mocked(reviewFixTask).mockResolvedValue('feature')
   state.project = { id: 'p', root: '/p' }
   state.activeTask = null
+  state.tasks = [{ id: 'feature' }]
   state.devices = [claude, codex]
   vi.mocked(useStore.getState).mockImplementation(
     () => state as unknown as ReturnType<typeof useStore.getState>,
@@ -118,10 +123,39 @@ test('without agent presets the fallback agent launches', async () => {
   expect(state.addRootTerminal).toHaveBeenCalledWith(expect.objectContaining({ command: 'claude' }))
 })
 
-test('a launch failure leaves the view unchanged and propagates the error', async () => {
+test('a launch failure removes its tile, switches back and propagates the error', async () => {
   vi.mocked(startTerminal).mockRejectedValue(new Error('Launch failed'))
   await expect(fixReviewFindings(record)).rejects.toThrow('Launch failed')
+  expect(state.removeTaskTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, 'fix-agent')
+  expect(state.setActiveTask).toHaveBeenLastCalledWith(null, true)
   expect(state.setView).not.toHaveBeenCalled()
+})
+
+test('a launch failure after the user moved on leaves their worktree alone', async () => {
+  vi.mocked(startTerminal).mockImplementation(async () => {
+    state.activeTask = 'other'
+    throw new Error('Launch failed')
+  })
+  await expect(fixReviewFindings(record)).rejects.toThrow('Launch failed')
+  expect(state.removeTaskTerminal).not.toHaveBeenCalled()
+  expect(state.activeTask).toBe('other')
+})
+
+test('a task the list lacks is refreshed before switching to it', async () => {
+  state.tasks = []
+  vi.mocked(refreshTasks).mockImplementation(async () => {
+    state.tasks = [{ id: 'feature' }]
+  })
+  await fixReviewFindings(record)
+  expect(refreshTasks).toHaveBeenCalledWith('p')
+  expect(vi.mocked(refreshTasks).mock.invocationCallOrder[0]).toBeLessThan(
+    state.setActiveTask.mock.invocationCallOrder[0],
+  )
+})
+
+test('a known task skips the refresh', async () => {
+  await fixReviewFindings(record)
+  expect(refreshTasks).not.toHaveBeenCalled()
 })
 
 test('a task switch during launch keeps the started agent and the current view', async () => {

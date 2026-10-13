@@ -154,7 +154,8 @@ test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewSession: 'rev
     await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', kickoff)).rejects.toThrow(
       'Launch failed',
     )
-    expect(useStore.getState().message).toContain('Launch failed')
+    // The handoff reports it; a toast here would show it twice.
+    expect(useStore.getState().message ?? '').not.toContain('Launch failed')
   },
 )
 test('a handoff learns its launch failed after sessions were reset', async () => {

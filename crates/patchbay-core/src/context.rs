@@ -1121,9 +1121,11 @@ pub fn plan_session_spec_for(
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
+/// A `kickoff` starts a fresh agent with that handoff as its first task.
 ///
 /// # Errors
-/// As [`plan_session_spec`].
+/// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
+#[allow(clippy::too_many_arguments)]
 pub fn task_root_session_spec(
     project: &Project,
     component_ids: &[String],
@@ -1131,35 +1133,10 @@ pub fn task_root_session_spec(
     task: Option<&str>,
     policy: &dyn Policy,
     sections: &[ContextSection],
-) -> Result<SessionSpec> {
-    root_session_spec(
-        project,
-        component_ids,
-        terminal,
-        task,
-        policy,
-        sections,
-        false,
-        None,
-    )
-}
-
-/// Start a new implementation agent with the requested handoff as its first task.
-///
-/// # Errors
-/// As [`task_root_session_spec`], or if the terminal is not an agent.
-#[allow(clippy::too_many_arguments)]
-pub fn task_root_implementation_spec(
-    project: &Project,
-    component_ids: &[String],
-    terminal: &TerminalSpec,
-    task: Option<&str>,
-    policy: &dyn Policy,
-    sections: &[ContextSection],
-    kickoff: Kickoff,
+    kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
-        terminal.kind == TerminalKind::Agent,
+        kickoff.is_none() || terminal.kind == TerminalKind::Agent,
         "Choose an agent for implementation"
     );
     root_session_spec(
@@ -1170,8 +1147,28 @@ pub fn task_root_implementation_spec(
         policy,
         sections,
         false,
-        Some(kickoff),
+        kickoff,
     )
+}
+
+/// What a root agent of `task` is handed besides its own task section: review
+/// `fix`'s findings alone, else the shared plan and the proposal for `selected`.
+///
+/// # Errors
+/// As [`crate::reviews::handoff`] for a fix.
+pub fn root_handoff(
+    project: &Project,
+    task: Option<&str>,
+    selected: &[String],
+    fix: Option<&crate::reviews::Session>,
+) -> Result<Vec<ContextSection>> {
+    let root = Path::new(&project.root);
+    if let Some(review) = fix {
+        return Ok(vec![crate::reviews::handoff(root, review)?]);
+    }
+    let plan = crate::plans::section(root, task);
+    let proposal = crate::proposals::section(project, task, selected);
+    Ok(plan.into_iter().chain(proposal).collect())
 }
 
 /// The first prompt of an agent started by Implement.
@@ -1711,6 +1708,7 @@ mod tests {
                     title: "Applied assignments".into(),
                     body: "api: Fix login".into(),
                 }],
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -1827,14 +1825,14 @@ mod tests {
                 title: "Shared plan".into(),
                 body: "Fix login".into(),
             }];
-            let spec = task_root_implementation_spec(
+            let spec = task_root_session_spec(
                 &project(),
                 &[],
                 &terminal,
                 None,
                 &AllowAll,
                 &sections,
-                Kickoff::ImplementPlan,
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1849,14 +1847,14 @@ mod tests {
         for (command, prompted) in [("env FOO=1 claude", true), ("codex exec inspect", false)] {
             let mut terminal = planner();
             terminal.command = command.into();
-            let spec = task_root_implementation_spec(
+            let spec = task_root_session_spec(
                 &project(),
                 &[],
                 &terminal,
                 None,
                 &AllowAll,
                 &[],
-                Kickoff::ImplementPlan,
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap();
             assert_eq!(
@@ -1876,14 +1874,14 @@ mod tests {
                 title: "Review findings".into(),
                 body: "Fix login".into(),
             }];
-            let spec = task_root_implementation_spec(
+            let spec = task_root_session_spec(
                 &project(),
                 &[],
                 &terminal,
                 None,
                 &AllowAll,
                 &sections,
-                Kickoff::FixFindings,
+                Some(Kickoff::FixFindings),
             )
             .unwrap();
             let words = command_tokens(&spec.command, Shell::current()).unwrap();

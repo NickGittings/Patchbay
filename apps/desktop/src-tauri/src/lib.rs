@@ -1321,9 +1321,22 @@ async fn task_root_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
-        let fix = matches!(kickoff, Some(context::Kickoff::FixFindings));
+        let fix = match kickoff {
+            Some(context::Kickoff::FixFindings) => Some(recorded_review(
+                &bridge,
+                &project_id,
+                review_session
+                    .as_deref()
+                    .ok_or("Choose the review to fix")?,
+            )?),
+            _ => None,
+        };
         // A review covers the whole branch, so its fix isn't limited to the highlights.
-        let component_ids = if fix { Vec::new() } else { component_ids };
+        let component_ids = if fix.is_some() {
+            Vec::new()
+        } else {
+            component_ids
+        };
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let selected = if component_ids.is_empty() {
@@ -1331,17 +1344,8 @@ async fn task_root_start(
         } else {
             component_ids
         };
-        let root = Path::new(&project.root);
-        // A fix agent works from the reviewed branch's findings alone, not the plan.
-        let handoff = if fix {
-            let session = review_session.ok_or("Choose the review to fix")?;
-            let reviewed = reviewed_by(&bridge, &project_id, root, &session)?;
-            vec![patchbay_core::reviews::handoff(root, &reviewed).map_err(err)?]
-        } else {
-            let plan = patchbay_core::plans::section(root, task.as_deref());
-            let proposal = patchbay_core::proposals::section(&project, task.as_deref(), &selected);
-            plan.into_iter().chain(proposal).collect()
-        };
+        let handoff = context::root_handoff(&project, task.as_deref(), &selected, fix.as_ref())
+            .map_err(err)?;
         let own = section.into_iter().chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),
@@ -1354,26 +1358,15 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        let mut spec = if let Some(kickoff) = kickoff {
-            context::task_root_implementation_spec(
-                &project,
-                &selected,
-                &terminal,
-                task.as_deref(),
-                &AllowAll,
-                &sections,
-                kickoff,
-            )
-        } else {
-            context::task_root_session_spec(
-                &project,
-                &selected,
-                &terminal,
-                task.as_deref(),
-                &AllowAll,
-                &sections,
-            )
-        }
+        let mut spec = context::task_root_session_spec(
+            &project,
+            &selected,
+            &terminal,
+            task.as_deref(),
+            &AllowAll,
+            &sections,
+            kickoff,
+        )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
@@ -1437,28 +1430,30 @@ async fn review_agent_start(
     .await
 }
 
-/// What review session `session` of `project_id` covered, from its recorded
-/// worktree and branch rather than anything the webview says.
-fn reviewed_by(
+/// Review session `session` of `project_id` as the service recorded it, never
+/// as the webview describes it.
+fn recorded_review(
     bridge: &service::Bridge,
     project_id: &str,
-    root: &Path,
     session: &str,
-) -> CmdResult<patchbay_core::reviews::Reviewed> {
-    let records = bridge.list()?;
-    let record = records
-        .iter()
+) -> CmdResult<patchbay_core::reviews::Session> {
+    let record = bridge
+        .list()?
+        .into_iter()
         .find(|r| {
             r.id == session
                 && r.metadata.project_id == project_id
                 && r.metadata.component_id == model::REVIEW_SCOPE
         })
         .ok_or("Unknown review session")?;
-    patchbay_core::reviews::reviewed(root, &record.spec.cwd, record.metadata.branch.as_deref())
-        .map_err(err)
+    Ok(patchbay_core::reviews::Session {
+        cwd: record.spec.cwd,
+        branch: record.metadata.branch,
+    })
 }
 
 /// The task a fix for review `session_id` runs in; `None` for the project folder.
+/// Refuses everything the launch would, before the webview changes anything.
 #[tauri::command]
 async fn review_fix_task(
     state: State<'_, AppState>,
@@ -1473,8 +1468,8 @@ async fn review_fix_task(
         .ok_or("No project is open")?;
     let bridge = state.service.clone();
     blocking(move || {
-        let reviewed = reviewed_by(&bridge, &project_id, &root, &session_id)?;
-        patchbay_core::reviews::fix_task(&root, &reviewed).map_err(err)
+        let review = recorded_review(&bridge, &project_id, &session_id)?;
+        patchbay_core::reviews::fix_task(&root, &review).map_err(err)
     })
     .await
 }
