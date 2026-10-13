@@ -282,14 +282,12 @@ pub fn prepare(
 /// unchanged since the last attempt, so resuming alone doesn't age its findings.
 ///
 /// # Errors
-/// Fails when the session's findings file isn't in the reviews folder, its record is
-/// missing, or the worktree no longer has the reviewed branch checked out.
-pub fn resume_attempt(root: &Path, spec: &SessionSpec) -> Result<Option<Attempt>> {
-    let findings = PathBuf::from(
-        spec.env
-            .get(REVIEW_FILE_ENV)
-            .context("The review session has no findings file")?,
-    );
+/// Fails when the branch's review record is missing, its identity doesn't match,
+/// or the worktree no longer has the reviewed branch checked out.
+pub fn resume_attempt(root: &Path, spec: &SessionSpec, branch: &str) -> Result<Option<Attempt>> {
+    // Session summaries deliberately strip the launch environment. Use the recorded
+    // branch to find the artifact, rather than depending on PATCHBAY_REVIEW_FILE.
+    let findings = file(root, branch)?;
     let folder = existing_dir(root).context("The reviews folder is missing")?;
     let sidecar = findings.with_extension("json");
     let old: Started = serde_json::from_slice(
@@ -352,6 +350,49 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
         started_ms: started.started_ms,
         edited_since_start,
         truncated,
+    })
+}
+
+/// Inline findings for a fix agent in the checked-out branch, without granting directories.
+#[must_use]
+pub fn section(worktree: &Path) -> Option<context::ContextSection> {
+    let branch =
+        git::run(git::git(worktree).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()?;
+    let findings = read(worktree, &branch)?;
+    let text = findings.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"])).ok()?;
+    let freshness = match findings.reviewed_head.as_deref() {
+        None => "from an earlier attempt; a newer review hasn't written findings yet".into(),
+        Some(reviewed) if reviewed != head => format!(
+            "reviewed at {}; the branch has commits since, so some may be resolved",
+            reviewed.get(..7).unwrap_or(reviewed)
+        ),
+        Some(_) if findings.edited_since_start => {
+            "files changed after the review started; some may already be addressed".into()
+        }
+        Some(_) => format!("current for HEAD {}", &head[..head.len().min(7)]),
+    };
+    let age = crate::plans::ago(
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(findings.modified_ms),
+    );
+    let cut = if findings.truncated {
+        format!(
+            "\n\n[The findings continue past {} KiB; read the rest in {}.]",
+            crate::plans::PLAN_LIMIT / 1024,
+            file(worktree, &branch).ok()?.display()
+        )
+    } else {
+        String::new()
+    };
+    Some(context::ContextSection {
+        title: "Review findings".into(),
+        body: format!(
+            "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
+            findings.base
+        ),
     })
 }
 
@@ -499,6 +540,153 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn section_omits_missing_blank_and_detached_findings() {
+        let f = Fixture::new();
+        assert!(section(&f.dir).is_none());
+        assert!(existing_dir(&f.dir).is_none());
+        f.prepare("claude").unwrap();
+        assert!(section(&f.dir).is_none());
+        f.save(" \n", true);
+        assert!(section(&f.dir).is_none());
+        f.save("P2 file.txt:1: Fix this", true);
+        git::run(git::git(&f.dir).args(["checkout", "--detach", "-q"])).unwrap();
+        assert!(section(&f.dir).is_none());
+    }
+
+    #[test]
+    fn section_inlines_current_findings_without_granting_reviews() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("P2 file.txt:1: Fix this", true);
+        let section = section(&f.dir).unwrap();
+        assert_eq!(section.title, "Review findings");
+        for text in [
+            "feature/a",
+            "Base: main",
+            "Saved just now",
+            "current for HEAD",
+            "Fix this",
+        ] {
+            assert!(section.body.contains(text), "{text}");
+        }
+        let terminal = serde_json::from_value(serde_json::json!({
+            "id": "fix", "name": "Fix", "kind": "agent", "command": "claude"
+        }))
+        .unwrap();
+        let spec = context::task_root_implementation_spec(
+            &f.project,
+            &[],
+            &terminal,
+            None,
+            &AllowAll,
+            &[section],
+            context::Kickoff::FixFindings,
+        )
+        .unwrap();
+        assert!(spec.dirs.is_empty());
+        assert!(!spec.command.contains("--add-dir"));
+    }
+
+    #[test]
+    fn section_reports_commits_since_review() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("Finding", true);
+        git::run(git::git(&f.dir).args(["commit", "--allow-empty", "-qm", "after review"]))
+            .unwrap();
+        assert!(section(&f.dir).unwrap().body.contains("commits since"));
+    }
+
+    #[test]
+    fn section_reports_edits_since_review() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("Finding", true);
+        let file = f.dir.join("file.txt");
+        fs::write(&file, "edited\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            section(&f.dir)
+                .unwrap()
+                .body
+                .contains("files changed after the review started")
+        );
+    }
+
+    #[test]
+    fn section_reports_an_earlier_attempt() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("Old finding", false);
+        assert!(
+            section(&f.dir)
+                .unwrap()
+                .body
+                .contains("a newer review hasn't written findings yet")
+        );
+    }
+
+    #[test]
+    fn section_names_the_file_when_truncated() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save(&"x".repeat(crate::plans::PLAN_LIMIT + 1), true);
+        let body = section(&f.dir).unwrap().body;
+        assert!(body.contains("continue past 64 KiB"));
+        assert!(
+            body.contains(
+                &file(&f.dir, &f.request.branch)
+                    .unwrap()
+                    .display()
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn section_reads_findings_from_a_linked_worktree() {
+        let f = Fixture::new();
+        let worktree = f.dir.join("linked");
+        git::run(git::git(&f.dir).args([
+            "worktree",
+            "add",
+            "-q",
+            worktree.to_str().unwrap(),
+            "main",
+        ]))
+        .unwrap();
+        let request = ReviewRequest {
+            worktree: worktree.display().to_string(),
+            branch: "main".into(),
+            base: f.request.branch.clone(),
+        };
+        let terminal = serde_json::from_value(
+            serde_json::json!({"id":"review", "name":"Review", "kind":"agent", "command":"claude"}),
+        )
+        .unwrap();
+        prepare(&f.project, &request, &terminal, &AllowAll).unwrap();
+        let path = file(&worktree, "main").unwrap();
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        fs::write(&path, "Linked finding").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_millis(started.started_ms + 10))
+            .unwrap();
+        let body = section(&worktree).unwrap().body;
+        assert!(body.contains("Branch: main"));
+        assert!(body.contains("Linked finding"));
+        assert!(body.contains("current for HEAD"));
     }
 
     #[test]
@@ -763,14 +951,23 @@ mod tests {
     #[test]
     fn resuming_records_a_new_attempt_only_when_the_worktree_moved_on() {
         let f = Fixture::new();
-        let job = f.prepare("claude").unwrap();
+        let mut job = f.prepare("claude").unwrap();
+        let briefing = context::owned_briefing(&job.spec).unwrap();
         f.save("findings", true);
-        assert!(resume_attempt(&f.dir, &job.spec).unwrap().is_none());
+        // The adapter receives public session summaries, with no launch environment.
+        job.spec.env.clear();
+        assert!(
+            resume_attempt(&f.dir, &job.spec, &f.request.branch)
+                .unwrap()
+                .is_none()
+        );
 
         fs::write(f.dir.join("file.txt"), "next\n").unwrap();
         git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
         let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
-        let attempt = resume_attempt(&f.dir, &job.spec).unwrap().unwrap();
+        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch)
+            .unwrap()
+            .unwrap();
         // Old findings predate the new attempt until the agent rewrites them.
         assert!(
             read(&f.dir, &f.request.branch)
@@ -785,7 +982,9 @@ mod tests {
                 .reviewed_head
                 .is_some()
         );
-        let attempt = resume_attempt(&f.dir, &job.spec).unwrap().unwrap();
+        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch)
+            .unwrap()
+            .unwrap();
         drop(attempt);
         f.save("new findings", true);
         let findings = read(&f.dir, &f.request.branch).unwrap();
@@ -793,8 +992,8 @@ mod tests {
         assert_eq!(findings.base, "main");
 
         git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
-        assert!(resume_attempt(&f.dir, &job.spec).is_err());
-        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+        assert!(resume_attempt(&f.dir, &job.spec, &f.request.branch).is_err());
+        context::remove_owned_briefing_file(&briefing);
     }
 
     #[test]

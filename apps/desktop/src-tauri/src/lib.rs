@@ -1311,7 +1311,7 @@ async fn task_root_start(
     terminal: TerminalSpec,
     task: Option<String>,
     extra_context: Option<Vec<ContextSection>>,
-    implement_plan: Option<bool>,
+    kickoff: Option<context::Kickoff>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1328,8 +1328,17 @@ async fn task_root_start(
             component_ids
         };
         let root = Path::new(&project.root);
+        let findings = if matches!(kickoff, Some(context::Kickoff::FixFindings)) {
+            Some(
+                patchbay_core::reviews::section(root)
+                    .ok_or("No review findings for this worktree's branch")?,
+            )
+        } else {
+            None
+        };
         let own = section
             .into_iter()
+            .chain(findings)
             .chain(patchbay_core::plans::section(root, task.as_deref()))
             .chain(patchbay_core::proposals::section(
                 &project,
@@ -1347,19 +1356,26 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        let build = if implement_plan.unwrap_or(false) {
-            context::task_root_implementation_spec
+        let mut spec = if let Some(kickoff) = kickoff {
+            context::task_root_implementation_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+                kickoff,
+            )
         } else {
-            context::task_root_session_spec
-        };
-        let mut spec = build(
-            &project,
-            &selected,
-            &terminal,
-            task.as_deref(),
-            &AllowAll,
-            &sections,
-        )
+            context::task_root_session_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+            )
+        }
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
@@ -1697,11 +1713,15 @@ async fn session_resume(
         };
         // A resumed review re-reviews the worktree as it is now.
         if record.metadata.component_id == model::REVIEW_SCOPE
-            && let Some(attempt) = patchbay_core::reviews::resume_attempt(
-                root.as_deref().ok_or("No project is open")?,
-                &record.spec,
-            )
-            .map_err(err)?
+            && let Some(attempt) =
+                patchbay_core::reviews::resume_attempt(
+                    root.as_deref().ok_or("No project is open")?,
+                    &record.spec,
+                    record.metadata.branch.as_deref().ok_or(
+                        "This session predates recorded review branches; start a new review",
+                    )?,
+                )
+                .map_err(err)?
         {
             return attempt.launch(|| bridge.call_reporting(resume));
         }

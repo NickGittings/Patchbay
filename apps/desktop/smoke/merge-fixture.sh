@@ -72,3 +72,16 @@ print('review-file:' + str(path), flush=True)
 print('review-verified', flush=True)
 input()  # exercise the running guard before an ordinary successful exit
 PYTHON
+
+cat > "$dir/fix.py" <<'PYTHON'
+import os
+import pathlib
+
+body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
+assert '## Review findings' in body
+assert 'Smoke review finding' in body
+assert 'addressing the review findings below' in body
+assert 'PATCHBAY_REVIEW_FILE' not in os.environ
+print(body, flush=True)
+print('fix-verified:' + str(pathlib.Path.cwd()), flush=True)
+PYTHON

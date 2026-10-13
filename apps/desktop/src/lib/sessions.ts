@@ -157,7 +157,7 @@ interface Launch {
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
-  implementPlan?: boolean
+  kickoff?: 'implementPlan' | 'fixFindings'
   restart?: boolean
 }
 
@@ -213,15 +213,15 @@ export function startTerminal(
   terminalId: string,
   task?: string | null,
   projectId?: string,
-  implementPlan = false,
+  kickoff?: 'implementPlan' | 'fixFindings',
 ): Promise<void> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
-    launch.implementPlan = implementPlan
+    launch.kickoff = kickoff
   } catch (e) {
     useStore.getState().setMessage(String(e))
-    if (implementPlan) return Promise.reject(e)
+    if (kickoff) return Promise.reject(e)
     return Promise.resolve()
   }
   return launchTerminal(launch)
@@ -269,7 +269,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           launch.rootTerminal,
           task,
           requestId,
-          launch.implementPlan,
+          launch.kickoff,
           resume,
         )
       } else if (runtime?.commandId)
@@ -308,7 +308,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (snapshot?.running) launchRequests.delete(sid)
       if (requestedEpoch === epoch && !snapshot?.running) {
         useStore.getState().setMessage(String(e))
-        if (launch.implementPlan) throw e
+        if (launch.kickoff) throw e
       }
     }
   })().finally(() => {

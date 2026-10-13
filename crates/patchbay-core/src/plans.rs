@@ -307,7 +307,7 @@ pub fn withdraw(root: &Path, task: Option<&str>) -> Result<bool> {
 }
 
 /// How long ago `then` was, roughly ("3 hours ago").
-fn ago(then: SystemTime) -> String {
+pub(crate) fn ago(then: SystemTime) -> String {
     let secs = SystemTime::now()
         .duration_since(then)
         .unwrap_or(Duration::ZERO)

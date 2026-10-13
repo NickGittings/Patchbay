@@ -13,6 +13,7 @@ import {
   terminalSnapshot,
   syncAgentProject,
   planRead,
+  taskAttach,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
@@ -60,6 +61,7 @@ import {
   syncRoots,
 } from './ipc'
 const hooks = {
+  taskAttach,
   planRead,
   syncAgentProject,
   saveMap,

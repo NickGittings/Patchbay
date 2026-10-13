@@ -19,6 +19,13 @@ pub struct ContextSection {
     pub title: String,
     pub body: String,
 }
+
+#[derive(serde::Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum Kickoff {
+    ImplementPlan,
+    FixFindings,
+}
 fn append_sections(out: &mut String, sections: &[ContextSection]) {
     for section in sections {
         let _ = writeln!(
@@ -644,6 +651,7 @@ pub fn implementation_context(
     project: &Project,
     ids: &[String],
     sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
 ) -> String {
     let mut out = format!(
         "# Patchbay implementation context\n\nImplement the task in **{}** at `{}`.\n\n## Selected components\n\n",
@@ -652,7 +660,14 @@ pub fn implementation_context(
     for component in plan_components(project, ids) {
         describe_component(&mut out, project, component);
     }
-    out.push_str("\nCoordinate and implement the complete selected scope, using the saved plan and applied assignments below.\n");
+    let instructions = match kickoff {
+        Some(Kickoff::FixFindings) => "addressing the review findings below",
+        _ => "using the saved plan and applied assignments below",
+    };
+    let _ = writeln!(
+        out,
+        "\nCoordinate and implement the complete selected scope, {instructions}."
+    );
     out.push_str(&implementation_actions(Shell::current()));
     append_sections(&mut out, sections);
     out
@@ -1100,7 +1115,7 @@ pub fn plan_session_spec_for(
         policy,
         sections,
         true,
-        false,
+        None,
     )
 }
 
@@ -1124,14 +1139,15 @@ pub fn task_root_session_spec(
         policy,
         sections,
         false,
-        false,
+        None,
     )
 }
 
-/// Start a new implementation agent with the saved plan as its first task.
+/// Start a new implementation agent with the requested handoff as its first task.
 ///
 /// # Errors
 /// As [`task_root_session_spec`], or if the terminal is not an agent.
+#[allow(clippy::too_many_arguments)]
 pub fn task_root_implementation_spec(
     project: &Project,
     component_ids: &[String],
@@ -1139,10 +1155,11 @@ pub fn task_root_implementation_spec(
     task: Option<&str>,
     policy: &dyn Policy,
     sections: &[ContextSection],
+    kickoff: Kickoff,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         terminal.kind == TerminalKind::Agent,
-        "Choose an agent to implement the plan"
+        "Choose an agent for implementation"
     );
     root_session_spec(
         project,
@@ -1152,12 +1169,13 @@ pub fn task_root_implementation_spec(
         policy,
         sections,
         false,
-        true,
+        Some(kickoff),
     )
 }
 
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
+const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing. Fix the ones that still apply; for any already resolved or that you disagree with, say why instead of changing code. Run the relevant checks and report each finding's outcome.";
 
 #[allow(clippy::too_many_arguments)]
 fn root_session_spec(
@@ -1168,7 +1186,7 @@ fn root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     planning: bool,
-    implement_plan: bool,
+    kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1196,7 +1214,7 @@ fn root_session_spec(
         let briefing = if planning {
             plan_context(project, component_ids, sections)
         } else {
-            implementation_context(project, component_ids, sections)
+            implementation_context(project, component_ids, sections, kickoff)
         };
         let file = context_file(
             &briefing_name(project, &format!("{scope}-{}", terminal.id), task),
@@ -1236,7 +1254,10 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
-            prompt: implement_plan.then_some(IMPLEMENT_PROMPT),
+            prompt: kickoff.map(|kind| match kind {
+                Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
+                Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
+            }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1812,6 +1833,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &sections,
+                Kickoff::ImplementPlan,
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1826,14 +1848,50 @@ mod tests {
         for (command, prompted) in [("env FOO=1 claude", true), ("codex exec inspect", false)] {
             let mut terminal = planner();
             terminal.command = command.into();
-            let spec =
-                task_root_implementation_spec(&project(), &[], &terminal, None, &AllowAll, &[])
-                    .unwrap();
+            let spec = task_root_implementation_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &[],
+                Kickoff::ImplementPlan,
+            )
+            .unwrap();
             assert_eq!(
                 spec.command.contains("Implement the shared plan"),
                 prompted,
                 "{command}"
             );
+        }
+    }
+
+    #[test]
+    fn fix_findings_starts_with_its_prompt_and_review_instructions() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = provider.into();
+            let sections = [ContextSection {
+                title: "Review findings".into(),
+                body: "Fix login".into(),
+            }];
+            let spec = task_root_implementation_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &sections,
+                Kickoff::FixFindings,
+            )
+            .unwrap();
+            let words = command_tokens(&spec.command, Shell::current()).unwrap();
+            assert_eq!(words.last().unwrap(), FIX_FINDINGS_PROMPT);
+            assert!(!words.iter().any(|word| word == IMPLEMENT_PROMPT));
+            let briefing = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+            assert!(briefing.contains("addressing the review findings below"));
+            assert!(briefing.contains("## Review findings\n\nFix login"));
+            assert!(!briefing.contains("using the saved plan"));
         }
     }
 

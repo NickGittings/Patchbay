@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
 import { reviewAgentRecords } from '../lib/reviewAgents'
+import { fixReviewFindings } from '../lib/reviewHandoff'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
 import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings'
@@ -31,13 +32,14 @@ export default function ReviewAgentPanel({
   const [findings, setFindings] = useState(false)
   const branch = selected.metadata.branch ?? undefined
   const shared = !!branch && branch === sourceBranch
-  // Read (and poll) findings only while they're shown, and only those Review doesn't.
+  // Poll while the panel is shown so the fix handoff can use findings before the toggle opens.
   const own = useReviewFindings(
     selected.metadata.projectId,
-    isReview && findings && !shared ? branch : undefined,
+    isReview && !shared ? branch : undefined,
   )
   const loaded = shared ? sourceFindings : own
   const [stopping, setStopping] = useState(false)
+  const [starting, setStarting] = useState(false)
   const terminal: TerminalSpec = {
     id: selected.metadata.terminalId,
     name: selected.metadata.name,
@@ -65,6 +67,24 @@ export default function ReviewAgentPanel({
         </select>
         <StatusLabel status={terminalStatus('agent', session)} />
         <span className="spacer" />
+        {isReview && branch && (
+          <button
+            disabled={starting || !!session?.running || !loaded?.findings?.text.trim()}
+            title={
+              session?.running
+                ? 'Wait for the review to finish; findings may still be partial'
+                : 'Start a fresh agent in the reviewed worktree to address the findings'
+            }
+            onClick={() => {
+              setStarting(true)
+              void fixReviewFindings(selected)
+                .catch((e) => useStore.getState().setMessage(String(e)))
+                .finally(() => setStarting(false))
+            }}
+          >
+            {starting ? 'Starting…' : 'Fix in Implementation →'}
+          </button>
+        )}
         {isReview && (
           <button aria-pressed={findings} onClick={() => setFindings(!findings)}>
             Findings
