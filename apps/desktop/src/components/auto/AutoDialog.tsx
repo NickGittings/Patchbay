@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '../../store'
 import type { AutoRun, AutoStage, EffortSettings, Severity } from '../../types'
-import { autoSnapshot, EFFORT, inferStage, startAuto, STAGES, STAGE_LABELS } from '../../lib/auto'
+import {
+  autoSnapshot,
+  checkAutoHooks,
+  EFFORT,
+  inferStage,
+  startAuto,
+  STAGES,
+  STAGE_LABELS,
+  type AutoSnapshot,
+} from '../../lib/auto'
 import { agentDevices } from '../../lib/plan'
-import { agentHooksCheck, agentProvider } from '../../lib/ipc'
+import { SEVERITIES } from '../../lib/autoSettings'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -17,7 +26,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [mode, setMode] = useState<'ask' | 'auto'>('ask')
   const [destination, setDestination] = useState('')
   const [destinations, setDestinations] = useState<string[]>([])
-  const [detected, setDetected] = useState('Detecting current work…')
+  const [snapshot, setSnapshot] = useState<AutoSnapshot | null>(null)
   const [stage, setStage] = useState<AutoStage | ''>('')
   const [error, setError] = useState('')
   const [integrationCheck, setIntegrationCheck] = useState<{
@@ -29,7 +38,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     integrationCheck?.device === device &&
     integrationCheck.devices === devices &&
     integrationCheck.installed
-  const requestKey = JSON.stringify([projectId, task, device, effort, overrides, mode, destination])
+  const requestKey = JSON.stringify([projectId, task, destination])
   const [loadedKey, setLoadedKey] = useState('')
   const loading = loadedKey !== requestKey
   const [starting, setStarting] = useState(false)
@@ -41,10 +50,9 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       status: 'running',
       stage: 'plan',
       goal: '',
-      effort,
-      overrides,
-      merge: { mode, destinationBranch: destination },
-      device,
+      effort: 'standard',
+      merge: { mode: 'ask', destinationBranch: destination },
+      device: '',
       round: 0,
       log: [],
     }
@@ -62,8 +70,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
             snapshot.worktrees.find((w) => w.current && w.path !== snapshot.source.path)?.branch ||
             '',
         )
-        const decision = inferStage(snapshot, run)
-        setDetected(`${STAGE_LABELS[decision.stage]} (${decision.reason})`)
+        setSnapshot(snapshot)
         setError('')
       })
       .catch((e) => {
@@ -75,26 +82,40 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     return () => {
       cancelled = true
     }
-  }, [projectId, task, device, effort, overrides, mode, destination, requestKey])
+  }, [projectId, task, destination, requestKey])
   useEffect(() => {
-    const agent = agents.find((a) => a.id === device)
     let cancelled = false
-    void (agent ? agentProvider(agent) : Promise.resolve(null))
-      .then((provider) => (provider ? agentHooksCheck(provider) : null))
-      .then((h) => {
-        if (!cancelled)
-          setIntegrationCheck({
-            device,
-            devices,
-            installed: !!h && h.installed && !h.disabled && h.reporterAvailable,
-          })
+    void checkAutoHooks(device)
+      .then(
+        () => true,
+        () => false,
+      )
+      .then((installed) => {
+        if (!cancelled) setIntegrationCheck({ device, devices, installed })
       })
-      .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [device, devices, agents])
+  }, [device, devices])
   const settings = { ...EFFORT[effort], ...overrides }
+  const decision =
+    snapshot &&
+    inferStage(snapshot, {
+      runId: '',
+      stage: 'plan',
+      status: 'running',
+      round: 0,
+      log: [],
+      goal,
+      effort,
+      overrides,
+      device,
+      merge: { mode, destinationBranch: destination },
+    })
+  const detected = decision
+    ? `${STAGE_LABELS[decision.stage]} (${decision.reason})`
+    : 'Detecting current work…'
+
   return (
     <div className="auto-content">
       <strong>Auto mode</strong>
@@ -153,7 +174,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
               setOverrides({ ...overrides, severityFloor: e.target.value as Severity })
             }
           >
-            {['critical', 'high', 'medium', 'low'].map((s) => (
+            {SEVERITIES.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>

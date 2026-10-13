@@ -212,25 +212,29 @@ function captureLaunch(
  * Start a terminal of `projectId` (default: the active project) in `task`'s worktree (default:
  * that project's active task; `null` for its own worktree).
  */
+export interface StartTerminalOptions {
+  kickoff?: import('../types').Kickoff
+  auto?: import('../types').AutoBrief
+  reviewBranch?: string
+}
+
 export function startTerminal(
   componentId: string,
   terminalId: string,
   task?: string | null,
   projectId?: string,
-  kickoff: import('../types').Kickoff | boolean = false,
-  auto?: import('../types').AutoBrief,
-  reviewBranch?: string,
+  options: StartTerminalOptions = {},
 ): Promise<void> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
-    launch.implementPlan = kickoff === true || kickoff === 'implementPlan'
-    launch.kickoff = typeof kickoff === 'string' ? kickoff : undefined
-    launch.auto = auto
-    launch.reviewBranch = reviewBranch
+    launch.implementPlan = options.kickoff === 'implementPlan'
+    launch.kickoff = options.kickoff
+    launch.auto = options.auto
+    launch.reviewBranch = options.reviewBranch
   } catch (e) {
     useStore.getState().setMessage(String(e))
-    if (kickoff || auto) return Promise.reject(e)
+    if (options.kickoff || options.auto) return Promise.reject(e)
     return Promise.resolve()
   }
   return launchTerminal(launch)
@@ -238,10 +242,17 @@ export function startTerminal(
 
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
-  if (isClosing(launch)) return Promise.resolve()
+  let launchCancelled = false
+  const cancelled = () => {
+    launchCancelled = true
+    if (launch.implementPlan || launch.kickoff || launch.auto)
+      throw new Error('Agent launch cancelled because the terminal closed or sessions reset')
+  }
+  if (isClosing(launch)) return Promise.resolve().then(cancelled)
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
-  if (existing) return existing
+  if (existing)
+    return launch.auto ? Promise.reject(new Error('This agent is already starting')) : existing
   // A retry reuses its request ID so a lost reply can't launch twice; Restart follows a stop,
   // so an earlier request is spent and would be answered as a duplicate without relaunching.
   const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
@@ -250,7 +261,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     const requestedEpoch = epoch
     try {
       await listenForTerminals()
-      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return cancelled()
       if (
         !isReservedScope(componentId) &&
         !runtime &&
@@ -258,7 +269,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           (c) => c.id === componentId && c.terminals.some((t) => t.id === terminalId),
         )
       )
-        return
+        return cancelled()
       if (!useStore.getState().serviceConnected)
         throw new Error('Disconnected; reconnect before starting work')
       const terminal =
@@ -269,8 +280,12 @@ function launchTerminal(launch: Launch): Promise<void> {
           ?.terminals.find((t) => t.id === terminalId)
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
         await savePlanDraft(launch.projectId, launch.task)
-      const autoArgs: [import('../types').AutoBrief?, import('../types').Kickoff?] =
-        launch.auto || launch.kickoff ? [launch.auto, launch.kickoff] : []
+      if (requestedEpoch !== epoch || isClosing(launch)) return cancelled()
+      const options = {
+        auto: launch.auto,
+        kickoff: launch.kickoff,
+        reviewBranch: launch.reviewBranch,
+      }
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
@@ -282,8 +297,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           requestId,
           launch.implementPlan,
           resume,
-          ...autoArgs,
-          ...(launch.reviewBranch ? [launch.reviewBranch] : []),
+          options,
         )
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
@@ -300,8 +314,7 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, requestId, !!launch.restart, ...autoArgs)
-        if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
+        await planStart(project, ids, terminal, requestId, !!launch.restart, options)
       } else {
         await terminalStart(
           project,
@@ -315,14 +328,18 @@ function launchTerminal(launch: Launch): Promise<void> {
         )
       }
       launchRequests.delete(sid)
+      if (requestedEpoch !== epoch || isClosing(launch)) return cancelled()
+      if (componentId === PLAN_SCOPE) markPlanStarted(launch.projectId, sid, launch.highlighted)
     } catch (e) {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       if (snapshot?.running) launchRequests.delete(sid)
-      if (requestedEpoch === epoch && !snapshot?.running) {
-        useStore.getState().setMessage(String(e))
-        if (launch.implementPlan || launch.kickoff || launch.auto) throw e
-      }
+      if (requestedEpoch === epoch && !snapshot?.running) useStore.getState().setMessage(String(e))
+      if (
+        (launch.implementPlan || launch.kickoff || launch.auto) &&
+        (launchCancelled || !snapshot?.running)
+      )
+        throw e
     }
   })().finally(() => {
     if (starting.get(sid) === request) starting.delete(sid)
@@ -409,7 +426,7 @@ export async function closeTerminal(componentId: string, terminalId: string) {
     )
   }
   try {
-    await Promise.all(
+    await Promise.allSettled(
       [...starting, ...restarting].filter(([sid]) => matches(sid)).map(([, request]) => request),
     )
     if (requestedEpoch !== epoch) return false

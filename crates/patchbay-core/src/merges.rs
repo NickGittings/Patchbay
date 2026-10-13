@@ -38,7 +38,7 @@ const OPERATION_MARKERS: [&str; 6] = [
 ];
 
 /// Check live Git state without changing either worktree.
-/// Active operations take precedence; completed integration is independent of worktree dirt.
+/// Active operations and uncommitted work take precedence over commit ancestry.
 ///
 /// # Errors
 /// Fails for foreign, missing or changed worktrees, or Git errors.
@@ -73,6 +73,17 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
             && destination.branch.as_deref() == Some(&request.destination_branch),
         "The merge branches changed"
     );
+    for path in [&source.path, &destination.path] {
+        if !git::run(git::git(Path::new(path)).args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ]))?
+        .is_empty()
+        {
+            return Ok(MergeOutcome::Dirty);
+        }
+    }
     let root = Path::new(&destination.path);
     let ancestor = git::git(root)
         .args([
@@ -84,17 +95,6 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
         .status()?;
     if !ancestor.success() {
         ensure!(ancestor.code() == Some(1), "Couldn't check merge ancestry");
-        for path in [&source.path, &destination.path] {
-            if !git::run(git::git(Path::new(path)).args([
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-            ]))?
-            .is_empty()
-            {
-                return Ok(MergeOutcome::Dirty);
-            }
-        }
         return Ok(MergeOutcome::NotMerged);
     }
     let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
@@ -433,29 +433,46 @@ mod tests {
     }
 
     #[test]
-    fn completed_integration_ignores_worktree_dirt() {
+    fn integration_requires_clean_source_and_destination() {
         let f = Fixture::new();
-        for path in [&f.request.source, &f.request.destination] {
-            let root = Path::new(path);
-            fs::write(root.join("untracked"), "unrelated").unwrap();
-            fs::write(root.join("file.txt"), "uncommitted").unwrap();
-        }
         assert_eq!(
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::AlreadyIntegrated
         );
+        for path in [&f.request.source, &f.request.destination] {
+            let root = Path::new(path);
+            fs::write(root.join("untracked"), "uncommitted work").unwrap();
+            assert_eq!(
+                outcome(&f.project, &f.request).unwrap(),
+                MergeOutcome::Dirty
+            );
+            fs::remove_file(root.join("untracked")).unwrap();
+            fs::write(root.join("file.txt"), "uncommitted").unwrap();
+            assert_eq!(
+                outcome(&f.project, &f.request).unwrap(),
+                MergeOutcome::Dirty
+            );
+            git::run(git::git(root).args(["checkout", "--", "file.txt"])).unwrap();
+        }
         let source = Path::new(&f.request.source);
+        fs::write(source.join("file.txt"), "feature").unwrap();
         git::run(git::git(source).args(["add", "file.txt"])).unwrap();
         git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
         let destination = Path::new(&f.request.destination);
-        git::run(git::git(destination).args(["checkout", "--", "file.txt"])).unwrap();
         git::run(git::git(destination).args(["merge", "--no-ff", "-qm", "merge", "feature"]))
             .unwrap();
-        fs::write(destination.join("file.txt"), "unrelated edit").unwrap();
         assert_eq!(
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::Merged
         );
+        for path in [source, destination] {
+            fs::write(path.join("file.txt"), "later edit").unwrap();
+            assert_eq!(
+                outcome(&f.project, &f.request).unwrap(),
+                MergeOutcome::Dirty
+            );
+            git::run(git::git(path).args(["checkout", "--", "file.txt"])).unwrap();
+        }
     }
 
     #[test]

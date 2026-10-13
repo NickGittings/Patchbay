@@ -73,7 +73,7 @@ Types are mirrored by hand — there is no codegen:
 - `plan_read`/`plan_write` ↔ `planRead`/`planWrite` (`plans::Plan` ↔ `PlanText`; `plan_write` replaces the file only while it holds `expected`); `terminal_start`/`component_context` take optional `peers` (`lib/plan.ts` `peersFor`).
 
 - `reviews::{Severity, Severities, Verdict}` ↔ `Severity`/`Verdict` and `ReviewFindings.verdict`; findings start with `Verdict: clean | issues` and severity tags.
-- `merges::MergeOutcome` ↔ `MergeOutcome`; `merge_outcome` ↔ `mergeOutcome` checks ancestry, operation markers and clean worktrees.
+- `merges::MergeOutcome` ↔ `MergeOutcome`; `merge_outcome` ↔ `mergeOutcome` checks operation markers and both worktrees for uncommitted work before reporting integration from commit ancestry.
 - `context::{AutoBrief, Kickoff::{ImplementPlan, FixFindings, Plan}}` ↔ `AutoBrief`/`Kickoff`; `plan_start`, `task_root_start`, `review_agent_start`, `merge_agent_start` accept optional `auto`; planner/root launches accept `kickoff`. Auto sections are backend-owned and precede extension context. Manual launches omit them.
 - `git::Review.ahead` ↔ `Review.ahead`; optional `git_review.base` includes committed branch files for Auto inference and validation.
 

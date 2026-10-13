@@ -1433,11 +1433,13 @@ async fn merge_agent_start(
 
 #[tauri::command]
 async fn merge_outcome(
+    window: WebviewWindow,
     state: State<'_, AppState>,
     project_id: String,
     mut project: Project,
     request: patchbay_core::merges::MergeRequest,
 ) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    main_only(&window)?;
     let access = state.project(&project_id)?.access.snapshot();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;

@@ -431,24 +431,24 @@ pub fn review(
     components: Vec<(String, PathBuf)>,
     worktree: Option<&str>,
 ) -> Result<Review> {
-    let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
-    let changes = changes(&root, &components);
+    review_branch(project, components, worktree, None)
+}
+
+fn affected_components(
+    project: &Project,
+    changes: &HashMap<String, Vec<ChangedFile>>,
+) -> Vec<Affected> {
     let mut changed: Vec<String> = changes
         .iter()
         .filter(|(id, files)| !files.is_empty() && id.as_str() != PROJECT_SCOPE)
         .map(|(id, _)| id.clone())
         .collect();
     changed.sort();
-    let affected = project
+    project
         .dependents(&changed)
         .into_iter()
         .map(|(id, via)| Affected { id, via })
-        .collect();
-    Ok(Review {
-        changes,
-        affected,
-        ahead: false,
-    })
+        .collect()
 }
 
 /// Include committed branch changes for Auto inference and validation.
@@ -461,11 +461,16 @@ pub fn review_branch(
     worktree: Option<&str>,
     base: Option<&str>,
 ) -> Result<Review> {
-    let mut review = review(project, components.clone(), worktree)?;
+    let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
+    let groups = group_by_repo(&with_project_scope(&root, &components));
+    let mut review = Review {
+        changes: changes_in(&root, &groups, None),
+        ..Review::default()
+    };
     let Some(base) = base else {
+        review.affected = affected_components(project, &review.changes);
         return Ok(review);
     };
-    let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
     crate::tasks::check_branch(&root, base)?;
     let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
     review.ahead = run(git(&root).args(["rev-parse", "HEAD"]))? != merge_base;
@@ -473,7 +478,6 @@ pub fn review_branch(
     // `git diff` names files from the repo's top folder, which sits above a
     // project opened in a subfolder; files are reported relative to the project.
     let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
-    let groups = group_by_repo(&with_project_scope(&root, &components));
     let members = groups
         .iter()
         .find(|g| g.root == repo)
@@ -495,17 +499,7 @@ pub fn review_branch(
             }
         }
     }
-    let changed: Vec<_> = review
-        .changes
-        .iter()
-        .filter(|(_, files)| !files.is_empty())
-        .map(|(id, _)| id.clone())
-        .collect();
-    review.affected = project
-        .dependents(&changed)
-        .into_iter()
-        .map(|(id, via)| Affected { id, via })
-        .collect();
+    review.affected = affected_components(project, &review.changes);
     Ok(review)
 }
 

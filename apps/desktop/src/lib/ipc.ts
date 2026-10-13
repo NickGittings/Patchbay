@@ -188,8 +188,7 @@ export const planStart = async (
   terminal: TerminalSpec,
   requestId: string = crypto.randomUUID(),
   resume = false,
-  auto?: import('../types').AutoBrief,
-  kickoff?: import('../types').Kickoff,
+  options: Pick<import('./sessions').StartTerminalOptions, 'auto' | 'kickoff'> = {},
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -197,8 +196,8 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
-    auto,
-    kickoff,
+    auto: options.auto,
+    kickoff: options.kickoff,
     resume,
     extraContext: await extraContext(project, componentIds),
   })
@@ -431,9 +430,7 @@ export const taskRootStart = async (
   requestId: string = crypto.randomUUID(),
   implementPlan = false,
   resume = false,
-  auto?: import('../types').AutoBrief,
-  kickoff?: import('../types').Kickoff,
-  reviewBranch?: string,
+  options: import('./sessions').StartTerminalOptions = {},
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -442,9 +439,9 @@ export const taskRootStart = async (
     terminal,
     task,
     requestId,
-    auto,
-    kickoff,
-    reviewBranch,
+    auto: options.auto,
+    kickoff: options.kickoff,
+    reviewBranch: options.reviewBranch,
     resume,
     implementPlan,
     extraContext:

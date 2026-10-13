@@ -72,7 +72,7 @@ test('one click hands off a whole-project plan using the planner provider', asyn
     s.rootTerminals.at(-1)!.id,
     null,
     'p',
-    true,
+    { kickoff: 'implementPlan' },
   )
 })
 
@@ -187,7 +187,7 @@ test('a plan made on the project folder is copied into the worktree it is implem
     useStore.getState().rootTerminals.at(-1)!.id,
     'later',
     'p',
-    true,
+    { kickoff: 'implementPlan' },
   )
 })
 
@@ -228,7 +228,10 @@ test('Auto implements the project plan and returns the launched session', async 
   const sid = await implementPlannerPlan('claude', auto)
   const terminalId = useStore.getState().rootTerminals.at(-1)!.id
   expect(sid).toBe(sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'))
-  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', true, auto)
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', {
+    kickoff: 'implementPlan',
+    auto,
+  })
 })
 
 test('Auto never falls back to an older worktree plan', async () => {
@@ -244,7 +247,7 @@ test('Auto never falls back to an older worktree plan', async () => {
   expect(startTerminal).not.toHaveBeenCalled()
 })
 
-test('Auto handing off a manual planner leaves its session open', async () => {
+test('Auto handing off a manual planner stops it before implementation', async () => {
   const planner = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   useStore.setState({ sessions: { [planner]: { running: true } } })
   await implementPlannerPlan('claude', {
@@ -253,6 +256,27 @@ test('Auto handing off a manual planner leaves its session open', async () => {
     effortNote: '',
     commit: true,
   })
-  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(ipc.terminalStop).toHaveBeenCalledWith(planner)
+  expect(startTerminal).toHaveBeenCalledOnce()
+})
+
+test('overlapping Auto and manual plan approvals launch only one implementation', async () => {
+  let finish!: () => void
+  vi.mocked(startTerminal).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const auto = implementPlannerPlan('claude', {
+    goal: 'Goal',
+    fixFloor: null,
+    effortNote: '',
+    commit: true,
+  })
+  await vi.waitFor(() => expect(startTerminal).toHaveBeenCalledOnce())
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('already being implemented')
+  finish()
+  await auto
   expect(startTerminal).toHaveBeenCalledOnce()
 })

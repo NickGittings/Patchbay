@@ -1,4 +1,5 @@
 import type { AutoRun } from '../types'
+import { EFFORT, SEVERITIES, STAGES } from './autoSettings'
 
 /** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */
 export function restoredAuto(value: unknown): AutoRun | null {
@@ -8,10 +9,8 @@ export function restoredAuto(value: unknown): AutoRun | null {
     typeof r.runId !== 'string' ||
     typeof r.goal !== 'string' ||
     typeof r.device !== 'string' ||
-    !['plan', 'implement', 'validate', 'review', 'fix', 'mergeGate', 'merge', 'done'].includes(
-      r.stage,
-    ) ||
-    !['light', 'standard', 'thorough'].includes(r.effort) ||
+    !STAGES.includes(r.stage) ||
+    !Object.hasOwn(EFFORT, r.effort) ||
     !Number.isInteger(r.round) ||
     r.round < 0 ||
     !r.merge ||
@@ -28,8 +27,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
         (!Number.isInteger(overrides.maxRounds) ||
           overrides.maxRounds < 0 ||
           overrides.maxRounds > 100)) ||
-      (overrides.severityFloor !== undefined &&
-        !['critical', 'high', 'medium', 'low'].includes(overrides.severityFloor)) ||
+      (overrides.severityFloor !== undefined && !SEVERITIES.includes(overrides.severityFloor)) ||
       (overrides.validate !== undefined && typeof overrides.validate !== 'boolean'))
   )
     return null

@@ -11,7 +11,7 @@ import { refreshTasks } from './tasks'
  * planner's provider. The planner belongs to the project, so the plan may have been written
  * before the worktree existed.
  */
-export async function implementPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
+async function handoffPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
   const initial = useStore.getState()
   const projectId = initial.project?.id
   if (!projectId) throw new Error('Open a project first')
@@ -47,15 +47,31 @@ export async function implementPlannerPlan(plannerId: string, auto?: import('../
       'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Tools → Agent status integration.',
     )
   current()
-  // Manual Implement ends the planner before handing off. Auto's driver stops its own
-  // planner; a manually started planner remains under the user's control.
+  // Accepting a plan ends its planner, including one Auto took over manually.
   const sid = plannerSessionId(plannerId, projectId)
-  if (!auto && current().sessions[sid]?.running) await terminalStop(sid)
+  if (current().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, true, ...(auto ? [auto] : []))
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
+    kickoff: 'implementPlan',
+    ...(auto ? { auto } : {}),
+  })
   current().setView('implementation')
   return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
+}
+
+const handingOff = new Set<string>()
+/** Serialize acceptance of a project-wide plan, including manual approvals during Auto. */
+export async function implementPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
+  const projectId = useStore.getState().project?.id
+  if (!projectId) throw new Error('Open a project first')
+  if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
+  handingOff.add(projectId)
+  try {
+    return await handoffPlannerPlan(plannerId, auto)
+  } finally {
+    handingOff.delete(projectId)
+  }
 }

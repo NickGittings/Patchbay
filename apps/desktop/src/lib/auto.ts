@@ -1,6 +1,7 @@
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
+  TASK_ROOT_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   plannerSessionId,
@@ -35,61 +36,20 @@ import { fixReviewFindings } from './reviewHandoff'
 import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgent } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
-export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }> = {
-  light: {
-    maxRounds: 1,
-    severityFloor: 'high',
-    validate: false,
-    note: 'Make minimal, targeted changes.',
-  },
-  standard: {
-    maxRounds: 3,
-    severityFloor: 'medium',
-    validate: true,
-    note: 'Fix properly; add tests where cheap.',
-  },
-  thorough: {
-    maxRounds: 5,
-    severityFloor: 'low',
-    validate: true,
-    note: 'Fix root causes and add tests.',
-  },
-}
-export const STAGE_LABELS: Record<AutoStage, string> = {
-  plan: 'Plan',
-  implement: 'Implement',
-  validate: 'Validate',
-  review: 'Review',
-  fix: 'Fix',
-  mergeGate: 'Merge approval',
-  merge: 'Merge',
-  done: 'Done',
-}
-export const STAGES: AutoStage[] = [
-  'plan',
-  'implement',
-  'validate',
-  'review',
-  'fix',
-  'mergeGate',
-  'merge',
-  'done',
-]
-const severities: Severity[] = ['critical', 'high', 'medium', 'low']
+import { EFFORT, SEVERITIES } from './autoSettings'
+export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
+
 export function effortSettings(run: Pick<AutoRun, 'effort' | 'overrides'>): EffortSettings {
   return { ...EFFORT[run.effort], ...run.overrides }
 }
 export function blockingCount(findings: ReviewFindings | null, floor: Severity) {
-  return severities
-    .slice(0, severities.indexOf(floor) + 1)
-    .reduce((sum, s) => sum + (findings?.verdict?.counts[s] ?? 0), 0)
+  return SEVERITIES.slice(0, SEVERITIES.indexOf(floor) + 1).reduce(
+    (sum, s) => sum + (findings?.verdict?.counts[s] ?? 0),
+    0,
+  )
 }
 const passed = (r: ActionReport['results'][number]) =>
   ['passed', 'started', 'reused'].includes(r.outcome)
-/** Components without a validation terminal are skipped, which no fix could change. */
-export function actionSucceeded(report: ActionReport) {
-  return report.results.every(passed)
-}
 /** One finding per failed validation terminal, for the fix agent's briefing. */
 export function validationFailures(reports: ActionReport[], name: (sessionId: string) => string) {
   return reports
@@ -174,7 +134,7 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun): Decision {
       status: 'running',
       reason: `Findings are ${snapshot.freshness}`,
     }
-  if (snapshot.plan.trim() || snapshot.proposal)
+  if (run.stage === 'implement' && (snapshot.plan.trim() || snapshot.proposal))
     return { stage: 'implement', status: 'running', reason: 'Saved plan is ready' }
   return { stage: 'plan', status: 'running', reason: 'Describe the task to plan' }
 }
@@ -274,12 +234,13 @@ export async function autoSnapshot(
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state?.project || !project) throw new Error('Open the project first')
+  const plannerPlanPromise = planRead(projectId)
   const [worktrees, branches, saved, proposal, plannerPlan] = await Promise.all([
     gitWorktrees(projectId),
     gitBranches(projectId),
-    planRead(projectId, task ?? undefined),
+    task ? planRead(projectId, task) : plannerPlanPromise,
     proposalRead(projectId),
-    planRead(projectId),
+    plannerPlanPromise,
   ])
   // The project folder is the current worktree, whose top can sit above a project in a subfolder.
   const path = task
@@ -307,7 +268,7 @@ export async function autoSnapshot(
         !r.metadata.extensionId &&
         !r.metadata.commandId &&
         (r.metadata.task ?? null) === task &&
-        (r.metadata.componentId === '@task' ||
+        (r.metadata.componentId === TASK_ROOT_SCOPE ||
           project.components.some((c) => c.id === r.metadata.componentId))) ||
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
       // The planner is project-wide: it belongs to this run only while it plans or tracks it.
@@ -318,7 +279,8 @@ export async function autoSnapshot(
   const agents = relevant.flatMap((r) => {
     const session = useStore.getState().sessions[r.id]
     if (!(session?.running ?? r.snapshot?.running)) return []
-    const a = session?.status?.agent ?? r.snapshot?.status?.agent
+    const status = session?.status ?? r.snapshot?.status
+    const a = status?.agent
     const stage: AutoStage =
       r.metadata.componentId === PLAN_SCOPE
         ? 'plan'
@@ -333,7 +295,7 @@ export async function autoSnapshot(
       {
         sessionId: r.id,
         stage,
-        state: a?.state ?? 'working',
+        state: status?.stopped ? 'idle' : (a?.state ?? (status?.active ? 'working' : 'idle')),
         sinceMs: a?.sinceMs ?? session?.startedMs ?? r.snapshot?.startedMs ?? Date.now(),
       },
     ]
@@ -378,7 +340,7 @@ export async function autoSnapshot(
 export type AutoSettings = Pick<AutoRun, 'goal' | 'effort' | 'overrides' | 'merge' | 'device'> & {
   stage?: AutoStage
 }
-async function checkHooks(deviceId: string) {
+export async function checkAutoHooks(deviceId: string) {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
   const provider = device ? await agentProvider(device) : null
   if (!provider) throw new Error('Choose an agent preset with Claude or Codex status integration')
@@ -401,11 +363,11 @@ export async function startAuto(projectId: string, task: string | null, settings
       !Number.isInteger(selectedEffort.maxRounds) ||
       selectedEffort.maxRounds < 0 ||
       selectedEffort.maxRounds > 100 ||
-      !severities.includes(selectedEffort.severityFloor) ||
+      !SEVERITIES.includes(selectedEffort.severityFloor) ||
       typeof selectedEffort.validate !== 'boolean'
     )
       throw new Error('Invalid Advanced effort settings')
-    await checkHooks(settings.device)
+    await checkAutoHooks(settings.device)
     const run: AutoRun = {
       ...settings,
       runId: crypto.randomUUID(),
@@ -416,17 +378,7 @@ export async function startAuto(projectId: string, task: string | null, settings
     }
     const snapshot = await autoSnapshot(projectId, task, run)
     const decision = inferStage(snapshot, run)
-    const p = projectStateOf(projectId)
-    if (
-      decision.sessionId &&
-      [null, ...(p?.tasks.map((t) => t.id) ?? [])].some(
-        (other) =>
-          other !== task &&
-          autoRun(projectId, other)?.sessionId === decision.sessionId &&
-          ['running', 'waitingOnYou', 'paused'].includes(autoRun(projectId, other)?.status ?? ''),
-      )
-    )
-      throw new Error('This planner or agent already belongs to another Auto run')
+    assertSessionAvailable(projectId, task, decision.sessionId)
     if (settings.stage && decision.sessionId)
       throw new Error('Finish or stop the current agent before overriding its stage')
     if (!run.goal.trim()) run.goal = snapshot.goal
@@ -440,6 +392,9 @@ export async function startAuto(projectId: string, task: string | null, settings
       auto: {
         ...run,
         ...decision,
+        sessionStartedMs: decision.sessionId
+          ? useStore.getState().sessions[decision.sessionId]?.startedMs
+          : undefined,
         reviewedHead,
         findingsSummary:
           snapshot.freshness === 'current' ? snapshot.findings?.text.slice(0, 2000) : undefined,
@@ -457,10 +412,11 @@ export function pauseAuto(projectId: string, task: string | null, reason = 'Paus
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
-  await checkHooks(run.device)
+  await checkAutoHooks(run.device)
   const snapshot = await autoSnapshot(projectId, task, run)
   const decision = inferStage(snapshot, run)
   if (autoRun(projectId, task)?.runId !== run.runId) return
+  assertSessionAvailable(projectId, task, decision.sessionId)
   patch(
     projectId,
     task,
@@ -552,6 +508,26 @@ function briefing(run: AutoRun): AutoBrief {
     commit: run.stage === 'implement' || run.stage === 'fix' || run.stage === 'merge',
   }
 }
+// Reserve a shared planner before awaiting its launch; records arrive only afterwards.
+const launchingSessions = new Map<string, string>()
+function assertSessionAvailable(projectId: string, task: string | null, sessionId?: string) {
+  if (!sessionId) return
+  const key = JSON.stringify([projectId, task])
+  const reservation = launchingSessions.get(sessionId)
+  const p = projectStateOf(projectId)
+  if (
+    (reservation && reservation !== key) ||
+    [null, ...(p?.tasks.map((t) => t.id) ?? [])].some((other) => {
+      const owner = autoRun(projectId, other)
+      return (
+        other !== task &&
+        owner?.sessionId === sessionId &&
+        ['running', 'waitingOnYou', 'paused'].includes(owner.status)
+      )
+    })
+  )
+    throw new Error('This planner or agent already belongs to another Auto run')
+}
 const busy = new Set<string>()
 const completionPolls = new Map<string, { turn: string; atMs: number }>()
 async function drive(projectId: string, task: string | null) {
@@ -565,6 +541,7 @@ async function drive(projectId: string, task: string | null) {
     return r?.runId === runId && r.status === 'running' ? r : null
   }
   busy.add(key)
+  let reservedSession: string | undefined
   try {
     let run = autoRun(projectId, task)!
     if (run.sessionId) {
@@ -590,23 +567,25 @@ async function drive(projectId: string, task: string | null) {
       }
       if (run.status === 'waitingOnYou') {
         if (
-          run.reason?.startsWith('Agent needs input') &&
-          agent?.state === 'working' &&
-          agent.authoritative &&
-          agent.sinceMs > (run.turnSince ?? 0)
+          !run.reason?.startsWith('Agent needs input') ||
+          !agent?.authoritative ||
+          !['working', 'review'].includes(agent.state) ||
+          agent.sinceMs <= (run.turnSince ?? 0)
         )
-          patch(
-            projectId,
-            task,
-            {
-              status: 'running',
-              turnSince: agent.sinceMs,
-              observedWorking: true,
-              reason: undefined,
-            },
-            'Agent resumed work',
-          )
-        return
+          return
+        // Completion can arrive before the monitor ever observes working.
+        patch(
+          projectId,
+          task,
+          {
+            status: 'running',
+            turnSince: agent.state === 'working' ? agent.sinceMs : run.turnSince,
+            observedWorking: true,
+            reason: undefined,
+          },
+          agent.state === 'review' ? 'Agent finished work' : 'Agent resumed work',
+        )
+        run = live()!
       }
       if (
         session?.status?.stopped ||
@@ -662,11 +641,13 @@ async function drive(projectId: string, task: string | null) {
           pauseAuto(projectId, task, 'The branch changed during review; Resume to review again')
           return
         }
+        assertSessionAvailable(projectId, task, decision.sessionId)
         const low = snapshot.findings?.verdict
           ? Object.values(snapshot.findings.verdict.counts).reduce((a, b) => a + b, 0) -
             blockingCount(snapshot.findings, effortSettings(run).severityFloor)
           : 0
-        if (session?.running && ownsSession(run)) await terminalStop(run.sessionId)
+        if (session?.running && (ownsSession(run) || run.stage === 'plan'))
+          await terminalStop(run.sessionId!)
         if (!live()) return
         patch(
           projectId,
@@ -822,6 +803,9 @@ async function drive(projectId: string, task: string | null) {
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(run.device, projectId)
+        assertSessionAvailable(projectId, task, sid)
+        launchingSessions.set(sid, key)
+        reservedSession = sid
         if (useStore.getState().sessions[sid]?.running) {
           pauseAuto(
             projectId,
@@ -831,7 +815,10 @@ async function drive(projectId: string, task: string | null) {
           return
         }
         if (!live() || !active(projectId, task)) return
-        await startTerminal(PLAN_SCOPE, run.device, task, projectId, 'plan', brief)
+        await startTerminal(PLAN_SCOPE, run.device, task, projectId, {
+          kickoff: 'plan',
+          auto: brief,
+        })
         break
       case 'implement':
         sid = await implementPlannerPlan(run.device, brief)
@@ -866,6 +853,11 @@ async function drive(projectId: string, task: string | null) {
     }
     if (!sid) throw new Error('Agent launch returned no session')
     await reconcileFreshSessions()
+    if (
+      !useStore.getState().sessions[sid] &&
+      !useStore.getState().sessionRecords.some((r) => r.id === sid)
+    )
+      throw new Error('Agent launch was not confirmed; Resume to try again')
     const latest = autoRun(projectId, task)
     if (latest?.runId !== runId || latest.status === 'stopped' || latest.status === 'done') {
       await terminalStop(sid)
@@ -880,6 +872,8 @@ async function drive(projectId: string, task: string | null) {
   } catch (e) {
     if (live()) patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
   } finally {
+    if (reservedSession && launchingSessions.get(reservedSession) === key)
+      launchingSessions.delete(reservedSession)
     busy.delete(key)
   }
 }

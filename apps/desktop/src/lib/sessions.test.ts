@@ -150,9 +150,9 @@ test('Implement propagates a failed launch so Plan can display it', async () => 
     source: 'builtin',
   })
   vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))
-  await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', true)).rejects.toThrow(
-    'Launch failed',
-  )
+  await expect(
+    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: 'implementPlan' }),
+  ).rejects.toThrow('Launch failed')
   expect(useStore.getState().message).toContain('Launch failed')
 })
 test('tab switch while closing edits only the originating project', async () => {
@@ -301,6 +301,7 @@ test('planner restart applies the current highlights and clears the scope warnin
     expect.objectContaining({ kind: 'agent' }),
     expect.any(String),
     true,
+    { auto: undefined, kickoff: undefined, reviewBranch: undefined },
   )
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -325,6 +326,7 @@ test('root agent restart prepares the current scope through taskRootStart', asyn
     expect.any(String),
     undefined,
     true,
+    { auto: undefined, kickoff: undefined, reviewBranch: undefined },
   )
 })
 
@@ -469,3 +471,90 @@ test('reconciling drops the state of sessions the service forgot', () => {
   })
   expect(withoutForgotten(sessions, [record('kept')], [record('kept')])).toBe(sessions)
 })
+
+test('reviewBranch alone reaches the named IPC option without occupying the auto slot', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { reviewBranch: 'feature' })
+  expect(ipc.taskRootStart).toHaveBeenCalledWith(
+    expect.anything(),
+    [],
+    expect.anything(),
+    undefined,
+    expect.any(String),
+    false,
+    false,
+    { auto: undefined, kickoff: undefined, reviewBranch: 'feature' },
+  )
+})
+
+test('Auto launch rejects when Close cancels it before IPC', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: 'implementPlan' })
+  const rejected = expect(launch).rejects.toThrow('Agent launch cancelled')
+  const close = closeTerminal(TASK_ROOT_SCOPE, terminalId)
+  await rejected
+  expect(await close).toBe(true)
+  expect(ipc.terminalCloseGuard).toHaveBeenCalledWith('p', TASK_ROOT_SCOPE, terminalId)
+  expect(ipc.taskRootStart).not.toHaveBeenCalled()
+})
+
+test('reset while the backend starts an Auto agent rejects the obsolete launch', async () => {
+  const spawn = deferred()
+  vi.mocked(ipc.taskRootStart).mockImplementationOnce(async () => {
+    await spawn.promise
+    return 'started'
+  })
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kickoff: 'implementPlan',
+  })
+  const rejected = expect(launch).rejects.toThrow('Agent launch cancelled')
+  await vi.waitFor(() => expect(ipc.taskRootStart).toHaveBeenCalledOnce())
+  resetSessions(1)
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ running: true } as TerminalSnapshot)
+  spawn.resolve()
+  await rejected
+})
+
+test.each([false, true])(
+  'Auto launch rejects on reset even with a stale running snapshot (%s)',
+  async (running) => {
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ running } as TerminalSnapshot)
+    const terminalId = useStore.getState().addRootTerminal({
+      id: 'agent',
+      name: 'Agent',
+      command: 'claude',
+      kind: 'agent',
+      category: 'Agents',
+      source: 'builtin',
+    })
+    const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+      kickoff: 'implementPlan',
+    })
+    const rejected = expect(launch).rejects.toThrow('Agent launch cancelled')
+    resetSessions(1)
+    await rejected
+    expect(ipc.taskRootStart).not.toHaveBeenCalled()
+  },
+)

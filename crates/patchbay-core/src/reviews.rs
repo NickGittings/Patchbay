@@ -49,35 +49,89 @@ pub struct Verdict {
     pub counts: Severities,
 }
 
-/// Read the first nonempty line's verdict and count severity-tagged findings.
+/// Read an explicit verdict, allowing Markdown headings and emphasis around its label.
+/// Count the leading severity of each finding; prose, legends and quoted tags don't count.
 #[must_use]
 pub fn verdict(text: &str) -> Option<Verdict> {
-    let mut lines = text.lines().map(str::trim).filter(|s| !s.is_empty());
-    let header = lines.next()?.to_ascii_lowercase();
-    let (key, value) = header.split_once(':')?;
-    if key.trim() != "verdict" {
-        return None;
-    }
-    let clean = match value.trim() {
-        "clean" => true,
-        "issues" => false,
-        _ => return None,
-    };
-    let mut counts = Severities::default();
-    for line in lines {
-        let line = line.to_ascii_lowercase();
-        // Count each tagged finding once, even if it mentions another severity.
-        for (tag, count) in [
-            ("[critical]", &mut counts.critical),
-            ("[high]", &mut counts.high),
-            ("[medium]", &mut counts.medium),
-            ("[low]", &mut counts.low),
-        ] {
-            if line.contains(tag) {
-                *count += 1;
-                break;
-            }
+    let mut lines = text.lines();
+    let clean = lines.find_map(|line| {
+        let header = line
+            .trim()
+            .trim_start_matches('#')
+            .trim()
+            .replace(['*', '`', '_'], "")
+            .to_ascii_lowercase();
+        let (key, value) = header.split_once(':')?;
+        if key.trim() != "verdict" {
+            return None;
         }
+        match value.trim() {
+            "clean" => Some(true),
+            "issues" => Some(false),
+            _ => None,
+        }
+    })?;
+    let mut counts = Severities::default();
+    let mut legend_section = false;
+    let mut code_block = false;
+    for line in lines {
+        let line = line.trim().to_ascii_lowercase();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            code_block = !code_block;
+            continue;
+        }
+        if code_block {
+            continue;
+        }
+        if line.starts_with('#') {
+            let heading = line.trim_start_matches('#').trim();
+            legend_section = heading.contains("legend")
+                || matches!(
+                    heading,
+                    "severities" | "severity levels" | "severity definitions"
+                );
+        }
+        if legend_section {
+            continue;
+        }
+        // Findings can be plain, bulleted, numbered or headings, with Markdown emphasis.
+        let line = line.trim_start_matches(['#', '-', '*', '+']).trim_start();
+        let line = if let Some((number, rest)) = line.split_once(['.', ')']) {
+            if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+                rest.trim_start()
+            } else {
+                line
+            }
+        } else {
+            line
+        };
+        let line = line.trim_start_matches(['*', '`', '_']);
+        let Some((tag, description)) = line.strip_prefix('[').and_then(|s| s.split_once(']'))
+        else {
+            continue;
+        };
+        let description = description.trim_start_matches(['*', '`', '_']).trim();
+        // A list of bare tags describes the severity scheme, not a finding.
+        if description.is_empty()
+            || description
+                .split(|c: char| c.is_whitespace() || matches!(c, ',' | '|' | '/'))
+                .all(|word| {
+                    matches!(
+                        word.trim_matches(['*', '`', '_']),
+                        "" | "and" | "or" | "[critical]" | "[high]" | "[medium]" | "[low]"
+                    )
+                })
+        {
+            continue;
+        }
+        let count = match tag {
+            "critical" => &mut counts.critical,
+            "high" => &mut counts.high,
+            "medium" => &mut counts.medium,
+            "low" => &mut counts.low,
+            _ => continue,
+        };
+        *count += 1;
     }
     Some(Verdict { clean, counts })
 }
@@ -594,7 +648,32 @@ mod tests {
         );
         assert!(verdict("No findings").is_none());
         assert!(verdict("Verdict: maybe").is_none());
-        assert!(verdict("# Findings\nVerdict: clean").is_none());
+        assert!(verdict("# Findings\n**Verdict:** clean").unwrap().clean);
+        let parsed = verdict("# Review\n**Verdict:** issues\nLegend: [critical], [high], [medium], [low]\n[critical] [high] [medium] [low]\n1. **[low]** finding mentions [critical]\n### [medium] another finding\nExplanation mentions [high]").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                low: 1,
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+        let parsed = verdict("# Review\n**Verdict**: **issues**\n## Severity legend\n- [critical] highest priority\n- [low] minor\n## Findings\n1. [medium] file.rs:1: bug mentioning [critical]\n```text\n[high] example\n```").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+        let parsed = verdict("Verdict: issues\n[low] [critical] file.rs:1: finding\n[critical], [high], [medium] or [low]").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                low: 1,
+                ..Severities::default()
+            }
+        );
     }
 
     use super::*;

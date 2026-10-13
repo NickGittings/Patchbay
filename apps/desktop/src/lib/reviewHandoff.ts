@@ -53,7 +53,11 @@ export async function fixReviewFindings(
     return s
   }
   const id = current().addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, 'fixFindings', auto, reviewBranch)
+  await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, {
+    kickoff: 'fixFindings',
+    auto,
+    reviewBranch,
+  })
   // The agent runs either way; follow it only if the user stayed in its worktree.
   const after = useStore.getState()
   if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
