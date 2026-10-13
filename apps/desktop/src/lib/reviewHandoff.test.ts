@@ -49,7 +49,7 @@ const fix = { kind: 'fixFindings', reviewSession: 'review' }
 const state = {
   project: { id: 'p', root: '/p' },
   activeTask: null as string | null,
-  tasks: [{ id: 'feature' }],
+  tasks: [{ id: 'feature' }] as { id: string; missing?: boolean }[],
   devices: [claude, codex],
   setActiveTask: vi.fn((task: string | null, _exact?: boolean) => {
     state.activeTask = task
@@ -151,6 +151,12 @@ test('a task the list lacks is refreshed before switching to it', async () => {
   expect(vi.mocked(refreshTasks).mock.invocationCallOrder[0]).toBeLessThan(
     state.setActiveTask.mock.invocationCallOrder[0],
   )
+})
+
+test('a task listed as missing is refreshed, since the backend found its worktree', async () => {
+  state.tasks = [{ id: 'feature', missing: true }]
+  await fixReviewFindings(record)
+  expect(refreshTasks).toHaveBeenCalledWith('p')
 })
 
 test('a known task skips the refresh', async () => {

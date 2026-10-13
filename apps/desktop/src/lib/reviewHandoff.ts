@@ -15,8 +15,9 @@ export async function fixReviewFindings(record: SessionRecord) {
   if (!projectId) throw new Error('Open a project first')
   if (projectId !== record.metadata.projectId) throw new Error('Open the reviewed project first')
   const task = await reviewFixTask(record.id, projectId)
-  // The task may come from the CLI or another window since the list was loaded.
-  if (task !== null && !useStore.getState().tasks.some((t) => t.id === task))
+  // The task may come from the CLI or another window, or its worktree may have come back, since
+  // the list was loaded; the backend just checked it exists.
+  if (task !== null && !useStore.getState().tasks.some((t) => t.id === task && !t.missing))
     await refreshTasks(projectId)
   const s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Open the reviewed project first')

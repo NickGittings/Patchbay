@@ -169,7 +169,8 @@ pub struct Metadata {
     pub command_id: Option<String>,
     #[serde(default)]
     pub key: Option<String>,
-    /// The branch a review job covers, so its findings never depend on the display name.
+    /// The branch a review job covers, so its findings never depend on the display name;
+    /// on a fix agent's root session, the reviewed branch, so starting it again still fixes.
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
@@ -1775,6 +1776,7 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
                 Path::new(&metadata.project_root),
                 metadata.task.as_deref(),
             )
+            .map(|text| crate::reviews::restart_briefing(&text))
         })
         .transpose()?;
     let settings = serde_json::to_string(&(

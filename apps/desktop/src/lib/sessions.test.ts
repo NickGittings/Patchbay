@@ -26,6 +26,7 @@ vi.mock('./ipc', () => ({
   extensionTerminalRun: vi.fn(),
 }))
 vi.mock('../extensions/host', () => ({ executeExtensionCommand: vi.fn() }))
+vi.mock('./planDrafts', () => ({ savePlanDraft: vi.fn(async () => {}) }))
 vi.mock('./windows', () => ({ showsSession: vi.fn() }))
 vi.mock('./git', () => ({ requestGitRefresh: vi.fn() }))
 vi.mock('./terminals', () => ({
@@ -39,6 +40,7 @@ vi.mock('./terminals', () => ({
 }))
 const ipc = await import('./ipc')
 const terminals = await import('./terminals')
+const { savePlanDraft } = await import('./planDrafts')
 const {
   closeTerminal,
   handleTerminalEvent,
@@ -158,6 +160,44 @@ test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewSession: 'rev
     expect(useStore.getState().message ?? '').not.toContain('Launch failed')
   },
 )
+const agent = {
+  id: 'agent',
+  name: 'Agent',
+  command: 'claude',
+  kind: 'agent',
+  category: 'Agents',
+  source: 'builtin',
+} as const
+test('a fix agent started again is briefed over the whole map without saving plan drafts', async () => {
+  useStore.setState({ highlighted: ['web'] })
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[1]).toEqual(['web'])
+  expect(savePlanDraft).toHaveBeenCalledTimes(1)
+  const fixId = useStore.getState().addRootTerminal(agent)
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: sessionId(TASK_ROOT_SCOPE, fixId, null, 'p'),
+        metadata: { branch: 'feature' },
+      } as never,
+    ],
+  })
+  await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[1]).toEqual([])
+  expect(savePlanDraft).toHaveBeenCalledTimes(1)
+})
+test('a failed handoff keeps no request id to retry with', async () => {
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))
+  const fix = { kind: 'fixFindings', reviewSession: 'review' } as const
+  await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)).rejects.toThrow()
+  vi.mocked(ipc.taskRootStart).mockResolvedValueOnce('')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)
+  const [first, second] = vi.mocked(ipc.taskRootStart).mock.calls.map((call) => call[4])
+  expect(second).not.toBe(first)
+})
 test('a handoff learns its launch failed after sessions were reset', async () => {
   const terminalId = useStore.getState().addRootTerminal({
     id: 'agent',

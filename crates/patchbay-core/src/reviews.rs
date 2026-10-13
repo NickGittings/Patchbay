@@ -365,23 +365,28 @@ fn current_branch(cwd: &Path) -> Option<String> {
     git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()
 }
 
+const FINDINGS_TITLE: &str = "Review findings";
+/// How `context::append_sections` heads the findings section in a briefing.
+const FINDINGS_HEADING: &str = "\n## Review findings\n\n";
+
 /// How much of the findings a fix agent's briefing inlines. Claude reads the
 /// briefing from a file and Codex falls back to pointing at it, so this may
 /// exceed what the Review panel shows.
 pub const HANDOFF_LIMIT: usize = 4 * crate::plans::PLAN_LIMIT;
 
 /// A review session's own record: the folder it ran in (its worktree's top) and
-/// the branch it recorded. The adapter reads it from the session service, never
-/// from the webview.
+/// the branch it recorded. A fix session records the same branch and runs in the
+/// same worktree, perhaps in a subfolder, so it maps back to the same review. The
+/// adapter reads either from the session service, never from the webview.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub cwd: PathBuf,
     pub branch: Option<String>,
 }
 
-/// The reviewed worktree (canonical), branch and its nonempty findings, checked
-/// without listing worktrees: the worktree must still have the branch checked out.
-fn fixable(session: &Session) -> Result<(PathBuf, &str, Findings)> {
+/// The reviewed worktree (canonical) and branch, checked without listing
+/// worktrees: the worktree must still have the branch checked out.
+fn target(session: &Session) -> Result<(PathBuf, &str)> {
     let branch = session
         .branch
         .as_deref()
@@ -390,27 +395,41 @@ fn fixable(session: &Session) -> Result<(PathBuf, &str, Findings)> {
         .cwd
         .canonicalize()
         .ok()
-        .filter(|w| git::nearest_repo(w).as_ref() == Some(w))
+        .and_then(|cwd| git::nearest_repo(&cwd))
         .context("The reviewed worktree no longer exists")?;
     ensure!(
         current_branch(&worktree).as_deref() == Some(branch),
         "{branch} is no longer checked out in this worktree; switch back or review again"
     );
-    let findings = load(&worktree, branch, HANDOFF_LIMIT, Some(&worktree))
-        .filter(|f| !f.text.trim().is_empty())
-        .with_context(|| format!("No review findings are saved for {branch}"))?;
-    Ok((worktree, branch, findings))
+    Ok((worktree, branch))
+}
+
+fn no_findings(branch: &str) -> anyhow::Error {
+    anyhow::anyhow!("No review findings are saved for {branch}")
+}
+
+/// Whether `branch` has nonempty findings saved, without reading their freshness.
+fn has_findings(worktree: &Path, branch: &str) -> bool {
+    let Ok(file) = file(worktree, branch) else {
+        return false;
+    };
+    let ours = std::fs::read(file.with_extension("json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Started>(&bytes).ok())
+        .is_some_and(|started| started.branch == branch);
+    ours && std::fs::read_to_string(file).is_ok_and(|text| !text.trim().is_empty())
 }
 
 /// The task a fix for review `session` runs in: `None` for the project folder
-/// `root` sits in. Checks everything [`handoff`] does first, so a refused fix
-/// changes nothing.
+/// `root` sits in, else the stored task holding the reviewed worktree. Makes
+/// [`handoff`]'s checks first, so a refused fix changes nothing.
 ///
 /// # Errors
-/// Fails as [`handoff`] would, or when neither a task nor the project folder
+/// Fails as [`handoff`] would, or when neither the project folder nor a task
 /// holds the reviewed worktree.
 pub fn fix_task(root: &Path, session: &Session) -> Result<Option<String>> {
-    let (worktree, ..) = fixable(session)?;
+    let (worktree, branch) = target(session)?;
+    ensure!(has_findings(&worktree, branch), no_findings(branch));
     if git::repo_root(root).as_ref() == Some(&worktree) {
         return Ok(None);
     }
@@ -428,11 +447,14 @@ pub fn fix_task(root: &Path, session: &Session) -> Result<Option<String>> {
 /// reviewed worktree, that worktree no longer has the branch checked out, or it
 /// has no saved findings.
 pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection> {
-    let (worktree, branch, findings) = fixable(session)?;
+    let (worktree, branch) = target(session)?;
     ensure!(
         git::repo_root(root).as_ref() == Some(&worktree),
         "This launch isn't in the reviewed worktree"
     );
+    let findings = load(&worktree, branch, HANDOFF_LIMIT, Some(&worktree))
+        .filter(|f| !f.text.trim().is_empty())
+        .ok_or_else(|| no_findings(branch))?;
     let worktree = worktree.as_path();
     let text = findings.text.trim();
     let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"]))?;
@@ -460,12 +482,30 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
         String::new()
     };
     Ok(context::ContextSection {
-        title: "Review findings".into(),
+        title: FINDINGS_TITLE.into(),
         body: format!(
             "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
             findings.base
         ),
     })
+}
+
+/// Drop the review findings' generated age and freshness lines, which change as
+/// time passes and the fix agent edits files; the findings themselves still
+/// participate in Restart.
+pub(crate) fn restart_briefing(text: &str) -> String {
+    let Some((before, rest)) = text.split_once(FINDINGS_HEADING) else {
+        return text.into();
+    };
+    let (header, findings) = rest.split_once("\n\n").unwrap_or((rest, ""));
+    let header: Vec<&str> = header
+        .lines()
+        .filter(|line| !line.starts_with("Saved ") && !line.starts_with("Freshness: "))
+        .collect();
+    format!(
+        "{before}{FINDINGS_HEADING}{}\n\n{findings}",
+        header.join("\n")
+    )
 }
 
 /// Remove a branch's findings and sidecar.
@@ -698,11 +738,28 @@ mod tests {
         let gone = f.dir.join("gone");
         let error = fix_task(&f.dir, &session(&gone, Some("feature/a"))).unwrap_err();
         assert!(error.to_string().contains("no longer exists"));
-        // A subfolder isn't a worktree's top.
+        // A fix agent started in a subfolder maps back to its worktree's review.
         let sub = f.dir.join("app");
         fs::create_dir_all(&sub).unwrap();
-        let error = handoff(&f.dir, &session(&sub, Some("feature/a"))).unwrap_err();
-        assert!(error.to_string().contains("no longer exists"));
+        assert!(handoff(&f.dir, &session(&sub, Some("feature/a"))).is_ok());
+    }
+
+    #[test]
+    fn restart_ignores_the_findings_age_and_freshness_only() {
+        let briefing = |saved: &str, freshness: &str, text: &str| {
+            format!(
+                "# Context\n\n## Review findings\n\nBranch: a\nBase: main\nSaved {saved}\nFreshness: {freshness}\n\n{text}\n"
+            )
+        };
+        let first = restart_briefing(&briefing("just now", "current for HEAD abc", "Fix x"));
+        let later = restart_briefing(&briefing("2 hours ago", "files changed", "Fix x"));
+        assert_eq!(first, later);
+        assert!(first.contains("Base: main"));
+        assert_ne!(
+            first,
+            restart_briefing(&briefing("just now", "current", "Fix y"))
+        );
+        assert_eq!(restart_briefing("no findings"), "no findings");
     }
 
     #[test]
@@ -785,6 +842,7 @@ mod tests {
             &AllowAll,
             &[section],
             Some(context::Kickoff::FixFindings),
+            false,
         )
         .unwrap();
         assert!(!spec.dirs.iter().any(|d| d.ends_with("reviews")));

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
-import { reviewAgentRecords, reviewWorktreeBusy, reviewWorktreeRunning } from '../lib/reviewAgents'
+import { reviewAgentRecords, reviewWorktreeBusy } from '../lib/reviewAgents'
 import { fixReviewFindings } from '../lib/reviewHandoff'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
@@ -36,15 +36,12 @@ export default function ReviewAgentPanel({
   const reviewing = useStore((s) =>
     reviewWorktreeBusy(s.sessionRecords, s.sessions, selected.spec.cwd),
   )
-  // Interactive reviewers write findings without exiting, so poll while one runs (and while the
+  // Interactive reviewers write findings without exiting, so poll while one is busy (and while the
   // findings are open); settling re-reads at once, for the fix handoff.
-  const running = useStore((s) =>
-    reviewWorktreeRunning(s.sessionRecords, s.sessions, selected.spec.cwd),
-  )
   const own = useReviewFindings(
     selected.metadata.projectId,
     isReview && !shared ? branch : undefined,
-    findings || running,
+    findings || reviewing,
     reviewing,
   )
   const loaded = shared ? sourceFindings : own

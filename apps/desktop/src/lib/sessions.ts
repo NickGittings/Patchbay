@@ -225,8 +225,6 @@ export function startTerminal(
     useStore.getState().setMessage(String(e))
     return Promise.resolve()
   }
-  // A review covers the whole branch, so its fix is briefed over the whole map.
-  if (kickoff?.kind === 'fixFindings') launch.highlighted = []
   return launchTerminal(launch)
 }
 
@@ -272,14 +270,20 @@ function launchTerminal(launch: Launch): Promise<void> {
         project.components
           .find((c) => c.id === componentId)
           ?.terminals.find((t) => t.id === terminalId)
-      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
+      // A fix agent (also one started again, which the backend recognises by its recorded
+      // branch) works from review findings over the whole map, never the plan.
+      const fix =
+        launch.kickoff?.kind === 'fixFindings' ||
+        (componentId === TASK_ROOT_SCOPE &&
+          useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
+      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
         await savePlanDraft(launch.projectId, launch.task)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
         await taskRootStart(
           project,
-          launch.highlighted,
+          fix ? [] : launch.highlighted,
           launch.rootTerminal,
           task,
           requestId,
@@ -323,8 +327,12 @@ function launchTerminal(launch: Launch): Promise<void> {
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       if (snapshot?.running) launchRequests.delete(sid)
       if (!snapshot?.running) {
-        // A handoff reports its own failure; otherwise skip errors made stale by a reset.
-        if (launch.kickoff) throw e
+        // A handoff reports its own failure and removes its fresh tile, so nothing retries it.
+        if (launch.kickoff) {
+          launchRequests.delete(sid)
+          throw e
+        }
+        // Otherwise skip errors made stale by a reset.
         if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
       }
     }

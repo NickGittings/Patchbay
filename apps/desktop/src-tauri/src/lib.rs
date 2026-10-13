@@ -1329,8 +1329,13 @@ async fn task_root_start(
                     .as_deref()
                     .ok_or("Choose the review to fix")?,
             )?),
+            // A fix agent started again keeps working from its review's findings.
+            None if terminal.kind == model::TerminalKind::Agent => {
+                recorded_fix(&bridge, &project_id, task.as_deref(), &terminal.id)?
+            }
             _ => None,
         };
+        let kickoff = kickoff.or(fix.as_ref().map(|_| context::Kickoff::FixFindings));
         // A review covers the whole branch, so its fix isn't limited to the highlights.
         let component_ids = if fix.is_some() {
             Vec::new()
@@ -1358,6 +1363,9 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
+        // Recorded so a later start of this terminal is still a fix (`recorded_fix`).
+        metadata.branch = fix.and_then(|f| f.branch);
+        let resume = resume.unwrap_or(false);
         let mut spec = context::task_root_session_spec(
             &project,
             &selected,
@@ -1366,12 +1374,13 @@ async fn task_root_start(
             &AllowAll,
             &sections,
             kickoff,
+            resume,
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        bridge.launch(spec, metadata, request_id, resume)
     })
     .await
 }
@@ -1450,6 +1459,27 @@ fn recorded_review(
         cwd: record.spec.cwd,
         branch: record.metadata.branch,
     })
+}
+
+/// The review an earlier run of root terminal `terminal_id` was started to fix,
+/// from the branch its record keeps; `None` for any other root terminal.
+fn recorded_fix(
+    bridge: &service::Bridge,
+    project_id: &str,
+    task: Option<&str>,
+    terminal_id: &str,
+) -> CmdResult<Option<patchbay_core::reviews::Session>> {
+    Ok(bridge.list()?.into_iter().find_map(|r| {
+        (r.metadata.project_id == project_id
+            && r.metadata.component_id == model::TASK_ROOT_SCOPE
+            && r.metadata.terminal_id == terminal_id
+            && r.metadata.task.as_deref() == task)
+            .then_some(r.metadata.branch?)
+            .map(|branch| patchbay_core::reviews::Session {
+                cwd: r.spec.cwd,
+                branch: Some(branch),
+            })
+    }))
 }
 
 /// The task a fix for review `session_id` runs in; `None` for the project folder.

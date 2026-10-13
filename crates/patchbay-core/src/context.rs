@@ -1121,7 +1121,8 @@ pub fn plan_session_spec_for(
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
-/// A `kickoff` starts a fresh agent with that handoff as its first task.
+/// A `kickoff` shapes an agent's briefing and, unless it `resume`s a
+/// conversation that already received it, gives the agent its first prompt.
 ///
 /// # Errors
 /// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
@@ -1134,6 +1135,7 @@ pub fn task_root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     kickoff: Option<Kickoff>,
+    resume: bool,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         kickoff.is_none() || terminal.kind == TerminalKind::Agent,
@@ -1147,7 +1149,7 @@ pub fn task_root_session_spec(
         policy,
         sections,
         false,
-        kickoff,
+        kickoff.map(|kind| (kind, !resume)),
     )
 }
 
@@ -1184,7 +1186,7 @@ fn root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     planning: bool,
-    kickoff: Option<Kickoff>,
+    kickoff: Option<(Kickoff, bool)>,
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1212,7 +1214,7 @@ fn root_session_spec(
         let briefing = if planning {
             plan_context(project, component_ids, sections)
         } else {
-            implementation_context(project, component_ids, sections, kickoff)
+            implementation_context(project, component_ids, sections, kickoff.map(|(k, _)| k))
         };
         let file = context_file(
             &briefing_name(project, &format!("{scope}-{}", terminal.id), task),
@@ -1252,10 +1254,12 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
-            prompt: kickoff.map(|kind| match kind {
-                Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
-                Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
-            }),
+            prompt: kickoff
+                .filter(|&(_, prompt)| prompt)
+                .map(|(kind, _)| match kind {
+                    Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
+                    Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
+                }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1709,6 +1713,7 @@ mod tests {
                     body: "api: Fix login".into(),
                 }],
                 None,
+                false,
             )
             .unwrap();
             assert_eq!(
@@ -1833,6 +1838,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::ImplementPlan),
+                false,
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1855,6 +1861,7 @@ mod tests {
                 &AllowAll,
                 &[],
                 Some(Kickoff::ImplementPlan),
+                false,
             )
             .unwrap();
             assert_eq!(
@@ -1882,6 +1889,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::FixFindings),
+                false,
             )
             .unwrap();
             let words = command_tokens(&spec.command, Shell::current()).unwrap();
@@ -1891,6 +1899,21 @@ mod tests {
             assert!(briefing.contains("addressing the review findings below"));
             assert!(briefing.contains("## Review findings\n\nFix login"));
             assert!(!briefing.contains("using the saved plan"));
+            // A resumed fix keeps its briefing but isn't prompted to start over.
+            let resumed = task_root_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &sections,
+                Some(Kickoff::FixFindings),
+                true,
+            )
+            .unwrap();
+            assert!(!resumed.command.contains(FIX_FINDINGS_PROMPT));
+            let briefing = std::fs::read_to_string(&resumed.env[CONTEXT_ENV]).unwrap();
+            assert!(briefing.contains("addressing the review findings below"));
         }
     }
 
