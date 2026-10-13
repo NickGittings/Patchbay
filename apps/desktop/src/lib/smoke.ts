@@ -13,6 +13,7 @@ import {
   terminalSnapshot,
   syncAgentProject,
   planRead,
+  taskAttach,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
@@ -60,7 +61,7 @@ import {
   syncRoots,
 } from './ipc'
 import { startAuto, mergeNow, pauseAuto, resumeAuto, stopAuto } from './auto'
-import { gitWorktrees, taskAttach, taskCreate, mergeOutcome } from './ipc'
+import { gitWorktrees, taskCreate, mergeOutcome } from './ipc'
 import { attentionItems } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 const hooks = {

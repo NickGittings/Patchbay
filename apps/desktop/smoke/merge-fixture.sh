@@ -61,6 +61,8 @@ import pathlib
 import subprocess
 import time
 
+status = pathlib.Path(os.environ['PATCHBAY_STATUS_FILE'])
+status.write_text('working\n')
 body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
 print(body, flush=True)
 before = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'])
@@ -70,5 +72,21 @@ path.write_text('P2 shared.txt:1: Smoke review finding\n')
 assert subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all']) == before
 print('review-file:' + str(path), flush=True)
 print('review-verified', flush=True)
-input()  # exercise the running guard before an ordinary successful exit
+input()  # exercise the running guard while working
+status.write_text('review\n')
+print('review-idle', flush=True)
+input()  # settled at its prompt, like an interactive agent, before an ordinary exit
+PYTHON
+
+cat > "$dir/fix.py" <<'PYTHON'
+import os
+import pathlib
+
+body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
+assert '## Review findings' in body
+assert 'Smoke review finding' in body
+assert 'addressing the review findings below' in body
+assert 'PATCHBAY_REVIEW_FILE' not in os.environ
+print(body, flush=True)
+print('fix-verified:' + str(pathlib.Path.cwd()), flush=True)
 PYTHON

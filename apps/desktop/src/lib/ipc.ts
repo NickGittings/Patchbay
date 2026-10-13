@@ -25,6 +25,8 @@ import type {
   FileSearchResult,
   FileDiff,
   GitStatus,
+  AutoBrief,
+  Kickoff,
   Project,
   Review,
   Task,
@@ -188,7 +190,8 @@ export const planStart = async (
   terminal: TerminalSpec,
   requestId: string = crypto.randomUUID(),
   resume = false,
-  options: Pick<import('./sessions').StartTerminalOptions, 'auto' | 'kickoff'> = {},
+  kickoff?: Kickoff,
+  auto?: AutoBrief,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -196,8 +199,8 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
-    auto: options.auto,
-    kickoff: options.kickoff,
+    auto,
+    kickoff: kickoff?.kind,
     resume,
     extraContext: await extraContext(project, componentIds),
   })
@@ -422,15 +425,18 @@ export const extensionSessionsList = (
 export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
   invoke<void>('extension_url_open', { extensionId, projectId, url })
 
+/** The task a fix for review session `sessionId` runs in; `null` for the project folder. */
+export const reviewFixTask = (sessionId: string, projectId: string) =>
+  invoke<string | null>('review_fix_task', { sessionId, projectId })
 export const taskRootStart = async (
   project: Project,
   componentIds: string[],
   terminal: TerminalSpec,
   task?: string,
   requestId: string = crypto.randomUUID(),
-  implementPlan = false,
+  kickoff?: Kickoff,
   resume = false,
-  options: import('./sessions').StartTerminalOptions = {},
+  auto?: AutoBrief,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -439,11 +445,10 @@ export const taskRootStart = async (
     terminal,
     task,
     requestId,
-    auto: options.auto,
-    kickoff: options.kickoff,
-    reviewBranch: options.reviewBranch,
+    auto,
     resume,
-    implementPlan,
+    kickoff: kickoff?.kind,
+    reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
   })

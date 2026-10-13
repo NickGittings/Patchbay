@@ -381,7 +381,7 @@ test('a task description launches Plan with the goal and then hands off its save
     })
     await flush()
     expect(startTerminal).toHaveBeenCalledWith('@plan', 'codex', 't', 'p', {
-      kickoff: 'plan',
+      kickoff: { kind: 'plan' },
       auto: expect.objectContaining({ goal: 'Implement the description', commit: false }),
     })
     const sid = autoRun('p', 't')!.sessionId!

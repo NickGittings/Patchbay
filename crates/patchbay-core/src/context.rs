@@ -19,6 +19,7 @@ pub struct ContextSection {
     pub title: String,
     pub body: String,
 }
+
 fn append_sections(out: &mut String, sections: &[ContextSection]) {
     for section in sections {
         let _ = writeln!(
@@ -72,6 +73,8 @@ impl AutoBrief {
     }
 }
 
+/// The first task of a fresh agent: a root agent implements the plan or fixes
+/// review findings; an Auto planner plans.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Kickoff {
@@ -706,6 +709,7 @@ pub fn implementation_context(
     project: &Project,
     ids: &[String],
     sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
 ) -> String {
     let mut out = format!(
         "# Patchbay implementation context\n\nImplement the task in **{}** at `{}`.\n\n## Selected components\n\n",
@@ -714,7 +718,14 @@ pub fn implementation_context(
     for component in plan_components(project, ids) {
         describe_component(&mut out, project, component);
     }
-    out.push_str("\nCoordinate and implement the complete selected scope, using the saved plan and applied assignments below.\n");
+    let instructions = match kickoff {
+        Some(Kickoff::FixFindings) => "addressing the review findings below",
+        _ => "using the saved plan and applied assignments below",
+    };
+    let _ = writeln!(
+        out,
+        "\nCoordinate and implement the complete selected scope, {instructions}."
+    );
     out.push_str(&implementation_actions(Shell::current()));
     append_sections(&mut out, sections);
     out
@@ -1163,102 +1174,20 @@ pub fn plan_session_spec_for(
         sections,
         true,
         None,
-        &[],
     )
 }
 
-/// Root implementation and shell sessions, separate from all planner sessions.
+/// [`plan_session_spec`] for an Auto planner, prompted to plan its goal at once.
+/// The session id is the manual planner's, so either can be resumed.
 ///
 /// # Errors
-/// As [`plan_session_spec`].
-pub fn task_root_session_spec(
+/// As [`plan_session_spec`], or if the terminal is not an agent.
+pub fn plan_kickoff_spec(
     project: &Project,
     component_ids: &[String],
     terminal: &TerminalSpec,
-    task: Option<&str>,
     policy: &dyn Policy,
     sections: &[ContextSection],
-) -> Result<SessionSpec> {
-    root_session_spec(
-        project,
-        component_ids,
-        terminal,
-        task,
-        policy,
-        sections,
-        false,
-        None,
-        &[],
-    )
-}
-
-/// Start a new implementation agent with the saved plan as its first task.
-///
-/// # Errors
-/// As [`task_root_session_spec`], or if the terminal is not an agent.
-pub fn task_root_implementation_spec(
-    project: &Project,
-    component_ids: &[String],
-    terminal: &TerminalSpec,
-    task: Option<&str>,
-    policy: &dyn Policy,
-    sections: &[ContextSection],
-) -> Result<SessionSpec> {
-    anyhow::ensure!(
-        terminal.kind == TerminalKind::Agent,
-        "Choose an agent to implement the plan"
-    );
-    root_session_spec(
-        project,
-        component_ids,
-        terminal,
-        task,
-        policy,
-        sections,
-        false,
-        Some(Kickoff::ImplementPlan),
-        &[],
-    )
-}
-
-/// Select saved instructions and any extra folders for a root implementation or fix agent.
-/// A fix receives only the selected branch's findings, including full-file access when cut.
-///
-/// # Errors
-/// Fails if a fix has no selected review or the findings cannot be handed off.
-pub fn root_handoff(
-    project: &Project,
-    ids: &[String],
-    task: Option<&str>,
-    kickoff: Option<Kickoff>,
-    review_branch: Option<&str>,
-) -> Result<(Vec<ContextSection>, Vec<PathBuf>)> {
-    let root = Path::new(&project.root);
-    if kickoff == Some(Kickoff::FixFindings) {
-        let branch = review_branch.ok_or_else(|| anyhow!("Choose the review to fix"))?;
-        let handoff = crate::reviews::handoff(root, branch)?;
-        Ok((vec![handoff.section], handoff.dirs))
-    } else {
-        let plan = crate::plans::section(root, task);
-        let proposal = crate::proposals::section(project, task, ids);
-        Ok((plan.into_iter().chain(proposal).collect(), Vec::new()))
-    }
-}
-
-/// Build a root agent with an explicit initial task.
-///
-/// # Errors
-/// As [`task_root_session_spec`].
-#[allow(clippy::too_many_arguments)]
-pub fn root_kickoff_spec(
-    project: &Project,
-    ids: &[String],
-    terminal: &TerminalSpec,
-    task: Option<&str>,
-    policy: &dyn Policy,
-    sections: &[ContextSection],
-    kickoff: Kickoff,
-    dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         terminal.kind == TerminalKind::Agent,
@@ -1266,22 +1195,97 @@ pub fn root_kickoff_spec(
     );
     root_session_spec(
         project,
-        ids,
+        component_ids,
+        terminal,
+        None,
+        policy,
+        sections,
+        true,
+        Some(Kickoff::Plan),
+    )
+}
+
+/// Root implementation and shell sessions, separate from all planner sessions.
+/// A `kickoff` shapes an agent's briefing and gives it a first prompt. A fix
+/// keeps its kickoff on every later start, so it resumes without that prompt
+/// (`resume_command`), while a fresh start still gets it.
+///
+/// # Errors
+/// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
+#[allow(clippy::too_many_arguments)]
+pub fn task_root_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        kickoff.is_none() || terminal.kind == TerminalKind::Agent,
+        "Choose an agent for implementation"
+    );
+    anyhow::ensure!(kickoff != Some(Kickoff::Plan), "Start planners in Plan");
+    root_session_spec(
+        project,
+        component_ids,
         terminal,
         task,
         policy,
         sections,
-        kickoff == Kickoff::Plan,
-        Some(kickoff),
-        dirs,
+        false,
+        kickoff,
     )
 }
 
-/// The first prompt of an agent started by Implement.
-const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
-const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing within the Auto fix scope when present. Run the relevant checks and report each finding\'s outcome.";
+/// Which review a root agent fixes.
+pub enum Fix {
+    /// The review the user chose to fix.
+    Review(crate::reviews::Session),
+    /// A former fix terminal started again, from the branch its record keeps, if
+    /// the service still has that record.
+    Again(Option<crate::reviews::Session>),
+}
 
+/// The kickoff and handoff sections a root agent of `task` starts with besides
+/// its own task section: a fix's findings alone, else the shared plan and the
+/// proposal for `selected`. A former fix terminal that can no longer fix (its
+/// branch moved, or its findings are gone) starts plainly, with neither.
+///
+/// # Errors
+/// As [`crate::reviews::handoff`] for [`Fix::Review`].
+pub fn root_handoff(
+    project: &Project,
+    task: Option<&str>,
+    selected: &[String],
+    kickoff: Option<Kickoff>,
+    fix: Option<&Fix>,
+) -> Result<(Option<Kickoff>, Vec<ContextSection>)> {
+    let root = Path::new(&project.root);
+    let findings = match fix {
+        Some(Fix::Review(review)) => Some(crate::reviews::handoff(root, review)?),
+        Some(Fix::Again(review)) => review
+            .as_ref()
+            .and_then(|r| crate::reviews::handoff(root, r).ok()),
+        None => {
+            let plan = crate::plans::section(root, task);
+            let proposal = crate::proposals::section(project, task, selected);
+            return Ok((kickoff, plan.into_iter().chain(proposal).collect()));
+        }
+    };
+    Ok(match findings {
+        Some(section) => (Some(Kickoff::FixFindings), vec![section]),
+        None => (None, Vec::new()),
+    })
+}
+
+/// The first prompt of an Auto planner.
+const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
+
+/// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
+const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing. Fix the ones that still apply; for any already resolved or that you disagree with, say why instead of changing code. Run the relevant checks and report each finding's outcome.";
 
 #[allow(clippy::too_many_arguments)]
 fn root_session_spec(
@@ -1293,7 +1297,6 @@ fn root_session_spec(
     sections: &[ContextSection],
     planning: bool,
     kickoff: Option<Kickoff>,
-    extra_dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1316,12 +1319,13 @@ fn root_session_spec(
     )]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut resume_command = None;
     let mut context_dirs: Vec<PathBuf> = Vec::new();
     if terminal.kind == TerminalKind::Agent {
         let briefing = if planning {
             plan_context(project, component_ids, sections)
         } else {
-            implementation_context(project, component_ids, sections)
+            implementation_context(project, component_ids, sections, kickoff)
         };
         let file = context_file(
             &briefing_name(project, &format!("{scope}-{}", terminal.id), task),
@@ -1346,11 +1350,6 @@ fn root_session_spec(
         if !planning {
             dirs.extend(crate::plans::existing_dir(Path::new(&project.root)));
         }
-        for dir in extra_dirs {
-            if !dirs.contains(dir) {
-                dirs.push(dir.clone());
-            }
-        }
         // cwd is the root; components in other repos must be added explicitly.
         for c in &components {
             let reach =
@@ -1373,12 +1372,17 @@ fn root_session_spec(
             }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        // Only a fix passes its kickoff again on Restart, so only its resume command
+        // stays the same across starts; an implement restart keeps resuming as before.
+        if matches!(kickoff, Some(Kickoff::FixFindings)) {
+            resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+        }
     }
     policy
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        resume_command: None,
+        resume_command,
         owns_briefing: false,
         exclusive_cwd: false,
         merge_source: None,
@@ -1853,6 +1857,7 @@ mod tests {
                     title: "Applied assignments".into(),
                     body: "api: Fix login".into(),
                 }],
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -1969,13 +1974,14 @@ mod tests {
                 title: "Shared plan".into(),
                 body: "Fix login".into(),
             }];
-            let spec = task_root_implementation_spec(
+            let spec = task_root_session_spec(
                 &project(),
                 &[],
                 &terminal,
                 None,
                 &AllowAll,
                 &sections,
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1990,9 +1996,16 @@ mod tests {
         for (command, prompted) in [("env FOO=1 claude", true), ("codex exec inspect", false)] {
             let mut terminal = planner();
             terminal.command = command.into();
-            let spec =
-                task_root_implementation_spec(&project(), &[], &terminal, None, &AllowAll, &[])
-                    .unwrap();
+            let spec = task_root_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &[],
+                Some(Kickoff::ImplementPlan),
+            )
+            .unwrap();
             assert_eq!(
                 spec.command.contains("Implement the shared plan"),
                 prompted,
@@ -2002,7 +2015,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_plan_and_fix_kickoffs_have_initial_prompts_and_keep_manual_ids() {
+    fn auto_planner_kickoff_has_its_prompt_and_keeps_the_manual_id() {
         for command in ["claude", "codex"] {
             let mut terminal = planner();
             terminal.command = command.into();
@@ -2014,39 +2027,54 @@ mod tests {
             }
             .section("plan")];
             let manual = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
-            let auto = root_kickoff_spec(
+            let auto = plan_kickoff_spec(&project(), &[], &terminal, &AllowAll, &sections).unwrap();
+            assert_eq!(auto.id, manual.id);
+            let words = command_tokens(&auto.command, Shell::current()).unwrap();
+            assert_eq!(words.last().unwrap(), PLAN_PROMPT);
+            assert!(!manual.command.contains(PLAN_PROMPT));
+            let root = task_root_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &[],
+                Some(Kickoff::Plan),
+            );
+            assert!(root.is_err());
+        }
+    }
+
+    #[test]
+    fn fix_findings_starts_with_its_prompt_and_review_instructions() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = provider.into();
+            let sections = [ContextSection {
+                title: "Review findings".into(),
+                body: "Fix login".into(),
+            }];
+            let spec = task_root_session_spec(
                 &project(),
                 &[],
                 &terminal,
                 None,
                 &AllowAll,
                 &sections,
-                Kickoff::Plan,
-                &[],
+                Some(Kickoff::FixFindings),
             )
             .unwrap();
-            assert_eq!(auto.id, manual.id);
-            let words = command_tokens(&auto.command, Shell::current()).unwrap();
-            assert_eq!(words.last().unwrap(), PLAN_PROMPT);
-            assert!(!manual.command.contains(PLAN_PROMPT));
-            let fix = root_kickoff_spec(
-                &project(),
-                &[],
-                &terminal,
-                None,
-                &AllowAll,
-                &[],
-                Kickoff::FixFindings,
-                &[],
-            )
-            .unwrap();
-            assert_eq!(
-                command_tokens(&fix.command, Shell::current())
-                    .unwrap()
-                    .last()
-                    .unwrap(),
-                FIX_FINDINGS_PROMPT
-            );
+            let words = command_tokens(&spec.command, Shell::current()).unwrap();
+            assert_eq!(words.last().unwrap(), FIX_FINDINGS_PROMPT);
+            assert!(!words.iter().any(|word| word == IMPLEMENT_PROMPT));
+            let briefing = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+            assert!(briefing.contains("addressing the review findings below"));
+            assert!(briefing.contains("## Review findings\n\nFix login"));
+            assert!(!briefing.contains("using the saved plan"));
+            // A resumed fix isn't prompted to start over; a fresh start is.
+            let resume = spec.resume_command.as_deref().unwrap();
+            assert!(!resume.contains(FIX_FINDINGS_PROMPT));
+            assert!(spec.command.starts_with(resume));
         }
     }
 

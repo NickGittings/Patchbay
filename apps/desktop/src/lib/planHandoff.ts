@@ -55,8 +55,8 @@ async function handoffPlannerPlan(plannerId: string, auto?: import('../types').A
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
   await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-    kickoff: 'implementPlan',
-    ...(auto ? { auto } : {}),
+    kickoff: { kind: 'implementPlan' },
+    auto,
   })
   current().setView('implementation')
   return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)

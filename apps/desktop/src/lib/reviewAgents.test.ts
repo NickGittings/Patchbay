@@ -2,6 +2,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import {
   MERGE_SCOPE,
   REVIEW_SCOPE,
+  type AgentState,
   type Task,
   type ReviewFindings,
   type DeviceManifest,
@@ -289,6 +290,56 @@ test('only a live review in the same worktree blocks another review', async () =
   expect(reviewWorktreeRunning([review], {}, '/feature')).toBe(true)
   expect(reviewWorktreeRunning([review], {}, '/other')).toBe(false)
   expect(reviewWorktreeRunning([review], { review: { running: false } }, '/feature')).toBe(false)
+})
+
+test('only a review that reported or confirmed settling stops blocking the fix handoff', async () => {
+  const { reviewWorktreeBusy } = await import('./reviewAgents')
+  const review = {
+    ...record('review', 'p', REVIEW_SCOPE, 10),
+    spec: { cwd: '/feature' },
+    snapshot: { running: true },
+  } as SessionRecord
+  const status = (
+    active: boolean,
+    agent?: AgentState,
+    authoritative = true,
+    lastOutputMs: number | null = null,
+  ) => ({
+    review: {
+      running: true,
+      status: {
+        lastOutputMs,
+        active,
+        agent: agent
+          ? { state: agent, sinceMs: 0, message: null, prompt: null, authoritative }
+          : null,
+        url: null,
+        ready: false,
+        healthy: null,
+        stopped: false,
+        seenMs: null,
+      },
+    },
+  })
+  expect(reviewWorktreeBusy([review], {}, '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(true), '/feature')).toBe(true)
+  // Quiet without hooks may be thinking; the reviewer must exit.
+  expect(reviewWorktreeBusy([review], status(false), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(false, 'working'), '/feature')).toBe(true)
+  // A permission prompt may lead to more writing.
+  expect(reviewWorktreeBusy([review], status(false, 'needsInput'), '/feature')).toBe(true)
+  // An unconfirmed or self-reported idle may be a stale report or an interrupt.
+  expect(reviewWorktreeBusy([review], status(false, 'idle', false), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(true, 'idle'), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'review'), '/feature')).toBe(false)
+  // The end of a turn is always reported, never inferred.
+  expect(reviewWorktreeBusy([review], status(false, 'review', false), '/feature')).toBe(false)
+  // Output well after a self-reported end of turn is a follow-up turn; hooks would report it.
+  expect(reviewWorktreeBusy([review], status(false, 'review', false, 1000), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'review', false, 5000), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(false, 'review', true, 5000), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'working'), '/other')).toBe(false)
+  expect(reviewWorktreeBusy([review], { review: { running: false } }, '/feature')).toBe(false)
 })
 
 test('review scope belongs in Review and never in the implementation grid or dock', async () => {

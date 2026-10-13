@@ -72,7 +72,7 @@ test('one click hands off a whole-project plan using the planner provider', asyn
     s.rootTerminals.at(-1)!.id,
     null,
     'p',
-    { kickoff: 'implementPlan' },
+    { kickoff: { kind: 'implementPlan' } },
   )
 })
 
@@ -187,7 +187,7 @@ test('a plan made on the project folder is copied into the worktree it is implem
     useStore.getState().rootTerminals.at(-1)!.id,
     'later',
     'p',
-    { kickoff: 'implementPlan' },
+    { kickoff: { kind: 'implementPlan' } },
   )
 })
 
@@ -229,7 +229,7 @@ test('Auto implements the project plan and returns the launched session', async 
   const terminalId = useStore.getState().rootTerminals.at(-1)!.id
   expect(sid).toBe(sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'))
   expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', {
-    kickoff: 'implementPlan',
+    kickoff: { kind: 'implementPlan' },
     auto,
   })
 })

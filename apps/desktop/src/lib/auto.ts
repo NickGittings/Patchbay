@@ -816,7 +816,7 @@ async function drive(projectId: string, task: string | null) {
         }
         if (!live() || !active(projectId, task)) return
         await startTerminal(PLAN_SCOPE, run.device, task, projectId, {
-          kickoff: 'plan',
+          kickoff: { kind: 'plan' },
           auto: brief,
         })
         break

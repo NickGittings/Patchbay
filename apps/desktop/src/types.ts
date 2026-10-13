@@ -5,6 +5,15 @@ export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
 
+/**
+ * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
+ * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
+ * Without one, it starts a former fix terminal again from the branch its own record keeps. `plan`
+ * prompts an Auto planner.
+ */
+export type Kickoff =
+  { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string } | { kind: 'plan' }
+
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
 export const isReservedScope = (scope: string) =>
@@ -35,7 +44,6 @@ export interface Verdict {
   counts: Record<Severity, number>
 }
 export type MergeOutcome = 'merged' | 'alreadyIntegrated' | 'inProgress' | 'dirty' | 'notMerged'
-export type Kickoff = 'implementPlan' | 'fixFindings' | 'plan'
 export interface AutoBrief {
   goal: string
   fixFloor: Severity | null
@@ -467,7 +475,7 @@ export interface SessionRecord {
     commandId?: string | null
     extensionId?: string | null
     key?: string | null
-    /** The branch a review job covers; absent for other sessions and older records. */
+    /** The branch a review job covers, or a fix agent's reviewed branch; absent otherwise. */
     branch?: string | null
     conversationId: string | null
     /** Set by the user, so captured resume hints don't replace it. */
