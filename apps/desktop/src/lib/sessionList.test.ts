@@ -1,11 +1,21 @@
 import { describe, expect, test } from 'vitest'
-import type { SessionRecord, Task, TerminalSnapshot } from '../types'
+import {
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  MERGE_SCOPE,
+  TASK_ROOT_SCOPE,
+  type SessionRecord,
+  type Task,
+  type TerminalSnapshot,
+} from '../types'
 import {
   DEFAULT_SESSION_LIST_OPTIONS,
   groupByProject,
   groupByWorktree,
   projectSessions,
   sessionLive,
+  sessionRole,
+  subject,
   sessionTimeMs,
   type SessionFilter,
   type SessionListOptions,
@@ -80,6 +90,48 @@ const starting = record('starting', { snapshot: null })
 // Saved mid-launch; the service marks it interrupted on load.
 const retained = record('retained', { snapshot: null, interrupted: true })
 const categories = [running, ended, failed, stopped, interrupted, starting, retained]
+
+describe('session labels', () => {
+  test.each([
+    { componentId: PLAN_SCOPE, kind: 'agent', role: 'Planner', tone: 'plan' },
+    { componentId: REVIEW_SCOPE, kind: 'agent', role: 'Review', tone: 'review' },
+    { componentId: MERGE_SCOPE, kind: 'agent', role: 'Merge', tone: 'merge' },
+    { componentId: TASK_ROOT_SCOPE, kind: 'agent', role: 'Implementation', tone: 'implement' },
+    { componentId: 'api', kind: 'agent', role: 'Implementation', tone: 'implement' },
+    { componentId: 'web', kind: 'task', role: 'Task', tone: 'task' },
+    { componentId: 'api', kind: 'shell', role: 'Shell', tone: 'shell' },
+    { componentId: TASK_ROOT_SCOPE, kind: 'shell', role: 'Shell', tone: 'shell' },
+  ] as const)('$componentId/$kind leads with $role', ({ componentId, kind, role, tone }) => {
+    expect(sessionRole({ ...running.metadata, componentId, kind })).toEqual({ role, tone })
+  })
+
+  test.each(['agent', 'task', 'shell'] as const)('extension takes precedence over %s', (kind) => {
+    expect(sessionRole({ ...running.metadata, kind, extensionId: 'docker' })).toEqual({
+      role: 'Extension',
+      tone: 'task',
+    })
+  })
+
+  test.each(['agent', 'task', 'shell'] as const)('%s names its component', (kind) => {
+    expect(subject({ ...running.metadata, componentId: 'api', kind, branch: 'feature-x' })).toBe(
+      'api',
+    )
+  })
+
+  test('review names its branch when recorded', () => {
+    expect(subject({ ...running.metadata, componentId: REVIEW_SCOPE, branch: 'feature-x' })).toBe(
+      'feature-x',
+    )
+    expect(
+      subject({ ...running.metadata, componentId: REVIEW_SCOPE, branch: null }),
+    ).toBeUndefined()
+    expect(subject({ ...running.metadata, componentId: REVIEW_SCOPE })).toBeUndefined()
+  })
+
+  test.each([PLAN_SCOPE, MERGE_SCOPE, TASK_ROOT_SCOPE])('%s has no subject', (componentId) => {
+    expect(subject({ ...running.metadata, componentId, branch: 'feature-x' })).toBeUndefined()
+  })
+})
 
 describe('projectSessions', () => {
   test('defaults to all sessions, most recently started or exited first', () => {
@@ -215,6 +267,17 @@ describe('groupByWorktree', () => {
       snapshot: snapshot({ startedMs }),
       spec: { cwd: `/components/${id}`, command: 'echo hello' },
     })
+
+  test('known tasks supply branches without borrowing a review branch or another task branch', () => {
+    const records = [inTask('main', null), inTask('known', 'known'), inTask('unknown', 'unknown')]
+    records[0].metadata.branch = 'reviewed-branch'
+    const tasks = [{ ...task('known', 'Known'), branch: 'feature-x' }]
+    expect(groupByWorktree(records, defaults, tasks).map((g) => [g.task, g.branch])).toEqual([
+      [null, undefined],
+      ['known', 'feature-x'],
+      ['unknown', undefined],
+    ])
+  })
 
   test('retained names order closed-project worktrees by title, with main first and id ties', () => {
     const records = [

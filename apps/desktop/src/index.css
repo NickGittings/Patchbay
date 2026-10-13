@@ -2008,16 +2008,56 @@ button.review-name:hover:not(:disabled) {
 }
 .session-worktree {
   margin: 12px 0 0 16px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
+}
+.session-worktree-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+}
+.session-worktree-label {
+  flex: 1;
+  min-width: 0;
+}
+.session-worktree-label .row {
+  flex-wrap: wrap;
+}
+.session-worktree-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 .session-worktree-heading h4 {
-  margin: 0 0 4px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
 }
-.session-worktree-heading small {
-  display: block;
-  color: var(--muted);
+.session-worktree-branch {
+  padding: 2px 6px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
+}
+.session-worktree-count,
+.session-worktree-path {
+  color: var(--muted);
+  font-size: 11px;
+}
+.session-worktree-path {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.session-worktree-rows {
+  margin: 4px 0 0 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
 }
 .session-row {
   display: flex;
@@ -2025,7 +2065,7 @@ button.review-name:hover:not(:disabled) {
   gap: 8px;
   flex-wrap: wrap;
   padding: 10px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 .session-row > div {
   flex: 1;
@@ -2038,6 +2078,38 @@ button.review-name:hover:not(:disabled) {
 .session-row small {
   display: block;
   color: var(--muted);
+}
+.session-title {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.session-role {
+  --role-color: var(--muted);
+  padding: 2px 6px;
+  color: var(--role-color);
+  background: color-mix(in srgb, var(--role-color) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--role-color) 25%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+}
+.session-role.plan {
+  --role-color: var(--accent-text);
+}
+.session-role.implement {
+  --role-color: var(--running);
+}
+.session-role.review {
+  --role-color: var(--review);
+}
+.session-role.merge {
+  --role-color: var(--ok);
+}
+.session-role.task {
+  --role-color: var(--input);
 }
 .session-preview {
   height: 320px;

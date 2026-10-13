@@ -10,8 +10,10 @@ import {
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
+import { reconcileSessions } from './sessions'
 import {
   graphTaskStop,
+  sessionForget,
   taskActivate,
   taskAttach,
   taskCheckRemovable,
@@ -214,9 +216,16 @@ async function stopTaskSessions(projectId: string, id: string) {
       await new Promise((resolve) => setTimeout(resolve, 100))
 }
 
+/** Include exited and retained records, which no longer have running terminals. */
+function taskSessionIds(projectId: string, id: string): string[] {
+  return [...sessionMetadata.keys()].filter(
+    (sid) => sessionTask(sid) === id && sessionMetadata.get(sid)?.projectId === projectId,
+  )
+}
+
 /**
- * Stop the task's terminals (nothing would show them once it is gone), then forget it and, with
- * `deleteWorktree`, remove its worktree. Stays with the project it was asked in.
+ * Stop the task's terminals, then forget the task and its session records after removal succeeds.
+ * With `deleteWorktree`, also remove its worktree. Stays with the project it was asked in.
  */
 export async function removeTask(id: string, deleteWorktree: boolean) {
   const projectId = useStore.getState().project?.id
@@ -228,6 +237,10 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   if (state?.activeTask === id) activateTaskIn(projectId, null)
   try {
     await taskRemove(id, deleteWorktree, projectId)
+    await Promise.all(
+      taskSessionIds(projectId, id).map((sid) => sessionForget(sid).catch(() => {})),
+    )
+    await reconcileSessions()
   } finally {
     await refreshTasks(projectId)
   }

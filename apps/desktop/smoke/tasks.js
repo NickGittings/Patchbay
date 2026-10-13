@@ -662,6 +662,14 @@
         /unknowngroup/i.test(textOf(rootAgentSid)),
     )
     await smoke.removeTask(secondTask.id, true)
+    assert(
+      !(await smoke.sessionsList()).some((r) => r.metadata.task === secondTask.id),
+      'removed worktree retained session records',
+    )
+    assert(
+      !state().sessionRecords.some((r) => r.metadata.task === secondTask.id),
+      'removed worktree sessions were not reconciled',
+    )
     secondTask = undefined
 
     // git refuses to remove a dirty worktree; the task stays.
