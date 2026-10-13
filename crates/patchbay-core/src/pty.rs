@@ -1064,10 +1064,16 @@ impl PtyManager {
     /// Signal one batch while the service excludes launches. Release the
     /// sessions lock before updating status so terminal input stays responsive.
     pub(crate) fn begin_stop_all(&self) -> Vec<(String, u64)> {
+        self.begin_stop(|_| true)
+    }
+
+    /// Like [`Self::begin_stop_all`], for the running sessions `matches` selects.
+    pub(crate) fn begin_stop(&self, matches: impl Fn(&str) -> bool) -> Vec<(String, u64)> {
         let runs: Vec<_> = {
             let mut sessions = self.sessions.lock().unwrap();
             sessions
                 .iter_mut()
+                .filter(|(id, _)| matches(id))
                 .map(|(id, session)| {
                     session.process.hang_up();
                     (id.clone(), session.generation)

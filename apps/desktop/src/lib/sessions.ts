@@ -650,6 +650,23 @@ export async function reconcileFreshSessions(): Promise<void> {
   await reconcileSessions()
 }
 
+/**
+ * Drop the state of sessions the service listed before and has since forgotten (in any window, or
+ * with a removed worktree), so no window keeps showing them. Unchanged when nothing was forgotten.
+ */
+export function withoutForgotten(
+  sessions: Record<string, SessionState>,
+  before: readonly SessionRecord[],
+  after: readonly SessionRecord[],
+): Record<string, SessionState> {
+  const listed = new Set(after.map((r) => r.id))
+  const gone = before.filter((r) => !listed.has(r.id) && r.id in sessions)
+  if (!gone.length) return sessions
+  const next = { ...sessions }
+  for (const r of gone) delete next[r.id]
+  return next
+}
+
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
@@ -668,11 +685,12 @@ export function reconcileSessions(force = true): Promise<void> {
       const changed = status.instanceId !== current.serviceInstance
       const reconnecting = !current.serviceConnected || changed
       if (changed) resetSessions(0)
-      useStore.setState({
+      useStore.setState((s) => ({
         serviceConnected: reconnecting ? false : current.serviceConnected,
         serviceInstance: status.instanceId,
         sessionRecords: records,
-      })
+        sessions: withoutForgotten(s.sessions, current.sessionRecords, records),
+      }))
       // Apply every record before awaiting anything, so events that arrive while
       // sessions hydrate aren't overwritten by this (by then older) list.
       const projects = useStore.getState().captureProjects()

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { sessionMetadata, type Task } from '../types'
+import type { Task } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
@@ -11,25 +11,13 @@ vi.mock('./ipc', () => ({
   taskList: vi.fn(),
   taskActivate: vi.fn(async () => {}),
   taskCreate: vi.fn(),
-  taskCheckRemovable: vi.fn(async () => {}),
-  graphTaskStop: vi.fn(async () => {}),
-  terminalStop: vi.fn(async () => {}),
-  terminalSnapshot: vi.fn(async () => ({ running: false })),
-  taskRemove: vi.fn(async (): Promise<number | null> => 0),
+  taskRemove: vi.fn(async () => true),
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
 const { cancelNewTask, createTask, followActiveTask, seedNewTask, removeTask } =
   await import('./tasks')
-const {
-  taskCreate,
-  taskUpdate,
-  taskList,
-  taskRemove,
-  taskCheckRemovable,
-  terminalStop,
-  graphTaskStop,
-} = await import('./ipc')
+const { taskCreate, taskUpdate, taskList, taskRemove } = await import('./ipc')
 const { reconcileFreshSessions } = await import('./sessions')
 
 let stop: (() => void) | undefined
@@ -39,17 +27,9 @@ afterEach(() => {
   stop = undefined
   vi.useRealTimers()
   cancelNewTask()
-  for (const sid of [
-    'running-task',
-    'exited-task',
-    'retained-task',
-    'other-project',
-    'main-worktree',
-  ])
-    sessionMetadata.delete(sid)
 })
 
-function removalSessions() {
+function removalProject(activeTask: string | null = 't') {
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject({
     projectId: 'p',
@@ -59,74 +39,47 @@ function removalSessions() {
     links: [],
     components: [],
   })
-  for (const [sid, projectId, task] of [
-    ['running-task', 'p', 't'],
-    ['exited-task', 'p', 't'],
-    ['retained-task', 'p', 't'],
-    ['other-project', 'other', 't'],
-    ['main-worktree', 'p', null],
-  ] as const)
-    sessionMetadata.set(sid, { projectId, task, componentId: 'web', terminalId: sid })
-  useStore.setState({
-    sessions: {
-      'running-task': { running: true },
-      'exited-task': { running: false },
-      'other-project': { running: true },
-      'main-worktree': { running: true },
-    },
-  })
-  vi.mocked(taskList).mockResolvedValue([])
+  const task = { id: 't', title: 'T', components: [] } as unknown as Task
+  useStore.getState().setTasks([task])
+  useStore.getState().setActiveTask(activeTask)
+  // The backend still lists a task it refused to remove.
+  vi.mocked(taskList).mockResolvedValue([task])
 }
 
-test('removing a worktree stops only its project task terminals, then refreshes sessions', async () => {
-  removalSessions()
-  await removeTask('t', true)
-  expect(vi.mocked(terminalStop).mock.calls.map(([sid]) => sid)).toEqual(['running-task'])
-  expect(taskRemove).toHaveBeenCalledWith('t', true, 'p')
-  expect(vi.mocked(taskRemove).mock.invocationCallOrder[0]).toBeLessThan(
-    vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0],
-  )
-  expect(useStore.getState().message).toBeFalsy()
-})
+test.each([true, false])(
+  'removal (%s) refreshes tasks and sessions after it succeeds',
+  async (remove) => {
+    removalProject()
+    await removeTask('t', remove)
+    expect(taskRemove).toHaveBeenCalledWith('t', remove, 'p')
+    expect(vi.mocked(taskRemove).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0],
+    )
+    expect(useStore.getState().activeTask).toBeNull()
+    expect(useStore.getState().message).toBeFalsy()
+  },
+)
 
-test('forgetting a task keeps its session records', async () => {
-  removalSessions()
-  await removeTask('t', false)
-  expect(taskRemove).toHaveBeenCalledWith('t', false, 'p')
+test('a refused removal keeps the active worktree and still refreshes tasks', async () => {
+  removalProject()
+  vi.mocked(taskRemove).mockRejectedValueOnce(new Error('dirty worktree'))
+  await expect(removeTask('t', true)).rejects.toThrow('dirty worktree')
   expect(reconcileFreshSessions).not.toHaveBeenCalled()
-})
-
-test('a refused task removal keeps session records and still refreshes tasks', async () => {
-  removalSessions()
-  vi.mocked(taskRemove).mockRejectedValueOnce(new Error('removal refused'))
-  await expect(removeTask('t', true)).rejects.toThrow('removal refused')
-  expect(reconcileFreshSessions).not.toHaveBeenCalled()
+  expect(useStore.getState().activeTask).toBe('t')
   expect(taskList).toHaveBeenCalledWith('p')
 })
 
-test('a worktree preflight refusal keeps running sessions', async () => {
-  removalSessions()
-  vi.mocked(taskCheckRemovable).mockRejectedValueOnce(new Error('dirty worktree'))
-  await expect(removeTask('t', true)).rejects.toThrow('dirty worktree')
-  expect(taskRemove).not.toHaveBeenCalled()
-  expect(terminalStop).not.toHaveBeenCalled()
-  expect(graphTaskStop).not.toHaveBeenCalled()
-})
-
 test('a failed session refresh does not fail a successful removal', async () => {
-  removalSessions()
+  removalProject()
   vi.mocked(reconcileFreshSessions).mockRejectedValueOnce(new Error('disconnected'))
   await expect(removeTask('t', true)).resolves.toBeUndefined()
 })
 
-test.each([
-  [2, /2 sessions are still running/],
-  [null, /could not be cleared/],
-])('a partial cleanup (%s) is reported', async (running, message) => {
-  removalSessions()
-  vi.mocked(taskRemove).mockResolvedValueOnce(running)
+test('sessions the backend could not forget are reported', async () => {
+  removalProject()
+  vi.mocked(taskRemove).mockResolvedValueOnce(false)
   await removeTask('t', true)
-  expect(useStore.getState().message).toMatch(message)
+  expect(useStore.getState().message).toMatch(/could not be cleared/)
 })
 
 test('cancelling the worktree dialog clears its pending follow-up', async () => {

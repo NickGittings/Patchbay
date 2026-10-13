@@ -7,7 +7,7 @@ use crate::workspace::{atomic_write, home, lock, private_dir};
 use crate::{EventSink, TerminalEvent, TerminalKind};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -307,10 +307,10 @@ pub enum Request {
     Forget {
         id: String,
     },
-    /// Forget every stopped record of a removed task; returns the ids still running.
-    ForgetTask {
-        project_id: String,
+    /// Stop every session of a task, in any project, and with `forget` drop their records.
+    EndTask {
         task: String,
+        forget: bool,
     },
     Shutdown {
         stop_running: bool,
@@ -326,11 +326,6 @@ pub enum Request {
         project_id: String,
         group_id: String,
         task: Option<String>,
-    },
-    /// Stop every environment started in the task's worktree.
-    ActionStopTask {
-        project_id: String,
-        task: String,
     },
     /// Stop the project's running validation; returns whether one was running.
     ActionCancel {
@@ -496,10 +491,9 @@ impl Client {
             | Request::Stop { .. }
             | Request::StopAll
             | Request::Forget { .. }
-            | Request::ForgetTask { .. }
             | Request::Shutdown { .. }
             | Request::ActionStopGroup { .. }
-            | Request::ActionStopTask { .. } => Some(SLOW_TIMEOUT),
+            | Request::EndTask { .. } => Some(SLOW_TIMEOUT),
             _ => Some(TIMEOUT),
         };
         let response = (|| -> Result<Response> {
@@ -1024,6 +1018,71 @@ impl Service {
             crate::context::remove_owned_briefing_file(file);
         }
     }
+    /// Drop stopped sessions' records and retained output in one pass, and the
+    /// owned briefings no remaining record uses. The caller holds the operation lock.
+    fn forget_stopped(&self, ids: &[String]) {
+        let stopped: Vec<_> = ids.iter().filter(|id| !self.pty.is_running(id)).collect();
+        if stopped.is_empty() {
+            return;
+        }
+        let (briefings, used) = {
+            let mut records = self.records.lock().unwrap();
+            let briefings: HashSet<_> = stopped
+                .iter()
+                .filter_map(|id| records.remove(*id))
+                .filter_map(|record| crate::context::owned_briefing(&record.spec))
+                .collect();
+            let used: HashSet<_> = records
+                .values()
+                .filter_map(|record| crate::context::owned_briefing(&record.spec))
+                .collect();
+            (briefings, used)
+        };
+        for file in briefings.difference(&used) {
+            crate::context::remove_owned_briefing_file(file);
+        }
+        for id in stopped {
+            self.pty.forget(id);
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+    /// Stop a task's environments and sessions in every project, so none keeps
+    /// running in a worktree about to be removed; with `forget`, drop their records.
+    fn end_task(self: &Arc<Self>, task: &str, forget: bool) -> Result<()> {
+        // Never hold the operation lock while acquiring a project's graph lock.
+        let actions: Vec<_> = self
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(project_id, actions)| (project_id.clone(), actions.clone()))
+            .collect();
+        for (project_id, actions) in actions {
+            let terminals = ServiceTerminals {
+                service: self.clone(),
+                project_id: &project_id,
+                project: None,
+            };
+            let epoch = actions.epoch();
+            actions.stop_task(&project_id, task, epoch, &terminals)?;
+        }
+        // Launches take the operation lock, so none of the task's can start meanwhile.
+        let _operation = self.operation.lock().unwrap();
+        let ids: Vec<_> = self
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| r.metadata.task.as_deref() == Some(task))
+            .map(|r| r.id.clone())
+            .collect();
+        let runs = self.pty.begin_stop(|id| ids.iter().any(|i| i == id));
+        self.pty.finish_stop_all(&runs)?;
+        if forget {
+            self.forget_stopped(&ids);
+        }
+        Ok(())
+    }
     fn start_with_command(
         self: &Arc<Self>,
         request: String,
@@ -1486,45 +1545,12 @@ impl Service {
                     !self.pty.is_running(&id),
                     "Stop running work before forgetting it"
                 );
-                let forgotten = self.records.lock().unwrap().remove(&id);
-                if let Some(record) = forgotten
-                    && let Some(file) = crate::context::owned_briefing(&record.spec)
-                {
-                    self.remove_unused_briefing(&file);
-                }
-                self.pty.forget(&id);
-                self.dirty.store(true, Ordering::Release);
+                self.forget_stopped(std::slice::from_ref(&id));
                 serde_json::Value::Null
             }
-            Request::ForgetTask { project_id, task } => {
-                let _operation = self.operation.lock().unwrap();
-                let ids: Vec<_> = self
-                    .records
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .filter(|r| {
-                        r.metadata.project_id == project_id
-                            && r.metadata.task.as_deref() == Some(task.as_str())
-                    })
-                    .map(|r| r.id.clone())
-                    .collect();
-                let (running, stopped): (Vec<_>, Vec<_>) =
-                    ids.into_iter().partition(|id| self.pty.is_running(id));
-                let forgotten: Vec<_> = {
-                    let mut records = self.records.lock().unwrap();
-                    stopped.iter().filter_map(|id| records.remove(id)).collect()
-                };
-                for record in &forgotten {
-                    if let Some(file) = crate::context::owned_briefing(&record.spec) {
-                        self.remove_unused_briefing(&file);
-                    }
-                    self.pty.forget(&record.id);
-                }
-                if !forgotten.is_empty() {
-                    self.dirty.store(true, Ordering::Release);
-                }
-                serde_json::to_value(running)?
+            Request::EndTask { task, forget } => {
+                self.end_task(&task, forget)?;
+                serde_json::Value::Null
             }
             Request::MaintenanceGuard {
                 project_id,
@@ -1643,17 +1669,6 @@ impl Service {
                 let actions = self.actions_for(&project_id);
                 let epoch = actions.epoch();
                 actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
-                serde_json::Value::Null
-            }
-            Request::ActionStopTask { project_id, task } => {
-                let terminals = ServiceTerminals {
-                    service: self.clone(),
-                    project_id: &project_id,
-                    project: None,
-                };
-                let actions = self.actions_for(&project_id);
-                let epoch = actions.epoch();
-                actions.stop_task(&project_id, &task, epoch, &terminals)?;
                 serde_json::Value::Null
             }
             Request::ActionCancel { project_id } => {
@@ -3434,51 +3449,52 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn forget_task_drops_its_stopped_records_and_reports_running_ones() {
+    fn end_task_stops_and_forgets_its_sessions_in_every_project() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
-        let start = |terminal: &str, task: Option<&str>, project: &str, command: &str| {
-            let metadata = Metadata {
-                project_id: project.into(),
-                project_name: "P".into(),
-                project_root: dir.display().to_string(),
-                component_id: "c".into(),
-                terminal_id: terminal.into(),
-                task: task.map(Into::into),
-                task_title: None,
-                name: terminal.into(),
-                kind: TerminalKind::Task,
-                adapter: None,
-                conversation_id: None,
-                conversation_pinned: false,
-                extension_id: None,
-                command_id: None,
-                key: None,
-                branch: None,
-                command: String::new(),
+        let start =
+            |request: &str, terminal: &str, task: Option<&str>, project: &str, command: &str| {
+                let metadata = Metadata {
+                    project_id: project.into(),
+                    project_name: "P".into(),
+                    project_root: dir.display().to_string(),
+                    component_id: "c".into(),
+                    terminal_id: terminal.into(),
+                    task: task.map(Into::into),
+                    task_title: None,
+                    name: terminal.into(),
+                    kind: TerminalKind::Task,
+                    adapter: None,
+                    conversation_id: None,
+                    conversation_pinned: false,
+                    extension_id: None,
+                    command_id: None,
+                    key: None,
+                    branch: None,
+                    command: String::new(),
+                };
+                let spec = SessionSpec {
+                    resume_command: None,
+                    owns_briefing: false,
+                    exclusive_cwd: false,
+                    merge_source: None,
+                    id: "ignored".into(),
+                    command: command.into(),
+                    cwd: dir.clone(),
+                    env: BTreeMap::new(),
+                    ready_when: String::new(),
+                    service: false,
+                    notice: None,
+                    dirs: Vec::new(),
+                };
+                service.start(request.into(), metadata, spec).unwrap()
             };
-            let spec = SessionSpec {
-                resume_command: None,
-                owns_briefing: false,
-                exclusive_cwd: false,
-                merge_source: None,
-                id: "ignored".into(),
-                command: command.into(),
-                cwd: dir.clone(),
-                env: BTreeMap::new(),
-                ready_when: String::new(),
-                service: false,
-                notice: None,
-                dirs: Vec::new(),
-            };
-            service.start(terminal.into(), metadata, spec).unwrap()
-        };
-        let done = start("done", Some("t"), "p", "true");
-        let live = start("live", Some("t"), "p", "sleep 30");
-        let other_task = start("other", Some("u"), "p", "true");
-        let other_project = start("elsewhere", Some("t"), "q", "true");
-        let main = start("main", None, "p", "true");
+        let done = start("1", "done", Some("t"), "p", "true");
+        let live = start("2", "live", Some("t"), "p", "sleep 30");
+        let other_task = start("3", "other", Some("u"), "p", "true");
+        let other_project = start("4", "elsewhere", Some("t"), "q", "true");
+        let main = start("5", "main", None, "p", "true");
         let deadline = Instant::now() + Duration::from_secs(5);
         for id in [&done, &other_task, &other_project, &main] {
             while service.pty.is_running(id) {
@@ -3486,25 +3502,36 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        let running: Vec<String> = serde_json::from_value(
-            service
-                .handle(
-                    "1",
-                    Request::ForgetTask {
-                        project_id: "p".into(),
-                        task: "t".into(),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(running, vec![live.clone()]);
+        // Stopping keeps every record; the task's live session is stopped in place.
+        service
+            .handle(
+                "1",
+                Request::EndTask {
+                    task: "t".into(),
+                    forget: false,
+                },
+            )
+            .unwrap();
+        assert!(!service.pty.is_running(&live));
+        assert_eq!(service.list().len(), 5);
+        assert_eq!(start("6", "live", Some("t"), "p", "sleep 30"), live);
+        assert!(service.pty.is_running(&live));
+        // Forgetting stops anything started since, in any project, and keeps other work.
+        service
+            .handle(
+                "1",
+                Request::EndTask {
+                    task: "t".into(),
+                    forget: true,
+                },
+            )
+            .unwrap();
+        assert!(!service.pty.is_running(&live));
         let mut left: Vec<_> = service.list().into_iter().map(|r| r.id).collect();
         left.sort();
-        let mut expected = vec![live.clone(), other_task, other_project, main];
+        let mut expected = vec![other_task, main];
         expected.sort();
         assert_eq!(left, expected);
-        service.pty.stop(&live);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

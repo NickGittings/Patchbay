@@ -47,6 +47,7 @@ const {
   restartTerminal,
   resetSessions,
   retireOlderService,
+  withoutForgotten,
 } = await import('./sessions')
 const project: Project = {
   schemaVersion: 4,
@@ -450,4 +451,21 @@ test('a stale status reply cannot enable a stop before reconnection', async () =
   expect(useStore.getState().serviceRetirement).toBe('reconnecting')
   await retireOlderService()
   expect(ipc.serviceRetire).toHaveBeenCalledTimes(1)
+})
+
+test('reconciling drops the state of sessions the service forgot', () => {
+  const record = (id: string) => ({ id }) as unknown as import('../types').SessionRecord
+  const sessions = {
+    kept: { running: false },
+    forgotten: { running: false },
+    local: { running: true },
+  }
+  // `local` was never listed (a launch not yet recorded), so it stays.
+  expect(
+    withoutForgotten(sessions, [record('kept'), record('forgotten')], [record('kept')]),
+  ).toEqual({
+    kept: { running: false },
+    local: { running: true },
+  })
+  expect(withoutForgotten(sessions, [record('kept')], [record('kept')])).toBe(sessions)
 })

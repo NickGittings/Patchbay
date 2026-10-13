@@ -523,6 +523,50 @@ pub fn remove(root: &Path, id: &str, delete_worktree: bool) -> Result<()> {
     Ok(())
 }
 
+/// What removing a task needs from whatever runs its terminals.
+pub trait TaskSessions {
+    /// Stop every session of `task`, in any project; with `forget`, also drop their records.
+    ///
+    /// # Errors
+    /// Fails if the sessions can't be reached or don't stop.
+    fn end_task(&self, task: &str, forget: bool) -> Result<()>;
+}
+
+/// The outcome of [`remove_with_sessions`].
+#[derive(Debug)]
+pub struct Removed {
+    /// The task as it was before removal.
+    pub task: Task,
+    /// Whether the task's session records were dropped; the removal stands either way.
+    pub sessions_cleared: bool,
+}
+
+/// [`remove`] for a task that may have terminals: check the worktree can go
+/// first, stop the task's sessions so none outlives its folder, remove, then
+/// forget the sessions, which can't resume once the task is gone.
+///
+/// # Errors
+/// Fails, removing nothing, if the task or its worktree can't be removed or
+/// its sessions don't stop.
+pub fn remove_with_sessions(
+    root: &Path,
+    id: &str,
+    delete_worktree: bool,
+    sessions: &dyn TaskSessions,
+) -> Result<Removed> {
+    let task = if delete_worktree {
+        check_removable(root, id)?
+    } else {
+        stored(root, id)?
+    };
+    sessions.end_task(id, false)?;
+    remove(root, id, delete_worktree)?;
+    Ok(Removed {
+        task,
+        sessions_cleared: sessions.end_task(id, true).is_ok(),
+    })
+}
+
 /// `project` (already trusted and restricted) as it is in `task`'s worktree:
 /// the root moves into the worktree and components that aren't in it (other
 /// repos, or folders the branch doesn't have) are dropped with their links.
@@ -987,5 +1031,72 @@ mod tests {
         assert!(find(&root, &task.id).is_err());
         remove(&root, &task.id, true).unwrap();
         assert!(list(&root).unwrap().is_empty());
+    }
+
+    #[derive(Default)]
+    struct Sessions {
+        calls: Mutex<Vec<(String, bool)>>,
+        refuse: Option<bool>,
+    }
+    impl TaskSessions for Sessions {
+        fn end_task(&self, task: &str, forget: bool) -> Result<()> {
+            self.calls.lock().unwrap().push((task.into(), forget));
+            if self.refuse == Some(forget) {
+                bail!("refused");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn removal_stops_sessions_first_and_forgets_them_after() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else {
+            return;
+        };
+        let draft = |branch: &str| TaskDraft {
+            title: branch.into(),
+            branch: branch.into(),
+            base: None,
+            components: vec![],
+        };
+        // A dirty worktree is refused before any session is stopped.
+        let dirty = create(&root, draft("dirty")).unwrap();
+        fs::write(Path::new(&dirty.worktree).join("new.txt"), "x").unwrap();
+        let sessions = Sessions::default();
+        assert!(remove_with_sessions(&root, &dirty.id, true, &sessions).is_err());
+        assert!(sessions.calls.lock().unwrap().is_empty());
+
+        // Sessions that won't stop keep the task and its worktree.
+        let task = create(&root, draft("side")).unwrap();
+        let refusing = Sessions {
+            refuse: Some(false),
+            ..Sessions::default()
+        };
+        assert!(remove_with_sessions(&root, &task.id, true, &refusing).is_err());
+        assert!(Path::new(&task.worktree).exists());
+
+        // A failed forget doesn't undo the removal.
+        let forgetful = Sessions {
+            refuse: Some(true),
+            ..Sessions::default()
+        };
+        let removed = remove_with_sessions(&root, &task.id, true, &forgetful).unwrap();
+        assert!(!removed.sessions_cleared);
+        assert_eq!(removed.task.id, task.id);
+        assert!(!Path::new(&task.worktree).exists());
+        assert_eq!(
+            *forgetful.calls.lock().unwrap(),
+            vec![(task.id.clone(), false), (task.id.clone(), true)]
+        );
+
+        // Forgetting the task alone also forgets its sessions, which can't resume without it.
+        let removed = remove_with_sessions(&root, &dirty.id, false, &sessions).unwrap();
+        assert!(removed.sessions_cleared);
+        assert!(Path::new(&dirty.worktree).exists());
+        assert_eq!(
+            *sessions.calls.lock().unwrap(),
+            vec![(dirty.id.clone(), false), (dirty.id.clone(), true)]
+        );
     }
 }
