@@ -237,8 +237,8 @@ function mergeRequest(snapshot: AutoSnapshot, run: AutoRun) {
 }
 /**
  * Pinned read calls; no active-tab state is consulted after capturing the project. The merge
- * outcome scans both worktrees, so it is read only while merging or when `inferring` the stage;
- * otherwise it stays `notMerged`.
+ * outcome scans both worktrees, so it is read only while merging or when `inferring` the stage of
+ * a reviewed or merged branch; otherwise it stays `notMerged`.
  */
 export async function autoSnapshot(
   projectId: string,
@@ -340,8 +340,15 @@ export async function autoSnapshot(
       .filter((r) => r.metadata.componentId === REVIEW_SCOPE && r.spec.cwd === path)
       .sort((a, b) => (b.snapshot?.startedMs ?? 0) - (a.snapshot?.startedMs ?? 0))[0],
   }
+  // A branch with no work yet is trivially "integrated", so inference reads the outcome only once
+  // the branch was reviewed or merged.
   if (
-    (inferring || run.stage === 'merge') &&
+    (run.stage === 'merge' ||
+      (inferring &&
+        (findings ||
+          records.some(
+            (r) => r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path,
+          )))) &&
     run.merge.destinationBranch &&
     snapshot.worktrees.some(
       (w) => w.branch === run.merge.destinationBranch && w.path !== source.path,

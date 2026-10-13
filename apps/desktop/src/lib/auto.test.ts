@@ -1114,4 +1114,8 @@ test('snapshots read the merge outcome only while merging or inferring', async (
   await autoSnapshot('p', 't', run({ stage: 'merge' }))
   await autoSnapshot('p', 't', run({ stage: 'fix' }), true)
   expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+  // A fresh branch is trivially an ancestor of its base; that isn't a finished merge.
+  vi.mocked(ipc.reviewRead).mockResolvedValue(null)
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
+  expect((await autoSnapshot('p', 't', run({ stage: 'plan' }), true)).outcome).toBe('notMerged')
 })
