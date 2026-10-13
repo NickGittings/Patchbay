@@ -18,6 +18,8 @@ import {
   groupByProject,
   groupByWorktree,
   sessionLive,
+  sessionRole,
+  subject,
   type ProjectSessionChoices,
   type SessionFilter,
   type SessionListOptions,
@@ -33,6 +35,8 @@ const EMPTY: Record<SessionFilter, string> = {
   running: 'No running sessions',
   closed: 'No closed sessions',
 }
+/** Worktree counts follow the filter, so they never read as the worktree's whole history. */
+const COUNTED: Record<SessionFilter, string> = { all: '', running: 'running ', closed: 'closed ' }
 
 /** A relative time that re-renders on the shared clock only while it is on screen. */
 function Ago({ ms }: { ms: number }) {
@@ -42,6 +46,20 @@ function Ago({ ms }: { ms: number }) {
     <time dateTime={date.toISOString()} title={date.toLocaleString()}>
       {ago(ms)}
     </time>
+  )
+}
+
+function SessionTitle({ metadata }: { metadata: SessionRecord['metadata'] }) {
+  const { role, tone } = sessionRole(metadata)
+  const label = subject(metadata)
+  return (
+    <strong className="session-title">
+      <span className={`session-role ${tone}`}>{role}</span>{' '}
+      <span>
+        {label && `${label} · `}
+        <span className="session-name">{metadata.name}</span>
+      </span>
+    </strong>
   )
 }
 
@@ -155,136 +173,152 @@ function SessionList({
                   key={worktree.task === null ? 'main' : `task:${worktree.task}`}
                 >
                   <div className="session-worktree-heading">
-                    <h4>{worktree.title}</h4>
-                    {worktree.path && <small className="mono">{worktree.path}</small>}
-                  </div>
-                  {worktree.rows.map(({ record: r, time }) => {
-                    const live = sessionLive(r)
-                    // Recorded but not spawned yet: output is not available to reconnect to.
-                    const starting = live && !r.snapshot
-                    const review = sessionView(r.metadata.componentId) === 'review'
-                    const unavailable = !connected || busy
-                    // Review sessions are reopened in Review rather than started again.
-                    const reopen = {
-                      label: review ? 'Show in Review' : 'Start new',
-                      // Both need the project open: Review reveals in the active project.
-                      disabled: unavailable || projectTasks[projectId] === undefined,
-                      onClick: () =>
-                        void perform(async () => {
-                          useStore.getState().activateProject(r.metadata.projectId)
-                          if (review) {
-                            onReveal(r)
-                            return
-                          }
-                          await startTerminal(
-                            r.metadata.componentId,
-                            r.metadata.terminalId,
-                            r.metadata.task ?? null,
-                            r.metadata.projectId,
-                          )
-                        }),
-                    }
-                    // Two inline actions at most; a finished review without Resume shows its way
-                    // back inline, since that is the row's main action.
-                    const reviewInline = review && !live && !r.metadata.adapter
-                    return (
-                      <div className="session-row" key={r.id}>
-                        <div>
-                          <strong>{r.metadata.name}</strong>
-                          <small>
-                            {r.metadata.componentId} · {r.metadata.kind} · {r.spec.cwd}
-                          </small>
-                        </div>
-                        <span>
-                          {!connected
-                            ? 'Disconnected'
-                            : starting
-                              ? 'Starting'
-                              : live
-                                ? 'Running'
-                                : r.interrupted
-                                  ? 'Interrupted'
-                                  : 'Ended'}
-                        </span>
-                        <small>{time !== undefined && <Ago ms={time} />}</small>
-                        <button
-                          disabled={unavailable || starting}
-                          onClick={() =>
-                            void perform(async () => {
-                              await hydrateSession(r.id)
-                              onSelect(r)
-                            })
-                          }
-                        >
-                          {live ? 'Reconnect' : 'View output'}
-                        </button>
-                        {live ? (
-                          <button
-                            title="Stop this session; cancel startup if its plan includes this session"
-                            disabled={unavailable}
-                            onClick={() => void perform(() => terminalStop(r.id))}
-                          >
-                            Stop
-                          </button>
-                        ) : r.metadata.adapter ? (
-                          <button
-                            disabled={unavailable}
-                            onClick={() => void perform(() => sessionResume(r.id))}
-                          >
-                            Resume
-                          </button>
-                        ) : (
-                          reviewInline && (
-                            <button disabled={reopen.disabled} onClick={reopen.onClick}>
-                              {reopen.label}
-                            </button>
-                          )
+                    <div className="session-worktree-label">
+                      <span className="session-worktree-eyebrow">
+                        {worktree.task === null ? 'PROJECT FOLDER' : 'WORKTREE'}
+                      </span>
+                      <div className="row">
+                        <h4>{worktree.title}</h4>
+                        {worktree.branch && (
+                          <span className="session-worktree-branch mono">{worktree.branch}</span>
                         )}
-                        {(!live || r.metadata.adapter) && (
-                          <Menu
-                            label="⋯"
-                            title="More session actions"
-                            triggerLabel={`More actions for ${r.metadata.name}`}
-                            caret={false}
-                            portal
-                            align="right"
-                            className="session-menu"
-                            listClassName="session-menu-list"
+                        <span className="session-worktree-count">
+                          {worktree.rows.length} {COUNTED[options.filter]}
+                          {worktree.rows.length === 1 ? 'session' : 'sessions'}
+                        </span>
+                      </div>
+                    </div>
+                    {worktree.path && (
+                      <small className="session-worktree-path mono">{worktree.path}</small>
+                    )}
+                  </div>
+                  <div className="session-worktree-rows">
+                    {worktree.rows.map(({ record: r, time }) => {
+                      const live = sessionLive(r)
+                      // Recorded but not spawned yet: output is not available to reconnect to.
+                      const starting = live && !r.snapshot
+                      const review = sessionView(r.metadata.componentId) === 'review'
+                      const unavailable = !connected || busy
+                      // Review sessions are reopened in Review rather than started again.
+                      const reopen = {
+                        label: review ? 'Show in Review' : 'Start new',
+                        // Both need the project open: Review reveals in the active project.
+                        disabled: unavailable || projectTasks[projectId] === undefined,
+                        onClick: () =>
+                          void perform(async () => {
+                            useStore.getState().activateProject(r.metadata.projectId)
+                            if (review) {
+                              onReveal(r)
+                              return
+                            }
+                            await startTerminal(
+                              r.metadata.componentId,
+                              r.metadata.terminalId,
+                              r.metadata.task ?? null,
+                              r.metadata.projectId,
+                            )
+                          }),
+                      }
+                      // Two inline actions at most; a finished review without Resume shows its way
+                      // back inline, since that is the row's main action.
+                      const reviewInline = review && !live && !r.metadata.adapter
+                      return (
+                        <div className="session-row" key={r.id}>
+                          <div>
+                            <SessionTitle metadata={r.metadata} />
+                            <small className="mono">{r.spec.cwd}</small>
+                          </div>
+                          <span>
+                            {!connected
+                              ? 'Disconnected'
+                              : starting
+                                ? 'Starting'
+                                : live
+                                  ? 'Running'
+                                  : r.interrupted
+                                    ? 'Interrupted'
+                                    : 'Ended'}
+                          </span>
+                          <small>{time !== undefined && <Ago ms={time} />}</small>
+                          <button
+                            disabled={unavailable || starting}
+                            onClick={() =>
+                              void perform(async () => {
+                                await hydrateSession(r.id)
+                                onSelect(r)
+                              })
+                            }
                           >
-                            {!live && !reviewInline && (
-                              <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
+                            {live ? 'Reconnect' : 'View output'}
+                          </button>
+                          {live ? (
+                            <button
+                              title="Stop this session; cancel startup if its plan includes this session"
+                              disabled={unavailable}
+                              onClick={() => void perform(() => terminalStop(r.id))}
+                            >
+                              Stop
+                            </button>
+                          ) : r.metadata.adapter ? (
+                            <button
+                              disabled={unavailable}
+                              onClick={() => void perform(() => sessionResume(r.id))}
+                            >
+                              Resume
+                            </button>
+                          ) : (
+                            reviewInline && (
+                              <button disabled={reopen.disabled} onClick={reopen.onClick}>
                                 {reopen.label}
-                              </MenuItem>
-                            )}
-                            {r.metadata.adapter && (
-                              <MenuItem
-                                disabled={unavailable}
-                                onClick={() =>
-                                  onConversation({
-                                    id: r.id,
-                                    value: r.metadata.conversationId ?? '',
-                                  })
-                                }
-                              >
-                                Set conversation ID…
-                              </MenuItem>
-                            )}
-                            {!live && (
-                              <>
-                                {!reviewInline && <MenuSeparator />}
+                              </button>
+                            )
+                          )}
+                          {(!live || r.metadata.adapter) && (
+                            <Menu
+                              label="⋯"
+                              title="More session actions"
+                              triggerLabel={`More actions for ${r.metadata.name}`}
+                              caret={false}
+                              portal
+                              align="right"
+                              className="session-menu"
+                              listClassName="session-menu-list"
+                            >
+                              {!live && !reviewInline && (
+                                <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
+                                  {reopen.label}
+                                </MenuItem>
+                              )}
+                              {r.metadata.adapter && (
                                 <MenuItem
                                   disabled={unavailable}
-                                  onClick={() => void perform(() => sessionForget(r.id))}
+                                  onClick={() =>
+                                    onConversation({
+                                      id: r.id,
+                                      value: r.metadata.conversationId ?? '',
+                                    })
+                                  }
                                 >
-                                  Forget
+                                  Set conversation ID…
                                 </MenuItem>
-                              </>
-                            )}
-                          </Menu>
-                        )}
-                      </div>
-                    )
-                  })}
+                              )}
+                              {!live && (
+                                <>
+                                  {!reviewInline && <MenuSeparator />}
+                                  <MenuItem
+                                    disabled={unavailable}
+                                    onClick={() => void perform(() => sessionForget(r.id))}
+                                  >
+                                    Forget
+                                  </MenuItem>
+                                </>
+                              )}
+                            </Menu>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </section>
               ))}
             </section>
@@ -428,7 +462,7 @@ export default function SessionsPanel() {
         {selected && (
           <section className="session-preview">
             <div className="row">
-              <strong>{selected.metadata.name}</strong>
+              <SessionTitle metadata={selected.metadata} />
               {!!selected.history.length && (
                 <select
                   aria-label="Run"

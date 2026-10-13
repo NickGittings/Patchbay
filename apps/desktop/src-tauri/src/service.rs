@@ -437,6 +437,17 @@ pub fn metadata(
     }
 }
 
+impl patchbay_core::tasks::TaskSessions for Bridge {
+    fn end_task(&self, task: &str, forget: bool) -> anyhow::Result<()> {
+        self.call::<serde_json::Value>(Request::EndTask {
+            task: task.into(),
+            forget,
+        })
+        .map(drop)
+        .map_err(anyhow::Error::msg)
+    }
+}
+
 #[cfg(test)]
 mod retirement_tests {
     use super::*;

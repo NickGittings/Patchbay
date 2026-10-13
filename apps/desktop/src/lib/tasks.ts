@@ -7,21 +7,11 @@ import {
   switchTaskWorkspace,
   useStore,
 } from '../store'
-import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
+import type { Task, TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
-import {
-  graphTaskStop,
-  taskActivate,
-  taskAttach,
-  taskCheckRemovable,
-  taskCreate,
-  taskList,
-  taskRemove,
-  taskUpdate,
-  terminalSnapshot,
-  terminalStop,
-} from './ipc'
+import { reconcileFreshSessions } from './sessions'
+import { taskActivate, taskAttach, taskCreate, taskList, taskRemove, taskUpdate } from './ipc'
 
 type Snapshot = Pick<ReturnType<typeof useStore.getState>, 'tasks' | 'activeTask'>
 
@@ -196,41 +186,32 @@ export async function attachTask(
   return task
 }
 
-/** Stop a project's task terminals and wait (up to 10s) for them to exit. */
-async function stopTaskSessions(projectId: string, id: string) {
-  await graphTaskStop(id, projectId)
-  const sids = Object.entries(useStore.getState().sessions)
-    .filter(
-      ([sid, session]) =>
-        session.running &&
-        sessionTask(sid) === id &&
-        sessionMetadata.get(sid)?.projectId === projectId,
-    )
-    .map(([sid]) => sid)
-  await Promise.all(sids.map((sid) => terminalStop(sid).catch(() => {})))
-  const deadline = Date.now() + 10000
-  for (const sid of sids)
-    while ((await terminalSnapshot(sid).catch(() => null))?.running && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-}
-
 /**
- * Stop the task's terminals (nothing would show them once it is gone), then forget it and, with
- * `deleteWorktree`, remove its worktree. Stays with the project it was asked in.
+ * Forget the task and, with `deleteWorktree`, remove its worktree. The backend stops the task's
+ * sessions in every project first and forgets them after, since they can't resume without it.
+ * Stays with the project it was asked in.
  */
 export async function removeTask(id: string, deleteWorktree: boolean) {
   const projectId = useStore.getState().project?.id
   if (!projectId) return
-  // Ask first, so a worktree git won't remove doesn't cost the task its running terminals.
-  if (deleteWorktree) await taskCheckRemovable(id, projectId)
-  await stopTaskSessions(projectId, id)
-  const state = useStore.getState().captureProjects()[projectId]?.state
-  if (state?.activeTask === id) activateTaskIn(projectId, null)
+  let cleared: boolean
   try {
-    await taskRemove(id, deleteWorktree, projectId)
+    cleared = await taskRemove(id, deleteWorktree, projectId)
   } finally {
     await refreshTasks(projectId)
   }
+  const state = useStore.getState().captureProjects()[projectId]?.state
+  if (state?.activeTask === id) activateTaskIn(projectId, null)
+  // The removal succeeded; refreshing the list must not report it as failed.
+  await reconcileFreshSessions().catch(() => {})
+  if (!cleared)
+    useStore
+      .getState()
+      .setMessage(
+        deleteWorktree
+          ? 'Worktree removed, but its sessions could not be cleared from Sessions.'
+          : 'Worktree forgotten, but its sessions could not be cleared from Sessions.',
+      )
 }
 
 /** What to do with the worktree the open New worktree dialog creates, once it is active. */

@@ -11,10 +11,14 @@ vi.mock('./ipc', () => ({
   taskList: vi.fn(),
   taskActivate: vi.fn(async () => {}),
   taskCreate: vi.fn(),
+  taskRemove: vi.fn(async () => true),
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
-const { cancelNewTask, createTask, followActiveTask, seedNewTask } = await import('./tasks')
-const { taskCreate, taskUpdate, taskList } = await import('./ipc')
+vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
+const { cancelNewTask, createTask, followActiveTask, seedNewTask, removeTask } =
+  await import('./tasks')
+const { taskCreate, taskUpdate, taskList, taskRemove } = await import('./ipc')
+const { reconcileFreshSessions } = await import('./sessions')
 
 let stop: (() => void) | undefined
 beforeEach(() => vi.clearAllMocks())
@@ -23,6 +27,59 @@ afterEach(() => {
   stop = undefined
   vi.useRealTimers()
   cancelNewTask()
+})
+
+function removalProject(activeTask: string | null = 't') {
+  useStore.setState(useStore.getInitialState())
+  useStore.getState().loadProject({
+    projectId: 'p',
+    name: 'P',
+    root: '/p',
+    schemaVersion: 4,
+    links: [],
+    components: [],
+  })
+  const task = { id: 't', title: 'T', components: [] } as unknown as Task
+  useStore.getState().setTasks([task])
+  useStore.getState().setActiveTask(activeTask)
+  // The backend still lists a task it refused to remove.
+  vi.mocked(taskList).mockResolvedValue([task])
+}
+
+test.each([true, false])(
+  'removal (%s) refreshes tasks and sessions after it succeeds',
+  async (remove) => {
+    removalProject()
+    await removeTask('t', remove)
+    expect(taskRemove).toHaveBeenCalledWith('t', remove, 'p')
+    expect(vi.mocked(taskRemove).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0],
+    )
+    expect(useStore.getState().activeTask).toBeNull()
+    expect(useStore.getState().message).toBeFalsy()
+  },
+)
+
+test('a refused removal keeps the active worktree and still refreshes tasks', async () => {
+  removalProject()
+  vi.mocked(taskRemove).mockRejectedValueOnce(new Error('dirty worktree'))
+  await expect(removeTask('t', true)).rejects.toThrow('dirty worktree')
+  expect(reconcileFreshSessions).not.toHaveBeenCalled()
+  expect(useStore.getState().activeTask).toBe('t')
+  expect(taskList).toHaveBeenCalledWith('p')
+})
+
+test('a failed session refresh does not fail a successful removal', async () => {
+  removalProject()
+  vi.mocked(reconcileFreshSessions).mockRejectedValueOnce(new Error('disconnected'))
+  await expect(removeTask('t', true)).resolves.toBeUndefined()
+})
+
+test('sessions the backend could not forget are reported', async () => {
+  removalProject()
+  vi.mocked(taskRemove).mockResolvedValueOnce(false)
+  await removeTask('t', true)
+  expect(useStore.getState().message).toMatch(/could not be cleared/)
 })
 
 test('cancelling the worktree dialog clears its pending follow-up', async () => {

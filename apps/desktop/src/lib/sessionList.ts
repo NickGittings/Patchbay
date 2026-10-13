@@ -1,4 +1,42 @@
-import type { SessionRecord, Task } from '../types'
+import {
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  MERGE_SCOPE,
+  isReservedScope,
+  type SessionRecord,
+  type Task,
+} from '../types'
+
+type SessionMetadata = SessionRecord['metadata']
+export interface SessionRole {
+  role: string
+  tone: 'plan' | 'implement' | 'review' | 'merge' | 'task' | 'shell'
+}
+
+/** The purpose of a session, independent of its terminal's saved name. */
+export function sessionRole(metadata: SessionMetadata): SessionRole {
+  if (metadata.extensionId) return { role: 'Extension', tone: 'task' }
+  if (metadata.kind === 'shell') return { role: 'Shell', tone: 'shell' }
+  switch (metadata.componentId) {
+    case PLAN_SCOPE:
+      return { role: 'Planner', tone: 'plan' }
+    case REVIEW_SCOPE:
+      return { role: 'Review', tone: 'review' }
+    case MERGE_SCOPE:
+      return { role: 'Merge', tone: 'merge' }
+    default:
+      // Root terminals and component terminals alike: agents implement, the rest run tasks.
+      return metadata.kind === 'agent'
+        ? { role: 'Implementation', tone: 'implement' }
+        : { role: 'Task', tone: 'task' }
+  }
+}
+
+/** Component sessions name their component; reviews name the branch being reviewed. */
+export function subject(metadata: SessionMetadata): string | undefined {
+  if (metadata.componentId === REVIEW_SCOPE) return metadata.branch ?? undefined
+  return isReservedScope(metadata.componentId) ? undefined : metadata.componentId
+}
 
 export type SessionFilter = 'all' | 'running' | 'closed'
 export type SessionSort = 'latest' | 'oldest'
@@ -25,6 +63,7 @@ export interface WorktreeSessionGroup {
   task: string | null
   title: string
   path: string | undefined
+  branch: string | undefined
   rows: SessionRow[]
 }
 
@@ -49,13 +88,14 @@ export function groupByWorktree(
     const id = row.record.metadata.task ?? null
     const group = groups.get(id)
     if (group) group.rows.push(row)
-    else groups.set(id, { task: id, title: '', path: undefined, rows: [row] })
+    else groups.set(id, { task: id, title: '', path: undefined, branch: undefined, rows: [row] })
   }
   for (const group of groups.values()) {
     // Folder moves and mixed legacy records must not make the displayed sort choose the path.
     group.path = newestRow(group.rows).record.metadata.projectRoot
     if (group.task === null) group.title = 'Main worktree'
     else {
+      group.branch = knownTasks.get(group.task)?.branch
       const named = group.rows.filter((row) => row.record.metadata.taskTitle)
       // Cached/read-only task lists support records saved before taskTitle was introduced.
       group.title =

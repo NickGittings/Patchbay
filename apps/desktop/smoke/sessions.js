@@ -20,9 +20,9 @@
       (section) => section.querySelector('h3')?.textContent === name,
     )
   const rows = (name) => [...(group(name)?.querySelectorAll('.session-row') ?? [])]
-  const names = (name) => rows(name).map((row) => row.querySelector('strong')?.textContent)
+  const names = (name) => rows(name).map((row) => row.querySelector('.session-name')?.textContent)
   const row = (project, name) =>
-    rows(project).find((element) => element.querySelector('strong')?.textContent === name)
+    rows(project).find((element) => element.querySelector('.session-name')?.textContent === name)
   const sessionMenu = () =>
     document.body.querySelector('[role="menu"][aria-label="More session actions"]')
   // Smoke windows never blur, so opening one menu doesn't close another; close it explicitly,
@@ -127,6 +127,22 @@
     for (const task of createdTasks) {
       try {
         await smoke.removeTask(task.id, true)
+        assert(
+          !(await smoke.sessionsList()).some((r) => r.metadata.task === task.id),
+          'Removed worktree kept service records',
+        )
+        assert(
+          !state().sessionRecords.some((r) => r.metadata.task === task.id),
+          'Removed worktree kept rendered session records',
+        )
+        if (panel())
+          await until(
+            'removed worktree group disappears',
+            () =>
+              ![...panel().querySelectorAll('.session-worktree h4')].some(
+                (heading) => heading.textContent === task.title,
+              ),
+          )
       } catch (error) {
         failures.push(`${task.title}: ${error.message ?? error}`)
       }
@@ -199,6 +215,12 @@
       assert(
         [...selects].every((select) => select.getAttribute('aria-label').includes(name)),
         'Controls lack project labels',
+      )
+      assert(
+        rows(name).every((element) =>
+          element.querySelector('strong')?.textContent.startsWith('Task'),
+        ),
+        'Session titles do not lead with their role',
       )
       assert(
         rows(name).every((element) => {
@@ -333,7 +355,13 @@
     await click(() => row(first, 'Done A'), 'View output')
     await until(
       'closed output preview',
-      () => document.querySelector('.session-preview strong')?.textContent === 'Done A',
+      () => document.querySelector('.session-preview .session-name')?.textContent === 'Done A',
+    )
+    const previewRecord = state().sessionRecords.find((r) => r.id === idsOne[2])
+    assert(
+      document.querySelector('.session-preview strong')?.textContent ===
+        `Task ${previewRecord.metadata.componentId} · Done A`,
+      'Preview title lacks its role and subject',
     )
     await until('closed preview output', () =>
       smoke.terminalText(idsOne[2]).text.includes('finished-output'),
@@ -484,6 +512,24 @@
       )
     })
     assert(worktree('Alpha work').textContent.includes(alpha.worktree), 'Missing worktree path')
+    assert(
+      worktree('Alpha work').querySelector('.session-worktree-eyebrow')?.textContent ===
+        'WORKTREE' &&
+        worktree('Main worktree').querySelector('.session-worktree-eyebrow')?.textContent ===
+          'PROJECT FOLDER' &&
+        worktree('Alpha work').querySelector('.session-worktree-count')?.textContent ===
+          '1 session',
+      'Worktree headers lack scope labels or session counts',
+    )
+    assert(
+      worktree('Alpha work').querySelector('.session-worktree-branch')?.textContent ===
+        alpha.branch,
+      'Missing worktree branch',
+    )
+    assert(
+      worktree('Alpha work').querySelector('.session-role')?.textContent === 'Shell',
+      'Worktree shell title has the wrong role',
+    )
     assert(worktree('Zebra work').textContent.includes(zebra.worktree), 'Missing worktree path')
     assert(
       worktree('Main worktree').querySelectorAll('.session-row').length === 4,
@@ -554,7 +600,7 @@
     await until('closed project labels', () => worktree('Alpha work') && worktree('Zebra work'))
     const endedNames = rows(first)
       .filter((element) => element.querySelector('button')?.textContent === 'View output')
-      .map((element) => element.querySelector('strong').textContent)
+      .map((element) => element.querySelector('.session-name').textContent)
     assert(endedNames.length, 'No ended sessions to check Start new')
     for (const name of endedNames) {
       await openMenu(() => row(first, name))

@@ -104,9 +104,6 @@ export const graphGroupStop = (
   task?: string,
   projectId = useStore.getState().project?.id,
 ) => invoke<void>('graph_group_stop', { groupId, task, projectId })
-/** Stop every environment started in the task's worktree, groups since removed included. */
-export const graphTaskStop = (task: string, projectId = useStore.getState().project?.id) =>
-  invoke<void>('graph_task_stop', { task, projectId })
 /** Stop the running validation; `false` if none was running. */
 export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
   invoke<boolean>('graph_validation_cancel', { projectId })
@@ -214,12 +211,12 @@ export const taskAttach = (
 ) => invoke<Task>('task_attach', { worktree, title, components, projectId })
 export const taskUpdate = (id: string, patch: TaskPatch, projectId = activeId()) =>
   invoke<Task>('task_update', { id, patch, projectId })
-/** git refuses to remove a worktree with changes; the branch is always kept. */
+/**
+ * git refuses to remove a worktree with changes; the branch is always kept. The task's sessions are
+ * stopped first and forgotten after; resolves to whether forgetting them succeeded.
+ */
 export const taskRemove = (id: string, deleteWorktree: boolean, projectId = activeId()) =>
-  invoke<void>('task_remove', { id, deleteWorktree, projectId })
-/** Fails with the reason the task's worktree can't be removed (e.g. uncommitted changes). */
-export const taskCheckRemovable = (id: string, projectId = activeId()) =>
-  invoke<void>('task_check_removable', { id, projectId })
+  invoke<boolean>('task_remove', { id, deleteWorktree, projectId })
 /** Watch the task's worktree (none for the project's own). */
 export const taskActivate = (id: string | null, projectId = useStore.getState().project?.id) =>
   invoke<void>('task_activate', { id, projectId })

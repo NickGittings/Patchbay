@@ -1146,19 +1146,9 @@ async fn task_update(
     blocking(move || tasks::update(&root, &id, patch).map_err(err)).await
 }
 
-/// Fails with the reason a task's worktree can't be removed, so the webview can
-/// ask before stopping its terminals.
-#[tauri::command]
-async fn task_check_removable(
-    project_id: String,
-    state: State<'_, AppState>,
-    id: String,
-) -> CmdResult<()> {
-    let (root, _) = task_repo(&state, &project_id)?;
-    blocking(move || tasks::check_removable(&root, &id).map(|_| ()).map_err(err)).await
-}
-
 /// Forget a task and optionally remove its (clean) worktree; the branch stays.
+/// The task's sessions are stopped first and forgotten afterwards; returns
+/// whether that forgetting succeeded.
 #[tauri::command]
 async fn task_remove(
     app: AppHandle,
@@ -1166,15 +1156,13 @@ async fn task_remove(
     state: State<'_, AppState>,
     id: String,
     delete_worktree: bool,
-) -> CmdResult<()> {
+) -> CmdResult<bool> {
     let (root, scoped) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
     blocking(move || {
-        let worktree = tasks::list(&root)
-            .map_err(err)?
-            .into_iter()
-            .find(|t| t.id == id)
-            .map(|t| PathBuf::from(t.worktree));
-        tasks::remove(&root, &id, delete_worktree).map_err(err)?;
+        let removed =
+            tasks::remove_with_sessions(&root, &id, delete_worktree, &*bridge).map_err(err)?;
+        let worktree = Some(PathBuf::from(removed.task.worktree));
         let mut active = scoped
             .task_root
             .lock()
@@ -1184,7 +1172,7 @@ async fn task_remove(
             drop(active);
             rewatch(&app, &project_id);
         }
-        Ok(())
+        Ok(removed.sessions_cleared)
     })
     .await
 }
@@ -1505,19 +1493,6 @@ async fn graph_group_stop(
         agent_commands::stop_group(&app, &project_id, &root, &group_id, task.as_deref(), "User")
     })
     .await
-}
-
-/// Stop every environment started in a task's worktree, before the task is removed.
-#[tauri::command]
-async fn graph_task_stop(
-    project_id: String,
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    task: String,
-) -> CmdResult<()> {
-    main_only(&window)?;
-    state.project(&project_id)?;
-    service(&state, Request::ActionStopTask { project_id, task }).await
 }
 
 /// Stop the running validation; it still reports the validators that ran.
@@ -2058,7 +2033,6 @@ pub fn run() {
                 task_attach,
                 task_update,
                 task_remove,
-                task_check_removable,
                 task_activate,
                 git_changes,
                 git_diff,
@@ -2103,7 +2077,6 @@ pub fn run() {
                 graph_action_plan,
                 graph_action_run,
                 graph_group_stop,
-                graph_task_stop,
                 graph_validation_cancel,
                 terminal_write,
                 terminal_resize,
