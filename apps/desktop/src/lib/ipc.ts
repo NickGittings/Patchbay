@@ -389,6 +389,11 @@ export const projectRelink = (projectId: string) =>
 export const sessionHistory = (sessionId: string, incarnation: number) =>
   invoke<TerminalSnapshot | null>('session_history', { sessionId, incarnation })
 
+export const agentProvider = (terminal: Pick<TerminalSpec, 'command' | 'adapter'>) =>
+  invoke<'claude' | 'codex' | null>('agent_provider', {
+    terminal: { id: 'auto', name: 'Auto', kind: 'agent', ...terminal },
+  })
+
 export const agentHooksCheck = (provider: 'claude' | 'codex', sourceOverride?: string) =>
   invoke<import('../types').AgentIntegration>('agent_hooks_check', { provider, sourceOverride })
 export const agentHooksConfigure = (

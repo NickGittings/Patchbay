@@ -47,10 +47,10 @@ export async function implementPlannerPlan(plannerId: string, auto?: import('../
       'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Tools → Agent status integration.',
     )
   current()
-  // End the planner before launching: approving its native dialog later must not
-  // start a second implementation in the planning terminal.
+  // Manual Implement ends the planner before handing off. Auto's driver stops its own
+  // planner; a manually started planner remains under the user's control.
   const sid = plannerSessionId(plannerId, projectId)
-  if (current().sessions[sid]?.running) await terminalStop(sid)
+  if (!auto && current().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.

@@ -319,6 +319,18 @@ fn agent_named(program: &str) -> Option<Agent> {
     }
 }
 
+/// Resolve status integration using the same command parser as agent briefings.
+#[must_use]
+pub fn agent_provider(terminal: &TerminalSpec) -> Option<crate::adapters::Adapter> {
+    terminal.adapter.or_else(|| {
+        let tokens = command_tokens(&terminal.command, Shell::current())?;
+        match agent_named(&tokens[program_index(&tokens)?])? {
+            Agent::Claude => Some(crate::adapters::Adapter::Claude),
+            Agent::Codex => Some(crate::adapters::Adapter::Codex),
+        }
+    })
+}
+
 /// `args` are the arguments after the `codex` program.
 fn unsupported_codex_subcommand(args: &[String]) -> bool {
     let mut args = args.iter();
@@ -1207,6 +1219,30 @@ pub fn task_root_implementation_spec(
         Some(Kickoff::ImplementPlan),
         &[],
     )
+}
+
+/// Select saved instructions and any extra folders for a root implementation or fix agent.
+/// A fix receives only the selected branch's findings, including full-file access when cut.
+///
+/// # Errors
+/// Fails if a fix has no selected review or the findings cannot be handed off.
+pub fn root_handoff(
+    project: &Project,
+    ids: &[String],
+    task: Option<&str>,
+    kickoff: Option<Kickoff>,
+    review_branch: Option<&str>,
+) -> Result<(Vec<ContextSection>, Vec<PathBuf>)> {
+    let root = Path::new(&project.root);
+    if kickoff == Some(Kickoff::FixFindings) {
+        let branch = review_branch.ok_or_else(|| anyhow!("Choose the review to fix"))?;
+        let handoff = crate::reviews::handoff(root, branch)?;
+        Ok((vec![handoff.section], handoff.dirs))
+    } else {
+        let plan = crate::plans::section(root, task);
+        let proposal = crate::proposals::section(project, task, ids);
+        Ok((plan.into_iter().chain(proposal).collect(), Vec::new()))
+    }
 }
 
 /// Build a root agent with an explicit initial task.
@@ -2111,6 +2147,30 @@ mod tests {
         ] {
             assert_eq!(agent_program(command, Shell::Unix), expected, "{command}");
         }
+    }
+
+    #[test]
+    fn status_provider_uses_briefing_detection_and_explicit_adapters() {
+        let mut terminal = planner();
+        for (command, expected) in [
+            (
+                "/opt/homebrew/bin/claude",
+                Some(crate::adapters::Adapter::Claude),
+            ),
+            ("env FOO=1 codex", Some(crate::adapters::Adapter::Codex)),
+            ("FOO=1 claude", Some(crate::adapters::Adapter::Claude)),
+            ("echo codex", None),
+            ("codex && echo done", None),
+        ] {
+            terminal.command = command.into();
+            terminal.adapter = None;
+            assert_eq!(agent_provider(&terminal), expected, "{command}");
+        }
+        terminal.adapter = Some(crate::adapters::Adapter::Claude);
+        assert_eq!(
+            agent_provider(&terminal),
+            Some(crate::adapters::Adapter::Claude)
+        );
     }
 
     #[test]

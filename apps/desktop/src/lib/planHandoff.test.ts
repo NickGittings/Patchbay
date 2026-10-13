@@ -243,3 +243,16 @@ test('Auto never falls back to an older worktree plan', async () => {
   expect(ipc.planWrite).not.toHaveBeenCalled()
   expect(startTerminal).not.toHaveBeenCalled()
 })
+
+test('Auto handing off a manual planner leaves its session open', async () => {
+  const planner = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [planner]: { running: true } } })
+  await implementPlannerPlan('claude', {
+    goal: 'Goal',
+    fixFloor: null,
+    effortNote: '',
+    commit: true,
+  })
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(startTerminal).toHaveBeenCalledOnce()
+})

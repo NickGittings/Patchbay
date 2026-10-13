@@ -1061,6 +1061,55 @@ mod tests {
     }
 
     #[test]
+    fn root_fix_handoff_selects_only_findings_and_their_required_access() {
+        let f = Fixture::new();
+        crate::plans::write(&f.dir, None, "Unrelated plan").unwrap();
+        assert!(
+            context::root_handoff(
+                &f.project,
+                &[],
+                None,
+                Some(context::Kickoff::FixFindings),
+                None
+            )
+            .is_err()
+        );
+        f.prepare("claude").unwrap();
+        f.save("[high] file.txt:1: Fix this", true);
+        let (sections, dirs) = context::root_handoff(
+            &f.project,
+            &[],
+            None,
+            Some(context::Kickoff::FixFindings),
+            Some(&f.request.branch),
+        )
+        .unwrap();
+        assert_eq!(sections.len(), 1);
+        assert!(sections[0].body.contains("Fix this"));
+        assert!(!sections[0].body.contains("Unrelated plan"));
+        assert!(dirs.is_empty());
+        f.save(&"x".repeat(crate::plans::PLAN_LIMIT + 1), true);
+        let (_, dirs) = context::root_handoff(
+            &f.project,
+            &[],
+            None,
+            Some(context::Kickoff::FixFindings),
+            Some(&f.request.branch),
+        )
+        .unwrap();
+        assert_eq!(dirs, [existing_dir(&f.dir).unwrap()]);
+        let (sections, _) = context::root_handoff(
+            &f.project,
+            &[],
+            None,
+            Some(context::Kickoff::ImplementPlan),
+            None,
+        )
+        .unwrap();
+        assert!(sections.iter().any(|s| s.body.contains("Unrelated plan")));
+    }
+
+    #[test]
     fn handoff_grants_the_reviews_folder_only_when_cut() {
         let f = Fixture::new();
         f.prepare("claude").unwrap();

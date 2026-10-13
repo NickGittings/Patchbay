@@ -150,6 +150,9 @@ pub fn run_action(
         ActionRequest::ValidateAffected { component_id } => Action::Validate {
             component_id: component_id.clone(),
         },
+        ActionRequest::ValidateChanged { component_ids } => Action::ValidateChanged {
+            component_ids: component_ids.clone(),
+        },
     };
     let mut activity = Activity {
         id: crate::agent_bridge::new_id(),
@@ -421,7 +424,16 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             )?;
             Ok(json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls}))
         }
-        Action::Validate { component_id } => {
+        action @ (Action::Validate { .. } | Action::ValidateChanged { .. }) => {
+            let request = match action {
+                Action::Validate { component_id } => {
+                    ActionRequest::ValidateAffected { component_id }
+                }
+                Action::ValidateChanged { component_ids } => {
+                    ActionRequest::ValidateChanged { component_ids }
+                }
+                _ => unreachable!(),
+            };
             if launch.planner {
                 anyhow::bail!("Switch to implementation before running checks");
             }
@@ -429,7 +441,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 app,
                 &launch.project_id,
                 scoped.project()?,
-                ActionRequest::ValidateAffected { component_id },
+                request,
                 launch.task.as_deref(),
                 &launch.agent_session,
             )?;

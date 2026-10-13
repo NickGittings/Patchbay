@@ -292,6 +292,11 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
+fn agent_provider(terminal: TerminalSpec) -> Option<patchbay_core::adapters::Adapter> {
+    context::agent_provider(&terminal)
+}
+
+#[tauri::command]
 async fn agent_hooks_check(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -1333,7 +1338,6 @@ async fn task_root_start(
         } else {
             component_ids
         };
-        let root = Path::new(&project.root);
         let fixing = kickoff == Some(context::Kickoff::FixFindings);
         if kickoff == Some(context::Kickoff::Plan) {
             return Err("Start planners in Plan".into());
@@ -1341,16 +1345,14 @@ async fn task_root_start(
         let auto_section = auto
             .as_ref()
             .map(|a| a.section(if fixing { "fix" } else { "implement" }));
-        // A fix agent works from the reviewed branch's findings alone, not the plan.
-        let (handoff, dirs) = if fixing {
-            let branch = review_branch.ok_or("Choose the review to fix")?;
-            let handoff = patchbay_core::reviews::handoff(root, &branch).map_err(err)?;
-            (vec![handoff.section], handoff.dirs)
-        } else {
-            let plan = patchbay_core::plans::section(root, task.as_deref());
-            let proposal = patchbay_core::proposals::section(&project, task.as_deref(), &selected);
-            (plan.into_iter().chain(proposal).collect(), Vec::new())
-        };
+        let (handoff, dirs) = context::root_handoff(
+            &project,
+            &selected,
+            task.as_deref(),
+            kickoff,
+            review_branch.as_deref(),
+        )
+        .map_err(err)?;
         let own = auto_section.into_iter().chain(section).chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),
@@ -2082,6 +2084,7 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                agent_provider,
                 agent_hooks_check,
                 agent_hooks_configure,
                 open_project,

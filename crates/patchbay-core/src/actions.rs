@@ -49,6 +49,10 @@ pub enum ActionRequest {
         #[serde(rename = "componentId")]
         component_id: String,
     },
+    ValidateChanged {
+        #[serde(rename = "componentIds")]
+        component_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,30 +108,14 @@ impl ActionPlan {
                 };
                 (stages, TerminalAction::Development)
             }
-            ActionRequest::ValidateAffected { component_id } => {
-                ensure!(
-                    project.component(component_id).is_some(),
-                    "Unknown component {component_id}"
-                );
-                let mut ids = vec![component_id.clone()];
-                ids.extend(
-                    project
-                        .dependents(std::slice::from_ref(component_id))
-                        .into_iter()
-                        .map(|(id, _)| id),
-                );
-                // Invalid graph ends must not silently disappear from the report.
-                for id in &ids {
-                    ensure!(
-                        project.component(id).is_some(),
-                        "Unknown affected component {id}"
-                    );
-                }
-                (
-                    ids.into_iter().map(|id| vec![id]).collect(),
-                    TerminalAction::Validation,
-                )
-            }
+            ActionRequest::ValidateAffected { component_id } => (
+                validation_stages(project, std::slice::from_ref(component_id))?,
+                TerminalAction::Validation,
+            ),
+            ActionRequest::ValidateChanged { component_ids } => (
+                validation_stages(project, component_ids)?,
+                TerminalAction::Validation,
+            ),
         };
         let mut skipped = Vec::new();
         let mut sessions = Vec::new();
@@ -218,6 +206,23 @@ impl ActionPlan {
     }
 }
 
+fn validation_stages(project: &Project, changed: &[String]) -> Result<Vec<Vec<String>>> {
+    let mut ids = changed.to_vec();
+    ids.sort();
+    ids.dedup();
+    for id in &ids {
+        ensure!(project.component(id).is_some(), "Unknown component {id}");
+    }
+    ids.extend(project.dependents(&ids).into_iter().map(|(id, _)| id));
+    for id in &ids {
+        ensure!(
+            project.component(id).is_some(),
+            "Unknown affected component {id}"
+        );
+    }
+    Ok(ids.into_iter().map(|id| vec![id]).collect())
+}
+
 fn startup_stages(project: &Project, ids: &[String]) -> Result<Vec<Vec<String>>> {
     let members: HashSet<_> = ids.iter().collect();
     let mut remaining = ids.to_vec();
@@ -256,7 +261,7 @@ impl ActionReport {
     /// Every task started, was reused or passed, and no affected component lacked a validator.
     #[must_use]
     pub fn succeeded(&self) -> bool {
-        let complete = !matches!(self.plan.request, ActionRequest::ValidateAffected { .. })
+        let complete = matches!(self.plan.request, ActionRequest::StartGroup { .. })
             || self.plan.skipped.is_empty();
         complete
             && self.results.iter().all(|r| {
@@ -434,6 +439,9 @@ impl GraphActions {
             }
             ActionRequest::ValidateAffected { component_id } => {
                 (format!("validation:{component_id}"), None, Duration::ZERO)
+            }
+            ActionRequest::ValidateChanged { .. } => {
+                ("validation:changed".into(), None, Duration::ZERO)
             }
         };
         let environment_components = match &plan.request {
@@ -1235,6 +1243,38 @@ mod tests {
         assert_eq!(plan.sessions, [sid("api", "check"), sid("web", "check")]);
         assert_eq!(plan.skipped, ["lib"]);
         assert_eq!(plan.component_ids(), ["lib", "api", "web"]);
+    }
+
+    #[test]
+    fn changed_components_validate_shared_dependents_once() {
+        let p = project();
+        let plan = build(
+            &p,
+            ActionRequest::ValidateChanged {
+                component_ids: vec!["api".into(), "lib".into(), "api".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.component_ids(), ["api", "lib", "web"]);
+        assert_eq!(plan.sessions, [sid("api", "check"), sid("web", "check")]);
+        assert_eq!(plan.skipped, ["lib"]);
+        let empty = build(
+            &p,
+            ActionRequest::ValidateChanged {
+                component_ids: vec![],
+            },
+        )
+        .unwrap();
+        assert!(empty.sessions.is_empty());
+        assert!(
+            build(
+                &p,
+                ActionRequest::ValidateChanged {
+                    component_ids: vec!["missing".into()]
+                }
+            )
+            .is_err()
+        );
     }
 
     #[cfg(unix)]

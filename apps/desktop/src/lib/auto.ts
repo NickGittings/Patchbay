@@ -17,6 +17,7 @@ import {
 } from '../types'
 import {
   agentHooksCheck,
+  agentProvider,
   gitBranches,
   gitReview,
   gitWorktrees,
@@ -129,7 +130,6 @@ export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): D
   if (
     !findings?.verdict ||
     findings.truncated ||
-    (findings.verdict.clean && Object.values(findings.verdict.counts).some((n) => n > 0)) ||
     (!findings.verdict.clean && Object.values(findings.verdict.counts).every((n) => n === 0))
   )
     return {
@@ -356,7 +356,7 @@ export async function autoSnapshot(
     ),
     hasChanges: !!review.ahead || Object.values(review.changes).some((files) => files.length > 0),
     findings,
-    freshness: reviewState(findings, source),
+    freshness: findings && findings.base !== base ? 'stale' : reviewState(findings, source),
     outcome: 'notMerged',
     agents,
     reviewRecord: records
@@ -380,13 +380,7 @@ export type AutoSettings = Pick<AutoRun, 'goal' | 'effort' | 'overrides' | 'merg
 }
 async function checkHooks(deviceId: string) {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
-  const provider =
-    device?.adapter ??
-    (/^\s*codex\b/.test(device?.command ?? '')
-      ? 'codex'
-      : /^\s*claude\b/.test(device?.command ?? '')
-        ? 'claude'
-        : undefined)
+  const provider = device ? await agentProvider(device) : null
   if (!provider) throw new Error('Choose an agent preset with Claude or Codex status integration')
   const hooks = await agentHooksCheck(provider)
   if (!hooks.installed || hooks.disabled || !hooks.reporterAvailable)
@@ -478,19 +472,32 @@ export async function resumeAuto(projectId: string, task: string | null) {
           ? snapshot.findings?.text.slice(0, 2000)
           : run.findingsSummary,
       runId: crypto.randomUUID(),
-      launchAtMs: undefined,
+      launchAtMs:
+        decision.sessionId === run.sessionId && ownsSession(run) ? run.launchAtMs : undefined,
       sessionId: decision.sessionId,
+      sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
       turnSince: decision.turnSince,
-      sessionStartedMs: undefined,
+      sessionStartedMs: decision.sessionId
+        ? useStore.getState().sessions[decision.sessionId]?.startedMs
+        : undefined,
       observedWorking: decision.observedWorking ?? false,
     },
     `Resumed: ${decision.reason}`,
   )
 }
+function ownsSession(run: AutoRun, sessionId = run.sessionId) {
+  return (
+    !!sessionId &&
+    run.sessionOwned === true &&
+    sessionId === run.sessionId &&
+    (run.sessionStartedMs === undefined ||
+      useStore.getState().sessions[sessionId]?.startedMs === run.sessionStartedMs)
+  )
+}
 export function stopAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   patch(projectId, task, { status: 'stopped', reason: 'Stopped by you' }, 'Auto stopped')
-  if (run?.sessionId)
+  if (run?.sessionId && ownsSession(run))
     void terminalStop(run.sessionId).catch((e) => useStore.getState().setMessage(String(e)))
   if (validating.has(JSON.stringify([projectId, task])))
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
@@ -498,7 +505,7 @@ export function stopAuto(projectId: string, task: string | null) {
 export async function skipStage(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run || run.status === 'running') return
-  if (run.sessionId && useStore.getState().sessions[run.sessionId]?.running) {
+  if (run.sessionId && ownsSession(run) && useStore.getState().sessions[run.sessionId]?.running) {
     await terminalStop(run.sessionId)
     if (
       autoRun(projectId, task)?.runId !== run.runId ||
@@ -519,6 +526,8 @@ export async function skipStage(projectId: string, task: string | null) {
     {
       runId: crypto.randomUUID(),
       sessionId: undefined,
+      sessionOwned: false,
+      reviewedHead: stage === 'mergeGate' ? undefined : run.reviewedHead,
       stage,
       status: stage === 'mergeGate' ? 'waitingOnYou' : 'running',
       reason: 'Stage skipped by you',
@@ -544,6 +553,7 @@ function briefing(run: AutoRun): AutoBrief {
   }
 }
 const busy = new Set<string>()
+const completionPolls = new Map<string, { turn: string; atMs: number }>()
 async function drive(projectId: string, task: string | null) {
   const key = JSON.stringify([projectId, task])
   if (busy.has(key)) return
@@ -622,6 +632,10 @@ async function drive(projectId: string, task: string | null) {
         agent.authoritative &&
         agent.sinceMs > (run.turnSince ?? 0)
       ) {
+        const turn = JSON.stringify([run.runId, run.sessionId, agent.sinceMs])
+        const previous = completionPolls.get(key)
+        if (previous?.turn === turn && Date.now() - previous.atMs < 5000) return
+        completionPolls.set(key, { turn, atMs: Date.now() })
         const snapshot = await autoSnapshot(projectId, task, run)
         if (!live()) return
         // Never advance on a previous attempt's saved findings.
@@ -652,7 +666,7 @@ async function drive(projectId: string, task: string | null) {
           ? Object.values(snapshot.findings.verdict.counts).reduce((a, b) => a + b, 0) -
             blockingCount(snapshot.findings, effortSettings(run).severityFloor)
           : 0
-        if (session?.running) await terminalStop(run.sessionId)
+        if (session?.running && ownsSession(run)) await terminalStop(run.sessionId)
         if (!live()) return
         patch(
           projectId,
@@ -660,6 +674,7 @@ async function drive(projectId: string, task: string | null) {
           {
             ...decision,
             sessionId: decision.sessionId,
+            sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
             sessionStartedMs: decision.sessionId
               ? useStore.getState().sessions[decision.sessionId]?.startedMs
               : undefined,
@@ -700,6 +715,7 @@ async function drive(projectId: string, task: string | null) {
         })
       return
     }
+    completionPolls.delete(key)
     if (run.status !== 'running') return
     if (!active(projectId, task)) {
       pauseAuto(
@@ -746,9 +762,12 @@ async function drive(projectId: string, task: string | null) {
       useStore.getState().patchTask(projectId, task, { graphActionBusy: true })
       validating.add(key)
       try {
-        for (const componentId of snapshot.changedComponents) {
+        if (snapshot.changedComponents.length) {
           if (!live()) return
-          const request = { kind: 'validateAffected' as const, componentId }
+          const request = {
+            kind: 'validateChanged' as const,
+            componentIds: snapshot.changedComponents,
+          }
           useStore.getState().patchTask(projectId, task, { graphAction: request })
           const report = await graphActionRun(project, request, task ?? undefined)
           reports.push(report)
@@ -780,15 +799,15 @@ async function drive(projectId: string, task: string | null) {
       pauseAuto(projectId, task, 'Another agent is active in this worktree')
       return
     }
-    // Review and merge sessions reuse fixed ids; other finished agents are the user's to close.
-    for (const agent of snapshot.agents.filter(
+    // A fixed review/merge slot may still contain a manual agent, even after its turn.
+    const occupied = snapshot.agents.find(
       (a) =>
-        (a.stage === 'review' || a.stage === 'merge') &&
-        (a.state === 'review' || a.state === 'idle'),
-    )) {
-      if (useStore.getState().sessions[agent.sessionId]?.running)
-        await terminalStop(agent.sessionId)
-      if (!live() || !active(projectId, task)) return
+        (run.stage === 'review' && a.stage === 'review') ||
+        (run.stage === 'merge' && a.stage === 'merge'),
+    )
+    if (occupied) {
+      pauseAuto(projectId, task, 'Close the current agent before starting another in this slot')
+      return
     }
     const since = Date.now()
     let sid: string
@@ -803,7 +822,14 @@ async function drive(projectId: string, task: string | null) {
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(run.device, projectId)
-        if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
+        if (useStore.getState().sessions[sid]?.running) {
+          pauseAuto(
+            projectId,
+            task,
+            'Close the current planner before starting another in this slot',
+          )
+          return
+        }
         if (!live() || !active(projectId, task)) return
         await startTerminal(PLAN_SCOPE, run.device, task, projectId, 'plan', brief)
         break
@@ -847,6 +873,7 @@ async function drive(projectId: string, task: string | null) {
     }
     patch(projectId, task, {
       sessionId: sid,
+      sessionOwned: true,
       sessionStartedMs: useStore.getState().sessions[sid]?.startedMs,
       turnSince: since,
     })
@@ -889,5 +916,6 @@ export function followAuto() {
     disposed = true
     unsubscribe()
     clearInterval(interval)
+    completionPolls.clear()
   }
 }

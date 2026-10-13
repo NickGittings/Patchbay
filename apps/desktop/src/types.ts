@@ -60,6 +60,8 @@ export interface AutoRun {
   device: string
   round: number
   sessionId?: string
+  /** Auto may stop only a session it launched, in the recorded process generation. */
+  sessionOwned?: boolean
   turnSince?: number
   launchAtMs?: number
   observedWorking?: boolean
@@ -196,7 +198,9 @@ export interface ComponentGroup {
 }
 
 export type ActionRequest =
-  { kind: 'startGroup'; groupId: string } | { kind: 'validateAffected'; componentId: string }
+  | { kind: 'startGroup'; groupId: string }
+  | { kind: 'validateAffected'; componentId: string }
+  | { kind: 'validateChanged'; componentIds: string[] }
 
 export interface ActionPlan {
   request: ActionRequest
@@ -664,7 +668,7 @@ export interface TaskActivity {
   projectId: string
   task: string | null
   initiator: string
-  action: { kind: string; groupId?: string; componentId?: string }
+  action: { kind: string; groupId?: string; componentId?: string; componentIds?: string[] }
   state: 'running' | 'finished' | 'failed'
   report: ActionReport | null
   error: string | null

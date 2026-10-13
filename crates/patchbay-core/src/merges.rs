@@ -28,7 +28,17 @@ pub enum MergeOutcome {
     NotMerged,
 }
 
+const OPERATION_MARKERS: [&str; 6] = [
+    "MERGE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "sequencer",
+];
+
 /// Check live Git state without changing either worktree.
+/// Active operations take precedence; completed integration is independent of worktree dirt.
 ///
 /// # Errors
 /// Fails for foreign, missing or changed worktrees, or Git errors.
@@ -37,31 +47,33 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
     let source = checked_tree(&trees, &request.source, "source")?;
     let destination = checked_tree(&trees, &request.destination, "destination")?;
     ensure!(
-        source.path != destination.path
-            && source.branch.as_deref() == Some(&request.source_branch)
-            && destination.branch.as_deref() == Some(&request.destination_branch),
-        "The merge branches changed"
+        source.path != destination.path,
+        "Choose a different destination worktree"
     );
     let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
     for path in [&source.path, &destination.path] {
         owned_dirs(Path::new(path), &common)?;
     }
-    let root = Path::new(&destination.path);
-    let marker = git::run(git::git(root).args(["rev-parse", "--git-path", "MERGE_HEAD"]))?;
-    if root.join(marker).exists() {
-        return Ok(MergeOutcome::InProgress);
-    }
     for path in [&source.path, &destination.path] {
-        if !git::run(git::git(Path::new(path)).args([
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-        ]))?
-        .is_empty()
-        {
-            return Ok(MergeOutcome::Dirty);
+        let markers = git::run(
+            git::git(Path::new(path))
+                .args(["rev-parse", "--path-format=absolute"])
+                .args(
+                    OPERATION_MARKERS
+                        .iter()
+                        .flat_map(|marker| ["--git-path", marker]),
+                ),
+        )?;
+        if markers.lines().any(|path| Path::new(path).exists()) {
+            return Ok(MergeOutcome::InProgress);
         }
     }
+    ensure!(
+        source.branch.as_deref() == Some(&request.source_branch)
+            && destination.branch.as_deref() == Some(&request.destination_branch),
+        "The merge branches changed"
+    );
+    let root = Path::new(&destination.path);
     let ancestor = git::git(root)
         .args([
             "merge-base",
@@ -71,6 +83,18 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
         ])
         .status()?;
     if !ancestor.success() {
+        ensure!(ancestor.code() == Some(1), "Couldn't check merge ancestry");
+        for path in [&source.path, &destination.path] {
+            if !git::run(git::git(Path::new(path)).args([
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ]))?
+            .is_empty()
+            {
+                return Ok(MergeOutcome::Dirty);
+            }
+        }
         return Ok(MergeOutcome::NotMerged);
     }
     let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
@@ -124,27 +148,23 @@ fn clean(
 ) -> Result<Vec<PathBuf>> {
     let root = Path::new(&tree.path);
     // Read ownership, live revision and every operation marker in one process.
-    let metadata = git::run(git::git(root).args([
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-dir",
-        "--git-common-dir",
-        "HEAD",
-        "--symbolic-full-name",
-        "HEAD",
-        "--git-path",
-        "MERGE_HEAD",
-        "--git-path",
-        "rebase-merge",
-        "--git-path",
-        "rebase-apply",
-        "--git-path",
-        "CHERRY_PICK_HEAD",
-        "--git-path",
-        "REVERT_HEAD",
-        "--git-path",
-        "sequencer",
-    ]))?;
+    let metadata = git::run(
+        git::git(root)
+            .args([
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+                "HEAD",
+                "--symbolic-full-name",
+                "HEAD",
+            ])
+            .args(
+                OPERATION_MARKERS
+                    .iter()
+                    .flat_map(|marker| ["--git-path", marker]),
+            ),
+    )?;
     let mut lines = metadata.lines();
     let dirs = lines
         .by_ref()
@@ -413,6 +433,51 @@ mod tests {
     }
 
     #[test]
+    fn completed_integration_ignores_worktree_dirt() {
+        let f = Fixture::new();
+        for path in [&f.request.source, &f.request.destination] {
+            let root = Path::new(path);
+            fs::write(root.join("untracked"), "unrelated").unwrap();
+            fs::write(root.join("file.txt"), "uncommitted").unwrap();
+        }
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::AlreadyIntegrated
+        );
+        let source = Path::new(&f.request.source);
+        git::run(git::git(source).args(["add", "file.txt"])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        let destination = Path::new(&f.request.destination);
+        git::run(git::git(destination).args(["checkout", "--", "file.txt"])).unwrap();
+        git::run(git::git(destination).args(["merge", "--no-ff", "-qm", "merge", "feature"]))
+            .unwrap();
+        fs::write(destination.join("file.txt"), "unrelated edit").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+    }
+
+    #[test]
+    fn detached_rebase_is_in_progress_before_branch_validation() {
+        let f = Fixture::new();
+        let source = Path::new(&f.request.source);
+        git::run(git::git(source).args(["checkout", "--detach", "-q"])).unwrap();
+        let marker = git::run(git::git(source).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "rebase-merge",
+        ]))
+        .unwrap();
+        fs::create_dir(marker).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::InProgress
+        );
+    }
+
+    #[test]
     fn auto_context_is_opt_in_for_jobs() {
         let f = Fixture::new();
         let auto = context::AutoBrief {
@@ -621,6 +686,10 @@ mod tests {
                 );
                 fs::write(&path, "marker").unwrap();
                 assert!(f.error().contains("operation in progress"));
+                assert_eq!(
+                    outcome(&f.project, &f.request).unwrap(),
+                    MergeOutcome::InProgress
+                );
                 fs::remove_file(path).unwrap();
             }
         }

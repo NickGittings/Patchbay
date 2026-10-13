@@ -3,7 +3,7 @@ import { useStore } from '../../store'
 import type { AutoRun, AutoStage, EffortSettings, Severity } from '../../types'
 import { autoSnapshot, EFFORT, inferStage, startAuto, STAGES, STAGE_LABELS } from '../../lib/auto'
 import { agentDevices } from '../../lib/plan'
-import { agentHooksCheck } from '../../lib/ipc'
+import { agentHooksCheck, agentProvider } from '../../lib/ipc'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -78,25 +78,18 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   }, [projectId, task, device, effort, overrides, mode, destination, requestKey])
   useEffect(() => {
     const agent = agents.find((a) => a.id === device)
-    const provider =
-      agent?.adapter ??
-      (/^\s*codex\b/.test(agent?.command ?? '')
-        ? 'codex'
-        : /^\s*claude\b/.test(agent?.command ?? '')
-          ? 'claude'
-          : null)
     let cancelled = false
-    if (provider)
-      void agentHooksCheck(provider)
-        .then((h) => {
-          if (!cancelled)
-            setIntegrationCheck({
-              device,
-              devices,
-              installed: h.installed && !h.disabled && h.reporterAvailable,
-            })
-        })
-        .catch(() => {})
+    void (agent ? agentProvider(agent) : Promise.resolve(null))
+      .then((provider) => (provider ? agentHooksCheck(provider) : null))
+      .then((h) => {
+        if (!cancelled)
+          setIntegrationCheck({
+            device,
+            devices,
+            installed: !!h && h.installed && !h.disabled && h.reporterAvailable,
+          })
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
