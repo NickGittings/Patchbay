@@ -560,3 +560,20 @@ test('denying an agent prompt pauses even when no provider hook confirms the den
     stop()
   }
 })
+
+test('service-side forgetting pauses the run instead of waiting forever for a removed session', async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.setState({ serviceConnected: true, sessionRecords: [], sessions: {} })
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 'forgotten' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      reason: 'The tracked session was forgotten',
+    })
+  } finally {
+    stop()
+  }
+})

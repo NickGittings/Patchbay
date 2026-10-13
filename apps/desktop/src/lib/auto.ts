@@ -531,6 +531,14 @@ async function drive(projectId: string, task: string | null) {
       const session = useStore.getState().sessions[run.sessionId]
       const agent = session?.status?.agent
       if (
+        !session &&
+        useStore.getState().serviceConnected &&
+        !useStore.getState().sessionRecords.some((r) => r.id === run.sessionId)
+      ) {
+        pauseAuto(projectId, task, 'The tracked session was forgotten')
+        return
+      }
+      if (
         run.status === 'waitingOnYou' &&
         session &&
         (!session.running ||
