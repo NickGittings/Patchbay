@@ -139,8 +139,8 @@ test('failed stop keeps the saved terminal and releases its removal guard', asyn
   expect(hasTerminal()).toBe(true)
   expect(ipc.releaseMapEdit).toHaveBeenCalledWith('p', 'lease')
 })
-test.each(['implementPlan', 'fixFindings'] as const)(
-  '%s propagates a failed launch to its handoff',
+test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewBranch: 'feature' }] as const)(
+  '$kind propagates a failed launch to its handoff',
   async (kickoff) => {
     const terminalId = useStore.getState().addRootTerminal({
       id: 'agent',

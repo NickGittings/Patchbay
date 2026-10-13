@@ -5,6 +5,12 @@ export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
 
+/**
+ * A fresh root agent's first task, `context::Kickoff`; a fix carries the reviewed branch, whose
+ * findings `task_root_start` reads only while that branch is still checked out.
+ */
+export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewBranch: string }
+
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
 export const isReservedScope = (scope: string) =>

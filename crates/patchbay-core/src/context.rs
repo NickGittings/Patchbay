@@ -20,6 +20,7 @@ pub struct ContextSection {
     pub body: String,
 }
 
+/// The first task of a fresh root agent.
 #[derive(serde::Deserialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub enum Kickoff {
@@ -1116,6 +1117,7 @@ pub fn plan_session_spec_for(
         sections,
         true,
         None,
+        &[],
     )
 }
 
@@ -1140,6 +1142,7 @@ pub fn task_root_session_spec(
         sections,
         false,
         None,
+        &[],
     )
 }
 
@@ -1156,6 +1159,7 @@ pub fn task_root_implementation_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     kickoff: Kickoff,
+    dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         terminal.kind == TerminalKind::Agent,
@@ -1170,6 +1174,7 @@ pub fn task_root_implementation_spec(
         sections,
         false,
         Some(kickoff),
+        dirs,
     )
 }
 
@@ -1187,6 +1192,7 @@ fn root_session_spec(
     sections: &[ContextSection],
     planning: bool,
     kickoff: Option<Kickoff>,
+    extra_dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1238,6 +1244,11 @@ fn root_session_spec(
         }
         if !planning {
             dirs.extend(crate::plans::existing_dir(Path::new(&project.root)));
+        }
+        for dir in extra_dirs {
+            if !dirs.contains(dir) {
+                dirs.push(dir.clone());
+            }
         }
         // cwd is the root; components in other repos must be added explicitly.
         for c in &components {
@@ -1834,6 +1845,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Kickoff::ImplementPlan,
+                &[],
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1856,6 +1868,7 @@ mod tests {
                 &AllowAll,
                 &[],
                 Kickoff::ImplementPlan,
+                &[],
             )
             .unwrap();
             assert_eq!(
@@ -1883,6 +1896,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Kickoff::FixFindings,
+                &[],
             )
             .unwrap();
             let words = command_tokens(&spec.command, Shell::current()).unwrap();

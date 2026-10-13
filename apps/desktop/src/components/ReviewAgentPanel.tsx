@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
-import { reviewAgentRecords } from '../lib/reviewAgents'
+import { reviewAgentRecords, reviewWorktreeRunning } from '../lib/reviewAgents'
 import { fixReviewFindings } from '../lib/reviewHandoff'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
@@ -32,10 +32,15 @@ export default function ReviewAgentPanel({
   const [findings, setFindings] = useState(false)
   const branch = selected.metadata.branch ?? undefined
   const shared = !!branch && branch === sourceBranch
-  // Poll while the panel is shown so the fix handoff can use findings before the toggle opens.
+  // Read on show, focus and review exits for the fix handoff; poll only while findings are open.
   const own = useReviewFindings(
     selected.metadata.projectId,
     isReview && !shared ? branch : undefined,
+    findings,
+  )
+  // Any review still writing to this worktree's findings, not only the selected one.
+  const reviewing = useStore((s) =>
+    reviewWorktreeRunning(s.sessionRecords, s.sessions, selected.spec.cwd),
   )
   const loaded = shared ? sourceFindings : own
   const [stopping, setStopping] = useState(false)
@@ -69,9 +74,9 @@ export default function ReviewAgentPanel({
         <span className="spacer" />
         {isReview && branch && (
           <button
-            disabled={starting || !!session?.running || !loaded?.findings?.text.trim()}
+            disabled={starting || reviewing || !loaded?.findings?.text.trim()}
             title={
-              session?.running
+              reviewing
                 ? 'Wait for the review to finish; findings may still be partial'
                 : 'Start a fresh agent in the reviewed worktree to address the findings'
             }

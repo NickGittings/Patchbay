@@ -1312,6 +1312,7 @@ async fn task_root_start(
     task: Option<String>,
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
+    review_branch: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1328,23 +1329,17 @@ async fn task_root_start(
             component_ids
         };
         let root = Path::new(&project.root);
-        let findings = if matches!(kickoff, Some(context::Kickoff::FixFindings)) {
-            Some(
-                patchbay_core::reviews::section(root)
-                    .ok_or("No review findings for this worktree's branch")?,
-            )
+        // A fix agent works from the reviewed branch's findings alone, not the plan.
+        let (handoff, dirs) = if matches!(kickoff, Some(context::Kickoff::FixFindings)) {
+            let branch = review_branch.ok_or("Choose the review to fix")?;
+            let handoff = patchbay_core::reviews::handoff(root, &branch).map_err(err)?;
+            (vec![handoff.section], handoff.dirs)
         } else {
-            None
+            let plan = patchbay_core::plans::section(root, task.as_deref());
+            let proposal = patchbay_core::proposals::section(&project, task.as_deref(), &selected);
+            (plan.into_iter().chain(proposal).collect(), Vec::new())
         };
-        let own = section
-            .into_iter()
-            .chain(findings)
-            .chain(patchbay_core::plans::section(root, task.as_deref()))
-            .chain(patchbay_core::proposals::section(
-                &project,
-                task.as_deref(),
-                &selected,
-            ));
+        let own = section.into_iter().chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),
             &project,
@@ -1365,6 +1360,7 @@ async fn task_root_start(
                 &AllowAll,
                 &sections,
                 kickoff,
+                &dirs,
             )
         } else {
             context::task_root_session_spec(

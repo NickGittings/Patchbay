@@ -25,6 +25,7 @@ import type {
   FileSearchResult,
   FileDiff,
   GitStatus,
+  Kickoff,
   Project,
   Review,
   Task,
@@ -421,7 +422,7 @@ export const taskRootStart = async (
   terminal: TerminalSpec,
   task?: string,
   requestId: string = crypto.randomUUID(),
-  kickoff?: 'implementPlan' | 'fixFindings',
+  kickoff?: Kickoff,
   resume = false,
 ) =>
   invoke<string>('task_root_start', {
@@ -432,7 +433,8 @@ export const taskRootStart = async (
     task,
     requestId,
     resume,
-    kickoff,
+    kickoff: kickoff?.kind,
+    reviewBranch: kickoff?.kind === 'fixFindings' ? kickoff.reviewBranch : undefined,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
   })

@@ -11,6 +11,7 @@ import {
   isReservedScope,
   TASK_ROOT_SCOPE,
   type Project,
+  type Kickoff,
   type RuntimeTerminal,
   type SessionRecord,
   type SessionState,
@@ -157,7 +158,7 @@ interface Launch {
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
-  kickoff?: 'implementPlan' | 'fixFindings'
+  kickoff?: Kickoff
   restart?: boolean
 }
 
@@ -213,7 +214,7 @@ export function startTerminal(
   terminalId: string,
   task?: string | null,
   projectId?: string,
-  kickoff?: 'implementPlan' | 'fixFindings',
+  kickoff?: Kickoff,
 ): Promise<void> {
   let launch: Launch
   try {

@@ -72,7 +72,7 @@ test('one click hands off a whole-project plan using the planner provider', asyn
     s.rootTerminals.at(-1)!.id,
     null,
     'p',
-    'implementPlan',
+    { kind: 'implementPlan' },
   )
 })
 
@@ -187,7 +187,7 @@ test('a plan made on the project folder is copied into the worktree it is implem
     useStore.getState().rootTerminals.at(-1)!.id,
     'later',
     'p',
-    'implementPlan',
+    { kind: 'implementPlan' },
   )
 })
 

@@ -54,6 +54,6 @@ export async function implementPlannerPlan(plannerId: string) {
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, 'implementPlan')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, { kind: 'implementPlan' })
   current().setView('implementation')
 }
