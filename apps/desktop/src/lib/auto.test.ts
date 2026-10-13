@@ -15,7 +15,12 @@ vi.mock('./ipc', () => ({
   terminalStop: vi.fn(),
   graphValidationCancel: vi.fn(),
 }))
-vi.mock('./sessions', () => ({ startTerminal: vi.fn(), reconcileFreshSessions: vi.fn() }))
+vi.mock('./sessions', () => ({
+  startTerminal: vi.fn(),
+  reconcileFreshSessions: vi.fn(),
+  listenForTerminals: vi.fn(),
+  refreshSession: vi.fn(),
+}))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 vi.mock('./reviewAgents', async () => ({
@@ -1016,4 +1021,97 @@ test('shared planner is reserved while a launch is pending without session recor
     await flush()
     stop()
   }
+})
+
+test('an unfinished merge keeps its agent for the user to answer', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('inProgress')
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'merge', sessionId: 's', sessionOwned: true, turnSince: 1000 }),
+  })
+  const stop = followAuto()
+  try {
+    agent('review', 1100)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'merge',
+      status: 'waitingOnYou',
+      sessionId: 's',
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('blocking findings never authorize an automatic merge from a chosen stage', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ critical: 1 }))
+  const settings = {
+    goal: 'Goal',
+    effort: 'light' as const,
+    device: 'codex',
+    merge: { mode: 'auto' as const, destinationBranch: 'main' },
+  }
+  await startAuto('p', 't', { ...settings, stage: 'mergeGate' })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
+  expect(nextStep(autoRun('p', 't')!).status).toBe('waitingOnYou')
+  stopAuto('p', 't')
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ low: 1 }))
+  await startAuto('p', 't', { ...settings, stage: 'mergeGate' })
+  expect(autoRun('p', 't')?.reviewedHead).toBe('abc')
+})
+
+test('validation clears its action state and pauses when the backend refuses it', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const id = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: true,
+    changes: { [id]: [{ path: 'file.txt', kind: 'modified' }] },
+    affected: [],
+  })
+  vi.mocked(ipc.graphActionRun).mockRejectedValue(
+    new Error('Another graph action is still running'),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'validate', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Another graph action is still running')
+    expect(useStore.getState().graphAction).toBeNull()
+    expect(useStore.getState().graphActionBusy).toBe(false)
+  } finally {
+    stop()
+  }
+})
+
+test('skipping a fix whose budget ran out goes to the merge gate', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'fix', status: 'waitingOnYou', round: 1 }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'fix', status: 'paused', sessionId: 'gone' }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')?.stage).toBe('review')
+})
+
+test('snapshots read the merge outcome only while merging or inferring', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  await autoSnapshot('p', 't', run({ stage: 'fix' }))
+  expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+  await autoSnapshot('p', 't', run({ stage: 'merge' }))
+  await autoSnapshot('p', 't', run({ stage: 'fix' }), true)
+  expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
 })

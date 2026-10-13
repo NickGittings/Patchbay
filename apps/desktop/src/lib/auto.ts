@@ -22,7 +22,6 @@ import {
   gitBranches,
   gitReview,
   gitWorktrees,
-  graphActionRun,
   mergeOutcome,
   planRead,
   proposalRead,
@@ -30,6 +29,7 @@ import {
   terminalStop,
   graphValidationCancel,
 } from './ipc'
+import { graphActionIn } from './actions'
 import { agentDevices } from './plan'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
@@ -182,6 +182,16 @@ export function nextStep(
       return { stage: 'done', status: 'done', reason: 'Finished' }
   }
 }
+/**
+ * The HEAD Auto may merge without asking: only one whose current findings leave nothing to fix at
+ * this run's severity floor, with validation passing.
+ */
+export function mergeableHead(snapshot: AutoSnapshot, run: AutoRun) {
+  return snapshot.freshness === 'current' &&
+    reviewDecision(run, snapshot.findings).stage === 'mergeGate'
+    ? snapshot.source.head
+    : undefined
+}
 export function inferredGoal(plan: string, title: string, notes: string, branch: string) {
   return (
     plan.match(/^#+\s+(.+)$/m)?.[1]?.trim() ||
@@ -225,11 +235,16 @@ function mergeRequest(snapshot: AutoSnapshot, run: AutoRun) {
     destinationBranch: run.merge.destinationBranch,
   }
 }
-/** Pinned read calls; no active-tab state is consulted after capturing the project. */
+/**
+ * Pinned read calls; no active-tab state is consulted after capturing the project. The merge
+ * outcome scans both worktrees, so it is read only while merging or when `inferring` the stage;
+ * otherwise it stays `notMerged`.
+ */
 export async function autoSnapshot(
   projectId: string,
   task: string | null,
   run: AutoRun,
+  inferring = false,
 ): Promise<AutoSnapshot> {
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
@@ -326,9 +341,7 @@ export async function autoSnapshot(
       .sort((a, b) => (b.snapshot?.startedMs ?? 0) - (a.snapshot?.startedMs ?? 0))[0],
   }
   if (
-    (findings ||
-      records.some((r) => r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path) ||
-      run.stage === 'merge') &&
+    (inferring || run.stage === 'merge') &&
     run.merge.destinationBranch &&
     snapshot.worktrees.some(
       (w) => w.branch === run.merge.destinationBranch && w.path !== source.path,
@@ -376,7 +389,7 @@ export async function startAuto(projectId: string, task: string | null, settings
       round: 0,
       log: [],
     }
-    const snapshot = await autoSnapshot(projectId, task, run)
+    const snapshot = await autoSnapshot(projectId, task, run, true)
     const decision = inferStage(snapshot, run)
     assertSessionAvailable(projectId, task, decision.sessionId)
     if (settings.stage && decision.sessionId)
@@ -385,8 +398,8 @@ export async function startAuto(projectId: string, task: string | null, settings
     if ((settings.stage ?? decision.stage) === 'plan' && !run.goal.trim())
       throw new Error('Describe the task first')
     if (!active(projectId, task)) throw new Error('The task changed')
-    const reviewedHead = snapshot.freshness === 'current' ? snapshot.source.head : undefined
-    // Starting at Merge skips the gate, so an unreviewed branch still waits for approval there.
+    const reviewedHead = mergeableHead(snapshot, run)
+    // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
     const stage = settings.stage === 'merge' && !reviewedHead ? 'mergeGate' : settings.stage
     useStore.getState().patchTask(projectId, task, {
       auto: {
@@ -413,7 +426,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
   await checkAutoHooks(run.device)
-  const snapshot = await autoSnapshot(projectId, task, run)
+  const snapshot = await autoSnapshot(projectId, task, run, true)
   const decision = inferStage(snapshot, run)
   if (autoRun(projectId, task)?.runId !== run.runId) return
   assertSessionAvailable(projectId, task, decision.sessionId)
@@ -422,7 +435,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
     task,
     {
       ...decision,
-      reviewedHead: snapshot.freshness === 'current' ? snapshot.source.head : undefined,
+      reviewedHead: mergeableHead(snapshot, run),
       findingsSummary:
         snapshot.freshness === 'current'
           ? snapshot.findings?.text.slice(0, 2000)
@@ -469,10 +482,14 @@ export async function skipStage(projectId: string, task: string | null) {
     )
       return
   }
+  // Skipping a fix that never started (its budget ran out) accepts the findings, so it goes to the
+  // merge gate; a fix that ran still gets its work reviewed.
   const stage: AutoStage =
     run.stage === 'plan'
       ? 'implement'
-      : run.stage === 'implement' || run.stage === 'fix' || run.stage === 'validate'
+      : run.stage === 'implement' ||
+          run.stage === 'validate' ||
+          (run.stage === 'fix' && run.sessionId)
         ? 'review'
         : 'mergeGate'
   // Skipping review cannot grant automatic merge permission.
@@ -646,7 +663,10 @@ async function drive(projectId: string, task: string | null) {
           ? Object.values(snapshot.findings.verdict.counts).reduce((a, b) => a + b, 0) -
             blockingCount(snapshot.findings, effortSettings(run).severityFloor)
           : 0
-        if (session?.running && (ownsSession(run) || run.stage === 'plan'))
+        // An agent whose stage didn't finish (a merge that stopped on conflicts or failing checks,
+        // an unreadable verdict) stays for the user to answer; one that finished is done.
+        const finished = decision.stage !== run.stage
+        if (finished && session?.running && (ownsSession(run) || run.stage === 'plan'))
           await terminalStop(run.sessionId!)
         if (!live()) return
         patch(
@@ -654,11 +674,16 @@ async function drive(projectId: string, task: string | null) {
           task,
           {
             ...decision,
-            sessionId: decision.sessionId,
-            sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
-            sessionStartedMs: decision.sessionId
-              ? useStore.getState().sessions[decision.sessionId]?.startedMs
-              : undefined,
+            // A kept agent stays tracked, so Stop still ends it.
+            ...(finished
+              ? {
+                  sessionId: decision.sessionId,
+                  sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
+                  sessionStartedMs: decision.sessionId
+                    ? useStore.getState().sessions[decision.sessionId]?.startedMs
+                    : undefined,
+                }
+              : {}),
             launchAtMs: undefined,
             reason:
               run.stage === 'merge' && decision.status === 'waitingOnYou'
@@ -666,7 +691,7 @@ async function drive(projectId: string, task: string | null) {
                 : decision.reason,
             turnSince: decision.turnSince,
             observedWorking: decision.observedWorking ?? false,
-            reviewedHead: run.stage === 'review' ? snapshot.source.head : run.reviewedHead,
+            reviewedHead: run.stage === 'review' ? mergeableHead(snapshot, run) : run.reviewedHead,
             findingsSummary:
               run.stage === 'review' ? snapshot.findings?.text.slice(0, 2000) : run.findingsSummary,
           },
@@ -740,23 +765,21 @@ async function drive(projectId: string, task: string | null) {
         return
       }
       const reports: ActionReport[] = []
-      useStore.getState().patchTask(projectId, task, { graphActionBusy: true })
       validating.add(key)
       try {
         if (snapshot.changedComponents.length) {
-          if (!live()) return
           const request = {
             kind: 'validateChanged' as const,
             componentIds: snapshot.changedComponents,
           }
-          useStore.getState().patchTask(projectId, task, { graphAction: request })
-          const report = await graphActionRun(project, request, task ?? undefined)
-          reports.push(report)
-          useStore.getState().patchTask(projectId, task, { graphActionReport: report })
+          reports.push(await graphActionIn(projectId, task, project, request))
         }
+      } catch (e) {
+        // Another worktree's action or an already running check clears up by itself; Resume retries.
+        if (live()) pauseAuto(projectId, task, `Validation couldn't run: ${e}`)
+        return
       } finally {
         validating.delete(key)
-        useStore.getState().patchTask(projectId, task, { graphActionBusy: false })
       }
       if (!live()) return
       const records = useStore.getState().sessionRecords

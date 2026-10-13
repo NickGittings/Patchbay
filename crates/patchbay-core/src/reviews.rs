@@ -65,7 +65,12 @@ pub fn verdict(text: &str) -> Option<Verdict> {
         if key.trim() != "verdict" {
             return None;
         }
-        match value.trim() {
+        // Only the first word counts, so "clean." or "issues (2)" still read.
+        match value
+            .trim()
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()?
+        {
             "clean" => Some(true),
             "issues" => Some(false),
             _ => None,
@@ -84,12 +89,18 @@ pub fn verdict(text: &str) -> Option<Verdict> {
             continue;
         }
         if line.starts_with('#') {
-            let heading = line.trim_start_matches('#').trim();
-            legend_section = heading.contains("legend")
-                || matches!(
-                    heading,
-                    "severities" | "severity levels" | "severity definitions"
-                );
+            let heading = line
+                .trim_start_matches('#')
+                .trim()
+                .trim_matches(['*', '`', '_', ':']);
+            // A tagged heading is a finding, even one about a chart's legend.
+            legend_section = !heading.starts_with('[')
+                && (heading == "legend"
+                    || heading.ends_with(" legend")
+                    || matches!(
+                        heading,
+                        "severities" | "severity levels" | "severity definitions"
+                    ));
         }
         if legend_section {
             continue;
@@ -747,6 +758,17 @@ mod tests {
             parsed.counts,
             Severities {
                 low: 1,
+                ..Severities::default()
+            }
+        );
+        assert!(verdict("Verdict: clean.").unwrap().clean);
+        assert!(!verdict("Verdict: issues (2)").unwrap().clean);
+        let parsed = verdict("Verdict: issues\n### [high] Chart legend overlaps axis\n### Legend\n[low] example tag\n## Findings\n- [medium] real").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                high: 1,
+                medium: 1,
                 ..Severities::default()
             }
         );

@@ -38,7 +38,9 @@ const OPERATION_MARKERS: [&str; 6] = [
 ];
 
 /// Check live Git state without changing either worktree.
-/// Active operations and uncommitted work take precedence over commit ancestry.
+/// Active operations and uncommitted work take precedence over commit ancestry:
+/// any in the source (it isn't in the merge), but only changes to tracked files
+/// in the destination, so artifacts its checks leave behind don't hide a merge.
 ///
 /// # Errors
 /// Fails for foreign, missing or changed worktrees, or Git errors.
@@ -73,12 +75,12 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
             && destination.branch.as_deref() == Some(&request.destination_branch),
         "The merge branches changed"
     );
-    for path in [&source.path, &destination.path] {
-        if !git::run(git::git(Path::new(path)).args([
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-        ]))?
+    for (path, untracked) in [(&source.path, "all"), (&destination.path, "no")] {
+        if !git::run(
+            git::git(Path::new(path))
+                .args(["status", "--porcelain"])
+                .arg(format!("--untracked-files={untracked}")),
+        )?
         .is_empty()
         {
             return Ok(MergeOutcome::Dirty);
@@ -442,10 +444,13 @@ mod tests {
         for path in [&f.request.source, &f.request.destination] {
             let root = Path::new(path);
             fs::write(root.join("untracked"), "uncommitted work").unwrap();
-            assert_eq!(
-                outcome(&f.project, &f.request).unwrap(),
+            // Untracked destination files are artifacts, not part of the merge.
+            let expected = if path == &f.request.source {
                 MergeOutcome::Dirty
-            );
+            } else {
+                MergeOutcome::AlreadyIntegrated
+            };
+            assert_eq!(outcome(&f.project, &f.request).unwrap(), expected);
             fs::remove_file(root.join("untracked")).unwrap();
             fs::write(root.join("file.txt"), "uncommitted").unwrap();
             assert_eq!(
@@ -465,6 +470,12 @@ mod tests {
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::Merged
         );
+        fs::write(destination.join("coverage.out"), "report").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+        fs::remove_file(destination.join("coverage.out")).unwrap();
         for path in [source, destination] {
             fs::write(path.join("file.txt"), "later edit").unwrap();
             assert_eq!(

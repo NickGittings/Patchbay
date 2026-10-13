@@ -1,8 +1,33 @@
 import { taskActionState } from './taskActions'
 import { useStore } from '../store'
-import type { ActionRequest } from '../types'
+import type { ActionReport, ActionRequest, Project } from '../types'
 import { graphActionRun, graphGroupStop, graphValidationCancel } from './ipc'
 import { refreshSession, listenForTerminals } from './sessions'
+
+/**
+ * Run `request` in `task`'s worktree of `projectId` (`null` for its own), keeping the busy state
+ * and report in that worktree. Rejects when the action can't run.
+ */
+export async function graphActionIn(
+  projectId: string,
+  task: string | null,
+  project: Project,
+  request: ActionRequest,
+): Promise<ActionReport> {
+  const patch = (change: Parameters<ReturnType<typeof useStore.getState>['patchTask']>[2]) =>
+    useStore.getState().patchTask(projectId, task, change)
+  patch({ graphActionBusy: true, graphAction: request, graphActionReport: null })
+  try {
+    await listenForTerminals()
+    const report = await graphActionRun(project, request, task ?? undefined)
+    patch({ graphActionReport: report })
+    // Already-running terminals may predate this window's listener.
+    await Promise.all(report.results.map((r) => refreshSession(r.sessionId)))
+    return report
+  } finally {
+    patch(taskActionState(useStore.getState().taskActivities, projectId, task))
+  }
+}
 
 /**
  * Runs in the active task's worktree, like every other terminal list. The result lands in the
@@ -14,8 +39,6 @@ export async function runGraphAction(request: ActionRequest) {
   const projectId = s.project.id
   const project = s.toProject()
   const task = s.activeTask ?? undefined
-  const patch = (id: string, change: Parameters<typeof s.patchTask>[2]) =>
-    useStore.getState().patchTask(id, task ?? null, change)
   const say = (message: string) => {
     if (
       useStore.getState().project?.id === projectId &&
@@ -23,14 +46,9 @@ export async function runGraphAction(request: ActionRequest) {
     )
       useStore.getState().setMessage(message)
   }
-  patch(projectId, { graphActionBusy: true, graphAction: request, graphActionReport: null })
   say(request.kind === 'startGroup' ? 'Starting environment…' : 'Validating affected components…')
   try {
-    await listenForTerminals()
-    const report = await graphActionRun(project, request, task)
-    patch(projectId, { graphActionReport: report })
-    // Already-running terminals may predate this window's listener.
-    await Promise.all(report.results.map((r) => refreshSession(r.sessionId)))
+    const report = await graphActionIn(projectId, task ?? null, project, request)
     const count = (outcome: string) => report.results.filter((r) => r.outcome === outcome).length
     const failed = count('failed')
     const stopped = count('stopped') + count('cancelled')
@@ -39,8 +57,6 @@ export async function runGraphAction(request: ActionRequest) {
     )
   } catch (e) {
     say(String(e))
-  } finally {
-    patch(projectId, taskActionState(useStore.getState().taskActivities, projectId, task ?? null))
   }
 }
 
