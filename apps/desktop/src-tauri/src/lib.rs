@@ -1312,7 +1312,7 @@ async fn task_root_start(
     task: Option<String>,
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
-    review_branch: Option<String>,
+    review_session: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1321,6 +1321,9 @@ async fn task_root_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
+        let fix = matches!(kickoff, Some(context::Kickoff::FixFindings));
+        // A review covers the whole branch, so its fix isn't limited to the highlights.
+        let component_ids = if fix { Vec::new() } else { component_ids };
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
         let selected = if component_ids.is_empty() {
@@ -1330,14 +1333,14 @@ async fn task_root_start(
         };
         let root = Path::new(&project.root);
         // A fix agent works from the reviewed branch's findings alone, not the plan.
-        let (handoff, dirs) = if matches!(kickoff, Some(context::Kickoff::FixFindings)) {
-            let branch = review_branch.ok_or("Choose the review to fix")?;
-            let handoff = patchbay_core::reviews::handoff(root, &branch).map_err(err)?;
-            (vec![handoff.section], handoff.dirs)
+        let handoff = if fix {
+            let session = review_session.ok_or("Choose the review to fix")?;
+            let reviewed = reviewed_by(&bridge, &project_id, root, &session)?;
+            vec![patchbay_core::reviews::handoff(root, &reviewed).map_err(err)?]
         } else {
             let plan = patchbay_core::plans::section(root, task.as_deref());
             let proposal = patchbay_core::proposals::section(&project, task.as_deref(), &selected);
-            (plan.into_iter().chain(proposal).collect(), Vec::new())
+            plan.into_iter().chain(proposal).collect()
         };
         let own = section.into_iter().chain(handoff);
         let sections = briefing_sections(
@@ -1360,7 +1363,6 @@ async fn task_root_start(
                 &AllowAll,
                 &sections,
                 kickoff,
-                &dirs,
             )
         } else {
             context::task_root_session_spec(
@@ -1431,6 +1433,48 @@ async fn review_agent_start(
             metadata.branch = Some(request.branch);
             bridge.start_reporting(job.spec, metadata, request_id)
         })
+    })
+    .await
+}
+
+/// What review session `session` of `project_id` covered, from its recorded
+/// worktree and branch rather than anything the webview says.
+fn reviewed_by(
+    bridge: &service::Bridge,
+    project_id: &str,
+    root: &Path,
+    session: &str,
+) -> CmdResult<patchbay_core::reviews::Reviewed> {
+    let records = bridge.list()?;
+    let record = records
+        .iter()
+        .find(|r| {
+            r.id == session
+                && r.metadata.project_id == project_id
+                && r.metadata.component_id == model::REVIEW_SCOPE
+        })
+        .ok_or("Unknown review session")?;
+    patchbay_core::reviews::reviewed(root, &record.spec.cwd, record.metadata.branch.as_deref())
+        .map_err(err)
+}
+
+/// The task a fix for review `session_id` runs in; `None` for the project folder.
+#[tauri::command]
+async fn review_fix_task(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: String,
+) -> CmdResult<Option<String>> {
+    let scoped = state.project(&project_id)?;
+    let root = scoped
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let reviewed = reviewed_by(&bridge, &project_id, &root, &session_id)?;
+        patchbay_core::reviews::fix_task(&root, &reviewed).map_err(err)
     })
     .await
 }
@@ -2087,6 +2131,7 @@ pub fn run() {
                 merge_agent_start,
                 review_agent_start,
                 review_read,
+                review_fix_task,
                 review_prune,
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,

@@ -228,9 +228,13 @@ export function startTerminal(
   return launchTerminal(launch)
 }
 
+/** A handoff must learn its agent didn't start, where other launches just stop quietly. */
+const cancelled = (launch: Launch) =>
+  launch.kickoff ? Promise.reject(new Error('The launch was cancelled')) : Promise.resolve()
+
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
-  if (isClosing(launch)) return Promise.resolve()
+  if (isClosing(launch)) return cancelled(launch)
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing) return existing
@@ -242,7 +246,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     const requestedEpoch = epoch
     try {
       await listenForTerminals()
-      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
       if (
         !isReservedScope(componentId) &&
         !runtime &&
@@ -307,8 +311,9 @@ function launchTerminal(launch: Launch): Promise<void> {
       // Another window may have auto-started the same shell in the meantime.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       if (snapshot?.running) launchRequests.delete(sid)
-      if (requestedEpoch === epoch && !snapshot?.running) {
-        useStore.getState().setMessage(String(e))
+      if (!snapshot?.running) {
+        // Sessions were reset since; the error is stale for everyone but a waiting handoff.
+        if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
         if (launch.kickoff) throw e
       }
     }

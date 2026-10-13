@@ -136,6 +136,13 @@
     )
     click([...reviewForm.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     await smoke.terminalWrite(reviewSid, '\r')
+    await until('reviewer settles at its prompt', () => text(reviewSid).includes('review-idle'))
+    await until(
+      'an idle running reviewer allows the fix handoff',
+      () => fixButton() && !fixButton().disabled,
+    )
+    assert(state().sessions[reviewSid]?.running, 'reviewer exited before settling')
+    await smoke.terminalWrite(reviewSid, '\r')
     await until(
       'review exits successfully',
       () =>

@@ -205,7 +205,7 @@ pub fn prepare(
     let cwd = Path::new(&request.worktree);
     let common = git::common_dir(root)?.canonicalize()?;
     owned_dirs(cwd, &common)?;
-    let branch = git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
+    let branch = current_branch(cwd)
         .context("The review worktree has a detached HEAD; check out a branch first")?;
     ensure!(
         branch == request.branch,
@@ -298,8 +298,7 @@ pub fn resume_attempt(root: &Path, spec: &SessionSpec, branch: &str) -> Result<O
         "The review's findings file is outside the reviews folder"
     );
     let cwd = spec.cwd.as_path();
-    let branch = git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        .unwrap_or_default();
+    let branch = current_branch(cwd).unwrap_or_default();
     ensure!(
         branch == old.branch,
         "The review worktree no longer has {} checked out; start a new review",
@@ -324,6 +323,12 @@ pub fn resume_attempt(root: &Path, spec: &SessionSpec, branch: &str) -> Result<O
 /// Read capped findings. Older findings remain visible, but have no reviewed HEAD.
 #[must_use]
 pub fn read(root: &Path, branch: &str) -> Option<Findings> {
+    load(root, branch, crate::plans::PLAN_LIMIT, None)
+}
+
+/// [`read`] up to `limit` bytes; `worktree`, when known to have `branch` checked
+/// out, spares looking it up.
+fn load(root: &Path, branch: &str, limit: usize, worktree: Option<&Path>) -> Option<Findings> {
     let file = file(root, branch).ok()?;
     let started: Started =
         serde_json::from_slice(&std::fs::read(file.with_extension("json")).ok()?).ok()?;
@@ -332,16 +337,18 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
     }
     let handle = std::fs::File::open(file).ok()?;
     let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
-    let (text, truncated) = crate::plans::read_capped(handle).ok()?;
+    let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
     let reviewed_head = (modified_ms > started.started_ms).then_some(started.head);
+    let changed = |w: &Path| git::changed_since(w, started.started_ms).unwrap_or(true);
     // Findings without a reviewed HEAD are stale anyway; skip the worktree scan.
     let edited_since_start = reviewed_head.is_some()
-        && git::worktrees(root)
-            .iter()
-            .find(|w| w.branch.as_deref() == Some(branch))
-            .is_some_and(|w| {
-                git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
-            });
+        && match worktree {
+            Some(worktree) => changed(worktree),
+            None => git::worktrees(root)
+                .iter()
+                .find(|w| w.branch.as_deref() == Some(branch))
+                .is_some_and(|w| changed(Path::new(&w.path))),
+        };
     Some(Findings {
         text,
         modified_ms,
@@ -353,25 +360,79 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
     })
 }
 
-/// A fix agent's briefing section, and the folders it needs to read all of it.
-pub struct Handoff {
-    pub section: context::ContextSection,
-    /// The reviews folder, granted only when the inline findings were cut.
-    pub dirs: Vec<PathBuf>,
+/// The branch checked out in `cwd`; `None` for a detached `HEAD`.
+fn current_branch(cwd: &Path) -> Option<String> {
+    git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()
 }
 
-/// Inline the reviewed branch's findings for a fix agent in `worktree`.
+/// How much of the findings a fix agent's briefing inlines. Claude reads the
+/// briefing from a file and Codex falls back to pointing at it, so this may
+/// exceed what the Review panel shows.
+pub const HANDOFF_LIMIT: usize = 4 * crate::plans::PLAN_LIMIT;
+
+/// What a review session covered: its worktree (canonical) and branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reviewed {
+    pub worktree: PathBuf,
+    pub branch: String,
+}
+
+/// The worktree and branch a review session (`cwd` and recorded `branch`) covered,
+/// checked against `root`'s repository.
 ///
 /// # Errors
-/// Fails when `worktree` no longer has `branch` checked out, or it has no saved
-/// findings.
-pub fn handoff(worktree: &Path, branch: &str) -> Result<Handoff> {
-    let current = git::run(git::git(worktree).args(["symbolic-ref", "--quiet", "--short", "HEAD"]));
+/// Fails for a session without a recorded branch, or a worktree the repository
+/// no longer lists.
+pub fn reviewed(root: &Path, cwd: &Path, branch: Option<&str>) -> Result<Reviewed> {
+    let branch = branch.context("This review predates recorded branches; start a new review")?;
+    let cwd = cwd.canonicalize().ok();
+    let worktree = git::worktrees(root)
+        .into_iter()
+        .map(|w| PathBuf::from(w.path))
+        .find(|w| Some(w) == cwd.as_ref())
+        .context("The reviewed worktree no longer exists")?;
+    Ok(Reviewed {
+        worktree,
+        branch: branch.into(),
+    })
+}
+
+/// The task a fix for `reviewed` runs in: `None` for the project folder `root`
+/// sits in.
+///
+/// # Errors
+/// Fails when no task and not the project folder holds the reviewed worktree.
+pub fn fix_task(root: &Path, reviewed: &Reviewed) -> Result<Option<String>> {
+    if let Some(task) = crate::tasks::list(root)?
+        .into_iter()
+        .find(|t| !t.missing && Path::new(&t.worktree) == reviewed.worktree)
+    {
+        return Ok(Some(task.id));
+    }
     ensure!(
-        current.as_deref().ok() == Some(branch),
+        git::repo_root(root).as_ref() == Some(&reviewed.worktree),
+        "Add this worktree as a task first"
+    );
+    Ok(None)
+}
+
+/// Inline `reviewed`'s findings for a fix agent launched at `root`. Grants no
+/// folders: the reviews folder would be writable to the agent.
+///
+/// # Errors
+/// Fails when `root` isn't in the reviewed worktree, that worktree no longer has
+/// the branch checked out, or it has no saved findings.
+pub fn handoff(root: &Path, reviewed: &Reviewed) -> Result<context::ContextSection> {
+    let Reviewed { worktree, branch } = reviewed;
+    ensure!(
+        git::repo_root(root).as_ref() == Some(worktree),
+        "This launch isn't in the reviewed worktree"
+    );
+    ensure!(
+        current_branch(worktree).as_deref() == Some(branch.as_str()),
         "{branch} is no longer checked out in this worktree; switch back or review again"
     );
-    let findings = read(worktree, branch)
+    let findings = load(worktree, branch, HANDOFF_LIMIT, Some(worktree))
         .filter(|f| !f.text.trim().is_empty())
         .with_context(|| format!("No review findings are saved for {branch}"))?;
     let text = findings.text.trim();
@@ -390,26 +451,21 @@ pub fn handoff(worktree: &Path, branch: &str) -> Result<Handoff> {
     let age = crate::plans::ago(
         SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(findings.modified_ms),
     );
-    let mut dirs = Vec::new();
     let cut = if findings.truncated {
-        dirs.extend(existing_dir(worktree));
         format!(
-            "\n\n[The findings continue past {} KiB; read the rest in {}.]",
-            crate::plans::PLAN_LIMIT / 1024,
+            "\n\n[The findings continue past {} KiB in {}; read it only, and ask the user if you can't.]",
+            HANDOFF_LIMIT / 1024,
             file(worktree, branch)?.display()
         )
     } else {
         String::new()
     };
-    Ok(Handoff {
-        section: context::ContextSection {
-            title: "Review findings".into(),
-            body: format!(
-                "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
-                findings.base
-            ),
-        },
-        dirs,
+    Ok(context::ContextSection {
+        title: "Review findings".into(),
+        body: format!(
+            "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
+            findings.base
+        ),
     })
 }
 
@@ -559,18 +615,27 @@ mod tests {
         }
     }
 
+    /// The fix briefing for a review of `branch` in the worktree at `dir`.
+    fn fix(dir: &Path, branch: &str) -> Result<context::ContextSection> {
+        handoff(dir, &reviewed(dir, dir, Some(branch))?)
+    }
+
+    fn fix_body(f: &Fixture) -> String {
+        fix(&f.dir, &f.request.branch).unwrap().body
+    }
+
     #[test]
     fn handoff_omits_missing_blank_and_detached_findings() {
         let f = Fixture::new();
-        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        assert!(fix(&f.dir, &f.request.branch).is_err());
         assert!(existing_dir(&f.dir).is_none());
         f.prepare("claude").unwrap();
-        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        assert!(fix(&f.dir, &f.request.branch).is_err());
         f.save(" \n", true);
-        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        assert!(fix(&f.dir, &f.request.branch).is_err());
         f.save("P2 file.txt:1: Fix this", true);
         git::run(git::git(&f.dir).args(["checkout", "--detach", "-q"])).unwrap();
-        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        assert!(fix(&f.dir, &f.request.branch).is_err());
     }
 
     #[test]
@@ -579,8 +644,62 @@ mod tests {
         f.prepare("claude").unwrap();
         f.save("Finding", true);
         git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
-        let error = handoff(&f.dir, &f.request.branch).err().unwrap();
+        let error = fix(&f.dir, &f.request.branch).unwrap_err();
         assert!(error.to_string().contains("no longer checked out"));
+    }
+
+    #[test]
+    fn reviewed_needs_a_recorded_branch_and_a_listed_worktree() {
+        let f = Fixture::new();
+        assert!(reviewed(&f.dir, &f.dir, None).is_err());
+        let gone = f.dir.join("gone");
+        let error = reviewed(&f.dir, &gone, Some("feature/a")).unwrap_err();
+        assert!(error.to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn fix_task_finds_the_task_else_the_project_folder() {
+        let f = Fixture::new();
+        let open = reviewed(&f.dir, &f.dir, Some("feature/a")).unwrap();
+        // A project opened in a subfolder still reviews at the worktree's top.
+        let sub = f.dir.join("app");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(fix_task(&sub, &open).unwrap(), None);
+        let linked = f.dir.join("linked");
+        git::run(git::git(&f.dir).args([
+            "worktree",
+            "add",
+            "-q",
+            linked.to_str().unwrap(),
+            "main",
+        ]))
+        .unwrap();
+        let other = reviewed(&f.dir, &linked, Some("main")).unwrap();
+        let error = fix_task(&f.dir, &other).unwrap_err();
+        assert!(error.to_string().contains("Add this worktree as a task"));
+        let task =
+            crate::tasks::attach(&f.dir, &other.worktree.display().to_string(), None, vec![])
+                .unwrap();
+        assert_eq!(fix_task(&f.dir, &other).unwrap(), Some(task.id));
+    }
+
+    #[test]
+    fn handoff_refuses_a_launch_outside_the_reviewed_worktree() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("Finding", true);
+        let linked = f.dir.join("linked");
+        git::run(git::git(&f.dir).args([
+            "worktree",
+            "add",
+            "-q",
+            linked.to_str().unwrap(),
+            "main",
+        ]))
+        .unwrap();
+        let target = reviewed(&f.dir, &f.dir, Some(&f.request.branch)).unwrap();
+        let error = handoff(&linked, &target).unwrap_err();
+        assert!(error.to_string().contains("isn't in the reviewed worktree"));
     }
 
     #[test]
@@ -588,9 +707,7 @@ mod tests {
         let f = Fixture::new();
         f.prepare("claude").unwrap();
         f.save("P2 file.txt:1: Fix this", true);
-        let handoff = handoff(&f.dir, &f.request.branch).unwrap();
-        assert!(handoff.dirs.is_empty());
-        let section = handoff.section;
+        let section = fix(&f.dir, &f.request.branch).unwrap();
         assert_eq!(section.title, "Review findings");
         for text in [
             "feature/a",
@@ -613,11 +730,10 @@ mod tests {
             &AllowAll,
             &[section],
             context::Kickoff::FixFindings,
-            &handoff.dirs,
         )
         .unwrap();
-        assert!(spec.dirs.is_empty());
-        assert!(!spec.command.contains("--add-dir"));
+        assert!(!spec.dirs.iter().any(|d| d.ends_with("reviews")));
+        assert!(!spec.command.contains("/patchbay/reviews"));
     }
 
     #[test]
@@ -627,13 +743,7 @@ mod tests {
         f.save("Finding", true);
         git::run(git::git(&f.dir).args(["commit", "--allow-empty", "-qm", "after review"]))
             .unwrap();
-        assert!(
-            handoff(&f.dir, &f.request.branch)
-                .unwrap()
-                .section
-                .body
-                .contains("commits since")
-        );
+        assert!(fix_body(&f).contains("commits since"));
     }
 
     #[test]
@@ -649,13 +759,7 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() + Duration::from_secs(1))
             .unwrap();
-        assert!(
-            handoff(&f.dir, &f.request.branch)
-                .unwrap()
-                .section
-                .body
-                .contains("files changed after the review started")
-        );
+        assert!(fix_body(&f).contains("files changed after the review started"));
     }
 
     #[test]
@@ -663,50 +767,22 @@ mod tests {
         let f = Fixture::new();
         f.prepare("claude").unwrap();
         f.save("Old finding", false);
-        assert!(
-            handoff(&f.dir, &f.request.branch)
-                .unwrap()
-                .section
-                .body
-                .contains("a newer review hasn't written findings yet")
-        );
+        assert!(fix_body(&f).contains("a newer review hasn't written findings yet"));
     }
 
     #[test]
-    fn handoff_names_the_file_when_truncated() {
+    fn handoff_inlines_past_the_panel_limit_and_names_the_file_when_cut() {
         let f = Fixture::new();
         f.prepare("claude").unwrap();
         f.save(&"x".repeat(crate::plans::PLAN_LIMIT + 1), true);
-        let handoff = handoff(&f.dir, &f.request.branch).unwrap();
-        let reviews = existing_dir(&f.dir).unwrap();
-        assert_eq!(handoff.dirs, std::slice::from_ref(&reviews));
-        let body = &handoff.section.body;
-        assert!(body.contains("continue past 64 KiB"));
-        assert!(
-            body.contains(
-                &file(&f.dir, &f.request.branch)
-                    .unwrap()
-                    .display()
-                    .to_string()
-            )
-        );
-        // The agent may read the rest, so the folder is granted for this launch only.
-        let terminal = serde_json::from_value(serde_json::json!({
-            "id": "fix", "name": "Fix", "kind": "agent", "command": "claude"
-        }))
-        .unwrap();
-        let spec = context::task_root_implementation_spec(
-            &f.project,
-            &[],
-            &terminal,
-            None,
-            &AllowAll,
-            &[handoff.section],
-            context::Kickoff::FixFindings,
-            &handoff.dirs,
-        )
-        .unwrap();
-        assert!(spec.command.contains(&reviews.display().to_string()));
+        let body = fix_body(&f);
+        assert!(body.contains(&"x".repeat(crate::plans::PLAN_LIMIT + 1)));
+        assert!(!body.contains("continue past"));
+        f.save(&"x".repeat(HANDOFF_LIMIT + 1), true);
+        let body = fix_body(&f);
+        assert!(body.contains("continue past 256 KiB"));
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        assert!(body.contains(&path.display().to_string()));
     }
 
     #[test]
@@ -741,7 +817,7 @@ mod tests {
             .unwrap()
             .set_modified(UNIX_EPOCH + Duration::from_millis(started.started_ms + 10))
             .unwrap();
-        let body = handoff(&worktree, "main").unwrap().section.body;
+        let body = fix(&worktree, "main").unwrap().body;
         assert!(body.contains("Branch: main"));
         assert!(body.contains("Linked finding"));
         assert!(body.contains("current for HEAD"));

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
-import { reviewAgentRecords, reviewWorktreeRunning } from '../lib/reviewAgents'
+import { reviewAgentRecords, reviewWorktreeBusy } from '../lib/reviewAgents'
 import { fixReviewFindings } from '../lib/reviewHandoff'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
@@ -40,7 +40,7 @@ export default function ReviewAgentPanel({
   )
   // Any review still writing to this worktree's findings, not only the selected one.
   const reviewing = useStore((s) =>
-    reviewWorktreeRunning(s.sessionRecords, s.sessions, selected.spec.cwd),
+    reviewWorktreeBusy(s.sessionRecords, s.sessions, selected.spec.cwd),
   )
   const loaded = shared ? sourceFindings : own
   const [stopping, setStopping] = useState(false)

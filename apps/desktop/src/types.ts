@@ -6,10 +6,10 @@ export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
 
 /**
- * A fresh root agent's first task, `context::Kickoff`; a fix carries the reviewed branch, whose
- * findings `task_root_start` reads only while that branch is still checked out.
+ * A fresh root agent's first task, `context::Kickoff`. A fix names the review session; the backend
+ * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
  */
-export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewBranch: string }
+export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession: string }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 

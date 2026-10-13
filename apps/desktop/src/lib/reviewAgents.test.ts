@@ -290,6 +290,37 @@ test('only a live review in the same worktree blocks another review', async () =
   expect(reviewWorktreeRunning([review], { review: { running: false } }, '/feature')).toBe(false)
 })
 
+test('a review settled at its prompt no longer blocks the fix handoff', async () => {
+  const { reviewWorktreeBusy } = await import('./reviewAgents')
+  const review = {
+    ...record('review', 'p', REVIEW_SCOPE, 10),
+    spec: { cwd: '/feature' },
+    snapshot: { running: true },
+  } as SessionRecord
+  const status = (active: boolean, agent?: 'working' | 'idle' | 'review') => ({
+    review: {
+      running: true,
+      status: {
+        lastOutputMs: null,
+        active,
+        agent: agent ? { state: agent, sinceMs: 0, message: null, prompt: null } : null,
+        url: null,
+        ready: false,
+        healthy: null,
+        stopped: false,
+        seenMs: null,
+      },
+    },
+  })
+  expect(reviewWorktreeBusy([review], {}, '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(true), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(false), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'working'), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(true, 'idle'), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'review'), '/other')).toBe(false)
+  expect(reviewWorktreeBusy([review], { review: { running: false } }, '/feature')).toBe(false)
+})
+
 test('review scope belongs in Review and never in the implementation grid or dock', async () => {
   const { isReservedScope, isReviewAgentScope, showsInDock, sessionView } = await import('../types')
   expect(isReservedScope(REVIEW_SCOPE)).toBe(true)

@@ -53,6 +53,25 @@ export const reviewWorktreeRunning = (
   worktree: string,
 ) => jobRunning(records, sessions, REVIEW_SCOPE, worktree)
 
+/**
+ * A review of `worktree` that may still be writing findings. Interactive agents keep running at
+ * their prompt once done, so a live process counts only while its agent reports work, or, without
+ * a report, while it is producing output.
+ */
+export const reviewWorktreeBusy = (
+  records: SessionRecord[],
+  sessions: Record<string, SessionState>,
+  worktree: string,
+) =>
+  records.some((r) => {
+    if (r.metadata.componentId !== REVIEW_SCOPE || r.spec.cwd !== worktree) return false
+    const s = sessions[r.id]
+    if (!(s?.running ?? sessionLive(r))) return false
+    const status = s?.status
+    if (!status) return true
+    return status.agent ? status.agent.state === 'working' : status.active
+  })
+
 /** Recover review and merge terminals from the session service, even after Review unmounts. */
 export function reviewAgentRecords(records: SessionRecord[], projectId: string | undefined) {
   return records

@@ -139,7 +139,7 @@ test('failed stop keeps the saved terminal and releases its removal guard', asyn
   expect(hasTerminal()).toBe(true)
   expect(ipc.releaseMapEdit).toHaveBeenCalledWith('p', 'lease')
 })
-test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewBranch: 'feature' }] as const)(
+test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewSession: 'review' }] as const)(
   '$kind propagates a failed launch to its handoff',
   async (kickoff) => {
     const terminalId = useStore.getState().addRootTerminal({
@@ -157,6 +157,31 @@ test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewBranch: 'feat
     expect(useStore.getState().message).toContain('Launch failed')
   },
 )
+test('a handoff learns its launch failed after sessions were reset', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  const start = deferred()
+  vi.mocked(ipc.taskRootStart).mockImplementationOnce(async () => {
+    await start.promise
+    throw new Error('Launch failed')
+  })
+  const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kind: 'fixFindings',
+    reviewSession: 'review',
+  })
+  await vi.waitFor(() => expect(ipc.taskRootStart).toHaveBeenCalled())
+  resetSessions(0)
+  start.resolve()
+  await expect(launch).rejects.toThrow('Launch failed')
+  // The reset made the error stale for everyone else.
+  expect(useStore.getState().message).not.toContain('Launch failed')
+})
 test('tab switch while closing edits only the originating project', async () => {
   const stop = deferred()
   sessionId('web', 'dev', null, 'p')
