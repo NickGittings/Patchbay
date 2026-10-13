@@ -329,12 +329,7 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
 /// [`read`] up to `limit` bytes; `worktree`, when known to have `branch` checked
 /// out, spares looking it up.
 fn load(root: &Path, branch: &str, limit: usize, worktree: Option<&Path>) -> Option<Findings> {
-    let file = file(root, branch).ok()?;
-    let started: Started =
-        serde_json::from_slice(&std::fs::read(file.with_extension("json")).ok()?).ok()?;
-    if started.branch != branch {
-        return None;
-    }
+    let (file, started) = attempt(root, branch)?;
     let handle = std::fs::File::open(file).ok()?;
     let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
     let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
@@ -408,20 +403,34 @@ fn no_findings(branch: &str) -> anyhow::Error {
     anyhow::anyhow!("No review findings are saved for {branch}")
 }
 
-/// Whether `branch` has nonempty findings saved, without reading their freshness.
-fn has_findings(worktree: &Path, branch: &str) -> bool {
-    let Ok(file) = file(worktree, branch) else {
-        return false;
-    };
-    let ours = std::fs::read(file.with_extension("json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Started>(&bytes).ok())
-        .is_some_and(|started| started.branch == branch);
-    ours && std::fs::read_to_string(file).is_ok_and(|text| !text.trim().is_empty())
+/// The findings file of `branch` and the attempt its sidecar records, when that
+/// sidecar is really `branch`'s.
+fn attempt(root: &Path, branch: &str) -> Option<(PathBuf, Started)> {
+    let file = file(root, branch).ok()?;
+    let started: Started =
+        serde_json::from_slice(&std::fs::read(file.with_extension("json")).ok()?).ok()?;
+    (started.branch == branch).then_some((file, started))
 }
 
-/// The task a fix for review `session` runs in: `None` for the project folder
-/// `root` sits in, else the stored task holding the reviewed worktree. Makes
+/// Whether `branch` has nonempty findings saved, without reading their
+/// freshness or more than the start of the file.
+fn has_findings(worktree: &Path, branch: &str) -> bool {
+    attempt(worktree, branch)
+        .and_then(|(file, _)| std::fs::File::open(file).ok())
+        .and_then(|handle| crate::plans::read_limited(handle, 4096).ok())
+        // A long file counts even if it were blank throughout; `handoff` still checks.
+        .is_some_and(|(text, cut)| cut || !text.trim().is_empty())
+}
+
+/// Whether a fix for `session` could still start: its branch is checked out with
+/// nonempty findings saved.
+#[must_use]
+pub fn fixable(session: &Session) -> bool {
+    target(session).is_ok_and(|(worktree, branch)| has_findings(&worktree, branch))
+}
+
+/// The task a fix for review `session` runs in: the stored task holding the
+/// reviewed worktree, else `None` for the project folder `root` sits in. Makes
 /// [`handoff`]'s checks first, so a refused fix changes nothing.
 ///
 /// # Errors
@@ -430,13 +439,17 @@ fn has_findings(worktree: &Path, branch: &str) -> bool {
 pub fn fix_task(root: &Path, session: &Session) -> Result<Option<String>> {
     let (worktree, branch) = target(session)?;
     ensure!(has_findings(&worktree, branch), no_findings(branch));
-    if git::repo_root(root).as_ref() == Some(&worktree) {
-        return Ok(None);
-    }
+    git::run(git::git(&worktree).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+        .with_context(|| format!("{branch} has no commit to fix yet"))?;
     // The store is per repository, so a match is also in `root`'s repository.
-    let task =
-        crate::tasks::stored_at(root, &worktree)?.context("Add this worktree as a task first")?;
-    Ok(Some(task.id))
+    if let Some(task) = crate::tasks::stored_at(root, &worktree)? {
+        return Ok(Some(task.id));
+    }
+    ensure!(
+        git::repo_root(root).as_ref() == Some(&worktree),
+        "Add this worktree as a task first"
+    );
+    Ok(None)
 }
 
 /// Inline review `session`'s findings for a fix agent launched at `root`. Grants
@@ -494,18 +507,29 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
 /// time passes and the fix agent edits files; the findings themselves still
 /// participate in Restart.
 pub(crate) fn restart_briefing(text: &str) -> String {
-    let Some((before, rest)) = text.split_once(FINDINGS_HEADING) else {
-        return text.into();
-    };
-    let (header, findings) = rest.split_once("\n\n").unwrap_or((rest, ""));
-    let header: Vec<&str> = header
-        .lines()
-        .filter(|line| !line.starts_with("Saved ") && !line.starts_with("Freshness: "))
-        .collect();
-    format!(
-        "{before}{FINDINGS_HEADING}{}\n\n{findings}",
-        header.join("\n")
-    )
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once(FINDINGS_HEADING) {
+        out.push_str(before);
+        out.push_str(FINDINGS_HEADING);
+        rest = after;
+        // Only the header `handoff` writes, not a lookalike heading in notes or extensions.
+        let lines: Vec<&str> = after.splitn(5, '\n').collect();
+        if let [branch, base, saved, fresh, tail] = lines[..]
+            && branch.starts_with("Branch: ")
+            && base.starts_with("Base: ")
+            && saved.starts_with("Saved ")
+            && fresh.starts_with("Freshness: ")
+        {
+            out.push_str(branch);
+            out.push('\n');
+            out.push_str(base);
+            out.push('\n');
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Remove a branch's findings and sidecar.
@@ -760,6 +784,14 @@ mod tests {
             restart_briefing(&briefing("just now", "current", "Fix y"))
         );
         assert_eq!(restart_briefing("no findings"), "no findings");
+        // A lookalike heading earlier in the briefing is left alone.
+        let notes = "## Review findings\n\nSaved by hand\n\n";
+        let first = restart_briefing(&format!(
+            "\n{notes}{}",
+            briefing("just now", "current", "Fix x")
+        ));
+        assert!(first.contains("Saved by hand"));
+        assert!(!first.contains("Saved just now"));
     }
 
     #[test]
@@ -793,6 +825,9 @@ mod tests {
         let task =
             crate::tasks::attach(&f.dir, &canonical.display().to_string(), None, vec![]).unwrap();
         assert_eq!(fix_task(&f.dir, &other).unwrap(), Some(task.id));
+        // A task holding the open checkout wins over the bare project folder.
+        let own = crate::tasks::attach(&f.dir, &f.dir.display().to_string(), None, vec![]).unwrap();
+        assert_eq!(fix_task(&sub, &open).unwrap(), Some(own.id));
     }
 
     #[test]
@@ -842,7 +877,6 @@ mod tests {
             &AllowAll,
             &[section],
             Some(context::Kickoff::FixFindings),
-            false,
         )
         .unwrap();
         assert!(!spec.dirs.iter().any(|d| d.ends_with("reviews")));

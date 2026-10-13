@@ -174,6 +174,7 @@ test('a fix agent started again is briefed over the whole map without saving pla
   vi.mocked(ipc.taskRootStart).mockResolvedValue('')
   await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p')
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[1]).toEqual(['web'])
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toBeUndefined()
   expect(savePlanDraft).toHaveBeenCalledTimes(1)
   const fixId = useStore.getState().addRootTerminal(agent)
   useStore.setState({
@@ -186,6 +187,8 @@ test('a fix agent started again is briefed over the whole map without saving pla
   })
   await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[1]).toEqual([])
+  // No review named: the backend reads the branch from the terminal's own record.
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual({ kind: 'fixFindings' })
   expect(savePlanDraft).toHaveBeenCalledTimes(1)
 })
 test('a failed handoff keeps no request id to retry with', async () => {

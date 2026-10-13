@@ -270,12 +270,14 @@ function launchTerminal(launch: Launch): Promise<void> {
         project.components
           .find((c) => c.id === componentId)
           ?.terminals.find((t) => t.id === terminalId)
-      // A fix agent (also one started again, which the backend recognises by its recorded
-      // branch) works from review findings over the whole map, never the plan.
-      const fix =
-        launch.kickoff?.kind === 'fixFindings' ||
-        (componentId === TASK_ROOT_SCOPE &&
-          useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
+      // A fix agent works from review findings over the whole map, never the plan; one started
+      // again asks the backend to brief it from the branch its record keeps.
+      const again =
+        componentId === TASK_ROOT_SCOPE &&
+        !launch.kickoff &&
+        useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch)
+      const kickoff: Kickoff | undefined = again ? { kind: 'fixFindings' } : launch.kickoff
+      const fix = kickoff?.kind === 'fixFindings'
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
         await savePlanDraft(launch.projectId, launch.task)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
@@ -287,7 +289,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           launch.rootTerminal,
           task,
           requestId,
-          launch.kickoff,
+          kickoff,
           resume,
         )
       } else if (runtime?.commandId)

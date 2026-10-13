@@ -1121,8 +1121,9 @@ pub fn plan_session_spec_for(
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
-/// A `kickoff` shapes an agent's briefing and, unless it `resume`s a
-/// conversation that already received it, gives the agent its first prompt.
+/// A `kickoff` shapes an agent's briefing and gives it a first prompt. A fix
+/// keeps its kickoff on every later start, so it resumes without that prompt
+/// (`resume_command`), while a fresh start still gets it.
 ///
 /// # Errors
 /// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
@@ -1135,7 +1136,6 @@ pub fn task_root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     kickoff: Option<Kickoff>,
-    resume: bool,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         kickoff.is_none() || terminal.kind == TerminalKind::Agent,
@@ -1149,7 +1149,7 @@ pub fn task_root_session_spec(
         policy,
         sections,
         false,
-        kickoff.map(|kind| (kind, !resume)),
+        kickoff,
     )
 }
 
@@ -1186,7 +1186,7 @@ fn root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     planning: bool,
-    kickoff: Option<(Kickoff, bool)>,
+    kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1209,12 +1209,13 @@ fn root_session_spec(
     )]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
+    let mut resume_command = None;
     let mut context_dirs: Vec<PathBuf> = Vec::new();
     if terminal.kind == TerminalKind::Agent {
         let briefing = if planning {
             plan_context(project, component_ids, sections)
         } else {
-            implementation_context(project, component_ids, sections, kickoff.map(|(k, _)| k))
+            implementation_context(project, component_ids, sections, kickoff)
         };
         let file = context_file(
             &briefing_name(project, &format!("{scope}-{}", terminal.id), task),
@@ -1254,20 +1255,23 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
-            prompt: kickoff
-                .filter(|&(_, prompt)| prompt)
-                .map(|(kind, _)| match kind {
-                    Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
-                    Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
-                }),
+            prompt: kickoff.map(|kind| match kind {
+                Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
+                Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
+            }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        // Only a fix passes its kickoff again on Restart, so only its resume command
+        // stays the same across starts; an implement restart keeps resuming as before.
+        if matches!(kickoff, Some(Kickoff::FixFindings)) {
+            resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+        }
     }
     policy
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
-        resume_command: None,
+        resume_command,
         owns_briefing: false,
         exclusive_cwd: false,
         merge_source: None,
@@ -1713,7 +1717,6 @@ mod tests {
                     body: "api: Fix login".into(),
                 }],
                 None,
-                false,
             )
             .unwrap();
             assert_eq!(
@@ -1838,7 +1841,6 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::ImplementPlan),
-                false,
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -1861,7 +1863,6 @@ mod tests {
                 &AllowAll,
                 &[],
                 Some(Kickoff::ImplementPlan),
-                false,
             )
             .unwrap();
             assert_eq!(
@@ -1889,7 +1890,6 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::FixFindings),
-                false,
             )
             .unwrap();
             let words = command_tokens(&spec.command, Shell::current()).unwrap();
@@ -1899,21 +1899,10 @@ mod tests {
             assert!(briefing.contains("addressing the review findings below"));
             assert!(briefing.contains("## Review findings\n\nFix login"));
             assert!(!briefing.contains("using the saved plan"));
-            // A resumed fix keeps its briefing but isn't prompted to start over.
-            let resumed = task_root_session_spec(
-                &project(),
-                &[],
-                &terminal,
-                None,
-                &AllowAll,
-                &sections,
-                Some(Kickoff::FixFindings),
-                true,
-            )
-            .unwrap();
-            assert!(!resumed.command.contains(FIX_FINDINGS_PROMPT));
-            let briefing = std::fs::read_to_string(&resumed.env[CONTEXT_ENV]).unwrap();
-            assert!(briefing.contains("addressing the review findings below"));
+            // A resumed fix isn't prompted to start over; a fresh start is.
+            let resume = spec.resume_command.as_deref().unwrap();
+            assert!(!resume.contains(FIX_FINDINGS_PROMPT));
+            assert!(spec.command.starts_with(resume));
         }
     }
 

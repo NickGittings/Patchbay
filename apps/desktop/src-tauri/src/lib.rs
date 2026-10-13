@@ -1321,21 +1321,24 @@ async fn task_root_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
-        let fix = match kickoff {
-            Some(context::Kickoff::FixFindings) => Some(recorded_review(
-                &bridge,
-                &project_id,
-                review_session
-                    .as_deref()
-                    .ok_or("Choose the review to fix")?,
-            )?),
-            // A fix agent started again keeps working from its review's findings.
-            None if terminal.kind == model::TerminalKind::Agent => {
+        let fix = match (kickoff, review_session) {
+            (Some(context::Kickoff::FixFindings), Some(session)) => {
+                Some(recorded_review(&bridge, &project_id, &session)?)
+            }
+            // A fix agent started again keeps working from its review's findings while it
+            // still can, else it starts as an ordinary agent.
+            (Some(context::Kickoff::FixFindings), None) => {
                 recorded_fix(&bridge, &project_id, task.as_deref(), &terminal.id)?
+                    .filter(patchbay_core::reviews::fixable)
             }
             _ => None,
         };
-        let kickoff = kickoff.or(fix.as_ref().map(|_| context::Kickoff::FixFindings));
+        let kickoff = match kickoff {
+            Some(context::Kickoff::FixFindings) => {
+                fix.as_ref().map(|_| context::Kickoff::FixFindings)
+            }
+            other => other,
+        };
         // A review covers the whole branch, so its fix isn't limited to the highlights.
         let component_ids = if fix.is_some() {
             Vec::new()
@@ -1365,7 +1368,6 @@ async fn task_root_start(
         metadata.task.clone_from(&task);
         // Recorded so a later start of this terminal is still a fix (`recorded_fix`).
         metadata.branch = fix.and_then(|f| f.branch);
-        let resume = resume.unwrap_or(false);
         let mut spec = context::task_root_session_spec(
             &project,
             &selected,
@@ -1374,13 +1376,12 @@ async fn task_root_start(
             &AllowAll,
             &sections,
             kickoff,
-            resume,
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        bridge.launch(spec, metadata, request_id, resume)
+        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
     })
     .await
 }
@@ -1462,7 +1463,9 @@ fn recorded_review(
 }
 
 /// The review an earlier run of root terminal `terminal_id` was started to fix,
-/// from the branch its record keeps; `None` for any other root terminal.
+/// from the branch its record keeps; `None` for any other root terminal. Only
+/// asked for terminals the webview saw recorded as fixes, so ordinary launches
+/// skip listing sessions.
 fn recorded_fix(
     bridge: &service::Bridge,
     project_id: &str,

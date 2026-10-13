@@ -8,8 +8,9 @@ export const REVIEW_SCOPE = '@review'
 /**
  * A fresh root agent's first task, `context::Kickoff`. A fix names the review session; the backend
  * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
+ * Without one, it starts a former fix terminal again from the branch its own record keeps.
  */
-export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession: string }
+export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
