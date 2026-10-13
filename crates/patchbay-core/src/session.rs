@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -307,6 +307,11 @@ pub enum Request {
     Forget {
         id: String,
     },
+    /// Forget every stopped record of a removed task; returns the ids still running.
+    ForgetTask {
+        project_id: String,
+        task: String,
+    },
     Shutdown {
         stop_running: bool,
     },
@@ -491,6 +496,7 @@ impl Client {
             | Request::Stop { .. }
             | Request::StopAll
             | Request::Forget { .. }
+            | Request::ForgetTask { .. }
             | Request::Shutdown { .. }
             | Request::ActionStopGroup { .. }
             | Request::ActionStopTask { .. } => Some(SLOW_TIMEOUT),
@@ -1489,6 +1495,36 @@ impl Service {
                 self.pty.forget(&id);
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
+            }
+            Request::ForgetTask { project_id, task } => {
+                let _operation = self.operation.lock().unwrap();
+                let ids: Vec<_> = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|r| {
+                        r.metadata.project_id == project_id
+                            && r.metadata.task.as_deref() == Some(task.as_str())
+                    })
+                    .map(|r| r.id.clone())
+                    .collect();
+                let (running, stopped): (Vec<_>, Vec<_>) =
+                    ids.into_iter().partition(|id| self.pty.is_running(id));
+                let forgotten: Vec<_> = {
+                    let mut records = self.records.lock().unwrap();
+                    stopped.iter().filter_map(|id| records.remove(id)).collect()
+                };
+                for record in &forgotten {
+                    if let Some(file) = crate::context::owned_briefing(&record.spec) {
+                        self.remove_unused_briefing(&file);
+                    }
+                    self.pty.forget(&record.id);
+                }
+                if !forgotten.is_empty() {
+                    self.dirty.store(true, Ordering::Release);
+                }
+                serde_json::to_value(running)?
             }
             Request::MaintenanceGuard {
                 project_id,
@@ -3393,6 +3429,82 @@ mod tests {
         );
         service.pty.stop(&replacement);
         service.pty.stop(&other_id);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forget_task_drops_its_stopped_records_and_reports_running_ones() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let start = |terminal: &str, task: Option<&str>, project: &str, command: &str| {
+            let metadata = Metadata {
+                project_id: project.into(),
+                project_name: "P".into(),
+                project_root: dir.display().to_string(),
+                component_id: "c".into(),
+                terminal_id: terminal.into(),
+                task: task.map(Into::into),
+                task_title: None,
+                name: terminal.into(),
+                kind: TerminalKind::Task,
+                adapter: None,
+                conversation_id: None,
+                conversation_pinned: false,
+                extension_id: None,
+                command_id: None,
+                key: None,
+                branch: None,
+                command: String::new(),
+            };
+            let spec = SessionSpec {
+                resume_command: None,
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
+                id: "ignored".into(),
+                command: command.into(),
+                cwd: dir.clone(),
+                env: BTreeMap::new(),
+                ready_when: String::new(),
+                service: false,
+                notice: None,
+                dirs: Vec::new(),
+            };
+            service.start(terminal.into(), metadata, spec).unwrap()
+        };
+        let done = start("done", Some("t"), "p", "true");
+        let live = start("live", Some("t"), "p", "sleep 30");
+        let other_task = start("other", Some("u"), "p", "true");
+        let other_project = start("elsewhere", Some("t"), "q", "true");
+        let main = start("main", None, "p", "true");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for id in [&done, &other_task, &other_project, &main] {
+            while service.pty.is_running(id) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let running: Vec<String> = serde_json::from_value(
+            service
+                .handle(
+                    "1",
+                    Request::ForgetTask {
+                        project_id: "p".into(),
+                        task: "t".into(),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(running, vec![live.clone()]);
+        let mut left: Vec<_> = service.list().into_iter().map(|r| r.id).collect();
+        left.sort();
+        let mut expected = vec![live.clone(), other_task, other_project, main];
+        expected.sort();
+        assert_eq!(left, expected);
+        service.pty.stop(&live);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

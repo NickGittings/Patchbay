@@ -101,6 +101,7 @@ describe('session labels', () => {
     { componentId: 'web', kind: 'task', role: 'Task', tone: 'task' },
     { componentId: 'api', kind: 'shell', role: 'Shell', tone: 'shell' },
     { componentId: TASK_ROOT_SCOPE, kind: 'shell', role: 'Shell', tone: 'shell' },
+    { componentId: TASK_ROOT_SCOPE, kind: 'task', role: 'Task', tone: 'task' },
   ] as const)('$componentId/$kind leads with $role', ({ componentId, kind, role, tone }) => {
     expect(sessionRole({ ...running.metadata, componentId, kind })).toEqual({ role, tone })
   })

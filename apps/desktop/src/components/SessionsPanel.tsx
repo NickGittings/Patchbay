@@ -35,6 +35,8 @@ const EMPTY: Record<SessionFilter, string> = {
   running: 'No running sessions',
   closed: 'No closed sessions',
 }
+/** Worktree counts follow the filter, so they never read as the worktree's whole history. */
+const COUNTED: Record<SessionFilter, string> = { all: '', running: 'running ', closed: 'closed ' }
 
 /** A relative time that re-renders on the shared clock only while it is on screen. */
 function Ago({ ms }: { ms: number }) {
@@ -181,7 +183,7 @@ function SessionList({
                           <span className="session-worktree-branch mono">{worktree.branch}</span>
                         )}
                         <span className="session-worktree-count">
-                          {worktree.rows.length}{' '}
+                          {worktree.rows.length} {COUNTED[options.filter]}
                           {worktree.rows.length === 1 ? 'session' : 'sessions'}
                         </span>
                       </div>

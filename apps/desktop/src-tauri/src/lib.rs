@@ -1159,6 +1159,8 @@ async fn task_check_removable(
 }
 
 /// Forget a task and optionally remove its (clean) worktree; the branch stays.
+/// Removing the worktree also forgets the task's stopped session records and
+/// returns how many still run, or `None` when the session service didn't answer.
 #[tauri::command]
 async fn task_remove(
     app: AppHandle,
@@ -1166,8 +1168,9 @@ async fn task_remove(
     state: State<'_, AppState>,
     id: String,
     delete_worktree: bool,
-) -> CmdResult<()> {
+) -> CmdResult<Option<usize>> {
     let (root, scoped) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
     blocking(move || {
         let worktree = tasks::list(&root)
             .map_err(err)?
@@ -1184,7 +1187,18 @@ async fn task_remove(
             drop(active);
             rewatch(&app, &project_id);
         }
-        Ok(())
+        if !delete_worktree {
+            // The worktree stays, so its sessions can still be resumed.
+            return Ok(Some(0));
+        }
+        // The removal already succeeded; a service failure only leaves records behind.
+        Ok(bridge
+            .call::<Vec<String>>(Request::ForgetTask {
+                project_id,
+                task: id,
+            })
+            .ok()
+            .map(|running| running.len()))
     })
     .await
 }

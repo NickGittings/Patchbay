@@ -10,10 +10,9 @@ import {
 import { sessionMetadata, sessionTask, type Task, type TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
-import { reconcileSessions } from './sessions'
+import { reconcileFreshSessions } from './sessions'
 import {
   graphTaskStop,
-  sessionForget,
   taskActivate,
   taskAttach,
   taskCheckRemovable,
@@ -216,16 +215,10 @@ async function stopTaskSessions(projectId: string, id: string) {
       await new Promise((resolve) => setTimeout(resolve, 100))
 }
 
-/** Include exited and retained records, which no longer have running terminals. */
-function taskSessionIds(projectId: string, id: string): string[] {
-  return [...sessionMetadata.keys()].filter(
-    (sid) => sessionTask(sid) === id && sessionMetadata.get(sid)?.projectId === projectId,
-  )
-}
-
 /**
- * Stop the task's terminals, then forget the task and its session records after removal succeeds.
- * With `deleteWorktree`, also remove its worktree. Stays with the project it was asked in.
+ * Stop the task's terminals, then forget the task. With `deleteWorktree`, also remove its worktree,
+ * and the backend forgets the task's session records; "Forget only" keeps them resumable.
+ * Stays with the project it was asked in.
  */
 export async function removeTask(id: string, deleteWorktree: boolean) {
   const projectId = useStore.getState().project?.id
@@ -235,15 +228,24 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   await stopTaskSessions(projectId, id)
   const state = useStore.getState().captureProjects()[projectId]?.state
   if (state?.activeTask === id) activateTaskIn(projectId, null)
+  let running: number | null
   try {
-    await taskRemove(id, deleteWorktree, projectId)
-    await Promise.all(
-      taskSessionIds(projectId, id).map((sid) => sessionForget(sid).catch(() => {})),
-    )
-    await reconcileSessions()
+    running = await taskRemove(id, deleteWorktree, projectId)
   } finally {
     await refreshTasks(projectId)
   }
+  // The removal succeeded; refreshing the list must not report it as failed.
+  if (deleteWorktree) await reconcileFreshSessions().catch(() => {})
+  if (running === null)
+    useStore
+      .getState()
+      .setMessage('Worktree removed, but its sessions could not be cleared from Sessions.')
+  else if (running > 0)
+    useStore
+      .getState()
+      .setMessage(
+        `Worktree removed; ${running} ${running === 1 ? 'session is' : 'sessions are'} still running and stay listed in Sessions.`,
+      )
 }
 
 /** What to do with the worktree the open New worktree dialog creates, once it is active. */

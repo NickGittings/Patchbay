@@ -214,9 +214,12 @@ export const taskAttach = (
 ) => invoke<Task>('task_attach', { worktree, title, components, projectId })
 export const taskUpdate = (id: string, patch: TaskPatch, projectId = activeId()) =>
   invoke<Task>('task_update', { id, patch, projectId })
-/** git refuses to remove a worktree with changes; the branch is always kept. */
+/**
+ * git refuses to remove a worktree with changes; the branch is always kept. Removing the worktree
+ * also forgets its stopped sessions: resolves to how many still run, or null if that wasn't known.
+ */
 export const taskRemove = (id: string, deleteWorktree: boolean, projectId = activeId()) =>
-  invoke<void>('task_remove', { id, deleteWorktree, projectId })
+  invoke<number | null>('task_remove', { id, deleteWorktree, projectId })
 /** Fails with the reason the task's worktree can't be removed (e.g. uncommitted changes). */
 export const taskCheckRemovable = (id: string, projectId = activeId()) =>
   invoke<void>('task_check_removable', { id, projectId })
