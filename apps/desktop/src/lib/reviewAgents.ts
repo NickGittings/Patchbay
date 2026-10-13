@@ -53,6 +53,30 @@ export const reviewWorktreeRunning = (
   worktree: string,
 ) => jobRunning(records, sessions, REVIEW_SCOPE, worktree)
 
+/**
+ * A review of `worktree` that may still be writing findings. Interactive agents keep running at
+ * their prompt once done, so a live process counts as finished only once its agent reported the
+ * end of its turn (`review`; a self-reported one until output resumes), or its provider's hooks
+ * confirmed it idle. A permission prompt, quiet
+ * thinking, a stale self-report or an unconfirmed Esc may still lead to more writing; without any
+ * report, the reviewer must exit first.
+ */
+export const reviewWorktreeBusy = (
+  records: SessionRecord[],
+  sessions: Record<string, SessionState>,
+  worktree: string,
+) =>
+  records.some((r) => {
+    if (r.metadata.componentId !== REVIEW_SCOPE || r.spec.cwd !== worktree) return false
+    const s = sessions[r.id]
+    if (!(s?.running ?? sessionLive(r))) return false
+    const agent = s?.status?.agent
+    // A self-reported end of turn holds until a follow-up turn produces output again.
+    if (agent?.state === 'review')
+      return !agent.authoritative && (s?.status?.lastOutputMs ?? 0) > agent.sinceMs + 2000
+    return !(agent?.authoritative && (agent.state === 'idle' || agent.state === 'ended'))
+  })
+
 /** Recover review and merge terminals from the session service, even after Review unmounts. */
 export function reviewAgentRecords(records: SessionRecord[], projectId: string | undefined) {
   return records

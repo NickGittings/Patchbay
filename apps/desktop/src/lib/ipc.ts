@@ -25,6 +25,7 @@ import type {
   FileSearchResult,
   FileDiff,
   GitStatus,
+  Kickoff,
   Project,
   Review,
   Task,
@@ -412,13 +413,16 @@ export const extensionSessionsList = (
 export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
   invoke<void>('extension_url_open', { extensionId, projectId, url })
 
+/** The task a fix for review session `sessionId` runs in; `null` for the project folder. */
+export const reviewFixTask = (sessionId: string, projectId: string) =>
+  invoke<string | null>('review_fix_task', { sessionId, projectId })
 export const taskRootStart = async (
   project: Project,
   componentIds: string[],
   terminal: TerminalSpec,
   task?: string,
   requestId: string = crypto.randomUUID(),
-  implementPlan = false,
+  kickoff?: Kickoff,
   resume = false,
 ) =>
   invoke<string>('task_root_start', {
@@ -429,7 +433,8 @@ export const taskRootStart = async (
     task,
     requestId,
     resume,
-    implementPlan,
+    kickoff: kickoff?.kind,
+    reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],
   })

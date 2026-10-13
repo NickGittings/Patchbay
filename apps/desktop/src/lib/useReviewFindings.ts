@@ -5,8 +5,16 @@ import { reviewRead } from './ipc'
 
 export type LoadedFindings = { key: string; findings: ReviewFindings | null; error?: string }
 
-/** Keep findings current on polling, focus and review exits, discarding results for old branches. */
-export function useReviewFindings(projectId: string | undefined, branch: string | undefined) {
+/**
+ * Keep findings current on focus, review exits and changes of `refresh`, and every 5s while
+ * `poll`, discarding results for old branches.
+ */
+export function useReviewFindings(
+  projectId: string | undefined,
+  branch: string | undefined,
+  poll = true,
+  refresh?: unknown,
+) {
   const exits = useStore((s) =>
     s.sessionRecords
       .filter((r) => r.metadata.projectId === projectId && r.metadata.componentId === REVIEW_SCOPE)
@@ -32,14 +40,14 @@ export function useReviewFindings(projectId: string | undefined, branch: string 
       }
     }
     void read()
-    const poll = window.setInterval(() => void read(), 5000)
+    const timer = poll ? window.setInterval(() => void read(), 5000) : undefined
     const focus = () => void read()
     window.addEventListener('focus', focus)
     return () => {
       disposed = true
-      window.clearInterval(poll)
+      window.clearInterval(timer)
       window.removeEventListener('focus', focus)
     }
-  }, [projectId, branch, key, exits])
+  }, [projectId, branch, key, exits, poll, refresh])
   return loaded?.key === key ? loaded : undefined
 }

@@ -44,11 +44,21 @@
       },
     ]
     devices.push({
+      id: 'fix-smoke',
+      name: 'Smoke fix agent',
+      kind: 'agent',
+      category: 'agent',
+      source: 'builtin',
+      adapter: 'codex',
+      command: `python3 '${parent}/fix.py'`,
+    })
+    devices.push({
       id: 'review-smoke',
       name: 'Smoke review agent',
       kind: 'agent',
       category: 'agent',
       source: 'builtin',
+      adapter: 'codex',
       command: `python3 '${parent}/review.py'`,
     })
     state().setDevices([])
@@ -108,6 +118,11 @@
     await until('saved Findings shown', () =>
       document.querySelector('.review-findings pre')?.textContent.includes('Smoke review finding'),
     )
+    const fixButton = () =>
+      [...document.querySelectorAll('.review-merge-terminal button')].find(
+        (b) => b.textContent === 'Fix in Implementation →',
+      )
+    assert(fixButton()?.disabled, 'partial findings enabled the fix handoff during review')
     await until('Reviewed status', () =>
       document.querySelector('.review-status')?.textContent.startsWith('Reviewed'),
     )
@@ -121,12 +136,61 @@
     )
     click([...reviewForm.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     await smoke.terminalWrite(reviewSid, '\r')
+    await until('reviewer settles at its prompt', () => text(reviewSid).includes('review-idle'))
+    await until(
+      'an idle running reviewer allows the fix handoff',
+      () => fixButton() && !fixButton().disabled,
+    )
+    assert(state().sessions[reviewSid]?.running, 'reviewer exited before settling')
+    await smoke.terminalWrite(reviewSid, '\r')
     await until(
       'review exits successfully',
       () =>
         state().sessions[reviewSid]?.running === false &&
         state().sessions[reviewSid]?.exitCode === 0,
     )
+    const task = await smoke.taskAttach(`${parent}/feature`, 'Feature fixes', [])
+    await smoke.refreshTasks()
+    await until('reviewed task registered', () => state().tasks.some((t) => t.id === task.id))
+    const beforeFix = state().rootTerminals.length
+    click(
+      [...document.querySelectorAll('.review-merge-terminal button')].find(
+        (b) => b.textContent === 'Findings',
+      ),
+    )
+    await until(
+      'fix enabled without showing Findings',
+      () => !document.querySelector('.review-findings'),
+    )
+    click(
+      await until('fix handoff enabled', () => fixButton() && !fixButton().disabled && fixButton()),
+    )
+    await until('fix handoff opens Implementation', () => state().view === 'implementation')
+    assert(state().activeTask === task.id, 'fix handoff did not activate the reviewed task')
+    assert(
+      state().rootTerminals.length === beforeFix + 1,
+      'fix handoff did not create a new root terminal',
+    )
+    const fixTerminal = state().rootTerminals.at(-1)
+    assert(fixTerminal.adapter === 'codex', 'fix handoff did not preserve the reviewer provider')
+    const fixSid = smoke.sessionId('@task', fixTerminal.id, task.id)
+    await until('fix agent receives inline findings', () => text(fixSid).includes('fix-verified:'))
+    assert(text(fixSid).includes('## Review findings'), 'fix briefing omitted Review findings')
+    await until('fix fixture exits', () => state().sessions[fixSid]?.running === false)
+    const fixRecord = await until('fix session record', () =>
+      state().sessionRecords.find((r) => r.id === fixSid),
+    )
+    assert(
+      fixRecord?.spec.cwd === task.worktree,
+      'fix agent did not launch in the reviewed worktree',
+    )
+    assert(
+      !fixRecord.spec.dirs?.some((dir) => dir.endsWith('/patchbay/reviews')),
+      'fix agent was granted the reviews folder',
+    )
+    state().setActiveTask(null)
+    state().setView('review')
+    await until('Review returns after fix launch', () => document.querySelector('.review-worktree'))
     click(
       [...document.querySelectorAll('.review-merge-terminal button')].find(
         (b) => b.textContent === 'Hide',
@@ -445,7 +509,7 @@
     assert(!state().dockKept.includes(sid), 'finished merge was retained in the dock')
     await smoke.terminalStop(shell)
     await smoke.report(
-      'PASS merge: review findings/read-only fixture/staleness/recovery, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
+      'PASS merge: review findings/read-only fixture/staleness/recovery and Fix in Implementation handoff, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
     )
   } catch (e) {
     await smoke.report(`FAIL merge: ${e?.message ?? e}`)

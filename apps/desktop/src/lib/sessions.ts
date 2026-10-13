@@ -11,6 +11,7 @@ import {
   isReservedScope,
   TASK_ROOT_SCOPE,
   type Project,
+  type Kickoff,
   type RuntimeTerminal,
   type SessionRecord,
   type SessionState,
@@ -157,7 +158,7 @@ interface Launch {
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
-  implementPlan?: boolean
+  kickoff?: Kickoff
   restart?: boolean
 }
 
@@ -213,23 +214,40 @@ export function startTerminal(
   terminalId: string,
   task?: string | null,
   projectId?: string,
-  implementPlan = false,
+  kickoff?: Kickoff,
 ): Promise<void> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
-    launch.implementPlan = implementPlan
+    launch.kickoff = kickoff
   } catch (e) {
+    if (kickoff) return Promise.reject(e)
     useStore.getState().setMessage(String(e))
-    if (implementPlan) return Promise.reject(e)
     return Promise.resolve()
   }
   return launchTerminal(launch)
 }
 
+/**
+ * Fix terminals this window launched, known before the session list reconciles and shows their
+ * recorded branch, so starting one again at once still briefs it from its review.
+ */
+const fixSessions = new Set<string>()
+
+/** A handoff's launch stopped before reaching the backend, so its agent isn't running. */
+class LaunchCancelled extends Error {
+  constructor() {
+    super('The launch was cancelled')
+  }
+}
+
+/** A handoff must learn its agent didn't start, where other launches just stop quietly. */
+const cancelled = (launch: Launch) =>
+  launch.kickoff ? Promise.reject(new LaunchCancelled()) : Promise.resolve()
+
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
-  if (isClosing(launch)) return Promise.resolve()
+  if (isClosing(launch)) return cancelled(launch)
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing) return existing
@@ -241,7 +259,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     const requestedEpoch = epoch
     try {
       await listenForTerminals()
-      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
       if (
         !isReservedScope(componentId) &&
         !runtime &&
@@ -258,20 +276,30 @@ function launchTerminal(launch: Launch): Promise<void> {
         project.components
           .find((c) => c.id === componentId)
           ?.terminals.find((t) => t.id === terminalId)
-      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
+      // A fix agent works from review findings over the whole map, never the plan; one started
+      // again asks the backend to brief it from the branch its record keeps.
+      const again =
+        componentId === TASK_ROOT_SCOPE &&
+        !launch.kickoff &&
+        (fixSessions.has(sid) ||
+          useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
+      const kickoff: Kickoff | undefined = again ? { kind: 'fixFindings' } : launch.kickoff
+      const fix = kickoff?.kind === 'fixFindings'
+      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
         await savePlanDraft(launch.projectId, launch.task)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
         await taskRootStart(
           project,
-          launch.highlighted,
+          fix ? [] : launch.highlighted,
           launch.rootTerminal,
           task,
           requestId,
-          launch.implementPlan,
+          kickoff,
           resume,
         )
+        if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
@@ -303,12 +331,22 @@ function launchTerminal(launch: Launch): Promise<void> {
       }
       launchRequests.delete(sid)
     } catch (e) {
-      // Another window may have auto-started the same shell in the meantime.
+      // Nothing was requested, so there is nothing to check; the handoff reports it.
+      if (e instanceof LaunchCancelled) throw e
+      // Another window may have auto-started the same shell in the meantime. A handoff's fresh
+      // terminal never ran before, so any snapshot means the service started it and only the
+      // reply was lost, even if the agent has already exited.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
-      if (snapshot?.running) launchRequests.delete(sid)
-      if (requestedEpoch === epoch && !snapshot?.running) {
-        useStore.getState().setMessage(String(e))
-        if (launch.implementPlan) throw e
+      const started = launch.kickoff ? !!snapshot : !!snapshot?.running
+      if (started) launchRequests.delete(sid)
+      if (!started) {
+        // A handoff reports its own failure and removes its fresh tile, so nothing retries it.
+        if (launch.kickoff) {
+          launchRequests.delete(sid)
+          throw e
+        }
+        // Otherwise skip errors made stale by a reset.
+        if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
       }
     }
   })().finally(() => {

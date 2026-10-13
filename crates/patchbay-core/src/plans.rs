@@ -92,13 +92,18 @@ struct Saved {
 
 /// Read at most `PLAN_LIMIT` bytes as text, and whether the file was longer.
 pub(crate) fn read_capped(handle: std::fs::File) -> std::io::Result<(String, bool)> {
+    read_limited(handle, PLAN_LIMIT)
+}
+
+/// [`read_capped`] at `limit` bytes.
+pub(crate) fn read_limited(handle: std::fs::File, limit: usize) -> std::io::Result<(String, bool)> {
     let mut bytes = Vec::new();
     // One byte past the limit tells a cut file from one exactly at it.
     handle
-        .take(u64::try_from(PLAN_LIMIT + 1).unwrap_or(u64::MAX))
+        .take(u64::try_from(limit + 1).unwrap_or(u64::MAX))
         .read_to_end(&mut bytes)?;
-    let cut = bytes.len() > PLAN_LIMIT;
-    bytes.truncate(PLAN_LIMIT);
+    let cut = bytes.len() > limit;
+    bytes.truncate(limit);
     if cut {
         // Cut at a character boundary, so the text stays within the limit.
         if let Err(e) = std::str::from_utf8(&bytes)
@@ -307,7 +312,7 @@ pub fn withdraw(root: &Path, task: Option<&str>) -> Result<bool> {
 }
 
 /// How long ago `then` was, roughly ("3 hours ago").
-fn ago(then: SystemTime) -> String {
+pub(crate) fn ago(then: SystemTime) -> String {
     let secs = SystemTime::now()
         .duration_since(then)
         .unwrap_or(Duration::ZERO)
