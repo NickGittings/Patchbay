@@ -228,6 +228,12 @@ export function startTerminal(
   return launchTerminal(launch)
 }
 
+/**
+ * Fix terminals this window launched, known before the session list reconciles and shows their
+ * recorded branch, so starting one again at once still briefs it from its review.
+ */
+const fixSessions = new Set<string>()
+
 /** A handoff's launch stopped before reaching the backend, so its agent isn't running. */
 class LaunchCancelled extends Error {
   constructor() {
@@ -275,7 +281,8 @@ function launchTerminal(launch: Launch): Promise<void> {
       const again =
         componentId === TASK_ROOT_SCOPE &&
         !launch.kickoff &&
-        useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch)
+        (fixSessions.has(sid) ||
+          useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
       const kickoff: Kickoff | undefined = again ? { kind: 'fixFindings' } : launch.kickoff
       const fix = kickoff?.kind === 'fixFindings'
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
@@ -292,6 +299,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           kickoff,
           resume,
         )
+        if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
       else if (runtime?.extensionId && runtime.key)
@@ -325,10 +333,13 @@ function launchTerminal(launch: Launch): Promise<void> {
     } catch (e) {
       // Nothing was requested, so there is nothing to check; the handoff reports it.
       if (e instanceof LaunchCancelled) throw e
-      // Another window may have auto-started the same shell in the meantime.
+      // Another window may have auto-started the same shell in the meantime. A handoff's fresh
+      // terminal never ran before, so any snapshot means the service started it and only the
+      // reply was lost, even if the agent has already exited.
       const snapshot = await terminalSnapshot(sid).catch(() => null)
-      if (snapshot?.running) launchRequests.delete(sid)
-      if (!snapshot?.running) {
+      const started = launch.kickoff ? !!snapshot : !!snapshot?.running
+      if (started) launchRequests.delete(sid)
+      if (!started) {
         // A handoff reports its own failure and removes its fresh tile, so nothing retries it.
         if (launch.kickoff) {
           launchRequests.delete(sid)

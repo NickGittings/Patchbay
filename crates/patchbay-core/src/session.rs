@@ -1776,7 +1776,6 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
                 Path::new(&metadata.project_root),
                 metadata.task.as_deref(),
             )
-            .map(|text| crate::reviews::restart_briefing(&text))
         })
         .transpose()?;
     let settings = serde_json::to_string(&(

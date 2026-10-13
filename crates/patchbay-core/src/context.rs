@@ -1153,24 +1153,45 @@ pub fn task_root_session_spec(
     )
 }
 
-/// What a root agent of `task` is handed besides its own task section: review
-/// `fix`'s findings alone, else the shared plan and the proposal for `selected`.
+/// Which review a root agent fixes.
+pub enum Fix {
+    /// The review the user chose to fix.
+    Review(crate::reviews::Session),
+    /// A former fix terminal started again, from the branch its record keeps, if
+    /// the service still has that record.
+    Again(Option<crate::reviews::Session>),
+}
+
+/// The kickoff and handoff sections a root agent of `task` starts with besides
+/// its own task section: a fix's findings alone, else the shared plan and the
+/// proposal for `selected`. A former fix terminal that can no longer fix (its
+/// branch moved, or its findings are gone) starts plainly, with neither.
 ///
 /// # Errors
-/// As [`crate::reviews::handoff`] for a fix.
+/// As [`crate::reviews::handoff`] for [`Fix::Review`].
 pub fn root_handoff(
     project: &Project,
     task: Option<&str>,
     selected: &[String],
-    fix: Option<&crate::reviews::Session>,
-) -> Result<Vec<ContextSection>> {
+    kickoff: Option<Kickoff>,
+    fix: Option<&Fix>,
+) -> Result<(Option<Kickoff>, Vec<ContextSection>)> {
     let root = Path::new(&project.root);
-    if let Some(review) = fix {
-        return Ok(vec![crate::reviews::handoff(root, review)?]);
-    }
-    let plan = crate::plans::section(root, task);
-    let proposal = crate::proposals::section(project, task, selected);
-    Ok(plan.into_iter().chain(proposal).collect())
+    let findings = match fix {
+        Some(Fix::Review(review)) => Some(crate::reviews::handoff(root, review)?),
+        Some(Fix::Again(review)) => review
+            .as_ref()
+            .and_then(|r| crate::reviews::handoff(root, r).ok()),
+        None => {
+            let plan = crate::plans::section(root, task);
+            let proposal = crate::proposals::section(project, task, selected);
+            return Ok((kickoff, plan.into_iter().chain(proposal).collect()));
+        }
+    };
+    Ok(match findings {
+        Some(section) => (Some(Kickoff::FixFindings), vec![section]),
+        None => (None, Vec::new()),
+    })
 }
 
 /// The first prompt of an agent started by Implement.

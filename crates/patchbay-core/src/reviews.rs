@@ -323,27 +323,31 @@ pub fn resume_attempt(root: &Path, spec: &SessionSpec, branch: &str) -> Result<O
 /// Read capped findings. Older findings remain visible, but have no reviewed HEAD.
 #[must_use]
 pub fn read(root: &Path, branch: &str) -> Option<Findings> {
-    load(root, branch, crate::plans::PLAN_LIMIT, None)
+    load(root, branch, crate::plans::PLAN_LIMIT)
 }
 
-/// [`read`] up to `limit` bytes; `worktree`, when known to have `branch` checked
-/// out, spares looking it up.
-fn load(root: &Path, branch: &str, limit: usize, worktree: Option<&Path>) -> Option<Findings> {
+/// The saved text of `branch`'s findings up to `limit` bytes, whether it was cut,
+/// and the HEAD it covers: absent when it predates the latest attempt.
+fn saved(root: &Path, branch: &str, limit: usize) -> Option<(String, bool, u64, Started)> {
     let (file, started) = attempt(root, branch)?;
     let handle = std::fs::File::open(file).ok()?;
     let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
     let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
+    Some((text, truncated, modified_ms, started))
+}
+
+/// [`read`] up to `limit` bytes.
+fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
+    let (text, truncated, modified_ms, started) = saved(root, branch, limit)?;
     let reviewed_head = (modified_ms > started.started_ms).then_some(started.head);
-    let changed = |w: &Path| git::changed_since(w, started.started_ms).unwrap_or(true);
     // Findings without a reviewed HEAD are stale anyway; skip the worktree scan.
     let edited_since_start = reviewed_head.is_some()
-        && match worktree {
-            Some(worktree) => changed(worktree),
-            None => git::worktrees(root)
-                .iter()
-                .find(|w| w.branch.as_deref() == Some(branch))
-                .is_some_and(|w| changed(Path::new(&w.path))),
-        };
+        && git::worktrees(root)
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .is_some_and(|w| {
+                git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
+            });
     Some(Findings {
         text,
         modified_ms,
@@ -359,10 +363,6 @@ fn load(root: &Path, branch: &str, limit: usize, worktree: Option<&Path>) -> Opt
 fn current_branch(cwd: &Path) -> Option<String> {
     git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()
 }
-
-const FINDINGS_TITLE: &str = "Review findings";
-/// How `context::append_sections` heads the findings section in a briefing.
-const FINDINGS_HEADING: &str = "\n## Review findings\n\n";
 
 /// How much of the findings a fix agent's briefing inlines. Claude reads the
 /// briefing from a file and Codex falls back to pointing at it, so this may
@@ -422,13 +422,6 @@ fn has_findings(worktree: &Path, branch: &str) -> bool {
         .is_some_and(|(text, cut)| cut || !text.trim().is_empty())
 }
 
-/// Whether a fix for `session` could still start: its branch is checked out with
-/// nonempty findings saved.
-#[must_use]
-pub fn fixable(session: &Session) -> bool {
-    target(session).is_ok_and(|(worktree, branch)| has_findings(&worktree, branch))
-}
-
 /// The task a fix for review `session` runs in: the stored task holding the
 /// reviewed worktree, else `None` for the project folder `root` sits in. Makes
 /// [`handoff`]'s checks first, so a refused fix changes nothing.
@@ -465,71 +458,37 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
         git::repo_root(root).as_ref() == Some(&worktree),
         "This launch isn't in the reviewed worktree"
     );
-    let findings = load(&worktree, branch, HANDOFF_LIMIT, Some(&worktree))
-        .filter(|f| !f.text.trim().is_empty())
+    let (text, truncated, modified_ms, started) = saved(&worktree, branch, HANDOFF_LIMIT)
+        .filter(|(text, ..)| !text.trim().is_empty())
         .ok_or_else(|| no_findings(branch))?;
-    let worktree = worktree.as_path();
-    let text = findings.text.trim();
-    let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"]))?;
-    let freshness = match findings.reviewed_head.as_deref() {
-        None => "from an earlier attempt; a newer review hasn't written findings yet".into(),
-        Some(reviewed) if reviewed != head => format!(
-            "reviewed at {}; the branch has commits since, so some may be resolved",
-            reviewed.get(..7).unwrap_or(reviewed)
-        ),
-        Some(_) if findings.edited_since_start => {
-            "files changed after the review started; some may already be addressed".into()
-        }
-        Some(_) => format!("current for HEAD {}", &head[..head.len().min(7)]),
+    // Only facts fixed by the findings themselves, so the briefing (and with it Restart's
+    // fingerprint, which a Codex command carries inline) stays the same while the fix works.
+    let reviewed = if modified_ms > started.started_ms {
+        let head = &started.head;
+        format!(
+            "HEAD {}, as it was when the review started",
+            head.get(..7).unwrap_or(head)
+        )
+    } else {
+        "an earlier attempt; a newer review hasn't written findings yet".into()
     };
-    let age = crate::plans::ago(
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(findings.modified_ms),
-    );
-    let cut = if findings.truncated {
+    let cut = if truncated {
         format!(
             "\n\n[The findings continue past {} KiB in {}; read it only, and ask the user if you can't.]",
             HANDOFF_LIMIT / 1024,
-            file(worktree, branch)?.display()
+            file(&worktree, branch)?.display()
         )
     } else {
         String::new()
     };
     Ok(context::ContextSection {
-        title: FINDINGS_TITLE.into(),
+        title: "Review findings".into(),
         body: format!(
-            "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
-            findings.base
+            "Branch: {branch}\nBase: {}\nReviewed: {reviewed}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}{cut}",
+            started.base,
+            text.trim()
         ),
     })
-}
-
-/// Drop the review findings' generated age and freshness lines, which change as
-/// time passes and the fix agent edits files; the findings themselves still
-/// participate in Restart.
-pub(crate) fn restart_briefing(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some((before, after)) = rest.split_once(FINDINGS_HEADING) {
-        out.push_str(before);
-        out.push_str(FINDINGS_HEADING);
-        rest = after;
-        // Only the header `handoff` writes, not a lookalike heading in notes or extensions.
-        let lines: Vec<&str> = after.splitn(5, '\n').collect();
-        if let [branch, base, saved, fresh, tail] = lines[..]
-            && branch.starts_with("Branch: ")
-            && base.starts_with("Base: ")
-            && saved.starts_with("Saved ")
-            && fresh.starts_with("Freshness: ")
-        {
-            out.push_str(branch);
-            out.push('\n');
-            out.push_str(base);
-            out.push('\n');
-            rest = tail;
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Remove a branch's findings and sidecar.
@@ -769,32 +728,6 @@ mod tests {
     }
 
     #[test]
-    fn restart_ignores_the_findings_age_and_freshness_only() {
-        let briefing = |saved: &str, freshness: &str, text: &str| {
-            format!(
-                "# Context\n\n## Review findings\n\nBranch: a\nBase: main\nSaved {saved}\nFreshness: {freshness}\n\n{text}\n"
-            )
-        };
-        let first = restart_briefing(&briefing("just now", "current for HEAD abc", "Fix x"));
-        let later = restart_briefing(&briefing("2 hours ago", "files changed", "Fix x"));
-        assert_eq!(first, later);
-        assert!(first.contains("Base: main"));
-        assert_ne!(
-            first,
-            restart_briefing(&briefing("just now", "current", "Fix y"))
-        );
-        assert_eq!(restart_briefing("no findings"), "no findings");
-        // A lookalike heading earlier in the briefing is left alone.
-        let notes = "## Review findings\n\nSaved by hand\n\n";
-        let first = restart_briefing(&format!(
-            "\n{notes}{}",
-            briefing("just now", "current", "Fix x")
-        ));
-        assert!(first.contains("Saved by hand"));
-        assert!(!first.contains("Saved just now"));
-    }
-
-    #[test]
     fn fix_task_refuses_what_handoff_would_before_anything_changes() {
         let f = Fixture::new();
         let open = session(&f.dir, Some("feature/a"));
@@ -859,8 +792,8 @@ mod tests {
         for text in [
             "feature/a",
             "Base: main",
-            "Saved just now",
-            "current for HEAD",
+            "Reviewed: HEAD ",
+            "may already address",
             "Fix this",
         ] {
             assert!(section.body.contains(text), "{text}");
@@ -884,29 +817,50 @@ mod tests {
     }
 
     #[test]
-    fn handoff_reports_commits_since_review() {
+    fn handoff_stays_the_same_as_the_fix_commits_and_edits() {
         let f = Fixture::new();
         f.prepare("claude").unwrap();
         f.save("Finding", true);
-        git::run(git::git(&f.dir).args(["commit", "--allow-empty", "-qm", "after review"]))
-            .unwrap();
-        assert!(fix_body(&f).contains("commits since"));
-    }
-
-    #[test]
-    fn handoff_reports_edits_since_review() {
-        let f = Fixture::new();
-        f.prepare("claude").unwrap();
-        f.save("Finding", true);
+        let before = fix_body(&f);
         let file = f.dir.join("file.txt");
         fs::write(&file, "edited\n").unwrap();
         fs::File::options()
             .write(true)
-            .open(file)
+            .open(&file)
             .unwrap()
             .set_modified(SystemTime::now() + Duration::from_secs(1))
             .unwrap();
-        assert!(fix_body(&f).contains("files changed after the review started"));
+        assert_eq!(fix_body(&f), before);
+        git::run(git::git(&f.dir).args(["commit", "-qam", "after review"])).unwrap();
+        assert_eq!(fix_body(&f), before);
+    }
+
+    #[test]
+    fn a_former_fix_starts_plainly_once_it_cannot_fix() {
+        use context::{Fix, Kickoff, root_handoff};
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("Finding", true);
+        let review = session(&f.dir, Some("feature/a"));
+        let again = Fix::Again(Some(review.clone()));
+        let (kickoff, sections) = root_handoff(&f.project, None, &[], None, Some(&again)).unwrap();
+        assert!(matches!(kickoff, Some(Kickoff::FixFindings)));
+        assert_eq!(sections[0].title, "Review findings");
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        crate::plans::write(&f.dir, None, "A plan").unwrap();
+        for fix in [again, Fix::Again(None)] {
+            let (kickoff, sections) = root_handoff(
+                &f.project,
+                None,
+                &[],
+                Some(Kickoff::FixFindings),
+                Some(&fix),
+            )
+            .unwrap();
+            assert!(kickoff.is_none());
+            assert!(sections.is_empty(), "no findings and no plan");
+        }
+        assert!(root_handoff(&f.project, None, &[], None, Some(&Fix::Review(review))).is_err());
     }
 
     #[test]
@@ -939,7 +893,7 @@ mod tests {
         let body = fix(&worktree, "main").unwrap().body;
         assert!(body.contains("Branch: main"));
         assert!(body.contains("Linked finding"));
-        assert!(body.contains("current for HEAD"));
+        assert!(body.contains("Reviewed: HEAD "));
     }
 
     #[test]

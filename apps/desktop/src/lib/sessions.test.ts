@@ -191,6 +191,23 @@ test('a fix agent started again is briefed over the whole map without saving pla
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual({ kind: 'fixFindings' })
   expect(savePlanDraft).toHaveBeenCalledTimes(1)
 })
+test('a fix terminal started again before the list reconciles is still a fix', async () => {
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  useStore.setState({ sessionRecords: [] })
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  const fix = { kind: 'fixFindings', reviewSession: 'review' } as const
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual({ kind: 'fixFindings' })
+})
+test('a handoff whose reply was lost counts as started once its session exists', async () => {
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Reply lost'))
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: false } as TerminalSnapshot)
+  await expect(
+    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kind: 'implementPlan' }),
+  ).resolves.toBeUndefined()
+})
 test('a failed handoff keeps no request id to retry with', async () => {
   const terminalId = useStore.getState().addRootTerminal(agent)
   vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))

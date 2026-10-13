@@ -1321,24 +1321,16 @@ async fn task_root_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
-        let fix = match (kickoff, review_session) {
-            (Some(context::Kickoff::FixFindings), Some(session)) => {
-                Some(recorded_review(&bridge, &project_id, &session)?)
-            }
-            // A fix agent started again keeps working from its review's findings while it
-            // still can, else it starts as an ordinary agent.
-            (Some(context::Kickoff::FixFindings), None) => {
-                recorded_fix(&bridge, &project_id, task.as_deref(), &terminal.id)?
-                    .filter(patchbay_core::reviews::fixable)
-            }
-            _ => None,
-        };
-        let kickoff = match kickoff {
-            Some(context::Kickoff::FixFindings) => {
-                fix.as_ref().map(|_| context::Kickoff::FixFindings)
-            }
-            other => other,
-        };
+        let fix =
+            match (kickoff, review_session) {
+                (Some(context::Kickoff::FixFindings), Some(session)) => Some(context::Fix::Review(
+                    recorded_review(&bridge, &project_id, &session)?,
+                )),
+                (Some(context::Kickoff::FixFindings), None) => Some(context::Fix::Again(
+                    recorded_fix(&bridge, &project_id, task.as_deref(), &terminal.id)?,
+                )),
+                _ => None,
+            };
         // A review covers the whole branch, so its fix isn't limited to the highlights.
         let component_ids = if fix.is_some() {
             Vec::new()
@@ -1352,8 +1344,9 @@ async fn task_root_start(
         } else {
             component_ids
         };
-        let handoff = context::root_handoff(&project, task.as_deref(), &selected, fix.as_ref())
-            .map_err(err)?;
+        let (kickoff, handoff) =
+            context::root_handoff(&project, task.as_deref(), &selected, kickoff, fix.as_ref())
+                .map_err(err)?;
         let own = section.into_iter().chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),
@@ -1366,8 +1359,12 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        // Recorded so a later start of this terminal is still a fix (`recorded_fix`).
-        metadata.branch = fix.and_then(|f| f.branch);
+        // Recorded so a later start of this terminal is still a fix (`recorded_fix`), even
+        // one that starts plainly while its branch is away.
+        metadata.branch = match fix {
+            Some(context::Fix::Review(r) | context::Fix::Again(Some(r))) => r.branch,
+            _ => None,
+        };
         let mut spec = context::task_root_session_spec(
             &project,
             &selected,

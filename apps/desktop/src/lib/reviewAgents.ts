@@ -56,7 +56,8 @@ export const reviewWorktreeRunning = (
 /**
  * A review of `worktree` that may still be writing findings. Interactive agents keep running at
  * their prompt once done, so a live process counts as finished only once its agent reported the
- * end of its turn (`review`), or its provider's hooks confirmed it idle. A permission prompt, quiet
+ * end of its turn (`review`; a self-reported one until output resumes), or its provider's hooks
+ * confirmed it idle. A permission prompt, quiet
  * thinking, a stale self-report or an unconfirmed Esc may still lead to more writing; without any
  * report, the reviewer must exit first.
  */
@@ -70,7 +71,9 @@ export const reviewWorktreeBusy = (
     const s = sessions[r.id]
     if (!(s?.running ?? sessionLive(r))) return false
     const agent = s?.status?.agent
-    if (agent?.state === 'review') return false
+    // A self-reported end of turn holds until a follow-up turn produces output again.
+    if (agent?.state === 'review')
+      return !agent.authoritative && (s?.status?.lastOutputMs ?? 0) > agent.sinceMs + 2000
     return !(agent?.authoritative && (agent.state === 'idle' || agent.state === 'ended'))
   })
 

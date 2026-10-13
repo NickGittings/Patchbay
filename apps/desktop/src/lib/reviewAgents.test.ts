@@ -298,11 +298,16 @@ test('only a review that reported or confirmed settling stops blocking the fix h
     spec: { cwd: '/feature' },
     snapshot: { running: true },
   } as SessionRecord
-  const status = (active: boolean, agent?: AgentState, authoritative = true) => ({
+  const status = (
+    active: boolean,
+    agent?: AgentState,
+    authoritative = true,
+    lastOutputMs: number | null = null,
+  ) => ({
     review: {
       running: true,
       status: {
-        lastOutputMs: null,
+        lastOutputMs,
         active,
         agent: agent
           ? { state: agent, sinceMs: 0, message: null, prompt: null, authoritative }
@@ -328,6 +333,10 @@ test('only a review that reported or confirmed settling stops blocking the fix h
   expect(reviewWorktreeBusy([review], status(false, 'review'), '/feature')).toBe(false)
   // The end of a turn is always reported, never inferred.
   expect(reviewWorktreeBusy([review], status(false, 'review', false), '/feature')).toBe(false)
+  // Output well after a self-reported end of turn is a follow-up turn; hooks would report it.
+  expect(reviewWorktreeBusy([review], status(false, 'review', false, 1000), '/feature')).toBe(false)
+  expect(reviewWorktreeBusy([review], status(false, 'review', false, 5000), '/feature')).toBe(true)
+  expect(reviewWorktreeBusy([review], status(false, 'review', true, 5000), '/feature')).toBe(false)
   expect(reviewWorktreeBusy([review], status(false, 'working'), '/other')).toBe(false)
   expect(reviewWorktreeBusy([review], { review: { running: false } }, '/feature')).toBe(false)
 })
