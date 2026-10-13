@@ -98,4 +98,10 @@ test('Auto persists per worktree without dirtying the map and restores paused', 
   expect(layout.auto?.sessionId).toBeUndefined()
   expect(layout.taskWorkspaces?.[''].auto?.status).toBe('paused')
   expect(restoredLayout({ auto: { ...run, overrides: { maxRounds: -1 } } }).auto).toBeNull()
+  // Finished runs stay finished, so a new run can start without Stop.
+  for (const status of ['done', 'stopped', 'failed'] as const)
+    expect(restoredLayout({ auto: { ...run, status, reason: 'Finished' } }).auto).toMatchObject({
+      status,
+      reason: 'Finished',
+    })
 })

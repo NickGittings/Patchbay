@@ -217,12 +217,8 @@ test('implementing in the project folder copies nothing', async () => {
   expect(ipc.planRead).toHaveBeenCalledWith('p', undefined)
 })
 
-test('Auto can pick up a saved worktree plan and passes its goal into implementation', async () => {
+test('Auto implements the project plan and returns the launched session', async () => {
   useStore.setState({ activeTask: 'later' })
-  vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
-    text: task ? '# Worktree plan' : '',
-    cut: false,
-  }))
   const auto = {
     goal: 'Finish the worktree task',
     fixFloor: null,
@@ -230,13 +226,20 @@ test('Auto can pick up a saved worktree plan and passes its goal into implementa
     commit: true,
   }
   const sid = await implementPlannerPlan('claude', auto)
-  expect(sid).toBe(useStore.getState().activeSession)
-  expect(startTerminal).toHaveBeenCalledWith(
-    TASK_ROOT_SCOPE,
-    expect.any(String),
-    'later',
-    'p',
-    true,
-    auto,
-  )
+  const terminalId = useStore.getState().rootTerminals.at(-1)!.id
+  expect(sid).toBe(sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'))
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', true, auto)
+})
+
+test('Auto never falls back to an older worktree plan', async () => {
+  useStore.setState({ activeTask: 'later' })
+  vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
+    text: task ? '# Old worktree plan' : '',
+    cut: false,
+  }))
+  await expect(
+    implementPlannerPlan('claude', { goal: 'g', fixFloor: null, effortNote: '', commit: true }),
+  ).rejects.toThrow('No plan received yet')
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
 })

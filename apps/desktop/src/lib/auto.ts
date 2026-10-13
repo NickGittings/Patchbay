@@ -83,11 +83,24 @@ export function blockingCount(findings: ReviewFindings | null, floor: Severity) 
     .slice(0, severities.indexOf(floor) + 1)
     .reduce((sum, s) => sum + (findings?.verdict?.counts[s] ?? 0), 0)
 }
+const passed = (r: ActionReport['results'][number]) =>
+  ['passed', 'started', 'reused'].includes(r.outcome)
+/** Components without a validation terminal are skipped, which no fix could change. */
 export function actionSucceeded(report: ActionReport) {
-  return (
-    (report.plan.request.kind !== 'validateAffected' || report.plan.skipped.length === 0) &&
-    report.results.every((r) => ['passed', 'started', 'reused'].includes(r.outcome))
-  )
+  return report.results.every(passed)
+}
+/** One finding per failed validation terminal, for the fix agent's briefing. */
+export function validationFailures(reports: ActionReport[], name: (sessionId: string) => string) {
+  return reports
+    .flatMap((report) =>
+      report.results
+        .filter((r) => !passed(r))
+        .map(
+          (r) =>
+            `[high] Validation failed: ${name(r.sessionId)} ${r.outcome}${r.exitCode === null ? '' : ` (exit ${r.exitCode})`}`,
+        ),
+    )
+    .join('\n')
 }
 export interface AutoSnapshot {
   plan: string
@@ -189,7 +202,8 @@ export function nextStep(
     case 'review':
       return reviewDecision(run, findings)
     case 'mergeGate':
-      return run.merge.mode === 'ask'
+      // Automatic merge covers only a branch Auto saw reviewed.
+      return run.merge.mode === 'ask' || !run.reviewedHead
         ? {
             stage: 'mergeGate',
             status: 'waitingOnYou',
@@ -260,7 +274,6 @@ export async function autoSnapshot(
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state?.project || !project) throw new Error('Open the project first')
-  const path = task ? state.tasks.find((t) => t.id === task)?.worktree : project.root
   const [worktrees, branches, saved, proposal, plannerPlan] = await Promise.all([
     gitWorktrees(projectId),
     gitBranches(projectId),
@@ -268,9 +281,18 @@ export async function autoSnapshot(
     proposalRead(projectId),
     planRead(projectId),
   ])
+  // The project folder is the current worktree, whose top can sit above a project in a subfolder.
+  const path = task
+    ? state.tasks.find((t) => t.id === task)?.worktree
+    : worktrees.find((w) => w.current)?.path
   const source = worktrees.find((w) => w.path === path)
-  if (!source?.branch) throw new Error('Choose a worktree with a branch')
-  const base = defaultReviewBase(source, state.tasks, worktrees, branches)
+  if (!path || !source?.branch) throw new Error('Choose a worktree with a branch')
+  // Review what the merge will bring in: the destination when it is a branch, else the default.
+  const destination = run.merge.destinationBranch
+  const base =
+    destination && destination !== source.branch && branches.includes(destination)
+      ? destination
+      : defaultReviewBase(source, state.tasks, worktrees, branches)
   if (!base) throw new Error('No review base found; choose another worktree')
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
@@ -288,7 +310,9 @@ export async function autoSnapshot(
         (r.metadata.componentId === '@task' ||
           project.components.some((c) => c.id === r.metadata.componentId))) ||
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
-      r.metadata.componentId === PLAN_SCOPE ||
+      // The planner is project-wide: it belongs to this run only while it plans or tracks it.
+      (r.metadata.componentId === PLAN_SCOPE &&
+        (r.id === run.sessionId || (run.stage === 'plan' && !run.sessionId))) ||
       (r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path),
   )
   const agents = relevant.flatMap((r) => {
@@ -315,7 +339,8 @@ export async function autoSnapshot(
     ]
   })
   const snapshot: AutoSnapshot = {
-    plan: saved.text.trim() ? saved.text : plannerPlan.text,
+    // Implement hands off the project plan only, never an older worktree plan.
+    plan: plannerPlan.text,
     proposal: !!proposal,
     goal: inferredGoal(
       saved.text || plannerPlan.text,
@@ -368,6 +393,8 @@ async function checkHooks(deviceId: string) {
     throw new Error('Install Agent status integration before starting Auto mode')
 }
 const startingAuto = new Set<string>()
+/** Worktrees whose Auto run is running a validation right now. */
+const validating = new Set<string>()
 export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
   const key = JSON.stringify([projectId, task])
   if (startingAuto.has(key)) throw new Error('Auto is already starting in this worktree')
@@ -412,14 +439,17 @@ export async function startAuto(projectId: string, task: string | null, settings
     if ((settings.stage ?? decision.stage) === 'plan' && !run.goal.trim())
       throw new Error('Describe the task first')
     if (!active(projectId, task)) throw new Error('The task changed')
+    const reviewedHead = snapshot.freshness === 'current' ? snapshot.source.head : undefined
+    // Starting at Merge skips the gate, so an unreviewed branch still waits for approval there.
+    const stage = settings.stage === 'merge' && !reviewedHead ? 'mergeGate' : settings.stage
     useStore.getState().patchTask(projectId, task, {
       auto: {
         ...run,
         ...decision,
-        reviewedHead: snapshot.freshness === 'current' ? snapshot.source.head : undefined,
+        reviewedHead,
         findingsSummary:
           snapshot.freshness === 'current' ? snapshot.findings?.text.slice(0, 2000) : undefined,
-        ...(settings.stage ? { stage: settings.stage, status: 'running' as const } : {}),
+        ...(stage ? { stage, status: 'running' as const } : {}),
         log: [{ atMs: Date.now(), text: decision.reason }],
       },
     })
@@ -462,7 +492,7 @@ export function stopAuto(projectId: string, task: string | null) {
   patch(projectId, task, { status: 'stopped', reason: 'Stopped by you' }, 'Auto stopped')
   if (run?.sessionId)
     void terminalStop(run.sessionId).catch((e) => useStore.getState().setMessage(String(e)))
-  if (run?.stage === 'validate')
+  if (validating.has(JSON.stringify([projectId, task])))
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
 }
 export async function skipStage(projectId: string, task: string | null) {
@@ -604,7 +634,7 @@ async function drive(projectId: string, task: string | null) {
             pauseAuto(projectId, task, "Couldn't read the review verdict — open findings")
           return
         }
-        if (run.stage === 'plan' && !snapshot.plan.trim()) {
+        if (run.stage === 'plan' && !snapshot.plan.trim() && !snapshot.proposal) {
           pauseAuto(projectId, task, 'Planner finished without a saved plan')
           return
         }
@@ -714,6 +744,7 @@ async function drive(projectId: string, task: string | null) {
       }
       const reports: ActionReport[] = []
       useStore.getState().patchTask(projectId, task, { graphActionBusy: true })
+      validating.add(key)
       try {
         for (const componentId of snapshot.changedComponents) {
           if (!live()) return
@@ -724,13 +755,15 @@ async function drive(projectId: string, task: string | null) {
           useStore.getState().patchTask(projectId, task, { graphActionReport: report })
         }
       } finally {
+        validating.delete(key)
         useStore.getState().patchTask(projectId, task, { graphActionBusy: false })
       }
       if (!live()) return
-      const failures = reports
-        .filter((r) => !actionSucceeded(r))
-        .map((r) => `[high] Validation failed: ${JSON.stringify(r)}`)
-        .join('\n')
+      const records = useStore.getState().sessionRecords
+      const failures = validationFailures(
+        reports,
+        (id) => records.find((r) => r.id === id)?.metadata.name ?? id,
+      )
       patch(
         projectId,
         task,
@@ -747,7 +780,12 @@ async function drive(projectId: string, task: string | null) {
       pauseAuto(projectId, task, 'Another agent is active in this worktree')
       return
     }
-    for (const agent of snapshot.agents.filter((a) => a.state === 'review' || a.state === 'idle')) {
+    // Review and merge sessions reuse fixed ids; other finished agents are the user's to close.
+    for (const agent of snapshot.agents.filter(
+      (a) =>
+        (a.stage === 'review' || a.stage === 'merge') &&
+        (a.state === 'review' || a.state === 'idle'),
+    )) {
       if (useStore.getState().sessions[agent.sessionId]?.running)
         await terminalStop(agent.sessionId)
       if (!live() || !active(projectId, task)) return

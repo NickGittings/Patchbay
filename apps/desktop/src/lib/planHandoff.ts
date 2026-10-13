@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, plannerSessionId } from '../types'
+import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
 import { plannerDevice } from './plan'
 import { savePlanDraft } from './planDrafts'
@@ -35,9 +35,8 @@ export async function implementPlannerPlan(plannerId: string, auto?: import('../
     await refreshTasks(projectId)
   } else if (task) {
     // Carry the planner's plan into the worktree, where its agents read it.
-    const projectPlan = await planRead(projectId)
-    const { text, cut } =
-      auto && !projectPlan.text.trim() ? await planRead(projectId, task) : projectPlan
+    // An empty project plan fails even when the worktree kept an older one.
+    const { text, cut } = await planRead(projectId)
     if (cut) throw new Error('The plan is longer than 64 KiB; shorten it before implementing.')
     if (!text.trim()) throw new Error('No plan received yet. Ask the planner to finish its plan.')
     await planWrite(projectId, task, text, null)
@@ -58,5 +57,5 @@ export async function implementPlannerPlan(plannerId: string, auto?: import('../
   const terminalId = s.addRootTerminal(device)
   await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, true, ...(auto ? [auto] : []))
   current().setView('implementation')
-  return current().activeSession!
+  return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
 }

@@ -837,6 +837,7 @@ async fn plan_start(
                 &AllowAll,
                 &sections,
                 context::Kickoff::Plan,
+                &[],
             )
         } else {
             context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
@@ -1316,6 +1317,7 @@ async fn task_root_start(
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
     implement_plan: Option<bool>,
+    review_branch: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1332,28 +1334,24 @@ async fn task_root_start(
             component_ids
         };
         let root = Path::new(&project.root);
-        let own = auto
+        let fixing = kickoff == Some(context::Kickoff::FixFindings);
+        if kickoff == Some(context::Kickoff::Plan) {
+            return Err("Start planners in Plan".into());
+        }
+        let auto_section = auto
             .as_ref()
-            .map(|a| {
-                a.section(if kickoff == Some(context::Kickoff::FixFindings) {
-                    "fix"
-                } else {
-                    "implement"
-                })
-            })
-            .into_iter()
-            .chain(section)
-            .chain(patchbay_core::plans::section(root, task.as_deref()))
-            .chain(patchbay_core::proposals::section(
-                &project,
-                task.as_deref(),
-                &selected,
-            ));
-        let own = own.chain(
-            (kickoff == Some(context::Kickoff::FixFindings))
-                .then(|| patchbay_core::reviews::section(root))
-                .flatten(),
-        );
+            .map(|a| a.section(if fixing { "fix" } else { "implement" }));
+        // A fix agent works from the reviewed branch's findings alone, not the plan.
+        let (handoff, dirs) = if fixing {
+            let branch = review_branch.ok_or("Choose the review to fix")?;
+            let handoff = patchbay_core::reviews::handoff(root, &branch).map_err(err)?;
+            (vec![handoff.section], handoff.dirs)
+        } else {
+            let plan = patchbay_core::plans::section(root, task.as_deref());
+            let proposal = patchbay_core::proposals::section(&project, task.as_deref(), &selected);
+            (plan.into_iter().chain(proposal).collect(), Vec::new())
+        };
+        let own = auto_section.into_iter().chain(section).chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),
             &project,
@@ -1377,6 +1375,7 @@ async fn task_root_start(
                 &AllowAll,
                 &sections,
                 kickoff,
+                &dirs,
             )
         } else {
             context::task_root_session_spec(

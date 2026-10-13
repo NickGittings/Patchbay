@@ -1,6 +1,6 @@
 import type { AutoRun } from '../types'
 
-/** Persisted controllers are inert until the user explicitly resumes. */
+/** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */
 export function restoredAuto(value: unknown): AutoRun | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const r = value as AutoRun
@@ -33,6 +33,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
       (overrides.validate !== undefined && typeof overrides.validate !== 'boolean'))
   )
     return null
+  const finished = ['done', 'stopped', 'failed'].includes(r.status)
   return {
     runId: r.runId,
     stage: r.stage,
@@ -42,7 +43,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     merge: r.merge,
     device: r.device,
     round: r.round,
-    status: 'paused',
+    status: finished ? r.status : 'paused',
     reviewedHead: typeof r.reviewedHead === 'string' ? r.reviewedHead : undefined,
     validation: Array.isArray(r.validation)
       ? r.validation.filter(
@@ -58,6 +59,10 @@ export function restoredAuto(value: unknown): AutoRun | null {
     log: r.log
       .filter((l) => l && Number.isFinite(l.atMs) && typeof l.text === 'string')
       .slice(-100),
-    reason: 'Restored after restart — Resume?',
+    reason: finished
+      ? typeof r.reason === 'string'
+        ? r.reason
+        : undefined
+      : 'Restored after restart — Resume?',
   }
 }

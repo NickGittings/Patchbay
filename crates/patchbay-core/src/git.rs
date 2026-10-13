@@ -470,18 +470,22 @@ pub fn review_branch(
     let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
     review.ahead = run(git(&root).args(["rev-parse", "HEAD"]))? != merge_base;
     let names = run(git(&root).args(["diff", "--name-only", "-z", &merge_base, "HEAD", "--"]))?;
+    // `git diff` names files from the repo's top folder, which sits above a
+    // project opened in a subfolder; files are reported relative to the project.
+    let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
     let groups = group_by_repo(&with_project_scope(&root, &components));
     let members = groups
         .iter()
-        .find(|g| g.root == root)
+        .find(|g| g.root == repo)
         .map(|g| g.members.as_slice())
         .unwrap_or_default();
-    for path in names.split('\0').filter(|p| !p.is_empty()) {
-        if let Some(id) = owner_of(path, members) {
+    for name in names.split('\0').filter(|p| !p.is_empty()) {
+        if let Some(id) = owner_of(name, members) {
+            let path = relative_path(&root, &repo.join(name));
             let files = review.changes.entry(id.into()).or_default();
             if !files.iter().any(|f| f.path == path) {
                 files.push(ChangedFile {
-                    path: path.into(),
+                    path,
                     kind: ChangeKind::Modified,
                     old_path: None,
                     modified_ms: None,
@@ -1433,6 +1437,39 @@ mod tests {
                 id: "app".into(),
                 via: vec!["lib".into()]
             }]
+        );
+    }
+
+    #[test]
+    fn review_branch_attributes_commits_in_a_project_subfolder() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        assert!(run_git(&f.0, &["branch", "base"]));
+        f.write("proj/lib/x.rs", "");
+        f.write("outside.txt", "");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "work"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "root": root.display().to_string(),
+            "components": [{ "id": "lib", "name": "lib", "path": "lib" }],
+        }))
+        .unwrap();
+        let c = components(&root, &[("lib", "lib")]);
+        let r = review_branch(&project, c, None, Some("base")).unwrap();
+        assert!(r.ahead);
+        assert_eq!(
+            r.changes["lib"].iter().map(|f| &f.path).collect::<Vec<_>>(),
+            ["lib/x.rs"]
+        );
+        assert!(
+            r.changes
+                .values()
+                .flatten()
+                .all(|f| f.path != "outside.txt")
         );
     }
 

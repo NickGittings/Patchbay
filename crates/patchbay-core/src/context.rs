@@ -1151,6 +1151,7 @@ pub fn plan_session_spec_for(
         sections,
         true,
         None,
+        &[],
     )
 }
 
@@ -1175,6 +1176,7 @@ pub fn task_root_session_spec(
         sections,
         false,
         None,
+        &[],
     )
 }
 
@@ -1203,6 +1205,7 @@ pub fn task_root_implementation_spec(
         sections,
         false,
         Some(Kickoff::ImplementPlan),
+        &[],
     )
 }
 
@@ -1210,6 +1213,7 @@ pub fn task_root_implementation_spec(
 ///
 /// # Errors
 /// As [`task_root_session_spec`].
+#[allow(clippy::too_many_arguments)]
 pub fn root_kickoff_spec(
     project: &Project,
     ids: &[String],
@@ -1218,6 +1222,7 @@ pub fn root_kickoff_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     kickoff: Kickoff,
+    dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         terminal.kind == TerminalKind::Agent,
@@ -1232,6 +1237,7 @@ pub fn root_kickoff_spec(
         sections,
         kickoff == Kickoff::Plan,
         Some(kickoff),
+        dirs,
     )
 }
 
@@ -1251,6 +1257,7 @@ fn root_session_spec(
     sections: &[ContextSection],
     planning: bool,
     kickoff: Option<Kickoff>,
+    extra_dirs: &[PathBuf],
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -1302,6 +1309,11 @@ fn root_session_spec(
         }
         if !planning {
             dirs.extend(crate::plans::existing_dir(Path::new(&project.root)));
+        }
+        for dir in extra_dirs {
+            if !dirs.contains(dir) {
+                dirs.push(dir.clone());
+            }
         }
         // cwd is the root; components in other repos must be added explicitly.
         for c in &components {
@@ -1974,6 +1986,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Kickoff::Plan,
+                &[],
             )
             .unwrap();
             assert_eq!(auto.id, manual.id);
@@ -1988,6 +2001,7 @@ mod tests {
                 &AllowAll,
                 &[],
                 Kickoff::FixFindings,
+                &[],
             )
             .unwrap();
             assert_eq!(

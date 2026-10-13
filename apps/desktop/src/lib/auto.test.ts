@@ -27,6 +27,9 @@ const {
   nextStep,
   blockingCount,
   actionSucceeded,
+  validationFailures,
+  autoSnapshot,
+  stopAuto,
   startAuto,
   followAuto,
   pauseAuto,
@@ -163,9 +166,12 @@ test.each(['light', 'standard', 'thorough'] as const)(
 )
 test('merge approval, verified outcome, overrides and validation failures', () => {
   expect(nextStep(run({ stage: 'mergeGate' })).status).toBe('waitingOnYou')
-  expect(
-    nextStep(run({ stage: 'mergeGate', merge: { mode: 'auto', destinationBranch: 'main' } })).stage,
-  ).toBe('merge')
+  const automatic = { mode: 'auto' as const, destinationBranch: 'main' }
+  expect(nextStep(run({ stage: 'mergeGate', merge: automatic, reviewedHead: 'abc' })).stage).toBe(
+    'merge',
+  )
+  // An unreviewed branch never merges automatically.
+  expect(nextStep(run({ stage: 'mergeGate', merge: automatic })).status).toBe('waitingOnYou')
   expect(nextStep(run({ stage: 'merge' }), null, 'dirty').status).toBe('waitingOnYou')
   expect(nextStep(run({ stage: 'merge' }), null, 'merged').status).toBe('done')
   expect(blockingCount(findings({ critical: 1, high: 2, medium: 3, low: 4 }), 'medium')).toBe(6)
@@ -185,7 +191,7 @@ test('merge approval, verified outcome, overrides and validation failures', () =
     results: [],
   }
   expect(actionSucceeded(report)).toBe(true)
-  expect(actionSucceeded({ ...report, plan: { ...report.plan, skipped: ['a'] } })).toBe(false)
+  expect(actionSucceeded({ ...report, plan: { ...report.plan, skipped: ['a'] } })).toBe(true)
   expect(
     actionSucceeded({
       ...report,
@@ -576,4 +582,93 @@ test('service-side forgetting pauses the run instead of waiting forever for a re
   } finally {
     stop()
   }
+})
+
+test('validation findings name failed terminals, not whole reports', () => {
+  const report = {
+    plan: {
+      request: { kind: 'validateAffected' as const, componentId: 'a' },
+      stages: [],
+      skipped: ['b'],
+      sessions: [],
+      task: null,
+    },
+    results: [
+      { sessionId: 'ok', outcome: 'passed' as const, exitCode: 0 },
+      { sessionId: 'bad', outcome: 'failed' as const, exitCode: 2 },
+    ],
+  }
+  expect(validationFailures([report], (id) => `Test ${id}`)).toBe(
+    '[high] Validation failed: Test bad failed (exit 2)',
+  )
+})
+
+test('starting at Merge on an unreviewed branch waits for approval', async () => {
+  load()
+  await startAuto('p', 't', {
+    goal: 'Goal',
+    effort: 'light',
+    merge: { mode: 'auto', destinationBranch: 'main' },
+    device: 'codex',
+    stage: 'merge',
+  })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('the project-wide planner belongs to a run only while it plans or tracks it', async () => {
+  load()
+  const planner = {
+    id: 'planner',
+    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent' },
+    spec: { cwd: '/p', command: 'codex' },
+  } as unknown as import('../types').SessionRecord
+  useStore.setState({
+    sessionRecords: [planner],
+    sessions: {
+      planner: {
+        running: true,
+        status: { agent: { state: 'working', sinceMs: 1, authoritative: true } },
+      } as SessionState,
+    },
+  })
+  expect((await autoSnapshot('p', 't', run({ stage: 'implement' }))).agents).toEqual([])
+  expect((await autoSnapshot('p', 't', run({ stage: 'plan' }))).agents).toHaveLength(1)
+  expect(
+    (await autoSnapshot('p', 't', run({ stage: 'review', sessionId: 'planner' }))).agents,
+  ).toHaveLength(1)
+})
+
+test('the project folder resolves to the current worktree and reviews against the destination', async () => {
+  load()
+  useStore.getState().setActiveTask(null, true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    tree,
+    { ...tree, path: '/repo', branch: 'work', current: true },
+    { ...tree, path: '/repo-release', branch: 'release' },
+  ])
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'work', 'release'])
+  const snap = await autoSnapshot(
+    'p',
+    null,
+    run({ merge: { mode: 'ask', destinationBranch: 'release' } }),
+  )
+  expect(snap.source.path).toBe('/repo')
+  expect(snap.base).toBe('release')
+  expect(ipc.gitReview).toHaveBeenCalledWith(expect.anything(), '/repo', 'release')
+})
+
+test('stopping Auto cancels only a validation it started', () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate', status: 'paused' }) })
+  stopAuto('p', 't')
+  expect(ipc.graphValidationCancel).not.toHaveBeenCalled()
+  expect(autoRun('p', 't')?.status).toBe('stopped')
 })

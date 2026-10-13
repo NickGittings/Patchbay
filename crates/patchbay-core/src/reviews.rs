@@ -444,17 +444,29 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
     })
 }
 
-/// Saved branch findings for a fix briefing.
-#[must_use]
-pub fn section(worktree: &Path) -> Option<context::ContextSection> {
-    let branch =
-        git::run(git::git(worktree).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()?;
-    let findings = read(worktree, &branch)?;
+/// A fix agent's briefing section, and the folders it needs to read all of it.
+pub struct Handoff {
+    pub section: context::ContextSection,
+    /// The reviews folder, granted only when the inline findings were cut.
+    pub dirs: Vec<PathBuf>,
+}
+
+/// Inline the reviewed branch's findings for a fix agent in `worktree`.
+///
+/// # Errors
+/// Fails when `worktree` no longer has `branch` checked out, or it has no saved
+/// findings.
+pub fn handoff(worktree: &Path, branch: &str) -> Result<Handoff> {
+    let current = git::run(git::git(worktree).args(["symbolic-ref", "--quiet", "--short", "HEAD"]));
+    ensure!(
+        current.as_deref().ok() == Some(branch),
+        "{branch} is no longer checked out in this worktree; switch back or review again"
+    );
+    let findings = read(worktree, branch)
+        .filter(|f| !f.text.trim().is_empty())
+        .with_context(|| format!("No review findings are saved for {branch}"))?;
     let text = findings.text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"])).ok()?;
+    let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"]))?;
     let freshness = match findings.reviewed_head.as_deref() {
         None => "from an earlier attempt; a newer review hasn't written findings yet".into(),
         Some(reviewed) if reviewed != head => format!(
@@ -469,21 +481,26 @@ pub fn section(worktree: &Path) -> Option<context::ContextSection> {
     let age = crate::plans::ago(
         SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(findings.modified_ms),
     );
+    let mut dirs = Vec::new();
     let cut = if findings.truncated {
+        dirs.extend(existing_dir(worktree));
         format!(
             "\n\n[The findings continue past {} KiB; read the rest in {}.]",
             crate::plans::PLAN_LIMIT / 1024,
-            file(worktree, &branch).ok()?.display()
+            file(worktree, branch)?.display()
         )
     } else {
         String::new()
     };
-    Some(context::ContextSection {
-        title: "Review findings".into(),
-        body: format!(
-            "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
-            findings.base
-        ),
+    Ok(Handoff {
+        section: context::ContextSection {
+            title: "Review findings".into(),
+            body: format!(
+                "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
+                findings.base
+            ),
+        },
+        dirs,
     })
 }
 
@@ -1024,5 +1041,51 @@ mod tests {
         for spec in [job.spec, next.spec] {
             context::remove_owned_briefing_file(&context::owned_briefing(&spec).unwrap());
         }
+    }
+
+    #[test]
+    fn handoff_refuses_missing_blank_detached_or_other_branch_findings() {
+        let f = Fixture::new();
+        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        f.prepare("claude").unwrap();
+        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        f.save(" \n", true);
+        assert!(handoff(&f.dir, &f.request.branch).is_err());
+        f.save("[high] file.txt:1: Fix this", true);
+        assert!(handoff(&f.dir, &f.request.branch).is_ok());
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        let error = handoff(&f.dir, &f.request.branch).err().unwrap();
+        assert!(error.to_string().contains("no longer checked out"));
+        git::run(git::git(&f.dir).args(["checkout", "-q", "--detach", "feature/a"])).unwrap();
+        assert!(handoff(&f.dir, &f.request.branch).is_err());
+    }
+
+    #[test]
+    fn handoff_grants_the_reviews_folder_only_when_cut() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        f.save("[high] file.txt:1: Fix this", true);
+        assert!(handoff(&f.dir, &f.request.branch).unwrap().dirs.is_empty());
+        f.save(&"x".repeat(crate::plans::PLAN_LIMIT + 1), true);
+        let handoff = handoff(&f.dir, &f.request.branch).unwrap();
+        let reviews = existing_dir(&f.dir).unwrap();
+        assert_eq!(handoff.dirs, std::slice::from_ref(&reviews));
+        assert!(handoff.section.body.contains("continue past 64 KiB"));
+        let terminal = serde_json::from_value(serde_json::json!({
+            "id": "fix", "name": "Fix", "kind": "agent", "command": "claude"
+        }))
+        .unwrap();
+        let spec = context::root_kickoff_spec(
+            &f.project,
+            &[],
+            &terminal,
+            None,
+            &AllowAll,
+            &[handoff.section],
+            context::Kickoff::FixFindings,
+            &handoff.dirs,
+        )
+        .unwrap();
+        assert!(spec.command.contains(&reviews.display().to_string()));
     }
 }

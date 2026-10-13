@@ -84,8 +84,13 @@
       stages.join(',') === 'review,fix,review,mergeGate,merge,done',
       `Wrong full sequence ${stages}`,
     )
-    const restored = smoke.restoredLayout(smoke.workspaceDocument().projects[0].layout)
-    assert(restored.auto.status === 'paused', 'Restored Auto continued without approval')
+    const layout = smoke.workspaceDocument().projects[0].layout
+    assert(smoke.restoredLayout(layout).auto.status === 'done', 'Restored Auto lost its finish')
+    const unfinished = smoke.restoredLayout({
+      ...layout,
+      auto: { ...layout.auto, status: 'running' },
+    })
+    assert(unfinished.auto.status === 'paused', 'Restored Auto continued without approval')
     const description = await smoke.taskCreate({
       title: 'Description fixture',
       branch: 'auto-description',

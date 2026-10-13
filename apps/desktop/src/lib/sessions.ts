@@ -160,6 +160,8 @@ interface Launch {
   implementPlan?: boolean
   kickoff?: import('../types').Kickoff
   auto?: import('../types').AutoBrief
+  /** The reviewed branch whose findings a `fixFindings` launch receives. */
+  reviewBranch?: string
   restart?: boolean
 }
 
@@ -217,6 +219,7 @@ export function startTerminal(
   projectId?: string,
   kickoff: import('../types').Kickoff | boolean = false,
   auto?: import('../types').AutoBrief,
+  reviewBranch?: string,
 ): Promise<void> {
   let launch: Launch
   try {
@@ -224,6 +227,7 @@ export function startTerminal(
     launch.implementPlan = kickoff === true || kickoff === 'implementPlan'
     launch.kickoff = typeof kickoff === 'string' ? kickoff : undefined
     launch.auto = auto
+    launch.reviewBranch = reviewBranch
   } catch (e) {
     useStore.getState().setMessage(String(e))
     if (kickoff || auto) return Promise.reject(e)
@@ -279,6 +283,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           launch.implementPlan,
           resume,
           ...autoArgs,
+          ...(launch.reviewBranch ? [launch.reviewBranch] : []),
         )
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)

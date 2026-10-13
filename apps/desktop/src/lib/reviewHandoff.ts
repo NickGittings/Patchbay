@@ -1,27 +1,42 @@
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, type SessionRecord } from '../types'
+import { TASK_ROOT_SCOPE, sessionId, type SessionRecord } from '../types'
+import { gitWorktrees } from './ipc'
 import { agentDevices } from './plan'
 import { startTerminal } from './sessions'
 
-/** Launch a fresh implementation agent in the reviewed worktree with only its findings. */
+/**
+ * The task a review ran in: `null` for the project folder. A review runs at its
+ * worktree's top folder, which can sit above a project opened in a subfolder.
+ */
+async function reviewedTask(projectId: string, cwd: string): Promise<string | null> {
+  const matching = useStore.getState().tasks.filter((t) => t.worktree === cwd)
+  const task = matching.find((t) => !t.missing)
+  if (task) return task.id
+  if (matching.length) throw new Error('The reviewed worktree no longer exists')
+  const worktrees = await gitWorktrees(projectId)
+  if (worktrees.some((w) => w.current && w.path === cwd)) return null
+  throw new Error('Add this worktree as a task first')
+}
+
+/**
+ * Launch a fresh implementation agent in the reviewed worktree with only its findings.
+ * Returns the launched session's id.
+ */
 export async function fixReviewFindings(
   record: SessionRecord,
   auto?: import('../types').AutoBrief,
   deviceId?: string,
 ) {
-  const initial = useStore.getState()
-  const project = initial.project
-  if (!project) throw new Error('Open a project first')
-  const projectId = project.id
+  const reviewBranch = record.metadata.branch
+  if (!reviewBranch) throw new Error('This review predates recorded branches; start a new review')
+  const projectId = useStore.getState().project?.id
+  if (!projectId) throw new Error('Open a project first')
   if (projectId !== record.metadata.projectId) throw new Error('Open the reviewed project first')
-  const task =
-    record.spec.cwd === project.root
-      ? null
-      : initial.tasks.find((t) => t.worktree === record.spec.cwd)?.id
-  if (task === undefined) throw new Error('Add this worktree as a task first')
-  if (!initial.devices.some((d) => d.kind === 'agent'))
-    throw new Error('No agent presets available')
+  const task = await reviewedTask(projectId, record.spec.cwd)
+  const initial = useStore.getState()
+  if (initial.project?.id !== projectId) throw new Error('Open the reviewed project first')
   const agents = agentDevices(initial.devices)
+  if (!agents.length) throw new Error('No agent presets available')
   const device =
     agents.find((d) => (deviceId ? d.id === deviceId : d.adapter === record.metadata.adapter)) ??
     agents[0]
@@ -38,7 +53,9 @@ export async function fixReviewFindings(
     return s
   }
   const id = current().addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, 'fixFindings', auto)
-  current().setView('implementation')
-  return current().activeSession!
+  await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, 'fixFindings', auto, reviewBranch)
+  // The agent runs either way; follow it only if the user stayed in its worktree.
+  const after = useStore.getState()
+  if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
+  return sessionId(TASK_ROOT_SCOPE, id, task, projectId)
 }

@@ -428,6 +428,7 @@ export const taskRootStart = async (
   resume = false,
   auto?: import('../types').AutoBrief,
   kickoff?: import('../types').Kickoff,
+  reviewBranch?: string,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -438,6 +439,7 @@ export const taskRootStart = async (
     requestId,
     auto,
     kickoff,
+    reviewBranch,
     resume,
     implementPlan,
     extraContext:
