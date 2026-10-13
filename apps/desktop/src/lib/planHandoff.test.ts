@@ -216,3 +216,27 @@ test('implementing in the project folder copies nothing', async () => {
   expect(ipc.planWrite).not.toHaveBeenCalled()
   expect(ipc.planRead).toHaveBeenCalledWith('p', undefined)
 })
+
+test('Auto can pick up a saved worktree plan and passes its goal into implementation', async () => {
+  useStore.setState({ activeTask: 'later' })
+  vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
+    text: task ? '# Worktree plan' : '',
+    cut: false,
+  }))
+  const auto = {
+    goal: 'Finish the worktree task',
+    fixFloor: null,
+    effortNote: 'Add tests',
+    commit: true,
+  }
+  const sid = await implementPlannerPlan('claude', auto)
+  expect(sid).toBe(useStore.getState().activeSession)
+  expect(startTerminal).toHaveBeenCalledWith(
+    TASK_ROOT_SCOPE,
+    expect.any(String),
+    'later',
+    'p',
+    true,
+    auto,
+  )
+})

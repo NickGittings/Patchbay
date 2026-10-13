@@ -14,6 +14,7 @@
     "check": "tsc -b && oxlint src && prettier --check . && vitest run && node --test scripts/smoke-fixtures.test.mjs",
     "test": "vitest run",
     "smoke": "node scripts/smoke-all.mjs popout",
+    "smoke:auto": "node scripts/smoke-all.mjs auto",
     "smoke:all": "node scripts/smoke-all.mjs",
     "smoke:views": "node scripts/smoke-all.mjs views",
     "smoke:merge": "node scripts/smoke-all.mjs merge",

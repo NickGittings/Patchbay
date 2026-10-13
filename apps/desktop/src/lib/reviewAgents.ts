@@ -78,11 +78,13 @@ async function startJobAgent<R>(
     request: R,
     terminal: TerminalSpec,
     requestId: string,
+    auto?: import('../types').AutoBrief,
   ) => Promise<string>,
   project: Project,
   request: R,
   device: DeviceManifest,
   requestId: string,
+  auto?: import('../types').AutoBrief,
 ) {
   await listenForTerminals()
   const sid = await start(
@@ -96,6 +98,7 @@ async function startJobAgent<R>(
       kind: 'agent',
     },
     requestId,
+    ...(auto ? [auto] : []),
   )
   await reconcileFreshSessions()
   return sid
@@ -106,14 +109,16 @@ export const startMergeAgent = (
   request: MergeRequest,
   device: DeviceManifest,
   requestId: string,
-) => startJobAgent(mergeAgentStart, project, request, device, requestId)
+  auto?: import('../types').AutoBrief,
+) => startJobAgent(mergeAgentStart, project, request, device, requestId, auto)
 
 export const startReviewAgent = (
   project: Project,
   request: ReviewRequest,
   device: DeviceManifest,
   requestId: string,
-) => startJobAgent(reviewAgentStart, project, request, device, requestId)
+  auto?: import('../types').AutoBrief,
+) => startJobAgent(reviewAgentStart, project, request, device, requestId, auto)
 
 /** Bases a branch can be reviewed against: never the branch itself. */
 export function reviewBases(

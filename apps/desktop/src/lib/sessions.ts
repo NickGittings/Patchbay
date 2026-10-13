@@ -158,6 +158,8 @@ interface Launch {
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
   implementPlan?: boolean
+  kickoff?: import('../types').Kickoff
+  auto?: import('../types').AutoBrief
   restart?: boolean
 }
 
@@ -213,15 +215,18 @@ export function startTerminal(
   terminalId: string,
   task?: string | null,
   projectId?: string,
-  implementPlan = false,
+  kickoff: import('../types').Kickoff | boolean = false,
+  auto?: import('../types').AutoBrief,
 ): Promise<void> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
-    launch.implementPlan = implementPlan
+    launch.implementPlan = kickoff === true || kickoff === 'implementPlan'
+    launch.kickoff = typeof kickoff === 'string' ? kickoff : undefined
+    launch.auto = auto
   } catch (e) {
     useStore.getState().setMessage(String(e))
-    if (implementPlan) return Promise.reject(e)
+    if (kickoff || auto) return Promise.reject(e)
     return Promise.resolve()
   }
   return launchTerminal(launch)
@@ -260,6 +265,8 @@ function launchTerminal(launch: Launch): Promise<void> {
           ?.terminals.find((t) => t.id === terminalId)
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent')
         await savePlanDraft(launch.projectId, launch.task)
+      const autoArgs: [import('../types').AutoBrief?, import('../types').Kickoff?] =
+        launch.auto || launch.kickoff ? [launch.auto, launch.kickoff] : []
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
@@ -271,6 +278,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           requestId,
           launch.implementPlan,
           resume,
+          ...autoArgs,
         )
       } else if (runtime?.commandId)
         await executeExtensionCommand(runtime.commandId, [], componentId, project, launch.task)
@@ -287,7 +295,7 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, requestId, !!launch.restart)
+        await planStart(project, ids, terminal, requestId, !!launch.restart, ...autoArgs)
         if (requestedEpoch === epoch) markPlanStarted(launch.projectId, sid, ids)
       } else {
         await terminalStart(
@@ -308,7 +316,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       if (snapshot?.running) launchRequests.delete(sid)
       if (requestedEpoch === epoch && !snapshot?.running) {
         useStore.getState().setMessage(String(e))
-        if (launch.implementPlan) throw e
+        if (launch.implementPlan || launch.kickoff || launch.auto) throw e
       }
     }
   })().finally(() => {

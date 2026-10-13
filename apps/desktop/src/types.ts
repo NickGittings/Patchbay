@@ -29,7 +29,51 @@ export interface ReviewRequest {
   base: string
 }
 
+export type Severity = 'critical' | 'high' | 'medium' | 'low'
+export interface Verdict {
+  clean: boolean
+  counts: Record<Severity, number>
+}
+export type MergeOutcome = 'merged' | 'alreadyIntegrated' | 'inProgress' | 'dirty' | 'notMerged'
+export type Kickoff = 'implementPlan' | 'fixFindings' | 'plan'
+export interface AutoBrief {
+  goal: string
+  fixFloor: Severity | null
+  effortNote: string
+  commit: boolean
+}
+export interface EffortSettings {
+  maxRounds: number
+  severityFloor: Severity
+  validate: boolean
+}
+export type AutoStage =
+  'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
+export interface AutoRun {
+  runId: string
+  status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
+  stage: AutoStage
+  goal: string
+  effort: 'light' | 'standard' | 'thorough'
+  overrides?: Partial<EffortSettings>
+  merge: { mode: 'ask' | 'auto'; destinationBranch: string }
+  device: string
+  round: number
+  sessionId?: string
+  turnSince?: number
+  launchAtMs?: number
+  observedWorking?: boolean
+  sessionStartedMs?: number
+  log: { atMs: number; text: string }[]
+  reason?: string
+  validation?: ActionReport[]
+  reviewedHead?: string
+  findingsSummary?: string
+  validationFindings?: string
+}
+
 export interface ReviewFindings {
+  verdict: Verdict | null
   text: string
   modifiedMs: number
   reviewedHead: string | null
@@ -220,6 +264,7 @@ export interface Affected {
 
 /** Changes per component plus their dependents (`git::Review`). */
 export interface Review {
+  ahead?: boolean
   changes: Record<string, ChangedFile[]>
   affected: Affected[]
 }
@@ -428,7 +473,7 @@ export interface SessionRecord {
   history: TerminalSnapshot[]
   interrupted: boolean
   /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
-  spec: { cwd: string; command: string; dirs?: string[] }
+  spec: { cwd: string; command: string; dirs?: string[]; merge_source?: string | null }
 }
 export interface WorkspaceProject {
   id: string

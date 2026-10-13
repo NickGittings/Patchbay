@@ -800,6 +800,7 @@ async fn plan_context(
 #[tauri::command]
 async fn plan_start(
     request_id: String,
+    auto: Option<context::AutoBrief>,
     resume: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
@@ -807,6 +808,7 @@ async fn plan_start(
     component_ids: Vec<String>,
     terminal: TerminalSpec,
     extra_context: Option<Vec<ContextSection>>,
+    kickoff: Option<context::Kickoff>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -822,13 +824,24 @@ async fn plan_start(
             &project,
             &component_ids,
             &roots,
-            None,
+            auto.as_ref().map(|a| a.section("plan")),
             extra_context,
         );
         let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        let mut spec =
+        let mut spec = if kickoff == Some(context::Kickoff::Plan) {
+            context::root_kickoff_spec(
+                &project,
+                &component_ids,
+                &terminal,
+                None,
+                &AllowAll,
+                &sections,
+                context::Kickoff::Plan,
+            )
+        } else {
             context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
-                .map_err(err)?;
+        }
+        .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, None, &mut spec);
         }
@@ -1073,6 +1086,7 @@ async fn git_review(
     state: State<'_, AppState>,
     mut project: Project,
     worktree: Option<String>,
+    base: Option<String>,
 ) -> CmdResult<git::Review> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1088,7 +1102,7 @@ async fn git_review(
             .collect();
         // Only folders readable in the open worktree are mapped into another.
         let components = readable_components(&access, folders);
-        git::review(&project, components, worktree.as_deref()).map_err(err)
+        git::review_branch(&project, components, worktree.as_deref(), base.as_deref()).map_err(err)
     })
     .await
 }
@@ -1291,6 +1305,7 @@ async fn terminal_start(
 #[tauri::command]
 async fn task_root_start(
     request_id: String,
+    auto: Option<context::AutoBrief>,
     resume: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
@@ -1299,6 +1314,7 @@ async fn task_root_start(
     terminal: TerminalSpec,
     task: Option<String>,
     extra_context: Option<Vec<ContextSection>>,
+    kickoff: Option<context::Kickoff>,
     implement_plan: Option<bool>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
@@ -1316,14 +1332,28 @@ async fn task_root_start(
             component_ids
         };
         let root = Path::new(&project.root);
-        let own = section
+        let own = auto
+            .as_ref()
+            .map(|a| {
+                a.section(if kickoff == Some(context::Kickoff::FixFindings) {
+                    "fix"
+                } else {
+                    "implement"
+                })
+            })
             .into_iter()
+            .chain(section)
             .chain(patchbay_core::plans::section(root, task.as_deref()))
             .chain(patchbay_core::proposals::section(
                 &project,
                 task.as_deref(),
                 &selected,
             ));
+        let own = own.chain(
+            (kickoff == Some(context::Kickoff::FixFindings))
+                .then(|| patchbay_core::reviews::section(root))
+                .flatten(),
+        );
         let sections = briefing_sections(
             &extensions.get(),
             &project,
@@ -1335,19 +1365,29 @@ async fn task_root_start(
         let mut metadata =
             service::metadata(&project_id, &project, model::TASK_ROOT_SCOPE, &terminal);
         metadata.task.clone_from(&task);
-        let build = if implement_plan.unwrap_or(false) {
-            context::task_root_implementation_spec
+        let kickoff = kickoff.or(implement_plan
+            .unwrap_or(false)
+            .then_some(context::Kickoff::ImplementPlan));
+        let mut spec = if let Some(kickoff) = kickoff {
+            context::root_kickoff_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+                kickoff,
+            )
         } else {
-            context::task_root_session_spec
-        };
-        let mut spec = build(
-            &project,
-            &selected,
-            &terminal,
-            task.as_deref(),
-            &AllowAll,
-            &sections,
-        )
+            context::task_root_session_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+            )
+        }
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
@@ -1358,6 +1398,7 @@ async fn task_root_start(
 }
 
 /// Launch a merge agent in an existing destination worktree.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn merge_agent_start(
     window: WebviewWindow,
@@ -1367,6 +1408,7 @@ async fn merge_agent_start(
     request: patchbay_core::merges::MergeRequest,
     terminal: TerminalSpec,
     request_id: String,
+    auto: Option<context::AutoBrief>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1374,15 +1416,37 @@ async fn merge_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        let job = patchbay_core::merges::prepare(&project, &request, &terminal, &AllowAll)
-            .map_err(err)?;
+        let job = patchbay_core::merges::prepare_with_auto(
+            &project,
+            &request,
+            &terminal,
+            &AllowAll,
+            auto.as_ref(),
+        )
+        .map_err(err)?;
         let metadata = service::metadata(&project_id, &project, model::MERGE_SCOPE, &job.terminal);
         bridge.start(job.spec, metadata, request_id)
     })
     .await
 }
 
+#[tauri::command]
+async fn merge_outcome(
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::merges::MergeRequest,
+) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        patchbay_core::merges::outcome(&project, &request).map_err(err)
+    })
+    .await
+}
+
 /// Launch a review agent in a registered worktree.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn review_agent_start(
     window: WebviewWindow,
@@ -1392,6 +1456,7 @@ async fn review_agent_start(
     request: patchbay_core::reviews::ReviewRequest,
     terminal: TerminalSpec,
     request_id: String,
+    auto: Option<context::AutoBrief>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1399,8 +1464,14 @@ async fn review_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        let prepared = patchbay_core::reviews::prepare(&project, &request, &terminal, &AllowAll)
-            .map_err(err)?;
+        let prepared = patchbay_core::reviews::prepare_with_auto(
+            &project,
+            &request,
+            &terminal,
+            &AllowAll,
+            auto.as_ref(),
+        )
+        .map_err(err)?;
         prepared.launch(|job| {
             let mut metadata =
                 service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
@@ -2043,6 +2114,7 @@ pub fn run() {
                 plan_read,
                 task_root_start,
                 merge_agent_start,
+                merge_outcome,
                 review_agent_start,
                 review_read,
                 review_prune,

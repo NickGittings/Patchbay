@@ -12,6 +12,76 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Severity {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Severities {
+    pub critical: u32,
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Verdict {
+    pub clean: bool,
+    pub counts: Severities,
+}
+
+/// Read the first nonempty line's verdict and count severity-tagged findings.
+#[must_use]
+pub fn verdict(text: &str) -> Option<Verdict> {
+    let mut lines = text.lines().map(str::trim).filter(|s| !s.is_empty());
+    let header = lines.next()?.to_ascii_lowercase();
+    let (key, value) = header.split_once(':')?;
+    if key.trim() != "verdict" {
+        return None;
+    }
+    let clean = match value.trim() {
+        "clean" => true,
+        "issues" => false,
+        _ => return None,
+    };
+    let mut counts = Severities::default();
+    for line in lines {
+        let line = line.to_ascii_lowercase();
+        // Count each tagged finding once, even if it mentions another severity.
+        for (tag, count) in [
+            ("[critical]", &mut counts.critical),
+            ("[high]", &mut counts.high),
+            ("[medium]", &mut counts.medium),
+            ("[low]", &mut counts.low),
+        ] {
+            if line.contains(tag) {
+                *count += 1;
+                break;
+            }
+        }
+    }
+    Some(Verdict { clean, counts })
+}
+
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +108,7 @@ struct Started {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Findings {
+    pub verdict: Option<Verdict>,
     pub text: String,
     pub modified_ms: u64,
     /// Absent when the findings predate the latest review attempt.
@@ -195,6 +266,20 @@ pub fn prepare(
     terminal: &TerminalSpec,
     policy: &dyn Policy,
 ) -> Result<Prepared> {
+    prepare_with_auto(project, request, terminal, policy, None)
+}
+
+/// Prepare a review with optional Auto instructions.
+///
+/// # Errors
+/// As [`prepare`].
+pub fn prepare_with_auto(
+    project: &Project,
+    request: &ReviewRequest,
+    terminal: &TerminalSpec,
+    policy: &dyn Policy,
+    auto: Option<&context::AutoBrief>,
+) -> Result<Prepared> {
     let root = Path::new(&project.root);
     ensure!(
         git::worktrees(root)
@@ -228,17 +313,20 @@ pub fn prepare(
     let mut terminal = terminal.clone();
     terminal.id = crate::workspace::session_id(&request.worktree, REVIEW_SCOPE, "review");
     terminal.name = format!("Review · {}", request.branch);
-    let text = format!(
+    let mut text = format!(
         "# Patchbay branch review\n\nProject: {}\nWorktree: {}\nBranch: {}\nHEAD: {head}\nBase branch: {}\nMerge base: {merge_base}\n\n\
          Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions.\n\n\
          Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Fixes belong in Implementation. Read-only behavior relies on these instructions; Patchbay does not rewrite the user's agent command to enforce it.\n\n\
-         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
+         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. Start the file with exactly Verdict: clean or Verdict: issues. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
         project.name,
         request.worktree,
         request.branch,
         request.base,
         findings.display(),
     );
+    if let Some(auto) = auto {
+        text.push_str(&auto.markdown("review"));
+    }
     let mut scoped = project.clone();
     scoped.root.clone_from(&request.worktree);
     scoped.components.clear();
@@ -345,6 +433,7 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
                 git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
             });
     Some(Findings {
+        verdict: verdict(&text),
         text,
         modified_ms,
         reviewed_head,
@@ -352,6 +441,49 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
         started_ms: started.started_ms,
         edited_since_start,
         truncated,
+    })
+}
+
+/// Saved branch findings for a fix briefing.
+#[must_use]
+pub fn section(worktree: &Path) -> Option<context::ContextSection> {
+    let branch =
+        git::run(git::git(worktree).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()?;
+    let findings = read(worktree, &branch)?;
+    let text = findings.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let head = git::run(git::git(worktree).args(["rev-parse", "HEAD"])).ok()?;
+    let freshness = match findings.reviewed_head.as_deref() {
+        None => "from an earlier attempt; a newer review hasn't written findings yet".into(),
+        Some(reviewed) if reviewed != head => format!(
+            "reviewed at {}; the branch has commits since, so some may be resolved",
+            reviewed.get(..7).unwrap_or(reviewed)
+        ),
+        Some(_) if findings.edited_since_start => {
+            "files changed after the review started; some may already be addressed".into()
+        }
+        Some(_) => format!("current for HEAD {}", &head[..head.len().min(7)]),
+    };
+    let age = crate::plans::ago(
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(findings.modified_ms),
+    );
+    let cut = if findings.truncated {
+        format!(
+            "\n\n[The findings continue past {} KiB; read the rest in {}.]",
+            crate::plans::PLAN_LIMIT / 1024,
+            file(worktree, &branch).ok()?.display()
+        )
+    } else {
+        String::new()
+    };
+    Some(context::ContextSection {
+        title: "Review findings".into(),
+        body: format!(
+            "Branch: {branch}\nBase: {}\nSaved {age}\nFreshness: {freshness}\n\n{text}{cut}",
+            findings.base
+        ),
     })
 }
 
@@ -426,6 +558,28 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_structured_verdicts_leniently_and_requires_the_header() {
+        use super::verdict;
+        assert!(verdict("  VERDICT : ClEaN \nNo findings.").unwrap().clean);
+        let issues =
+            verdict("Verdict: issues\n- [Critical] one\n- [HIGH] two\n[medium] three\n[low] four")
+                .unwrap();
+        assert!(!issues.clean);
+        assert_eq!(
+            issues.counts,
+            super::Severities {
+                critical: 1,
+                high: 1,
+                medium: 1,
+                low: 1
+            }
+        );
+        assert!(verdict("No findings").is_none());
+        assert!(verdict("Verdict: maybe").is_none());
+        assert!(verdict("# Findings\nVerdict: clean").is_none());
+    }
+
     use super::*;
     use crate::policy::AllowAll;
     use std::fs;
@@ -520,6 +674,9 @@ mod tests {
                 "Do not edit",
                 "stage, commit, stash, reset or check out",
                 "file:line",
+                "Verdict: clean or Verdict: issues",
+                "[critical], [high], [medium] or [low]",
+                "say so explicitly",
                 "$PATCHBAY_REVIEW_FILE",
             ] {
                 assert!(body.contains(rule), "{rule}");

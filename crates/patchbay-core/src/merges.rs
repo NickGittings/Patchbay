@@ -18,6 +18,71 @@ pub struct MergeRequest {
     pub destination_branch: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeOutcome {
+    Merged,
+    AlreadyIntegrated,
+    InProgress,
+    Dirty,
+    NotMerged,
+}
+
+/// Check live Git state without changing either worktree.
+///
+/// # Errors
+/// Fails for foreign, missing or changed worktrees, or Git errors.
+pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome> {
+    let trees = git::worktrees(Path::new(&project.root));
+    let source = checked_tree(&trees, &request.source, "source")?;
+    let destination = checked_tree(&trees, &request.destination, "destination")?;
+    ensure!(
+        source.path != destination.path
+            && source.branch.as_deref() == Some(&request.source_branch)
+            && destination.branch.as_deref() == Some(&request.destination_branch),
+        "The merge branches changed"
+    );
+    let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
+    for path in [&source.path, &destination.path] {
+        owned_dirs(Path::new(path), &common)?;
+    }
+    let root = Path::new(&destination.path);
+    let marker = git::run(git::git(root).args(["rev-parse", "--git-path", "MERGE_HEAD"]))?;
+    if root.join(marker).exists() {
+        return Ok(MergeOutcome::InProgress);
+    }
+    for path in [&source.path, &destination.path] {
+        if !git::run(git::git(Path::new(path)).args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ]))?
+        .is_empty()
+        {
+            return Ok(MergeOutcome::Dirty);
+        }
+    }
+    let ancestor = git::git(root)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            &source.head,
+            &destination.head,
+        ])
+        .status()?;
+    if !ancestor.success() {
+        return Ok(MergeOutcome::NotMerged);
+    }
+    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
+    Ok(
+        if parents.split_whitespace().skip(2).any(|p| p == source.head) {
+            MergeOutcome::Merged
+        } else {
+            MergeOutcome::AlreadyIntegrated
+        },
+    )
+}
+
 pub struct AgentJob {
     pub terminal: TerminalSpec,
     pub spec: SessionSpec,
@@ -130,6 +195,20 @@ pub fn prepare(
     terminal: &TerminalSpec,
     policy: &dyn Policy,
 ) -> Result<AgentJob> {
+    prepare_with_auto(project, request, terminal, policy, None)
+}
+
+/// Prepare a merge with optional Auto instructions.
+///
+/// # Errors
+/// As [`prepare`].
+pub fn prepare_with_auto(
+    project: &Project,
+    request: &MergeRequest,
+    terminal: &TerminalSpec,
+    policy: &dyn Policy,
+    auto: Option<&context::AutoBrief>,
+) -> Result<AgentJob> {
     let trees = git::worktrees(Path::new(&project.root));
     let mut source = checked_tree(&trees, &request.source, "source")?;
     let mut destination = checked_tree(&trees, &request.destination, "destination")?;
@@ -171,6 +250,9 @@ pub fn prepare(
             "\n## Review findings\n\nFindings file: {}\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n",
             file.display(), findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()),
         ));
+    }
+    if let Some(auto) = auto {
+        text.push_str(&auto.markdown("merge"));
     }
     // Linked worktrees write their private index/HEAD and the shared object/ref store.
     let mut dirs = destination_dirs;
@@ -285,6 +367,75 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn outcome_checks_ancestry_operation_and_dirt() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        let source = Path::new(&f.request.source);
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::AlreadyIntegrated
+        );
+        fs::write(source.join("new.txt"), "feature\n").unwrap();
+        git::run(git::git(source).args(["add", "."])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::NotMerged
+        );
+        let review =
+            git::review_branch(&f.project, vec![], Some(&f.request.source), Some("main")).unwrap();
+        assert!(review.ahead);
+        assert!(
+            review.changes[crate::model::PROJECT_SCOPE]
+                .iter()
+                .any(|file| file.path == "new.txt")
+        );
+        fs::write(source.join("dirt"), "untracked").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Dirty
+        );
+        fs::remove_file(source.join("dirt")).unwrap();
+        git::run(git::git(root).args(["merge", "--no-commit", "--no-ff", "feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::InProgress
+        );
+        git::run(git::git(root).args(["commit", "-qm", "merge feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+    }
+
+    #[test]
+    fn auto_context_is_opt_in_for_jobs() {
+        let f = Fixture::new();
+        let auto = context::AutoBrief {
+            goal: "Goal".into(),
+            fix_floor: None,
+            effort_note: "Thorough".into(),
+            commit: true,
+        };
+        let plain = f.prepare().unwrap();
+        let automatic = prepare_with_auto(
+            &f.project,
+            &f.request,
+            &Fixture::terminal("claude"),
+            &AllowAll,
+            Some(&auto),
+        )
+        .unwrap();
+        let read =
+            |job: &AgentJob| fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
+        assert!(!read(&plain).contains("## Auto mode"));
+        assert!(read(&automatic).contains("## Auto mode"));
+        for job in [plain, automatic] {
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
     }
 

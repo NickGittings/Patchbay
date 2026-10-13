@@ -155,10 +155,12 @@ export const gitDiff = (
   worktree?: string,
 ) => invoke<FileDiff>('git_diff', { components, componentId, path, oldPath, worktree })
 /** `worktree` is a path `gitWorktrees` returned; omitted for the open one. */
-export const gitReview = (project: Project, worktree?: string) =>
-  invoke<Review>('git_review', { project, projectId: project.projectId, worktree })
-export const gitWorktrees = () => invoke<Worktree[]>('git_worktrees')
-export const gitBranches = () => invoke<string[]>('git_branches')
+export const gitReview = (project: Project, worktree?: string, base?: string) =>
+  invoke<Review>('git_review', { project, projectId: project.projectId, worktree, base })
+export const gitWorktrees = (projectId = useStore.getState().project?.id) =>
+  invoke<Worktree[]>('git_worktrees', { projectId })
+export const gitBranches = (projectId = useStore.getState().project?.id) =>
+  invoke<string[]>('git_branches', { projectId })
 /** Planners belong to the project, so they never take a task. */
 export const planContext = async (project: Project, componentIds: string[]) =>
   invoke<string>('plan_context', {
@@ -186,6 +188,8 @@ export const planStart = async (
   terminal: TerminalSpec,
   requestId: string = crypto.randomUUID(),
   resume = false,
+  auto?: import('../types').AutoBrief,
+  kickoff?: import('../types').Kickoff,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -193,6 +197,8 @@ export const planStart = async (
     componentIds,
     terminal,
     requestId,
+    auto,
+    kickoff,
     resume,
     extraContext: await extraContext(project, componentIds),
   })
@@ -420,6 +426,8 @@ export const taskRootStart = async (
   requestId: string = crypto.randomUUID(),
   implementPlan = false,
   resume = false,
+  auto?: import('../types').AutoBrief,
+  kickoff?: import('../types').Kickoff,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -428,6 +436,8 @@ export const taskRootStart = async (
     terminal,
     task,
     requestId,
+    auto,
+    kickoff,
     resume,
     implementPlan,
     extraContext:
@@ -467,6 +477,7 @@ export const mergeAgentStart = (
   request: import('../types').MergeRequest,
   terminal: TerminalSpec,
   requestId: string,
+  auto?: import('../types').AutoBrief,
 ) =>
   invoke<string>('merge_agent_start', {
     projectId: project.projectId,
@@ -474,6 +485,7 @@ export const mergeAgentStart = (
     request,
     terminal,
     requestId,
+    auto,
   })
 
 export const reviewAgentStart = (
@@ -481,6 +493,7 @@ export const reviewAgentStart = (
   request: import('../types').ReviewRequest,
   terminal: TerminalSpec,
   requestId: string,
+  auto?: import('../types').AutoBrief,
 ) =>
   invoke<string>('review_agent_start', {
     projectId: project.projectId,
@@ -488,9 +501,17 @@ export const reviewAgentStart = (
     request,
     terminal,
     requestId,
+    auto,
   })
 
 export const reviewRead = (projectId: string, branch: string) =>
   invoke<import('../types').ReviewFindings | null>('review_read', { projectId, branch })
 
 export const reviewPrune = (projectId: string) => invoke<void>('review_prune', { projectId })
+
+export const mergeOutcome = (project: Project, request: import('../types').MergeRequest) =>
+  invoke<import('../types').MergeOutcome>('merge_outcome', {
+    projectId: project.projectId,
+    project,
+    request,
+  })

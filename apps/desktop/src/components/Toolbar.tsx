@@ -8,6 +8,7 @@ import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
 import MapSaveStatus from './MapSaveStatus'
+import AutoPanel from './auto/AutoPanel'
 import AttentionMenu from './status/AttentionMenu'
 import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
@@ -137,6 +138,7 @@ export default function Toolbar() {
             <>
               {/* Plan and Implementation carry the picker in their own headers. */}
               {(view === 'navigation' || view === 'review') && <WorktreePicker align="right" />}
+              <AutoPanel onIntegrations={() => setIntegrationsOpen(true)} />
               <AttentionMenu />
               <MapSaveStatus />
             </>

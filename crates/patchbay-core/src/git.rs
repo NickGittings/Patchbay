@@ -413,6 +413,7 @@ pub struct Affected {
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
+    pub ahead: bool,
     pub changes: HashMap<String, Vec<ChangedFile>>,
     pub affected: Vec<Affected>,
 }
@@ -443,7 +444,65 @@ pub fn review(
         .into_iter()
         .map(|(id, via)| Affected { id, via })
         .collect();
-    Ok(Review { changes, affected })
+    Ok(Review {
+        changes,
+        affected,
+        ahead: false,
+    })
+}
+
+/// Include committed branch changes for Auto inference and validation.
+///
+/// # Errors
+/// As [`review`], plus invalid base refs or Git errors.
+pub fn review_branch(
+    project: &Project,
+    components: Vec<(String, PathBuf)>,
+    worktree: Option<&str>,
+    base: Option<&str>,
+) -> Result<Review> {
+    let mut review = review(project, components.clone(), worktree)?;
+    let Some(base) = base else {
+        return Ok(review);
+    };
+    let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
+    crate::tasks::check_branch(&root, base)?;
+    let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
+    review.ahead = run(git(&root).args(["rev-parse", "HEAD"]))? != merge_base;
+    let names = run(git(&root).args(["diff", "--name-only", "-z", &merge_base, "HEAD", "--"]))?;
+    let groups = group_by_repo(&with_project_scope(&root, &components));
+    let members = groups
+        .iter()
+        .find(|g| g.root == root)
+        .map(|g| g.members.as_slice())
+        .unwrap_or_default();
+    for path in names.split('\0').filter(|p| !p.is_empty()) {
+        if let Some(id) = owner_of(path, members) {
+            let files = review.changes.entry(id.into()).or_default();
+            if !files.iter().any(|f| f.path == path) {
+                files.push(ChangedFile {
+                    path: path.into(),
+                    kind: ChangeKind::Modified,
+                    old_path: None,
+                    modified_ms: None,
+                    added: None,
+                    removed: None,
+                });
+            }
+        }
+    }
+    let changed: Vec<_> = review
+        .changes
+        .iter()
+        .filter(|(_, files)| !files.is_empty())
+        .map(|(id, _)| id.clone())
+        .collect();
+    review.affected = project
+        .dependents(&changed)
+        .into_iter()
+        .map(|(id, via)| Affected { id, via })
+        .collect();
+    Ok(review)
 }
 
 /// Which changed file to diff: `path` (relative to the project root) as

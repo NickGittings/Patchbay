@@ -1,3 +1,4 @@
+import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { emptyTaskWorkspace, projectFrom, useStore, type ProjectState } from '../store'
@@ -62,6 +63,7 @@ export function workspaceDocument(): WorkspaceDocument {
               rootTerminals: state.rootTerminals,
               componentTerminals: state.componentTerminals,
               maximizedTerminal: state.maximizedTerminal,
+              auto: state.auto,
               graphActionReport: state.graphActionReport,
             }
           : (p.unavailableLayout ?? {}),
@@ -84,6 +86,7 @@ export function restoredLayout(
   nested = false,
 ): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
+  out.auto = restoredAuto(layout.auto)
   if (!nested)
     out.closedTaskIds = Array.isArray(layout.closedTaskIds)
       ? [...new Set(layout.closedTaskIds.filter((id): id is string => typeof id === 'string'))]
@@ -296,6 +299,7 @@ export function initializeWorkspace() {
           s.groups === prev.groups &&
           s.activeTask === prev.activeTask &&
           s.closedTaskIds === prev.closedTaskIds &&
+          s.auto === prev.auto &&
           s.taskWorkspaces === prev.taskWorkspaces &&
           s.rootTerminals === prev.rootTerminals &&
           s.componentTerminals === prev.componentTerminals &&

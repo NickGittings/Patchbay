@@ -1,0 +1,54 @@
+.auto-popover {
+  width: min(420px, calc(100vw - 24px));
+  max-height: 80vh;
+  overflow: auto;
+}
+.auto-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.auto-content label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.auto-content textarea,
+.auto-content select,
+.auto-content input[type='number'] {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+.auto-content p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.auto-content button {
+  cursor: pointer;
+}
+.auto-controls,
+.auto-stages {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-stages {
+  padding-left: 20px;
+  font-size: 12px;
+}
+.auto-stages [aria-current='step'] {
+  font-weight: bold;
+  text-decoration: underline;
+}
+.auto-log {
+  max-height: 220px;
+  overflow: auto;
+  padding-left: 20px;
+  font-size: 12px;
+}
+.auto-log time {
+  opacity: 0.65;
+}

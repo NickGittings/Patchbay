@@ -77,3 +77,25 @@ test('legacy layouts retain fallback and malformed entries are ignored', () => {
     }).implementationComponents,
   ).toEqual([{ id: 'b', visible: false }])
 })
+
+test('Auto persists per worktree without dirtying the map and restores paused', () => {
+  const run = {
+    runId: 'run',
+    status: 'running' as const,
+    stage: 'review' as const,
+    goal: 'Ship the task',
+    effort: 'light' as const,
+    merge: { mode: 'ask' as const, destinationBranch: 'main' },
+    device: 'codex',
+    round: 1,
+    sessionId: 'old-session',
+    log: [{ atMs: 1, text: 'Review' }],
+  }
+  useStore.getState().patchTask('p', null, { auto: run })
+  expect(useStore.getState().dirty).toBe(false)
+  const layout = restoredLayout(workspaceDocument().projects[0].layout)
+  expect(layout.auto).toMatchObject({ status: 'paused', stage: 'review', round: 1 })
+  expect(layout.auto?.sessionId).toBeUndefined()
+  expect(layout.taskWorkspaces?.[''].auto?.status).toBe('paused')
+  expect(restoredLayout({ auto: { ...run, overrides: { maxRounds: -1 } } }).auto).toBeNull()
+})
