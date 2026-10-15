@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react'
+import ReviewerPicker from './ReviewerPicker'
 import { roleDevices } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
@@ -92,23 +93,12 @@ export default function AgentJobDialog({
         {multiple && agents.length > 1 ? (
           <fieldset className="agent-job-agents" disabled={busy}>
             <legend>Agents</legend>
-            {agents.map((d) => (
-              <label key={d.id}>
-                <input
-                  type="checkbox"
-                  value={d.id}
-                  checked={chosen.includes(d)}
-                  onChange={(e) =>
-                    setPicked(
-                      agents
-                        .filter((a) => (a === d ? e.target.checked : chosen.includes(a)))
-                        .map((a) => a.id),
-                    )
-                  }
-                />{' '}
-                {d.name}
-              </label>
-            ))}
+            <ReviewerPicker
+              agents={agents}
+              selected={chosen.map((d) => d.id)}
+              onChange={setPicked}
+              disabled={busy}
+            />
             {chosen.length > 1 && (
               <p className="hint flush">
                 Each agent reviews independently; their findings are combined for the fix.

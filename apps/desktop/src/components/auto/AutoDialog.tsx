@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReviewerPicker from '../ReviewerPicker'
 import { useStore } from '../../store'
 import {
   AGENT_ROLES,
@@ -269,22 +270,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           stage === 'review' && agents.length > 1 ? (
             <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
               {ROLE_LABELS[stage]}
-              {agents.map((a) => (
-                <label key={a.id}>
-                  <input
-                    type="checkbox"
-                    checked={reviewers.includes(a.id)}
-                    onChange={(e) =>
-                      setReviewers(
-                        agents
-                          .filter((r) => (r === a ? e.target.checked : reviewers.includes(r.id)))
-                          .map((r) => r.id),
-                      )
-                    }
-                  />{' '}
-                  {a.name}
-                </label>
-              ))}
+              <ReviewerPicker agents={agents} selected={reviewers} onChange={setReviewers} />
             </div>
           ) : (
             <label key={stage}>

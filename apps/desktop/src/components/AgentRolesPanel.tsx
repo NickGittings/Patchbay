@@ -1,3 +1,4 @@
+import ReviewerPicker from './ReviewerPicker'
 import { ROLE_LABELS } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
@@ -20,25 +21,17 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   const reviewers = (
     <fieldset key="review" className="agent-job-agents">
       <legend>Review</legend>
-      {agents.map((a) => {
-        const ids = roles.review ?? []
-        return (
-          <label key={a.id}>
-            <input
-              type="checkbox"
-              checked={ids.includes(a.id)}
-              onChange={(e) => {
-                const next = e.target.checked ? [...ids, a.id] : ids.filter((id) => id !== a.id)
-                const { review: _, ...rest } = roles
-                setRoles(next.length ? { ...rest, review: next } : rest)
-              }}
-            />{' '}
-            {a.name}
-          </label>
-        )
-      })}
+      <ReviewerPicker
+        agents={agents}
+        selected={roles.review ?? []}
+        showMissing
+        onChange={(next) => {
+          const { review: _, ...rest } = roles
+          setRoles(next.length ? { ...rest, review: next } : rest)
+        }}
+      />
       <p className="hint flush">
-        {(roles.review?.length ?? 0) > 1
+        {agents.filter((a) => roles.review?.includes(a.id)).length > 1
           ? 'These agents review independently, and the fix receives all their findings.'
           : 'Check several to have them review in parallel. None: the first agent preset.'}
       </p>
@@ -67,7 +60,7 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           review in parallel.
         </p>
         {AGENT_ROLES.map((role) => {
-          if (role === 'review' && agents.length > 1) return reviewers
+          if (role === 'review') return reviewers
           const id = roles[role]?.[0] ?? ''
           const missing = id && !agents.some((a) => a.id === id)
           return (

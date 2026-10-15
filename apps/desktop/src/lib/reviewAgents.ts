@@ -166,21 +166,21 @@ export async function startReviewAgents(
   const round = crypto.randomUUID()
   const sessions: string[] = []
   const errors: string[] = []
-  for (const device of devices) {
-    try {
-      sessions.push(
-        await startReviewAgent(
-          project,
-          { ...request, lane: device.id, round },
-          device,
-          crypto.randomUUID(),
-          auto,
-        ),
-      )
-    } catch (e) {
-      errors.push(`${device.name}: ${String(e)}`)
-    }
-  }
+  const results = await Promise.allSettled(
+    devices.map((device) =>
+      startReviewAgent(
+        project,
+        { ...request, lane: device.id, round },
+        device,
+        crypto.randomUUID(),
+        auto,
+      ),
+    ),
+  )
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') sessions.push(result.value)
+    else errors.push(`${devices[index].name}: ${String(result.reason)}`)
+  })
   if (!sessions.length) throw new Error(errors.join('\n'))
   return { sessions, errors }
 }

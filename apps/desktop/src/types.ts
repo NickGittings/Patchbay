@@ -88,6 +88,8 @@ export interface AutoRun {
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */
   sessionOwned?: boolean
+  /** The reviewer whose prompt the current input wait opens. */
+  inputSessionId?: string
   turnSince?: number
   launchAtMs?: number
   observedWorking?: boolean

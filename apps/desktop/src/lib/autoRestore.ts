@@ -1,4 +1,5 @@
 import { AGENT_ROLES, type AutoRun } from '../types'
+import { restoredPresetIds } from './agentRoles'
 import { EFFORT, finished as ended, SEVERITIES, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
@@ -68,9 +69,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     merge: r.merge,
     device: r.device,
     agents: restoredAgents(r.agents),
-    reviewers: Array.isArray(r.reviewers)
-      ? [...new Set(r.reviewers.filter((id) => typeof id === 'string' && !!id))]
-      : undefined,
+    reviewers: Array.isArray(r.reviewers) ? restoredPresetIds(r.reviewers) : undefined,
     // Reviewers beside the tracked session keep running in the service too.
     laneSessions: Array.isArray(r.laneSessions)
       ? r.laneSessions.flatMap((l) =>

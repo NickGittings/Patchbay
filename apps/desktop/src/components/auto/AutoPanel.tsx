@@ -47,7 +47,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
       openRequest={openRequest}
     >
       {!run || newRun ? (
-        <AutoDialog onIntegrations={onIntegrations} />
+        <AutoDialog key={JSON.stringify([projectId, task])} onIntegrations={onIntegrations} />
       ) : (
         <div className="auto-content">
           <strong>Auto mode · {run.status}</strong>
@@ -81,8 +81,8 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
             <button
               onClick={() =>
                 revealTerminal({
-                  sid: run.sessionId!,
-                  componentId: parseSessionId(run.sessionId!).componentId,
+                  sid: run.inputSessionId ?? run.sessionId!,
+                  componentId: parseSessionId(run.inputSessionId ?? run.sessionId!).componentId,
                 })
               }
             >

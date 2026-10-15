@@ -229,7 +229,7 @@ pub struct ReviewRequest {
     pub round: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Started {
     branch: String,
@@ -427,13 +427,17 @@ pub fn file(root: &Path, branch: &str) -> Result<PathBuf> {
 /// A reviewer's findings path: the branch's own for a single reviewer, else beside it
 /// with the lane's identity, which needs no validation to stay inside the folder.
 fn in_lane(folder: &Path, branch: &str, lane: Option<&str>) -> PathBuf {
+    named_lane(folder, &name(branch), lane)
+}
+
+fn named_lane(folder: &Path, name: &str, lane: Option<&str>) -> PathBuf {
     match lane {
-        None => folder.join(format!("{}.md", name(branch))),
+        None => folder.join(format!("{name}.md")),
         Some(lane) => {
             let identity = crate::workspace::session_id(lane, REVIEW_SCOPE, "lane");
             folder.join(format!(
                 "{}~{}-{}.md",
-                name(branch),
+                name,
                 crate::detect::slug(lane),
                 &identity[2..10]
             ))
@@ -453,15 +457,14 @@ pub fn lane_file(root: &Path, branch: &str, lane: Option<&str>) -> Result<PathBu
     Ok(in_lane(&folder, branch, lane))
 }
 
-/// Whether `path` is one of `branch`'s files (any lane), judged by name alone.
-fn of_branch(path: &Path, branch: &str) -> bool {
-    let prefix = name(branch);
+/// Whether `path` belongs to the precomputed branch prefix (any lane).
+fn of_branch(path: &Path, prefix: &str) -> bool {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .is_some_and(|stem| {
             stem == prefix
                 || stem
-                    .strip_prefix(&prefix)
+                    .strip_prefix(prefix)
                     .is_some_and(|rest| rest.starts_with('~'))
         })
 }
@@ -620,6 +623,9 @@ pub fn resume_attempt(
         merge_base,
         started_ms: crate::status::unix_ms(SystemTime::now()),
         attempt: uuid::Uuid::new_v4().to_string(),
+        // A resumed reviewer covers the new tree on its own. Pulling its old peers
+        // forward would mix commits and could revive findings from an older round.
+        round: uuid::Uuid::new_v4().to_string(),
         ..old
     };
     Attempt::record(sidecar, &started, None).map(Some)
@@ -777,32 +783,57 @@ fn no_findings(branch: &str) -> anyhow::Error {
     anyhow::anyhow!("No review findings are saved for {branch}")
 }
 
+// Polling findings should only deserialize records whose metadata changed. The key is
+// the canonical folder plus branch identity, so other repositories/branches stay isolated.
+#[derive(Default)]
+struct RoundCache {
+    stamps: Vec<(PathBuf, SystemTime, u64)>,
+    records: Vec<(PathBuf, Started)>,
+}
+
+static ROUNDS: Mutex<BTreeMap<PathBuf, RoundCache>> = Mutex::new(BTreeMap::new());
+
 /// The findings file and attempt of each reviewer in `branch`'s latest round (the
 /// round of the most recently started attempt), sorted by lane. Only sidecars that
 /// really are `branch`'s, at the path their own branch and lane give, count.
 fn round(root: &Path, branch: &str) -> Vec<(PathBuf, Started)> {
-    let Some(folder) = file(root, branch)
-        .ok()
-        .and_then(|f| f.parent().map(Path::to_path_buf))
-    else {
+    let Some(folder) = existing_dir(root) else {
         return vec![];
     };
     let Ok(entries) = std::fs::read_dir(&folder) else {
         return vec![];
     };
-    let mut all: Vec<(PathBuf, Started)> = entries
+    let prefix = name(branch);
+    let mut stamps: Vec<_> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") || !of_branch(&path, branch) {
+            if path.extension().is_none_or(|ext| ext != "json") || !of_branch(&path, &prefix) {
                 return None;
             }
-            let started: Started = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-            let findings = in_lane(&folder, &started.branch, started.lane.as_deref());
-            (started.branch == branch && findings.with_extension("json") == path)
-                .then_some((findings, started))
+            let metadata = entry.metadata().ok()?;
+            Some((path, metadata.modified().ok()?, metadata.len()))
         })
         .collect();
+    stamps.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut cache = ROUNDS.lock().unwrap_or_else(PoisonError::into_inner);
+    let entry = cache.entry(folder.join(&prefix)).or_default();
+    if entry.stamps != stamps {
+        entry.records = stamps
+            .iter()
+            .filter_map(|(path, _, _)| {
+                let started: Started = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                if started.branch != branch {
+                    return None;
+                }
+                let findings = named_lane(&folder, &prefix, started.lane.as_deref());
+                (findings.with_extension("json") == *path).then_some((findings, started))
+            })
+            .collect();
+        entry.stamps = stamps;
+    }
+    let mut all = entry.records.clone();
+    drop(cache);
     let Some((round, attempt)) = all
         .iter()
         .max_by_key(|(_, s)| s.started_ms)
@@ -901,9 +932,10 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
     };
     let body = match lanes.as_slice() {
         [one] => format!(
-            "Branch: {branch}\nBase: {}\nReviewed: {}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
+            "Branch: {branch}\nBase: {}\nReviewed: {}\nFindings file: {}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
             one.started.base,
             reviewed(one),
+            one.file.display(),
             findings(one)
         ),
         _ => format!(
@@ -913,9 +945,10 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
             lanes
                 .iter()
                 .map(|s| format!(
-                    "### Reviewer: {}\nReviewed: {}\n\n{}",
+                    "### Reviewer: {}\nReviewed: {}\nFindings file: {}\n\n{}",
                     s.lane(),
                     reviewed(s),
+                    s.file.display(),
                     findings(s)
                 ))
                 .collect::<Vec<_>>()
@@ -934,6 +967,7 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
 /// Fails for a non-repository root or deletion errors.
 pub fn remove(root: &Path, branch: &str) -> Result<()> {
     let file = file(root, branch)?;
+    let prefix = name(branch);
     // Every reviewer's findings path, also those whose findings were never written.
     let mut lanes = std::collections::BTreeSet::from([file.clone()]);
     if let Some(folder) = file.parent()
@@ -946,7 +980,7 @@ pub fn remove(root: &Path, branch: &str) -> Result<()> {
                 .filter(|path| {
                     path.extension()
                         .is_some_and(|ext| ext == "md" || ext == "json")
-                        && of_branch(path, branch)
+                        && of_branch(path, &prefix)
                 })
                 .map(|path| path.with_extension("md")),
         );
@@ -2115,13 +2149,21 @@ mod tests {
         );
         fs::write(f.dir.join("file.txt"), "next\n").unwrap();
         git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
-        // The lane's own sidecar gets the new attempt; its round stays.
+        // The resumed lane starts its own round, leaving its old peers alone.
         let before = fs::read(b_file.with_extension("json")).unwrap();
         resume_attempt(&f.dir, &summary, &f.request.branch, Some("claude"))
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(b_file.with_extension("json")).unwrap(), before);
-        assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 2);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewers.len(), 1);
+        assert!(findings.reviewed_head.is_none());
+        save_at(&a_file, "Verdict: clean", true);
+        let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
+        assert_eq!(
+            read(&f.dir, &f.request.branch).unwrap().reviewed_head,
+            Some(head)
+        );
         // A lane that never wrote findings still has its sidecar removed.
         remove(&f.dir, &f.request.branch).unwrap();
         for path in [&a_file, &b_file] {
@@ -2129,6 +2171,36 @@ mod tests {
         }
         assert!(read(&f.dir, &f.request.branch).is_none());
         cleanup([a, b]);
+    }
+
+    #[test]
+    fn resuming_an_old_lane_does_not_revive_its_rounds_other_findings() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(&a_file, "Verdict: clean", true);
+        save_at(&b_file, "Verdict: issues\n- [high] Old finding", true);
+        std::thread::sleep(Duration::from_millis(5));
+        let newer = f.prepare("claude").unwrap();
+        f.save("Verdict: clean", true);
+        // Populate the cache before a later attempt replaces the old sidecar.
+        assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 1);
+        fs::write(f.dir.join("file.txt"), "next\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
+        let attempt = resume_attempt(&f.dir, &a.spec, &f.request.branch, Some("claude"))
+            .unwrap()
+            .unwrap();
+        save_at(&a_file, "Verdict: clean", true);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewers.len(), 1);
+        assert!(findings.verdict.unwrap().clean);
+        assert!(findings.reviewed_head.is_some());
+        // Rollback also invalidates the cached latest round.
+        attempt.rollback();
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewers[0].lane, None);
+        assert!(findings.verdict.unwrap().clean);
+        cleanup([a, b, newer]);
     }
 
     #[test]

@@ -65,6 +65,9 @@ const SCRIPTS = {
   workspace: smoke('workspace.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
+  reviewers: smoke('reviewers.js', {
+    PATCHBAY_SMOKE_ROOT_2: defaultFixture,
+  }),
   sessions: smoke('sessions.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),

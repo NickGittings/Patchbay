@@ -328,6 +328,23 @@ test('only a live review in the same worktree blocks another review', async () =
   expect(reviewWorktreeRunning([review], { review: { running: false } }, '/feature')).toBe(false)
 })
 
+test('all reviewer launches begin before any reviewer launch resolves', async () => {
+  const { startReviewAgents } = await import('./reviewAgents')
+  const resolve: ((sid: string) => void)[] = []
+  vi.mocked(reviewAgentStart).mockImplementation(() => new Promise((done) => resolve.push(done)))
+  const pending = startReviewAgents(
+    {} as Project,
+    { worktree: '/feature', branch: 'feature', base: 'main' },
+    ['a', 'b'].map((id) => ({ id, name: id }) as DeviceManifest),
+  )
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  expect(reviewAgentStart).toHaveBeenCalledTimes(2)
+  // Reply order must not change which reviewer Auto tracks first.
+  resolve[1]('second')
+  resolve[0]('first')
+  expect(await pending).toEqual({ sessions: ['first', 'second'], errors: [] })
+})
+
 test('only a review that reported or confirmed settling stops blocking the fix handoff', async () => {
   const { reviewWorktreeBusy } = await import('./reviewAgents')
   const review = {

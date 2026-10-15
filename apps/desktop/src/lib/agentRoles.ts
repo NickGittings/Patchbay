@@ -42,6 +42,13 @@ export function roleDevices(
     : [roleDevice(devices, roles, role)]
 }
 
+/** Saved preset ids, preserving order and dropping malformed/duplicate entries. */
+export function restoredPresetIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string => typeof id === 'string' && !!id))]
+    : []
+}
+
 /** A saved layout's assignments, dropping anything malformed. */
 export function restoredAgentRoles(value: unknown): AgentRoles {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -49,7 +56,7 @@ export function restoredAgentRoles(value: unknown): AgentRoles {
   for (const role of AGENT_ROLES) {
     const ids = (value as Record<string, unknown>)[role]
     if (!Array.isArray(ids)) continue
-    const valid = [...new Set(ids.filter((id): id is string => typeof id === 'string' && !!id))]
+    const valid = restoredPresetIds(ids)
     if (valid.length) out[role] = role === 'review' ? valid : valid.slice(0, 1)
   }
   return out

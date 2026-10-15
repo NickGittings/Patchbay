@@ -252,11 +252,18 @@ pub fn prepare(
         request.destination_branch,
         destination.head,
     );
-    if let Some(findings) = crate::reviews::read(Path::new(&project.root), &request.source_branch) {
-        let file = crate::reviews::file(Path::new(&project.root), &request.source_branch)?;
+    if let Some(findings) = crate::reviews::read(Path::new(&project.root), &request.source_branch)
+        && let Ok(section) = crate::reviews::handoff(
+            Path::new(&source.path),
+            &crate::reviews::Session {
+                cwd: PathBuf::from(&source.path),
+                branch: Some(request.source_branch.clone()),
+            },
+        )
+    {
         text.push_str(&format!(
-            "\n## Review findings\n\nFindings file: {}\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n",
-            file.display(), findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()),
+            "\n## Review findings\n\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n\n{}\n",
+            findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()), section.body,
         ));
     }
     if let Some(auto) = auto {
@@ -593,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_briefing_points_to_review_findings_and_identifies_stale_heads() {
+    fn merge_briefing_inlines_review_findings_and_identifies_stale_heads() {
         let f = Fixture::new();
         let review = crate::reviews::prepare(
             &f.project,
@@ -631,13 +638,78 @@ mod tests {
             }
             let job = f.prepare().unwrap();
             let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
-            assert!(body.contains(&findings.display().to_string()));
+            assert!(body.contains("P1 file.txt:1: sample finding"));
             assert!(body.contains(&format!("Reviewed HEAD matches source HEAD: {current}")));
             assert!(body.contains("mention unresolved findings"));
             assert!(body.contains("Do not fix them unless the merge requires it"));
             context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
         context::remove_owned_briefing_file(&context::owned_briefing(&review.spec).unwrap());
+    }
+
+    #[test]
+    fn merge_briefing_includes_every_reviewer_and_never_the_old_single_file() {
+        for old_single_file in [false, true] {
+            let f = Fixture::new();
+            let root = Path::new(&f.project.root);
+            if old_single_file {
+                crate::reviews::dir(root).unwrap();
+                fs::write(
+                    crate::reviews::file(root, "feature").unwrap(),
+                    "Stale findings",
+                )
+                .unwrap();
+            }
+            for lane in ["claude", "codex"] {
+                let review = crate::reviews::prepare(
+                    &f.project,
+                    &crate::reviews::ReviewRequest {
+                        worktree: f.request.source.clone(),
+                        branch: "feature".into(),
+                        base: "main".into(),
+                        lane: Some(lane.into()),
+                        round: Some("round".into()),
+                    },
+                    &Fixture::terminal("claude"),
+                    &AllowAll,
+                    None,
+                )
+                .unwrap()
+                .job;
+                fs::write(
+                    crate::reviews::lane_file(root, "feature", Some(lane)).unwrap(),
+                    format!("Verdict: issues\n- [high] Finding from {lane}"),
+                )
+                .unwrap();
+                context::remove_owned_briefing_file(
+                    &context::owned_briefing(&review.spec).unwrap(),
+                );
+            }
+            let job = f.prepare().unwrap();
+            let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
+            assert!(body.contains("Finding from claude"));
+            assert!(body.contains("Finding from codex"));
+            for lane in ["claude", "codex"] {
+                assert!(
+                    body.contains(
+                        &crate::reviews::lane_file(root, "feature", Some(lane))
+                            .unwrap()
+                            .display()
+                            .to_string()
+                    )
+                );
+            }
+            assert!(
+                !body.contains(
+                    &crate::reviews::file(root, "feature")
+                        .unwrap()
+                        .display()
+                        .to_string()
+                )
+            );
+            assert!(!body.contains("Stale findings"));
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+        }
     }
 
     #[test]
