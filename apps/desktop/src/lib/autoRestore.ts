@@ -57,6 +57,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     overrides: r.overrides,
     merge: r.merge,
     device: r.device,
+    branch: typeof r.branch === 'string' ? r.branch : undefined,
     round: r.round,
     status: finished ? r.status : 'paused',
     // Agents outlive the app in the session service, so Auto keeps tracking (and owning) them.
@@ -69,6 +70,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     observedWorking: r.observedWorking === true,
     sessionBrief: restoredBrief(r.sessionBrief),
     planMark: typeof r.planMark === 'string' ? r.planMark : undefined,
+    waitingFor: r.waitingFor === 'fixBudget' ? 'fixBudget' : undefined,
     reviewedHead: typeof r.reviewedHead === 'string' ? r.reviewedHead : undefined,
     validation: Array.isArray(r.validation)
       ? r.validation.filter(
@@ -84,6 +86,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     log: r.log
       .filter((l) => l && Number.isFinite(l.atMs) && typeof l.text === 'string')
       .slice(-100),
+    // `gateError` isn't restored: only a live approval wait reports one, and it polls again.
     reason: finished
       ? typeof r.reason === 'string'
         ? r.reason

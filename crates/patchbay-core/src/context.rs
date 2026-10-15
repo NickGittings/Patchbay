@@ -1155,17 +1155,38 @@ fn brief_agent(
 /// Build a planner terminal session at the project root.
 ///
 /// An empty scope plans over all components. Agent commands receive the context file.
+/// A Plan kickoff prompts the agent immediately while preserving the manual session id.
 ///
 /// # Errors
-/// Fails for unknown component ids, context file I/O, or a rejected policy check.
+/// Fails for unknown component ids, invalid kickoffs, context file I/O, or a rejected policy check.
 pub fn plan_session_spec(
     project: &Project,
     component_ids: &[String],
     terminal: &TerminalSpec,
     policy: &dyn Policy,
     sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
-    plan_session_spec_for(project, component_ids, terminal, None, policy, sections)
+    match kickoff {
+        Some(Kickoff::Plan) => {
+            anyhow::ensure!(
+                terminal.kind == TerminalKind::Agent,
+                "Choose an agent preset"
+            );
+            root_session_spec(
+                project,
+                component_ids,
+                terminal,
+                None,
+                policy,
+                sections,
+                true,
+                kickoff,
+            )
+        }
+        Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
+        None => plan_session_spec_for(project, component_ids, terminal, None, policy, sections),
+    }
 }
 
 /// [`plan_session_spec`] for a task's planner: the session id and briefing
@@ -1192,56 +1213,6 @@ pub fn plan_session_spec_for(
         true,
         None,
     )
-}
-
-/// [`plan_session_spec`] for an Auto planner, prompted to plan its goal at once.
-/// The session id is the manual planner's, so either can be resumed.
-///
-/// # Errors
-/// As [`plan_session_spec`], or if the terminal is not an agent.
-pub fn plan_kickoff_spec(
-    project: &Project,
-    component_ids: &[String],
-    terminal: &TerminalSpec,
-    policy: &dyn Policy,
-    sections: &[ContextSection],
-) -> Result<SessionSpec> {
-    anyhow::ensure!(
-        terminal.kind == TerminalKind::Agent,
-        "Choose an agent preset"
-    );
-    root_session_spec(
-        project,
-        component_ids,
-        terminal,
-        None,
-        policy,
-        sections,
-        true,
-        Some(Kickoff::Plan),
-    )
-}
-
-/// A planner session: [`plan_kickoff_spec`] for a [`Kickoff::Plan`], else
-/// [`plan_session_spec`].
-///
-/// # Errors
-/// As those, or for a kickoff other than [`Kickoff::Plan`].
-pub fn planner_spec(
-    project: &Project,
-    component_ids: &[String],
-    terminal: &TerminalSpec,
-    policy: &dyn Policy,
-    sections: &[ContextSection],
-    kickoff: Option<Kickoff>,
-) -> Result<SessionSpec> {
-    match kickoff {
-        Some(Kickoff::Plan) => {
-            plan_kickoff_spec(project, component_ids, terminal, policy, sections)
-        }
-        Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
-        None => plan_session_spec(project, component_ids, terminal, policy, sections),
-    }
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
@@ -1940,7 +1911,8 @@ mod tests {
     fn planner_session_uses_root_scope_and_context() {
         let mut p = project();
         p.name = "root-scope-demo".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
+        let spec =
+            plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[], None).unwrap();
         assert_eq!(
             spec.id,
             crate::workspace::session_id(&p.root, PLAN_SCOPE, "claude")
@@ -1960,7 +1932,8 @@ mod tests {
     fn planner_adds_dirs_for_components_outside_the_root() {
         let mut p = project();
         p.components[1].path = "../shared/db".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
+        let spec =
+            plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[], None).unwrap();
         assert_eq!(spec.command.matches("--add-dir").count(), 1);
         assert!(spec.command.contains("--add-dir '/shared/db'"));
     }
@@ -2005,7 +1978,7 @@ mod tests {
         }
         let mut p = project();
         p.root = root.canonicalize().unwrap().display().to_string();
-        let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
+        let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[], None).unwrap();
         let plans = crate::plans::dir(Path::new(&p.root)).unwrap();
         assert_eq!(
             spec.env[crate::plans::PLAN_FILE_ENV],
@@ -2046,7 +2019,8 @@ mod tests {
             let briefing = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
             assert!(briefing.contains("Fix login"));
             assert!(!briefing.contains("You are planning, not implementing"));
-            let planner = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
+            let planner =
+                plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
             assert!(!planner.command.contains("Implement the shared plan"));
         }
         // The prompt follows the briefing: an env-prefixed agent gets it, a command left
@@ -2084,8 +2058,17 @@ mod tests {
                 commit: false,
             }
             .section("plan")];
-            let manual = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
-            let auto = plan_kickoff_spec(&project(), &[], &terminal, &AllowAll, &sections).unwrap();
+            let manual =
+                plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
+            let auto = plan_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                &AllowAll,
+                &sections,
+                Some(Kickoff::Plan),
+            )
+            .unwrap();
             assert_eq!(auto.id, manual.id);
             let words = command_tokens(&auto.command, Shell::current()).unwrap();
             assert_eq!(words.last().unwrap(), PLAN_PROMPT);
@@ -2142,7 +2125,14 @@ mod tests {
 
     #[test]
     fn planner_rejects_unknown_components() {
-        let result = plan_session_spec(&project(), &["missing".into()], &planner(), &AllowAll, &[]);
+        let result = plan_session_spec(
+            &project(),
+            &["missing".into()],
+            &planner(),
+            &AllowAll,
+            &[],
+            None,
+        );
         assert_eq!(
             result.err().unwrap().to_string(),
             "unknown component missing"
@@ -2155,7 +2145,7 @@ mod tests {
         p.name = "context-scope-demo".into();
         p.components[0].id = "plan-claude".into();
         let component = session_spec(&p, "plan-claude", "agent", &AllowAll, &[]).unwrap();
-        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
+        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll, &[], None).unwrap();
         assert_ne!(component.env[CONTEXT_ENV], planner.env[CONTEXT_ENV]);
         assert_eq!(
             std::fs::read_to_string(&component.env[CONTEXT_ENV]).unwrap(),
@@ -2178,7 +2168,7 @@ mod tests {
         }
         let mut p = project();
         p.name = "policy-demo".into();
-        let result = plan_session_spec(&p, &[], &planner(), &Deny, &[]);
+        let result = plan_session_spec(&p, &[], &planner(), &Deny, &[], None);
         assert_eq!(
             result.err().unwrap().to_string(),
             "blocked by policy: planning disabled"
@@ -2786,7 +2776,7 @@ mod tests {
         let mut terminal = planner();
         terminal.command = "codex".into();
         let scope = ["api".into()];
-        let spec = plan_session_spec(&p, &scope, &terminal, &AllowAll, &[]).unwrap();
+        let spec = plan_session_spec(&p, &scope, &terminal, &AllowAll, &[], None).unwrap();
         assert!(spec.command.contains(&format!(
             "--add-dir {}",
             Shell::current().quote(&p.component_dir(&p.components[1]).display().to_string())

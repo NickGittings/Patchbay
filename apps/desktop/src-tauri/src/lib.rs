@@ -833,7 +833,7 @@ async fn plan_start(
             extra_context,
         );
         let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        let mut spec = context::planner_spec(
+        let mut spec = context::plan_session_spec(
             &project,
             &component_ids,
             &terminal,
@@ -1102,7 +1102,7 @@ async fn git_review(
             .collect();
         // Only folders readable in the open worktree are mapped into another.
         let components = readable_components(&access, folders);
-        git::review_branch(&project, components, worktree.as_deref(), base.as_deref()).map_err(err)
+        git::review(&project, components, worktree.as_deref(), base.as_deref()).map_err(err)
     })
     .await
 }
@@ -1406,14 +1406,9 @@ async fn merge_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        let job = patchbay_core::merges::prepare_with_auto(
-            &project,
-            &request,
-            &terminal,
-            &AllowAll,
-            auto.as_ref(),
-        )
-        .map_err(err)?;
+        let job =
+            patchbay_core::merges::prepare(&project, &request, &terminal, &AllowAll, auto.as_ref())
+                .map_err(err)?;
         let metadata = service::metadata(&project_id, &project, model::MERGE_SCOPE, &job.terminal);
         bridge.start(job.spec, metadata, request_id)
     })
@@ -1456,7 +1451,7 @@ async fn review_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        let prepared = patchbay_core::reviews::prepare_with_auto(
+        let prepared = patchbay_core::reviews::prepare(
             &project,
             &request,
             &terminal,

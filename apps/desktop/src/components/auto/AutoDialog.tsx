@@ -19,7 +19,10 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const task = useStore((s) => s.activeTask)
   const devices = useStore((s) => s.devices)
   const agents = useMemo(() => agentDevices(devices), [devices])
-  const [device, setDevice] = useState(agents[0]?.id ?? '')
+  const [selectedDevice, setDevice] = useState('')
+  const device = agents.some((a) => a.id === selectedDevice)
+    ? selectedDevice
+    : (agents[0]?.id ?? '')
   const [goal, setGoal] = useState('')
   // The goal this dialog filled in itself, withdrawn once a load finds the branch merged.
   const filledGoal = useRef('')

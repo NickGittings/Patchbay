@@ -44,3 +44,9 @@ test('a brief the backend could not read is dropped', () => {
       ?.sessionBrief,
   ).toBeUndefined()
 })
+
+test('a restored budget wait remains explicit while failed fixes cannot accept findings', () => {
+  expect(restoredAuto({ ...saved, waitingFor: 'fixBudget' })?.waitingFor).toBe('fixBudget')
+  expect(restoredAuto({ ...saved, waitingFor: 'unknown' })?.waitingFor).toBeUndefined()
+  expect(restoredAuto({ ...saved, status: 'failed' })?.waitingFor).toBeUndefined()
+})

@@ -27,6 +27,14 @@
     state().setActiveTask(task.id)
     state().setView('review')
     const fixtureDir = state().project.root.replace(/\/project$/, '')
+    smoke.store.setState({ devices: [] })
+    const autoButton = await until('Auto button', () =>
+      document.querySelector('button[title="Auto mode"]'),
+    )
+    autoButton.click()
+    await until('Auto dialog before presets load', () =>
+      document.querySelector('.auto-content select'),
+    )
     smoke.store.setState({
       devices: [
         {
@@ -40,6 +48,19 @@
         },
       ],
     })
+    await until('Start enabled after presets arrive', () => {
+      const start = [...document.querySelectorAll('.auto-content button')].find(
+        (b) => b.textContent === 'Start',
+      )
+      return start && !start.disabled
+    })
+    assert(
+      [...document.querySelectorAll('.auto-content select')].some(
+        (s) => s.value === 'auto-fixture',
+      ),
+      'Loaded preset was not selected',
+    )
+    autoButton.click()
     const stages = []
     const unsubscribe = smoke.store.subscribe((s) => {
       if (s.auto && stages.at(-1) !== s.auto.stage) stages.push(s.auto.stage)
@@ -125,7 +146,7 @@
       'Affected validation did not run and pass',
     )
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; authoritative turns, scoped commit, attention, verified Git outcome, paused restore, description planning/implementation/affected validation and automatic merge',
+      'PASS Auto: review → fix → review → approval → merge → done; authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, description planning/implementation/affected validation and automatic merge',
     )
   } catch (e) {
     await smoke.report(

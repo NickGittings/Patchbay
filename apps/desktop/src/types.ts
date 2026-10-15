@@ -66,6 +66,8 @@ export interface AutoRun {
   overrides?: Partial<EffortSettings>
   merge: { mode: 'ask' | 'auto'; destinationBranch: string }
   device: string
+  /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
+  branch?: string
   round: number
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */
@@ -83,7 +85,9 @@ export interface AutoRun {
   planMark?: string
   log: { atMs: number; text: string }[]
   reason?: string
-  waitingFor?: 'agentInput'
+  /** Why the approval wait couldn't check the merge status; it keeps retrying meanwhile. */
+  gateError?: string
+  waitingFor?: 'agentInput' | 'fixBudget'
   validation?: ActionReport[]
   reviewedHead?: string
   findingsSummary?: string

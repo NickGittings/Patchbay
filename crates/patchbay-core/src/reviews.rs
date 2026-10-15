@@ -34,7 +34,7 @@ impl Severity {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Severities {
     pub critical: u32,
     pub high: u32,
@@ -51,9 +51,14 @@ pub struct Verdict {
 
 /// Read an explicit verdict, allowing Markdown headings and emphasis around its label.
 /// Count the leading severity of each finding; prose, legends and quoted tags don't count.
+/// An optional `Counts:` line right after the verdict (blank lines aside) reports totals: each
+/// severity takes the larger of the reported and the counted total, since neither alone may hide a
+/// finding, and a clean verdict with any finding reads as issues. Unreadable totals there give no
+/// verdict; a `Counts:` line anywhere else is prose.
 #[must_use]
 pub fn verdict(text: &str) -> Option<Verdict> {
-    let mut lines = text.lines();
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lines = text.lines().peekable();
     let clean = lines.find_map(|line| {
         let header = line
             .trim()
@@ -76,6 +81,14 @@ pub fn verdict(text: &str) -> Option<Verdict> {
             _ => None,
         }
     })?;
+    while lines.next_if(|line| line.trim().is_empty()).is_some() {}
+    let reported = match lines.peek().and_then(|line| counts_value(line)) {
+        Some(value) => {
+            lines.next();
+            Some(serde_json::from_str::<Severities>(&value).ok()?)
+        }
+        None => None,
+    };
     let mut counts = Severities::default();
     let mut legend_section = false;
     let mut code_block = false;
@@ -172,7 +185,31 @@ pub fn verdict(text: &str) -> Option<Verdict> {
         };
         *count += 1;
     }
-    Some(Verdict { clean, counts })
+    if let Some(reported) = reported {
+        counts.critical = counts.critical.max(reported.critical);
+        counts.high = counts.high.max(reported.high);
+        counts.medium = counts.medium.max(reported.medium);
+        counts.low = counts.low.max(reported.low);
+    }
+    Some(Verdict {
+        clean: clean && counts == Severities::default(),
+        counts,
+    })
+}
+
+/// The value of a `Counts:` line, allowing a heading mark and Markdown emphasis around it.
+fn counts_value(line: &str) -> Option<String> {
+    let line = line
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .replace(['*', '`', '_'], "")
+        .to_ascii_lowercase();
+    let rest = line
+        .strip_prefix("counts")?
+        .trim_start()
+        .strip_prefix(':')?;
+    Some(rest.trim().to_owned())
 }
 
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
@@ -358,19 +395,6 @@ pub fn prepare(
     request: &ReviewRequest,
     terminal: &TerminalSpec,
     policy: &dyn Policy,
-) -> Result<Prepared> {
-    prepare_with_auto(project, request, terminal, policy, None)
-}
-
-/// Prepare a review with optional Auto instructions.
-///
-/// # Errors
-/// As [`prepare`].
-pub fn prepare_with_auto(
-    project: &Project,
-    request: &ReviewRequest,
-    terminal: &TerminalSpec,
-    policy: &dyn Policy,
     auto: Option<&context::AutoBrief>,
 ) -> Result<Prepared> {
     let root = Path::new(&project.root);
@@ -410,7 +434,7 @@ pub fn prepare_with_auto(
         "# Patchbay branch review\n\nProject: {}\nWorktree: {}\nBranch: {}\nHEAD: {head}\nBase branch: {}\nMerge base: {merge_base}\n\n\
          Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions.\n\n\
          Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Fixes belong in Implementation. Read-only behavior relies on these instructions; Patchbay does not rewrite the user's agent command to enforce it.\n\n\
-         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. Start the file with exactly Verdict: clean or Verdict: issues. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
+         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. Start the file with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}, with nonnegative integer totals for ALL open findings at each severity. Include all four keys exactly once, no other keys, and no Markdown around these two lines. Use clean only when all counts are zero; use issues otherwise. These counts control automatic merging, so verify them against every finding before saving. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
         project.name,
         request.worktree,
         request.branch,
@@ -745,6 +769,113 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn reported_counts_and_tagged_findings_both_block() {
+        let findings = "- [low] Minor issue\n- **[high]** src/db.rs:42 Data loss";
+        let parsed = verdict(&format!(
+            "Verdict: issues\nCounts: {{\"critical\":0,\"high\":1,\"medium\":0,\"low\":1}}\n{findings}"
+        ))
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(parsed.counts.high, 1);
+        assert_eq!(parsed.counts.low, 1);
+        // Tagged findings the reported counts leave out still count.
+        let parsed = verdict(&format!(
+            "Verdict: clean\nCounts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}\n- [critical] Lost writes\n{findings}"
+        ))
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                critical: 1,
+                high: 1,
+                low: 1,
+                ..Severities::default()
+            }
+        );
+        // Reported totals above the tagged ones count too, even with a clean verdict.
+        let parsed = verdict(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":2,\"medium\":0,\"low\":0}\n- [high] Bug",
+        )
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(parsed.counts.high, 2);
+        let clean = verdict(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nNo findings.",
+        )
+        .unwrap();
+        assert!(clean.clean);
+        assert!(
+            !verdict("Verdict: issues\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}")
+                .unwrap()
+                .clean
+        );
+    }
+
+    #[test]
+    fn counts_are_optional_and_read_leniently_but_never_malformed() {
+        assert!(verdict("Verdict: clean\nNo findings.").unwrap().clean);
+        assert_eq!(
+            verdict("Verdict: issues\n- [high] Bug")
+                .unwrap()
+                .counts
+                .high,
+            1
+        );
+        for text in [
+            "\u{feff}Verdict: issues\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}",
+            "# Review\n\n**Verdict:** issues\n\n**Counts:** `{\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}`",
+            "Verdict: issues\n\n\ncounts : {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}",
+        ] {
+            assert_eq!(verdict(text).unwrap().counts.high, 1, "{text}");
+        }
+        assert!(
+            verdict("Verdict: maybe\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}")
+                .is_none()
+        );
+        for counts in [
+            "{}",
+            r#"{"critical":0,"high":1,"medium":0}"#,
+            r#"{"critical":0,"high":1,"medium":0,"low":0,"extra":1}"#,
+            r#"{"critical":0,"high":0,"high":1,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":-1,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":1.5,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":4294967296,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":"1","medium":0,"low":0}"#,
+            "not json",
+        ] {
+            assert!(
+                verdict(&format!("Verdict: clean\nCounts: {counts}")).is_none(),
+                "{counts}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts_lines_away_from_the_verdict_are_prose() {
+        // Without totals beside the verdict, tags decide, whatever later lines say.
+        for later in [
+            "Counts: not json",
+            "**Counts:** 2 high, 1 low",
+            r#"Counts: {"critical":0,"high":0,"medium":0,"low":0}"#,
+            r#"Counts: {"critical":3,"high":0,"medium":0,"low":0}"#,
+        ] {
+            let text = format!("Verdict: issues\nSummary first.\n{later}\n- [high] Bug");
+            let parsed = verdict(&text).unwrap();
+            assert_eq!(
+                parsed.counts,
+                Severities {
+                    high: 1,
+                    ..Severities::default()
+                },
+                "{later}"
+            );
+        }
+        let text = "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\n\nCounts: not json\nNo findings.";
+        assert!(verdict(text).unwrap().clean);
+    }
+
+    #[test]
     fn markdown_does_not_hide_blocking_findings() {
         for line in [
             "- [ ] [high] Bug",
@@ -910,7 +1041,7 @@ mod tests {
         }
         fn prepared(&self, command: &str) -> Result<Prepared> {
             let terminal = serde_json::from_value(serde_json::json!({"id":"agent", "name":"Agent", "kind":"agent", "command":command})).unwrap();
-            prepare(&self.project, &self.request, &terminal, &AllowAll)
+            prepare(&self.project, &self.request, &terminal, &AllowAll, None)
         }
         fn prepare(&self, command: &str) -> Result<AgentJob> {
             self.prepared(command).map(|p| p.job)
@@ -971,7 +1102,7 @@ mod tests {
             serde_json::json!({"id":"review", "name":"Review", "kind":"agent", "command":"claude"}),
         )
         .unwrap();
-        prepare(&f.project, &request, &terminal, &AllowAll).unwrap();
+        prepare(&f.project, &request, &terminal, &AllowAll, None).unwrap();
         let path = file(&worktree, "main").unwrap();
         let started: Started =
             serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();

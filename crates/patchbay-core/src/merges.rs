@@ -46,29 +46,17 @@ const OPERATION_MARKERS: [&str; 6] = [
 /// Fails for foreign, missing or changed worktrees, or Git errors.
 pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome> {
     let trees = git::worktrees(Path::new(&project.root));
-    let source = checked_tree(&trees, &request.source, "source")?;
-    let destination = checked_tree(&trees, &request.destination, "destination")?;
+    let mut source = checked_tree(&trees, &request.source, "source")?;
+    let mut destination = checked_tree(&trees, &request.destination, "destination")?;
     ensure!(
         source.path != destination.path,
         "Choose a different destination worktree"
     );
     let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
-    for path in [&source.path, &destination.path] {
-        owned_dirs(Path::new(path), &common)?;
-    }
-    for path in [&source.path, &destination.path] {
-        let markers = git::run(
-            git::git(Path::new(path))
-                .args(["rev-parse", "--path-format=absolute"])
-                .args(
-                    OPERATION_MARKERS
-                        .iter()
-                        .flat_map(|marker| ["--git-path", marker]),
-                ),
-        )?;
-        if markers.lines().any(|path| Path::new(path).exists()) {
-            return Ok(MergeOutcome::InProgress);
-        }
+    let (_, source_busy) = read_tree(&mut source, &common)?;
+    let (_, destination_busy) = read_tree(&mut destination, &common)?;
+    if source_busy || destination_busy {
+        return Ok(MergeOutcome::InProgress);
     }
     ensure!(
         source.branch.as_deref() == Some(&request.source_branch)
@@ -142,12 +130,8 @@ pub(crate) fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn clean(
-    tree: &mut Worktree,
-    expected_branch: &str,
-    role: &str,
-    common: &Path,
-) -> Result<Vec<PathBuf>> {
+/// Refresh ownership, HEAD, branch and operation markers with one Git process.
+fn read_tree(tree: &mut Worktree, common: &Path) -> Result<(Vec<PathBuf>, bool)> {
     let root = Path::new(&tree.path);
     // Read ownership, live revision and every operation marker in one process.
     let metadata = git::run(
@@ -178,21 +162,36 @@ fn clean(
     let branch = lines
         .next()
         .and_then(|line| line.strip_prefix("refs/heads/"));
+    tree.head = head.into();
+    tree.branch = branch.map(str::to_owned);
+    let busy = lines.any(|path| Path::new(path).exists());
+    Ok((dirs, busy))
+}
+
+fn clean(
+    tree: &mut Worktree,
+    expected_branch: &str,
+    role: &str,
+    common: &Path,
+) -> Result<Vec<PathBuf>> {
+    let (dirs, busy) = read_tree(tree, common)?;
     ensure!(
-        branch.is_some(),
+        tree.branch.is_some(),
         "The {role} worktree has a detached HEAD; check out a branch first"
     );
     ensure!(
-        branch == Some(expected_branch),
+        tree.branch.as_deref() == Some(expected_branch),
         "The {role} branch changed; refresh Review and try again"
     );
-    tree.head = head.into();
-    tree.branch = branch.map(str::to_owned);
     ensure!(
-        lines.all(|path| !Path::new(path).exists()),
+        !busy,
         "The {role} worktree has an operation in progress; finish or abort it first"
     );
-    let status = git::run(git::git(root).args(["status", "--porcelain", "--untracked-files=all"]))?;
+    let status = git::run(git::git(Path::new(&tree.path)).args([
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ]))?;
     ensure!(
         status.is_empty(),
         "The {role} worktree has uncommitted changes; commit or clear them before merging"
@@ -212,19 +211,6 @@ fn checked_tree(trees: &[Worktree], path: &str, role: &str) -> Result<Worktree> 
 /// # Errors
 /// Fails for missing, foreign, detached, identical, dirty, or busy worktrees, or briefing I/O.
 pub fn prepare(
-    project: &Project,
-    request: &MergeRequest,
-    terminal: &TerminalSpec,
-    policy: &dyn Policy,
-) -> Result<AgentJob> {
-    prepare_with_auto(project, request, terminal, policy, None)
-}
-
-/// Prepare a merge with optional Auto instructions.
-///
-/// # Errors
-/// As [`prepare`].
-pub fn prepare_with_auto(
     project: &Project,
     request: &MergeRequest,
     terminal: &TerminalSpec,
@@ -377,6 +363,7 @@ mod tests {
                 &self.request,
                 &Self::terminal("claude"),
                 &AllowAll,
+                None,
             )
         }
         fn error(&self) -> String {
@@ -409,7 +396,7 @@ mod tests {
             MergeOutcome::NotMerged
         );
         let review =
-            git::review_branch(&f.project, vec![], Some(&f.request.source), Some("main")).unwrap();
+            git::review(&f.project, vec![], Some(&f.request.source), Some("main")).unwrap();
         assert!(review.ahead);
         assert!(
             review.changes[crate::model::PROJECT_SCOPE]
@@ -444,7 +431,7 @@ mod tests {
         for path in [&f.request.source, &f.request.destination] {
             let root = Path::new(path);
             fs::write(root.join("untracked"), "uncommitted work").unwrap();
-            // Untracked destination files are artifacts, not part of the merge.
+            // New source files aren't in the merge; untracked destination files are artifacts.
             let expected = if path == &f.request.source {
                 MergeOutcome::Dirty
             } else {
@@ -475,7 +462,13 @@ mod tests {
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::Merged
         );
-        fs::remove_file(destination.join("coverage.out")).unwrap();
+        // Uncommitted new files in the source would be left out of a finished merge.
+        fs::write(source.join("notes.md"), "unsaved work").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Dirty
+        );
+        fs::remove_file(source.join("notes.md")).unwrap();
         for path in [source, destination] {
             fs::write(path.join("file.txt"), "later edit").unwrap();
             assert_eq!(
@@ -515,7 +508,7 @@ mod tests {
             commit: true,
         };
         let plain = f.prepare().unwrap();
-        let automatic = prepare_with_auto(
+        let automatic = prepare(
             &f.project,
             &f.request,
             &Fixture::terminal("claude"),
@@ -545,6 +538,7 @@ mod tests {
                 &f.request,
                 &Fixture::terminal(command),
                 &AllowAll,
+                None,
             )
             .unwrap();
             assert_eq!(job.spec.cwd, PathBuf::from(&f.request.destination));
@@ -610,6 +604,7 @@ mod tests {
             },
             &Fixture::terminal("claude"),
             &AllowAll,
+            None,
         )
         .unwrap()
         .job;
@@ -745,6 +740,7 @@ mod tests {
             &f.request,
             &Fixture::terminal("codex"),
             &AllowAll,
+            None,
         )
         .unwrap();
         assert_eq!(first.terminal.id, next.terminal.id);
@@ -921,6 +917,6 @@ mod tests {
         let f = Fixture::new();
         let mut terminal = Fixture::terminal("claude");
         terminal.kind = TerminalKind::Shell;
-        assert!(prepare(&f.project, &f.request, &terminal, &AllowAll).is_err());
+        assert!(prepare(&f.project, &f.request, &terminal, &AllowAll, None).is_err());
     }
 }

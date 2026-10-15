@@ -55,7 +55,7 @@ elif 'Stage: implement' in body:
 elif 'Stage: review' in body:
     path = pathlib.Path(os.environ['PATCHBAY_REVIEW_FILE'])
     fixed = pathlib.Path('shared.txt').read_text() == 'feature fixed\n'
-    path.write_text('Verdict: clean\nNo findings.\n' if fixed else 'Verdict: issues\n[high] shared.txt:1: Fix the fixture text.\n')
+    path.write_text('Verdict: clean\nCounts: {"critical":0,"high":0,"medium":0,"low":0}\nNo findings.\n' if fixed else 'Verdict: issues\nCounts: {"critical":0,"high":1,"medium":0,"low":0}\n[high] shared.txt:1: Fix the fixture text.\n')
 elif 'Stage: fix' in body:
     assert '≥ high' in body
     assert 'Commit your work' in body

@@ -418,22 +418,6 @@ pub struct Review {
     pub affected: Vec<Affected>,
 }
 
-/// [`changes`] for `components` (`(id, canonical folder)`, only folders the
-/// user allowed) in `worktree` (see [`in_worktree`]), plus the components of
-/// `project` that depend on a changed one. Those can include components not
-/// in `components`, since that only reads the map.
-///
-/// # Errors
-/// Fails if `worktree` isn't one of the project repo's worktrees, or the
-/// project folder doesn't exist in it.
-pub fn review(
-    project: &Project,
-    components: Vec<(String, PathBuf)>,
-    worktree: Option<&str>,
-) -> Result<Review> {
-    review_branch(project, components, worktree, None)
-}
-
 fn affected_components(
     project: &Project,
     changes: &HashMap<String, Vec<ChangedFile>>,
@@ -451,11 +435,16 @@ fn affected_components(
         .collect()
 }
 
-/// Include committed branch changes for Auto inference and validation.
+/// [`changes`] for `components` (`(id, canonical folder)`, only folders the
+/// user allowed) in `worktree` (see [`in_worktree`]), plus the components of
+/// `project` that depend on a changed one. Those can include components not
+/// in `components`, since that only reads the map.
+///
+/// An optional base also includes committed branch changes.
 ///
 /// # Errors
-/// As [`review`], plus invalid base refs or Git errors.
-pub fn review_branch(
+/// Fails for missing or foreign worktrees, invalid base refs, or Git errors.
+pub fn review(
     project: &Project,
     components: Vec<(String, PathBuf)>,
     worktree: Option<&str>,
@@ -488,15 +477,17 @@ pub fn review_branch(
         ])
         .args(&pathspecs))?
     .is_empty();
-    let names = run(git(&root).args([
-        "diff",
-        "--name-status",
-        "-M",
-        "-z",
-        &merge_base,
-        "HEAD",
-        "--",
-    ]))?;
+    let names = run(git(&repo)
+        .args([
+            "diff",
+            "--name-status",
+            "-M",
+            "-z",
+            &merge_base,
+            "HEAD",
+            "--",
+        ])
+        .args(&pathspecs))?;
     // `git diff` names files from the repo's top folder, which sits above a
     // project opened in a subfolder; files are reported relative to the project.
     let members = group.map(|g| g.members.as_slice()).unwrap_or_default();
@@ -1472,7 +1463,7 @@ mod tests {
         }))
         .unwrap();
         let c = components(&f.0, &[("lib", "lib"), ("app", "app")]);
-        let r = review(&project, c.clone(), None).unwrap();
+        let r = review(&project, c.clone(), None, None).unwrap();
         assert_eq!(r.changes["lib"].len(), 1);
         assert!(r.changes["app"].is_empty());
         assert_eq!(
@@ -1503,7 +1494,7 @@ mod tests {
         }))
         .unwrap();
         let c = components(&root, &[("lib", "lib")]);
-        let r = review_branch(&project, c, None, Some("base")).unwrap();
+        let r = review(&project, c, None, Some("base")).unwrap();
         assert!(r.ahead);
         assert_eq!(
             r.changes["lib"].iter().map(|f| &f.path).collect::<Vec<_>>(),
@@ -1535,7 +1526,7 @@ mod tests {
             "name": "p", "root": root.display().to_string(), "components": [],
         }))
         .unwrap();
-        let r = review_branch(&project, vec![], None, Some("base")).unwrap();
+        let r = review(&project, vec![], None, Some("base")).unwrap();
         assert!(!r.ahead);
         assert!(r.changes.values().all(Vec::is_empty));
         // Unmapped project files still count, even if a later commit reverts them.
@@ -1545,7 +1536,7 @@ mod tests {
         f.write("proj/file.txt", "base");
         assert!(run_git(&f.0, &["add", "."]));
         assert!(run_git(&f.0, &["commit", "-qm", "revert"]));
-        let r = review_branch(&project, vec![], None, Some("base")).unwrap();
+        let r = review(&project, vec![], None, Some("base")).unwrap();
         assert!(r.ahead);
     }
 
@@ -1568,20 +1559,20 @@ mod tests {
         .unwrap();
         let c = components(&root, &[("shared", "../shared")]);
         assert!(
-            !review_branch(&project, c.clone(), None, Some("base"))
+            !review(&project, c.clone(), None, Some("base"))
                 .unwrap()
                 .ahead
         );
         f.write("shared/file.txt", "work");
         assert!(run_git(&f.0, &["add", "."]));
         assert!(run_git(&f.0, &["commit", "-qm", "shared work"]));
-        let review = review_branch(&project, c.clone(), None, Some("base")).unwrap();
+        let review = review(&project, c.clone(), None, Some("base")).unwrap();
         assert!(review.ahead);
         assert_eq!(review.changes["shared"][0].path, "../shared/file.txt");
         f.write("shared/file.txt", "base");
         assert!(run_git(&f.0, &["add", "."]));
         assert!(run_git(&f.0, &["commit", "-qm", "revert shared work"]));
-        let review = review_branch(&project, c, None, Some("base")).unwrap();
+        let review = self::review(&project, c, None, Some("base")).unwrap();
         assert!(review.ahead);
         assert!(review.changes.values().all(Vec::is_empty));
     }
@@ -1612,7 +1603,7 @@ mod tests {
         }))
         .unwrap();
         let c = components(&f.0, &[("lib", "lib")]);
-        let r = review_branch(&project, c, None, Some("base")).unwrap();
+        let r = review(&project, c, None, Some("base")).unwrap();
         let files = r.changes["lib"]
             .iter()
             .map(|f| (f.path.as_str(), f.kind, f.old_path.as_deref()))
@@ -1676,7 +1667,7 @@ mod tests {
             groups: vec![],
         };
         assert!(
-            review(&project, c.clone(), None)
+            review(&project, c.clone(), None, None)
                 .unwrap()
                 .affected
                 .is_empty()

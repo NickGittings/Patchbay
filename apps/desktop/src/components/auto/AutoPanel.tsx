@@ -64,6 +64,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
             {run.merge.destinationBranch}
           </p>
           {run.reason && <p>{run.reason}</p>}
+          {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
           {run.findingsSummary && ['mergeGate', 'fix'].includes(run.stage) && (
             <details>
               <summary>Review summary</summary>

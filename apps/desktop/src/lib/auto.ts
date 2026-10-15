@@ -103,6 +103,7 @@ export type Decision = {
   waitingFor?: AutoRun['waitingFor']
 }
 export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): Decision {
+  // Issues without a single counted finding can't be weighed against the severity floor.
   if (
     !findings?.verdict ||
     findings.truncated ||
@@ -119,6 +120,7 @@ export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): D
       return {
         stage: 'fix',
         status: 'waitingOnYou',
+        waitingFor: 'fixBudget',
         reason: `Fix budget exhausted (${run.round} rounds). ${count} blocking finding(s) remain.${run.validationFindings ? ' Validation still needs attention.' : ''}`,
       }
     return {
@@ -177,7 +179,7 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false):
   if (snapshot.freshness === 'current') return reviewDecision(run, snapshot.findings)
   if (snapshot.hasChanges)
     return {
-      stage: effortSettings(run).validate ? 'validate' : 'review',
+      stage: effortSettings(run).validate || run.validationFindings ? 'validate' : 'review',
       status: 'running',
       reason: `Findings are ${snapshot.freshness}`,
     }
@@ -200,8 +202,9 @@ export function nextStep(
       return step('implement', 'Plan finished')
     case 'implement':
     case 'fix':
+      // Only a passing validation (or skipping it) settles failures, whatever the effort.
       return step(
-        effortSettings(run).validate ? 'validate' : 'review',
+        effortSettings(run).validate || run.validationFindings ? 'validate' : 'review',
         'Work finished; review again',
       )
     case 'validate':
@@ -266,6 +269,8 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
     auto: {
       ...run,
       waitingFor: undefined,
+      // Only the approval wait reports these, again on its next poll.
+      gateError: undefined,
       ...update,
       log: text ? [...run.log, { atMs: Date.now(), text }].slice(-100) : run.log,
     },
@@ -275,7 +280,7 @@ function active(projectId: string, task: string | null) {
   const s = useStore.getState()
   return s.project?.id === projectId && s.activeTask === task
 }
-function mergeRequest(snapshot: AutoSnapshot, run: AutoRun) {
+function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
   const destination = snapshot.worktrees.find((w) => w.branch === run.merge.destinationBranch)
   if (!destination || destination.path === snapshot.source.path)
     throw new Error('Choose a different destination branch with an existing worktree')
@@ -285,6 +290,34 @@ function mergeRequest(snapshot: AutoSnapshot, run: AutoRun) {
     destination: destination.path,
     destinationBranch: run.merge.destinationBranch,
   }
+}
+/** The run's worktree no longer has the run's branch checked out. */
+export class BranchMoved extends Error {}
+/**
+ * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
+ * above a project in a subfolder. A run that recorded its `branch` never judges another branch
+ * checked out there.
+ */
+async function sourceWorktree(
+  projectId: string,
+  task: string | null,
+  worktrees: Worktree[],
+  branch?: string,
+) {
+  // The task list loads after a restored layout, so a run resumed early loads it first.
+  if (task && !projectStateOf(projectId)?.tasks.some((t) => t.id === task))
+    await refreshTasks(projectId)
+  const tasks = projectStateOf(projectId)?.tasks ?? []
+  const path = task
+    ? tasks.find((t) => t.id === task)?.worktree
+    : worktrees.find((w) => w.current)?.path
+  const source = worktrees.find((w) => w.path === path)
+  if (!path || !source?.branch) throw new Error('Choose a worktree with a branch')
+  if (branch && source.branch !== branch)
+    throw new BranchMoved(
+      `The worktree has ${source.branch} checked out, not this run's ${branch}; check ${branch} out again or Stop`,
+    )
+  return { source: { ...source, branch: source.branch }, tasks }
 }
 /**
  * Pinned read calls; no active-tab state is consulted after capturing the project. The merge
@@ -308,16 +341,8 @@ export async function autoSnapshot(
     proposalRead(projectId),
     plannerPlanPromise,
   ])
-  // The task list loads after a restored layout, so a run resumed early loads it first.
-  if (task && !projectStateOf(projectId)?.tasks.some((t) => t.id === task))
-    await refreshTasks(projectId)
-  const tasks = projectStateOf(projectId)?.tasks ?? state.tasks
-  // The project folder is the current worktree, whose top can sit above a project in a subfolder.
-  const path = task
-    ? tasks.find((t) => t.id === task)?.worktree
-    : worktrees.find((w) => w.current)?.path
-  const source = worktrees.find((w) => w.path === path)
-  if (!path || !source?.branch) throw new Error('Choose a worktree with a branch')
+  const { source, tasks } = await sourceWorktree(projectId, task, worktrees, run.branch)
+  const path = source.path
   // Review what the merge will bring in: the destination when it is a branch, else the default.
   const destination = run.merge.destinationBranch
   const base =
@@ -425,15 +450,64 @@ export async function checkAutoHooks(deviceId: string) {
   if (!hooks.installed || hooks.disabled || !hooks.reporterAvailable)
     throw new Error('Install Agent status integration before starting Auto mode')
 }
-const startingAuto = new Set<string>()
-/** Worktrees whose Auto run is running a validation right now. */
-const validating = new Set<string>()
-export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
+/** One owner for each worktree's in-flight work and polling state. */
+interface AutoController {
+  projectId: string
+  task: string | null
+  phase: 'idle' | 'driving' | 'launching'
+  /** Start runs beside a stale drive of a stopped run, which acts only on its own runId. */
+  starting: boolean
+  pending: boolean
+  wake?: () => void
+  validating: boolean
+  gatePoll?: { runId: string; atMs: number }
+  completionPoll?: { turn: string; atMs: number }
+  gateRequest?: { key: string; request: ReturnType<typeof mergeRequest> }
+}
+const controllers = new Map<string, AutoController>()
+/** The worktree's controller, if it has one; checks never create one. */
+const peekController = (projectId: string, task: string | null) =>
+  controllers.get(JSON.stringify([projectId, task]))
+function controllerFor(projectId: string, task: string | null) {
   const key = JSON.stringify([projectId, task])
-  if (startingAuto.has(key)) throw new Error('Auto is already starting in this worktree')
-  if (launching.has(key))
+  let controller = controllers.get(key)
+  if (!controller) {
+    controller = {
+      projectId,
+      task,
+      phase: 'idle',
+      starting: false,
+      pending: false,
+      validating: false,
+    }
+    controllers.set(key, controller)
+  }
+  return controller
+}
+function release(controller: AutoController) {
+  controller.phase = 'idle'
+  if (controller.starting) return
+  if (controller.pending) {
+    controller.wake?.()
+    return
+  }
+  // A worktree without an unfinished run keeps no state worth polling; drop its controller.
+  const { projectId, task } = controller
+  const key = JSON.stringify([projectId, task])
+  if (
+    !controller.validating &&
+    !unfinished(autoRun(projectId, task)?.status) &&
+    controllers.get(key) === controller
+  )
+    controllers.delete(key)
+}
+export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
+  const controller = controllerFor(projectId, task)
+  if (controller.starting) throw new Error('Auto is already starting in this worktree')
+  // A launch may still attach its agent to a run; any other drive belongs to a finished run.
+  if (controller.phase === 'launching')
     throw new Error('Auto is still starting an agent; Start once it has started')
-  startingAuto.add(key)
+  controller.starting = true
   try {
     if (unfinished(autoRun(projectId, task)?.status))
       throw new Error('This worktree already has an Auto run')
@@ -452,8 +526,6 @@ export async function startAuto(projectId: string, task: string | null, settings
     const decision = inferStage(snapshot, run, true)
     const stage =
       settings.stage === 'merge' && !mergeableHead(snapshot, run) ? 'mergeGate' : settings.stage
-    if (launching.has(key))
-      throw new Error('Auto is still starting an agent; Start once it has started')
     assertSessionAvailable(projectId, task, decision.sessionId)
     // Merged work's old plan is no goal for a new run.
     if (
@@ -474,6 +546,7 @@ export async function startAuto(projectId: string, task: string | null, settings
       auto: {
         ...run,
         ...decision,
+        branch: snapshot.source.branch,
         sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
         reviewedHead,
         findingsSummary:
@@ -485,7 +558,9 @@ export async function startAuto(projectId: string, task: string | null, settings
       },
     })
   } finally {
-    startingAuto.delete(key)
+    controller.starting = false
+    // A drive still running releases the controller itself when it ends.
+    if (controller.phase === 'idle') release(controller)
   }
 }
 export function pauseAuto(projectId: string, task: string | null, reason = 'Paused by you') {
@@ -495,17 +570,17 @@ export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
   // Resume changes the run id, so let a pending launch attach its session first.
-  if (launching.has(JSON.stringify([projectId, task])))
+  if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
   const snapshot = await autoSnapshot(projectId, task, run, true)
-  if (launching.has(JSON.stringify([projectId, task])))
+  if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
   // Pause preserves runId; a new status or another Pause still cancels this Resume.
   if (autoRun(projectId, task) !== run) return
   const decision = inferStage(snapshot, run)
   if (['plan', 'implement', 'review', 'fix', 'merge'].includes(decision.stage))
     await checkAutoHooks(run.device)
-  if (launching.has(JSON.stringify([projectId, task])))
+  if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
   if (autoRun(projectId, task) !== run) return
   assertSessionAvailable(projectId, task, decision.sessionId)
@@ -514,6 +589,8 @@ export async function resumeAuto(projectId: string, task: string | null) {
     task,
     {
       ...decision,
+      // A run restored from before branches were recorded adopts its worktree's.
+      branch: run.branch ?? snapshot.source.branch,
       reviewedHead: mergeableHead(snapshot, run),
       findingsSummary:
         snapshot.freshness === 'current'
@@ -558,7 +635,7 @@ export function stopAuto(projectId: string, task: string | null) {
   )
   if (run?.sessionId && ownsSession(run))
     void terminalStop(run.sessionId).catch((e) => useStore.getState().setMessage(String(e)))
-  if (validating.has(JSON.stringify([projectId, task])))
+  if (peekController(projectId, task)?.validating)
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
 }
 export async function skipStage(projectId: string, task: string | null) {
@@ -572,14 +649,13 @@ export async function skipStage(projectId: string, task: string | null) {
     )
       return
   }
-  // Skipping a fix that never started (its budget ran out) accepts the findings, so it goes to the
-  // merge gate; a fix that ran still gets its work reviewed.
+  // Only an explicit budget wait accepts findings. Failed or interrupted fixes return to review.
   const stage: AutoStage =
     run.stage === 'plan'
       ? 'implement'
       : run.stage === 'implement' ||
           run.stage === 'validate' ||
-          (run.stage === 'fix' && run.sessionId)
+          (run.stage === 'fix' && run.waitingFor !== 'fixBudget')
         ? 'review'
         : 'mergeGate'
   // Skipping review cannot grant automatic merge permission.
@@ -599,6 +675,20 @@ export async function skipStage(projectId: string, task: string | null) {
     },
     'Stage skipped by you',
   )
+}
+/** End a run whose branch is integrated, stopping a still running agent it launched and owns. */
+function settleIntegrated(projectId: string, task: string | null, run: AutoRun) {
+  const session = run.sessionId ? useStore.getState().sessions[run.sessionId] : undefined
+  const stop = session?.running && !session.status?.stopped && ownsSession(run)
+  patch(
+    projectId,
+    task,
+    { stage: 'done', status: 'done', reason: 'Branch is integrated' },
+    'Branch is integrated',
+  )
+  // The panel offers no Stop for a finished run, so its agent would be left running.
+  if (stop)
+    void terminalStop(run.sessionId!).catch((e) => useStore.getState().setMessage(String(e)))
 }
 export function mergeNow(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
@@ -634,13 +724,26 @@ function assertSessionAvailable(projectId: string, task: string | null, sessionI
   )
     throw new Error('This planner or agent already belongs to another Auto run')
 }
-const busy = new Set<string>()
-const launching = new Set<string>()
-const gatePolls = new Map<string, { runId: string; atMs: number }>()
-const completionPolls = new Map<string, { turn: string; atMs: number }>()
+/** Cache only the pinned merge request; outcome checks need no plans, findings or diff. */
+async function approvalOutcome(
+  projectId: string,
+  task: string | null,
+  run: AutoRun,
+  controller: AutoController,
+) {
+  const project = projectOf(projectId)
+  if (!project) throw new Error('Open the project first')
+  const key = JSON.stringify([run.runId, run.merge.destinationBranch])
+  if (controller.gateRequest?.key !== key) {
+    const worktrees = await gitWorktrees(projectId)
+    const { source } = await sourceWorktree(projectId, task, worktrees, run.branch)
+    controller.gateRequest = { key, request: mergeRequest({ source, worktrees }, run) }
+  }
+  return mergeOutcome(project, controller.gateRequest.request)
+}
 async function drive(projectId: string, task: string | null) {
   const key = JSON.stringify([projectId, task])
-  if (busy.has(key)) return
+  const controller = controllerFor(projectId, task)
   const initial = autoRun(projectId, task)
   if (!initial || !['running', 'waitingOnYou'].includes(initial.status)) return
   const runId = initial.runId
@@ -648,16 +751,37 @@ async function drive(projectId: string, task: string | null) {
     const r = autoRun(projectId, task)
     return r?.runId === runId && r.status === 'running' ? r : null
   }
-  busy.add(key)
   let reservedSession: string | undefined
   try {
     let run = autoRun(projectId, task)!
     // Approval waits still observe Git, including a merge performed outside Auto.
     if (run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !run.sessionId) {
-      const previous = gatePolls.get(key)
+      const previous = controller.gatePoll
       if (previous?.runId === runId && Date.now() - previous.atMs < 5000) return
-      gatePolls.set(key, { runId, atMs: Date.now() })
-      const snapshot = await autoSnapshot(projectId, task, run)
+      controller.gatePoll = { runId, atMs: Date.now() }
+      let outcome: MergeOutcome
+      try {
+        outcome = await approvalOutcome(projectId, task, run, controller)
+      } catch (e) {
+        // Resolve worktrees again after a missing checkout or branch switch, and show the
+        // failure beside the wait's own reason while retrying for temporary Git errors.
+        controller.gateRequest = undefined
+        const latest = autoRun(projectId, task)
+        const gateError = e instanceof Error ? e.message : String(e)
+        if (
+          latest?.runId === runId &&
+          latest.stage === 'mergeGate' &&
+          latest.status === 'waitingOnYou' &&
+          latest.gateError !== gateError
+        )
+          patch(
+            projectId,
+            task,
+            { gateError, waitingFor: latest.waitingFor },
+            `Couldn't check merge status: ${gateError}`,
+          )
+        return
+      }
       const latest = autoRun(projectId, task)
       if (
         latest?.runId !== runId ||
@@ -665,33 +789,52 @@ async function drive(projectId: string, task: string | null) {
         latest.status !== 'waitingOnYou'
       )
         return
-      if (integrated(snapshot.outcome))
-        patch(
-          projectId,
-          task,
-          { stage: 'done', status: 'done', reason: 'Branch is integrated' },
-          'Branch is integrated',
-        )
+      if (integrated(outcome)) settleIntegrated(projectId, task, latest)
+      else if (latest.gateError)
+        patch(projectId, task, { gateError: undefined, waitingFor: latest.waitingFor })
       return
     }
     if (run.sessionId) {
-      const session = useStore.getState().sessions[run.sessionId]
+      const state = useStore.getState()
+      const session =
+        state.sessions[run.sessionId] ??
+        state.sessionRecords.find((r) => r.id === run.sessionId)?.snapshot
       const agent = session?.status?.agent
-      if (
+      const forgotten =
         !session &&
         useStore.getState().serviceConnected &&
         !useStore.getState().sessionRecords.some((r) => r.id === run.sessionId)
-      ) {
-        pauseAuto(projectId, task, 'The tracked session was forgotten')
-        return
-      }
-      if (
+      const stoppedWaiting =
         run.status === 'waitingOnYou' &&
         session &&
         (!session.running ||
           session.status?.stopped ||
           (agent?.state === 'idle' && agent.sinceMs >= (run.turnSince ?? 0)))
-      ) {
+      // A merge agent that ended may have left the merge done: the user may have resolved and
+      // committed it before closing the agent. True once this settled the run.
+      const mergedByHand = async () => {
+        if (run.stage !== 'merge') return false
+        const current = run
+        let outcome: MergeOutcome
+        try {
+          outcome = await approvalOutcome(projectId, task, current, controller)
+        } catch (e) {
+          controller.gateRequest = undefined
+          if (autoRun(projectId, task) === current)
+            pauseAuto(projectId, task, `Couldn't check merge status: ${e}`)
+          return true
+        }
+        if (autoRun(projectId, task) !== current) return true
+        if (!integrated(outcome)) return false
+        settleIntegrated(projectId, task, current)
+        return true
+      }
+      if ((forgotten || stoppedWaiting) && (await mergedByHand())) return
+      if (forgotten) {
+        pauseAuto(projectId, task, 'The tracked session was forgotten')
+        return
+      }
+      if (stoppedWaiting) {
         pauseAuto(projectId, task, 'Agent stopped while waiting for input')
         return
       }
@@ -719,8 +862,11 @@ async function drive(projectId: string, task: string | null) {
       }
       if (
         session?.status?.stopped ||
-        (run.sessionStartedMs && session?.startedMs !== run.sessionStartedMs)
+        (run.sessionStartedMs !== undefined &&
+          session?.startedMs !== undefined &&
+          session.startedMs !== run.sessionStartedMs)
       ) {
+        if (await mergedByHand()) return
         pauseAuto(projectId, task, 'The tracked session was stopped or relaunched by hand')
         return
       }
@@ -743,9 +889,9 @@ async function drive(projectId: string, task: string | null) {
         agent.sinceMs > (run.turnSince ?? 0)
       ) {
         const turn = JSON.stringify([run.runId, run.sessionId, agent.sinceMs])
-        const previous = completionPolls.get(key)
+        const previous = controller.completionPoll
         if (previous?.turn === turn && Date.now() - previous.atMs < 5000) return
-        completionPolls.set(key, { turn, atMs: Date.now() })
+        controller.completionPoll = { turn, atMs: Date.now() }
         const snapshot = await autoSnapshot(projectId, task, run)
         if (!live()) return
         // Never advance on a previous attempt's saved findings.
@@ -773,7 +919,7 @@ async function drive(projectId: string, task: string | null) {
         // Another agent at this stage keeps working on it: wait for it rather than advance, and
         // keep tracking the run's own agent.
         if (other?.stage === run.stage) {
-          completionPolls.delete(key)
+          controller.completionPoll = undefined
           const reason = 'Waiting for another agent in this worktree to finish'
           if (run.reason !== reason) patch(projectId, task, { reason }, reason)
           return
@@ -810,6 +956,11 @@ async function drive(projectId: string, task: string | null) {
                 }
               : {}),
             launchAtMs: undefined,
+            // Only the validation a finished fix leads to settles these failures; a skipped or
+            // interrupted fix keeps them for review to act on.
+            ...(run.stage === 'fix' && decision.stage === 'validate'
+              ? { validationFindings: undefined }
+              : {}),
             reason:
               run.stage === 'merge' && decision.status === 'waitingOnYou'
                 ? `${decision.reason}${agent.message ? ': ' + agent.message : ''}`
@@ -832,6 +983,7 @@ async function drive(projectId: string, task: string | null) {
             ['idle', 'ended'].includes(agent.state) &&
             agent.sinceMs >= (run.turnSince ?? 0)))
       ) {
+        if (await mergedByHand()) return
         pauseAuto(projectId, task, agent?.message || 'Agent stopped before finishing its turn')
         return
       }
@@ -846,7 +998,7 @@ async function drive(projectId: string, task: string | null) {
         })
       return
     }
-    completionPolls.delete(key)
+    controller.completionPoll = undefined
     if (run.status !== 'running') return
     if (!active(projectId, task)) {
       pauseAuto(
@@ -866,12 +1018,7 @@ async function drive(projectId: string, task: string | null) {
     if (!live()) return
     run = live()!
     if ((run.stage === 'mergeGate' || run.stage === 'merge') && integrated(snapshot.outcome)) {
-      patch(
-        projectId,
-        task,
-        { stage: 'done', status: 'done', reason: 'Branch is integrated' },
-        'Branch is integrated',
-      )
+      settleIntegrated(projectId, task, run)
       return
     }
     if (
@@ -880,6 +1027,18 @@ async function drive(projectId: string, task: string | null) {
       (run.reviewedHead !== snapshot.source.head || snapshot.freshness !== 'current')
     ) {
       pauseAuto(projectId, task, 'The branch changed since review; Resume to review again')
+      return
+    }
+    if (
+      (run.stage === 'mergeGate' || run.stage === 'merge') &&
+      run.reviewedHead &&
+      mergeableHead(snapshot, run) !== run.reviewedHead
+    ) {
+      pauseAuto(
+        projectId,
+        task,
+        'The review no longer permits automatic merging; Resume to review again',
+      )
       return
     }
     if (run.stage === 'mergeGate') {
@@ -896,7 +1055,7 @@ async function drive(projectId: string, task: string | null) {
         return
       }
       const reports: ActionReport[] = []
-      validating.add(key)
+      controller.validating = true
       try {
         if (snapshot.changedComponents.length) {
           const request = {
@@ -910,7 +1069,7 @@ async function drive(projectId: string, task: string | null) {
         if (live()) pauseAuto(projectId, task, `Validation couldn't run: ${e}`)
         return
       } finally {
-        validating.delete(key)
+        controller.validating = false
       }
       if (!live()) return
       const records = useStore.getState().sessionRecords
@@ -963,7 +1122,7 @@ async function drive(projectId: string, task: string | null) {
       `Starting ${run.stage}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
     )
     if (!live() || !active(projectId, task)) return
-    launching.add(key)
+    controller.phase = 'launching'
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(run.device, projectId)
@@ -1000,7 +1159,9 @@ async function drive(projectId: string, task: string | null) {
         if (!snapshot.reviewRecord)
           throw new Error('Open findings and start a review before fixing')
         sid = await fixReviewFindings(snapshot.reviewRecord, brief, run.device)
-        if (autoRun(projectId, task)?.runId === runId)
+        // A refused launch rejects; one that returned may be running even if confirming it fails,
+        // so it uses up its round now.
+        if (sid && autoRun(projectId, task)?.runId === runId)
           patch(projectId, task, { round: run.round + 1 })
         break
       case 'merge':
@@ -1046,33 +1207,31 @@ async function drive(projectId: string, task: string | null) {
       latest?.runId === runId &&
       (latest.status === 'running' ||
         (latest.status === 'waitingOnYou' && latest.stage === 'mergeGate'))
-    )
-      patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
+    ) {
+      // Checking the run's branch out again and resuming continues it.
+      if (e instanceof BranchMoved) pauseAuto(projectId, task, e.message)
+      else patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
+    }
   } finally {
     if (reservedSession && launchingSessions.get(reservedSession) === key)
       launchingSessions.delete(reservedSession)
-    launching.delete(key)
-    busy.delete(key)
   }
 }
 /** The main window owns a single driver; the timer also polls findings every five seconds. */
 export function followAuto() {
   let queued = false
   let disposed = false
-  const driving = new Set<string>()
-  const pending = new Set<string>()
   const schedule = (projectId: string, task: string | null) => {
     if (disposed) return
-    const key = JSON.stringify([projectId, task])
-    if (driving.has(key)) {
-      pending.add(key)
+    const controller = controllerFor(projectId, task)
+    controller.wake = () => schedule(projectId, task)
+    if (controller.phase !== 'idle' || controller.starting) {
+      controller.pending = true
       return
     }
-    driving.add(key)
-    void drive(projectId, task).finally(() => {
-      driving.delete(key)
-      if (pending.delete(key)) schedule(projectId, task)
-    })
+    controller.pending = false
+    controller.phase = 'driving'
+    void drive(projectId, task).finally(() => release(controller))
   }
   const tick = () => {
     if (queued || disposed) return
@@ -1158,9 +1317,12 @@ export function followAuto() {
   tick()
   return () => {
     disposed = true
+    for (const [key, controller] of controllers) {
+      controller.wake = undefined
+      controller.pending = false
+      if (controller.phase === 'idle' && !controller.starting) controllers.delete(key)
+    }
     unsubscribe()
     clearInterval(interval)
-    completionPolls.clear()
-    gatePolls.clear()
   }
 }
