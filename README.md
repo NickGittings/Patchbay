@@ -4,10 +4,40 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![Patchbay showing a component map, a running dev server and the component inspector](docs/screenshots/graph-actions.png)
-
 > **Status:** early (0.1.0). Patchbay is developed and tested mainly on macOS; the Linux and
 > Windows code paths exist but are less exercised. Expect rough edges, and please report them.
+
+## Workspace views
+
+The current desktop app, shown with the Northstar demo project.
+
+### Navigation
+
+Explore the component map, follow dependencies, and inspect a component alongside its live
+terminals.
+
+![Navigation view showing the Northstar component map, Web app inspector, and running development server](docs/screenshots/navigation.png)
+
+### Plan
+
+Highlight the components in scope, work with a planner terminal, and save a shared implementation
+plan.
+
+![Plan view showing highlighted components, planner scope, saved plan, and planning notes](docs/screenshots/plan.png)
+
+### Implementation
+
+Keep each task's worktree and terminals together, with development servers and validation output
+in one view.
+
+![Implementation view showing the Add product search task with live Web and API servers and passing catalog tests](docs/screenshots/implementation.png)
+
+### Review
+
+Inspect Git changes by component, read diffs, and check affected components before reviewing or
+merging a branch.
+
+![Review view showing component changes and the product search diff in the task worktree](docs/screenshots/review.png)
 
 ## Layout
 
@@ -23,7 +53,8 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 
 There are no prebuilt releases yet, so build Patchbay from source.
 
-Prerequisites: Rust 1.89+ (via [rustup](https://rustup.rs)), Node 20+, Git, and the
+Prerequisites: Rust 1.89+ (via [rustup](https://rustup.rs)), Node.js (20.19+ on 20.x,
+22.12+ on 22.x, or 24+), Git, and the
 [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform.
 
 ```sh
@@ -34,16 +65,42 @@ npm run tauri dev        # run the desktop app
 npm run tauri build      # or build a local app bundle
 ```
 
-The CLI exercises the same core without the UI:
+For agent terminals, install and sign in to Claude Code or Codex separately, and make its
+`claude` or `codex` command available on your login-shell PATH.
+
+The CLI exercises the same core without the UI. After stopping the development app, return
+from `apps/desktop` to the repository root:
 
 ```sh
+cd ../..
 cargo run -p patchbay-cli -- detect .                       # suggested component map
 cargo run -p patchbay-cli -- context patchbay-core          # what an agent on that component is told
 ```
 
+### First project
+
+1. Choose **Project → Open folder…** and select your repository. Review the detected components
+   in **Navigation**, then choose **Project → Create map configuration** to save `patchbay.json`.
+   Later map edits save automatically.
+2. Select a component and configure its development and test commands in the Inspector. Give
+   task terminals a **Development environment** or **Validation** graph action when you want
+   them included in [group startup or affected validation](#graph-actions).
+3. Open **Plan**, highlight the components you want to change, and start a planner terminal.
+   Agree on a plan and check **Saved plan**. You can also paste and save a plan there. To capture
+   Claude's native plans, install its hooks through **Tools → Agent status integration…**.
+4. Choose **Implement → New worktree…**, name the task, and create its branch/worktree. Patchbay
+   passes the plan to a fresh agent and opens **Implementation**. Prepare dependencies and
+   environment files in that checkout. Use **Add terminal** for component servers, tests, or a
+   root shell. Named tasks require a Git repository.
+5. Run the configured checks, then open **Review** to inspect the task's changes and diffs.
+   **Review branch…** starts a review agent; **Merge into…** selects another worktree as the
+   destination. [Auto mode](#auto-mode) can coordinate these stages for you.
+
 ## Checks
 
-Run these before opening a pull request:
+Run these from the repository root before opening a pull request. If you are still in
+`apps/desktop`, run `cd ../..` first. Smoke checks need a desktop session; stop `tauri dev`
+before running them.
 
 ```sh
 cargo fmt --all -- --check
@@ -70,13 +127,19 @@ each tab owns its terminals. **＋ New task** requires a title and creates a new
 immediately by default; choose **Existing worktree** to attach one instead. A checkout can belong
 to only one task. Non-Git projects keep the Main worktree tab only.
 
-Plan and Implementation share the task's checkout and component scope; the scope decides what
-agents are briefed on, not which terminals the tab shows. A tab lists its own terminals (a new
-task starts with a stopped root shell for manual setup), the saved component terminals you add
-to it with **+ Add terminal…** (a dev server, tests), and anything else running in its worktree,
-such as an environment or an agent's checks. **Start agent…** launches one coordinating agent at
-the worktree root; **Run…** appears once the map has groups or validation terminals. × removes a
-terminal from the tab (asking first while it runs); component terminals stay on the map.
+The planner and **Saved plan** belong to the project, so planning can start before a task
+worktree exists. **Implement →** accepts the plan into the chosen task, stops the planner, and
+starts a fresh agent at the worktree root using the planner's provider. The implementation
+agent receives the saved plan and assignments separately from the planner's conversation.
+Component scope controls the agent briefing; it does not determine which terminals a task shows.
+
+A tab lists its own terminals (a new task starts with a stopped root shell for manual setup),
+the saved component terminals you add to it, and anything else running in its worktree, such as
+an environment or an agent's checks. Choose **Add terminal**, pick **Project root** or a component
+under **Where**, then select an agent, saved terminal, preset, or custom command. An agent choice
+shows **Start agent**; other terminals are added stopped. A root agent coordinates the task's
+selected component scope. **Run…** appears once the map has groups or validation terminals.
+× removes a terminal from the tab (asking first while it runs); component terminals stay on the map.
 Switching tasks restores each tab's terminals, focus and maximization while other processes keep
 running. The tab's ⋯ menu offers rename, notes, review, forget and worktree removal. Removal
 checks for changes and cannot delete the open checkout.
@@ -87,7 +150,9 @@ Planners can submit an agreed Markdown plan and ordered component assignments:
 {
   "version": 1,
   "plan": "# Add button\nImplement and validate the agreed design.",
-  "assignments": [{ "componentId": "web", "assignment": "Add the button and its behavior." }]
+  "assignments": [
+    { "componentId": "web", "assignment": "Add the button and its behavior." }
+  ]
 }
 ```
 
@@ -116,9 +181,38 @@ preview links appear in the initiating task; background results raise tab attent
 desktop disconnects these commands while service-owned processes keep running. Restart an agent
 session after reopening the desktop to receive a fresh command connection.
 
-Patchbay does not install dependencies, copy environment files, isolate ports/databases, merge
-branches or delete worktrees automatically. `npm run smoke:tasks` covers proposals, root-agent
-handoff, configured actions, worktree isolation and switching while commands finish.
+Prepare dependencies, environment files, and ports/databases for each worktree yourself.
+Worktree deletion is an explicit task-menu action; automatic merging is available through the
+opt-in [Auto mode](#auto-mode). `npm run smoke:tasks` covers proposals, root-agent handoff,
+configured actions, worktree isolation and switching while commands finish.
+
+## Auto mode
+
+Open **Auto** in the toolbar to coordinate a task from planning through implementation,
+validation, review, fixes, and merge. It detects a starting stage from existing work; you can
+choose another stage before starting. Supply a task goal, an agent preset, and a destination
+branch checked out in another worktree.
+
+Auto requires Claude or Codex status hooks installed through **Tools → Agent status integration…**.
+For Codex, review and trust the hook definitions through `/hooks`. Auto uses native agent status
+to advance between stages and waits when an agent needs input. See
+[agent status setup](docs/agent-status-validation.md).
+
+Choose **Light**, **Standard**, or **Thorough** effort for up to 1, 3, or 5 fix rounds.
+Standard is the default and enables validation after implementation and fixes; Light disables
+that validation by default. **Advanced** lets you adjust the round limit, lowest severity to
+fix, and validation setting. Validation uses the map's configured validation terminals.
+
+**Ask before merging** is the default: Auto waits at merge approval until you choose
+**Merge now**. Select **Merge automatically** to let Auto proceed when the reviewed branch has
+no findings blocking that run's severity threshold. Changes after review require a fresh review
+before automatic merging. Merge completion is checked against Git.
+
+The Auto panel shows the current stage, review summary, validation results, and run log.
+**Pause** stops progression while the current process can keep running; **Stop** also stops the
+agent owned by that run and cancels its active validation. **Resume** reassesses the current work.
+Auto can pause between stages when its worktree is inactive; switch back and resume to continue.
+Unfinished runs restore paused after reopening Patchbay. `npm run smoke:auto` exercises the flow.
 
 ## Editor navigation
 
@@ -151,65 +245,20 @@ Run `npm run smoke:navigation` for the Unix desktop fixture. See
 
 ## Extensions
 
-Extensions are local folders containing a `package.json`. Open **Tools → Extensions…** in the
-toolbar, choose **Install from folder…**, and select the extension folder. Installed folders live
-in `~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
-`~/.patchbay/extensions.json`. **Reload** reloads manifests and restarts code hosts. Invalid
-manifests stay visible with errors while other extensions continue loading. Set
-`PATCHBAY_EXTENSIONS_DIR` to use another registry (including `examples/extensions`).
+Open **Tools → Extensions… → Install from folder…** to install a local extension, then use
+**Reload** after changing its installed files. Installation copies the source folder into
+`~/.patchbay/extensions/<publisher>.<name>/`; editing the original folder does not update the
+installed copy. Enable or disable extensions in the same panel. Invalid manifests stay visible
+with errors while other extensions continue loading.
 
-Manifests require `name`, `publisher`, a semantic `version`, and `engines.patchbay` (for example,
-`"^0.1.0"`). `contributes` can declare devices, detectors, commands, menu placements, agent
-context files, and Inspector/dock views. Each contribution id must be unique within its type
-across installed extensions; use `<publisher>.<name>.<id>` for commands and views. Devices
-load in built-in → extension → user order. Detectors claim folders after built-in manifest
-recognition; rescanning preserves all existing edits. Context files are component-relative,
-limited to 32 KiB, and checked against the same allowed roots as the file tree.
+The supported [Docker Compose and browser preview integrations](extensions/README.md) provide
+container actions, status, and links from running development servers. Install each folder
+separately. Docker requires Docker Compose and an accessible daemon; opening a browser preview
+requires its development server to be running.
 
-**Cmd/Ctrl+Shift+P** opens the command palette. Commands with a `run` block create a temporary
-terminal at the selected component, using the existing session, policy, and PTY launch path.
-These terminals appear in the dock without changing the saved project. Place commands in
-`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Tools**).
-Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
-`component.hasTerminal('id')`, `component.hasFile('file')`, and `view`. Unknown or malformed
-expressions hide the contribution.
-
-For code, set `main` to an ES module exporting `activate(patchbay)` and optionally
-`deactivate()`. Activation events are `onStartup`, `onProjectOpen`, `onCommand:<id>`,
-`onView:<id>`, and `workspaceContains:<file>`; first command/view use also activates its owner.
-Each project/task retains its own host when tabs or tasks change. Disabling an extension and Reload dispose its hosts. Code runs only in the
-main window, in opaque-origin `sandbox="allow-scripts"` frames. The broker binds each request
-to its sending frame, checks permissions, bounds messages and concurrent calls, and stops
-hosts that stop answering (three timeouts in a row) or send excessive traffic; a single slow
-call just fails. Commands have a 60-second deadline. Extension frames receive no Tauri API. CSP blocks
-network/IPC connections; asset requests are canonicalized inside their extension directory.
-
-The API declarations are in [`packages/extension-api/index.d.ts`](packages/extension-api/index.d.ts).
-Use `project:read` for project/selection snapshots, Git status, and badge/context providers;
-`terminals` for terminal launches; `files:read` for bounded project file reads;
-`sessions:read` for component task-terminal URL summaries; and the separate `urls:open`
-permission for native-validated HTTP/HTTPS browser opening. `workspace.get` reports the
-host’s stable project/task identity. Commands and file reads use that task’s worktree. Storage is
-per extension under `~/.patchbay/extension-data/` (alongside an overridden registry). No raw
-filesystem or network API is exposed. `terminals.run` returns captured output and exit status,
-or `running: true` after eight seconds for a longer task; its session remains in the dock
-(without taking focus), and running the same command again in that component reuses it. An
-extension keeps at most eight such sessions. Extension context in a briefing is capped at 128 KiB.
-Context and badge providers have a two-second response deadline. Views use
-`views.registerWebviewView(id, { resolve(view), onMessage(message) })`; `view.render(html)`
-mounts sandboxed HTML, and `patchbayView.postMessage` / `patchbayView.onMessage` communicate
-with the extension's handler. HTML may use inline styles and scripts, with no network access.
-
-[`examples/extensions/docker`](examples/extensions/docker) demonstrates every declarative
-contribution plus container counts from a terminal task, agent context, and an Inspector view.
-Its fixture uses Compose; Docker is optional for smoke verification (missing or failing
-Docker displays an error and preserves the last successful result). Run `PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions`
-or `... -- detect examples/extensions/docker/fixture` to inspect it. `npm run smoke:extensions`
-checks the example inside the desktop app, including the iframe IPC sandbox. Project-local
-extensions, marketplace/URL installs, and extension views in pop-out windows are future work.
-
-Supported first-party Docker and browser preview folders are in [`extensions`](extensions/README.md).
-They remain sandboxed and locally installed, with explicit refresh and task-scoped state.
+Extensions can add terminal presets, detectors, commands, agent context, and Inspector/dock
+views. See [extension development](docs/extensions.md) for manifests, APIs, permissions, sandbox
+behavior, development overrides, and the example extension.
 
 ## Workspace continuity
 
@@ -224,7 +273,7 @@ independent `patchbay-sessiond` helper. **Stop** terminates a session and cancel
 startup only when its plan includes that session; stopping one validator lets validation
 continue. **Stop all work** asks for confirmation, then cancels coordinated actions and stops
 sessions across every project, including those hidden by filters, while keeping Patchbay
-open. From the CLI, `patchbay sessions shutdown --stop-running` stops all work and shuts down
+open. From the CLI, `patchbay-cli sessions shutdown --stop-running` stops all work and shuts down
 the helper. Sessions show **Disconnected** while the desktop reconnects; losing a connection
 never starts replacement processes. The helper exits after 60 seconds without clients or
 running processes.
@@ -280,7 +329,7 @@ cargo build -p patchbay-cli -p patchbay-sessiond
 ```
 
 Development and Tauri packaging build and copy the helper automatically. Standalone CLI
-installations need `patchbay-sessiond` beside `patchbay`. `PATCHBAY_STATE_DIR` selects isolated
+installations need `patchbay-sessiond` beside `patchbay-cli`. `PATCHBAY_STATE_DIR` selects isolated
 local state for tests; it must be an absolute path. `npm run smoke:workspace` accepts a second
 fixture through `PATCHBAY_SMOKE_ROOT_2`. `npm run smoke:lifecycle` creates isolated fixtures,
 quits and relaunches the desktop, and verifies the same process and recovered workspace.
