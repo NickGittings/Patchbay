@@ -56,7 +56,10 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     return out
   }, [agents, devices, picked, reviewers, roles])
   const device = runAgents.plan
-  const distinct = [...new Set([...Object.values(runAgents), ...reviewers])].join(',')
+  const distinct = useMemo(
+    () => [...new Set([...Object.values(runAgents), ...reviewers])],
+    [runAgents, reviewers],
+  )
   const [goal, setGoal] = useState('')
   // The goal this dialog filled in itself, withdrawn once a load finds the branch merged.
   const filledGoal = useRef('')
@@ -69,7 +72,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [stage, setStage] = useState<AutoStage | ''>('')
   const [error, setError] = useState('')
   const [integrationCheck, setIntegrationCheck] = useState<{
-    distinct: string
+    distinct: string[]
     devices: typeof devices
     installed: boolean
   } | null>(null)
@@ -134,7 +137,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   }, [projectId, task, destination, requestKey])
   useEffect(() => {
     let cancelled = false
-    void Promise.all(distinct.split(',').map((id) => checkAutoHooks(id)))
+    void Promise.all(distinct.map(checkAutoHooks))
       .then(
         () => true,
         () => false,

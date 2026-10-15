@@ -531,7 +531,7 @@ export async function startAuto(projectId: string, task: string | null, settings
       throw new Error('This worktree already has an Auto run')
     if (!validOverrides(settings.overrides ?? {}))
       throw new Error('Invalid Advanced effort settings')
-    for (const device of runAgents(settings)) await checkAutoHooks(device)
+    await Promise.all(runAgents(settings).map(checkAutoHooks))
     const run: AutoRun = {
       ...settings,
       runId: crypto.randomUUID(),
@@ -613,7 +613,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
         observedWorking: run.observedWorking,
       }
     : inferStage(snapshot, run)
-  if (decision.stage === 'review') for (const id of reviewAgents(run)) await checkAutoHooks(id)
+  if (decision.stage === 'review') await Promise.all(reviewAgents(run).map(checkAutoHooks))
   else if (agentStage(decision.stage)) await checkAutoHooks(agentFor(run, decision.stage))
   if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
@@ -1055,13 +1055,17 @@ async function drive(projectId: string, task: string | null) {
         controller.completionPoll = { turn, atMs: Date.now() }
         const snapshot = await autoSnapshot(projectId, task, run)
         if (!live()) return
-        const other =
-          run.stage === 'review'
-            ? undefined
-            : snapshot.agents.find(
-                (a) => a.sessionId !== run.sessionId && ['working', 'needsInput'].includes(a.state),
-              )
-        if (other?.stage === run.stage) {
+        const reviewing = new Set(
+          run.stage === 'review' ? run.laneSessions?.map((lane) => lane.sessionId) : [],
+        )
+        const other = snapshot.agents.find(
+          (a) =>
+            a.sessionId !== run.sessionId &&
+            !reviewing.has(a.sessionId) &&
+            ['working', 'needsInput'].includes(a.state) &&
+            (run.stage === 'review' || a.stage === run.stage),
+        )
+        if (other) {
           controller.completionPoll = undefined
           const reason = 'Waiting for another agent in this worktree to finish'
           if (run.reason !== reason) patch(projectId, task, { reason }, reason)
@@ -1265,7 +1269,7 @@ async function drive(projectId: string, task: string | null) {
             return reviewer
           })
         : [device]
-    for (const d of reviewers) await checkAutoHooks(d.id)
+    await Promise.all(reviewers.map((d) => checkAutoHooks(d.id)))
     if (!live() || !active(projectId, task)) return
     // Guard against a manually launched competing agent.
     const competing = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
@@ -1370,9 +1374,9 @@ async function drive(projectId: string, task: string | null) {
         startedMs: startedOf(id) ?? (await terminalSnapshot(id).catch(() => null))?.startedMs,
       })),
     )
-    if (generations.some((g) => g.startedMs === undefined)) {
+    if (run.stage === 'review' && generations.some((g) => g.startedMs === undefined)) {
       await Promise.all([sid, ...lanes].map((id) => terminalStop(id)))
-      throw new Error('Reviewer or agent launch time was not confirmed; Resume to try again')
+      throw new Error('Reviewer launch time was not confirmed; Resume to try again')
     }
     const startedMs = generations[0].startedMs
     const latest = autoRun(projectId, task)

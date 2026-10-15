@@ -310,6 +310,8 @@ pub struct Attempt {
     previous: Option<Vec<u8>>,
     written: Vec<u8>,
     briefing: Option<PathBuf>,
+    previous_findings: Option<(Vec<u8>, SystemTime)>,
+    cache_key: PathBuf,
 }
 
 impl Attempt {
@@ -317,14 +319,41 @@ impl Attempt {
         let written = serde_json::to_vec(started)?;
         let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
         let previous = std::fs::read(&sidecar).ok();
+        let findings = sidecar.with_extension("md");
+        let previous_findings = match std::fs::File::open(&findings) {
+            Ok(mut file) => {
+                use std::io::Read;
+                let modified = file.metadata()?.modified()?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Some((bytes, modified))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
         crate::plans::write_atomic(&sidecar, &written)?;
-        Ok(Self {
+        let cache_key = sidecar.parent().unwrap().join(name(&started.branch));
+        ROUNDS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&cache_key);
+        let attempt = Self {
             sidecar,
             previous,
             written,
             briefing,
-        })
+            previous_findings,
+            cache_key,
+        };
+        if let Err(error) = std::fs::remove_file(&findings)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            drop(_guard);
+            attempt.rollback();
+            return Err(error.into());
+        }
+        Ok(attempt)
     }
 
     /// Put back the sidecar this attempt replaced, best-effort, unless a later attempt
@@ -337,6 +366,23 @@ impl Attempt {
                     Some(bytes) => crate::plans::write_atomic(&self.sidecar, bytes),
                     None => std::fs::remove_file(&self.sidecar).map_err(Into::into),
                 };
+                // A refused launch restores both the findings and their original freshness.
+                // Never replace findings another writer has produced in the meantime.
+                if let Some((bytes, modified)) = &self.previous_findings {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::File::options()
+                        .write(true)
+                        .create_new(true)
+                        .open(self.sidecar.with_extension("md"))
+                        && file.write_all(bytes).is_ok()
+                    {
+                        let _ = file.set_modified(*modified);
+                    }
+                }
+                ROUNDS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&self.cache_key);
             }
         }
         if let Some(file) = &self.briefing {
@@ -582,7 +628,8 @@ pub fn prepare(
 
 /// Record a new attempt for a review session about to resume, so findings it writes
 /// count for its worktree's current HEAD. `None` when the HEAD and worktree are
-/// unchanged since the last attempt, so resuming alone doesn't age its findings.
+/// unchanged since the last attempt and it still belongs to the latest round, so
+/// resuming alone doesn't age current findings.
 ///
 /// # Errors
 /// Fails when the branch's review record is missing, its identity doesn't match,
@@ -613,7 +660,11 @@ pub fn resume_attempt(
         old.branch
     );
     let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
-    if head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true) {
+    let current_round = round(root, &old.branch)
+        .iter()
+        .any(|(file, started)| *file == findings && started.attempt == old.attempt);
+    if current_round && head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true)
+    {
         return Ok(None);
     }
     let merge_base = git::run(git::git(cwd).args(["merge-base", &old.base, "HEAD"]))
@@ -712,7 +763,7 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
         .map(|s| Reviewer {
             lane: s.started.lane.clone(),
             finished: s.fresh(),
-            verdict: verdict(&s.text),
+            verdict: s.fresh().then(|| verdict(&s.text)).flatten(),
         })
         .collect();
     let (text, verdict) = match lanes.as_slice() {
@@ -899,12 +950,33 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
         "This launch isn't in the reviewed worktree"
     );
     let all = saved(&worktree, branch, HANDOFF_LIMIT);
+    let body = findings_body(&all, branch, true).ok_or_else(|| no_findings(branch))?;
+    Ok(context::ContextSection {
+        title: "Review findings".into(),
+        body,
+    })
+}
+
+/// Inline findings for a merge without fix instructions or a worktree status scan.
+/// The caller has already validated the source worktree and its HEAD.
+#[must_use]
+pub fn merge_handoff(root: &Path, branch: &str, head: &str) -> Option<context::ContextSection> {
+    let all = saved(root, branch, HANDOFF_LIMIT);
+    let body = findings_body(&all, branch, false)?;
+    let modified_ms = all.iter().map(|s| s.modified_ms).max()?;
+    let matches = all.iter().all(|s| s.fresh() && s.started.head == head);
+    Some(context::ContextSection {
+        title: "Review findings".into(),
+        body: format!(
+            "Review saved at Unix milliseconds: {modified_ms}\nReviewed HEAD matches source HEAD: {matches}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n\n{body}"
+        ),
+    })
+}
+
+fn findings_body(all: &[Saved], branch: &str, for_fix: bool) -> Option<String> {
     let each = HANDOFF_LIMIT / all.len().max(1);
-    let lanes: Vec<Saved> = all
-        .into_iter()
-        .filter(|s| !s.text.trim().is_empty())
-        .collect();
-    let first = lanes.first().ok_or_else(|| no_findings(branch))?;
+    let lanes: Vec<_> = all.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    let first = lanes.first()?;
     // Only facts fixed by the findings themselves, so the briefing (and with it Restart's
     // fingerprint, which a Codex command carries inline) stays the same while the fix works.
     let reviewed = |s: &Saved| {
@@ -939,9 +1011,10 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
             findings(one)
         ),
         _ => format!(
-            "Branch: {branch}\nBase: {}\n\n{} reviewers reviewed this branch independently, so their findings may overlap: fix each issue once. Commits since the reviewed HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
+            "Branch: {branch}\nBase: {}\n\n{} reviewers reviewed this branch independently, so their findings may overlap{}. Commits since the reviewed HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
             first.started.base,
             lanes.len(),
+            if for_fix { ": fix each issue once" } else { "" },
             lanes
                 .iter()
                 .map(|s| format!(
@@ -955,10 +1028,7 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
                 .join("\n\n")
         ),
     };
-    Ok(context::ContextSection {
-        title: "Review findings".into(),
-        body,
-    })
+    Some(body)
 }
 
 /// Remove a branch's findings and sidecars, every reviewer's.
@@ -1828,6 +1898,37 @@ mod tests {
     }
 
     #[test]
+    fn rollback_invalidates_the_round_cache_even_with_identical_metadata() {
+        let f = Fixture::new();
+        let job = f.prepare("claude").unwrap();
+        let sidecar = file(&f.dir, &f.request.branch)
+            .unwrap()
+            .with_extension("json");
+        let previous = fs::read(&sidecar).unwrap();
+        let modified = fs::metadata(&sidecar).unwrap().modified().unwrap();
+        let mut next: Started = serde_json::from_slice(&previous).unwrap();
+        let old_round = next.round.clone();
+        next.round = "x".repeat(old_round.len());
+        let attempt = Attempt::record(sidecar.clone(), &next, None).unwrap();
+        assert_eq!(
+            previous.len(),
+            usize::try_from(fs::metadata(&sidecar).unwrap().len()).unwrap()
+        );
+        fs::File::open(&sidecar)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(round(&f.dir, &f.request.branch)[0].1.round, next.round);
+        attempt.rollback();
+        fs::File::open(&sidecar)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(round(&f.dir, &f.request.branch)[0].1.round, old_round);
+        cleanup([job]);
+    }
+
+    #[test]
     fn launch_rolls_back_only_a_certain_refusal() {
         let f = Fixture::new();
         let sidecar = file(&f.dir, &f.request.branch)
@@ -1900,13 +2001,8 @@ mod tests {
         let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
             .unwrap()
             .unwrap();
-        // Old findings predate the new attempt until the agent rewrites them.
-        assert!(
-            read(&f.dir, &f.request.branch)
-                .unwrap()
-                .reviewed_head
-                .is_none()
-        );
+        // A new attempt has no findings until the agent rewrites them.
+        assert!(read(&f.dir, &f.request.branch).is_none());
         attempt.rollback();
         assert!(
             read(&f.dir, &f.request.branch)
@@ -2134,6 +2230,38 @@ mod tests {
     }
 
     #[test]
+    fn a_new_round_clears_prior_findings_and_waits_for_every_reviewer() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(&a_file, "Verdict: clean", true);
+        save_at(&b_file, "Verdict: clean", true);
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .verdict
+                .unwrap()
+                .clean
+        );
+
+        let (next_a, _) = prepare_lane(&f, "claude", "r2");
+        let (next_b, _) = prepare_lane(&f, "codex", "r2");
+        assert!(!a_file.exists() && !b_file.exists());
+        assert!(read(&f.dir, &f.request.branch).is_none());
+        save_at(&a_file, "Verdict: clean", true);
+        let partial = read(&f.dir, &f.request.branch).unwrap();
+        assert!(partial.verdict.is_none() && partial.reviewed_head.is_none());
+        // Even a stale file restored externally cannot supply the missing verdict.
+        save_at(&b_file, "Verdict: clean", false);
+        assert!(read(&f.dir, &f.request.branch).unwrap().verdict.is_none());
+        save_at(&b_file, "Verdict: issues\n- [high] New finding", true);
+        let all = read(&f.dir, &f.request.branch).unwrap();
+        assert!(all.reviewed_head.is_some());
+        assert_eq!(all.verdict.unwrap().counts.high, 1);
+        cleanup([a, b, next_a, next_b]);
+    }
+
+    #[test]
     fn removing_and_resuming_cover_every_lane() {
         let f = Fixture::new();
         let (a, a_file) = prepare_lane(&f, "claude", "r1");
@@ -2155,9 +2283,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(b_file.with_extension("json")).unwrap(), before);
-        let findings = read(&f.dir, &f.request.branch).unwrap();
-        assert_eq!(findings.reviewers.len(), 1);
-        assert!(findings.reviewed_head.is_none());
+        assert!(read(&f.dir, &f.request.branch).is_none());
         save_at(&a_file, "Verdict: clean", true);
         let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
         assert_eq!(
@@ -2185,8 +2311,7 @@ mod tests {
         f.save("Verdict: clean", true);
         // Populate the cache before a later attempt replaces the old sidecar.
         assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 1);
-        fs::write(f.dir.join("file.txt"), "next\n").unwrap();
-        git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
+        // No tree changes: an older lane must still move to a current round.
         let attempt = resume_attempt(&f.dir, &a.spec, &f.request.branch, Some("claude"))
             .unwrap()
             .unwrap();

@@ -252,19 +252,12 @@ pub fn prepare(
         request.destination_branch,
         destination.head,
     );
-    if let Some(findings) = crate::reviews::read(Path::new(&project.root), &request.source_branch)
-        && let Ok(section) = crate::reviews::handoff(
-            Path::new(&source.path),
-            &crate::reviews::Session {
-                cwd: PathBuf::from(&source.path),
-                branch: Some(request.source_branch.clone()),
-            },
-        )
-    {
-        text.push_str(&format!(
-            "\n## Review findings\n\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n\n{}\n",
-            findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()), section.body,
-        ));
+    if let Some(section) = crate::reviews::merge_handoff(
+        Path::new(&project.root),
+        &request.source_branch,
+        &source.head,
+    ) {
+        text.push_str(&format!("\n## {}\n\n{}\n", section.title, section.body));
     }
     if let Some(auto) = auto {
         text.push_str(&auto.markdown("merge"));
@@ -708,6 +701,8 @@ mod tests {
                 )
             );
             assert!(!body.contains("Stale findings"));
+            assert!(!body.contains("fix each issue once"));
+            assert!(body.contains("Do not fix them unless the merge requires it"));
             context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
         }
     }

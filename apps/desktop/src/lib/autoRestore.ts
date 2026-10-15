@@ -1,5 +1,5 @@
-import { AGENT_ROLES, type AutoRun } from '../types'
-import { restoredPresetIds } from './agentRoles'
+import type { AutoRun } from '../types'
+import { restoredAgents, restoredPresetIds } from './agentRoles'
 import { EFFORT, finished as ended, SEVERITIES, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
@@ -28,16 +28,6 @@ function restoredBrief(value: AutoRun['sessionBrief']): AutoRun['sessionBrief'] 
     },
     kickoff: kickoff ? { kind: 'plan' } : undefined,
   }
-}
-
-/** Per-stage presets, dropping anything but a nonempty id for a known stage. */
-function restoredAgents(value: unknown): AutoRun['agents'] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const entries = AGENT_ROLES.flatMap((stage) => {
-    const id = (value as Record<string, unknown>)[stage]
-    return typeof id === 'string' && id ? [[stage, id] as const] : []
-  })
-  return entries.length ? Object.fromEntries(entries) : undefined
 }
 
 /** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */

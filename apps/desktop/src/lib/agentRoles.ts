@@ -49,15 +49,30 @@ export function restoredPresetIds(value: unknown): string[] {
     : []
 }
 
-/** A saved layout's assignments, dropping anything malformed. */
-export function restoredAgentRoles(value: unknown): AgentRoles {
+/** Known role entries from a saved object, shared by layout and Auto restoration. */
+function restoredRoles<T>(
+  value: unknown,
+  restore: (value: unknown, role: AgentRole) => T | undefined,
+): Partial<Record<AgentRole, T>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-  const out: AgentRoles = {}
+  const out: Partial<Record<AgentRole, T>> = {}
   for (const role of AGENT_ROLES) {
-    const ids = (value as Record<string, unknown>)[role]
-    if (!Array.isArray(ids)) continue
-    const valid = restoredPresetIds(ids)
-    if (valid.length) out[role] = role === 'review' ? valid : valid.slice(0, 1)
+    const valid = restore((value as Record<string, unknown>)[role], role)
+    if (valid !== undefined) out[role] = valid
   }
   return out
+}
+
+/** A saved layout's assignments, dropping anything malformed. */
+export function restoredAgentRoles(value: unknown): AgentRoles {
+  return restoredRoles(value, (ids, role) => {
+    const valid = restoredPresetIds(ids)
+    return valid.length ? (role === 'review' ? valid : valid.slice(0, 1)) : undefined
+  })
+}
+
+/** Per-stage Auto presets; older runs have no per-stage assignments. */
+export function restoredAgents(value: unknown): Partial<Record<AgentRole, string>> | undefined {
+  const agents = restoredRoles(value, (id) => (typeof id === 'string' && id ? id : undefined))
+  return Object.keys(agents).length ? agents : undefined
 }

@@ -511,30 +511,47 @@ test.each(['crashed', 'ended', 'stopped', 'relaunched', 'forgotten'] as const)(
   },
 )
 
-test('unrelated manual reviewers do not hold a completed Auto review open', async () => {
-  load()
-  useStore.setState({
-    sessions: { s: reviewSession('review') },
-    sessionRecords: [
-      {
-        id: 'manual',
-        metadata: { projectId: 'p', componentId: '@review', kind: 'agent' },
-        spec: { cwd: tree.path },
-        snapshot: reviewSession('working'),
-      },
-    ] as SessionRecord[],
-  })
-  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-  const dispose = followAuto()
-  try {
-    await flush()
-    expect(autoRun('p', 't')?.stage).toBe('mergeGate')
-    expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
-  } finally {
-    dispose()
-  }
-})
+test.each(['review', 'implement'] as const)(
+  'a busy manual %s agent holds a completed Auto review open',
+  async (stage) => {
+    load()
+    useStore.setState({
+      sessions: { s: reviewSession('review') },
+      sessionRecords: [
+        {
+          id: 'manual',
+          metadata: {
+            projectId: 'p',
+            componentId: stage === 'review' ? '@review' : TASK_ROOT_SCOPE,
+            kind: 'agent',
+            task: 't',
+          },
+          spec: { cwd: tree.path },
+          snapshot: reviewSession('working'),
+        },
+      ] as SessionRecord[],
+    })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        stage: 'review',
+        sessionId: 's',
+        reason: 'Waiting for another agent in this worktree to finish',
+      })
+      expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
+      useStore.setState({
+        sessions: { ...useStore.getState().sessions, manual: reviewSession('review') },
+      })
+      await flush()
+      expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+    } finally {
+      dispose()
+    }
+  },
+)
 
 test('Resume keeps the original primary while a second reviewer needs input', async () => {
   load()
@@ -1310,6 +1327,67 @@ test('snapshot reads the project plan once in the project folder', async () => {
   useStore.getState().setActiveTask(null, true)
   await autoSnapshot('p', null, run({ merge: { mode: 'ask', destinationBranch: 'feature' } }))
   expect(ipc.planRead).toHaveBeenCalledExactlyOnceWith('p')
+})
+
+test.each(['plan', 'implement', 'fix', 'merge'] as const)(
+  '%s tracks a confirmed launch without claiming ownership when its start time is unavailable',
+  async (stage) => {
+    load()
+    const { plannerSessionId } = await import('../types')
+    const { implementPlannerPlan } = await import('./planHandoff')
+    const { fixReviewFindings } = await import('./reviewHandoff')
+    const sid = stage === 'plan' ? plannerSessionId('codex', 'p') : 'launched'
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
+    vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+      useStore.setState({ sessions: { [sid]: { running: true } } })
+    })
+    vi.mocked(implementPlannerPlan).mockResolvedValue(sid)
+    vi.mocked(fixReviewFindings).mockResolvedValue(sid)
+    vi.mocked(jobs.startMergeAgent).mockResolvedValue(sid)
+    useStore.setState({
+      sessionRecords: [
+        {
+          id: 'reviewer',
+          metadata: { projectId: 'p', componentId: '@review' },
+          spec: { cwd: tree.path },
+        },
+      ] as SessionRecord[],
+    })
+    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        stage,
+        status: 'running',
+        sessionId: sid,
+        sessionOwned: false,
+        round: stage === 'fix' ? 1 : 0,
+      })
+      expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid)
+      expect(ipc.terminalStop).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('review launches still require confirmed start times', async () => {
+  load()
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
+  vi.mocked(jobs.startReviewAgent).mockResolvedValue('reviewer')
+  vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+    useStore.setState({ sessions: { reviewer: { running: true } } })
+  })
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('failed')
+    expect(ipc.terminalStop).toHaveBeenCalledWith('reviewer')
+  } finally {
+    dispose()
+  }
 })
 
 test('Auto refuses an unconfirmed launch without recording a phantom session', async () => {
