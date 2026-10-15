@@ -8,3 +8,7 @@ apps/desktop/src-tauri/binaries/
 
 # Keep this repository's personal map local.
 /patchbay.json
+
+# Local extension storage beside the development registries.
+/extension-data/
+/examples/extension-data/

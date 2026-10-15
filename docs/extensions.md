@@ -6,11 +6,41 @@ preview integrations, see [supported local integrations](../extensions/README.md
 ## Installation
 
 Extensions are local folders containing a `package.json`. Open **Tools → Extensions…** in the
-toolbar, choose **Install from folder…**, and select the extension folder. Installed folders live
-in `~/.patchbay/extensions/<publisher>.<name>/`; enable/disable settings live in
-`~/.patchbay/extensions.json`. **Reload** reloads manifests and restarts code hosts. Invalid
-manifests stay visible with errors while other extensions continue loading. Set
-`PATCHBAY_EXTENSIONS_DIR` to use another registry (including `examples/extensions`).
+toolbar, choose **Install from folder…**, and select the extension folder. Choose
+**Open extensions folder** in the same panel to find the active installation directory. Enable
+or disable extensions in the panel; those settings live in `~/.patchbay/extensions.json`.
+**Reload** reloads manifests and restarts code hosts. Invalid manifests stay visible with errors
+while other extensions continue loading.
+
+Installation copies the source folder; editing the source does not update the installed copy.
+To update an extension, choose **Open extensions folder**, delete its `<publisher>.<name>`
+folder there, then install the updated source folder again. Installing over an existing copy
+fails with an "already installed" error. Use **Reload** after editing installed files directly.
+
+## Development override
+
+Set `PATCHBAY_EXTENSIONS_DIR` to an **absolute path** when starting Patchbay to load extension
+source folders directly. Choose a dedicated folder containing only extensions: every immediate
+subfolder is treated as an extension, so a general projects folder such as `~/code` would list
+unrelated repositories as broken extensions. The override replaces the default
+`~/.patchbay/extensions` registry entirely; only the override folder is loaded, and
+**Install from folder…** copies new installs into it too. When loading source folders directly,
+edit them and use **Reload**; installing them again would create copies beside the sources.
+
+For the supported integrations, run from the repository root:
+
+```sh
+export PATCHBAY_EXTENSIONS_DIR="$PWD/extensions"
+cargo run -p patchbay-cli -- extensions
+(cd apps/desktop && npm run tauri dev)
+```
+
+Set the variable before changing directories so its value stays absolute when launching from
+`apps/desktop`. Extension storage is written to `extension-data/` beside the registry; the
+example above writes to `<repo>/extension-data/`. That generated directory and
+`<repo>/examples/extension-data/` (used by the example below) are ignored by Git. Prefer a
+dedicated folder outside a repository for other local extensions and their storage. Unset
+`PATCHBAY_EXTENSIONS_DIR` before restarting Patchbay to return to the default registry.
 
 ## Manifest contributions
 
@@ -72,8 +102,8 @@ Docker displays an error and preserves the last successful result). From the rep
 inspect the extension and its detected components with:
 
 ```sh
-PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- extensions
-PATCHBAY_EXTENSIONS_DIR=examples/extensions cargo run -p patchbay-cli -- detect examples/extensions/docker/fixture
+PATCHBAY_EXTENSIONS_DIR="$PWD/examples/extensions" cargo run -p patchbay-cli -- extensions
+PATCHBAY_EXTENSIONS_DIR="$PWD/examples/extensions" cargo run -p patchbay-cli -- detect examples/extensions/docker/fixture
 ```
 
 Run `npm run smoke:extensions` from `apps/desktop` to check the example inside the desktop app,

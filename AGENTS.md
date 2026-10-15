@@ -15,7 +15,7 @@ Keep shared behavior in the core crate and desktop integration in the Tauri back
 
 ## Build, Test, and Development Commands
 
-Prerequisites: Rust via rustup and Node.js 20+. Run Cargo commands from the repository root; run npm commands from `apps/desktop`.
+Prerequisites: Rust via rustup and Node.js (20.19+ on 20.x, 22.12+ on 22.x, or 24+). Run Cargo commands from the repository root; run npm commands from `apps/desktop`.
 
 - `npm install`: install desktop dependencies.
 - `npm run tauri dev`: start the desktop app with development tooling.

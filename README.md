@@ -23,7 +23,7 @@ terminals.
 Highlight the components in scope, work with a planner terminal, and save a shared implementation
 plan.
 
-![Plan view showing highlighted components, planner scope, saved plan, and planning notes](docs/screenshots/plan.png)
+![Plan view showing highlighted components, planner scope, saved plan, and a Codex planner terminal](docs/screenshots/plan.png)
 
 ### Implementation
 
@@ -88,10 +88,12 @@ cargo run -p patchbay-cli -- context patchbay-core          # what an agent on t
 3. Open **Plan**, highlight the components you want to change, and start a planner terminal.
    Agree on a plan and check **Saved plan**. You can also paste and save a plan there. To capture
    Claude's native plans, install its hooks through **Tools → Agent status integration…**.
-4. Choose **Implement → New worktree…**, name the task, and create its branch/worktree. Patchbay
-   passes the plan to a fresh agent and opens **Implementation**. Prepare dependencies and
-   environment files in that checkout. Use **Add terminal** for component servers, tests, or a
-   root shell. Named tasks require a Git repository.
+4. With **Main worktree** active, open **Implement →** and choose **New worktree…** to name a task
+   and create its branch/worktree, or **Implement in project folder** to work in the open folder
+   (also available without Git). If a task is already active, choose **Implement in \<task\> →**
+   to use that worktree. Patchbay passes the plan to a fresh agent and opens **Implementation**.
+   Prepare dependencies and environment files in the chosen folder. Use **Add terminal** for
+   component servers, tests, or a root shell. Named tasks require a Git repository.
 5. Run the configured checks, then open **Review** to inspect the task's changes and diffs.
    **Review branch…** starts a review agent; **Merge into…** selects another worktree as the
    destination. [Auto mode](#auto-mode) can coordinate these stages for you.
@@ -128,10 +130,13 @@ immediately by default; choose **Existing worktree** to attach one instead. A ch
 to only one task. Non-Git projects keep the Main worktree tab only.
 
 The planner and **Saved plan** belong to the project, so planning can start before a task
-worktree exists. **Implement →** accepts the plan into the chosen task, stops the planner, and
-starts a fresh agent at the worktree root using the planner's provider. The implementation
-agent receives the saved plan and assignments separately from the planner's conversation.
-Component scope controls the agent briefing; it does not determine which terminals a task shows.
+worktree exists. On the project folder, **Implement →** opens a menu with **New worktree…** and
+**Implement in project folder**; the latter works without Git. With a task active,
+**Implement in \<task\> →** uses that task's worktree. Either route accepts the plan, stops the
+planner, and starts a fresh agent in the chosen folder using the planner's provider. The
+implementation agent receives the saved plan and assignments separately from the planner's
+conversation. Component scope controls the agent briefing; it does not determine which
+terminals a task shows.
 
 A tab lists its own terminals (a new task starts with a stopped root shell for manual setup),
 the saved component terminals you add to it, and anything else running in its worktree, such as
@@ -205,8 +210,10 @@ fix, and validation setting. Validation uses the map's configured validation ter
 
 **Ask before merging** is the default: Auto waits at merge approval until you choose
 **Merge now**. Select **Merge automatically** to let Auto proceed when the reviewed branch has
-no findings blocking that run's severity threshold. Changes after review require a fresh review
-before automatic merging. Merge completion is checked against Git.
+no findings blocking that run's severity threshold and no unresolved validation failures.
+Unresolved validation failures send Auto to fixes before it reaches the merge gate, even with a
+clean review. Changes after review require a fresh review before automatic merging. Merge
+completion is checked against Git.
 
 The Auto panel shows the current stage, review summary, validation results, and run log.
 **Pause** stops progression while the current process can keep running; **Stop** also stops the
@@ -245,11 +252,8 @@ Run `npm run smoke:navigation` for the Unix desktop fixture. See
 
 ## Extensions
 
-Open **Tools → Extensions… → Install from folder…** to install a local extension, then use
-**Reload** after changing its installed files. Installation copies the source folder into
-`~/.patchbay/extensions/<publisher>.<name>/`; editing the original folder does not update the
-installed copy. Enable or disable extensions in the same panel. Invalid manifests stay visible
-with errors while other extensions continue loading.
+See [extension setup](docs/extensions.md#installation) for installation, updates, and development
+overrides.
 
 The supported [Docker Compose and browser preview integrations](extensions/README.md) provide
 container actions, status, and links from running development servers. Install each folder
@@ -257,8 +261,8 @@ separately. Docker requires Docker Compose and an accessible daemon; opening a b
 requires its development server to be running.
 
 Extensions can add terminal presets, detectors, commands, agent context, and Inspector/dock
-views. See [extension development](docs/extensions.md) for manifests, APIs, permissions, sandbox
-behavior, development overrides, and the example extension.
+views. See [extension development](docs/extensions.md#manifest-contributions) for manifests, APIs,
+permissions, sandbox behavior, and the example extension.
 
 ## Workspace continuity
 

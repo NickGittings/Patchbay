@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Prerequisites: Rust (edition 2024, via rustup), Node 20+.
+Prerequisites: Rust (edition 2024, via rustup), Node.js (20.19+ on 20.x, 22.12+ on 22.x, or 24+).
 
 ```sh
 # Desktop app (Tauri 2 + React)

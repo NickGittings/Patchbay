@@ -1,6 +1,10 @@
 # Supported local integrations
 
-Install `extensions/docker` and `extensions/preview` separately with Patchbay’s **Extensions → Install local folder…**. They use the same opaque-origin sandbox and permission broker as other extensions. For development, run `PATCHBAY_EXTENSIONS_DIR="$PWD/extensions" cargo run -p patchbay-cli -- extensions` from the repository root, or set that environment variable when starting the desktop app. Reload after editing an installed folder. Installation copies the folder; edits to the source do not update an installed copy.
+Install `extensions/docker` and `extensions/preview` separately. They use the same opaque-origin
+sandbox and permission broker as other extensions.
+
+See [extension setup](../docs/extensions.md#installation) for installation, updates, and
+development overrides.
 
 ## Docker Compose
 
