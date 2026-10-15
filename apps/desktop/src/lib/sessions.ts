@@ -32,6 +32,7 @@ import {
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
 import { savePlanDraft } from './planDrafts'
+import { unfinished } from './autoSettings'
 import { requestGitRefresh } from './git'
 import {
   disposeAll,
@@ -269,10 +270,7 @@ function autoBriefOf(projectId: string, sid: string) {
   // A stopped, failed or finished run no longer briefs its agent.
   return runs.find(
     (run) =>
-      run &&
-      ['running', 'waitingOnYou', 'paused'].includes(run.status) &&
-      run.sessionId === sid &&
-      run.sessionBrief?.sessionId === sid,
+      run && unfinished(run.status) && run.sessionId === sid && run.sessionBrief?.sessionId === sid,
   )?.sessionBrief
 }
 

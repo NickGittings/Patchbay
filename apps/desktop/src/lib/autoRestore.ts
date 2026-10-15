@@ -1,5 +1,5 @@
 import type { AutoRun } from '../types'
-import { EFFORT, SEVERITIES, STAGES, validOverrides } from './autoSettings'
+import { EFFORT, finished as ended, SEVERITIES, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
 
@@ -48,7 +48,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
   )
     return null
   if (r.overrides && (typeof r.overrides !== 'object' || !validOverrides(r.overrides))) return null
-  const finished = ['done', 'stopped', 'failed'].includes(r.status)
+  const finished = ended(r.status)
   return {
     runId: r.runId,
     stage: r.stage,

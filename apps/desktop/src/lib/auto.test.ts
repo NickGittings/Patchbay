@@ -1,6 +1,12 @@
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import type { AutoRun, ReviewFindings, SessionState, Worktree } from '../types'
+import {
+  TASK_ROOT_SCOPE,
+  type AutoRun,
+  type ReviewFindings,
+  type SessionState,
+  type Worktree,
+} from '../types'
 vi.mock('./ipc', () => ({
   agentHooksCheck: vi.fn(),
   agentProvider: vi.fn(),
@@ -513,6 +519,18 @@ test('skipping a paused active step stops its tracked agent before the next hand
   agent('working', 1000)
   useStore.getState().patchTask('p', 't', {
     auto: run({ status: 'paused', stage: 'fix', sessionId: 's', sessionOwned: true }),
+  })
+  // Without the launch's start time it isn't provably Auto's, so it keeps running.
+  await skipStage('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      status: 'paused',
+      stage: 'fix',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+    }),
   })
   await skipStage('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -1220,4 +1238,66 @@ test('only merged work needs a new goal, and the chosen stage decides', async ()
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
   await expect(startAuto('p', 't', settings())).rejects.toThrow('describe the new goal')
   await expect(startAuto('p', 't', settings('implement'))).resolves.toBeUndefined()
+})
+
+test('a resumed run planning or implementing a new goal on merged work is not done', () => {
+  const merged = snapshot({
+    outcome: 'alreadyIntegrated',
+    freshness: 'current',
+    findings: findings(),
+  })
+  expect(inferStage(merged, run({ stage: 'plan' }))).toMatchObject({ stage: 'plan' })
+  expect(inferStage({ ...merged, plan: '# New' }, run({ stage: 'implement' }))).toMatchObject({
+    stage: 'implement',
+  })
+  expect(inferStage(merged, run({ stage: 'review' }))).toMatchObject({ stage: 'done' })
+})
+
+test('another agent busy at the same stage is waited for, not tracked instead', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Plan', cut: false })
+  const root = (id: string, state: 'review' | 'working', sinceMs: number) => ({
+    id,
+    spec: { cwd: tree.path },
+    metadata: { projectId: 'p', componentId: TASK_ROOT_SCOPE, kind: 'agent', task: 't' },
+    snapshot: { running: true, startedMs: 1000, status: { agent: { state, sinceMs } } },
+  })
+  useStore.setState({
+    sessionRecords: [root('s', 'review', 1500), root('manual', 'working', 1400)] as never,
+  })
+  agent('review', 1500)
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      stage: 'implement',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1100,
+    }),
+  })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'implement',
+      status: 'running',
+      sessionId: 's',
+      reason: 'Waiting for another agent in this worktree to finish',
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('skipping validation drops its failures', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', stage: 'validate', validationFindings: '[high] failed' }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'review', validationFindings: undefined })
 })

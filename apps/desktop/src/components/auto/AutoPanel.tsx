@@ -14,6 +14,7 @@ import {
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
+import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
 import './auto.css'
 
@@ -25,7 +26,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
   const [error, setError] = useState('')
   // The finished run New run was pressed for; another run or worktree shows its own state.
   const [newRunFor, setNewRunFor] = useState<string | null>(null)
-  const finished = !!run && ['done', 'stopped', 'failed'].includes(run.status)
+  const finished = !!run && ended(run.status)
   const newRun = finished && newRunFor === JSON.stringify([projectId, task, run.runId])
   const label = !run
     ? 'Auto'

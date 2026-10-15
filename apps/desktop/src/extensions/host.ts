@@ -1,6 +1,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import * as ipc from '../lib/ipc'
+import { fnv1a } from '../lib/hash'
 import { projectFrom, useStore } from '../store'
 import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
 import { serveContextRequests, setContextCollector } from './context'
@@ -349,12 +350,7 @@ export async function executeExtensionCommand(
   return request(runtime, 'command', id, args, COMMAND_TIMEOUT)
 }
 /** Short stable name for a command, so repeating a `terminals.run` reuses its session. */
-function runKey(command: string) {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < command.length; i++)
-    hash = Math.imul(hash ^ command.charCodeAt(i), 0x01000193) >>> 0
-  return hash.toString(16)
-}
+const runKey = (command: string) => fnv1a(command).toString(16)
 async function runTerminal(runtime: Runtime, componentId: string, command: string) {
   const s = stateForRuntime(runtime)
   if (!s.project) throw new Error('Open a project first')

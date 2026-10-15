@@ -263,13 +263,19 @@ impl ActionReport {
     pub fn succeeded(&self) -> bool {
         let complete = matches!(self.plan.request, ActionRequest::StartGroup { .. })
             || self.plan.skipped.is_empty();
-        complete
-            && self.results.iter().all(|r| {
-                matches!(
-                    r.outcome,
-                    TaskOutcome::Passed | TaskOutcome::Started | TaskOutcome::Reused
-                )
-            })
+        complete && !self.failed()
+    }
+
+    /// Some task it ran didn't start, pass or get reused. A component without a
+    /// validator is skipped, not failed.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        !self.results.iter().all(|r| {
+            matches!(
+                r.outcome,
+                TaskOutcome::Passed | TaskOutcome::Started | TaskOutcome::Reused
+            )
+        })
     }
 
     /// The sessions it ran, in order.
@@ -1035,6 +1041,8 @@ mod tests {
         let start = serde_json::json!({"kind":"startGroup","groupId":"dev"});
         assert!(report(validate.clone(), &[], "passed").succeeded());
         assert!(!report(validate.clone(), &["lib"], "passed").succeeded());
+        assert!(!report(validate.clone(), &["lib"], "passed").failed());
+        assert!(report(validate.clone(), &[], "failed").failed());
         assert!(!report(validate, &[], "failed").succeeded());
         assert!(report(start.clone(), &[], "reused").succeeded());
         assert!(!report(start, &[], "stopped").succeeded());

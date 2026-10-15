@@ -1,4 +1,21 @@
-import type { ActionReport, AutoRun, AutoStage, EffortSettings, Severity } from '../types'
+import type {
+  ActionReport,
+  AutoRun,
+  AutoStage,
+  EffortSettings,
+  MergeOutcome,
+  Severity,
+} from '../types'
+
+/** A run that still tracks its work: it can be resumed, and it briefs its agent. */
+export const unfinished = (status: AutoRun['status'] | undefined) =>
+  status === 'running' || status === 'waitingOnYou' || status === 'paused'
+/** A run that ended and stays so, restored or not. */
+export const finished = (status: AutoRun['status'] | undefined) =>
+  status === 'done' || status === 'stopped' || status === 'failed'
+/** The source branch's work is in its destination. */
+export const integrated = (outcome: MergeOutcome | undefined) =>
+  outcome === 'merged' || outcome === 'alreadyIntegrated'
 
 export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }> = {
   light: {
@@ -56,6 +73,6 @@ export function validOverrides(overrides: Partial<EffortSettings>) {
   )
 }
 
-/** A validation task that passed, mirroring the outcomes `ActionReport::succeeded` accepts. */
+/** A validation task that passed, mirroring the outcomes `ActionReport::failed` accepts. */
 export const taskPassed = (result: ActionReport['results'][number]) =>
   ['passed', 'started', 'reused'].includes(result.outcome)

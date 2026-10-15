@@ -190,10 +190,11 @@ pub fn run_action(
     });
     match &result {
         Ok((report, urls)) => {
-            activity.state = if report.succeeded() {
-                "finished"
-            } else {
+            // The report still lists components without a validator.
+            activity.state = if report.failed() {
                 "failed"
+            } else {
+                "finished"
             }
             .into();
             activity.report = Some(report.clone());

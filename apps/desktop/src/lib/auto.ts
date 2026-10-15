@@ -26,17 +26,27 @@ import {
   planRead,
   proposalRead,
   reviewRead,
+  terminalSnapshot,
   terminalStop,
   graphValidationCancel,
 } from './ipc'
 import { graphActionIn } from './actions'
 import { agentDevices } from './plan'
 import { implementPlannerPlan } from './planHandoff'
+import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
 import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgent } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
-import { EFFORT, SEVERITIES, taskPassed, validOverrides } from './autoSettings'
+import {
+  EFFORT,
+  integrated,
+  SEVERITIES,
+  taskPassed,
+  unfinished,
+  validOverrides,
+} from './autoSettings'
+import { fnv1a } from './hash'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
 export function effortSettings(run: Pick<AutoRun, 'effort' | 'overrides'>): EffortSettings {
@@ -149,10 +159,16 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false):
         turnSince: planner.sinceMs,
       }
   }
-  if (['merged', 'alreadyIntegrated'].includes(snapshot.outcome))
-    return fresh && !snapshot.hasChanges
-      ? { stage: 'plan', status: 'running', reason: 'Earlier work is merged; plan the new goal' }
-      : { stage: 'done', status: 'done', reason: 'Branch is integrated' }
+  if (integrated(snapshot.outcome)) {
+    // A new goal on merged work: a fresh run, or one still planning or implementing it, starts
+    // over; findings of the merged work don't apply to it.
+    const startingOver =
+      !snapshot.hasChanges && (fresh || run.stage === 'plan' || run.stage === 'implement')
+    if (!startingOver) return { stage: 'done', status: 'done', reason: 'Branch is integrated' }
+    if (run.stage === 'implement' && (snapshot.plan.trim() || snapshot.proposal))
+      return { stage: 'implement', status: 'running', reason: 'Saved plan is ready' }
+    return { stage: 'plan', status: 'running', reason: 'Earlier work is merged; plan the new goal' }
+  }
   if (snapshot.freshness === 'current') return reviewDecision(run, snapshot.findings)
   if (snapshot.hasChanges)
     return {
@@ -197,7 +213,7 @@ export function nextStep(
           }
         : step('merge', 'Merging automatically')
     case 'merge':
-      return ['merged', 'alreadyIntegrated'].includes(outcome ?? '')
+      return integrated(outcome)
         ? { stage: 'done', status: 'done', reason: 'Branch is integrated' }
         : {
             stage: 'merge',
@@ -230,12 +246,8 @@ export function inferredGoal(plan: string, title: string, notes: string, branch:
   )
 }
 
-/** FNV-1a, enough to notice a rewritten plan without persisting its text. */
-function fingerprint(text: string) {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
-  return `${text.length}:${(hash >>> 0).toString(16)}`
-}
+/** Enough to notice a rewritten plan without persisting its text. */
+const fingerprint = (text: string) => `${text.length}:${fnv1a(text).toString(16)}`
 
 function workspace(projectId: string, task: string | null) {
   const state = projectStateOf(projectId)
@@ -290,9 +302,13 @@ export async function autoSnapshot(
     proposalRead(projectId),
     plannerPlanPromise,
   ])
+  // The task list loads after a restored layout, so a run resumed early loads it first.
+  if (task && !projectStateOf(projectId)?.tasks.some((t) => t.id === task))
+    await refreshTasks(projectId)
+  const tasks = projectStateOf(projectId)?.tasks ?? state.tasks
   // The project folder is the current worktree, whose top can sit above a project in a subfolder.
   const path = task
-    ? state.tasks.find((t) => t.id === task)?.worktree
+    ? tasks.find((t) => t.id === task)?.worktree
     : worktrees.find((w) => w.current)?.path
   const source = worktrees.find((w) => w.path === path)
   if (!path || !source?.branch) throw new Error('Choose a worktree with a branch')
@@ -301,7 +317,7 @@ export async function autoSnapshot(
   const base =
     destination && destination !== source.branch && branches.includes(destination)
       ? destination
-      : defaultReviewBase(source, state.tasks, worktrees, branches)
+      : defaultReviewBase(source, tasks, worktrees, branches)
   if (!base) throw new Error('No review base found; choose another worktree')
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
@@ -355,8 +371,8 @@ export async function autoSnapshot(
     planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
     goal: inferredGoal(
       saved.text || plannerPlan.text,
-      state.tasks.find((t) => t.id === task)?.title ?? '',
-      state.tasks.find((t) => t.id === task)?.notes ?? '',
+      tasks.find((t) => t.id === task)?.title ?? '',
+      tasks.find((t) => t.id === task)?.notes ?? '',
       source.branch,
     ),
     source,
@@ -410,7 +426,7 @@ export async function startAuto(projectId: string, task: string | null, settings
   if (startingAuto.has(key)) throw new Error('Auto is already starting in this worktree')
   startingAuto.add(key)
   try {
-    if (['running', 'waitingOnYou', 'paused'].includes(autoRun(projectId, task)?.status ?? ''))
+    if (unfinished(autoRun(projectId, task)?.status))
       throw new Error('This worktree already has an Auto run')
     if (!validOverrides(settings.overrides ?? {}))
       throw new Error('Invalid Advanced effort settings')
@@ -429,7 +445,7 @@ export async function startAuto(projectId: string, task: string | null, settings
     // Merged work's old plan is no goal for a new run.
     if (
       (settings.stage ?? decision.stage) === 'plan' &&
-      ['merged', 'alreadyIntegrated'].includes(snapshot.outcome) &&
+      integrated(snapshot.outcome) &&
       !run.goal.trim()
     )
       throw new Error("This branch's earlier work is merged; describe the new goal")
@@ -466,8 +482,13 @@ export function pauseAuto(projectId: string, task: string | null, reason = 'Paus
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
+  // A launch in flight would read the new run id as a cancellation and stop its agent.
+  if (busy.has(JSON.stringify([projectId, task])))
+    throw new Error('Auto is still starting an agent; Resume once it has started')
   await checkAutoHooks(run.device)
   const snapshot = await autoSnapshot(projectId, task, run, true)
+  if (busy.has(JSON.stringify([projectId, task])))
+    throw new Error('Auto is still starting an agent; Resume once it has started')
   const decision = inferStage(snapshot, run)
   if (autoRun(projectId, task)?.runId !== run.runId) return
   assertSessionAvailable(projectId, task, decision.sessionId)
@@ -505,7 +526,9 @@ function ownsSession(run: AutoRun, sessionId = run.sessionId) {
     !!sessionId &&
     run.sessionOwned === true &&
     sessionId === run.sessionId &&
-    (run.sessionStartedMs === undefined || startedOf(sessionId) === run.sessionStartedMs)
+    // Without the launch's start time, a later session under this id would count as Auto's.
+    run.sessionStartedMs !== undefined &&
+    startedOf(sessionId) === run.sessionStartedMs
   )
 }
 export function stopAuto(projectId: string, task: string | null) {
@@ -546,6 +569,8 @@ export async function skipStage(projectId: string, task: string | null) {
       sessionId: undefined,
       sessionOwned: false,
       reviewedHead: stage === 'mergeGate' ? undefined : run.reviewedHead,
+      // Skipped validation leaves no failures for review and fix to act on.
+      ...(run.stage === 'validate' ? { validation: undefined, validationFindings: undefined } : {}),
       stage,
       status: stage === 'mergeGate' ? 'waitingOnYou' : 'running',
       reason: 'Stage skipped by you',
@@ -581,11 +606,7 @@ function assertSessionAvailable(projectId: string, task: string | null, sessionI
     (reservation && reservation !== key) ||
     [null, ...(p?.tasks.map((t) => t.id) ?? [])].some((other) => {
       const owner = autoRun(projectId, other)
-      return (
-        other !== task &&
-        owner?.sessionId === sessionId &&
-        ['running', 'waitingOnYou', 'paused'].includes(owner.status)
-      )
+      return other !== task && owner?.sessionId === sessionId && unfinished(owner?.status)
     })
   )
     throw new Error('This planner or agent already belongs to another Auto run')
@@ -701,6 +722,13 @@ async function drive(projectId: string, task: string | null) {
         const other = snapshot.agents.find(
           (a) => a.sessionId !== run.sessionId && ['working', 'needsInput'].includes(a.state),
         )
+        // Another agent at this stage keeps working on it: wait for it rather than advance, and
+        // keep tracking the run's own agent.
+        if (other?.stage === run.stage) {
+          const reason = 'Waiting for another agent in this worktree to finish'
+          if (run.reason !== reason) patch(projectId, task, { reason }, reason)
+          return
+        }
         const decision = other
           ? inferStage(snapshot, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
@@ -934,6 +962,7 @@ async function drive(projectId: string, task: string | null) {
       !useStore.getState().sessionRecords.some((r) => r.id === sid)
     )
       throw new Error('Agent launch was not confirmed; Resume to try again')
+    const startedMs = startedOf(sid) ?? (await terminalSnapshot(sid))?.startedMs
     const latest = autoRun(projectId, task)
     if (latest?.runId !== runId || latest.status === 'stopped' || latest.status === 'done') {
       await terminalStop(sid)
@@ -941,8 +970,9 @@ async function drive(projectId: string, task: string | null) {
     }
     patch(projectId, task, {
       sessionId: sid,
-      sessionOwned: true,
-      sessionStartedMs: startedOf(sid),
+      // Owned only with its start time, so a later session under this id never is.
+      sessionOwned: startedMs !== undefined,
+      sessionStartedMs: startedMs,
       sessionBrief: {
         sessionId: sid,
         auto: brief,

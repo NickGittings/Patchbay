@@ -12,7 +12,7 @@ import {
   type AutoSnapshot,
 } from '../../lib/auto'
 import { agentDevices } from '../../lib/plan'
-import { MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
+import { integrated, MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -64,7 +64,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         if (cancelled) return
         // Merged work's plan is no goal for a new run. Without a destination the outcome is
         // unknown, so a goal filled in then is withdrawn once a later load finds it merged.
-        if (snapshot.outcome === 'notMerged') {
+        if (!integrated(snapshot.outcome)) {
           filledGoal.current ||= snapshot.goal
           setGoal((old) => old || snapshot.goal)
         } else {
