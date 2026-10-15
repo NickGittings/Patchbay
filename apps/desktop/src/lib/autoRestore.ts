@@ -1,5 +1,33 @@
 import type { AutoRun } from '../types'
-import { EFFORT, SEVERITIES, STAGES } from './autoSettings'
+import { EFFORT, SEVERITIES, STAGES, validOverrides } from './autoSettings'
+
+const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
+
+/** A brief the backend can read, so a tracked terminal can still start. */
+function restoredBrief(value: AutoRun['sessionBrief']): AutoRun['sessionBrief'] {
+  const auto = value?.auto
+  const kickoff = value?.kickoff
+  if (
+    typeof value?.sessionId !== 'string' ||
+    !auto ||
+    typeof auto.goal !== 'string' ||
+    typeof auto.effortNote !== 'string' ||
+    typeof auto.commit !== 'boolean' ||
+    !(auto.fixFloor === null || SEVERITIES.includes(auto.fixFloor)) ||
+    (kickoff !== undefined && kickoff?.kind !== 'plan')
+  )
+    return undefined
+  return {
+    sessionId: value.sessionId,
+    auto: {
+      goal: auto.goal,
+      fixFloor: auto.fixFloor,
+      effortNote: auto.effortNote,
+      commit: auto.commit,
+    },
+    kickoff: kickoff ? { kind: 'plan' } : undefined,
+  }
+}
 
 /** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */
 export function restoredAuto(value: unknown): AutoRun | null {
@@ -19,18 +47,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     !Array.isArray(r.log)
   )
     return null
-  const overrides = r.overrides
-  if (
-    overrides &&
-    (typeof overrides !== 'object' ||
-      (overrides.maxRounds !== undefined &&
-        (!Number.isInteger(overrides.maxRounds) ||
-          overrides.maxRounds < 0 ||
-          overrides.maxRounds > 100)) ||
-      (overrides.severityFloor !== undefined && !SEVERITIES.includes(overrides.severityFloor)) ||
-      (overrides.validate !== undefined && typeof overrides.validate !== 'boolean'))
-  )
-    return null
+  if (r.overrides && (typeof r.overrides !== 'object' || !validOverrides(r.overrides))) return null
   const finished = ['done', 'stopped', 'failed'].includes(r.status)
   return {
     runId: r.runId,
@@ -42,6 +59,16 @@ export function restoredAuto(value: unknown): AutoRun | null {
     device: r.device,
     round: r.round,
     status: finished ? r.status : 'paused',
+    // Agents outlive the app in the session service, so Auto keeps tracking (and owning) them.
+    sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
+    // Ownership needs the launch's start time, or a later session under the same id would count.
+    sessionOwned: r.sessionOwned === true && finite(r.sessionStartedMs) !== undefined,
+    sessionStartedMs: finite(r.sessionStartedMs),
+    turnSince: finite(r.turnSince),
+    launchAtMs: finite(r.launchAtMs),
+    observedWorking: r.observedWorking === true,
+    sessionBrief: restoredBrief(r.sessionBrief),
+    planMark: typeof r.planMark === 'string' ? r.planMark : undefined,
     reviewedHead: typeof r.reviewedHead === 'string' ? r.reviewedHead : undefined,
     validation: Array.isArray(r.validation)
       ? r.validation.filter(

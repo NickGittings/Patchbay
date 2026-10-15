@@ -65,6 +65,23 @@ impl AutoBrief {
         }
     }
 
+    /// The section for an Auto planner.
+    #[must_use]
+    pub fn plan_section(&self) -> ContextSection {
+        self.section("plan")
+    }
+
+    /// The section for a root agent launched with `kickoff` (as [`root_handoff`]
+    /// settled it): a fix agent fixes, any other implements.
+    #[must_use]
+    pub fn root_section(&self, kickoff: Option<Kickoff>) -> ContextSection {
+        self.section(if kickoff == Some(Kickoff::FixFindings) {
+            "fix"
+        } else {
+            "implement"
+        })
+    }
+
     #[must_use]
     pub fn markdown(&self, stage: &str) -> String {
         let mut out = String::new();
@@ -1205,6 +1222,28 @@ pub fn plan_kickoff_spec(
     )
 }
 
+/// A planner session: [`plan_kickoff_spec`] for a [`Kickoff::Plan`], else
+/// [`plan_session_spec`].
+///
+/// # Errors
+/// As those, or for a kickoff other than [`Kickoff::Plan`].
+pub fn planner_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
+) -> Result<SessionSpec> {
+    match kickoff {
+        Some(Kickoff::Plan) => {
+            plan_kickoff_spec(project, component_ids, terminal, policy, sections)
+        }
+        Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
+        None => plan_session_spec(project, component_ids, terminal, policy, sections),
+    }
+}
+
 /// Root implementation and shell sessions, separate from all planner sessions.
 /// A `kickoff` shapes an agent's briefing and gives it a first prompt. A fix
 /// keeps its kickoff on every later start, so it resumes without that prompt
@@ -1372,10 +1411,17 @@ fn root_session_spec(
             }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
-        // Only a fix passes its kickoff again on Restart, so only its resume command
-        // stays the same across starts; an implement restart keeps resuming as before.
-        if matches!(kickoff, Some(Kickoff::FixFindings)) {
-            resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+        // A fix and an Auto planner pass their kickoff again on Restart, so their resume
+        // command stays the same across starts and a resumed conversation isn't prompted
+        // again; an implement restart keeps resuming as before.
+        match kickoff {
+            Some(Kickoff::FixFindings) => {
+                resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+            }
+            Some(Kickoff::Plan) => {
+                resume_command = Some(job_resume_command(&command, PLAN_PROMPT));
+            }
+            _ => {}
         }
     }
     policy
@@ -1571,6 +1617,18 @@ mod tests {
         };
         assert!(!auto.markdown("review").contains("Commit your work"));
         assert!(!auto.markdown("review").contains("Fix findings"));
+        // A root agent's stage follows its settled kickoff; a planner plans.
+        let stage = |s: super::ContextSection| s.body.lines().nth(2).unwrap_or_default().to_owned();
+        assert_eq!(
+            stage(auto.root_section(Some(super::Kickoff::FixFindings))),
+            "Stage: fix"
+        );
+        assert_eq!(
+            stage(auto.root_section(Some(super::Kickoff::ImplementPlan))),
+            "Stage: implement"
+        );
+        assert_eq!(stage(auto.root_section(None)), "Stage: implement");
+        assert_eq!(stage(auto.plan_section()), "Stage: plan");
     }
 
     use super::*;
@@ -2032,6 +2090,10 @@ mod tests {
             let words = command_tokens(&auto.command, Shell::current()).unwrap();
             assert_eq!(words.last().unwrap(), PLAN_PROMPT);
             assert!(!manual.command.contains(PLAN_PROMPT));
+            // A resumed planner isn't prompted to plan again.
+            let resume = auto.resume_command.as_deref().unwrap();
+            assert!(!resume.contains(PLAN_PROMPT), "{resume}");
+            assert!(manual.resume_command.is_none());
             let root = task_root_session_spec(
                 &project(),
                 &[],

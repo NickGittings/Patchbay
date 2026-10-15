@@ -89,6 +89,7 @@ const snapshot = (
   goal: 'Goal',
   plan: '',
   proposal: false,
+  planMark: '',
   hasChanges: false,
   changedComponents: [],
   findings: null,
@@ -1118,4 +1119,105 @@ test('snapshots read the merge outcome only while merging or inferring', async (
   vi.mocked(ipc.reviewRead).mockResolvedValue(null)
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
   expect((await autoSnapshot('p', 't', run({ stage: 'plan' }), true)).outcome).toBe('notMerged')
+})
+
+test('a planner that ends its turn without a new plan pauses instead of handing off the old one', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Earlier plan', cut: false })
+  const { startTerminal } = await import('./sessions')
+  const { implementPlannerPlan } = await import('./planHandoff')
+  const { plannerSessionId } = await import('../types')
+  const sid = plannerSessionId('codex', 'p')
+  vi.mocked(startTerminal).mockImplementation(async () => {
+    useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
+  })
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'A new goal',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    // Later starts of the planner get the same brief and kickoff, so Restart can resume it.
+    expect(autoRun('p', 't')?.sessionBrief).toMatchObject({
+      sessionId: sid,
+      kickoff: { kind: 'plan' },
+      auto: { goal: 'A new goal' },
+    })
+    useStore.setState({
+      sessions: {
+        [sid]: {
+          running: true,
+          startedMs: 1000,
+          status: {
+            stopped: false,
+            agent: { state: 'review', sinceMs: 1200, authoritative: true },
+          },
+        } as SessionState,
+      },
+    })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(implementPlannerPlan).not.toHaveBeenCalled()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'plan',
+      status: 'paused',
+      reason: 'Planner finished without saving a new plan',
+    })
+  } finally {
+    stop()
+  }
+})
+
+test('a new run on a branch whose earlier work is merged plans; a resumed one is done', () => {
+  const merged = snapshot({
+    outcome: 'alreadyIntegrated',
+    freshness: 'current',
+    findings: findings(),
+  })
+  expect(inferStage(merged, run(), true)).toMatchObject({ stage: 'plan', status: 'running' })
+  expect(inferStage(merged, run({ stage: 'merge' }))).toMatchObject({ stage: 'done' })
+  // New work since the merge isn't a fresh start.
+  expect(inferStage({ ...merged, hasChanges: true }, run(), true)).toMatchObject({ stage: 'done' })
+})
+
+test('resuming after a planner answered picks up its new plan, or waits on its next turn', () => {
+  const planning = run({ stage: 'plan', sessionId: 'planner', planMark: 'old' })
+  const planner = { sessionId: 'planner', stage: 'plan' as const, state: 'review', sinceMs: 1500 }
+  expect(
+    inferStage(snapshot({ plan: '# New', planMark: 'new', agents: [planner] }), planning),
+  ).toMatchObject({ stage: 'implement', status: 'running' })
+  expect(
+    inferStage(snapshot({ plan: '# Old', planMark: 'old', agents: [planner] }), planning),
+  ).toMatchObject({ stage: 'plan', sessionId: 'planner', turnSince: 1500 })
+  // A fresh run never reads an older run's mark.
+  expect(inferStage(snapshot({ plan: '# New', planMark: 'new' }), planning, true)).toMatchObject({
+    stage: 'plan',
+  })
+})
+
+test('only merged work needs a new goal, and the chosen stage decides', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  const settings = (stage?: import('../types').AutoStage) => ({
+    goal: '',
+    effort: 'standard' as const,
+    device: 'codex',
+    merge: { mode: 'ask' as const, destinationBranch: 'main' },
+    stage,
+  })
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('dirty')
+  await expect(startAuto('p', 't', settings())).resolves.toBeUndefined()
+  useStore.getState().patchTask('p', 't', { auto: undefined })
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
+  await expect(startAuto('p', 't', settings())).rejects.toThrow('describe the new goal')
+  await expect(startAuto('p', 't', settings('implement'))).resolves.toBeUndefined()
 })

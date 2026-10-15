@@ -251,6 +251,31 @@ class LaunchCancelled extends Error {
   }
 }
 
+/**
+ * The brief (and planner kickoff) an Auto run launched `sid` with, while that run still tracks it,
+ * so a later start of the same terminal is briefed the same and can resume.
+ */
+function autoBriefOf(projectId: string, sid: string) {
+  const state = projectStateOf(projectId)
+  if (!state) return undefined
+  // Workspaces, not the task list, which loads only after a restored layout.
+  const active = state.activeTask ?? ''
+  const runs = [
+    state.auto,
+    ...Object.entries(state.taskWorkspaces)
+      .filter(([id]) => id !== active)
+      .map(([, w]) => w?.auto),
+  ]
+  // A stopped, failed or finished run no longer briefs its agent.
+  return runs.find(
+    (run) =>
+      run &&
+      ['running', 'waitingOnYou', 'paused'].includes(run.status) &&
+      run.sessionId === sid &&
+      run.sessionBrief?.sessionId === sid,
+  )?.sessionBrief
+}
+
 /** A handoff or Auto launch, whose caller reports every failure itself. */
 const reports = (launch: Launch) => !!(launch.kickoff || launch.auto)
 
@@ -297,7 +322,11 @@ function launchTerminal(launch: Launch): Promise<void> {
         !launch.kickoff &&
         (fixSessions.has(sid) ||
           useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
-      const kickoff: Kickoff | undefined = again ? { kind: 'fixFindings' } : launch.kickoff
+      const recorded = launch.auto ? undefined : autoBriefOf(launch.projectId, sid)
+      const auto = launch.auto ?? recorded?.auto
+      const kickoff: Kickoff | undefined = again
+        ? { kind: 'fixFindings' }
+        : (launch.kickoff ?? (componentId === PLAN_SCOPE ? recorded?.kickoff : undefined))
       const fix = kickoff?.kind === 'fixFindings'
       if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
         await savePlanDraft(launch.projectId, launch.task)
@@ -313,7 +342,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           requestId,
           kickoff,
           resume,
-          launch.auto,
+          auto,
         )
         if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
@@ -331,15 +360,7 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(
-          project,
-          ids,
-          terminal,
-          requestId,
-          !!launch.restart,
-          launch.kickoff,
-          launch.auto,
-        )
+        await planStart(project, ids, terminal, requestId, !!launch.restart, kickoff, auto)
       } else {
         await terminalStart(
           project,

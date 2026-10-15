@@ -294,6 +294,9 @@ interface State {
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
+  /** Bumped to open the toolbar's Auto panel, from the attention list (UI only). */
+  autoPanelRequest: number
+  showAutoPanel: () => void
   /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */
   proposedScope: string[]
   setProposedScope: (ids: string[]) => void
@@ -645,6 +648,8 @@ export const useStore = create<State>((set, get) => ({
     }),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
+  autoPanelRequest: 0,
+  showAutoPanel: () => set((s) => ({ autoPanelRequest: s.autoPanelRequest + 1 })),
   proposedScope: [],
   setProposedScope: (proposedScope) => set({ proposedScope }),
 

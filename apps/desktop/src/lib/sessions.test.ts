@@ -629,3 +629,45 @@ test.each([false, true])(
     expect(ipc.taskRootStart).not.toHaveBeenCalled()
   },
 )
+
+test('starting an agent an Auto run still tracks again sends its Auto brief and planner kickoff', async () => {
+  const auto = { goal: 'Goal', fixFloor: 'medium' as const, effortNote: 'Note', commit: true }
+  const fixId = useStore.getState().addRootTerminal(agent)
+  const fixSid = sessionId(TASK_ROOT_SCOPE, fixId, null, 'p')
+  const plannerSid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  const tracking = (
+    sid: string,
+    kickoff?: { kind: 'plan' },
+    status: 'paused' | 'stopped' = 'paused',
+  ) =>
+    useStore.getState().patchTask('p', null, {
+      auto: {
+        runId: 'r',
+        status,
+        stage: 'fix',
+        goal: 'Goal',
+        effort: 'standard',
+        merge: { mode: 'ask', destinationBranch: 'main' },
+        device: 'claude',
+        round: 1,
+        log: [],
+        sessionId: sid,
+        sessionBrief: { sessionId: sid, auto, kickoff },
+      },
+    })
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  tracking(fixSid)
+  await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[7]).toEqual(auto)
+  tracking(plannerSid, { kind: 'plan' })
+  await restartTerminal(PLAN_SCOPE, 'claude')
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([{ kind: 'plan' }, auto])
+  // Once the run moved on, the terminal starts like any other.
+  tracking('other')
+  await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[7]).toBeUndefined()
+  // A stopped run briefs nothing either.
+  tracking(plannerSid, { kind: 'plan' }, 'stopped')
+  await restartTerminal(PLAN_SCOPE, 'claude')
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([undefined, undefined])
+})

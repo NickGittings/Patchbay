@@ -36,7 +36,7 @@ import { fixReviewFindings } from './reviewHandoff'
 import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgent } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
-import { EFFORT, SEVERITIES } from './autoSettings'
+import { EFFORT, SEVERITIES, taskPassed, validOverrides } from './autoSettings'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
 export function effortSettings(run: Pick<AutoRun, 'effort' | 'overrides'>): EffortSettings {
@@ -48,14 +48,14 @@ export function blockingCount(findings: ReviewFindings | null, floor: Severity) 
     0,
   )
 }
-const passed = (r: ActionReport['results'][number]) =>
-  ['passed', 'started', 'reused'].includes(r.outcome)
+/** A validation report with a task that didn't pass; components without a check are skipped. */
+export const validationFailed = (report: ActionReport) => report.results.some((r) => !taskPassed(r))
 /** One finding per failed validation terminal, for the fix agent's briefing. */
 export function validationFailures(reports: ActionReport[], name: (sessionId: string) => string) {
   return reports
     .flatMap((report) =>
       report.results
-        .filter((r) => !passed(r))
+        .filter((r) => !taskPassed(r))
         .map(
           (r) =>
             `[high] Validation failed: ${name(r.sessionId)} ${r.outcome}${r.exitCode === null ? '' : ` (exit ${r.exitCode})`}`,
@@ -66,6 +66,8 @@ export function validationFailures(reports: ActionReport[], name: (sessionId: st
 export interface AutoSnapshot {
   plan: string
   proposal: boolean
+  /** Fingerprint of the project plan and proposal, to tell whether a planner wrote new ones. */
+  planMark: string
   goal: string
   source: Worktree
   worktrees: Worktree[]
@@ -113,8 +115,11 @@ export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): D
   }
   return { stage: 'mergeGate', status: 'running', reason: 'No blocking findings remain' }
 }
-/** Existing manual work takes precedence over a remembered stage. */
-export function inferStage(snapshot: AutoSnapshot, run: AutoRun): Decision {
+/**
+ * Existing manual work takes precedence over a remembered stage. A `fresh` run (just started, with
+ * its own goal) treats a branch whose earlier work is already merged as a new start, not as done.
+ */
+export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false): Decision {
   const busy = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
   if (busy)
     return {
@@ -125,8 +130,29 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun): Decision {
       turnSince: busy.sinceMs,
       observedWorking: busy.state === 'working',
     }
+  if (run.stage === 'plan' && !fresh) {
+    // A planner that answered after Auto paused may have saved its plan since.
+    if (
+      run.planMark !== undefined &&
+      snapshot.planMark !== run.planMark &&
+      (snapshot.plan.trim() || snapshot.proposal)
+    )
+      return { stage: 'implement', status: 'running', reason: 'Planner saved a new plan' }
+    // Otherwise keep waiting on the run's own planner, at its prompt, for its next turn.
+    const planner = snapshot.agents.find((a) => a.sessionId === run.sessionId && a.stage === 'plan')
+    if (planner)
+      return {
+        stage: 'plan',
+        status: 'running',
+        reason: "Waiting for the planner's next turn",
+        sessionId: planner.sessionId,
+        turnSince: planner.sinceMs,
+      }
+  }
   if (['merged', 'alreadyIntegrated'].includes(snapshot.outcome))
-    return { stage: 'done', status: 'done', reason: 'Branch is integrated' }
+    return fresh && !snapshot.hasChanges
+      ? { stage: 'plan', status: 'running', reason: 'Earlier work is merged; plan the new goal' }
+      : { stage: 'done', status: 'done', reason: 'Branch is integrated' }
   if (snapshot.freshness === 'current') return reviewDecision(run, snapshot.findings)
   if (snapshot.hasChanges)
     return {
@@ -202,6 +228,13 @@ export function inferredGoal(plan: string, title: string, notes: string, branch:
     [title, notes].filter(Boolean).join('\n\n') ||
     branch
   )
+}
+
+/** FNV-1a, enough to notice a rewritten plan without persisting its text. */
+function fingerprint(text: string) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  return `${text.length}:${(hash >>> 0).toString(16)}`
 }
 
 function workspace(projectId: string, task: string | null) {
@@ -319,6 +352,7 @@ export async function autoSnapshot(
     // Implement hands off the project plan only, never an older worktree plan.
     plan: plannerPlan.text,
     proposal: !!proposal,
+    planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
     goal: inferredGoal(
       saved.text || plannerPlan.text,
       state.tasks.find((t) => t.id === task)?.title ?? '',
@@ -378,14 +412,7 @@ export async function startAuto(projectId: string, task: string | null, settings
   try {
     if (['running', 'waitingOnYou', 'paused'].includes(autoRun(projectId, task)?.status ?? ''))
       throw new Error('This worktree already has an Auto run')
-    const selectedEffort = effortSettings(settings)
-    if (
-      !Number.isInteger(selectedEffort.maxRounds) ||
-      selectedEffort.maxRounds < 0 ||
-      selectedEffort.maxRounds > 100 ||
-      !SEVERITIES.includes(selectedEffort.severityFloor) ||
-      typeof selectedEffort.validate !== 'boolean'
-    )
+    if (!validOverrides(settings.overrides ?? {}))
       throw new Error('Invalid Advanced effort settings')
     await checkAutoHooks(settings.device)
     const run: AutoRun = {
@@ -397,8 +424,15 @@ export async function startAuto(projectId: string, task: string | null, settings
       log: [],
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
-    const decision = inferStage(snapshot, run)
+    const decision = inferStage(snapshot, run, true)
     assertSessionAvailable(projectId, task, decision.sessionId)
+    // Merged work's old plan is no goal for a new run.
+    if (
+      (settings.stage ?? decision.stage) === 'plan' &&
+      ['merged', 'alreadyIntegrated'].includes(snapshot.outcome) &&
+      !run.goal.trim()
+    )
+      throw new Error("This branch's earlier work is merged; describe the new goal")
     if (settings.stage && decision.sessionId)
       throw new Error('Finish or stop the current agent before overriding its stage')
     if (!run.goal.trim()) run.goal = snapshot.goal
@@ -412,12 +446,12 @@ export async function startAuto(projectId: string, task: string | null, settings
       auto: {
         ...run,
         ...decision,
-        sessionStartedMs: decision.sessionId
-          ? useStore.getState().sessions[decision.sessionId]?.startedMs
-          : undefined,
+        sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
         reviewedHead,
         findingsSummary:
           snapshot.freshness === 'current' ? snapshot.findings?.text.slice(0, 2000) : undefined,
+        // An adopted planner must still save a plan other than the one it started with.
+        planMark: decision.stage === 'plan' ? snapshot.planMark : undefined,
         ...(stage ? { stage, status: 'running' as const } : {}),
         log: [{ atMs: Date.now(), text: decision.reason }],
       },
@@ -453,12 +487,17 @@ export async function resumeAuto(projectId: string, task: string | null) {
       sessionId: decision.sessionId,
       sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
       turnSince: decision.turnSince,
-      sessionStartedMs: decision.sessionId
-        ? useStore.getState().sessions[decision.sessionId]?.startedMs
-        : undefined,
+      sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
       observedWorking: decision.observedWorking ?? false,
     },
     `Resumed: ${decision.reason}`,
+  )
+}
+/** A session's start time, from its record when this window hasn't hydrated it yet. */
+function startedOf(sid: string) {
+  const s = useStore.getState()
+  return (
+    s.sessions[sid]?.startedMs ?? s.sessionRecords.find((r) => r.id === sid)?.snapshot?.startedMs
   )
 }
 function ownsSession(run: AutoRun, sessionId = run.sessionId) {
@@ -466,8 +505,7 @@ function ownsSession(run: AutoRun, sessionId = run.sessionId) {
     !!sessionId &&
     run.sessionOwned === true &&
     sessionId === run.sessionId &&
-    (run.sessionStartedMs === undefined ||
-      useStore.getState().sessions[sessionId]?.startedMs === run.sessionStartedMs)
+    (run.sessionStartedMs === undefined || startedOf(sessionId) === run.sessionStartedMs)
   )
 }
 export function stopAuto(projectId: string, task: string | null) {
@@ -651,8 +689,13 @@ async function drive(projectId: string, task: string | null) {
             pauseAuto(projectId, task, "Couldn't read the review verdict — open findings")
           return
         }
-        if (run.stage === 'plan' && !snapshot.plan.trim() && !snapshot.proposal) {
-          pauseAuto(projectId, task, 'Planner finished without a saved plan')
+        // A plan saved before this planner launched is no answer to its goal.
+        if (
+          run.stage === 'plan' &&
+          ((!snapshot.plan.trim() && !snapshot.proposal) ||
+            (run.planMark !== undefined && snapshot.planMark === run.planMark))
+        ) {
+          pauseAuto(projectId, task, 'Planner finished without saving a new plan')
           return
         }
         const other = snapshot.agents.find(
@@ -686,9 +729,7 @@ async function drive(projectId: string, task: string | null) {
               ? {
                   sessionId: decision.sessionId,
                   sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
-                  sessionStartedMs: decision.sessionId
-                    ? useStore.getState().sessions[decision.sessionId]?.startedMs
-                    : undefined,
+                  sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
                 }
               : {}),
             launchAtMs: undefined,
@@ -826,7 +867,12 @@ async function drive(projectId: string, task: string | null) {
     patch(
       projectId,
       task,
-      { turnSince: since, launchAtMs: since, observedWorking: false },
+      {
+        turnSince: since,
+        launchAtMs: since,
+        observedWorking: false,
+        planMark: run.stage === 'plan' ? snapshot.planMark : run.planMark,
+      },
       `Starting ${run.stage}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
     )
     if (!live() || !active(projectId, task)) return
@@ -896,7 +942,12 @@ async function drive(projectId: string, task: string | null) {
     patch(projectId, task, {
       sessionId: sid,
       sessionOwned: true,
-      sessionStartedMs: useStore.getState().sessions[sid]?.startedMs,
+      sessionStartedMs: startedOf(sid),
+      sessionBrief: {
+        sessionId: sid,
+        auto: brief,
+        kickoff: run.stage === 'plan' ? { kind: 'plan' } : undefined,
+      },
       turnSince: since,
     })
   } catch (e) {

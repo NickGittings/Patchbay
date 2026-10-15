@@ -69,11 +69,14 @@ export default function Popover({
   role = 'dialog',
   initialFocus,
   onOpenKeyDown,
+  openRequest = 0,
   children,
 }: PopoverProps & {
   role?: 'menu' | 'dialog'
   /** What takes focus on open, instead of the popup itself. */
   initialFocus?: (list: HTMLElement, keyboard: boolean) => HTMLElement | undefined
+  /** Opens the popup whenever it changes to another nonzero value; an open popup stays open. */
+  openRequest?: number
   /** Keys pressed while open, other than Escape. */
   onOpenKeyDown?: (
     e: KeyboardEvent<HTMLDivElement>,
@@ -152,6 +155,15 @@ export default function Popover({
     }
     previous.current = null
     setOpen(false)
+  }
+  // Only a new request opens it, never a re-render while closed.
+  const [handled, setHandled] = useState(openRequest)
+  if (openRequest !== handled) {
+    setHandled(openRequest)
+    if (!open) {
+      setOpen({ keyboard: false })
+      setOpens((n) => n + 1)
+    }
   }
   const latest = useRef({ close, initialFocus })
   useEffect(() => {

@@ -241,9 +241,7 @@ export function revealTerminal(
   const s = useStore.getState()
   if (item.auto) {
     s.setActiveTask(item.task ?? null, true)
-    requestAnimationFrame(() =>
-      document.querySelector<HTMLButtonElement>('.auto-menu .menu-trigger')?.click(),
-    )
+    s.showAutoPanel()
     return
   }
   if (isReviewAgentScope(item.componentId)) {

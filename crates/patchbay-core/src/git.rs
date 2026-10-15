@@ -474,7 +474,15 @@ pub fn review_branch(
     crate::tasks::check_branch(&root, base)?;
     let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
     review.ahead = run(git(&root).args(["rev-parse", "HEAD"]))? != merge_base;
-    let names = run(git(&root).args(["diff", "--name-only", "-z", &merge_base, "HEAD", "--"]))?;
+    let names = run(git(&root).args([
+        "diff",
+        "--name-status",
+        "-M",
+        "-z",
+        &merge_base,
+        "HEAD",
+        "--",
+    ]))?;
     // `git diff` names files from the repo's top folder, which sits above a
     // project opened in a subfolder; files are reported relative to the project.
     let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
@@ -483,24 +491,57 @@ pub fn review_branch(
         .find(|g| g.root == repo)
         .map(|g| g.members.as_slice())
         .unwrap_or_default();
-    for name in names.split('\0').filter(|p| !p.is_empty()) {
-        if let Some(id) = owner_of(name, members) {
-            let path = relative_path(&root, &repo.join(name));
-            let files = review.changes.entry(id.into()).or_default();
-            if !files.iter().any(|f| f.path == path) {
-                files.push(ChangedFile {
-                    path,
-                    kind: ChangeKind::Modified,
-                    old_path: None,
-                    modified_ms: None,
-                    added: None,
-                    removed: None,
-                });
-            }
+    let mut touched = HashSet::new();
+    for (kind, old, name) in committed_changes(&names) {
+        let Some(id) = owner_of(name, members) else {
+            continue;
+        };
+        let path = relative_path(&root, &repo.join(name));
+        let files = review.changes.entry(id.into()).or_default();
+        // An uncommitted change of the same file describes it as it is now.
+        if !files.iter().any(|f| f.path == path) {
+            files.push(ChangedFile {
+                path,
+                kind,
+                old_path: old.map(|o| relative_path(&root, &repo.join(o))),
+                modified_ms: None,
+                added: None,
+                removed: None,
+            });
+            touched.insert(id.to_owned());
+        }
+    }
+    for id in touched {
+        if let Some(files) = review.changes.get_mut(&id) {
+            files.sort_by(|a, b| a.path.cmp(&b.path));
         }
     }
     review.affected = affected_components(project, &review.changes);
     Ok(review)
+}
+
+/// The files of `git diff --name-status -z`: each one's kind, the path it was
+/// renamed from, and its path, from the repo's top folder.
+fn committed_changes(out: &str) -> Vec<(ChangeKind, Option<&str>, &str)> {
+    let mut fields = out.split('\0').filter(|p| !p.is_empty());
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        // A rename or a copy names its source first; only a rename keeps it.
+        let (kind, source) = match status.as_bytes().first() {
+            Some(b'A') => (ChangeKind::Added, false),
+            Some(b'C') => (ChangeKind::Added, true),
+            Some(b'D') => (ChangeKind::Deleted, false),
+            Some(b'R') => (ChangeKind::Renamed, true),
+            Some(b'T') => (ChangeKind::TypeChanged, false),
+            Some(b'U') => (ChangeKind::Conflicted, false),
+            _ => (ChangeKind::Modified, false),
+        };
+        let old = if source { fields.next() } else { None };
+        let Some(path) = fields.next() else { break };
+        let old = old.filter(|_| kind == ChangeKind::Renamed);
+        files.push((kind, old, path));
+    }
+    files
 }
 
 /// Which changed file to diff: `path` (relative to the project root) as
@@ -1464,6 +1505,49 @@ mod tests {
                 .values()
                 .flatten()
                 .all(|f| f.path != "outside.txt")
+        );
+    }
+
+    #[test]
+    fn review_branch_keeps_committed_kinds_and_renames_in_order() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("lib/gone.rs", "gone\n");
+        f.write("lib/old.rs", "a long enough line to detect a rename\n");
+        f.write("lib/same.rs", "one\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        assert!(run_git(&f.0, &["rm", "-q", "lib/gone.rs"]));
+        assert!(run_git(&f.0, &["mv", "lib/old.rs", "lib/new.rs"]));
+        f.write("lib/added.rs", "");
+        f.write("lib/same.rs", "two\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "work"]));
+        f.write("lib/b.rs", "");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "root": f.0.display().to_string(),
+            "components": [{ "id": "lib", "name": "lib", "path": "lib" }],
+        }))
+        .unwrap();
+        let c = components(&f.0, &[("lib", "lib")]);
+        let r = review_branch(&project, c, None, Some("base")).unwrap();
+        let files = r.changes["lib"]
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.old_path.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            files,
+            [
+                ("lib/added.rs", ChangeKind::Added, None),
+                ("lib/b.rs", ChangeKind::Untracked, None),
+                ("lib/gone.rs", ChangeKind::Deleted, None),
+                ("lib/new.rs", ChangeKind::Renamed, Some("lib/old.rs")),
+                ("lib/same.rs", ChangeKind::Modified, None),
+            ]
         );
     }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
 import type { AutoRun, AutoStage, EffortSettings, Severity } from '../../types'
 import {
@@ -12,7 +12,7 @@ import {
   type AutoSnapshot,
 } from '../../lib/auto'
 import { agentDevices } from '../../lib/plan'
-import { SEVERITIES } from '../../lib/autoSettings'
+import { MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -21,6 +21,8 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const agents = useMemo(() => agentDevices(devices), [devices])
   const [device, setDevice] = useState(agents[0]?.id ?? '')
   const [goal, setGoal] = useState('')
+  // The goal this dialog filled in itself, withdrawn once a load finds the branch merged.
+  const filledGoal = useRef('')
   const [effort, setEffort] = useState<AutoRun['effort']>('standard')
   const [overrides, setOverrides] = useState<Partial<EffortSettings>>({})
   const [mode, setMode] = useState<'ask' | 'auto'>('ask')
@@ -56,10 +58,20 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       round: 0,
       log: [],
     }
-    void autoSnapshot(projectId, task, run)
+    // Inferring like Start does, so the preview shows the stage Start will pick.
+    void autoSnapshot(projectId, task, run, true)
       .then((snapshot) => {
         if (cancelled) return
-        setGoal((old) => old || snapshot.goal)
+        // Merged work's plan is no goal for a new run. Without a destination the outcome is
+        // unknown, so a goal filled in then is withdrawn once a later load finds it merged.
+        if (snapshot.outcome === 'notMerged') {
+          filledGoal.current ||= snapshot.goal
+          setGoal((old) => old || snapshot.goal)
+        } else {
+          const filled = filledGoal.current
+          filledGoal.current = ''
+          setGoal((old) => (filled && old === filled ? '' : old))
+        }
         const branches = snapshot.worktrees
           .filter((w) => w.branch && w.path !== snapshot.source.path)
           .map((w) => w.branch!)
@@ -100,18 +112,22 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const settings = { ...EFFORT[effort], ...overrides }
   const decision =
     snapshot &&
-    inferStage(snapshot, {
-      runId: '',
-      stage: 'plan',
-      status: 'running',
-      round: 0,
-      log: [],
-      goal,
-      effort,
-      overrides,
-      device,
-      merge: { mode, destinationBranch: destination },
-    })
+    inferStage(
+      snapshot,
+      {
+        runId: '',
+        stage: 'plan',
+        status: 'running',
+        round: 0,
+        log: [],
+        goal,
+        effort,
+        overrides,
+        device,
+        merge: { mode, destinationBranch: destination },
+      },
+      true,
+    )
   const detected = decision
     ? `${STAGE_LABELS[decision.stage]} (${decision.reason})`
     : 'Detecting current work…'
@@ -156,12 +172,15 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           <input
             type="number"
             min={0}
-            max={100}
+            max={MAX_ROUNDS}
             value={settings.maxRounds}
             onChange={(e) =>
               setOverrides({
                 ...overrides,
-                maxRounds: Math.max(0, Math.min(100, Number(e.target.value))),
+                maxRounds: Math.max(
+                  0,
+                  Math.min(MAX_ROUNDS, Math.round(Number(e.target.value) || 0)),
+                ),
               })
             }
           />

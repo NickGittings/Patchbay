@@ -58,7 +58,10 @@ async function handoffPlannerPlan(plannerId: string, auto?: import('../types').A
     kickoff: { kind: 'implementPlan' },
     auto,
   })
-  current().setView('implementation')
+  // The agent is running now, so a later switch away only skips the view change; its caller
+  // still learns the session it has to track.
+  const after = useStore.getState()
+  if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
   return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
 }
 

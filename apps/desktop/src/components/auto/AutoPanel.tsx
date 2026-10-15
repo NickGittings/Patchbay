@@ -10,6 +10,7 @@ import {
   stopAuto,
   STAGES,
   STAGE_LABELS,
+  validationFailed,
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
@@ -20,8 +21,12 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
+  const openRequest = useStore((s) => s.autoPanelRequest)
   const [error, setError] = useState('')
-  const [newRun, setNewRun] = useState(false)
+  // The finished run New run was pressed for; another run or worktree shows its own state.
+  const [newRunFor, setNewRunFor] = useState<string | null>(null)
+  const finished = !!run && ['done', 'stopped', 'failed'].includes(run.status)
+  const newRun = finished && newRunFor === JSON.stringify([projectId, task, run.runId])
   const label = !run
     ? 'Auto'
     : run.status === 'running'
@@ -38,8 +43,9 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
       title="Auto mode"
       portal
       listClassName="auto-popover"
+      openRequest={openRequest}
     >
-      {!run || (newRun && ['done', 'stopped', 'failed'].includes(run.status)) ? (
+      {!run || newRun ? (
         <AutoDialog onIntegrations={onIntegrations} />
       ) : (
         <div className="auto-content">
@@ -66,12 +72,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
           {run.validation && (
             <p>
               Validation: {run.validation.length} report(s),{' '}
-              {
-                run.validation.filter(
-                  (r) => r.results.some((x) => x.outcome === 'failed') || r.plan.skipped.length > 0,
-                ).length
-              }{' '}
-              need attention
+              {run.validation.filter(validationFailed).length} need attention
             </p>
           )}
           {run.sessionId && (
@@ -103,8 +104,10 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
             {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
               <button onClick={() => act(mergeNow)}>Merge now</button>
             )}
-            {['done', 'stopped', 'failed'].includes(run.status) && (
-              <button onClick={() => setNewRun(true)}>New run</button>
+            {finished && (
+              <button onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}>
+                New run
+              </button>
             )}
           </div>
           {error && <p role="alert">{error}</p>}

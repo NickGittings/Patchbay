@@ -829,15 +829,18 @@ async fn plan_start(
             &project,
             &component_ids,
             &roots,
-            auto.as_ref().map(|a| a.section("plan")),
+            auto.as_ref().map(context::AutoBrief::plan_section),
             extra_context,
         );
         let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        let mut spec = if kickoff == Some(context::Kickoff::Plan) {
-            context::plan_kickoff_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
-        } else {
-            context::plan_session_spec(&project, &component_ids, &terminal, &AllowAll, &sections)
-        }
+        let mut spec = context::planner_spec(
+            &project,
+            &component_ids,
+            &terminal,
+            &AllowAll,
+            &sections,
+            kickoff,
+        )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, None, &mut spec);
@@ -1347,13 +1350,7 @@ async fn task_root_start(
         let (kickoff, handoff) =
             context::root_handoff(&project, task.as_deref(), &selected, kickoff, fix.as_ref())
                 .map_err(err)?;
-        let auto_section = auto.as_ref().map(|a| {
-            a.section(if kickoff == Some(context::Kickoff::FixFindings) {
-                "fix"
-            } else {
-                "implement"
-            })
-        });
+        let auto_section = auto.as_ref().map(|a| a.root_section(kickoff));
         let own = auto_section.into_iter().chain(section).chain(handoff);
         let sections = briefing_sections(
             &extensions.get(),

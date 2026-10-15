@@ -89,13 +89,20 @@ test('Auto persists per worktree without dirtying the map and restores paused', 
     device: 'codex',
     round: 1,
     sessionId: 'old-session',
+    sessionOwned: true,
+    sessionStartedMs: 5,
     log: [{ atMs: 1, text: 'Review' }],
   }
   useStore.getState().patchTask('p', null, { auto: run })
   expect(useStore.getState().dirty).toBe(false)
   const layout = restoredLayout(workspaceDocument().projects[0].layout)
   expect(layout.auto).toMatchObject({ status: 'paused', stage: 'review', round: 1 })
-  expect(layout.auto?.sessionId).toBeUndefined()
+  // Its agent keeps running in the session service, so Auto still tracks and owns it.
+  expect(layout.auto).toMatchObject({
+    sessionId: 'old-session',
+    sessionOwned: true,
+    sessionStartedMs: 5,
+  })
   expect(layout.taskWorkspaces?.[''].auto?.status).toBe('paused')
   expect(restoredLayout({ auto: { ...run, overrides: { maxRounds: -1 } } }).auto).toBeNull()
   // Finished runs stay finished, so a new run can start without Stop.

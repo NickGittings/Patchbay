@@ -74,6 +74,13 @@ export interface AutoRun {
   launchAtMs?: number
   observedWorking?: boolean
   sessionStartedMs?: number
+  /**
+   * What Auto launched its tracked session with, sent again on every later start of that session
+   * so its briefing, and with it Restart's fingerprint, stays the same.
+   */
+  sessionBrief?: { sessionId: string; auto: AutoBrief; kickoff?: Kickoff }
+  /** Fingerprint of the project plan and proposal when the planner launched. */
+  planMark?: string
   log: { atMs: number; text: string }[]
   reason?: string
   validation?: ActionReport[]
