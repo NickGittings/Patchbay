@@ -97,7 +97,16 @@
       reviewForm.querySelector('select[aria-label="Base branch"]').value === 'main',
       'review base did not default to main',
     )
-    choose(reviewForm.querySelector('select[aria-label="Agent"]'), 'review-smoke')
+    // Several presets offer reviewer checkboxes; review with this one alone.
+    const reviewerBoxes = () => [...reviewForm.querySelectorAll('.agent-job-agents input')]
+    assert(reviewerBoxes().length > 1, 'missing reviewer checkboxes')
+    for (const value of reviewerBoxes().map((box) => box.value)) {
+      const box = reviewerBoxes().find((b) => b.value === value)
+      if (box.checked !== (value === 'review-smoke')) box.click()
+      await until(`reviewer ${value} set`, () =>
+        reviewerBoxes().some((b) => b.value === value && b.checked === (value === 'review-smoke')),
+      )
+    }
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     const reviewSid = await until('review session panel', () => {

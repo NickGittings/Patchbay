@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type AutoBrief, type SessionRecord } from '../types'
 import { reviewFixTask } from './ipc'
+import { roleDevice } from './agentRoles'
 import { agentDevices } from './plan'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
@@ -26,11 +27,17 @@ export async function fixReviewFindings(
     await refreshTasks(projectId)
   const s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Open the reviewed project first')
-  // Session records keep the preset's command but not its id, so match the reviewer's provider.
+  // Auto's fix agent, else the project's fix role, else the reviewer's provider: session records
+  // keep the preset's command but not its id, so match by adapter.
   const agents = agentDevices(s.devices)
   const device =
-    agents.find((d) => (deviceId ? d.id === deviceId : d.adapter === record.metadata.adapter)) ??
-    agents[0]
+    (deviceId && agents.find((d) => d.id === deviceId)) ||
+    roleDevice(
+      s.devices,
+      s.agentRoles,
+      'fix',
+      agents.find((d) => d.adapter === record.metadata.adapter),
+    )
   const previous = s.activeTask
   // Exact: a `null` here means no task holds the project folder, so nothing to redirect to.
   if (previous !== task) s.setActiveTask(task, true)

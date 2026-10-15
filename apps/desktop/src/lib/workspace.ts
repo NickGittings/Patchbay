@@ -1,3 +1,4 @@
+import { restoredAgentRoles } from './agentRoles'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -55,6 +56,7 @@ export function workspaceDocument(): WorkspaceDocument {
               implementationComponents: state.implementationComponents,
               planActive: state.planActive,
               planStartedWith: state.planStartedWith,
+              agentRoles: state.agentRoles,
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
@@ -126,6 +128,7 @@ export function restoredLayout(
     out.panels = layout.panels as ProjectState['panels']
   if (layout.planStartedWith && typeof layout.planStartedWith === 'object')
     out.planStartedWith = layout.planStartedWith as Record<string, string>
+  if (!nested) out.agentRoles = restoredAgentRoles(layout.agentRoles)
   if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
     const report = layout.graphActionReport as ProjectState['graphActionReport']
     if (
@@ -183,6 +186,7 @@ export function restoredLayout(
                 'selectedEdgeId',
                 'viewport',
                 'planStartedWith',
+                'agentRoles',
               ].includes(key),
           ),
         ),
@@ -294,6 +298,7 @@ export function initializeWorkspace() {
           s.implementationComponents === prev.implementationComponents &&
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
+          s.agentRoles === prev.agentRoles &&
           s.viewport === prev.viewport &&
           s.panels === prev.panels &&
           s.groups === prev.groups &&

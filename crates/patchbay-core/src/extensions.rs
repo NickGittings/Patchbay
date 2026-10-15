@@ -980,6 +980,7 @@ mod tests {
                 command_id: None,
                 key: None,
                 branch: None,
+                lane: None,
                 command: String::new(),
             },
             spec: SessionSpec {

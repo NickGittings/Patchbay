@@ -36,6 +36,10 @@ export interface ReviewRequest {
   worktree: string
   branch: string
   base: string
+  /** The reviewer's preset id when several review at once; each gets its own session and file. */
+  lane?: string
+  /** Shared by reviewers launched together, whose findings combine. */
+  round?: string
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
@@ -50,6 +54,11 @@ export interface AutoBrief {
   effortNote: string
   commit: boolean
 }
+/** The jobs an agent preset can be assigned to (per project, workspace layout only). */
+export type AgentRole = 'plan' | 'implement' | 'review' | 'fix' | 'merge'
+export const AGENT_ROLES: AgentRole[] = ['plan', 'implement', 'review', 'fix', 'merge']
+/** Preset ids per role; only `review` uses more than its first entry. */
+export type AgentRoles = Partial<Record<AgentRole, string[]>>
 export interface EffortSettings {
   maxRounds: number
   severityFloor: Severity
@@ -65,7 +74,14 @@ export interface AutoRun {
   effort: 'light' | 'standard' | 'thorough'
   overrides?: Partial<EffortSettings>
   merge: { mode: 'ask' | 'auto'; destinationBranch: string }
+  /** The preset for any stage `agents` leaves unset (and every stage of older runs). */
   device: string
+  /** The preset each agent stage launches. */
+  agents?: Partial<Record<AgentRole, string>>
+  /** Presets that review together when there are several; `agents.review` reviews alone. */
+  reviewers?: string[]
+  /** Reviewers launched beside the tracked session, owned while their start times match. */
+  laneSessions?: { sessionId: string; startedMs?: number }[]
   /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
   branch?: string
   round: number
@@ -105,6 +121,14 @@ export interface ReviewFindings {
   /** Files in the branch's worktree changed after the attempt started, or couldn't be checked. */
   editedSinceStart: boolean
   truncated: boolean
+  /** Each reviewer of the round; one entry for a single reviewer. */
+  reviewers: ReviewerStatus[]
+}
+export interface ReviewerStatus {
+  lane: string | null
+  /** It wrote findings since its attempt started. */
+  finished: boolean
+  verdict: Verdict | null
 }
 
 /** Reserved id for changed files under the project root that no component contains. */
@@ -489,6 +513,8 @@ export interface SessionRecord {
     key?: string | null
     /** The branch a review job covers, or a fix agent's reviewed branch; absent otherwise. */
     branch?: string | null
+    /** A review job's reviewer lane when several reviewed at once. */
+    lane?: string | null
     conversationId: string | null
     /** Set by the user, so captured resume hints don't replace it. */
     conversationPinned?: boolean

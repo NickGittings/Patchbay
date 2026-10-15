@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react'
 import { create } from 'zustand'
 import type {
+  AgentRoles,
   ExtensionRegistry,
   CommandContribution,
   MenuContribution,
@@ -147,6 +148,7 @@ export interface ProjectState {
   /** Components kept in Implementation's header, including hidden ones (UI only). */
   implementationComponents: ImplementationComponent[] | null
   planStartedWith: Record<string, string>
+  agentRoles: AgentRoles
   planActive: string | null
   dirty: boolean
   gitChanges: Record<string, number>
@@ -269,6 +271,9 @@ interface State {
   implementationComponents: ImplementationComponent[] | null
   setImplementationScope: (components: ImplementationComponent[]) => void
   planStartedWith: Record<string, string>
+  /** The agent preset assigned to each role in this project (workspace layout only). */
+  agentRoles: AgentRoles
+  setAgentRoles: (roles: AgentRoles) => void
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
   setPlanActive: (id: string | null) => void
@@ -626,6 +631,8 @@ export const useStore = create<State>((set, get) => ({
       revealed: null,
     }),
   planStartedWith: {},
+  agentRoles: {},
+  setAgentRoles: (agentRoles) => set({ agentRoles }),
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
@@ -962,6 +969,7 @@ function emptyProjectState(): ProjectState {
     highlighted: [],
     implementationComponents: null,
     planStartedWith: {},
+    agentRoles: {},
     planActive: null,
     dirty: false,
     gitChanges: {},
@@ -992,6 +1000,7 @@ function projectState(s: State): ProjectState {
     highlighted,
     implementationComponents,
     planStartedWith,
+    agentRoles,
     planActive,
     dirty,
     gitChanges,
@@ -1025,6 +1034,7 @@ function projectState(s: State): ProjectState {
     highlighted,
     implementationComponents,
     planStartedWith,
+    agentRoles,
     planActive,
     dirty,
     gitChanges,

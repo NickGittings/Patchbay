@@ -35,6 +35,7 @@ export default function MergeAgentDialog({
   const target = destinations.find((w) => w.path === destination)
   return (
     <AgentJobDialog
+      role="merge"
       title="Start merge agent"
       source={source}
       ready={!!target?.branch}
@@ -42,7 +43,7 @@ export default function MergeAgentDialog({
       runningText="A merge agent is already running in this destination."
       offlineText="Reconnect before starting a merge agent."
       hint="Merges the whole committed branch, resolves conflicts, and runs relevant checks before completing the local merge. Both worktrees must be clean. Leaves pushing to you."
-      launch={(device) =>
+      launch={([device]) =>
         startMergeAgent(
           project,
           {

@@ -1463,6 +1463,7 @@ async fn review_agent_start(
             let mut metadata =
                 service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
             metadata.branch = Some(request.branch);
+            metadata.lane = request.lane.filter(|lane| !lane.is_empty());
             bridge.start_reporting(job.spec, metadata, request_id)
         })
     })
@@ -1804,6 +1805,7 @@ async fn session_resume(
                     record.metadata.branch.as_deref().ok_or(
                         "This session predates recorded review branches; start a new review",
                     )?,
+                    record.metadata.lane.as_deref(),
                 )
                 .map_err(err)?
         {

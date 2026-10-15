@@ -1,22 +1,34 @@
 import { useStore } from '../store'
 import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
-import { plannerDevice } from './plan'
+import { roleDevice } from './agentRoles'
+import { agentDevices, plannerDevice } from './plan'
 import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
 /**
- * Accept the project's plan into the active worktree and launch a fresh agent there with the
- * planner's provider. The planner belongs to the project, so the plan may have been written
- * before the worktree existed.
+ * Accept the project's plan into the active worktree and launch a fresh agent there: `deviceId`
+ * (Auto's implement agent), else the project's implement role, else the planner's provider. The
+ * planner belongs to the project, so the plan may have been written before the worktree existed.
  */
-async function handoffPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
+async function handoffPlannerPlan(
+  plannerId: string,
+  auto?: import('../types').AutoBrief,
+  deviceId?: string,
+) {
   const initial = useStore.getState()
   const projectId = initial.project?.id
   if (!projectId) throw new Error('Open a project first')
   const task = initial.activeTask
-  const device = plannerDevice(initial.devices, plannerId)
+  const device =
+    (deviceId && agentDevices(initial.devices).find((d) => d.id === deviceId)) ||
+    roleDevice(
+      initial.devices,
+      initial.agentRoles,
+      'implement',
+      plannerDevice(initial.devices, plannerId),
+    )
   const current = () => {
     const s = useStore.getState()
     if (s.project?.id !== projectId || s.activeTask !== task)
@@ -67,13 +79,17 @@ async function handoffPlannerPlan(plannerId: string, auto?: import('../types').A
 
 const handingOff = new Set<string>()
 /** Serialize acceptance of a project-wide plan, including manual approvals during Auto. */
-export async function implementPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
+export async function implementPlannerPlan(
+  plannerId: string,
+  auto?: import('../types').AutoBrief,
+  deviceId?: string,
+) {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
   handingOff.add(projectId)
   try {
-    return await handoffPlannerPlan(plannerId, auto)
+    return await handoffPlannerPlan(plannerId, auto, deviceId)
   } finally {
     handingOff.delete(projectId)
   }

@@ -1,4 +1,4 @@
-import type { AutoRun } from '../types'
+import { AGENT_ROLES, type AutoRun } from '../types'
 import { EFFORT, finished as ended, SEVERITIES, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
@@ -29,6 +29,16 @@ function restoredBrief(value: AutoRun['sessionBrief']): AutoRun['sessionBrief'] 
   }
 }
 
+/** Per-stage presets, dropping anything but a nonempty id for a known stage. */
+function restoredAgents(value: unknown): AutoRun['agents'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entries = AGENT_ROLES.flatMap((stage) => {
+    const id = (value as Record<string, unknown>)[stage]
+    return typeof id === 'string' && id ? [[stage, id] as const] : []
+  })
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
 /** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */
 export function restoredAuto(value: unknown): AutoRun | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -57,6 +67,18 @@ export function restoredAuto(value: unknown): AutoRun | null {
     overrides: r.overrides,
     merge: r.merge,
     device: r.device,
+    agents: restoredAgents(r.agents),
+    reviewers: Array.isArray(r.reviewers)
+      ? [...new Set(r.reviewers.filter((id) => typeof id === 'string' && !!id))]
+      : undefined,
+    // Reviewers beside the tracked session keep running in the service too.
+    laneSessions: Array.isArray(r.laneSessions)
+      ? r.laneSessions.flatMap((l) =>
+          l && typeof l.sessionId === 'string'
+            ? [{ sessionId: l.sessionId, startedMs: finite(l.startedMs) }]
+            : [],
+        )
+      : undefined,
     branch: typeof r.branch === 'string' ? r.branch : undefined,
     round: r.round,
     status: finished ? r.status : 'paused',

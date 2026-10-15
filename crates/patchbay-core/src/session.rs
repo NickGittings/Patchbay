@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-// ValidateChanged extends the session service action request protocol.
-pub const PROTOCOL: u32 = 7;
+// Metadata records a review's lane, which an older service would drop.
+pub const PROTOCOL: u32 = 8;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -174,6 +174,10 @@ pub struct Metadata {
     /// on a fix agent's root session, the reviewed branch, so starting it again still fixes.
     #[serde(default)]
     pub branch: Option<String>,
+    /// The reviewer lane of a review job that runs beside others (`reviews::ReviewRequest::lane`),
+    /// so resuming it re-reviews into its own findings.
+    #[serde(default)]
+    pub lane: Option<String>,
     #[serde(default)]
     pub command: String,
 }
@@ -1747,6 +1751,7 @@ impl Terminals for ServiceTerminals<'_> {
             command_id: None,
             key: None,
             branch: None,
+            lane: None,
             command: terminal.command.clone(),
         };
         let started = self.service.start_with_command(
@@ -3047,6 +3052,7 @@ mod tests {
             command_id: None,
             key: None,
             branch: None,
+            lane: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -3474,6 +3480,7 @@ mod tests {
                     command_id: None,
                     key: None,
                     branch: None,
+                    lane: None,
                     command: String::new(),
                 };
                 let spec = SessionSpec {
@@ -3560,6 +3567,7 @@ mod tests {
             command_id: None,
             key: None,
             branch: None,
+            lane: None,
             command: String::new(),
         };
         let spec = SessionSpec {
@@ -4285,6 +4293,7 @@ mod tests {
                 command_id: None,
                 key: None,
                 branch: None,
+                lane: None,
                 command: String::new(),
             },
             spec: SessionSpec {

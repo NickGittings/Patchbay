@@ -1,11 +1,13 @@
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
+  AGENT_ROLES,
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   plannerSessionId,
+  type AgentRole,
   type AutoBrief,
   type AutoRun,
   type AutoStage,
@@ -37,7 +39,7 @@ import { agentDevices } from './plan'
 import { implementPlannerPlan } from './planHandoff'
 import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
-import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgent } from './reviewAgents'
+import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgents } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
 import {
@@ -439,9 +441,24 @@ export async function autoSnapshot(
     snapshot.outcome = await mergeOutcome(project, mergeRequest(snapshot, run))
   return snapshot
 }
-export type AutoSettings = Pick<AutoRun, 'goal' | 'effort' | 'overrides' | 'merge' | 'device'> & {
+export type AutoSettings = Pick<
+  AutoRun,
+  'goal' | 'effort' | 'overrides' | 'merge' | 'device' | 'agents' | 'reviewers'
+> & {
   stage?: AutoStage
 }
+/** The preset `stage` launches: its own, else the run's single preset. */
+export const agentFor = (run: Pick<AutoRun, 'device' | 'agents'>, stage: AgentRole) =>
+  run.agents?.[stage] || run.device
+/** The presets of the review stage: several reviewing together, else the review agent. */
+export const reviewAgents = (run: Pick<AutoRun, 'device' | 'agents' | 'reviewers'>) =>
+  run.reviewers && run.reviewers.length > 1 ? run.reviewers : [agentFor(run, 'review')]
+/** Every preset a run may launch, each once. */
+export const runAgents = (run: Pick<AutoRun, 'device' | 'agents' | 'reviewers'>) => [
+  ...new Set([...AGENT_ROLES.map((stage) => agentFor(run, stage)), ...reviewAgents(run)]),
+]
+const agentStage = (stage: AutoStage): stage is AgentRole =>
+  (AGENT_ROLES as string[]).includes(stage)
 export async function checkAutoHooks(deviceId: string) {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
   const provider = device ? await agentProvider(device) : null
@@ -513,7 +530,7 @@ export async function startAuto(projectId: string, task: string | null, settings
       throw new Error('This worktree already has an Auto run')
     if (!validOverrides(settings.overrides ?? {}))
       throw new Error('Invalid Advanced effort settings')
-    await checkAutoHooks(settings.device)
+    for (const device of runAgents(settings)) await checkAutoHooks(device)
     const run: AutoRun = {
       ...settings,
       runId: crypto.randomUUID(),
@@ -578,8 +595,8 @@ export async function resumeAuto(projectId: string, task: string | null) {
   // Pause preserves runId; a new status or another Pause still cancels this Resume.
   if (autoRun(projectId, task) !== run) return
   const decision = inferStage(snapshot, run)
-  if (['plan', 'implement', 'review', 'fix', 'merge'].includes(decision.stage))
-    await checkAutoHooks(run.device)
+  if (decision.stage === 'review') for (const id of reviewAgents(run)) await checkAutoHooks(id)
+  else if (agentStage(decision.stage)) await checkAutoHooks(agentFor(run, decision.stage))
   if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
   if (autoRun(projectId, task) !== run) return
@@ -625,6 +642,24 @@ function ownsSession(run: AutoRun, sessionId = run.sessionId) {
     startedOf(sessionId) === run.sessionStartedMs
   )
 }
+/**
+ * Stop the extra reviewers a run launched that still run as it launched them; `undefined` when
+ * none does.
+ */
+function stopLanes(run: AutoRun) {
+  const sessions = useStore.getState().sessions
+  const running = (run.laneSessions ?? []).filter(
+    (l) =>
+      l.startedMs !== undefined &&
+      startedOf(l.sessionId) === l.startedMs &&
+      sessions[l.sessionId]?.running,
+  )
+  if (!running.length) return undefined
+  return Promise.all(running.map((l) => terminalStop(l.sessionId))).then(
+    () => {},
+    (e) => useStore.getState().setMessage(String(e)),
+  )
+}
 export function stopAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   patch(
@@ -635,6 +670,7 @@ export function stopAuto(projectId: string, task: string | null) {
   )
   if (run?.sessionId && ownsSession(run))
     void terminalStop(run.sessionId).catch((e) => useStore.getState().setMessage(String(e)))
+  if (run) void stopLanes(run)
   if (peekController(projectId, task)?.validating)
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
 }
@@ -643,6 +679,15 @@ export async function skipStage(projectId: string, task: string | null) {
   if (!run || run.status === 'running') return
   if (run.sessionId && ownsSession(run) && useStore.getState().sessions[run.sessionId]?.running) {
     await terminalStop(run.sessionId)
+    if (
+      autoRun(projectId, task)?.runId !== run.runId ||
+      autoRun(projectId, task)?.status === 'running'
+    )
+      return
+  }
+  const stopping = stopLanes(run)
+  if (stopping) {
+    await stopping
     if (
       autoRun(projectId, task)?.runId !== run.runId ||
       autoRun(projectId, task)?.status === 'running'
@@ -666,6 +711,7 @@ export async function skipStage(projectId: string, task: string | null) {
       runId: crypto.randomUUID(),
       sessionId: undefined,
       sessionOwned: false,
+      laneSessions: undefined,
       reviewedHead: stage === 'mergeGate' ? undefined : run.reviewedHead,
       // Skipped validation leaves no failures for review and fix to act on.
       ...(run.stage === 'validate' ? { validation: undefined, validationFindings: undefined } : {}),
@@ -689,6 +735,7 @@ function settleIntegrated(projectId: string, task: string | null, run: AutoRun) 
   // The panel offers no Stop for a finished run, so its agent would be left running.
   if (stop)
     void terminalStop(run.sessionId!).catch((e) => useStore.getState().setMessage(String(e)))
+  void stopLanes(run)
 }
 export function mergeNow(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
@@ -894,6 +941,18 @@ async function drive(projectId: string, task: string | null) {
         controller.completionPoll = { turn, atMs: Date.now() }
         const snapshot = await autoSnapshot(projectId, task, run)
         if (!live()) return
+        const other = snapshot.agents.find(
+          (a) => a.sessionId !== run.sessionId && ['working', 'needsInput'].includes(a.state),
+        )
+        // Another agent at this stage keeps working on it (another reviewer of the round, whose
+        // findings aren't written yet): wait for it rather than advance, and keep tracking the
+        // run's own agent.
+        if (other?.stage === run.stage) {
+          controller.completionPoll = undefined
+          const reason = 'Waiting for another agent in this worktree to finish'
+          if (run.reason !== reason) patch(projectId, task, { reason }, reason)
+          return
+        }
         // Never advance on a previous attempt's saved findings.
         if (
           run.stage === 'review' &&
@@ -913,17 +972,6 @@ async function drive(projectId: string, task: string | null) {
           pauseAuto(projectId, task, 'Planner finished without saving a new plan')
           return
         }
-        const other = snapshot.agents.find(
-          (a) => a.sessionId !== run.sessionId && ['working', 'needsInput'].includes(a.state),
-        )
-        // Another agent at this stage keeps working on it: wait for it rather than advance, and
-        // keep tracking the run's own agent.
-        if (other?.stage === run.stage) {
-          controller.completionPoll = undefined
-          const reason = 'Waiting for another agent in this worktree to finish'
-          if (run.reason !== reason) patch(projectId, task, { reason }, reason)
-          return
-        }
         const decision = other
           ? inferStage(snapshot, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
@@ -941,6 +989,7 @@ async function drive(projectId: string, task: string | null) {
         const finished = decision.stage !== run.stage
         if (finished && session?.running && (ownsSession(run) || run.stage === 'plan'))
           await terminalStop(run.sessionId!)
+        if (finished) await stopLanes(run)
         if (!live()) return
         patch(
           projectId,
@@ -953,6 +1002,7 @@ async function drive(projectId: string, task: string | null) {
                   sessionId: decision.sessionId,
                   sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
                   sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
+                  laneSessions: undefined,
                 }
               : {}),
             launchAtMs: undefined,
@@ -1087,9 +1137,20 @@ async function drive(projectId: string, task: string | null) {
       )
       return
     }
-    const device = agentDevices(useStore.getState().devices).find((d) => d.id === run.device)
+    if (!agentStage(run.stage)) throw new Error(`Unsupported Auto stage ${run.stage}`)
+    const deviceId = agentFor(run, run.stage)
+    const presets = agentDevices(useStore.getState().devices)
+    const device = presets.find((d) => d.id === deviceId)
     if (!device) throw new Error('The selected agent preset is unavailable')
-    await checkAutoHooks(run.device)
+    const reviewers =
+      run.stage === 'review'
+        ? reviewAgents(run).map((id) => {
+            const reviewer = presets.find((d) => d.id === id)
+            if (!reviewer) throw new Error('The selected agent preset is unavailable')
+            return reviewer
+          })
+        : [device]
+    for (const d of reviewers) await checkAutoHooks(d.id)
     if (!live() || !active(projectId, task)) return
     // Guard against a manually launched competing agent.
     const competing = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
@@ -1109,6 +1170,7 @@ async function drive(projectId: string, task: string | null) {
     }
     const since = Date.now()
     let sid: string
+    let lanes: string[] = []
     const brief = briefing(run)
     patch(
       projectId,
@@ -1125,7 +1187,7 @@ async function drive(projectId: string, task: string | null) {
     controller.phase = 'launching'
     switch (run.stage) {
       case 'plan':
-        sid = plannerSessionId(run.device, projectId)
+        sid = plannerSessionId(deviceId, projectId)
         assertSessionAvailable(projectId, task, sid)
         launchingSessions.set(sid, key)
         reservedSession = sid
@@ -1138,27 +1200,31 @@ async function drive(projectId: string, task: string | null) {
           return
         }
         if (!live() || !active(projectId, task)) return
-        await startTerminal(PLAN_SCOPE, run.device, task, projectId, {
+        await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
           kickoff: { kind: 'plan' },
           auto: brief,
         })
         break
       case 'implement':
-        sid = await implementPlannerPlan(run.device, brief)
+        // The planner whose plan is accepted is the plan stage's; the implement agent may differ.
+        sid = await implementPlannerPlan(agentFor(run, 'plan'), brief, deviceId)
         break
-      case 'review':
-        sid = await startReviewAgent(
+      case 'review': {
+        const { sessions, errors } = await startReviewAgents(
           project,
           { worktree: snapshot.source.path, branch: snapshot.source.branch!, base: snapshot.base },
-          device,
-          crypto.randomUUID(),
+          reviewers,
           brief,
         )
+        ;[sid, ...lanes] = sessions
+        if (errors.length)
+          patch(projectId, task, {}, `Some reviewers didn't start: ${errors.join('; ')}`)
         break
+      }
       case 'fix':
         if (!snapshot.reviewRecord)
           throw new Error('Open findings and start a review before fixing')
-        sid = await fixReviewFindings(snapshot.reviewRecord, brief, run.device)
+        sid = await fixReviewFindings(snapshot.reviewRecord, brief, deviceId)
         // A refused launch rejects; one that returned may be running even if confirming it fails,
         // so it uses up its round now.
         if (sid && autoRun(projectId, task)?.runId === runId)
@@ -1186,7 +1252,7 @@ async function drive(projectId: string, task: string | null) {
     const startedMs = startedOf(sid) ?? (await terminalSnapshot(sid))?.startedMs
     const latest = autoRun(projectId, task)
     if (latest?.runId !== runId || latest.status === 'stopped' || latest.status === 'done') {
-      await terminalStop(sid)
+      await Promise.all([sid, ...lanes].map((id) => terminalStop(id)))
       return
     }
     patch(projectId, task, {
@@ -1194,6 +1260,9 @@ async function drive(projectId: string, task: string | null) {
       // Owned only with its start time, so a later session under this id never is.
       sessionOwned: startedMs !== undefined,
       sessionStartedMs: startedMs,
+      laneSessions: lanes.length
+        ? lanes.map((id) => ({ sessionId: id, startedMs: startedOf(id) }))
+        : undefined,
       sessionBrief: {
         sessionId: sid,
         auto: brief,

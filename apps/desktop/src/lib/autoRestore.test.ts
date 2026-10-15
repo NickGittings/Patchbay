@@ -50,3 +50,27 @@ test('a restored budget wait remains explicit while failed fixes cannot accept f
   expect(restoredAuto({ ...saved, waitingFor: 'unknown' })?.waitingFor).toBeUndefined()
   expect(restoredAuto({ ...saved, status: 'failed' })?.waitingFor).toBeUndefined()
 })
+
+test('per-stage agents survive a restore, and older runs keep their single preset', () => {
+  expect(restoredAuto(saved)?.agents).toBeUndefined()
+  expect(
+    restoredAuto({
+      ...saved,
+      agents: { plan: 'claude', implement: 'codex', fix: '', merge: 7, other: 'x' },
+    })?.agents,
+  ).toEqual({ plan: 'claude', implement: 'codex' })
+  expect(restoredAuto({ ...saved, agents: ['codex'] })?.agents).toBeUndefined()
+})
+
+test('parallel reviewers and their sessions survive a restore', () => {
+  const restored = restoredAuto({
+    ...saved,
+    reviewers: ['claude', 'codex', 'codex', 3],
+    laneSessions: [{ sessionId: 'lane', startedMs: 5 }, { sessionId: 7 }, { sessionId: 'x' }],
+  })
+  expect(restored?.reviewers).toEqual(['claude', 'codex'])
+  expect(restored?.laneSessions).toEqual([
+    { sessionId: 'lane', startedMs: 5 },
+    { sessionId: 'x', startedMs: undefined },
+  ])
+})

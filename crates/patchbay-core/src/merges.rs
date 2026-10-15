@@ -601,6 +601,8 @@ mod tests {
                 worktree: f.request.source.clone(),
                 branch: "feature".into(),
                 base: "main".into(),
+                lane: None,
+                round: None,
             },
             &Fixture::terminal("claude"),
             &AllowAll,

@@ -220,6 +220,13 @@ pub struct ReviewRequest {
     pub worktree: String,
     pub branch: String,
     pub base: String,
+    /// The reviewer (its preset id) when several review the branch at once, each in its
+    /// own session and findings file; `None` for a single reviewer.
+    #[serde(default)]
+    pub lane: Option<String>,
+    /// Shared by reviewers launched together, so findings combine only within one round.
+    #[serde(default)]
+    pub round: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,6 +240,11 @@ struct Started {
     /// Unique per attempt, so a rollback recognises the sidecar it wrote.
     #[serde(default)]
     attempt: String,
+    /// The launch this attempt belongs to; reviewers started together share it.
+    #[serde(default)]
+    round: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lane: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -250,6 +262,43 @@ pub struct Findings {
     /// attempt started, or couldn't be checked.
     pub edited_since_start: bool,
     pub truncated: bool,
+    /// Each reviewer of the round, by lane; one entry for a single reviewer.
+    pub reviewers: Vec<Reviewer>,
+}
+
+/// One reviewer's part of a round's findings.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reviewer {
+    pub lane: Option<String>,
+    /// It wrote findings since its attempt started.
+    pub finished: bool,
+    pub verdict: Option<Verdict>,
+}
+
+/// The verdict of several reviewers: issues if any reports issues, and per severity
+/// the largest count, since reviewers often report the same finding. `None` while
+/// any reviewer has no readable verdict.
+#[must_use]
+pub fn combined(verdicts: impl IntoIterator<Item = Option<Verdict>>) -> Option<Verdict> {
+    verdicts.into_iter().try_fold(
+        Verdict {
+            clean: true,
+            counts: Severities::default(),
+        },
+        |all, one| {
+            let one = one?;
+            Some(Verdict {
+                clean: all.clean && one.clean,
+                counts: Severities {
+                    critical: all.counts.critical.max(one.counts.critical),
+                    high: all.counts.high.max(one.counts.high),
+                    medium: all.counts.medium.max(one.counts.medium),
+                    low: all.counts.low.max(one.counts.low),
+                },
+            })
+        },
+    )
 }
 
 /// Serializes sidecar writes, so a rollback can't overwrite a newer attempt's.
@@ -372,15 +421,49 @@ pub fn existing_dir(root: &Path) -> Option<PathBuf> {
 /// # Errors
 /// Fails when the root isn't in a repository.
 pub fn file(root: &Path, branch: &str) -> Result<PathBuf> {
+    lane_file(root, branch, None)
+}
+
+/// A reviewer's findings path: the branch's own for a single reviewer, else beside it
+/// with the lane's identity, which needs no validation to stay inside the folder.
+fn in_lane(folder: &Path, branch: &str, lane: Option<&str>) -> PathBuf {
+    match lane {
+        None => folder.join(format!("{}.md", name(branch))),
+        Some(lane) => {
+            let identity = crate::workspace::session_id(lane, REVIEW_SCOPE, "lane");
+            folder.join(format!(
+                "{}~{}-{}.md",
+                name(branch),
+                crate::detect::slug(lane),
+                &identity[2..10]
+            ))
+        }
+    }
+}
+
+/// [`file`] for reviewer `lane`.
+///
+/// # Errors
+/// Fails when the root isn't in a repository.
+pub fn lane_file(root: &Path, branch: &str, lane: Option<&str>) -> Result<PathBuf> {
     let folder = match existing_dir(root) {
         Some(folder) => folder,
         None => crate::tasks::store_dir(root)?.join("reviews"),
     };
-    Ok(in_dir(&folder, branch))
+    Ok(in_lane(&folder, branch, lane))
 }
 
-fn in_dir(folder: &Path, branch: &str) -> PathBuf {
-    folder.join(format!("{}.md", name(branch)))
+/// Whether `path` is one of `branch`'s files (any lane), judged by name alone.
+fn of_branch(path: &Path, branch: &str) -> bool {
+    let prefix = name(branch);
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| {
+            stem == prefix
+                || stem
+                    .strip_prefix(&prefix)
+                    .is_some_and(|rest| rest.starts_with('~'))
+        })
 }
 
 /// Prepare a review without modifying repository files or Git state.
@@ -426,10 +509,16 @@ pub fn prepare(
     let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
     let merge_base = git::run(git::git(cwd).args(["merge-base", &request.base, "HEAD"]))?;
     let folder = dir(root)?;
-    let findings = in_dir(&folder, &request.branch);
+    let lane = request.lane.as_deref().filter(|l| !l.is_empty());
+    let findings = in_lane(&folder, &request.branch, lane);
     let mut terminal = terminal.clone();
-    terminal.id = crate::workspace::session_id(&request.worktree, REVIEW_SCOPE, "review");
-    terminal.name = format!("Review · {}", request.branch);
+    // One session slot per worktree and reviewer.
+    let slot = lane.map_or_else(|| "review".into(), |lane| format!("review~{lane}"));
+    terminal.id = crate::workspace::session_id(&request.worktree, REVIEW_SCOPE, &slot);
+    terminal.name = match lane {
+        Some(_) => format!("Review · {} · {}", request.branch, terminal.name),
+        None => format!("Review · {}", request.branch),
+    };
     let mut text = format!(
         "# Patchbay branch review\n\nProject: {}\nWorktree: {}\nBranch: {}\nHEAD: {head}\nBase branch: {}\nMerge base: {merge_base}\n\n\
          Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions.\n\n\
@@ -466,6 +555,12 @@ pub fn prepare(
         merge_base,
         started_ms: crate::status::unix_ms(SystemTime::now()),
         attempt: uuid::Uuid::new_v4().to_string(),
+        round: request
+            .round
+            .clone()
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        lane: lane.map(Into::into),
     };
     let briefing = context::owned_briefing(&spec);
     match Attempt::record(findings.with_extension("json"), &started, briefing.clone()) {
@@ -489,17 +584,22 @@ pub fn prepare(
 /// # Errors
 /// Fails when the branch's review record is missing, its identity doesn't match,
 /// or the worktree no longer has the reviewed branch checked out.
-pub fn resume_attempt(root: &Path, spec: &SessionSpec, branch: &str) -> Result<Option<Attempt>> {
+pub fn resume_attempt(
+    root: &Path,
+    spec: &SessionSpec,
+    branch: &str,
+    lane: Option<&str>,
+) -> Result<Option<Attempt>> {
     // Session summaries deliberately strip the launch environment. Use the recorded
-    // branch to find the artifact, rather than depending on PATCHBAY_REVIEW_FILE.
-    let findings = file(root, branch)?;
+    // branch and lane to find the artifact, rather than depending on PATCHBAY_REVIEW_FILE.
+    let findings = lane_file(root, branch, lane)?;
     let folder = existing_dir(root).context("The reviews folder is missing")?;
     let sidecar = findings.with_extension("json");
     let old: Started = serde_json::from_slice(
         &std::fs::read(&sidecar).context("The review's record is missing; start a new review")?,
     )?;
     ensure!(
-        in_dir(&folder, &old.branch) == findings,
+        in_lane(&folder, &old.branch, old.lane.as_deref()) == findings,
         "The review's findings file is outside the reviews folder"
     );
     let cwd = spec.cwd.as_path();
@@ -531,37 +631,105 @@ pub fn read(root: &Path, branch: &str) -> Option<Findings> {
     load(root, branch, crate::plans::PLAN_LIMIT)
 }
 
-/// The saved text of `branch`'s findings up to `limit` bytes, whether it was cut,
-/// and the HEAD it covers: absent when it predates the latest attempt.
-fn saved(root: &Path, branch: &str, limit: usize) -> Option<(String, bool, u64, Started)> {
-    let (file, started) = attempt(root, branch)?;
-    let handle = std::fs::File::open(file).ok()?;
-    let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
-    let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
-    Some((text, truncated, modified_ms, started))
+/// One reviewer's saved findings, read up to a limit.
+struct Saved {
+    file: PathBuf,
+    text: String,
+    truncated: bool,
+    modified_ms: u64,
+    started: Started,
 }
 
-/// [`read`] up to `limit` bytes.
+impl Saved {
+    /// Written since its attempt started, so it covers that attempt's HEAD.
+    fn fresh(&self) -> bool {
+        self.modified_ms > self.started.started_ms
+    }
+
+    fn lane(&self) -> &str {
+        self.started.lane.as_deref().unwrap_or("reviewer")
+    }
+}
+
+/// Every reviewer of `branch`'s latest round, by lane, with up to `limit` bytes of
+/// findings between them; empty when none has a findings file. A reviewer whose file
+/// is missing or unreadable counts as one that hasn't written yet.
+fn saved(root: &Path, branch: &str, limit: usize) -> Vec<Saved> {
+    let round = round(root, branch);
+    let each = limit / round.len().max(1);
+    let read = |file: &Path| {
+        let handle = std::fs::File::open(file).ok()?;
+        let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
+        let (text, truncated) = crate::plans::read_limited(handle, each).ok()?;
+        Some((text, truncated, modified_ms))
+    };
+    let lanes: Vec<(Saved, bool)> = round
+        .into_iter()
+        .map(|(file, started)| {
+            let found = read(&file);
+            let exists = found.is_some();
+            let (text, truncated, modified_ms) = found.unwrap_or_default();
+            let saved = Saved {
+                file,
+                text,
+                truncated,
+                modified_ms,
+                started,
+            };
+            (saved, exists)
+        })
+        .collect();
+    if !lanes.iter().any(|(_, exists)| *exists) {
+        return vec![];
+    }
+    lanes.into_iter().map(|(saved, _)| saved).collect()
+}
+
+/// [`read`] up to `limit` bytes, combining the round's reviewers.
 fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
-    let (text, truncated, modified_ms, started) = saved(root, branch, limit)?;
-    let reviewed_head = (modified_ms > started.started_ms).then_some(started.head);
+    let lanes = saved(root, branch, limit);
+    let first = lanes.first()?;
+    let started_ms = lanes.iter().map(|s| s.started.started_ms).min()?;
+    // Covered only once every reviewer wrote findings, all for the same HEAD.
+    let reviewed_head = lanes
+        .iter()
+        .all(|s| s.fresh() && s.started.head == first.started.head)
+        .then(|| first.started.head.clone());
     // Findings without a reviewed HEAD are stale anyway; skip the worktree scan.
     let edited_since_start = reviewed_head.is_some()
         && git::worktrees(root)
             .iter()
             .find(|w| w.branch.as_deref() == Some(branch))
-            .is_some_and(|w| {
-                git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
-            });
+            .is_some_and(|w| git::changed_since(Path::new(&w.path), started_ms).unwrap_or(true));
+    let reviewers: Vec<Reviewer> = lanes
+        .iter()
+        .map(|s| Reviewer {
+            lane: s.started.lane.clone(),
+            finished: s.fresh(),
+            verdict: verdict(&s.text),
+        })
+        .collect();
+    let (text, verdict) = match lanes.as_slice() {
+        [one] => (one.text.clone(), reviewers[0].verdict.clone()),
+        _ => (
+            lanes
+                .iter()
+                .map(|s| format!("## Reviewer: {}\n\n{}", s.lane(), s.text.trim()))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            combined(reviewers.iter().map(|r| r.verdict.clone())),
+        ),
+    };
     Some(Findings {
-        verdict: verdict(&text),
+        verdict,
         text,
-        modified_ms,
+        modified_ms: lanes.iter().map(|s| s.modified_ms).max()?,
         reviewed_head,
-        base: started.base,
-        started_ms: started.started_ms,
+        base: first.started.base.clone(),
+        started_ms,
         edited_since_start,
-        truncated,
+        truncated: lanes.iter().any(|s| s.truncated),
+        reviewers,
     })
 }
 
@@ -609,23 +777,58 @@ fn no_findings(branch: &str) -> anyhow::Error {
     anyhow::anyhow!("No review findings are saved for {branch}")
 }
 
-/// The findings file of `branch` and the attempt its sidecar records, when that
-/// sidecar is really `branch`'s.
-fn attempt(root: &Path, branch: &str) -> Option<(PathBuf, Started)> {
-    let file = file(root, branch).ok()?;
-    let started: Started =
-        serde_json::from_slice(&std::fs::read(file.with_extension("json")).ok()?).ok()?;
-    (started.branch == branch).then_some((file, started))
+/// The findings file and attempt of each reviewer in `branch`'s latest round (the
+/// round of the most recently started attempt), sorted by lane. Only sidecars that
+/// really are `branch`'s, at the path their own branch and lane give, count.
+fn round(root: &Path, branch: &str) -> Vec<(PathBuf, Started)> {
+    let Some(folder) = file(root, branch)
+        .ok()
+        .and_then(|f| f.parent().map(Path::to_path_buf))
+    else {
+        return vec![];
+    };
+    let Ok(entries) = std::fs::read_dir(&folder) else {
+        return vec![];
+    };
+    let mut all: Vec<(PathBuf, Started)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") || !of_branch(&path, branch) {
+                return None;
+            }
+            let started: Started = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+            let findings = in_lane(&folder, &started.branch, started.lane.as_deref());
+            (started.branch == branch && findings.with_extension("json") == path)
+                .then_some((findings, started))
+        })
+        .collect();
+    let Some((round, attempt)) = all
+        .iter()
+        .max_by_key(|(_, s)| s.started_ms)
+        .map(|(_, s)| (s.round.clone(), s.attempt.clone()))
+    else {
+        return vec![];
+    };
+    // Sidecars from before rounds were recorded stand alone.
+    all.retain(|(_, s)| {
+        if round.is_empty() {
+            s.attempt == attempt
+        } else {
+            s.round == round
+        }
+    });
+    all.sort_by(|a, b| a.1.lane.cmp(&b.1.lane));
+    all
 }
 
 /// Whether `branch` has nonempty findings saved, without reading their
-/// freshness or more than the start of the file.
+/// freshness or more than the start of each file.
 fn has_findings(worktree: &Path, branch: &str) -> bool {
-    attempt(worktree, branch)
-        .and_then(|(file, _)| std::fs::File::open(file).ok())
-        .and_then(|handle| crate::plans::read_limited(handle, 4096).ok())
+    saved(worktree, branch, 4096)
+        .iter()
         // A long file counts even if it were blank throughout; `handoff` still checks.
-        .is_some_and(|(text, cut)| cut || !text.trim().is_empty())
+        .any(|s| s.truncated || !s.text.trim().is_empty())
 }
 
 /// The task a fix for review `session` runs in: the stored task holding the
@@ -664,47 +867,94 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
         git::repo_root(root).as_ref() == Some(&worktree),
         "This launch isn't in the reviewed worktree"
     );
-    let (text, truncated, modified_ms, started) = saved(&worktree, branch, HANDOFF_LIMIT)
-        .filter(|(text, ..)| !text.trim().is_empty())
-        .ok_or_else(|| no_findings(branch))?;
+    let all = saved(&worktree, branch, HANDOFF_LIMIT);
+    let each = HANDOFF_LIMIT / all.len().max(1);
+    let lanes: Vec<Saved> = all
+        .into_iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .collect();
+    let first = lanes.first().ok_or_else(|| no_findings(branch))?;
     // Only facts fixed by the findings themselves, so the briefing (and with it Restart's
     // fingerprint, which a Codex command carries inline) stays the same while the fix works.
-    let reviewed = if modified_ms > started.started_ms {
-        let head = &started.head;
-        format!(
-            "HEAD {}, as it was when the review started",
-            head.get(..7).unwrap_or(head)
-        )
-    } else {
-        "an earlier attempt; a newer review hasn't written findings yet".into()
+    let reviewed = |s: &Saved| {
+        if s.fresh() {
+            let head = &s.started.head;
+            format!(
+                "HEAD {}, as it was when the review started",
+                head.get(..7).unwrap_or(head)
+            )
+        } else {
+            "an earlier attempt; a newer review hasn't written findings yet".into()
+        }
     };
-    let cut = if truncated {
-        format!(
-            "\n\n[The findings continue past {} KiB in {}; read it only, and ask the user if you can't.]",
-            HANDOFF_LIMIT / 1024,
-            file(&worktree, branch)?.display()
-        )
-    } else {
-        String::new()
+    let findings = |s: &Saved| {
+        let cut = if s.truncated {
+            format!(
+                "\n\n[The findings continue past {} KiB in {}; read it only, and ask the user if you can't.]",
+                each / 1024,
+                s.file.display()
+            )
+        } else {
+            String::new()
+        };
+        format!("{}{cut}", s.text.trim())
+    };
+    let body = match lanes.as_slice() {
+        [one] => format!(
+            "Branch: {branch}\nBase: {}\nReviewed: {}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
+            one.started.base,
+            reviewed(one),
+            findings(one)
+        ),
+        _ => format!(
+            "Branch: {branch}\nBase: {}\n\n{} reviewers reviewed this branch independently, so their findings may overlap: fix each issue once. Commits since the reviewed HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}",
+            first.started.base,
+            lanes.len(),
+            lanes
+                .iter()
+                .map(|s| format!(
+                    "### Reviewer: {}\nReviewed: {}\n\n{}",
+                    s.lane(),
+                    reviewed(s),
+                    findings(s)
+                ))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        ),
     };
     Ok(context::ContextSection {
         title: "Review findings".into(),
-        body: format!(
-            "Branch: {branch}\nBase: {}\nReviewed: {reviewed}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}{cut}",
-            started.base,
-            text.trim()
-        ),
+        body,
     })
 }
 
-/// Remove a branch's findings and sidecar.
+/// Remove a branch's findings and sidecars, every reviewer's.
 ///
 /// # Errors
 /// Fails for a non-repository root or deletion errors.
 pub fn remove(root: &Path, branch: &str) -> Result<()> {
     let file = file(root, branch)?;
+    // Every reviewer's findings path, also those whose findings were never written.
+    let mut lanes = std::collections::BTreeSet::from([file.clone()]);
+    if let Some(folder) = file.parent()
+        && let Ok(entries) = std::fs::read_dir(folder)
+    {
+        lanes.extend(
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext == "md" || ext == "json")
+                        && of_branch(path, branch)
+                })
+                .map(|path| path.with_extension("md")),
+        );
+    }
     // Keep the branch identity for a later cleanup retry if deleting findings fails.
-    for path in [file.clone(), file.with_extension("json")] {
+    let findings = lanes.iter().cloned();
+    let sidecars = lanes.iter().map(|f| f.with_extension("json"));
+    for path in findings.chain(sidecars) {
         match std::fs::remove_file(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
@@ -736,7 +986,8 @@ pub fn prune(root: &Path) -> Result<()> {
             continue;
         };
         // Never trust a sidecar's branch to remove a different artifact.
-        if path != in_dir(&folder, &started.branch).with_extension("json") {
+        if path != in_lane(&folder, &started.branch, started.lane.as_deref()).with_extension("json")
+        {
             continue;
         }
         if !branches.contains(&started.branch) {
@@ -1032,6 +1283,8 @@ mod tests {
                 worktree: project.root.clone(),
                 branch: "feature/a".into(),
                 base: "main".into(),
+                lane: None,
+                round: None,
             };
             Self {
                 dir,
@@ -1097,6 +1350,8 @@ mod tests {
             worktree: worktree.display().to_string(),
             branch: "main".into(),
             base: f.request.branch.clone(),
+            lane: None,
+            round: None,
         };
         let terminal = serde_json::from_value(
             serde_json::json!({"id":"review", "name":"Review", "kind":"agent", "command":"claude"}),
@@ -1600,7 +1855,7 @@ mod tests {
         // The adapter receives public session summaries, with no launch environment.
         job.spec.env.clear();
         assert!(
-            resume_attempt(&f.dir, &job.spec, &f.request.branch)
+            resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
                 .unwrap()
                 .is_none()
         );
@@ -1608,7 +1863,7 @@ mod tests {
         fs::write(f.dir.join("file.txt"), "next\n").unwrap();
         git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
         let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
-        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch)
+        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
             .unwrap()
             .unwrap();
         // Old findings predate the new attempt until the agent rewrites them.
@@ -1625,7 +1880,7 @@ mod tests {
                 .reviewed_head
                 .is_some()
         );
-        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch)
+        let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
             .unwrap()
             .unwrap();
         drop(attempt);
@@ -1635,7 +1890,7 @@ mod tests {
         assert_eq!(findings.base, "main");
 
         git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
-        assert!(resume_attempt(&f.dir, &job.spec, &f.request.branch).is_err());
+        assert!(resume_attempt(&f.dir, &job.spec, &f.request.branch, None).is_err());
         context::remove_owned_briefing_file(&briefing);
     }
 
@@ -1709,5 +1964,196 @@ mod tests {
         for spec in [job.spec, next.spec] {
             context::remove_owned_briefing_file(&context::owned_briefing(&spec).unwrap());
         }
+    }
+
+    /// Prepare reviewer `lane` of `round`, returning its findings path.
+    fn prepare_lane(f: &Fixture, lane: &str, round: &str) -> (AgentJob, PathBuf) {
+        let mut request = f.request.clone();
+        request.lane = Some(lane.into());
+        request.round = Some(round.into());
+        let terminal = serde_json::from_value(
+            serde_json::json!({"id":lane, "name":lane, "kind":"agent", "command":"claude"}),
+        )
+        .unwrap();
+        let job = prepare(&f.project, &request, &terminal, &AllowAll, None)
+            .unwrap()
+            .job;
+        (
+            job,
+            lane_file(&f.dir, &f.request.branch, Some(lane)).unwrap(),
+        )
+    }
+
+    /// Write `text` to findings `path`, modified after its attempt started when `after`.
+    fn save_at(path: &Path, text: &str, after: bool) {
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+        let time = if after {
+            started.started_ms + 10
+        } else {
+            started.started_ms.saturating_sub(10)
+        };
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_millis(time))
+            .unwrap();
+    }
+
+    fn cleanup(jobs: impl IntoIterator<Item = AgentJob>) {
+        for file in jobs
+            .into_iter()
+            .filter_map(|job| context::owned_briefing(&job.spec))
+        {
+            context::remove_owned_briefing_file(&file);
+        }
+    }
+
+    #[test]
+    fn lanes_get_their_own_slot_and_file_inside_the_reviews_folder() {
+        let f = Fixture::new();
+        let (claude, claude_file) = prepare_lane(&f, "claude", "r1");
+        let (odd, odd_file) = prepare_lane(&f, "../../x y", "r1");
+        let folder = dir(&f.dir).unwrap();
+        for path in [&claude_file, &odd_file] {
+            assert_eq!(path.parent(), Some(folder.as_path()));
+            assert_ne!(*path, file(&f.dir, &f.request.branch).unwrap());
+            assert!(path.with_extension("json").exists());
+        }
+        assert_ne!(claude.terminal.id, odd.terminal.id);
+        assert_ne!(claude.terminal.id, f.prepare("claude").unwrap().terminal.id);
+        assert_eq!(claude.terminal.name, "Review · feature/a · claude");
+        assert_eq!(
+            claude.spec.env.get(REVIEW_FILE_ENV).map(String::as_str),
+            Some(claude_file.to_str().unwrap())
+        );
+        cleanup([claude, odd]);
+    }
+
+    #[test]
+    fn a_round_combines_its_reviewers_once_all_have_written() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(
+            &a_file,
+            "Verdict: issues\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}\n- [high] A",
+            true,
+        );
+        let partial = read(&f.dir, &f.request.branch).unwrap();
+        assert!(partial.reviewed_head.is_none());
+        assert!(partial.verdict.is_none());
+        assert_eq!(
+            partial
+                .reviewers
+                .iter()
+                .map(|r| (r.lane.as_deref(), r.finished))
+                .collect::<Vec<_>>(),
+            [(Some("claude"), true), (Some("codex"), false)]
+        );
+        save_at(
+            &b_file,
+            "Verdict: issues\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":2}\n- [high] A\n- [low] B\n- [low] C",
+            true,
+        );
+        let all = read(&f.dir, &f.request.branch).unwrap();
+        assert!(all.reviewed_head.is_some());
+        let verdict = all.verdict.unwrap();
+        assert!(!verdict.clean);
+        assert_eq!((verdict.counts.high, verdict.counts.low), (1, 2));
+        assert!(
+            all.text.contains("## Reviewer: claude") && all.text.contains("## Reviewer: codex")
+        );
+
+        let body = fix_body(&f);
+        assert!(body.contains("2 reviewers reviewed this branch independently"));
+        assert!(body.contains("### Reviewer: claude") && body.contains("### Reviewer: codex"));
+        assert!(fix_task(&f.dir, &session(&f.dir, Some("feature/a"))).is_ok());
+        cleanup([a, b]);
+    }
+
+    #[test]
+    fn a_later_round_replaces_every_reviewer_of_the_earlier_one() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(&a_file, "Verdict: clean", true);
+        save_at(&b_file, "Verdict: clean", true);
+        std::thread::sleep(Duration::from_millis(5));
+        // A single reviewer starts a new round of its own.
+        let single = f.prepare("claude").unwrap();
+        f.save("Verdict: issues\n- [low] Only", true);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.text, "Verdict: issues\n- [low] Only");
+        assert_eq!(findings.reviewers.len(), 1);
+        assert!(findings.reviewers[0].lane.is_none());
+        std::thread::sleep(Duration::from_millis(5));
+        let (c, c_file) = prepare_lane(&f, "codex", "r2");
+        save_at(&c_file, "Verdict: clean", true);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewers.len(), 1);
+        assert_eq!(findings.reviewers[0].lane.as_deref(), Some("codex"));
+        assert!(findings.verdict.unwrap().clean);
+        cleanup([a, b, single, c]);
+    }
+
+    #[test]
+    fn removing_and_resuming_cover_every_lane() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(&a_file, "findings", true);
+        // The adapter receives public session summaries, with no launch environment.
+        let mut summary = a.spec.clone();
+        summary.env.clear();
+        assert!(
+            resume_attempt(&f.dir, &summary, &f.request.branch, Some("claude"))
+                .unwrap()
+                .is_none()
+        );
+        fs::write(f.dir.join("file.txt"), "next\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
+        // The lane's own sidecar gets the new attempt; its round stays.
+        let before = fs::read(b_file.with_extension("json")).unwrap();
+        resume_attempt(&f.dir, &summary, &f.request.branch, Some("claude"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(b_file.with_extension("json")).unwrap(), before);
+        assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 2);
+        // A lane that never wrote findings still has its sidecar removed.
+        remove(&f.dir, &f.request.branch).unwrap();
+        for path in [&a_file, &b_file] {
+            assert!(!path.exists() && !path.with_extension("json").exists());
+        }
+        assert!(read(&f.dir, &f.request.branch).is_none());
+        cleanup([a, b]);
+    }
+
+    #[test]
+    fn combined_verdicts_need_every_reviewer_and_take_the_largest_counts() {
+        let v = |text: &str| verdict(text);
+        assert!(combined([v("Verdict: clean"), None]).is_none());
+        let both = combined([
+            v("Verdict: issues\n- [high] A\n- [low] B"),
+            v("Verdict: issues\n- [high] A\n- [critical] C"),
+        ])
+        .unwrap();
+        assert!(!both.clean);
+        assert_eq!(
+            both.counts,
+            Severities {
+                critical: 1,
+                high: 1,
+                low: 1,
+                ..Severities::default()
+            }
+        );
+        assert!(
+            combined([v("Verdict: clean"), v("Verdict: clean")])
+                .unwrap()
+                .clean
+        );
     }
 }

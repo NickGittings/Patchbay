@@ -11,6 +11,7 @@ import {
   proposalRead,
   proposalApply,
 } from '../lib/ipc'
+import { roleDevice } from '../lib/agentRoles'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
 import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
@@ -39,6 +40,7 @@ export default function PlanView() {
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
   const activeId = useStore((s) => s.planActive)
+  const roles = useStore((s) => s.agentRoles)
   const setActiveId = useStore((s) => s.setPlanActive)
   const proposalKey = project?.id ?? ''
   const [proposalResult, setProposalResult] = useState<{
@@ -70,7 +72,12 @@ export default function PlanView() {
   // The file is longer than the editor holds, so saving would lose the rest.
   const [planCut, setPlanCut] = useState(false)
   const terminals = planTerminals(devices)
-  const active = terminals.find((t) => t.id === activeId) ?? terminals[0]
+  const planRole = roleDevice(devices, roles, 'plan').id
+  // Until a tab is picked, the project's plan agent is shown.
+  const active =
+    terminals.find((t) => t.id === activeId) ??
+    terminals.find((t) => t.id === planRole) ??
+    terminals[0]
   const sid = plannerSessionId(active.id)
   const session = sessions[sid]
   const nearby = nearbyIds(highlighted, edges)

@@ -851,6 +851,8 @@ mod tests {
                 worktree: task.worktree.clone(),
                 branch: "feature/review".into(),
                 base: "main".into(),
+                lane: None,
+                round: None,
             },
             &terminal,
             &crate::policy::AllowAll,

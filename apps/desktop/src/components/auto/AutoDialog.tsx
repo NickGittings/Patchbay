@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import type { AutoRun, AutoStage, EffortSettings, Severity } from '../../types'
+import {
+  AGENT_ROLES,
+  type AgentRole,
+  type AutoRun,
+  type AutoStage,
+  type EffortSettings,
+  type Severity,
+} from '../../types'
 import {
   autoSnapshot,
   checkAutoHooks,
@@ -11,6 +18,7 @@ import {
   STAGE_LABELS,
   type AutoSnapshot,
 } from '../../lib/auto'
+import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
 import { integrated, MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
 
@@ -18,11 +26,36 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const devices = useStore((s) => s.devices)
+  const roles = useStore((s) => s.agentRoles)
   const agents = useMemo(() => agentDevices(devices), [devices])
-  const [selectedDevice, setDevice] = useState('')
-  const device = agents.some((a) => a.id === selectedDevice)
-    ? selectedDevice
-    : (agents[0]?.id ?? '')
+  // This run's choices; unpicked stages follow the project's agent roles.
+  const [picked, setPicked] = useState<Partial<Record<AgentRole, string>>>({})
+  const [pickedReviewers, setReviewers] = useState<string[]>()
+  const reviewers = useMemo(
+    () =>
+      (pickedReviewers
+        ? agents.filter((a) => pickedReviewers.includes(a.id))
+        : roleDevices(devices, roles, 'review')
+      ).map((a) => a.id),
+    [agents, devices, pickedReviewers, roles],
+  )
+  const runAgents = useMemo(() => {
+    const out = {} as Record<AgentRole, string>
+    const fallback = { implement: 'plan', fix: 'review' } as Partial<Record<AgentRole, AgentRole>>
+    for (const stage of AGENT_ROLES) {
+      const choice = agents.find((a) =>
+        stage === 'review' ? a.id === reviewers[0] : a.id === picked[stage],
+      )
+      const after = fallback[stage]
+      out[stage] = (
+        choice ??
+        roleDevice(devices, roles, stage, after && agents.find((a) => a.id === out[after]))
+      ).id
+    }
+    return out
+  }, [agents, devices, picked, reviewers, roles])
+  const device = runAgents.plan
+  const distinct = [...new Set([...Object.values(runAgents), ...reviewers])].join(',')
   const [goal, setGoal] = useState('')
   // The goal this dialog filled in itself, withdrawn once a load finds the branch merged.
   const filledGoal = useRef('')
@@ -35,12 +68,12 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [stage, setStage] = useState<AutoStage | ''>('')
   const [error, setError] = useState('')
   const [integrationCheck, setIntegrationCheck] = useState<{
-    device: string
+    distinct: string
     devices: typeof devices
     installed: boolean
   } | null>(null)
   const integration =
-    integrationCheck?.device === device &&
+    integrationCheck?.distinct === distinct &&
     integrationCheck.devices === devices &&
     integrationCheck.installed
   const requestKey = JSON.stringify([projectId, task, destination])
@@ -100,18 +133,18 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   }, [projectId, task, destination, requestKey])
   useEffect(() => {
     let cancelled = false
-    void checkAutoHooks(device)
+    void Promise.all(distinct.split(',').map((id) => checkAutoHooks(id)))
       .then(
         () => true,
         () => false,
       )
       .then((installed) => {
-        if (!cancelled) setIntegrationCheck({ device, devices, installed })
+        if (!cancelled) setIntegrationCheck({ distinct, devices, installed })
       })
     return () => {
       cancelled = true
     }
-  }, [device, devices])
+  }, [distinct, devices])
   const settings = { ...EFFORT[effort], ...overrides }
   const decision =
     snapshot &&
@@ -127,6 +160,8 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         effort,
         overrides,
         device,
+        agents: runAgents,
+        reviewers,
         merge: { mode, destinationBranch: destination },
       },
       true,
@@ -228,16 +263,46 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           ))}
         </select>
       </label>
-      <label>
-        Agent preset
-        <select value={device} onChange={(e) => setDevice(e.target.value)}>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <fieldset className="auto-agents">
+        <legend>Agents</legend>
+        {AGENT_ROLES.map((stage) =>
+          stage === 'review' && agents.length > 1 ? (
+            <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
+              {ROLE_LABELS[stage]}
+              {agents.map((a) => (
+                <label key={a.id}>
+                  <input
+                    type="checkbox"
+                    checked={reviewers.includes(a.id)}
+                    onChange={(e) =>
+                      setReviewers(
+                        agents
+                          .filter((r) => (r === a ? e.target.checked : reviewers.includes(r.id)))
+                          .map((r) => r.id),
+                      )
+                    }
+                  />{' '}
+                  {a.name}
+                </label>
+              ))}
+            </div>
+          ) : (
+            <label key={stage}>
+              {ROLE_LABELS[stage]}
+              <select
+                value={runAgents[stage]}
+                onChange={(e) => setPicked({ ...picked, [stage]: e.target.value })}
+              >
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ),
+        )}
+      </fieldset>
       {!integration && (
         <p>
           Auto needs authoritative agent status.{' '}
@@ -246,7 +311,9 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       )}
       {error && <p role="alert">{error}</p>}
       <button
-        disabled={loading || starting || !integration || !destination || !goal.trim()}
+        disabled={
+          loading || starting || !integration || !destination || !goal.trim() || !reviewers.length
+        }
         onClick={() => {
           if (!projectId) return
           setStarting(true)
@@ -256,6 +323,8 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
             overrides,
             merge: { mode, destinationBranch: destination },
             device,
+            agents: runAgents,
+            reviewers: reviewers.length > 1 ? reviewers : undefined,
             stage: stage || undefined,
           })
             .catch((e) => setError(String(e)))

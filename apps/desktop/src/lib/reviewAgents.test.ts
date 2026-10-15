@@ -222,6 +222,7 @@ test('findings become stale for new HEADs, newer edits and unfinished review att
     startedMs: 40,
     editedSinceStart: false,
     truncated: false,
+    reviewers: [],
   }
   expect(reviewState(null, source)).toBe('none')
   expect(reviewState(findings, source)).toBe('current')
@@ -276,6 +277,41 @@ test('review launch subscribes first and reconciles only successful starts', asy
     'Unknown review base',
   )
   expect(reconcileFreshSessions).toHaveBeenCalledTimes(1)
+})
+
+test('several reviewers start in lanes of one round; one alone keeps the single slot', async () => {
+  const { startReviewAgents } = await import('./reviewAgents')
+  const project = { projectId: 'captured' } as Project
+  const request = { worktree: '/feature', branch: 'feature', base: 'main' }
+  const agent = (id: string) => ({ id, name: id, command: id, adapter: id }) as DeviceManifest
+  vi.mocked(reviewAgentStart).mockImplementation(async (_p, r) => `review-${r.lane ?? 'single'}`)
+  expect(await startReviewAgents(project, request, [agent('claude')])).toEqual({
+    sessions: ['review-single'],
+    errors: [],
+  })
+  expect(vi.mocked(reviewAgentStart).mock.lastCall?.[1]).toEqual(request)
+
+  vi.mocked(reviewAgentStart).mockClear()
+  vi.mocked(reviewAgentStart).mockImplementation(async (_p, r) => {
+    if (r.lane === 'gone') throw new Error('Unknown preset')
+    return `review-${r.lane}`
+  })
+  const started = await startReviewAgents(project, request, [
+    agent('claude'),
+    agent('gone'),
+    agent('codex'),
+  ])
+  expect(started.sessions).toEqual(['review-claude', 'review-codex'])
+  expect(started.errors).toEqual(['gone: Error: Unknown preset'])
+  const rounds = new Set(vi.mocked(reviewAgentStart).mock.calls.map(([, r]) => r.round))
+  expect(rounds.size).toBe(1)
+  expect([...rounds][0]).toBeTruthy()
+
+  vi.mocked(reviewAgentStart).mockRejectedValue(new Error('Refused'))
+  await expect(startReviewAgents(project, request, [agent('a'), agent('b')])).rejects.toThrow(
+    'Refused',
+  )
+  await expect(startReviewAgents(project, request, [])).rejects.toThrow('Choose at least one')
 })
 
 test('only a live review in the same worktree blocks another review', async () => {

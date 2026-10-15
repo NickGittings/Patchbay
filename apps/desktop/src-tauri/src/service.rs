@@ -433,6 +433,7 @@ pub fn metadata(
         command_id: None,
         key: None,
         branch: None,
+        lane: None,
         command: terminal.command.clone(),
     }
 }

@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import {
   TASK_ROOT_SCOPE,
   type AutoRun,
+  type SessionRecord,
   type ReviewFindings,
   type SessionState,
   type Worktree,
@@ -29,11 +30,32 @@ vi.mock('./sessions', () => ({
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
-vi.mock('./reviewAgents', async () => ({
-  ...(await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')),
-  startReviewAgent: vi.fn(),
-  startMergeAgent: vi.fn(),
-}))
+vi.mock('./reviewAgents', async () => {
+  const actual = await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')
+  const startReviewAgent = vi.fn()
+  return {
+    ...actual,
+    startReviewAgent,
+    startMergeAgent: vi.fn(),
+    // Through the mocked single launch, as the real one does, with a lane per reviewer of a round.
+    startReviewAgents: async (
+      ...[project, request, devices, auto]: Parameters<typeof actual.startReviewAgents>
+    ) => {
+      const sessions: string[] = []
+      for (const device of devices)
+        sessions.push(
+          await startReviewAgent(
+            project,
+            devices.length > 1 ? { ...request, lane: device.id, round: 'round' } : request,
+            device,
+            'request',
+            auto,
+          ),
+        )
+      return { sessions, errors: [] }
+    },
+  }
+})
 const {
   inferStage,
   nextStep,
@@ -50,6 +72,8 @@ const {
   mergeNow,
   skipStage,
   autoRun,
+  agentFor,
+  runAgents,
 } = await import('./auto')
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
@@ -87,6 +111,7 @@ const findings = (
   base: 'main',
   editedSinceStart: false,
   truncated: false,
+  reviewers: [],
 })
 const snapshot = (
   patch: Partial<import('./auto').AutoSnapshot> = {},
@@ -149,6 +174,15 @@ test.each([
     inferStage(snapshot(input as Partial<import('./auto').AutoSnapshot>), run()),
   ).toMatchObject({ stage, status }),
 )
+test("each stage launches its own preset, else the run's single one", () => {
+  const split = run({ device: 'claude', agents: { implement: 'codex', fix: 'codex', plan: '' } })
+  expect(agentFor(split, 'plan')).toBe('claude')
+  expect(agentFor(split, 'implement')).toBe('codex')
+  expect(agentFor(split, 'review')).toBe('claude')
+  expect(runAgents(split)).toEqual(['claude', 'codex'])
+  expect(runAgents(run())).toEqual(['codex'])
+})
+
 test('Light reviews directly; budgets and verdicts are never guessed', () => {
   expect(inferStage(snapshot({ hasChanges: true }), run({ effort: 'light' })).stage).toBe('review')
   expect(
@@ -314,6 +348,78 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     stop()
   }
 })
+test('parallel reviewers share a round; the run waits for all, then stops the others', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  const codex = useStore.getState().devices[0]
+  useStore.setState({
+    devices: [codex, { ...codex, id: 'claude', name: 'Claude', command: 'claude' }],
+  })
+  const reviewer = (state: 'working' | 'review', sinceMs: number) =>
+    ({
+      running: true,
+      startedMs: 1000,
+      status: {
+        stopped: false,
+        agent: { state, sinceMs, authoritative: true, message: null, prompt: null },
+      },
+    }) as SessionState
+  const lane = {
+    id: 'lane',
+    metadata: { projectId: 'p', componentId: '@review', kind: 'agent', name: 'Review' },
+    spec: { cwd: tree.path, command: 'claude' },
+    snapshot: null,
+    history: [],
+    interrupted: false,
+  } as unknown as SessionRecord
+  const set = (own: SessionState, other: SessionState) =>
+    useStore.setState({ sessions: { s: own, lane: other }, sessionRecords: [lane] })
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
+    set(reviewer('working', 1001), reviewer('working', 1001))
+    return request.lane === 'claude' ? 'lane' : 's'
+  })
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'light',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+      device: 'codex',
+      reviewers: ['codex', 'claude'],
+    })
+    await flush()
+    expect(vi.mocked(jobs.startReviewAgent).mock.calls.map(([, r]) => r.lane)).toEqual([
+      'codex',
+      'claude',
+    ])
+    expect(autoRun('p', 't')).toMatchObject({
+      sessionId: 's',
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+    })
+    // The tracked reviewer is done, the other still writes: no verdict yet, and no pause.
+    vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), reviewedHead: null })
+    set(reviewer('review', 1200), reviewer('working', 1001))
+    await flush()
+    await vi.advanceTimersByTimeAsync(35000)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'review',
+      status: 'running',
+      reason: 'Waiting for another agent in this worktree to finish',
+    })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    set(reviewer('review', 1200), reviewer('review', 36000))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', laneSessions: undefined })
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+    expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
+  } finally {
+    stop()
+  }
+})
+
 test('needs input resumes only on authoritative work; interruption pauses', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)
@@ -415,6 +521,7 @@ test('a task description launches Plan with the goal and then hands off its save
     expect(implementPlannerPlan).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({ goal: 'Implement the description', commit: true }),
+      'codex',
     )
   } finally {
     stop()

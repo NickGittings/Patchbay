@@ -3,6 +3,7 @@ import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
 import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
+import AgentRolesPanel from './AgentRolesPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
@@ -23,6 +24,7 @@ const views: { id: View; label: string }[] = [
 
 export default function Toolbar() {
   const [integrationsOpen, setIntegrationsOpen] = useState(false)
+  const [rolesOpen, setRolesOpen] = useState(false)
   const project = useStore((s) => s.project)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
@@ -59,6 +61,7 @@ export default function Toolbar() {
   return (
     <>
       {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
+      {rolesOpen && <AgentRolesPanel onClose={() => setRolesOpen(false)} />}
       <div className="toolbar">
         <div className="toolbar-group">
           <Menu label="Project">
@@ -113,6 +116,9 @@ export default function Toolbar() {
               Extensions…
             </MenuItem>
             <MenuItem onClick={() => setIntegrationsOpen(true)}>Agent status integration…</MenuItem>
+            <MenuItem disabled={!project} onClick={() => setRolesOpen(true)}>
+              Agent roles…
+            </MenuItem>
             <ExtensionMenu slot="toolbar" asMenuItems />
           </Menu>
         </div>

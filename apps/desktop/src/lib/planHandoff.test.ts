@@ -76,6 +76,24 @@ test('one click hands off a whole-project plan using the planner provider', asyn
   )
 })
 
+test('the implement role, or an explicit preset, picks the implementation agent', async () => {
+  const codex: DeviceManifest = { ...claude, id: 'codex', command: 'codex', adapter: 'codex' }
+  const shell: DeviceManifest = { ...claude, id: 'zsh', command: 'zsh', kind: 'shell' }
+  useStore.getState().setDevices([claude, codex, shell])
+  useStore.getState().setAgentRoles({ implement: ['codex'] })
+  await implementPlannerPlan('claude')
+  expect(useStore.getState().rootTerminals.at(-1)).toMatchObject({ command: 'codex' })
+  useStore.getState().setAgentRoles({ implement: ['gone'] })
+  await implementPlannerPlan('codex')
+  expect(useStore.getState().rootTerminals.at(-1)).toMatchObject({ command: 'codex' })
+  useStore.getState().setAgentRoles({ implement: ['codex'] })
+  await implementPlannerPlan('codex', undefined, 'claude')
+  expect(useStore.getState().rootTerminals.at(-1)).toMatchObject({ command: claude.command })
+  // Only agent presets count.
+  await implementPlannerPlan('claude', undefined, 'zsh')
+  expect(useStore.getState().rootTerminals.at(-1)).toMatchObject({ command: 'codex' })
+})
+
 test('each accepted plan receives a fresh briefing instead of reusing a running agent', async () => {
   useStore.getState().addRootTerminal(claude)
   const before = useStore.getState().rootTerminals.length

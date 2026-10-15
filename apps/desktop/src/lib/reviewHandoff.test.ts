@@ -51,6 +51,7 @@ const state = {
   activeTask: null as string | null,
   tasks: [{ id: 'feature' }] as { id: string; missing?: boolean }[],
   devices: [claude, codex],
+  agentRoles: {} as Record<string, string[]>,
   setActiveTask: vi.fn((task: string | null, _exact?: boolean) => {
     state.activeTask = task
   }),
@@ -67,6 +68,7 @@ beforeEach(() => {
   state.activeTask = null
   state.tasks = [{ id: 'feature' }]
   state.devices = [claude, codex]
+  state.agentRoles = {}
   vi.mocked(useStore.getState).mockImplementation(
     () => state as unknown as ReturnType<typeof useStore.getState>,
   )
@@ -115,6 +117,15 @@ test('falls back to the first agent preset when the reviewer provider is unavail
   state.devices = [{ ...codex, kind: 'shell' }, claude]
   await fixReviewFindings(record)
   expect(state.addRootTerminal).toHaveBeenCalledWith(claude)
+})
+
+test("the project's fix role wins over the reviewer's provider, and Auto's preset over both", async () => {
+  state.agentRoles = { fix: ['claude'] }
+  await fixReviewFindings(record)
+  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude)
+  state.agentRoles = { fix: ['codex'] }
+  await fixReviewFindings(record, undefined, 'claude')
+  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude)
 })
 
 test('without agent presets the fallback agent launches', async () => {

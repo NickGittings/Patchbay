@@ -4,7 +4,7 @@ import {
   defaultReviewBase,
   reviewBases,
   reviewWorktreeRunning,
-  startReviewAgent,
+  startReviewAgents,
 } from '../lib/reviewAgents'
 import { useStore } from '../store'
 import type { Worktree } from '../types'
@@ -44,6 +44,7 @@ export default function ReviewAgentDialog({
   }, [])
   return (
     <AgentJobDialog
+      role="review"
       title="Start review agent"
       source={source}
       ready={!!base}
@@ -51,14 +52,16 @@ export default function ReviewAgentDialog({
       runningText="A review agent is already running in this worktree."
       offlineText="Reconnect before starting a review agent."
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Implementation. Read-only behavior relies on the briefing, not on rewriting your agent command."
-      launch={(device) =>
-        startReviewAgent(
+      launch={async (devices) => {
+        const { sessions, errors } = await startReviewAgents(
           project,
           { worktree: source.path, branch: source.branch!, base },
-          device,
-          crypto.randomUUID(),
+          devices,
         )
-      }
+        if (errors.length)
+          useStore.getState().setMessage(`Some reviewers didn't start:\n${errors.join('\n')}`)
+        return sessions[0]
+      }}
       close={close}
       launched={launched}
     >

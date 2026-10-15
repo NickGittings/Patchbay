@@ -144,6 +144,47 @@ export const startReviewAgent = (
   auto?: import('../types').AutoBrief,
 ) => startJobAgent(reviewAgentStart, project, request, device, requestId, auto)
 
+/**
+ * Start one review, or several reviewers at once, each in its own lane of one round so their
+ * findings combine. Every reviewer that starts keeps running; the others' errors are returned.
+ * Rejects only when none started.
+ */
+export async function startReviewAgents(
+  project: Project,
+  request: ReviewRequest,
+  devices: DeviceManifest[],
+  auto?: import('../types').AutoBrief,
+): Promise<{ sessions: string[]; errors: string[] }> {
+  if (devices.length <= 1) {
+    const device = devices[0]
+    if (!device) throw new Error('Choose at least one agent')
+    return {
+      sessions: [await startReviewAgent(project, request, device, crypto.randomUUID(), auto)],
+      errors: [],
+    }
+  }
+  const round = crypto.randomUUID()
+  const sessions: string[] = []
+  const errors: string[] = []
+  for (const device of devices) {
+    try {
+      sessions.push(
+        await startReviewAgent(
+          project,
+          { ...request, lane: device.id, round },
+          device,
+          crypto.randomUUID(),
+          auto,
+        ),
+      )
+    } catch (e) {
+      errors.push(`${device.name}: ${String(e)}`)
+    }
+  }
+  if (!sessions.length) throw new Error(errors.join('\n'))
+  return { sessions, errors }
+}
+
 /** Bases a branch can be reviewed against: never the branch itself. */
 export function reviewBases(
   source: Worktree,

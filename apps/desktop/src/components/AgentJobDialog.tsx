@@ -1,10 +1,12 @@
 import { useRef, useState, type ReactNode } from 'react'
+import { roleDevices } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
 import type { DeviceManifest, Worktree } from '../types'
 
 /** The shared shell of the review and merge dialogs: agent picker, launch guard and errors. */
 export default function AgentJobDialog({
+  role,
   title,
   source,
   ready,
@@ -17,6 +19,8 @@ export default function AgentJobDialog({
   launched,
   children,
 }: {
+  /** Preselects the project's agents for this job; several may review at once. */
+  role: 'review' | 'merge'
   title: string
   source: Worktree
   /** The job-specific fields are complete. */
@@ -25,27 +29,32 @@ export default function AgentJobDialog({
   runningText: string
   offlineText: string
   hint: ReactNode
-  launch: (device: DeviceManifest) => Promise<string>
+  launch: (devices: DeviceManifest[]) => Promise<string>
   close: () => void
   launched: (sid: string) => void
   children: (props: { busy: boolean; clearError: () => void }) => ReactNode
 }) {
   const devices = useStore((s) => s.devices)
   const connected = useStore((s) => s.serviceConnected)
+  const roles = useStore((s) => s.agentRoles)
   const agents = agentDevices(devices)
-  // Devices may still be loading, or no agent preset exists.
-  const [agent, setAgent] = useState(agents[0]?.id)
+  const multiple = role === 'review'
+  // Devices may still be loading, so the role's presets are resolved until the user picks.
+  const [picked, setPicked] = useState<string[]>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
-  const device = agents.find((d) => d.id === agent) ?? (agents[0] as DeviceManifest | undefined)
+  const chosen = picked
+    ? agents.filter((d) => picked.includes(d.id))
+    : roleDevices(devices, roles, role)
+  const device = chosen[0] as DeviceManifest | undefined
   const submit = async () => {
     if (pending.current || !ready || !source.branch || !device || !connected || running) return
     pending.current = true
     setBusy(true)
     setError('')
     try {
-      launched(await launch(device))
+      launched(await launch(chosen))
     } catch (e) {
       setError(String(e))
     } finally {
@@ -80,24 +89,52 @@ export default function AgentJobDialog({
           <code>{source.path}</code>
         </label>
         {children({ busy, clearError: () => setError('') })}
-        <label>
-          Agent
-          <select
-            aria-label="Agent"
-            value={device?.id ?? ''}
-            disabled={busy || !device}
-            onChange={(e) => setAgent(e.target.value)}
-          >
-            {!device && <option value="">No agent presets</option>}
+        {multiple && agents.length > 1 ? (
+          <fieldset className="agent-job-agents" disabled={busy}>
+            <legend>Agents</legend>
             {agents.map((d) => (
-              <option key={d.id} value={d.id}>
+              <label key={d.id}>
+                <input
+                  type="checkbox"
+                  value={d.id}
+                  checked={chosen.includes(d)}
+                  onChange={(e) =>
+                    setPicked(
+                      agents
+                        .filter((a) => (a === d ? e.target.checked : chosen.includes(a)))
+                        .map((a) => a.id),
+                    )
+                  }
+                />{' '}
                 {d.name}
-              </option>
+              </label>
             ))}
-          </select>
-        </label>
+            {chosen.length > 1 && (
+              <p className="hint flush">
+                Each agent reviews independently; their findings are combined for the fix.
+              </p>
+            )}
+          </fieldset>
+        ) : (
+          <label>
+            Agent
+            <select
+              aria-label="Agent"
+              value={device?.id ?? ''}
+              disabled={busy || !device}
+              onChange={(e) => setPicked([e.target.value])}
+            >
+              {!device && <option value="">No agent presets</option>}
+              {agents.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <p className="hint flush">{hint}</p>
-        {!device && <p role="status">Add an agent preset before starting an agent.</p>}
+        {!device && <p role="status">Choose at least one agent.</p>}
         {running && <p role="status">{runningText}</p>}
         {!connected && <p role="status">{offlineText}</p>}
         {error && (

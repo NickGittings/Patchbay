@@ -21,6 +21,28 @@
   box-sizing: border-box;
   font: inherit;
 }
+.auto-agents {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.auto-reviewers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.auto-content .auto-reviewers label {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+.auto-agents legend {
+  padding: 0 4px;
+}
 .auto-content p {
   margin: 0;
   white-space: pre-wrap;
