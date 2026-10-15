@@ -32,6 +32,7 @@ import {
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
 import { savePlanDraft } from './planDrafts'
+import { autoRuns } from './autoState'
 import { unfinished } from './autoSettings'
 import { requestGitRefresh } from './git'
 import {
@@ -259,14 +260,7 @@ class LaunchCancelled extends Error {
 function autoBriefOf(projectId: string, sid: string) {
   const state = projectStateOf(projectId)
   if (!state) return undefined
-  // Workspaces, not the task list, which loads only after a restored layout.
-  const active = state.activeTask ?? ''
-  const runs = [
-    state.auto,
-    ...Object.entries(state.taskWorkspaces)
-      .filter(([id]) => id !== active)
-      .map(([, w]) => w?.auto),
-  ]
+  const runs = autoRuns(state).map(({ run }) => run)
   // A stopped, failed or finished run no longer briefs its agent.
   return runs.find(
     (run) =>

@@ -105,8 +105,29 @@ pub fn verdict(text: &str) -> Option<Verdict> {
         if legend_section {
             continue;
         }
-        // Findings can be plain, bulleted, numbered or headings, with Markdown emphasis.
-        let line = line.trim_start_matches(['#', '-', '*', '+']).trim_start();
+        // Ignore Markdown emphasis around either a tag or a list number.
+        let finding = line.replace(['*', '`', '_'], "");
+        // A severity column needn't be the first column of a Markdown table.
+        let table_finding = finding.strip_prefix('|').and_then(|row| {
+            let cells: Vec<_> = row.split('|').map(str::trim).collect();
+            let tag = cells.iter().find_map(|cell| {
+                let tag = cell.strip_prefix('[')?.strip_suffix(']')?.trim();
+                matches!(tag, "critical" | "high" | "medium" | "low").then_some(tag)
+            })?;
+            // Counts, row numbers and bare severity tags aren't descriptions. A finding
+            // table must also have a cell containing the actual issue's text.
+            let description = cells.into_iter().find(|cell| {
+                !matches!(*cell, "[critical]" | "[high]" | "[medium]" | "[low]")
+                    && cell.chars().any(char::is_alphabetic)
+            })?;
+            Some((tag, description))
+        });
+        if finding.starts_with('|') && table_finding.is_none() {
+            continue;
+        }
+        let line = finding
+            .trim_start_matches(['#', '-', '+', '|'])
+            .trim_start();
         let line = if let Some((number, rest)) = line.split_once(['.', ')']) {
             if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
                 rest.trim_start()
@@ -116,12 +137,19 @@ pub fn verdict(text: &str) -> Option<Verdict> {
         } else {
             line
         };
-        let line = line.trim_start_matches(['*', '`', '_']);
-        let Some((tag, description)) = line.strip_prefix('[').and_then(|s| s.split_once(']'))
+        // A checked or unchecked task list item can still contain a finding.
+        let line = ["[ ]", "[x]"]
+            .into_iter()
+            .find_map(|box_tag| line.strip_prefix(box_tag))
+            .unwrap_or(line)
+            .trim_start();
+        let Some((tag, description)) =
+            table_finding.or_else(|| line.strip_prefix('[').and_then(|s| s.split_once(']')))
         else {
             continue;
         };
-        let description = description.trim_start_matches(['*', '`', '_']).trim();
+        let tag = tag.trim();
+        let description = description.trim().trim_matches('|').trim();
         // A list of bare tags describes the severity scheme, not a finding.
         if description.is_empty()
             || description
@@ -716,6 +744,68 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markdown_does_not_hide_blocking_findings() {
+        for line in [
+            "- [ ] [high] Bug",
+            "* [x] **[high]** Bug",
+            "1. [X] [**high**] Bug",
+            "| [high] | Bug |",
+            "| [**high**] | Bug |",
+            "| 1 | [**high**] | Bug |",
+            "| Bug mentions [low] | [high] |",
+            "[**high**] Bug",
+            "- [ ] [__high__] Bug",
+        ] {
+            let parsed = super::verdict(&format!("Verdict: clean\n{line}")).unwrap();
+            assert_eq!(parsed.counts.high, 1, "{line}");
+        }
+        let parsed = super::verdict(
+            "Verdict: clean\n| [high] |\n| [**high**] | [low] |\n- [ ] [high]\n\
+             ## Severity legend\n| [high] | Priority definition |\n\
+             ## Examples\n```markdown\n- [ ] [high] Example\n```",
+        )
+        .unwrap();
+        assert_eq!(parsed.counts, super::Severities::default());
+    }
+
+    #[test]
+    fn severity_count_tables_are_not_findings() {
+        for row in [
+            "| [high] | 0 |",
+            "| [**critical**] | 2 |",
+            "| 0 | [medium] |",
+            "| 1 | [low] | 0 |",
+            "| [high] | 0 | 0% |",
+        ] {
+            let parsed = super::verdict(&format!(
+                "Verdict: clean\n| Severity | Count |\n| --- | ---: |\n{row}"
+            ))
+            .unwrap();
+            assert_eq!(parsed.counts, super::Severities::default(), "{row}");
+        }
+        let parsed = super::verdict(
+            "Verdict: issues\n| [high] | 0 |\n| 1 | [high] | Bug |\n| [low] | Minor issue |",
+        )
+        .unwrap();
+        assert_eq!(parsed.counts.high, 1);
+        assert_eq!(parsed.counts.low, 1);
+    }
+
+    #[test]
+    fn bold_list_numbers_do_not_hide_blocking_findings() {
+        for line in [
+            "**1.** [high] Bug",
+            "**2)** **[high]** Bug",
+            "- **[high]** Bug",
+            "__1.__ [high] Bug",
+            "`1.` [high] Bug",
+        ] {
+            let parsed = super::verdict(&format!("Verdict: clean\n{line}")).unwrap();
+            assert_eq!(parsed.counts.high, 1, "{line}");
+        }
+    }
+
     #[test]
     fn parses_structured_verdicts_leniently_and_requires_the_header() {
         use super::verdict;

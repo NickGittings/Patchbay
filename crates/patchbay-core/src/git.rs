@@ -473,7 +473,21 @@ pub fn review_branch(
     };
     crate::tasks::check_branch(&root, base)?;
     let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
-    review.ahead = run(git(&root).args(["rev-parse", "HEAD"]))? != merge_base;
+    let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
+    let group = groups.iter().find(|g| g.root == repo);
+    let pathspecs = group.map(RepoGroup::pathspecs).unwrap_or_default();
+    // Include all mapped folders in this repo, even siblings of the project,
+    // and commits whose changes were later reverted.
+    review.ahead = !run(git(&repo)
+        .args([
+            "rev-list",
+            "--max-count=1",
+            "HEAD",
+            &format!("^{merge_base}"),
+            "--",
+        ])
+        .args(&pathspecs))?
+    .is_empty();
     let names = run(git(&root).args([
         "diff",
         "--name-status",
@@ -485,12 +499,7 @@ pub fn review_branch(
     ]))?;
     // `git diff` names files from the repo's top folder, which sits above a
     // project opened in a subfolder; files are reported relative to the project.
-    let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
-    let members = groups
-        .iter()
-        .find(|g| g.root == repo)
-        .map(|g| g.members.as_slice())
-        .unwrap_or_default();
+    let members = group.map(|g| g.members.as_slice()).unwrap_or_default();
     let mut touched = HashSet::new();
     for (kind, old, name) in committed_changes(&names) {
         let Some(id) = owner_of(name, members) else {
@@ -1506,6 +1515,75 @@ mod tests {
                 .flatten()
                 .all(|f| f.path != "outside.txt")
         );
+    }
+
+    #[test]
+    fn review_branch_ignores_commits_outside_the_project() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("proj/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        f.write("outside.txt", "unrelated work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "outside"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": root.display().to_string(), "components": [],
+        }))
+        .unwrap();
+        let r = review_branch(&project, vec![], None, Some("base")).unwrap();
+        assert!(!r.ahead);
+        assert!(r.changes.values().all(Vec::is_empty));
+        // Unmapped project files still count, even if a later commit reverts them.
+        f.write("proj/file.txt", "work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "inside"]));
+        f.write("proj/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "revert"]));
+        let r = review_branch(&project, vec![], None, Some("base")).unwrap();
+        assert!(r.ahead);
+    }
+
+    #[test]
+    fn review_branch_counts_commits_in_external_components_even_after_reverting() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("proj/file.txt", "base");
+        f.write("shared/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": root.display().to_string(),
+            "components": [{ "id": "shared", "name": "shared", "path": "../shared" }],
+        }))
+        .unwrap();
+        let c = components(&root, &[("shared", "../shared")]);
+        assert!(
+            !review_branch(&project, c.clone(), None, Some("base"))
+                .unwrap()
+                .ahead
+        );
+        f.write("shared/file.txt", "work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "shared work"]));
+        let review = review_branch(&project, c.clone(), None, Some("base")).unwrap();
+        assert!(review.ahead);
+        assert_eq!(review.changes["shared"][0].path, "../shared/file.txt");
+        f.write("shared/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "revert shared work"]));
+        let review = review_branch(&project, c, None, Some("base")).unwrap();
+        assert!(review.ahead);
+        assert!(review.changes.values().all(Vec::is_empty));
     }
 
     #[test]

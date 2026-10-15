@@ -1,3 +1,4 @@
+import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
@@ -15,6 +16,7 @@ import {
   type ActionReport,
   type Worktree,
   type SessionRecord,
+  type SessionState,
 } from '../types'
 import {
   agentHooksCheck,
@@ -47,6 +49,7 @@ import {
   validOverrides,
 } from './autoSettings'
 import { fnv1a } from './hash'
+import { autoRuns, autoWorkspace } from './autoState'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
 export function effortSettings(run: Pick<AutoRun, 'effort' | 'overrides'>): EffortSettings {
@@ -97,6 +100,7 @@ export type Decision = {
   sessionId?: string
   turnSince?: number
   observedWorking?: boolean
+  waitingFor?: AutoRun['waitingFor']
 }
 export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): Decision {
   if (
@@ -139,6 +143,7 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false):
       sessionId: busy.sessionId,
       turnSince: busy.sinceMs,
       observedWorking: busy.state === 'working',
+      waitingFor: busy.state === 'needsInput' ? 'agentInput' : undefined,
     }
   if (run.stage === 'plan' && !fresh) {
     // A planner that answered after Auto paused may have saved its plan since.
@@ -219,6 +224,7 @@ export function nextStep(
             stage: 'merge',
             status: 'waitingOnYou',
             reason: `Merge did not complete (${outcome ?? 'unknown'})`,
+            waitingFor: 'agentInput',
           }
     case 'done':
       return { stage: 'done', status: 'done', reason: 'Finished' }
@@ -250,8 +256,7 @@ export function inferredGoal(plan: string, title: string, notes: string, branch:
 const fingerprint = (text: string) => `${text.length}:${fnv1a(text).toString(16)}`
 
 function workspace(projectId: string, task: string | null) {
-  const state = projectStateOf(projectId)
-  return state?.activeTask === task ? state : state?.taskWorkspaces[task ?? '']
+  return autoWorkspace(projectStateOf(projectId), task)
 }
 export const autoRun = (projectId: string, task: string | null) => workspace(projectId, task)?.auto
 function patch(projectId: string, task: string | null, update: Partial<AutoRun>, text?: string) {
@@ -260,6 +265,7 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   useStore.getState().patchTask(projectId, task, {
     auto: {
       ...run,
+      waitingFor: undefined,
       ...update,
       log: text ? [...run.log, { atMs: Date.now(), text }].slice(-100) : run.log,
     },
@@ -391,9 +397,10 @@ export async function autoSnapshot(
       .sort((a, b) => (b.snapshot?.startedMs ?? 0) - (a.snapshot?.startedMs ?? 0))[0],
   }
   // A branch with no work yet is trivially "integrated", so inference reads the outcome only once
-  // the branch was reviewed or merged.
+  // the branch was reviewed or merged. At the gate, also notice a merge done by hand.
   if (
     (run.stage === 'merge' ||
+      run.stage === 'mergeGate' ||
       (inferring &&
         (findings ||
           records.some(
@@ -424,6 +431,8 @@ const validating = new Set<string>()
 export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
   const key = JSON.stringify([projectId, task])
   if (startingAuto.has(key)) throw new Error('Auto is already starting in this worktree')
+  if (launching.has(key))
+    throw new Error('Auto is still starting an agent; Start once it has started')
   startingAuto.add(key)
   try {
     if (unfinished(autoRun(projectId, task)?.status))
@@ -441,6 +450,10 @@ export async function startAuto(projectId: string, task: string | null, settings
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
     const decision = inferStage(snapshot, run, true)
+    const stage =
+      settings.stage === 'merge' && !mergeableHead(snapshot, run) ? 'mergeGate' : settings.stage
+    if (launching.has(key))
+      throw new Error('Auto is still starting an agent; Start once it has started')
     assertSessionAvailable(projectId, task, decision.sessionId)
     // Merged work's old plan is no goal for a new run.
     if (
@@ -457,7 +470,6 @@ export async function startAuto(projectId: string, task: string | null, settings
     if (!active(projectId, task)) throw new Error('The task changed')
     const reviewedHead = mergeableHead(snapshot, run)
     // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
-    const stage = settings.stage === 'merge' && !reviewedHead ? 'mergeGate' : settings.stage
     useStore.getState().patchTask(projectId, task, {
       auto: {
         ...run,
@@ -482,15 +494,20 @@ export function pauseAuto(projectId: string, task: string | null, reason = 'Paus
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
-  // A launch in flight would read the new run id as a cancellation and stop its agent.
-  if (busy.has(JSON.stringify([projectId, task])))
+  // Resume changes the run id, so let a pending launch attach its session first.
+  if (launching.has(JSON.stringify([projectId, task])))
     throw new Error('Auto is still starting an agent; Resume once it has started')
-  await checkAutoHooks(run.device)
   const snapshot = await autoSnapshot(projectId, task, run, true)
-  if (busy.has(JSON.stringify([projectId, task])))
+  if (launching.has(JSON.stringify([projectId, task])))
     throw new Error('Auto is still starting an agent; Resume once it has started')
+  // Pause preserves runId; a new status or another Pause still cancels this Resume.
+  if (autoRun(projectId, task) !== run) return
   const decision = inferStage(snapshot, run)
-  if (autoRun(projectId, task)?.runId !== run.runId) return
+  if (['plan', 'implement', 'review', 'fix', 'merge'].includes(decision.stage))
+    await checkAutoHooks(run.device)
+  if (launching.has(JSON.stringify([projectId, task])))
+    throw new Error('Auto is still starting an agent; Resume once it has started')
+  if (autoRun(projectId, task) !== run) return
   assertSessionAvailable(projectId, task, decision.sessionId)
   patch(
     projectId,
@@ -533,7 +550,12 @@ function ownsSession(run: AutoRun, sessionId = run.sessionId) {
 }
 export function stopAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
-  patch(projectId, task, { status: 'stopped', reason: 'Stopped by you' }, 'Auto stopped')
+  patch(
+    projectId,
+    task,
+    { runId: crypto.randomUUID(), status: 'stopped', reason: 'Stopped by you' },
+    'Auto stopped',
+  )
   if (run?.sessionId && ownsSession(run))
     void terminalStop(run.sessionId).catch((e) => useStore.getState().setMessage(String(e)))
   if (validating.has(JSON.stringify([projectId, task])))
@@ -604,14 +626,17 @@ function assertSessionAvailable(projectId: string, task: string | null, sessionI
   const p = projectStateOf(projectId)
   if (
     (reservation && reservation !== key) ||
-    [null, ...(p?.tasks.map((t) => t.id) ?? [])].some((other) => {
-      const owner = autoRun(projectId, other)
-      return other !== task && owner?.sessionId === sessionId && unfinished(owner?.status)
-    })
+    (p &&
+      autoRuns(p).some(
+        ({ task: other, run: owner }) =>
+          other !== task && owner.sessionId === sessionId && unfinished(owner.status),
+      ))
   )
     throw new Error('This planner or agent already belongs to another Auto run')
 }
 const busy = new Set<string>()
+const launching = new Set<string>()
+const gatePolls = new Map<string, { runId: string; atMs: number }>()
 const completionPolls = new Map<string, { turn: string; atMs: number }>()
 async function drive(projectId: string, task: string | null) {
   const key = JSON.stringify([projectId, task])
@@ -627,6 +652,28 @@ async function drive(projectId: string, task: string | null) {
   let reservedSession: string | undefined
   try {
     let run = autoRun(projectId, task)!
+    // Approval waits still observe Git, including a merge performed outside Auto.
+    if (run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !run.sessionId) {
+      const previous = gatePolls.get(key)
+      if (previous?.runId === runId && Date.now() - previous.atMs < 5000) return
+      gatePolls.set(key, { runId, atMs: Date.now() })
+      const snapshot = await autoSnapshot(projectId, task, run)
+      const latest = autoRun(projectId, task)
+      if (
+        latest?.runId !== runId ||
+        latest.stage !== 'mergeGate' ||
+        latest.status !== 'waitingOnYou'
+      )
+        return
+      if (integrated(snapshot.outcome))
+        patch(
+          projectId,
+          task,
+          { stage: 'done', status: 'done', reason: 'Branch is integrated' },
+          'Branch is integrated',
+        )
+      return
+    }
     if (run.sessionId) {
       const session = useStore.getState().sessions[run.sessionId]
       const agent = session?.status?.agent
@@ -650,7 +697,7 @@ async function drive(projectId: string, task: string | null) {
       }
       if (run.status === 'waitingOnYou') {
         if (
-          !run.reason?.startsWith('Agent needs input') ||
+          run.waitingFor !== 'agentInput' ||
           !agent?.authoritative ||
           !['working', 'review'].includes(agent.state) ||
           agent.sinceMs <= (run.turnSince ?? 0)
@@ -683,6 +730,7 @@ async function drive(projectId: string, task: string | null) {
           task,
           {
             status: 'waitingOnYou',
+            waitingFor: 'agentInput',
             reason: `Agent needs input${agent.message ? ': ' + agent.message : ''}`,
           },
           'Agent needs input',
@@ -725,6 +773,7 @@ async function drive(projectId: string, task: string | null) {
         // Another agent at this stage keeps working on it: wait for it rather than advance, and
         // keep tracking the run's own agent.
         if (other?.stage === run.stage) {
+          completionPolls.delete(key)
           const reason = 'Waiting for another agent in this worktree to finish'
           if (run.reason !== reason) patch(projectId, task, { reason }, reason)
           return
@@ -765,7 +814,7 @@ async function drive(projectId: string, task: string | null) {
               run.stage === 'merge' && decision.status === 'waitingOnYou'
                 ? `${decision.reason}${agent.message ? ': ' + agent.message : ''}`
                 : decision.reason,
-            turnSince: decision.turnSince,
+            turnSince: decision.waitingFor === 'agentInput' ? agent.sinceMs : decision.turnSince,
             observedWorking: decision.observedWorking ?? false,
             reviewedHead: run.stage === 'review' ? mergeableHead(snapshot, run) : run.reviewedHead,
             findingsSummary:
@@ -814,11 +863,17 @@ async function drive(projectId: string, task: string | null) {
       return
     }
     const project = projectOf(projectId)!
-    const device = agentDevices(useStore.getState().devices).find((d) => d.id === run.device)
-    if (!device) throw new Error('The selected agent preset is unavailable')
-    // Stop any completed prior Auto agent before issuing a new startup briefing.
     if (!live()) return
     run = live()!
+    if ((run.stage === 'mergeGate' || run.stage === 'merge') && integrated(snapshot.outcome)) {
+      patch(
+        projectId,
+        task,
+        { stage: 'done', status: 'done', reason: 'Branch is integrated' },
+        'Branch is integrated',
+      )
+      return
+    }
     if (
       (run.stage === 'mergeGate' || run.stage === 'merge') &&
       run.reviewedHead &&
@@ -873,6 +928,10 @@ async function drive(projectId: string, task: string | null) {
       )
       return
     }
+    const device = agentDevices(useStore.getState().devices).find((d) => d.id === run.device)
+    if (!device) throw new Error('The selected agent preset is unavailable')
+    await checkAutoHooks(run.device)
+    if (!live() || !active(projectId, task)) return
     // Guard against a manually launched competing agent.
     const competing = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
     if (competing) {
@@ -904,6 +963,7 @@ async function drive(projectId: string, task: string | null) {
       `Starting ${run.stage}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
     )
     if (!live() || !active(projectId, task)) return
+    launching.add(key)
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(run.device, projectId)
@@ -981,10 +1041,17 @@ async function drive(projectId: string, task: string | null) {
       turnSince: since,
     })
   } catch (e) {
-    if (live()) patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
+    const latest = autoRun(projectId, task)
+    if (
+      latest?.runId === runId &&
+      (latest.status === 'running' ||
+        (latest.status === 'waitingOnYou' && latest.stage === 'mergeGate'))
+    )
+      patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
   } finally {
     if (reservedSession && launchingSessions.get(reservedSession) === key)
       launchingSessions.delete(reservedSession)
+    launching.delete(key)
     busy.delete(key)
   }
 }
@@ -992,6 +1059,21 @@ async function drive(projectId: string, task: string | null) {
 export function followAuto() {
   let queued = false
   let disposed = false
+  const driving = new Set<string>()
+  const pending = new Set<string>()
+  const schedule = (projectId: string, task: string | null) => {
+    if (disposed) return
+    const key = JSON.stringify([projectId, task])
+    if (driving.has(key)) {
+      pending.add(key)
+      return
+    }
+    driving.add(key)
+    void drive(projectId, task).finally(() => {
+      driving.delete(key)
+      if (pending.delete(key)) schedule(projectId, task)
+    })
+  }
   const tick = () => {
     if (queued || disposed) return
     queued = true
@@ -1002,19 +1084,76 @@ export function followAuto() {
       for (const id of state.projectOrder) {
         const p = projectStateOf(id)
         if (!p) continue
-        for (const task of [null, ...p.tasks.map((t) => t.id)]) {
-          const run = autoRun(id, task)
+        for (const { task, run } of autoRuns(p)) {
           if (
             run &&
             (run.status === 'running' ||
-              (run.status === 'waitingOnYou' && run.reason?.startsWith('Agent needs input')))
+              (run.status === 'waitingOnYou' &&
+                (run.waitingFor === 'agentInput' || run.stage === 'mergeGate')))
           )
-            void drive(id, task)
+            schedule(id, task)
         }
       }
     })
   }
-  const unsubscribe = useStore.subscribe(tick)
+  // Output buffers change on every terminal line; only run and session lifecycle changes
+  // need an immediate drive. The timer still polls Git and saved plans.
+  const lifecycle = (
+    session: Pick<SessionState, 'running' | 'startedMs' | 'status'> | null | undefined,
+  ) => [
+    session?.running,
+    session?.startedMs,
+    session?.status?.active,
+    session?.status?.stopped,
+    session?.status?.agent?.state,
+    session?.status?.agent?.sinceMs,
+    session?.status?.agent?.authoritative,
+    session?.status?.agent?.message,
+  ]
+  const watch = (state: ReturnType<typeof useStore.getState>) => [
+    state.restoring,
+    state.serviceConnected,
+    state.project?.id,
+    ...state.projectOrder.flatMap((id) => {
+      const p = projectStateOf(id, state)
+      return p ? [id, p.activeTask, ...autoRuns(p).flatMap(({ task, run }) => [task, run])] : [id]
+    }),
+    ...Object.entries(state.sessions).flatMap(([id, session]) => [id, ...lifecycle(session)]),
+    ...state.sessionRecords.flatMap((record) => [
+      record.id,
+      record.metadata.projectId,
+      record.metadata.task,
+      record.metadata.componentId,
+      record.metadata.kind,
+      record.metadata.extensionId,
+      record.metadata.commandId,
+      record.spec.cwd,
+      record.spec.merge_source,
+      ...lifecycle(record.snapshot ?? undefined),
+    ]),
+  ]
+  // Most store updates (including output counters) leave these references untouched.
+  // Select them first, before building lifecycle arrays across every session and record.
+  const inputs = (state: ReturnType<typeof useStore.getState>) => [
+    state.restoring,
+    state.serviceConnected,
+    state.project,
+    state.projectOrder,
+    state.projects,
+    state.activeTask,
+    state.auto,
+    state.taskWorkspaces,
+    state.sessions,
+    state.sessionRecords,
+  ]
+  let watched = watch(useStore.getState())
+  const unsubscribe = useStore.subscribe((state, previous) => {
+    if (shallow(inputs(state), inputs(previous))) return
+    const next = watch(state)
+    const changed = !shallow(next, watched)
+    watched = next
+    if (changed) tick()
+  })
   const interval = setInterval(tick, 5000)
   tick()
   return () => {
@@ -1022,5 +1161,6 @@ export function followAuto() {
     unsubscribe()
     clearInterval(interval)
     completionPolls.clear()
+    gatePolls.clear()
   }
 }

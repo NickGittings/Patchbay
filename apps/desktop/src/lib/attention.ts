@@ -1,3 +1,4 @@
+import { autoWorkspace } from './autoState'
 import { useStore } from '../store'
 import {
   PLAN_SCOPE,
@@ -138,7 +139,7 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
       })),
   ]
   const autoItems: AttentionItem[] = scopes.flatMap(([task, taskTitle]) => {
-    const run = task === s.activeTask ? s.auto : s.taskWorkspaces?.[task ?? '']?.auto
+    const run = autoWorkspace(s, task)?.auto
     if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
     return [
       {

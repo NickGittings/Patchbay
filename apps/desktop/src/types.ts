@@ -83,6 +83,7 @@ export interface AutoRun {
   planMark?: string
   log: { atMs: number; text: string }[]
   reason?: string
+  waitingFor?: 'agentInput'
   validation?: ActionReport[]
   reviewedHead?: string
   findingsSummary?: string
