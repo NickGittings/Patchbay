@@ -18,6 +18,85 @@ pub struct MergeRequest {
     pub destination_branch: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeOutcome {
+    Merged,
+    AlreadyIntegrated,
+    InProgress,
+    Dirty,
+    NotMerged,
+}
+
+const OPERATION_MARKERS: [&str; 6] = [
+    "MERGE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "sequencer",
+];
+
+/// Check live Git state without changing either worktree.
+/// Active operations and uncommitted work take precedence over commit ancestry:
+/// any in the source (it isn't in the merge), but only changes to tracked files
+/// in the destination, so artifacts its checks leave behind don't hide a merge.
+///
+/// # Errors
+/// Fails for foreign, missing or changed worktrees, or Git errors.
+pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome> {
+    let trees = git::worktrees(Path::new(&project.root));
+    let mut source = checked_tree(&trees, &request.source, "source")?;
+    let mut destination = checked_tree(&trees, &request.destination, "destination")?;
+    ensure!(
+        source.path != destination.path,
+        "Choose a different destination worktree"
+    );
+    let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
+    let (_, source_busy) = read_tree(&mut source, &common)?;
+    let (_, destination_busy) = read_tree(&mut destination, &common)?;
+    if source_busy || destination_busy {
+        return Ok(MergeOutcome::InProgress);
+    }
+    ensure!(
+        source.branch.as_deref() == Some(&request.source_branch)
+            && destination.branch.as_deref() == Some(&request.destination_branch),
+        "The merge branches changed"
+    );
+    for (path, untracked) in [(&source.path, "all"), (&destination.path, "no")] {
+        if !git::run(
+            git::git(Path::new(path))
+                .args(["status", "--porcelain"])
+                .arg(format!("--untracked-files={untracked}")),
+        )?
+        .is_empty()
+        {
+            return Ok(MergeOutcome::Dirty);
+        }
+    }
+    let root = Path::new(&destination.path);
+    let ancestor = git::git(root)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            &source.head,
+            &destination.head,
+        ])
+        .status()?;
+    if !ancestor.success() {
+        ensure!(ancestor.code() == Some(1), "Couldn't check merge ancestry");
+        return Ok(MergeOutcome::NotMerged);
+    }
+    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
+    Ok(
+        if parents.split_whitespace().skip(2).any(|p| p == source.head) {
+            MergeOutcome::Merged
+        } else {
+            MergeOutcome::AlreadyIntegrated
+        },
+    )
+}
+
 pub struct AgentJob {
     pub terminal: TerminalSpec,
     pub spec: SessionSpec,
@@ -51,35 +130,27 @@ pub(crate) fn owned_dirs(root: &Path, common: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn clean(
-    tree: &mut Worktree,
-    expected_branch: &str,
-    role: &str,
-    common: &Path,
-) -> Result<Vec<PathBuf>> {
+/// Refresh ownership, HEAD, branch and operation markers with one Git process.
+fn read_tree(tree: &mut Worktree, common: &Path) -> Result<(Vec<PathBuf>, bool)> {
     let root = Path::new(&tree.path);
     // Read ownership, live revision and every operation marker in one process.
-    let metadata = git::run(git::git(root).args([
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-dir",
-        "--git-common-dir",
-        "HEAD",
-        "--symbolic-full-name",
-        "HEAD",
-        "--git-path",
-        "MERGE_HEAD",
-        "--git-path",
-        "rebase-merge",
-        "--git-path",
-        "rebase-apply",
-        "--git-path",
-        "CHERRY_PICK_HEAD",
-        "--git-path",
-        "REVERT_HEAD",
-        "--git-path",
-        "sequencer",
-    ]))?;
+    let metadata = git::run(
+        git::git(root)
+            .args([
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+                "HEAD",
+                "--symbolic-full-name",
+                "HEAD",
+            ])
+            .args(
+                OPERATION_MARKERS
+                    .iter()
+                    .flat_map(|marker| ["--git-path", marker]),
+            ),
+    )?;
     let mut lines = metadata.lines();
     let dirs = lines
         .by_ref()
@@ -91,21 +162,36 @@ fn clean(
     let branch = lines
         .next()
         .and_then(|line| line.strip_prefix("refs/heads/"));
+    tree.head = head.into();
+    tree.branch = branch.map(str::to_owned);
+    let busy = lines.any(|path| Path::new(path).exists());
+    Ok((dirs, busy))
+}
+
+fn clean(
+    tree: &mut Worktree,
+    expected_branch: &str,
+    role: &str,
+    common: &Path,
+) -> Result<Vec<PathBuf>> {
+    let (dirs, busy) = read_tree(tree, common)?;
     ensure!(
-        branch.is_some(),
+        tree.branch.is_some(),
         "The {role} worktree has a detached HEAD; check out a branch first"
     );
     ensure!(
-        branch == Some(expected_branch),
+        tree.branch.as_deref() == Some(expected_branch),
         "The {role} branch changed; refresh Review and try again"
     );
-    tree.head = head.into();
-    tree.branch = branch.map(str::to_owned);
     ensure!(
-        lines.all(|path| !Path::new(path).exists()),
+        !busy,
         "The {role} worktree has an operation in progress; finish or abort it first"
     );
-    let status = git::run(git::git(root).args(["status", "--porcelain", "--untracked-files=all"]))?;
+    let status = git::run(git::git(Path::new(&tree.path)).args([
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ]))?;
     ensure!(
         status.is_empty(),
         "The {role} worktree has uncommitted changes; commit or clear them before merging"
@@ -129,6 +215,7 @@ pub fn prepare(
     request: &MergeRequest,
     terminal: &TerminalSpec,
     policy: &dyn Policy,
+    auto: Option<&context::AutoBrief>,
 ) -> Result<AgentJob> {
     let trees = git::worktrees(Path::new(&project.root));
     let mut source = checked_tree(&trees, &request.source, "source")?;
@@ -171,6 +258,9 @@ pub fn prepare(
             "\n## Review findings\n\nFindings file: {}\nReview saved at Unix milliseconds: {}\nReviewed HEAD matches source HEAD: {}\n\nRead these findings and mention unresolved findings in your report. Do not fix them unless the merge requires it.\n",
             file.display(), findings.modified_ms, findings.reviewed_head.as_deref() == Some(source.head.as_str()),
         ));
+    }
+    if let Some(auto) = auto {
+        text.push_str(&auto.markdown("merge"));
     }
     // Linked worktrees write their private index/HEAD and the shared object/ref store.
     let mut dirs = destination_dirs;
@@ -273,6 +363,7 @@ mod tests {
                 &self.request,
                 &Self::terminal("claude"),
                 &AllowAll,
+                None,
             )
         }
         fn error(&self) -> String {
@@ -289,6 +380,152 @@ mod tests {
     }
 
     #[test]
+    fn outcome_checks_ancestry_operation_and_dirt() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        let source = Path::new(&f.request.source);
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::AlreadyIntegrated
+        );
+        fs::write(source.join("new.txt"), "feature\n").unwrap();
+        git::run(git::git(source).args(["add", "."])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::NotMerged
+        );
+        let review =
+            git::review(&f.project, vec![], Some(&f.request.source), Some("main")).unwrap();
+        assert!(review.ahead);
+        assert!(
+            review.changes[crate::model::PROJECT_SCOPE]
+                .iter()
+                .any(|file| file.path == "new.txt")
+        );
+        fs::write(source.join("dirt"), "untracked").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Dirty
+        );
+        fs::remove_file(source.join("dirt")).unwrap();
+        git::run(git::git(root).args(["merge", "--no-commit", "--no-ff", "feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::InProgress
+        );
+        git::run(git::git(root).args(["commit", "-qm", "merge feature"])).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+    }
+
+    #[test]
+    fn integration_requires_clean_source_and_destination() {
+        let f = Fixture::new();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::AlreadyIntegrated
+        );
+        for path in [&f.request.source, &f.request.destination] {
+            let root = Path::new(path);
+            fs::write(root.join("untracked"), "uncommitted work").unwrap();
+            // New source files aren't in the merge; untracked destination files are artifacts.
+            let expected = if path == &f.request.source {
+                MergeOutcome::Dirty
+            } else {
+                MergeOutcome::AlreadyIntegrated
+            };
+            assert_eq!(outcome(&f.project, &f.request).unwrap(), expected);
+            fs::remove_file(root.join("untracked")).unwrap();
+            fs::write(root.join("file.txt"), "uncommitted").unwrap();
+            assert_eq!(
+                outcome(&f.project, &f.request).unwrap(),
+                MergeOutcome::Dirty
+            );
+            git::run(git::git(root).args(["checkout", "--", "file.txt"])).unwrap();
+        }
+        let source = Path::new(&f.request.source);
+        fs::write(source.join("file.txt"), "feature").unwrap();
+        git::run(git::git(source).args(["add", "file.txt"])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        let destination = Path::new(&f.request.destination);
+        git::run(git::git(destination).args(["merge", "--no-ff", "-qm", "merge", "feature"]))
+            .unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+        fs::write(destination.join("coverage.out"), "report").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Merged
+        );
+        // Uncommitted new files in the source would be left out of a finished merge.
+        fs::write(source.join("notes.md"), "unsaved work").unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::Dirty
+        );
+        fs::remove_file(source.join("notes.md")).unwrap();
+        for path in [source, destination] {
+            fs::write(path.join("file.txt"), "later edit").unwrap();
+            assert_eq!(
+                outcome(&f.project, &f.request).unwrap(),
+                MergeOutcome::Dirty
+            );
+            git::run(git::git(path).args(["checkout", "--", "file.txt"])).unwrap();
+        }
+    }
+
+    #[test]
+    fn detached_rebase_is_in_progress_before_branch_validation() {
+        let f = Fixture::new();
+        let source = Path::new(&f.request.source);
+        git::run(git::git(source).args(["checkout", "--detach", "-q"])).unwrap();
+        let marker = git::run(git::git(source).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "rebase-merge",
+        ]))
+        .unwrap();
+        fs::create_dir(marker).unwrap();
+        assert_eq!(
+            outcome(&f.project, &f.request).unwrap(),
+            MergeOutcome::InProgress
+        );
+    }
+
+    #[test]
+    fn auto_context_is_opt_in_for_jobs() {
+        let f = Fixture::new();
+        let auto = context::AutoBrief {
+            goal: "Goal".into(),
+            fix_floor: None,
+            effort_note: "Thorough".into(),
+            commit: true,
+        };
+        let plain = f.prepare().unwrap();
+        let automatic = prepare(
+            &f.project,
+            &f.request,
+            &Fixture::terminal("claude"),
+            &AllowAll,
+            Some(&auto),
+        )
+        .unwrap();
+        let read =
+            |job: &AgentJob| fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
+        assert!(!read(&plain).contains("## Auto mode"));
+        assert!(read(&automatic).contains("## Auto mode"));
+        for job in [plain, automatic] {
+            context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+        }
+    }
+
+    #[test]
     fn builds_a_destination_merge_with_native_prompt_and_no_task_plan() {
         let f = Fixture::new();
         for command in [
@@ -301,6 +538,7 @@ mod tests {
                 &f.request,
                 &Fixture::terminal(command),
                 &AllowAll,
+                None,
             )
             .unwrap();
             assert_eq!(job.spec.cwd, PathBuf::from(&f.request.destination));
@@ -366,6 +604,7 @@ mod tests {
             },
             &Fixture::terminal("claude"),
             &AllowAll,
+            None,
         )
         .unwrap()
         .job;
@@ -470,6 +709,10 @@ mod tests {
                 );
                 fs::write(&path, "marker").unwrap();
                 assert!(f.error().contains("operation in progress"));
+                assert_eq!(
+                    outcome(&f.project, &f.request).unwrap(),
+                    MergeOutcome::InProgress
+                );
                 fs::remove_file(path).unwrap();
             }
         }
@@ -497,6 +740,7 @@ mod tests {
             &f.request,
             &Fixture::terminal("codex"),
             &AllowAll,
+            None,
         )
         .unwrap();
         assert_eq!(first.terminal.id, next.terminal.id);
@@ -673,6 +917,6 @@ mod tests {
         let f = Fixture::new();
         let mut terminal = Fixture::terminal("claude");
         terminal.kind = TerminalKind::Shell;
-        assert!(prepare(&f.project, &f.request, &terminal, &AllowAll).is_err());
+        assert!(prepare(&f.project, &f.request, &terminal, &AllowAll, None).is_err());
     }
 }

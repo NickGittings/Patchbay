@@ -20,13 +20,6 @@ pub struct ContextSection {
     pub body: String,
 }
 
-/// The first task of a fresh root agent.
-#[derive(serde::Deserialize, Clone, Copy)]
-#[serde(rename_all = "camelCase")]
-pub enum Kickoff {
-    ImplementPlan,
-    FixFindings,
-}
 fn append_sections(out: &mut String, sections: &[ContextSection]) {
     for section in sections {
         let _ = writeln!(
@@ -36,6 +29,75 @@ fn append_sections(out: &mut String, sections: &[ContextSection]) {
             section.body
         );
     }
+}
+
+/// Backend-owned instructions for an Auto launch.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoBrief {
+    pub goal: String,
+    pub fix_floor: Option<crate::reviews::Severity>,
+    pub effort_note: String,
+    pub commit: bool,
+}
+
+impl AutoBrief {
+    #[must_use]
+    pub fn section(&self, stage: &str) -> ContextSection {
+        let mut body = format!(
+            "Goal: {}\n\nStage: {stage}\n\n{}\n",
+            self.goal, self.effort_note
+        );
+        if let Some(floor) = self.fix_floor {
+            let _ = writeln!(
+                body,
+                "Fix findings tagged ≥ {}; leave lower ones listed.",
+                floor.label()
+            );
+        }
+        if self.commit {
+            body.push_str("Commit your work with a descriptive message when done.\n");
+        }
+        body.push_str("Don't ask for confirmation unless blocked.\n");
+        ContextSection {
+            title: "Auto mode".into(),
+            body,
+        }
+    }
+
+    /// The section for an Auto planner.
+    #[must_use]
+    pub fn plan_section(&self) -> ContextSection {
+        self.section("plan")
+    }
+
+    /// The section for a root agent launched with `kickoff` (as [`root_handoff`]
+    /// settled it): a fix agent fixes, any other implements.
+    #[must_use]
+    pub fn root_section(&self, kickoff: Option<Kickoff>) -> ContextSection {
+        self.section(if kickoff == Some(Kickoff::FixFindings) {
+            "fix"
+        } else {
+            "implement"
+        })
+    }
+
+    #[must_use]
+    pub fn markdown(&self, stage: &str) -> String {
+        let mut out = String::new();
+        append_sections(&mut out, &[self.section(stage)]);
+        out
+    }
+}
+
+/// The first task of a fresh agent: a root agent implements the plan or fixes
+/// review findings; an Auto planner plans.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Kickoff {
+    ImplementPlan,
+    FixFindings,
+    Plan,
 }
 
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
@@ -275,6 +337,18 @@ fn agent_named(program: &str) -> Option<Agent> {
         "codex" => Some(Agent::Codex),
         _ => None,
     }
+}
+
+/// Resolve status integration using the same command parser as agent briefings.
+#[must_use]
+pub fn agent_provider(terminal: &TerminalSpec) -> Option<crate::adapters::Adapter> {
+    terminal.adapter.or_else(|| {
+        let tokens = command_tokens(&terminal.command, Shell::current())?;
+        match agent_named(&tokens[program_index(&tokens)?])? {
+            Agent::Claude => Some(crate::adapters::Adapter::Claude),
+            Agent::Codex => Some(crate::adapters::Adapter::Codex),
+        }
+    })
 }
 
 /// `args` are the arguments after the `codex` program.
@@ -1081,17 +1155,38 @@ fn brief_agent(
 /// Build a planner terminal session at the project root.
 ///
 /// An empty scope plans over all components. Agent commands receive the context file.
+/// A Plan kickoff prompts the agent immediately while preserving the manual session id.
 ///
 /// # Errors
-/// Fails for unknown component ids, context file I/O, or a rejected policy check.
+/// Fails for unknown component ids, invalid kickoffs, context file I/O, or a rejected policy check.
 pub fn plan_session_spec(
     project: &Project,
     component_ids: &[String],
     terminal: &TerminalSpec,
     policy: &dyn Policy,
     sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
-    plan_session_spec_for(project, component_ids, terminal, None, policy, sections)
+    match kickoff {
+        Some(Kickoff::Plan) => {
+            anyhow::ensure!(
+                terminal.kind == TerminalKind::Agent,
+                "Choose an agent preset"
+            );
+            root_session_spec(
+                project,
+                component_ids,
+                terminal,
+                None,
+                policy,
+                sections,
+                true,
+                kickoff,
+            )
+        }
+        Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
+        None => plan_session_spec_for(project, component_ids, terminal, None, policy, sections),
+    }
 }
 
 /// [`plan_session_spec`] for a task's planner: the session id and briefing
@@ -1141,6 +1236,7 @@ pub fn task_root_session_spec(
         kickoff.is_none() || terminal.kind == TerminalKind::Agent,
         "Choose an agent for implementation"
     );
+    anyhow::ensure!(kickoff != Some(Kickoff::Plan), "Start planners in Plan");
     root_session_spec(
         project,
         component_ids,
@@ -1193,6 +1289,9 @@ pub fn root_handoff(
         None => (None, Vec::new()),
     })
 }
+
+/// The first prompt of an Auto planner.
+const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
 
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
@@ -1276,16 +1375,24 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
-            prompt: kickoff.map(|kind| match kind {
+            prompt: kickoff.map(|k| match k {
                 Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
                 Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
+                Kickoff::Plan => PLAN_PROMPT,
             }),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
-        // Only a fix passes its kickoff again on Restart, so only its resume command
-        // stays the same across starts; an implement restart keeps resuming as before.
-        if matches!(kickoff, Some(Kickoff::FixFindings)) {
-            resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+        // A fix and an Auto planner pass their kickoff again on Restart, so their resume
+        // command stays the same across starts and a resumed conversation isn't prompted
+        // again; an implement restart keeps resuming as before.
+        match kickoff {
+            Some(Kickoff::FixFindings) => {
+                resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
+            }
+            Some(Kickoff::Plan) => {
+                resume_command = Some(job_resume_command(&command, PLAN_PROMPT));
+            }
+            _ => {}
         }
     }
     policy
@@ -1453,6 +1560,48 @@ pub(crate) fn quote_argument(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auto_brief_contains_goal_scope_effort_and_optional_commit() {
+        let auto = super::AutoBrief {
+            goal: "Make widgets work".into(),
+            fix_floor: Some(crate::reviews::Severity::High),
+            effort_note: "Targeted changes".into(),
+            commit: true,
+        };
+        let text = auto.markdown("fix");
+        for expected in [
+            "## Auto mode",
+            "Make widgets work",
+            "Stage: fix",
+            "≥ high",
+            "leave lower ones listed",
+            "Targeted changes",
+            "Commit your work",
+            "unless blocked",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        let auto = super::AutoBrief {
+            commit: false,
+            fix_floor: None,
+            ..auto
+        };
+        assert!(!auto.markdown("review").contains("Commit your work"));
+        assert!(!auto.markdown("review").contains("Fix findings"));
+        // A root agent's stage follows its settled kickoff; a planner plans.
+        let stage = |s: super::ContextSection| s.body.lines().nth(2).unwrap_or_default().to_owned();
+        assert_eq!(
+            stage(auto.root_section(Some(super::Kickoff::FixFindings))),
+            "Stage: fix"
+        );
+        assert_eq!(
+            stage(auto.root_section(Some(super::Kickoff::ImplementPlan))),
+            "Stage: implement"
+        );
+        assert_eq!(stage(auto.root_section(None)), "Stage: implement");
+        assert_eq!(stage(auto.plan_section()), "Stage: plan");
+    }
+
     use super::*;
 
     #[test]
@@ -1762,7 +1911,8 @@ mod tests {
     fn planner_session_uses_root_scope_and_context() {
         let mut p = project();
         p.name = "root-scope-demo".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
+        let spec =
+            plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[], None).unwrap();
         assert_eq!(
             spec.id,
             crate::workspace::session_id(&p.root, PLAN_SCOPE, "claude")
@@ -1782,7 +1932,8 @@ mod tests {
     fn planner_adds_dirs_for_components_outside_the_root() {
         let mut p = project();
         p.components[1].path = "../shared/db".into();
-        let spec = plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[]).unwrap();
+        let spec =
+            plan_session_spec(&p, &["api".into()], &planner(), &AllowAll, &[], None).unwrap();
         assert_eq!(spec.command.matches("--add-dir").count(), 1);
         assert!(spec.command.contains("--add-dir '/shared/db'"));
     }
@@ -1827,7 +1978,7 @@ mod tests {
         }
         let mut p = project();
         p.root = root.canonicalize().unwrap().display().to_string();
-        let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
+        let spec = plan_session_spec(&p, &[], &planner(), &AllowAll, &[], None).unwrap();
         let plans = crate::plans::dir(Path::new(&p.root)).unwrap();
         assert_eq!(
             spec.env[crate::plans::PLAN_FILE_ENV],
@@ -1868,7 +2019,8 @@ mod tests {
             let briefing = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
             assert!(briefing.contains("Fix login"));
             assert!(!briefing.contains("You are planning, not implementing"));
-            let planner = plan_session_spec(&project(), &[], &terminal, &AllowAll, &[]).unwrap();
+            let planner =
+                plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
             assert!(!planner.command.contains("Implement the shared plan"));
         }
         // The prompt follows the briefing: an env-prefixed agent gets it, a command left
@@ -1891,6 +2043,50 @@ mod tests {
                 prompted,
                 "{command}"
             );
+        }
+    }
+
+    #[test]
+    fn auto_planner_kickoff_has_its_prompt_and_keeps_the_manual_id() {
+        for command in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = command.into();
+            let sections = [AutoBrief {
+                goal: "Plan a change".into(),
+                fix_floor: None,
+                effort_note: "Add tests".into(),
+                commit: false,
+            }
+            .section("plan")];
+            let manual =
+                plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
+            let auto = plan_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                &AllowAll,
+                &sections,
+                Some(Kickoff::Plan),
+            )
+            .unwrap();
+            assert_eq!(auto.id, manual.id);
+            let words = command_tokens(&auto.command, Shell::current()).unwrap();
+            assert_eq!(words.last().unwrap(), PLAN_PROMPT);
+            assert!(!manual.command.contains(PLAN_PROMPT));
+            // A resumed planner isn't prompted to plan again.
+            let resume = auto.resume_command.as_deref().unwrap();
+            assert!(!resume.contains(PLAN_PROMPT), "{resume}");
+            assert!(manual.resume_command.is_none());
+            let root = task_root_session_spec(
+                &project(),
+                &[],
+                &terminal,
+                None,
+                &AllowAll,
+                &[],
+                Some(Kickoff::Plan),
+            );
+            assert!(root.is_err());
         }
     }
 
@@ -1929,7 +2125,14 @@ mod tests {
 
     #[test]
     fn planner_rejects_unknown_components() {
-        let result = plan_session_spec(&project(), &["missing".into()], &planner(), &AllowAll, &[]);
+        let result = plan_session_spec(
+            &project(),
+            &["missing".into()],
+            &planner(),
+            &AllowAll,
+            &[],
+            None,
+        );
         assert_eq!(
             result.err().unwrap().to_string(),
             "unknown component missing"
@@ -1942,7 +2145,7 @@ mod tests {
         p.name = "context-scope-demo".into();
         p.components[0].id = "plan-claude".into();
         let component = session_spec(&p, "plan-claude", "agent", &AllowAll, &[]).unwrap();
-        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll, &[]).unwrap();
+        let planner = plan_session_spec(&p, &[], &planner(), &AllowAll, &[], None).unwrap();
         assert_ne!(component.env[CONTEXT_ENV], planner.env[CONTEXT_ENV]);
         assert_eq!(
             std::fs::read_to_string(&component.env[CONTEXT_ENV]).unwrap(),
@@ -1965,7 +2168,7 @@ mod tests {
         }
         let mut p = project();
         p.name = "policy-demo".into();
-        let result = plan_session_spec(&p, &[], &planner(), &Deny, &[]);
+        let result = plan_session_spec(&p, &[], &planner(), &Deny, &[], None);
         assert_eq!(
             result.err().unwrap().to_string(),
             "blocked by policy: planning disabled"
@@ -2024,6 +2227,30 @@ mod tests {
         ] {
             assert_eq!(agent_program(command, Shell::Unix), expected, "{command}");
         }
+    }
+
+    #[test]
+    fn status_provider_uses_briefing_detection_and_explicit_adapters() {
+        let mut terminal = planner();
+        for (command, expected) in [
+            (
+                "/opt/homebrew/bin/claude",
+                Some(crate::adapters::Adapter::Claude),
+            ),
+            ("env FOO=1 codex", Some(crate::adapters::Adapter::Codex)),
+            ("FOO=1 claude", Some(crate::adapters::Adapter::Claude)),
+            ("echo codex", None),
+            ("codex && echo done", None),
+        ] {
+            terminal.command = command.into();
+            terminal.adapter = None;
+            assert_eq!(agent_provider(&terminal), expected, "{command}");
+        }
+        terminal.adapter = Some(crate::adapters::Adapter::Claude);
+        assert_eq!(
+            agent_provider(&terminal),
+            Some(crate::adapters::Adapter::Claude)
+        );
     }
 
     #[test]
@@ -2549,7 +2776,7 @@ mod tests {
         let mut terminal = planner();
         terminal.command = "codex".into();
         let scope = ["api".into()];
-        let spec = plan_session_spec(&p, &scope, &terminal, &AllowAll, &[]).unwrap();
+        let spec = plan_session_spec(&p, &scope, &terminal, &AllowAll, &[], None).unwrap();
         assert!(spec.command.contains(&format!(
             "--add-dir {}",
             Shell::current().quote(&p.component_dir(&p.components[1]).display().to_string())

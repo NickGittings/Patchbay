@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, plannerSessionId } from '../types'
+import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
 import { plannerDevice } from './plan'
 import { savePlanDraft } from './planDrafts'
@@ -11,7 +11,7 @@ import { refreshTasks } from './tasks'
  * planner's provider. The planner belongs to the project, so the plan may have been written
  * before the worktree existed.
  */
-export async function implementPlannerPlan(plannerId: string) {
+async function handoffPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
   const initial = useStore.getState()
   const projectId = initial.project?.id
   if (!projectId) throw new Error('Open a project first')
@@ -35,6 +35,7 @@ export async function implementPlannerPlan(plannerId: string) {
     await refreshTasks(projectId)
   } else if (task) {
     // Carry the planner's plan into the worktree, where its agents read it.
+    // An empty project plan fails even when the worktree kept an older one.
     const { text, cut } = await planRead(projectId)
     if (cut) throw new Error('The plan is longer than 64 KiB; shorten it before implementing.')
     if (!text.trim()) throw new Error('No plan received yet. Ask the planner to finish its plan.')
@@ -46,14 +47,34 @@ export async function implementPlannerPlan(plannerId: string) {
       'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Tools → Agent status integration.',
     )
   current()
-  // End the planner before launching: approving its native dialog later must not
-  // start a second implementation in the planning terminal.
+  // Accepting a plan ends its planner, including one Auto took over manually.
   const sid = plannerSessionId(plannerId, projectId)
   if (current().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, { kind: 'implementPlan' })
-  current().setView('implementation')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
+    kickoff: { kind: 'implementPlan' },
+    auto,
+  })
+  // The agent is running now, so a later switch away only skips the view change; its caller
+  // still learns the session it has to track.
+  const after = useStore.getState()
+  if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
+  return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
+}
+
+const handingOff = new Set<string>()
+/** Serialize acceptance of a project-wide plan, including manual approvals during Auto. */
+export async function implementPlannerPlan(plannerId: string, auto?: import('../types').AutoBrief) {
+  const projectId = useStore.getState().project?.id
+  if (!projectId) throw new Error('Open a project first')
+  if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
+  handingOff.add(projectId)
+  try {
+    return await handoffPlannerPlan(plannerId, auto)
+  } finally {
+    handingOff.delete(projectId)
+  }
 }

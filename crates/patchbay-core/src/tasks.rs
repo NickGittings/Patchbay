@@ -854,6 +854,7 @@ mod tests {
             },
             &terminal,
             &crate::policy::AllowAll,
+            None,
         )
         .unwrap();
         let findings = crate::reviews::file(&root, "feature/review").unwrap();

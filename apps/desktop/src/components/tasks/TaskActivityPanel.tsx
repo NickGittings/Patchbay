@@ -94,7 +94,7 @@ export function ActivityStatus() {
       <span role="status">
         {action?.kind === 'startGroup' ? 'Starting environment…' : 'Validating…'}
       </span>
-      {action?.kind === 'validateAffected' && (
+      {(action?.kind === 'validateAffected' || action?.kind === 'validateChanged') && (
         <button onClick={() => void stopValidation()}>Stop checks</button>
       )}
     </div>
@@ -151,7 +151,7 @@ export default function TaskActivityPanel() {
               <div key={activity.id} className={`task-action-result ${activity.state}`}>
                 <div className="row">
                   <strong>
-                    {activity.action.kind === 'validate'
+                    {['validate', 'validateChanged'].includes(activity.action.kind)
                       ? 'Validation'
                       : activity.action.kind === 'environmentStop'
                         ? 'Stop environment'
@@ -173,7 +173,12 @@ export default function TaskActivityPanel() {
                                     kind: 'validateAffected',
                                     componentId: activity.action.componentId!,
                                   }
-                                : { kind: 'startGroup', groupId: activity.action.groupId! },
+                                : activity.action.kind === 'validateChanged'
+                                  ? {
+                                      kind: 'validateChanged',
+                                      componentIds: activity.action.componentIds!,
+                                    }
+                                  : { kind: 'startGroup', groupId: activity.action.groupId! },
                             )
                       }
                     >

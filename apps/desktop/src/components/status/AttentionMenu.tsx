@@ -22,6 +22,7 @@ export default function AttentionMenu() {
   const sessionRecords = useStore((s) => s.sessionRecords)
   const rootTerminals = useStore((s) => s.rootTerminals)
   const taskWorkspaces = useStore((s) => s.taskWorkspaces)
+  const auto = useStore((s) => s.auto)
   const activeTask = useStore((s) => s.activeTask)
   const items = attentionItems({
     nodes,
@@ -33,6 +34,7 @@ export default function AttentionMenu() {
     rootTerminals,
     taskWorkspaces,
     activeTask,
+    auto,
   })
 
   if (items.length === 0) return null
@@ -63,7 +65,7 @@ export default function AttentionMenu() {
           onClick={() => {
             revealTerminal(item)
             // So typing answers the revealed terminal, once the view switch has attached it.
-            focusTerminal(item.sid)
+            if (!item.auto) focusTerminal(item.sid)
           }}
         >
           <span className="status-dot" />

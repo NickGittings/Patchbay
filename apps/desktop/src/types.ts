@@ -6,11 +6,13 @@ export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
 
 /**
- * A fresh root agent's first task, `context::Kickoff`. A fix names the review session; the backend
+ * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
  * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
- * Without one, it starts a former fix terminal again from the branch its own record keeps.
+ * Without one, it starts a former fix terminal again from the branch its own record keeps. `plan`
+ * prompts an Auto planner.
  */
-export type Kickoff = { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string }
+export type Kickoff =
+  { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string } | { kind: 'plan' }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
@@ -36,7 +38,64 @@ export interface ReviewRequest {
   base: string
 }
 
+export type Severity = 'critical' | 'high' | 'medium' | 'low'
+export interface Verdict {
+  clean: boolean
+  counts: Record<Severity, number>
+}
+export type MergeOutcome = 'merged' | 'alreadyIntegrated' | 'inProgress' | 'dirty' | 'notMerged'
+export interface AutoBrief {
+  goal: string
+  fixFloor: Severity | null
+  effortNote: string
+  commit: boolean
+}
+export interface EffortSettings {
+  maxRounds: number
+  severityFloor: Severity
+  validate: boolean
+}
+export type AutoStage =
+  'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
+export interface AutoRun {
+  runId: string
+  status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
+  stage: AutoStage
+  goal: string
+  effort: 'light' | 'standard' | 'thorough'
+  overrides?: Partial<EffortSettings>
+  merge: { mode: 'ask' | 'auto'; destinationBranch: string }
+  device: string
+  /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
+  branch?: string
+  round: number
+  sessionId?: string
+  /** Auto may stop only a session it launched, in the recorded process generation. */
+  sessionOwned?: boolean
+  turnSince?: number
+  launchAtMs?: number
+  observedWorking?: boolean
+  sessionStartedMs?: number
+  /**
+   * What Auto launched its tracked session with, sent again on every later start of that session
+   * so its briefing, and with it Restart's fingerprint, stays the same.
+   */
+  sessionBrief?: { sessionId: string; auto: AutoBrief; kickoff?: Kickoff }
+  /** Fingerprint of the project plan and proposal when the planner launched. */
+  planMark?: string
+  log: { atMs: number; text: string }[]
+  reason?: string
+  /** Why the approval wait couldn't check the merge status; it keeps retrying meanwhile. */
+  gateError?: string
+  waitingFor?: 'agentInput' | 'fixBudget'
+  validation?: ActionReport[]
+  reviewedHead?: string
+  findingsSummary?: string
+  validationFindings?: string
+}
+
 export interface ReviewFindings {
+  verdict: Verdict | null
   text: string
   modifiedMs: number
   reviewedHead: string | null
@@ -159,7 +218,9 @@ export interface ComponentGroup {
 }
 
 export type ActionRequest =
-  { kind: 'startGroup'; groupId: string } | { kind: 'validateAffected'; componentId: string }
+  | { kind: 'startGroup'; groupId: string }
+  | { kind: 'validateAffected'; componentId: string }
+  | { kind: 'validateChanged'; componentIds: string[] }
 
 export interface ActionPlan {
   request: ActionRequest
@@ -227,6 +288,7 @@ export interface Affected {
 
 /** Changes per component plus their dependents (`git::Review`). */
 export interface Review {
+  ahead?: boolean
   changes: Record<string, ChangedFile[]>
   affected: Affected[]
 }
@@ -435,7 +497,7 @@ export interface SessionRecord {
   history: TerminalSnapshot[]
   interrupted: boolean
   /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
-  spec: { cwd: string; command: string; dirs?: string[] }
+  spec: { cwd: string; command: string; dirs?: string[]; merge_source?: string | null }
 }
 export interface WorkspaceProject {
   id: string
@@ -626,7 +688,7 @@ export interface TaskActivity {
   projectId: string
   task: string | null
   initiator: string
-  action: { kind: string; groupId?: string; componentId?: string }
+  action: { kind: string; groupId?: string; componentId?: string; componentIds?: string[] }
   state: 'running' | 'finished' | 'failed'
   report: ActionReport | null
   error: string | null

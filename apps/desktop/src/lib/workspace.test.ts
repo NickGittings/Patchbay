@@ -77,3 +77,38 @@ test('legacy layouts retain fallback and malformed entries are ignored', () => {
     }).implementationComponents,
   ).toEqual([{ id: 'b', visible: false }])
 })
+
+test('Auto persists per worktree without dirtying the map and restores paused', () => {
+  const run = {
+    runId: 'run',
+    status: 'running' as const,
+    stage: 'review' as const,
+    goal: 'Ship the task',
+    effort: 'light' as const,
+    merge: { mode: 'ask' as const, destinationBranch: 'main' },
+    device: 'codex',
+    round: 1,
+    sessionId: 'old-session',
+    sessionOwned: true,
+    sessionStartedMs: 5,
+    log: [{ atMs: 1, text: 'Review' }],
+  }
+  useStore.getState().patchTask('p', null, { auto: run })
+  expect(useStore.getState().dirty).toBe(false)
+  const layout = restoredLayout(workspaceDocument().projects[0].layout)
+  expect(layout.auto).toMatchObject({ status: 'paused', stage: 'review', round: 1 })
+  // Its agent keeps running in the session service, so Auto still tracks and owns it.
+  expect(layout.auto).toMatchObject({
+    sessionId: 'old-session',
+    sessionOwned: true,
+    sessionStartedMs: 5,
+  })
+  expect(layout.taskWorkspaces?.[''].auto?.status).toBe('paused')
+  expect(restoredLayout({ auto: { ...run, overrides: { maxRounds: -1 } } }).auto).toBeNull()
+  // Finished runs stay finished, so a new run can start without Stop.
+  for (const status of ['done', 'stopped', 'failed'] as const)
+    expect(restoredLayout({ auto: { ...run, status, reason: 'Finished' } }).auto).toMatchObject({
+      status,
+      reason: 'Finished',
+    })
+})

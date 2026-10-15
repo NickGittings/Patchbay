@@ -143,14 +143,7 @@ pub fn run_action(
     task: Option<&str>,
     initiator: &str,
 ) -> Result<(ActionReport, Vec<String>)> {
-    let action = match &request {
-        ActionRequest::StartGroup { group_id } => Action::EnvironmentStart {
-            group_id: group_id.clone(),
-        },
-        ActionRequest::ValidateAffected { component_id } => Action::Validate {
-            component_id: component_id.clone(),
-        },
-    };
+    let action = Action::from(request.clone());
     let mut activity = Activity {
         id: crate::agent_bridge::new_id(),
         project_id: project_id.into(),
@@ -187,10 +180,11 @@ pub fn run_action(
     });
     match &result {
         Ok((report, urls)) => {
-            activity.state = if report.succeeded() {
-                "finished"
-            } else {
+            // The report still lists components without a validator.
+            activity.state = if report.failed() {
                 "failed"
+            } else {
+                "finished"
             }
             .into();
             activity.report = Some(report.clone());
@@ -407,35 +401,69 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             )?;
             Ok(json!({"stopped":true,"groupId":group_id}))
         }
-        Action::EnvironmentStart { group_id } => {
+        action @ (Action::EnvironmentStart { .. }
+        | Action::Validate { .. }
+        | Action::ValidateChanged { .. }) => {
+            let request = ActionRequest::try_from(action)?;
+            let validation = !matches!(request, ActionRequest::StartGroup { .. });
             if launch.planner {
-                anyhow::bail!("Switch to implementation before starting environments");
+                anyhow::bail!(
+                    "Switch to implementation before {}",
+                    if validation {
+                        "running checks"
+                    } else {
+                        "starting environments"
+                    }
+                );
             }
             let (report, urls) = run_action(
                 app,
                 &launch.project_id,
                 scoped.project()?,
-                ActionRequest::StartGroup { group_id },
+                request,
                 launch.task.as_deref(),
                 &launch.agent_session,
             )?;
-            Ok(json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls}))
+            if validation {
+                Ok(
+                    json!({"passed":report.succeeded(),"missingValidators":report.plan.skipped,"sessionIds":report.session_ids(),"report":report,"previewUrls":urls}),
+                )
+            } else {
+                Ok(json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls}))
+            }
         }
-        Action::Validate { component_id } => {
-            if launch.planner {
-                anyhow::bail!("Switch to implementation before running checks");
+    }
+}
+
+impl From<ActionRequest> for Action {
+    fn from(request: ActionRequest) -> Self {
+        match request {
+            ActionRequest::StartGroup { group_id } => Self::EnvironmentStart { group_id },
+            ActionRequest::ValidateAffected { component_id } => Self::Validate { component_id },
+            ActionRequest::ValidateChanged { component_ids } => {
+                Self::ValidateChanged { component_ids }
             }
-            let (report, urls) = run_action(
-                app,
-                &launch.project_id,
-                scoped.project()?,
-                ActionRequest::ValidateAffected { component_id },
-                launch.task.as_deref(),
-                &launch.agent_session,
-            )?;
-            Ok(
-                json!({"passed":report.succeeded(),"missingValidators":report.plan.skipped,"sessionIds":report.session_ids(),"report":report,"previewUrls":urls}),
-            )
+        }
+    }
+}
+
+impl TryFrom<Action> for ActionRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(action: Action) -> Result<Self> {
+        match action {
+            Action::EnvironmentStart { group_id } => Ok(Self::StartGroup { group_id }),
+            Action::Validate { component_id } => Ok(Self::ValidateAffected { component_id }),
+            Action::ValidateChanged { component_ids } => {
+                Ok(Self::ValidateChanged { component_ids })
+            }
+            Action::Context {}
+            | Action::Status {}
+            | Action::Logs { .. }
+            | Action::EnvironmentStop { .. }
+            | Action::Propose { .. }
+            | Action::SavePlan { .. }
+            | Action::WithdrawPlan { .. } => anyhow::bail!("Unsupported graph command"),
         }
     }
 }
@@ -443,6 +471,33 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_commands_round_trip_with_their_payloads() {
+        for request in [
+            ActionRequest::StartGroup {
+                group_id: "env".into(),
+            },
+            ActionRequest::ValidateAffected {
+                component_id: "web".into(),
+            },
+            ActionRequest::ValidateChanged {
+                component_ids: vec!["web".into(), "api".into()],
+            },
+        ] {
+            let expected = serde_json::to_value(&request).unwrap();
+            let action = Action::from(request);
+            let actual = ActionRequest::try_from(action).unwrap();
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+        }
+        assert!(ActionRequest::try_from(Action::Context {}).is_err());
+        assert!(
+            ActionRequest::try_from(Action::EnvironmentStop {
+                group_id: "env".into()
+            })
+            .is_err()
+        );
+    }
 
     struct Fixture {
         calls: Mutex<Vec<Request>>,

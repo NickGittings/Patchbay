@@ -21,6 +21,14 @@ const smoke = (script, env = {}, fixture) => ({
   env: { PATCHBAY_SMOKE_SCRIPT: at('smoke', script), PATCHBAY_SMOKE_ROOT: defaultFixture, ...env },
 })
 const SCRIPTS = {
+  auto: {
+    ...smoke(
+      'auto.js',
+      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-auto/project') },
+      'auto-fixture.sh',
+    ),
+    run: ['scripts/auto.mjs'],
+  },
   popout: smoke('popout.js'),
   bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
   autosave: smoke(

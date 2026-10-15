@@ -79,7 +79,9 @@ function ComponentInspector({ node }: { node: FlowNode }) {
   const issue = useMaintenance((s) => s.issues[projectId ?? '']?.find((i) => i.componentId === id))
   const sessions = useStore((s) => s.sessions)
   const graphActionBusy = useStore((s) => s.graphActionBusy)
-  const validating = useStore((s) => s.graphAction?.kind === 'validateAffected')
+  const validating = useStore((s) =>
+    ['validateAffected', 'validateChanged'].includes(s.graphAction?.kind ?? ''),
+  )
   const task = useStore((s) => s.activeTask)
   useClockTick()
   const edges = useStore((s) => s.edges)

@@ -413,8 +413,26 @@ pub struct Affected {
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
+    pub ahead: bool,
     pub changes: HashMap<String, Vec<ChangedFile>>,
     pub affected: Vec<Affected>,
+}
+
+fn affected_components(
+    project: &Project,
+    changes: &HashMap<String, Vec<ChangedFile>>,
+) -> Vec<Affected> {
+    let mut changed: Vec<String> = changes
+        .iter()
+        .filter(|(id, files)| !files.is_empty() && id.as_str() != PROJECT_SCOPE)
+        .map(|(id, _)| id.clone())
+        .collect();
+    changed.sort();
+    project
+        .dependents(&changed)
+        .into_iter()
+        .map(|(id, via)| Affected { id, via })
+        .collect()
 }
 
 /// [`changes`] for `components` (`(id, canonical folder)`, only folders the
@@ -422,28 +440,108 @@ pub struct Review {
 /// `project` that depend on a changed one. Those can include components not
 /// in `components`, since that only reads the map.
 ///
+/// An optional base also includes committed branch changes.
+///
 /// # Errors
-/// Fails if `worktree` isn't one of the project repo's worktrees, or the
-/// project folder doesn't exist in it.
+/// Fails for missing or foreign worktrees, invalid base refs, or Git errors.
 pub fn review(
     project: &Project,
     components: Vec<(String, PathBuf)>,
     worktree: Option<&str>,
+    base: Option<&str>,
 ) -> Result<Review> {
     let (root, components) = in_worktree(Path::new(&project.root), components, worktree)?;
-    let changes = changes(&root, &components);
-    let mut changed: Vec<String> = changes
-        .iter()
-        .filter(|(id, files)| !files.is_empty() && id.as_str() != PROJECT_SCOPE)
-        .map(|(id, _)| id.clone())
-        .collect();
-    changed.sort();
-    let affected = project
-        .dependents(&changed)
-        .into_iter()
-        .map(|(id, via)| Affected { id, via })
-        .collect();
-    Ok(Review { changes, affected })
+    let groups = group_by_repo(&with_project_scope(&root, &components));
+    let mut review = Review {
+        changes: changes_in(&root, &groups, None),
+        ..Review::default()
+    };
+    let Some(base) = base else {
+        review.affected = affected_components(project, &review.changes);
+        return Ok(review);
+    };
+    crate::tasks::check_branch(&root, base)?;
+    let merge_base = run(git(&root).args(["merge-base", base, "HEAD"]))?;
+    let repo = nearest_repo(&root).ok_or_else(|| anyhow!("The project isn't in a git repo"))?;
+    let group = groups.iter().find(|g| g.root == repo);
+    let pathspecs = group.map(RepoGroup::pathspecs).unwrap_or_default();
+    // Include all mapped folders in this repo, even siblings of the project,
+    // and commits whose changes were later reverted.
+    review.ahead = !run(git(&repo)
+        .args([
+            "rev-list",
+            "--max-count=1",
+            "HEAD",
+            &format!("^{merge_base}"),
+            "--",
+        ])
+        .args(&pathspecs))?
+    .is_empty();
+    let names = run(git(&repo)
+        .args([
+            "diff",
+            "--name-status",
+            "-M",
+            "-z",
+            &merge_base,
+            "HEAD",
+            "--",
+        ])
+        .args(&pathspecs))?;
+    // `git diff` names files from the repo's top folder, which sits above a
+    // project opened in a subfolder; files are reported relative to the project.
+    let members = group.map(|g| g.members.as_slice()).unwrap_or_default();
+    let mut touched = HashSet::new();
+    for (kind, old, name) in committed_changes(&names) {
+        let Some(id) = owner_of(name, members) else {
+            continue;
+        };
+        let path = relative_path(&root, &repo.join(name));
+        let files = review.changes.entry(id.into()).or_default();
+        // An uncommitted change of the same file describes it as it is now.
+        if !files.iter().any(|f| f.path == path) {
+            files.push(ChangedFile {
+                path,
+                kind,
+                old_path: old.map(|o| relative_path(&root, &repo.join(o))),
+                modified_ms: None,
+                added: None,
+                removed: None,
+            });
+            touched.insert(id.to_owned());
+        }
+    }
+    for id in touched {
+        if let Some(files) = review.changes.get_mut(&id) {
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+    }
+    review.affected = affected_components(project, &review.changes);
+    Ok(review)
+}
+
+/// The files of `git diff --name-status -z`: each one's kind, the path it was
+/// renamed from, and its path, from the repo's top folder.
+fn committed_changes(out: &str) -> Vec<(ChangeKind, Option<&str>, &str)> {
+    let mut fields = out.split('\0').filter(|p| !p.is_empty());
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        // A rename or a copy names its source first; only a rename keeps it.
+        let (kind, source) = match status.as_bytes().first() {
+            Some(b'A') => (ChangeKind::Added, false),
+            Some(b'C') => (ChangeKind::Added, true),
+            Some(b'D') => (ChangeKind::Deleted, false),
+            Some(b'R') => (ChangeKind::Renamed, true),
+            Some(b'T') => (ChangeKind::TypeChanged, false),
+            Some(b'U') => (ChangeKind::Conflicted, false),
+            _ => (ChangeKind::Modified, false),
+        };
+        let old = if source { fields.next() } else { None };
+        let Some(path) = fields.next() else { break };
+        let old = old.filter(|_| kind == ChangeKind::Renamed);
+        files.push((kind, old, path));
+    }
+    files
 }
 
 /// Which changed file to diff: `path` (relative to the project root) as
@@ -1365,7 +1463,7 @@ mod tests {
         }))
         .unwrap();
         let c = components(&f.0, &[("lib", "lib"), ("app", "app")]);
-        let r = review(&project, c.clone(), None).unwrap();
+        let r = review(&project, c.clone(), None, None).unwrap();
         assert_eq!(r.changes["lib"].len(), 1);
         assert!(r.changes["app"].is_empty());
         assert_eq!(
@@ -1374,6 +1472,151 @@ mod tests {
                 id: "app".into(),
                 via: vec!["lib".into()]
             }]
+        );
+    }
+
+    #[test]
+    fn review_branch_attributes_commits_in_a_project_subfolder() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        assert!(run_git(&f.0, &["branch", "base"]));
+        f.write("proj/lib/x.rs", "");
+        f.write("outside.txt", "");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "work"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "root": root.display().to_string(),
+            "components": [{ "id": "lib", "name": "lib", "path": "lib" }],
+        }))
+        .unwrap();
+        let c = components(&root, &[("lib", "lib")]);
+        let r = review(&project, c, None, Some("base")).unwrap();
+        assert!(r.ahead);
+        assert_eq!(
+            r.changes["lib"].iter().map(|f| &f.path).collect::<Vec<_>>(),
+            ["lib/x.rs"]
+        );
+        assert!(
+            r.changes
+                .values()
+                .flatten()
+                .all(|f| f.path != "outside.txt")
+        );
+    }
+
+    #[test]
+    fn review_branch_ignores_commits_outside_the_project() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("proj/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        f.write("outside.txt", "unrelated work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "outside"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": root.display().to_string(), "components": [],
+        }))
+        .unwrap();
+        let r = review(&project, vec![], None, Some("base")).unwrap();
+        assert!(!r.ahead);
+        assert!(r.changes.values().all(Vec::is_empty));
+        // Unmapped project files still count, even if a later commit reverts them.
+        f.write("proj/file.txt", "work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "inside"]));
+        f.write("proj/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "revert"]));
+        let r = review(&project, vec![], None, Some("base")).unwrap();
+        assert!(r.ahead);
+    }
+
+    #[test]
+    fn review_branch_counts_commits_in_external_components_even_after_reverting() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("proj/file.txt", "base");
+        f.write("shared/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        let root = f.0.join("proj");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": root.display().to_string(),
+            "components": [{ "id": "shared", "name": "shared", "path": "../shared" }],
+        }))
+        .unwrap();
+        let c = components(&root, &[("shared", "../shared")]);
+        assert!(
+            !review(&project, c.clone(), None, Some("base"))
+                .unwrap()
+                .ahead
+        );
+        f.write("shared/file.txt", "work");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "shared work"]));
+        let review = review(&project, c.clone(), None, Some("base")).unwrap();
+        assert!(review.ahead);
+        assert_eq!(review.changes["shared"][0].path, "../shared/file.txt");
+        f.write("shared/file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "revert shared work"]));
+        let review = self::review(&project, c, None, Some("base")).unwrap();
+        assert!(review.ahead);
+        assert!(review.changes.values().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn review_branch_keeps_committed_kinds_and_renames_in_order() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("lib/gone.rs", "gone\n");
+        f.write("lib/old.rs", "a long enough line to detect a rename\n");
+        f.write("lib/same.rs", "one\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        assert!(run_git(&f.0, &["rm", "-q", "lib/gone.rs"]));
+        assert!(run_git(&f.0, &["mv", "lib/old.rs", "lib/new.rs"]));
+        f.write("lib/added.rs", "");
+        f.write("lib/same.rs", "two\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "work"]));
+        f.write("lib/b.rs", "");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "root": f.0.display().to_string(),
+            "components": [{ "id": "lib", "name": "lib", "path": "lib" }],
+        }))
+        .unwrap();
+        let c = components(&f.0, &[("lib", "lib")]);
+        let r = review(&project, c, None, Some("base")).unwrap();
+        let files = r.changes["lib"]
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind, f.old_path.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            files,
+            [
+                ("lib/added.rs", ChangeKind::Added, None),
+                ("lib/b.rs", ChangeKind::Untracked, None),
+                ("lib/gone.rs", ChangeKind::Deleted, None),
+                ("lib/new.rs", ChangeKind::Renamed, Some("lib/old.rs")),
+                ("lib/same.rs", ChangeKind::Modified, None),
+            ]
         );
     }
 
@@ -1424,7 +1667,7 @@ mod tests {
             groups: vec![],
         };
         assert!(
-            review(&project, c.clone(), None)
+            review(&project, c.clone(), None, None)
                 .unwrap()
                 .affected
                 .is_empty()

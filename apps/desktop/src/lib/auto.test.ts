@@ -1,0 +1,2325 @@
+import { beforeEach, afterEach, expect, test, vi } from 'vitest'
+import { useStore } from '../store'
+import {
+  TASK_ROOT_SCOPE,
+  type AutoRun,
+  type ReviewFindings,
+  type SessionState,
+  type Worktree,
+} from '../types'
+vi.mock('./ipc', () => ({
+  agentHooksCheck: vi.fn(),
+  agentProvider: vi.fn(),
+  gitBranches: vi.fn(),
+  gitReview: vi.fn(),
+  gitWorktrees: vi.fn(),
+  graphActionRun: vi.fn(),
+  mergeOutcome: vi.fn(),
+  planRead: vi.fn(),
+  proposalRead: vi.fn(),
+  reviewRead: vi.fn(),
+  terminalStop: vi.fn(),
+  graphValidationCancel: vi.fn(),
+}))
+vi.mock('./sessions', () => ({
+  startTerminal: vi.fn(),
+  reconcileFreshSessions: vi.fn(),
+  listenForTerminals: vi.fn(),
+  refreshSession: vi.fn(),
+}))
+vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
+vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
+vi.mock('./reviewAgents', async () => ({
+  ...(await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')),
+  startReviewAgent: vi.fn(),
+  startMergeAgent: vi.fn(),
+}))
+const {
+  inferStage,
+  nextStep,
+  reviewDecision,
+  mergeableHead,
+  blockingCount,
+  validationFailures,
+  autoSnapshot,
+  stopAuto,
+  startAuto,
+  followAuto,
+  pauseAuto,
+  resumeAuto,
+  mergeNow,
+  skipStage,
+  autoRun,
+} = await import('./auto')
+const ipc = await import('./ipc')
+const jobs = await import('./reviewAgents')
+const awaitSessions = await import('./sessions')
+const tree: Worktree = {
+  path: '/p/feature',
+  branch: 'feature',
+  head: 'abc',
+  current: false,
+  main: false,
+}
+const run = (patch: Partial<AutoRun> = {}): AutoRun => ({
+  runId: 'run',
+  status: 'running',
+  stage: 'review',
+  goal: 'Goal',
+  effort: 'standard',
+  merge: { mode: 'ask', destinationBranch: 'main' },
+  device: 'codex',
+  round: 0,
+  log: [],
+  ...patch,
+})
+const findings = (
+  counts: Partial<NonNullable<ReviewFindings['verdict']>['counts']> = {},
+): ReviewFindings => ({
+  text: 'Verdict: issues',
+  verdict: {
+    clean: Object.keys(counts).length === 0,
+    counts: { critical: 0, high: 0, medium: 0, low: 0, ...counts },
+  },
+  reviewedHead: 'abc',
+  modifiedMs: 1100,
+  startedMs: 1001,
+  base: 'main',
+  editedSinceStart: false,
+  truncated: false,
+})
+const snapshot = (
+  patch: Partial<import('./auto').AutoSnapshot> = {},
+): import('./auto').AutoSnapshot => ({
+  source: tree,
+  worktrees: [tree],
+  base: 'main',
+  goal: 'Goal',
+  plan: '',
+  proposal: false,
+  planMark: '',
+  hasChanges: false,
+  changedComponents: [],
+  findings: null,
+  freshness: 'none',
+  outcome: 'notMerged',
+  agents: [],
+  ...patch,
+})
+beforeEach(() => {
+  vi.resetAllMocks()
+  useStore.setState(useStore.getInitialState())
+})
+afterEach(() => vi.useRealTimers())
+test.each([
+  [
+    'busy before landed merge',
+    { outcome: 'merged', agents: [{ sessionId: 's', stage: 'fix', state: 'working', sinceMs: 1 }] },
+    'fix',
+    'running',
+  ],
+  [
+    'needs input',
+    { agents: [{ sessionId: 's', stage: 'review', state: 'needsInput', sinceMs: 1 }] },
+    'review',
+    'waitingOnYou',
+  ],
+  ['merged', { outcome: 'merged' }, 'done', 'done'],
+  ['integrated', { outcome: 'alreadyIntegrated' }, 'done', 'done'],
+  ['clean', { freshness: 'current', findings: findings() }, 'mergeGate', 'running'],
+  ['blocking', { freshness: 'current', findings: findings({ high: 1 }) }, 'fix', 'running'],
+  ['low', { freshness: 'current', findings: findings({ low: 1 }) }, 'mergeGate', 'running'],
+  [
+    'stale implementation',
+    { hasChanges: true, freshness: 'stale', plan: 'Plan' },
+    'validate',
+    'running',
+  ],
+  [
+    'manual plan and committed implementation',
+    { hasChanges: true, plan: 'Plan' },
+    'validate',
+    'running',
+  ],
+  ['old plan only', { plan: '# Plan' }, 'plan', 'running'],
+  ['old proposal only', { proposal: true }, 'plan', 'running'],
+  ['new task', {}, 'plan', 'running'],
+] as const)('%s', (_name, input, stage, status) =>
+  expect(
+    inferStage(snapshot(input as Partial<import('./auto').AutoSnapshot>), run()),
+  ).toMatchObject({ stage, status }),
+)
+test('Light reviews directly; budgets and verdicts are never guessed', () => {
+  expect(inferStage(snapshot({ hasChanges: true }), run({ effort: 'light' })).stage).toBe('review')
+  expect(
+    inferStage(
+      snapshot({ freshness: 'current', findings: findings({ high: 2 }) }),
+      run({ round: 3 }),
+    ).status,
+  ).toBe('waitingOnYou')
+  expect(nextStep(run(), { ...findings(), verdict: null }).status).toBe('paused')
+  expect(nextStep(run(), { ...findings(), truncated: true }).status).toBe('paused')
+})
+test.each(['light', 'standard', 'thorough'] as const)(
+  '%s severity and budget decisions',
+  (effort) => {
+    expect(nextStep(run({ effort }), findings({ high: 1 })).stage).toBe('fix')
+    expect(nextStep(run({ effort, round: 100 }), findings({ high: 1 })).status).toBe('waitingOnYou')
+    expect(nextStep(run({ effort }), findings({ low: 1 })).stage).toBe(
+      effort === 'thorough' ? 'fix' : 'mergeGate',
+    )
+    expect(nextStep(run({ effort, stage: 'fix' })).stage).toBe(
+      effort === 'light' ? 'review' : 'validate',
+    )
+  },
+)
+test('merge approval, verified outcome, overrides and validation failures', () => {
+  expect(nextStep(run({ stage: 'mergeGate' })).status).toBe('waitingOnYou')
+  const automatic = { mode: 'auto' as const, destinationBranch: 'main' }
+  expect(nextStep(run({ stage: 'mergeGate', merge: automatic, reviewedHead: 'abc' })).stage).toBe(
+    'merge',
+  )
+  // An unreviewed branch never merges automatically.
+  expect(nextStep(run({ stage: 'mergeGate', merge: automatic })).status).toBe('waitingOnYou')
+  expect(nextStep(run({ stage: 'merge' }), null, 'dirty').status).toBe('waitingOnYou')
+  expect(nextStep(run({ stage: 'merge' }), null, 'merged').status).toBe('done')
+  expect(blockingCount(findings({ critical: 1, high: 2, medium: 3, low: 4 }), 'medium')).toBe(6)
+  expect(
+    nextStep(run({ overrides: { severityFloor: 'low', maxRounds: 0 } }), findings({ low: 1 }))
+      .status,
+  ).toBe('waitingOnYou')
+  expect(nextStep(run({ validationFindings: 'Failed check' }), findings()).stage).toBe('fix')
+})
+function load() {
+  vi.mocked(jobs.startMergeAgent).mockResolvedValue('merge-s')
+  const { reconcileFreshSessions } = awaitSessions
+  vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
+    const sessions = { ...useStore.getState().sessions }
+    for (const sid of ['merge-s', 'implementation'])
+      sessions[sid] ??= { running: true, startedMs: Date.now() }
+    useStore.setState({ sessions })
+  })
+  useStore.getState().loadProject({
+    projectId: 'p',
+    root: '/p',
+    name: 'P',
+    schemaVersion: 4,
+    components: [],
+    links: [],
+  })
+  useStore.setState({
+    tasks: [
+      {
+        id: 't',
+        title: 'Task',
+        worktree: tree.path,
+        branch: 'feature',
+        base: 'main',
+        notes: '',
+        components: [],
+        createdMs: 0,
+        missing: false,
+        current: false,
+      },
+    ],
+    devices: [
+      {
+        id: 'codex',
+        name: 'Codex',
+        adapter: 'codex',
+        command: 'codex',
+        kind: 'agent',
+        source: 'builtin',
+        category: 'agent',
+      },
+    ],
+    restoring: false,
+  })
+  useStore.getState().setActiveTask('t')
+  vi.mocked(ipc.terminalStop).mockResolvedValue(undefined)
+  vi.mocked(ipc.agentProvider).mockResolvedValue('codex')
+  vi.mocked(ipc.agentHooksCheck).mockResolvedValue({
+    installed: true,
+    disabled: false,
+    reporterAvailable: true,
+  } as Awaited<ReturnType<typeof ipc.agentHooksCheck>>)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    tree,
+    { ...tree, path: '/p', branch: 'main', current: true },
+  ])
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'feature'])
+  vi.mocked(ipc.gitReview).mockResolvedValue({ ahead: true, changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
+  vi.mocked(ipc.proposalRead).mockResolvedValue(null)
+  vi.mocked(ipc.reviewRead).mockResolvedValue(null)
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
+}
+const flush = async () => {
+  for (let i = 0; i < 50; i++) await Promise.resolve()
+}
+function agent(
+  state: 'review' | 'working' | 'needsInput' | 'idle',
+  sinceMs: number,
+  authoritative = true,
+) {
+  useStore.setState({
+    sessions: {
+      s: {
+        running: true,
+        startedMs: 1000,
+        status: {
+          stopped: false,
+          agent: { state, sinceMs, authoritative, message: null, prompt: null },
+        },
+      } as SessionState,
+    },
+  })
+}
+test('driver requires a new authoritative turn and stops reviewer before gating', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    agent('working', 1001)
+    return 's'
+  })
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'light',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+      device: 'codex',
+    })
+    await flush()
+    expect(jobs.startReviewAgent).toHaveBeenCalledTimes(1)
+    agent('review', 1100, false)
+    await flush()
+    expect(autoRun('p', 't')?.stage).toBe('review')
+    agent('review', 999)
+    await flush()
+    expect(autoRun('p', 't')?.stage).toBe('review')
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    agent('review', 1200)
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    mergeNow('p', 't')
+    await flush()
+    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+  } finally {
+    stop()
+  }
+})
+test('needs input resumes only on authoritative work; interruption pauses', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  const stop = followAuto()
+  try {
+    agent('needsInput', 1100)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', waitingFor: 'agentInput' })
+    useStore.getState().patchTask('p', 't', {
+      auto: { ...autoRun('p', 't')!, reason: 'Please answer the question' },
+    })
+    agent('working', 1200, false)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    agent('working', 1300)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('running')
+    agent('idle', 1400)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+  } finally {
+    stop()
+  }
+})
+test('inactive worktrees pause and manual changes are picked up on resume', async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ effort: 'light' }) })
+  useStore.getState().setActiveTask(null, true)
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    expect(useStore.getState().auto).toBeNull()
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    pauseAuto('p', 't')
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ high: 1 }))
+    useStore.getState().setActiveTask('t')
+    await resumeAuto('p', 't')
+    expect(autoRun('p', 't')?.stage).toBe('fix')
+  } finally {
+    stop()
+  }
+})
+test('skipping review still requires explicit merge approval', () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', merge: { mode: 'auto', destinationBranch: 'main' } }),
+  })
+  skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+})
+
+test('a task description launches Plan with the goal and then hands off its saved plan', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  const { startTerminal } = await import('./sessions')
+  const { implementPlannerPlan } = await import('./planHandoff')
+  vi.mocked(startTerminal).mockImplementation(async () => {
+    const { plannerSessionId } = await import('../types')
+    const sid = plannerSessionId('codex', 'p')
+    useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
+  })
+  vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Implement the description',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    expect(startTerminal).toHaveBeenCalledWith('@plan', 'codex', 't', 'p', {
+      kickoff: { kind: 'plan' },
+      auto: expect.objectContaining({ goal: 'Implement the description', commit: false }),
+    })
+    const sid = autoRun('p', 't')!.sessionId!
+    vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Saved description plan', cut: false })
+    useStore.setState({
+      sessions: {
+        [sid]: {
+          running: true,
+          startedMs: 1000,
+          status: {
+            stopped: false,
+            agent: { state: 'review', sinceMs: 1200, authoritative: true },
+          },
+        } as SessionState,
+      },
+    })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(implementPlannerPlan).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({ goal: 'Implement the description', commit: true }),
+    )
+  } finally {
+    stop()
+  }
+})
+
+test('validation uses the pinned worktree and keeps failed results when the user switches tasks', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const id = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: true,
+    changes: { [id]: [{ path: 'file.txt', kind: 'modified' }] },
+    affected: [],
+  })
+  const report = {
+    plan: {
+      request: { kind: 'validateAffected' as const, componentId: id },
+      sessions: ['check'],
+      stages: [],
+      skipped: [],
+      task: 't',
+    },
+    results: [{ sessionId: 'check', outcome: 'failed' as const, exitCode: 1 }],
+  }
+  vi.mocked(ipc.graphActionRun).mockImplementation(async () => {
+    useStore.getState().setActiveTask(null, true)
+    return report
+  })
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(ipc.graphActionRun).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'p' }),
+      { kind: 'validateChanged', componentIds: [id] },
+      't',
+    )
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      stage: 'review',
+      validation: [report],
+    })
+    expect(autoRun('p', 't')?.validationFindings).toContain('[high] Validation failed')
+    expect(useStore.getState().taskWorkspaces.t.graphActionReport).toEqual(report)
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('snapshot includes component agents below the worktree root and ignores exited working reports', async () => {
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const id = useStore.getState().selectedId!
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 'component-agent',
+        metadata: { projectId: 'p', task: 't', componentId: id, kind: 'agent' },
+        spec: { cwd: '/p/feature/subdirectory' },
+        snapshot: null,
+      },
+    ] as unknown as import('../types').SessionRecord[],
+  })
+  useStore.setState({
+    sessions: {
+      'component-agent': {
+        running: true,
+        status: { agent: { state: 'working', sinceMs: 10, authoritative: true } },
+      } as SessionState,
+    },
+  })
+  const { autoSnapshot } = await import('./auto')
+  expect(inferStage(await autoSnapshot('p', 't', run()), run())).toMatchObject({
+    stage: 'implement',
+    sessionId: 'component-agent',
+  })
+  useStore.setState({
+    sessions: {
+      'component-agent': {
+        running: false,
+        status: { agent: { state: 'working', sinceMs: 10, authoritative: true } },
+      } as SessionState,
+    },
+  })
+  expect((await autoSnapshot('p', 't', run())).agents).toEqual([])
+})
+
+test('skipping a paused active step stops its tracked agent before the next handoff', async () => {
+  load()
+  agent('working', 1000)
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', stage: 'fix', sessionId: 's', sessionOwned: true }),
+  })
+  // Without the launch's start time it isn't provably Auto's, so it keeps running.
+  await skipStage('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      status: 'paused',
+      stage: 'fix',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+    }),
+  })
+  await skipStage('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  expect(autoRun('p', 't')).toMatchObject({
+    stage: 'review',
+    status: 'running',
+    sessionId: undefined,
+  })
+})
+
+test('provider startup idle waits for working, and unconfirmed interruption then pauses', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  const stop = followAuto()
+  try {
+    agent('idle', 1100)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('running')
+    agent('working', 1200)
+    await flush()
+    agent('idle', 1300, false)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+  } finally {
+    stop()
+  }
+})
+
+test('denying an agent prompt pauses even when no provider hook confirms the denial', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  const stop = followAuto()
+  try {
+    agent('needsInput', 1100)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    agent('idle', 1200, false)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+  } finally {
+    stop()
+  }
+})
+
+test('service-side forgetting pauses the run instead of waiting forever for a removed session', async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.setState({ serviceConnected: true, sessionRecords: [], sessions: {} })
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 'forgotten' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      reason: 'The tracked session was forgotten',
+    })
+  } finally {
+    stop()
+  }
+})
+
+test('validation findings name failed terminals, not whole reports', () => {
+  const report = {
+    plan: {
+      request: { kind: 'validateAffected' as const, componentId: 'a' },
+      stages: [],
+      skipped: ['b'],
+      sessions: [],
+      task: null,
+    },
+    results: [
+      { sessionId: 'ok', outcome: 'passed' as const, exitCode: 0 },
+      { sessionId: 'bad', outcome: 'failed' as const, exitCode: 2 },
+    ],
+  }
+  expect(validationFailures([report], (id) => `Test ${id}`)).toBe(
+    '[high] Validation failed: Test bad failed (exit 2)',
+  )
+})
+
+test('starting at Merge on an unreviewed branch waits for approval', async () => {
+  load()
+  await startAuto('p', 't', {
+    goal: 'Goal',
+    effort: 'light',
+    merge: { mode: 'auto', destinationBranch: 'main' },
+    device: 'codex',
+    stage: 'merge',
+  })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('the project-wide planner belongs to a run only while it plans or tracks it', async () => {
+  load()
+  const planner = {
+    id: 'planner',
+    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent' },
+    spec: { cwd: '/p', command: 'codex' },
+  } as unknown as import('../types').SessionRecord
+  useStore.setState({
+    sessionRecords: [planner],
+    sessions: {
+      planner: {
+        running: true,
+        status: { agent: { state: 'working', sinceMs: 1, authoritative: true } },
+      } as SessionState,
+    },
+  })
+  expect((await autoSnapshot('p', 't', run({ stage: 'implement' }))).agents).toEqual([])
+  expect((await autoSnapshot('p', 't', run({ stage: 'plan' }))).agents).toHaveLength(1)
+  expect(
+    (await autoSnapshot('p', 't', run({ stage: 'review', sessionId: 'planner' }))).agents,
+  ).toHaveLength(1)
+})
+
+test('the project folder resolves to the current worktree and reviews against the destination', async () => {
+  load()
+  useStore.getState().setActiveTask(null, true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    tree,
+    { ...tree, path: '/repo', branch: 'work', current: true },
+    { ...tree, path: '/repo-release', branch: 'release' },
+  ])
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'work', 'release'])
+  const snap = await autoSnapshot(
+    'p',
+    null,
+    run({ merge: { mode: 'ask', destinationBranch: 'release' } }),
+  )
+  expect(snap.source.path).toBe('/repo')
+  expect(snap.base).toBe('release')
+  expect(ipc.gitReview).toHaveBeenCalledWith(expect.anything(), '/repo', 'release')
+})
+
+test('stopping Auto cancels only a validation it started', () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate', status: 'paused' }) })
+  stopAuto('p', 't')
+  expect(ipc.graphValidationCancel).not.toHaveBeenCalled()
+  expect(autoRun('p', 't')?.status).toBe('stopped')
+})
+
+test('clean verdicts with nits use the configured severity floor', () => {
+  const cleanWithNits = findings({ low: 1 })
+  cleanWithNits.verdict!.clean = true
+  expect(nextStep(run(), cleanWithNits)).toMatchObject({ stage: 'mergeGate', status: 'running' })
+  expect(nextStep(run({ effort: 'thorough' }), cleanWithNits).stage).toBe('fix')
+})
+
+test('findings against a different base cannot authorize automatic merging', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), base: 'develop' })
+  const snap = await autoSnapshot('p', 't', run())
+  expect(snap.freshness).toBe('stale')
+  await startAuto('p', 't', {
+    goal: 'Goal',
+    effort: 'light',
+    device: 'codex',
+    merge: { mode: 'auto', destinationBranch: 'main' },
+  })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
+})
+
+test('skipping a stale review clears the old head and permits an approved merge', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', reviewedHead: 'before-fix' }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
+  const dispose = followAuto()
+  try {
+    mergeNow('p', 't')
+    await flush()
+    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+    expect(autoRun('p', 't')?.status).toBe('running')
+  } finally {
+    dispose()
+  }
+})
+
+function manualAgent() {
+  agent('working', 1000)
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 's',
+        metadata: { ...plannerRecord().metadata, task: 't', componentId: '@task' },
+        spec: { cwd: tree.path },
+        snapshot: null,
+      },
+    ] as unknown as import('../types').SessionRecord[],
+  })
+}
+
+test.each(['start', 'resume'] as const)(
+  '%s observes a manual agent without stopping it on completion or Stop Auto',
+  async (how) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    manualAgent()
+    if (how === 'start')
+      await startAuto('p', 't', {
+        goal: 'Goal',
+        effort: 'light',
+        device: 'codex',
+        merge: { mode: 'ask', destinationBranch: 'main' },
+      })
+    else {
+      useStore.getState().patchTask('p', 't', { auto: run({ effort: 'light', status: 'paused' }) })
+      await resumeAuto('p', 't')
+    }
+    expect(autoRun('p', 't')?.sessionId).toBe('s')
+    stopAuto('p', 't')
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    await resumeAuto('p', 't')
+    const dispose = followAuto()
+    try {
+      agent('review', 1200)
+      await flush()
+      expect(jobs.startReviewAgent).toHaveBeenCalledTimes(1)
+      expect(ipc.terminalStop).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('skipping an adopted agent and stopping a manually relaunched generation leave it running', async () => {
+  load()
+  manualAgent()
+  useStore
+    .getState()
+    .patchTask('p', 't', { auto: run({ status: 'paused', sessionId: 's', sessionOwned: false }) })
+  await skipStage('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ sessionId: 's', sessionOwned: true, sessionStartedMs: 900 }),
+  })
+  stopAuto('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
+test('resuming preserves ownership only for the same Auto-launched generation', async () => {
+  load()
+  manualAgent()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', sessionId: 's', sessionOwned: true, sessionStartedMs: 1000 }),
+  })
+  await resumeAuto('p', 't')
+  expect(autoRun('p', 't')?.sessionOwned).toBe(true)
+  stopAuto('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+})
+
+test('terminal output cannot cause repeated Git snapshots while findings are pending', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  agent('review', 1100)
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ sessionId: 's', sessionOwned: true, turnSince: 1000, launchAtMs: 1000 }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    const snapshots = vi.mocked(ipc.gitWorktrees).mock.calls.length
+    expect(snapshots).toBe(1)
+    for (let i = 0; i < 20; i++) {
+      useStore.setState({
+        sessions: { ...useStore.getState().sessions, noisy: { running: true, startedMs: i } },
+      })
+      await flush()
+    }
+    expect(ipc.gitWorktrees).toHaveBeenCalledTimes(snapshots)
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+  } finally {
+    dispose()
+  }
+})
+
+test('all changed components are sent in one validation request', async () => {
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const a = useStore.getState().selectedId!
+  useStore.getState().addComponent({ x: 100, y: 0 })
+  const b = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: true,
+    changes: {
+      [a]: [{ path: 'a', kind: 'modified' }],
+      [b]: [{ path: 'b', kind: 'modified' }],
+    },
+    affected: [],
+  })
+  vi.mocked(ipc.graphActionRun).mockResolvedValue({
+    plan: { stages: [], skipped: [], sessions: [] },
+    results: [],
+  } as unknown as import('../types').ActionReport)
+  const dispose = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    expect(ipc.graphActionRun).toHaveBeenCalledTimes(1)
+    expect(ipc.graphActionRun).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: 'validateChanged', componentIds: [a, b] },
+      't',
+    )
+  } finally {
+    dispose()
+  }
+})
+
+test('a new goal plans before implementing an unrelated saved plan or proposal', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Unrelated old goal', cut: false })
+  vi.mocked(ipc.proposalRead).mockResolvedValue({ version: 1, plan: 'Old goal', assignments: [] })
+  await startAuto('p', 't', {
+    goal: 'New task',
+    effort: 'light',
+    device: 'codex',
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'plan', goal: 'New task' })
+  expect(inferStage(snapshot({ plan: '# Accepted plan' }), run({ stage: 'implement' })).stage).toBe(
+    'implement',
+  )
+})
+
+test('needsInput can go directly to review without an observed working tick', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  const stop = followAuto()
+  try {
+    agent('needsInput', 1100)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    agent('review', 1200, false)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    agent('review', 1200)
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+  } finally {
+    stop()
+  }
+})
+
+function plannerRecord() {
+  return {
+    id: 's',
+    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent' },
+    spec: { cwd: '/p', command: 'codex' },
+  } as unknown as import('../types').SessionRecord
+}
+
+test.each(['running', 'paused', 'waitingOnYou'] as const)(
+  'Resume cannot take another restored %s run’s planner before tasks load',
+  async (status) => {
+    load()
+    useStore
+      .getState()
+      .patchTask('p', 'restored', { auto: run({ stage: 'plan', sessionId: 's', status }) })
+    useStore
+      .getState()
+      .patchTask('p', 't', { auto: run({ runId: 'second', stage: 'plan', status: 'paused' }) })
+    useStore.setState({ sessionRecords: [plannerRecord()] })
+    agent('working', 1000)
+    await expect(resumeAuto('p', 't')).rejects.toThrow('already belongs to another Auto run')
+    expect(autoRun('p', 't')).toMatchObject({
+      runId: 'second',
+      status: 'paused',
+    })
+  },
+)
+
+test('Auto stops a planner it took over before handing off the completed plan', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  useStore.setState({ sessionRecords: [plannerRecord()] })
+  agent('working', 1000)
+  await startAuto('p', 't', {
+    goal: 'New task',
+    effort: 'light',
+    device: 'codex',
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
+  expect(autoRun('p', 't')?.sessionOwned).not.toBe(true)
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# New plan', cut: false })
+  const { implementPlannerPlan } = await import('./planHandoff')
+  vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
+  agent('review', 1200)
+  const stop = followAuto()
+  try {
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
+    expect(vi.mocked(ipc.terminalStop).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(implementPlannerPlan).mock.invocationCallOrder[0],
+    )
+  } finally {
+    stop()
+  }
+})
+
+test('idle agent processes without a provider report do not count as working forever', async () => {
+  load()
+  useStore.setState({
+    sessionRecords: [
+      {
+        ...plannerRecord(),
+        metadata: { ...plannerRecord().metadata, task: 't', componentId: '@task' },
+      },
+    ],
+  })
+  useStore.setState({
+    sessions: { s: { running: true, status: { active: false, agent: null } } as SessionState },
+  })
+  expect((await autoSnapshot('p', 't', run())).agents[0].state).toBe('idle')
+  useStore.setState({
+    sessions: { s: { running: true, status: { active: true, agent: null } } as SessionState },
+  })
+  expect((await autoSnapshot('p', 't', run())).agents[0].state).toBe('working')
+})
+
+test('snapshot reads the project plan once in the project folder', async () => {
+  load()
+  useStore.getState().setActiveTask(null, true)
+  await autoSnapshot('p', null, run({ merge: { mode: 'ask', destinationBranch: 'feature' } }))
+  expect(ipc.planRead).toHaveBeenCalledExactlyOnceWith('p')
+})
+
+test('Auto refuses an unconfirmed launch without recording a phantom session', async () => {
+  load()
+  vi.mocked(awaitSessions.reconcileFreshSessions).mockResolvedValue(undefined)
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'merge' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'failed' })
+    expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+    expect(autoRun('p', 't')?.reason).toContain('launch was not confirmed')
+  } finally {
+    stop()
+  }
+})
+
+test('shared planner is reserved while a launch is pending without session records', async () => {
+  vi.useFakeTimers()
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  let finish!: () => void
+  vi.mocked(awaitSessions.startTerminal).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    useStore.getState().setActiveTask(null, true)
+    useStore.getState().patchTask('p', null, {
+      auto: run({
+        runId: 'second',
+        stage: 'plan',
+        merge: { mode: 'ask', destinationBranch: 'feature' },
+      }),
+    })
+    await flush()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(autoRun('p', null)?.reason).toContain('already belongs to another Auto run')
+  } finally {
+    finish()
+    await flush()
+    stop()
+  }
+})
+
+test('an unfinished merge keeps its agent for the user to answer', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('inProgress')
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'merge', sessionId: 's', sessionOwned: true, turnSince: 1000 }),
+  })
+  const stop = followAuto()
+  try {
+    agent('review', 1100)
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'merge',
+      status: 'waitingOnYou',
+      sessionId: 's',
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('blocking findings never authorize an automatic merge from a chosen stage', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ critical: 1 }))
+  const settings = {
+    goal: 'Goal',
+    effort: 'light' as const,
+    device: 'codex',
+    merge: { mode: 'auto' as const, destinationBranch: 'main' },
+  }
+  await startAuto('p', 't', { ...settings, stage: 'mergeGate' })
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
+  expect(nextStep(autoRun('p', 't')!).status).toBe('waitingOnYou')
+  stopAuto('p', 't')
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ low: 1 }))
+  await startAuto('p', 't', { ...settings, stage: 'mergeGate' })
+  expect(autoRun('p', 't')?.reviewedHead).toBe('abc')
+})
+
+test('validation clears its action state and pauses when the backend refuses it', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const id = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: true,
+    changes: { [id]: [{ path: 'file.txt', kind: 'modified' }] },
+    affected: [],
+  })
+  vi.mocked(ipc.graphActionRun).mockRejectedValue(
+    new Error('Another graph action is still running'),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate' }) })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'validate', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Another graph action is still running')
+    expect(useStore.getState().graphAction).toBeNull()
+    expect(useStore.getState().graphActionBusy).toBe(false)
+  } finally {
+    stop()
+  }
+})
+
+test('skipping a fix whose budget ran out goes to the merge gate', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'fix', status: 'waitingOnYou', waitingFor: 'fixBudget', round: 1 }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'fix', status: 'paused', sessionId: 'gone' }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')?.stage).toBe('review')
+})
+
+test('snapshots read the merge outcome only while merging or inferring', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  await autoSnapshot('p', 't', run({ stage: 'fix' }))
+  expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+  await autoSnapshot('p', 't', run({ stage: 'merge' }))
+  await autoSnapshot('p', 't', run({ stage: 'fix' }), true)
+  expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+  // A fresh branch is trivially an ancestor of its base; that isn't a finished merge.
+  vi.mocked(ipc.reviewRead).mockResolvedValue(null)
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
+  expect((await autoSnapshot('p', 't', run({ stage: 'plan' }), true)).outcome).toBe('notMerged')
+})
+
+test('a planner that ends its turn without a new plan pauses instead of handing off the old one', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Earlier plan', cut: false })
+  const { startTerminal } = await import('./sessions')
+  const { implementPlannerPlan } = await import('./planHandoff')
+  const { plannerSessionId } = await import('../types')
+  const sid = plannerSessionId('codex', 'p')
+  vi.mocked(startTerminal).mockImplementation(async () => {
+    useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
+  })
+  const stop = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'A new goal',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    // Later starts of the planner get the same brief and kickoff, so Restart can resume it.
+    expect(autoRun('p', 't')?.sessionBrief).toMatchObject({
+      sessionId: sid,
+      kickoff: { kind: 'plan' },
+      auto: { goal: 'A new goal' },
+    })
+    useStore.setState({
+      sessions: {
+        [sid]: {
+          running: true,
+          startedMs: 1000,
+          status: {
+            stopped: false,
+            agent: { state: 'review', sinceMs: 1200, authoritative: true },
+          },
+        } as SessionState,
+      },
+    })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(implementPlannerPlan).not.toHaveBeenCalled()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'plan',
+      status: 'paused',
+      reason: 'Planner finished without saving a new plan',
+    })
+  } finally {
+    stop()
+  }
+})
+
+test('a new run on a branch whose earlier work is merged plans; a resumed one is done', () => {
+  const merged = snapshot({
+    outcome: 'alreadyIntegrated',
+    freshness: 'current',
+    findings: findings(),
+  })
+  expect(inferStage(merged, run(), true)).toMatchObject({ stage: 'plan', status: 'running' })
+  expect(inferStage(merged, run({ stage: 'merge' }))).toMatchObject({ stage: 'done' })
+  // New work since the merge isn't a fresh start.
+  expect(inferStage({ ...merged, hasChanges: true }, run(), true)).toMatchObject({ stage: 'done' })
+})
+
+test('resuming after a planner answered picks up its new plan, or waits on its next turn', () => {
+  const planning = run({ stage: 'plan', sessionId: 'planner', planMark: 'old' })
+  const planner = { sessionId: 'planner', stage: 'plan' as const, state: 'review', sinceMs: 1500 }
+  expect(
+    inferStage(snapshot({ plan: '# New', planMark: 'new', agents: [planner] }), planning),
+  ).toMatchObject({ stage: 'implement', status: 'running' })
+  expect(
+    inferStage(snapshot({ plan: '# Old', planMark: 'old', agents: [planner] }), planning),
+  ).toMatchObject({ stage: 'plan', sessionId: 'planner', turnSince: 1500 })
+  // A fresh run never reads an older run's mark.
+  expect(inferStage(snapshot({ plan: '# New', planMark: 'new' }), planning, true)).toMatchObject({
+    stage: 'plan',
+  })
+})
+
+test('only merged work needs a new goal, and the chosen stage decides', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  const settings = (stage?: import('../types').AutoStage) => ({
+    goal: '',
+    effort: 'standard' as const,
+    device: 'codex',
+    merge: { mode: 'ask' as const, destinationBranch: 'main' },
+    stage,
+  })
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('dirty')
+  await expect(startAuto('p', 't', settings())).resolves.toBeUndefined()
+  useStore.getState().patchTask('p', 't', { auto: undefined })
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
+  await expect(startAuto('p', 't', settings())).rejects.toThrow('describe the new goal')
+  await expect(startAuto('p', 't', settings('implement'))).resolves.toBeUndefined()
+})
+
+test('a resumed run planning or implementing a new goal on merged work is not done', () => {
+  const merged = snapshot({
+    outcome: 'alreadyIntegrated',
+    freshness: 'current',
+    findings: findings(),
+  })
+  expect(inferStage(merged, run({ stage: 'plan' }))).toMatchObject({ stage: 'plan' })
+  expect(inferStage({ ...merged, plan: '# New' }, run({ stage: 'implement' }))).toMatchObject({
+    stage: 'implement',
+  })
+  expect(inferStage(merged, run({ stage: 'review' }))).toMatchObject({ stage: 'done' })
+})
+
+test('another agent busy at the same stage is waited for, not tracked instead', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Plan', cut: false })
+  const root = (id: string, state: 'review' | 'working', sinceMs: number) => ({
+    id,
+    spec: { cwd: tree.path },
+    metadata: { projectId: 'p', componentId: TASK_ROOT_SCOPE, kind: 'agent', task: 't' },
+    snapshot: { running: true, startedMs: 1000, status: { agent: { state, sinceMs } } },
+  })
+  useStore.setState({
+    sessionRecords: [root('s', 'review', 1500), root('manual', 'working', 1400)] as never,
+  })
+  agent('review', 1500)
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      stage: 'implement',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1100,
+    }),
+  })
+  const stop = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'implement',
+      status: 'running',
+      sessionId: 's',
+      reason: 'Waiting for another agent in this worktree to finish',
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+test('skipping validation drops its failures', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ status: 'paused', stage: 'validate', validationFindings: '[high] failed' }),
+  })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'review', validationFindings: undefined })
+})
+
+test.each(['start', 'resume'] as const)(
+  '%s waits for a stopped run’s pending launch',
+  async (how) => {
+    load()
+    let finish!: (sid: string) => void
+    vi.mocked(jobs.startReviewAgent).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    useStore.getState().patchTask('p', 't', { auto: run() })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+      stopAuto('p', 't')
+      const stopped = autoRun('p', 't')!
+      const action = how === 'resume' ? resumeAuto('p', 't') : startAuto('p', 't', stopped)
+      await expect(action).rejects.toThrow('still starting an agent')
+      expect(autoRun('p', 't')).toBe(stopped)
+      agent('working', 1000)
+      finish('s')
+      await flush()
+      expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+      expect(autoRun('p', 't')?.status).toBe('stopped')
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['stop', 'pause'] as const)(
+  '%s cancels Resume while its Git snapshot is pending',
+  async (how) => {
+    load()
+    useStore.getState().patchTask('p', 't', { auto: run({ status: 'paused' }) })
+    let finish!: (trees: Worktree[]) => void
+    vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const pending = resumeAuto('p', 't')
+    await flush()
+    if (how === 'pause') pauseAuto('p', 't')
+    else stopAuto('p', 't')
+    const stopped = autoRun('p', 't')!
+    finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await pending
+    expect(autoRun('p', 't')).toBe(stopped)
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['merged', 'alreadyIntegrated'] as const)(
+  'Merge now finishes a branch already %s by hand',
+  async (outcome) => {
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' }),
+    })
+    // The manual merge can change HEAD and delete the preset, too.
+    useStore.setState({ devices: [] })
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
+    const dispose = followAuto()
+    try {
+      mergeNow('p', 't')
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['validate', 'mergeGate', 'done'] as const)(
+  '%s refuses to start without an agent preset before reading Git',
+  async (stage) => {
+    load()
+    useStore.setState({ devices: [] })
+    await expect(startAuto('p', 't', { ...run(), stage })).rejects.toThrow('Choose an agent preset')
+    expect(ipc.gitWorktrees).not.toHaveBeenCalled()
+    expect(ipc.gitReview).not.toHaveBeenCalled()
+    expect(autoRun('p', 't')).toBeNull()
+  },
+)
+
+test('terminal output and unrelated store changes do not poll Auto; its timer still does', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  agent('review', 1100)
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(ipc.gitReview).toHaveBeenCalledOnce()
+    // No saved verdict yet: a repeated completion would otherwise poll again after 5s.
+    vi.setSystemTime(7000)
+    const session = useStore.getState().sessions.s
+    useStore.setState({
+      sessions: {
+        s: {
+          ...session,
+          status: { ...session.status!, lastOutputMs: 7000, agent: { ...session.status!.agent! } },
+        },
+      },
+    })
+    useStore.getState().setMessage('Unrelated message')
+    await flush()
+    expect(ipc.gitReview).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ipc.gitReview).toHaveBeenCalledTimes(2)
+    agent('working', 13000)
+    await flush()
+    expect(autoRun('p', 't')?.observedWorking).toBe(true)
+  } finally {
+    dispose()
+  }
+})
+
+test.each([undefined, 'validate', 'mergeGate', 'review'] as const)(
+  'Start at %s checks status integration before Git review',
+  async (stage) => {
+    load()
+    vi.mocked(ipc.agentHooksCheck).mockResolvedValue({
+      installed: false,
+      disabled: false,
+      reporterAvailable: true,
+    } as Awaited<ReturnType<typeof ipc.agentHooksCheck>>)
+    await expect(startAuto('p', 't', { ...run(), stage })).rejects.toThrow(
+      'Install Agent status integration',
+    )
+    expect(ipc.gitWorktrees).not.toHaveBeenCalled()
+    expect(ipc.gitReview).not.toHaveBeenCalled()
+    expect(ipc.graphActionRun).not.toHaveBeenCalled()
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    expect(autoRun('p', 't')).toBeNull()
+  },
+)
+
+test('Pause cancels Resume while its integration check is pending', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ status: 'paused', effort: 'light' }) })
+  let finish!: (hooks: Awaited<ReturnType<typeof ipc.agentHooksCheck>>) => void
+  vi.mocked(ipc.agentHooksCheck).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const pending = resumeAuto('p', 't')
+  await flush()
+  expect(ipc.agentHooksCheck).toHaveBeenCalledOnce()
+  pauseAuto('p', 't')
+  const paused = autoRun('p', 't')!
+  finish({ installed: true, disabled: false, reporterAvailable: true } as never)
+  await pending
+  expect(autoRun('p', 't')).toBe(paused)
+})
+
+test.each(['merged', 'alreadyIntegrated'] as const)(
+  'a waiting merge gate notices a branch %s by hand without approval',
+  async (outcome) => {
+    vi.useFakeTimers()
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' }),
+    })
+    useStore.setState({ devices: [] })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+      vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['live', 'record'] as const)(
+  'another agent finishing in its %s status wakes Auto immediately',
+  async (source) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    const record = {
+      ...plannerRecord(),
+      id: 'manual',
+      metadata: { ...plannerRecord().metadata, componentId: TASK_ROOT_SCOPE, task: 't' },
+      snapshot: {
+        running: true,
+        startedMs: 1000,
+        status: { agent: { state: 'working', sinceMs: 1400 } },
+      },
+    }
+    useStore.setState({ sessionRecords: [record] as never })
+    agent('review', 1500)
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'implement', sessionId: 's', turnSince: 1100 }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')?.reason).toContain('Waiting for another agent')
+      const finished = {
+        running: true,
+        startedMs: 1000,
+        status: { agent: { state: 'review', sinceMs: 2100 } },
+      }
+      if (source === 'live')
+        useStore.setState({
+          sessions: { ...useStore.getState().sessions, manual: finished as SessionState },
+        })
+      else useStore.setState({ sessionRecords: [{ ...record, snapshot: finished }] as never })
+      await flush()
+      expect(autoRun('p', 't')?.stage).not.toBe('implement')
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a session update received during a Git snapshot is retried as soon as it finishes', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  agent('review', 1500)
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ sessionId: 's', turnSince: 1100 }),
+  })
+  let finish!: (trees: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const dispose = followAuto()
+  try {
+    await flush()
+    agent('working', 2100)
+    await flush()
+    finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ observedWorking: true, turnSince: 2100 })
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['review', 'fix'] as const)(
+  'Pause during a %s launch keeps its agent attached and accounts for the round',
+  async (stage) => {
+    load()
+    const { fixReviewFindings } = await import('./reviewHandoff')
+    const { REVIEW_SCOPE } = await import('../types')
+    if (stage === 'fix')
+      useStore.setState({
+        sessionRecords: [
+          {
+            id: 'reviewer',
+            metadata: { projectId: 'p', componentId: REVIEW_SCOPE },
+            spec: { cwd: tree.path },
+          },
+        ] as never,
+      })
+    let finish!: (sid: string) => void
+    const launch = stage === 'fix' ? fixReviewFindings : jobs.startReviewAgent
+    vi.mocked(launch).mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve
+        }),
+    )
+    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(launch).toHaveBeenCalledOnce()
+      pauseAuto('p', 't')
+      expect(autoRun('p', 't')?.runId).toBe('run')
+      await expect(resumeAuto('p', 't')).rejects.toThrow('still starting an agent')
+      agent('working', 1000)
+      useStore.setState({
+        sessionRecords: [
+          ...useStore.getState().sessionRecords,
+          {
+            id: 's',
+            metadata: {
+              projectId: 'p',
+              componentId: stage === 'fix' ? TASK_ROOT_SCOPE : REVIEW_SCOPE,
+              kind: 'agent',
+              task: 't',
+            },
+            spec: { cwd: tree.path },
+          },
+        ] as never,
+      })
+      finish('s')
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        runId: 'run',
+        status: 'paused',
+        sessionId: 's',
+        sessionOwned: true,
+        round: stage === 'fix' ? 1 : 0,
+      })
+      expect(ipc.terminalStop).not.toHaveBeenCalled()
+      await resumeAuto('p', 't')
+      expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
+      expect(launch).toHaveBeenCalledOnce()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('merge-gate polls are throttled and read only the outcome after resolving worktrees', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'mergeGate', status: 'waitingOnYou' }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+    expect(ipc.mergeOutcome).toHaveBeenCalledOnce()
+    for (let i = 0; i < 5; i++) {
+      agent('working', 1001 + i)
+      useStore.getState().patchTask('p', 't', {
+        auto: { ...autoRun('p', 't')!, reason: `Still waiting ${i}` },
+      })
+      await flush()
+    }
+    expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+    expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+    expect(ipc.gitBranches).not.toHaveBeenCalled()
+    expect(ipc.gitReview).not.toHaveBeenCalled()
+    expect(ipc.reviewRead).not.toHaveBeenCalled()
+    expect(ipc.planRead).not.toHaveBeenCalled()
+    expect(ipc.proposalRead).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test('Resume can infer the stage while a merge-gate poll is pending', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'mergeGate', status: 'waitingOnYou' }),
+  })
+  let finish!: (trees: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const dispose = followAuto()
+  try {
+    await flush()
+    await expect(resumeAuto('p', 't')).resolves.toBeUndefined()
+    expect(autoRun('p', 't')?.runId).not.toBe('run')
+    finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['worktrees', 'outcome'] as const)(
+  'merge-gate %s failures keep approval pending and retry automatically',
+  async (failure) => {
+    vi.useFakeTimers()
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Approval required' }),
+    })
+    if (failure === 'worktrees')
+      vi.mocked(ipc.gitWorktrees).mockRejectedValueOnce(new Error('Branch switched'))
+    else vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('Git lock'))
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        status: 'waitingOnYou',
+        reason: 'Approval required',
+        gateError: expect.stringContaining(
+          failure === 'worktrees' ? 'Branch switched' : 'Git lock',
+        ),
+      })
+      expect(autoRun('p', 't')?.log).toHaveLength(1)
+      vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['skip', 'resume', 'completion'] as const)(
+  'leaving a fix via %s keeps validation failures until a validation runs',
+  async (transition) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        stage: 'fix',
+        status: transition === 'completion' ? 'running' : 'paused',
+        effort: 'light',
+        validationFindings: '[high] Previous validation failed',
+        sessionId: transition === 'completion' ? 's' : undefined,
+        turnSince: 1000,
+      }),
+    })
+    if (transition === 'skip') await skipStage('p', 't')
+    else if (transition === 'resume') await resumeAuto('p', 't')
+    else {
+      agent('review', 1100)
+      vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+        agent('working', 1200)
+        return 's'
+      })
+      const dispose = followAuto()
+      try {
+        await flush()
+      } finally {
+        dispose()
+      }
+    }
+    const current = autoRun('p', 't')!
+    if (transition === 'completion') {
+      // Light effort skips validation, but a finished fix still re-validates the failures (here
+      // with nothing to check, which passes).
+      expect(current).toMatchObject({ stage: 'review', validationFindings: undefined })
+      expect(current.log.map((l) => l.text)).toContain('Validation passed')
+      expect(nextStep(current, findings()).stage).toBe('mergeGate')
+      return
+    }
+    // A clean review can't merge past failures a skipped or interrupted fix left, and resuming
+    // the changed branch validates it again first.
+    expect(current).toMatchObject({
+      stage: transition === 'resume' ? 'validate' : 'review',
+      validationFindings: '[high] Previous validation failed',
+    })
+    expect(nextStep({ ...current, stage: 'review' }, findings()).stage).toBe('fix')
+    expect(reviewDecision(current, findings()).stage).toBe('fix')
+    expect(
+      mergeableHead(snapshot({ freshness: 'current', findings: findings() }), current),
+    ).toBeUndefined()
+  },
+)
+
+test('approval polling refreshes its request after a changed destination worktree', async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' }),
+  })
+  const destination = { ...tree, path: '/p', branch: 'main', current: true }
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+    vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('destination changed'))
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')?.gateError).toContain('destination changed')
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')?.gateError).toContain('existing worktree')
+    const moved = { ...destination, path: '/p/main' }
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, moved])
+    vi.mocked(ipc.mergeOutcome).mockImplementation(async (_project, request) =>
+      request.destination === moved.path ? 'merged' : Promise.reject('Stale destination'),
+    )
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ipc.gitWorktrees).toHaveBeenCalledTimes(3)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test("approval polling never judges another branch checked out in the run's worktree", async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' }),
+  })
+  const destination = { ...tree, path: '/p', branch: 'main', current: true }
+  const dispose = followAuto()
+  try {
+    await flush()
+    // The user checks out another branch, which is already merged, in the run's worktree.
+    vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('The merge branches changed'))
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([{ ...tree, branch: 'hotfix' }, destination])
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'mergeGate',
+      status: 'waitingOnYou',
+      gateError: expect.stringContaining('hotfix checked out'),
+    })
+    expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+    expect(
+      vi.mocked(ipc.mergeOutcome).mock.calls.every(([, r]) => r.sourceBranch === 'feature'),
+    ).toBe(true)
+    // Checking the run's branch out again lets the poll judge it.
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, destination])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+  } finally {
+    dispose()
+  }
+})
+
+test('a running run pauses when its worktree has another branch checked out', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'review', branch: 'other' }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'review' })
+    expect(autoRun('p', 't')?.reason).toContain("this run's other")
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test("a recovered approval poll clears its error and keeps the wait's reason", async () => {
+  vi.useFakeTimers()
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Stage skipped by you' }),
+  })
+  vi.mocked(ipc.mergeOutcome)
+    .mockRejectedValueOnce(new Error('Temporary Git lock'))
+    .mockRejectedValueOnce(new Error('Another Git lock'))
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      reason: 'Stage skipped by you',
+      gateError: 'Temporary Git lock',
+    })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')?.gateError).toBe('Another Git lock')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'waitingOnYou',
+      reason: 'Stage skipped by you',
+      gateError: undefined,
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['stopped', 'exited', 'idle'] as const)(
+  'a running merge agent that %s finishes Done when Git shows the merge',
+  async (end) => {
+    load()
+    agent(end === 'idle' ? 'idle' : 'working', 1100)
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        stage: 'merge',
+        sessionId: 's',
+        sessionOwned: true,
+        turnSince: 1000,
+        observedWorking: true,
+        sessionStartedMs: 1000,
+      }),
+    })
+    const s = useStore.getState().sessions.s
+    useStore.setState({
+      sessions: {
+        s:
+          end === 'stopped'
+            ? { ...s, status: { ...s.status!, stopped: true } }
+            : end === 'exited'
+              ? { ...s, running: false }
+              : s,
+      },
+    })
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+      // An owned agent idle at its prompt is stopped with the run; an ended one needs no stop.
+      if (end === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+      else expect(ipc.terminalStop).not.toHaveBeenCalled()
+      vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
+      useStore.getState().patchTask('p', 't', {
+        auto: run({
+          stage: 'merge',
+          runId: 'again',
+          sessionId: 's',
+          turnSince: 1000,
+          observedWorking: true,
+          sessionStartedMs: 1000,
+        }),
+      })
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
+  'a %s merge agent checks Git after the user resolves the merge',
+  async (state) => {
+    load()
+    agent('review', 1100)
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        stage: 'merge',
+        status: 'waitingOnYou',
+        waitingFor: 'agentInput',
+        sessionId: 's',
+        sessionOwned: true,
+        sessionStartedMs: 1000,
+        turnSince: 1100,
+      }),
+    })
+    if (state === 'forgotten') useStore.setState({ sessions: {}, serviceConnected: true })
+    else if (state === 'idle') agent('idle', 1200)
+    else
+      useStore.setState({
+        sessions: {
+          s: {
+            ...useStore.getState().sessions.s,
+            running: state !== 'closed',
+            status: { ...useStore.getState().sessions.s.status!, stopped: state === 'stopped' },
+          },
+        },
+      })
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+      expect(ipc.gitReview).not.toHaveBeenCalled()
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      // Only an agent still at its prompt is left to stop; a finished run offers no Stop.
+      if (state === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+      else expect(ipc.terminalStop).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each(['notMerged', 'inProgress', 'dirty', 'error'] as const)(
+  'a closed merge agent pauses when the Git outcome is %s',
+  async (outcome) => {
+    load()
+    agent('idle', 1200)
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        stage: 'merge',
+        status: 'waitingOnYou',
+        waitingFor: 'agentInput',
+        sessionId: 's',
+        turnSince: 1100,
+      }),
+    })
+    if (outcome === 'error')
+      vi.mocked(ipc.mergeOutcome).mockRejectedValue(new Error('Missing tree'))
+    else vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+      expect(autoRun('p', 't')?.reason).toContain(
+        outcome === 'error' ? 'Missing tree' : 'Agent stopped while waiting for input',
+      )
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each([true, false])(
+  'a kept merge agent finishing its next turn completes Auto (working observed: %s)',
+  async (observeWorking) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue('inProgress')
+    agent('review', 1100)
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'merge', sessionId: 's', turnSince: 1000 }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        status: 'waitingOnYou',
+        waitingFor: 'agentInput',
+        turnSince: 1100,
+      })
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(ipc.mergeOutcome).toHaveBeenCalledOnce()
+      if (observeWorking) {
+        agent('working', 1200)
+        await flush()
+        expect(autoRun('p', 't')?.status).toBe('running')
+      }
+      vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+      agent('review', 1300)
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('unrelated store updates do not rebuild session lifecycle selections', async () => {
+  load()
+  const records = useStore.getState().sessionRecords
+  const scan = vi.spyOn(records, 'flatMap')
+  const dispose = followAuto()
+  try {
+    await flush()
+    scan.mockClear()
+    for (let i = 0; i < 20; i++) useStore.getState().setMessage(`Output ${i}`)
+    await flush()
+    expect(scan).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+    scan.mockRestore()
+  }
+})
+
+test.each(['failed', 'paused'] as const)(
+  'skipping a %s fix launch does not accept findings',
+  async (status) => {
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'fix', status, round: 0, reason: 'Launch failed' }),
+    })
+    await skipStage('p', 't')
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'running' })
+  },
+)
+
+test.each(['working', 'review', 'needsInput'] as const)(
+  'record-only %s sessions are tracked before hydration',
+  async (state) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    const record = {
+      ...plannerRecord(),
+      id: 's',
+      snapshot: {
+        running: true,
+        startedMs: 1000,
+        status: { stopped: false, agent: { state, sinceMs: 1500, authoritative: true } },
+      },
+    }
+    useStore.setState({ serviceConnected: true, sessionRecords: [record] as never, sessions: {} })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ sessionId: 's', sessionStartedMs: 1000, turnSince: 1100 }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      if (state === 'working')
+        expect(autoRun('p', 't')).toMatchObject({ status: 'running', observedWorking: true })
+      if (state === 'review')
+        expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+      if (state === 'needsInput')
+        expect(autoRun('p', 't')).toMatchObject({
+          status: 'waitingOnYou',
+          waitingFor: 'agentInput',
+        })
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('record-only sessions still pause when their generation changes', async () => {
+  load()
+  useStore.setState({
+    sessionRecords: [
+      { ...plannerRecord(), id: 's', snapshot: { running: true, startedMs: 2000 } },
+    ] as never,
+  })
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', sessionStartedMs: 1000 }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      reason: 'The tracked session was stopped or relaunched by hand',
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test('Auto pauses legacy mixed-format findings instead of merging them', async () => {
+  load()
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    text: 'Verdict: issues\n- [low] Minor\n- **src/db.rs:42** [high] Data loss',
+    verdict: null,
+  })
+  const dispose = followAuto()
+  try {
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'standard',
+      device: 'codex',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+    })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'paused' })
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['mergeGate', 'merge'] as const)(
+  'a saved reviewed head at %s cannot bypass missing counts',
+  async (stage) => {
+    load()
+    vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), verdict: null })
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage, reviewedHead: 'abc', merge: { mode: 'auto', destinationBranch: 'main' } }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a record without a snapshot waits for hydration instead of reporting a relaunch', async () => {
+  load()
+  useStore.setState({
+    serviceConnected: true,
+    sessionRecords: [{ ...plannerRecord(), id: 's', snapshot: null }] as never,
+  })
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', sessionStartedMs: 1000 }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['refused', 'empty', 'unconfirmed'] as const)(
+  'a %s fix launch never accepts findings on Skip, and uses a round only once it may run',
+  async (failure) => {
+    load()
+    const { fixReviewFindings } = await import('./reviewHandoff')
+    const { REVIEW_SCOPE } = await import('../types')
+    useStore.setState({
+      sessionRecords: [
+        {
+          id: 'reviewer',
+          metadata: { projectId: 'p', componentId: REVIEW_SCOPE },
+          spec: { cwd: tree.path },
+        },
+      ] as never,
+    })
+    if (failure === 'refused')
+      vi.mocked(fixReviewFindings).mockRejectedValue(new Error('Launch refused'))
+    else
+      vi.mocked(fixReviewFindings).mockResolvedValue(failure === 'empty' ? '' : 'unknown-session')
+    useStore.getState().patchTask('p', 't', { auto: run({ stage: 'fix' }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(fixReviewFindings).toHaveBeenCalledOnce()
+      // An unconfirmed launch may have started an agent, so it counts against the budget.
+      expect(autoRun('p', 't')).toMatchObject({
+        status: 'failed',
+        round: failure === 'unconfirmed' ? 1 : 0,
+      })
+      expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+      await skipStage('p', 't')
+      expect(autoRun('p', 't')?.stage).toBe('review')
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('Start proceeds after Stop while a stale drive still waits, which then leaves the new run alone', async () => {
+  load()
+  let release!: (value: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockReturnValueOnce(
+    new Promise<Worktree[]>((resolve) => {
+      release = resolve
+    }),
+  )
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    agent('working', Date.now())
+    return 's'
+  })
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'review', effort: 'light' }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+    stopAuto('p', 't')
+    await startAuto('p', 't', {
+      goal: 'Goal',
+      effort: 'light',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+      device: 'codex',
+    })
+    const started = autoRun('p', 't')!
+    expect(started).toMatchObject({ status: 'running', branch: 'feature' })
+    release([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await flush()
+    await flush()
+    // Only the new run's own drive launches its reviewer.
+    expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')?.sessionId).toBe('s')
+  } finally {
+    dispose()
+  }
+})
+
+test('a finished fix re-runs failed validation even when the effort skips validation', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const id = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: true,
+    changes: { [id]: [{ path: 'file.txt', kind: 'modified' }] },
+    affected: [],
+  })
+  const report = {
+    plan: {
+      request: { kind: 'validateChanged' as const, componentIds: [id] },
+      sessions: ['check'],
+      stages: [],
+      skipped: [],
+      task: 't',
+    },
+    results: [{ sessionId: 'check', outcome: 'failed' as const, exitCode: 1 }],
+  }
+  vi.mocked(ipc.graphActionRun).mockResolvedValue(report as never)
+  // A Light run started at Validate, whose failures sent a clean review to Fix.
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      stage: 'fix',
+      effort: 'light',
+      round: 0,
+      validationFindings: '[high] Validation failed: check failed (exit 1)',
+      sessionId: 's',
+      turnSince: 1000,
+    }),
+  })
+  agent('review', 1100)
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  const dispose = followAuto()
+  try {
+    await flush()
+    await flush()
+    expect(ipc.graphActionRun).toHaveBeenCalledOnce()
+    const current = autoRun('p', 't')!
+    expect(current.stage).not.toBe('mergeGate')
+    expect(current.stage).not.toBe('merge')
+    expect(current.validationFindings).toContain('[high] Validation failed')
+    // Clean findings still don't permit a merge while validation fails.
+    expect(reviewDecision(current, findings()).stage).toBe('fix')
+    expect(
+      mergeableHead(snapshot({ freshness: 'current', findings: findings() }), current),
+    ).toBeUndefined()
+  } finally {
+    dispose()
+  }
+})

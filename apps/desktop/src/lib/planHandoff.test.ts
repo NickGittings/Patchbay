@@ -72,7 +72,7 @@ test('one click hands off a whole-project plan using the planner provider', asyn
     s.rootTerminals.at(-1)!.id,
     null,
     'p',
-    { kind: 'implementPlan' },
+    { kickoff: { kind: 'implementPlan' } },
   )
 })
 
@@ -187,7 +187,7 @@ test('a plan made on the project folder is copied into the worktree it is implem
     useStore.getState().rootTerminals.at(-1)!.id,
     'later',
     'p',
-    { kind: 'implementPlan' },
+    { kickoff: { kind: 'implementPlan' } },
   )
 })
 
@@ -215,4 +215,68 @@ test('implementing in the project folder copies nothing', async () => {
   await implementPlannerPlan('claude')
   expect(ipc.planWrite).not.toHaveBeenCalled()
   expect(ipc.planRead).toHaveBeenCalledWith('p', undefined)
+})
+
+test('Auto implements the project plan and returns the launched session', async () => {
+  useStore.setState({ activeTask: 'later' })
+  const auto = {
+    goal: 'Finish the worktree task',
+    fixFloor: null,
+    effortNote: 'Add tests',
+    commit: true,
+  }
+  const sid = await implementPlannerPlan('claude', auto)
+  const terminalId = useStore.getState().rootTerminals.at(-1)!.id
+  expect(sid).toBe(sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'))
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', {
+    kickoff: { kind: 'implementPlan' },
+    auto,
+  })
+})
+
+test('Auto never falls back to an older worktree plan', async () => {
+  useStore.setState({ activeTask: 'later' })
+  vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
+    text: task ? '# Old worktree plan' : '',
+    cut: false,
+  }))
+  await expect(
+    implementPlannerPlan('claude', { goal: 'g', fixFloor: null, effortNote: '', commit: true }),
+  ).rejects.toThrow('No plan received yet')
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+})
+
+test('Auto handing off a manual planner stops it before implementation', async () => {
+  const planner = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [planner]: { running: true } } })
+  await implementPlannerPlan('claude', {
+    goal: 'Goal',
+    fixFloor: null,
+    effortNote: '',
+    commit: true,
+  })
+  expect(ipc.terminalStop).toHaveBeenCalledWith(planner)
+  expect(startTerminal).toHaveBeenCalledOnce()
+})
+
+test('overlapping Auto and manual plan approvals launch only one implementation', async () => {
+  let finish!: () => void
+  vi.mocked(startTerminal).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const auto = implementPlannerPlan('claude', {
+    goal: 'Goal',
+    fixFloor: null,
+    effortNote: '',
+    commit: true,
+  })
+  await vi.waitFor(() => expect(startTerminal).toHaveBeenCalledOnce())
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('already being implemented')
+  finish()
+  await auto
+  expect(startTerminal).toHaveBeenCalledOnce()
 })

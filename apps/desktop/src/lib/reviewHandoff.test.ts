@@ -45,7 +45,7 @@ const record: SessionRecord = {
   history: [],
   interrupted: false,
 }
-const fix = { kind: 'fixFindings', reviewSession: 'review' }
+const fix = { kickoff: { kind: 'fixFindings', reviewSession: 'review' } }
 const state = {
   project: { id: 'p', root: '/p' },
   activeTask: null as string | null,

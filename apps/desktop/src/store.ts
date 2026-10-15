@@ -78,6 +78,7 @@ export interface TaskWorkspace {
   maximizedTerminal: string | null
   graphActionBusy: boolean
   graphAction: ActionRequest | null
+  auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
 }
 export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
@@ -92,6 +93,7 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
     maximizedTerminal: null,
     graphActionBusy: false,
     graphAction: null,
+    auto: null,
     graphActionReport: null,
   }
 }
@@ -107,6 +109,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     maximizedTerminal,
     graphActionBusy,
     graphAction,
+    auto,
     graphActionReport,
   } = s
   return {
@@ -120,6 +123,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     maximizedTerminal,
     graphActionBusy,
     graphAction,
+    auto,
     graphActionReport,
   }
 }
@@ -154,6 +158,7 @@ export interface ProjectState {
   groups: ComponentGroup[]
   graphActionBusy: boolean
   graphAction: ActionRequest | null
+  auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
   tasks: Task[]
   activeTask: string | null
@@ -233,6 +238,7 @@ interface State {
   graphActionBusy: boolean
   /** The action running, while `graphActionBusy`. */
   graphAction: ActionRequest | null
+  auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
   extensions: ExtensionRegistry
   commands: CommandContribution[]
@@ -288,6 +294,9 @@ interface State {
   /** Components to seed the new-task dialog with while it is open (UI only). */
   newTask: string[] | null
   setNewTask: (components: string[] | null) => void
+  /** Bumped to open the toolbar's Auto panel, from the attention list (UI only). */
+  autoPanelRequest: number
+  showAutoPanel: () => void
   /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */
   proposedScope: string[]
   setProposedScope: (ids: string[]) => void
@@ -535,6 +544,7 @@ export const useStore = create<State>((set, get) => ({
   groups: [],
   graphActionBusy: false,
   graphAction: null,
+  auto: null,
   graphActionReport: null,
   addGroup: (name, componentIds) =>
     set((s) => ({
@@ -638,6 +648,8 @@ export const useStore = create<State>((set, get) => ({
     }),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
+  autoPanelRequest: 0,
+  showAutoPanel: () => set((s) => ({ autoPanelRequest: s.autoPanelRequest + 1 })),
   proposedScope: [],
   setProposedScope: (proposedScope) => set({ proposedScope }),
 
@@ -960,6 +972,7 @@ function emptyProjectState(): ProjectState {
     groups: [],
     graphActionBusy: false,
     graphAction: null,
+    auto: null,
     graphActionReport: null,
     tasks: [],
     activeTask: null,
@@ -990,6 +1003,7 @@ function projectState(s: State): ProjectState {
     groups,
     graphActionBusy,
     graphAction,
+    auto,
     graphActionReport,
     tasks,
     activeTask,
@@ -1022,6 +1036,7 @@ function projectState(s: State): ProjectState {
     groups,
     graphActionBusy,
     graphAction,
+    auto,
     graphActionReport,
     tasks,
     activeTask,

@@ -214,6 +214,7 @@ test('a branch is never its own review base', async () => {
 test('findings become stale for new HEADs, newer edits and unfinished review attempts', async () => {
   const { reviewState } = await import('./reviewAgents')
   const findings: ReviewFindings = {
+    verdict: null,
     text: 'No findings',
     modifiedMs: 100,
     reviewedHead: 'abc',

@@ -69,6 +69,10 @@ pub enum Action {
         #[serde(rename = "componentId")]
         component_id: String,
     },
+    ValidateChanged {
+        #[serde(rename = "componentIds")]
+        component_ids: Vec<String>,
+    },
     Propose {
         proposal: Proposal,
     },

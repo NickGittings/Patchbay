@@ -60,8 +60,23 @@ import {
   releaseMapEdit,
   syncRoots,
 } from './ipc'
+import { startAuto, mergeNow, pauseAuto, resumeAuto, stopAuto } from './auto'
+import { gitWorktrees, taskCreate, mergeOutcome } from './ipc'
+import { attentionItems } from './attention'
+import { restoredLayout, workspaceDocument } from './workspace'
 const hooks = {
+  startAuto,
+  mergeNow,
+  pauseAuto,
+  resumeAuto,
+  stopAuto,
+  gitWorktrees,
   taskAttach,
+  taskCreate,
+  mergeOutcome,
+  attentionItems,
+  restoredLayout,
+  workspaceDocument,
   planRead,
   syncAgentProject,
   saveMap,

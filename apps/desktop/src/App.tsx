@@ -29,6 +29,7 @@ import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
+import { followAuto } from './lib/auto'
 import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
 import { projectOf, useStore } from './store'
@@ -126,11 +127,13 @@ export default function App() {
     void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
     const stopWindows = syncComponentWindows()
     const stopTasks = followActiveTask()
+    const stopAuto = followAuto()
     return () => {
       stopHost()
       stopMaintenance()
       stopWindows()
       stopTasks()
+      stopAuto()
     }
   }, [])
   useEffect(() => {

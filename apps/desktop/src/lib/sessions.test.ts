@@ -154,9 +154,9 @@ test.each([{ kind: 'implementPlan' }, { kind: 'fixFindings', reviewSession: 'rev
       source: 'builtin',
     })
     vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))
-    await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', kickoff)).rejects.toThrow(
-      'Launch failed',
-    )
+    await expect(
+      startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff }),
+    ).rejects.toThrow('Launch failed')
     // The handoff reports it; a toast here would show it twice.
     expect(useStore.getState().message ?? '').not.toContain('Launch failed')
   },
@@ -197,7 +197,7 @@ test('a fix terminal started again before the list reconciles is still a fix', a
   useStore.setState({ sessionRecords: [] })
   vi.mocked(ipc.taskRootStart).mockResolvedValue('')
   const fix = { kind: 'fixFindings', reviewSession: 'review' } as const
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: fix })
   await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p')
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual({ kind: 'fixFindings' })
 })
@@ -206,16 +206,18 @@ test('a handoff whose reply was lost counts as started once its session exists',
   vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Reply lost'))
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: false } as TerminalSnapshot)
   await expect(
-    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kind: 'implementPlan' }),
+    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: { kind: 'implementPlan' } }),
   ).resolves.toBeUndefined()
 })
 test('a failed handoff keeps no request id to retry with', async () => {
   const terminalId = useStore.getState().addRootTerminal(agent)
   vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Launch failed'))
   const fix = { kind: 'fixFindings', reviewSession: 'review' } as const
-  await expect(startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)).rejects.toThrow()
+  await expect(
+    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: fix }),
+  ).rejects.toThrow()
   vi.mocked(ipc.taskRootStart).mockResolvedValueOnce('')
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', fix)
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: fix })
   const [first, second] = vi.mocked(ipc.taskRootStart).mock.calls.map((call) => call[4])
   expect(second).not.toBe(first)
 })
@@ -234,8 +236,7 @@ test('a handoff learns its launch failed after sessions were reset', async () =>
     throw new Error('Launch failed')
   })
   const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
-    kind: 'fixFindings',
-    reviewSession: 'review',
+    kickoff: { kind: 'fixFindings', reviewSession: 'review' },
   })
   await vi.waitFor(() => expect(ipc.taskRootStart).toHaveBeenCalled())
   resetSessions(0)
@@ -390,6 +391,8 @@ test('planner restart applies the current highlights and clears the scope warnin
     expect.objectContaining({ kind: 'agent' }),
     expect.any(String),
     true,
+    undefined,
+    undefined,
   )
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -414,6 +417,7 @@ test('root agent restart prepares the current scope through taskRootStart', asyn
     expect.any(String),
     undefined,
     true,
+    undefined,
   )
 })
 
@@ -557,4 +561,113 @@ test('reconciling drops the state of sessions the service forgot', () => {
     local: { running: true },
   })
   expect(withoutForgotten(sessions, [record('kept')], [record('kept')])).toBe(sessions)
+})
+
+test('Auto launch rejects when Close cancels it before IPC', async () => {
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+  const rejected = expect(launch).rejects.toThrow('The launch was cancelled')
+  const close = closeTerminal(TASK_ROOT_SCOPE, terminalId)
+  await rejected
+  expect(await close).toBe(true)
+  expect(ipc.terminalCloseGuard).toHaveBeenCalledWith('p', TASK_ROOT_SCOPE, terminalId)
+  expect(ipc.taskRootStart).not.toHaveBeenCalled()
+})
+
+test('reset while the backend starts an Auto agent rejects the obsolete launch', async () => {
+  const spawn = deferred()
+  vi.mocked(ipc.taskRootStart).mockImplementationOnce(async () => {
+    await spawn.promise
+    return 'started'
+  })
+  const terminalId = useStore.getState().addRootTerminal({
+    id: 'agent',
+    name: 'Agent',
+    command: 'claude',
+    kind: 'agent',
+    category: 'Agents',
+    source: 'builtin',
+  })
+  const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+  const rejected = expect(launch).rejects.toThrow('The launch was cancelled')
+  await vi.waitFor(() => expect(ipc.taskRootStart).toHaveBeenCalledOnce())
+  resetSessions(1)
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ running: true } as TerminalSnapshot)
+  spawn.resolve()
+  await rejected
+})
+
+test.each([false, true])(
+  'Auto launch rejects on reset even with a stale running snapshot (%s)',
+  async (running) => {
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ running } as TerminalSnapshot)
+    const terminalId = useStore.getState().addRootTerminal({
+      id: 'agent',
+      name: 'Agent',
+      command: 'claude',
+      kind: 'agent',
+      category: 'Agents',
+      source: 'builtin',
+    })
+    const launch = startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+      kickoff: { kind: 'implementPlan' },
+    })
+    const rejected = expect(launch).rejects.toThrow('The launch was cancelled')
+    resetSessions(1)
+    await rejected
+    expect(ipc.taskRootStart).not.toHaveBeenCalled()
+  },
+)
+
+test('starting an agent an Auto run still tracks again sends its Auto brief and planner kickoff', async () => {
+  const auto = { goal: 'Goal', fixFloor: 'medium' as const, effortNote: 'Note', commit: true }
+  const fixId = useStore.getState().addRootTerminal(agent)
+  const fixSid = sessionId(TASK_ROOT_SCOPE, fixId, null, 'p')
+  const plannerSid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  const tracking = (
+    sid: string,
+    kickoff?: { kind: 'plan' },
+    status: 'paused' | 'stopped' = 'paused',
+  ) =>
+    useStore.getState().patchTask('p', null, {
+      auto: {
+        runId: 'r',
+        status,
+        stage: 'fix',
+        goal: 'Goal',
+        effort: 'standard',
+        merge: { mode: 'ask', destinationBranch: 'main' },
+        device: 'claude',
+        round: 1,
+        log: [],
+        sessionId: sid,
+        sessionBrief: { sessionId: sid, auto, kickoff },
+      },
+    })
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  tracking(fixSid)
+  await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[7]).toEqual(auto)
+  tracking(plannerSid, { kind: 'plan' })
+  await restartTerminal(PLAN_SCOPE, 'claude')
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([{ kind: 'plan' }, auto])
+  // Once the run moved on, the terminal starts like any other.
+  tracking('other')
+  await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[7]).toBeUndefined()
+  // A stopped run briefs nothing either.
+  tracking(plannerSid, { kind: 'plan' }, 'stopped')
+  await restartTerminal(PLAN_SCOPE, 'claude')
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([undefined, undefined])
 })

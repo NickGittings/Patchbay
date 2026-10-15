@@ -12,6 +12,206 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Severity {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Severities {
+    pub critical: u32,
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Verdict {
+    pub clean: bool,
+    pub counts: Severities,
+}
+
+/// Read an explicit verdict, allowing Markdown headings and emphasis around its label.
+/// Count the leading severity of each finding; prose, legends and quoted tags don't count.
+/// An optional `Counts:` line right after the verdict (blank lines aside) reports totals: each
+/// severity takes the larger of the reported and the counted total, since neither alone may hide a
+/// finding, and a clean verdict with any finding reads as issues. Unreadable totals there give no
+/// verdict; a `Counts:` line anywhere else is prose.
+#[must_use]
+pub fn verdict(text: &str) -> Option<Verdict> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lines = text.lines().peekable();
+    let clean = lines.find_map(|line| {
+        let header = line
+            .trim()
+            .trim_start_matches('#')
+            .trim()
+            .replace(['*', '`', '_'], "")
+            .to_ascii_lowercase();
+        let (key, value) = header.split_once(':')?;
+        if key.trim() != "verdict" {
+            return None;
+        }
+        // Only the first word counts, so "clean." or "issues (2)" still read.
+        match value
+            .trim()
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()?
+        {
+            "clean" => Some(true),
+            "issues" => Some(false),
+            _ => None,
+        }
+    })?;
+    while lines.next_if(|line| line.trim().is_empty()).is_some() {}
+    let reported = match lines.peek().and_then(|line| counts_value(line)) {
+        Some(value) => {
+            lines.next();
+            Some(serde_json::from_str::<Severities>(&value).ok()?)
+        }
+        None => None,
+    };
+    let mut counts = Severities::default();
+    let mut legend_section = false;
+    let mut code_block = false;
+    for line in lines {
+        let line = line.trim().to_ascii_lowercase();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            code_block = !code_block;
+            continue;
+        }
+        if code_block {
+            continue;
+        }
+        if line.starts_with('#') {
+            let heading = line
+                .trim_start_matches('#')
+                .trim()
+                .trim_matches(['*', '`', '_', ':']);
+            // A tagged heading is a finding, even one about a chart's legend.
+            legend_section = !heading.starts_with('[')
+                && (heading == "legend"
+                    || heading.ends_with(" legend")
+                    || matches!(
+                        heading,
+                        "severities" | "severity levels" | "severity definitions"
+                    ));
+        }
+        if legend_section {
+            continue;
+        }
+        // Ignore Markdown emphasis around either a tag or a list number.
+        let finding = line.replace(['*', '`', '_'], "");
+        // A severity column needn't be the first column of a Markdown table.
+        let table_finding = finding.strip_prefix('|').and_then(|row| {
+            let cells: Vec<_> = row.split('|').map(str::trim).collect();
+            let tag = cells.iter().find_map(|cell| {
+                let tag = cell.strip_prefix('[')?.strip_suffix(']')?.trim();
+                matches!(tag, "critical" | "high" | "medium" | "low").then_some(tag)
+            })?;
+            // Counts, row numbers and bare severity tags aren't descriptions. A finding
+            // table must also have a cell containing the actual issue's text.
+            let description = cells.into_iter().find(|cell| {
+                !matches!(*cell, "[critical]" | "[high]" | "[medium]" | "[low]")
+                    && cell.chars().any(char::is_alphabetic)
+            })?;
+            Some((tag, description))
+        });
+        if finding.starts_with('|') && table_finding.is_none() {
+            continue;
+        }
+        let line = finding
+            .trim_start_matches(['#', '-', '+', '|'])
+            .trim_start();
+        let line = if let Some((number, rest)) = line.split_once(['.', ')']) {
+            if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+                rest.trim_start()
+            } else {
+                line
+            }
+        } else {
+            line
+        };
+        // A checked or unchecked task list item can still contain a finding.
+        let line = ["[ ]", "[x]"]
+            .into_iter()
+            .find_map(|box_tag| line.strip_prefix(box_tag))
+            .unwrap_or(line)
+            .trim_start();
+        let Some((tag, description)) =
+            table_finding.or_else(|| line.strip_prefix('[').and_then(|s| s.split_once(']')))
+        else {
+            continue;
+        };
+        let tag = tag.trim();
+        let description = description.trim().trim_matches('|').trim();
+        // A list of bare tags describes the severity scheme, not a finding.
+        if description.is_empty()
+            || description
+                .split(|c: char| c.is_whitespace() || matches!(c, ',' | '|' | '/'))
+                .all(|word| {
+                    matches!(
+                        word.trim_matches(['*', '`', '_']),
+                        "" | "and" | "or" | "[critical]" | "[high]" | "[medium]" | "[low]"
+                    )
+                })
+        {
+            continue;
+        }
+        let count = match tag {
+            "critical" => &mut counts.critical,
+            "high" => &mut counts.high,
+            "medium" => &mut counts.medium,
+            "low" => &mut counts.low,
+            _ => continue,
+        };
+        *count += 1;
+    }
+    if let Some(reported) = reported {
+        counts.critical = counts.critical.max(reported.critical);
+        counts.high = counts.high.max(reported.high);
+        counts.medium = counts.medium.max(reported.medium);
+        counts.low = counts.low.max(reported.low);
+    }
+    Some(Verdict {
+        clean: clean && counts == Severities::default(),
+        counts,
+    })
+}
+
+/// The value of a `Counts:` line, allowing a heading mark and Markdown emphasis around it.
+fn counts_value(line: &str) -> Option<String> {
+    let line = line
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .replace(['*', '`', '_'], "")
+        .to_ascii_lowercase();
+    let rest = line
+        .strip_prefix("counts")?
+        .trim_start()
+        .strip_prefix(':')?;
+    Some(rest.trim().to_owned())
+}
+
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +238,7 @@ struct Started {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Findings {
+    pub verdict: Option<Verdict>,
     pub text: String,
     pub modified_ms: u64,
     /// Absent when the findings predate the latest review attempt.
@@ -194,6 +395,7 @@ pub fn prepare(
     request: &ReviewRequest,
     terminal: &TerminalSpec,
     policy: &dyn Policy,
+    auto: Option<&context::AutoBrief>,
 ) -> Result<Prepared> {
     let root = Path::new(&project.root);
     ensure!(
@@ -228,17 +430,20 @@ pub fn prepare(
     let mut terminal = terminal.clone();
     terminal.id = crate::workspace::session_id(&request.worktree, REVIEW_SCOPE, "review");
     terminal.name = format!("Review · {}", request.branch);
-    let text = format!(
+    let mut text = format!(
         "# Patchbay branch review\n\nProject: {}\nWorktree: {}\nBranch: {}\nHEAD: {head}\nBase branch: {}\nMerge base: {merge_base}\n\n\
          Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions.\n\n\
          Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Fixes belong in Implementation. Read-only behavior relies on these instructions; Patchbay does not rewrite the user's agent command to enforce it.\n\n\
-         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
+         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. Start the file with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}, with nonnegative integer totals for ALL open findings at each severity. Include all four keys exactly once, no other keys, and no Markdown around these two lines. Use clean only when all counts are zero; use issues otherwise. These counts control automatic merging, so verify them against every finding before saving. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
         project.name,
         request.worktree,
         request.branch,
         request.base,
         findings.display(),
     );
+    if let Some(auto) = auto {
+        text.push_str(&auto.markdown("review"));
+    }
     let mut scoped = project.clone();
     scoped.root.clone_from(&request.worktree);
     scoped.components.clear();
@@ -349,6 +554,7 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
                 git::changed_since(Path::new(&w.path), started.started_ms).unwrap_or(true)
             });
     Some(Findings {
+        verdict: verdict(&text),
         text,
         modified_ms,
         reviewed_head,
@@ -562,6 +768,233 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reported_counts_and_tagged_findings_both_block() {
+        let findings = "- [low] Minor issue\n- **[high]** src/db.rs:42 Data loss";
+        let parsed = verdict(&format!(
+            "Verdict: issues\nCounts: {{\"critical\":0,\"high\":1,\"medium\":0,\"low\":1}}\n{findings}"
+        ))
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(parsed.counts.high, 1);
+        assert_eq!(parsed.counts.low, 1);
+        // Tagged findings the reported counts leave out still count.
+        let parsed = verdict(&format!(
+            "Verdict: clean\nCounts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}\n- [critical] Lost writes\n{findings}"
+        ))
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                critical: 1,
+                high: 1,
+                low: 1,
+                ..Severities::default()
+            }
+        );
+        // Reported totals above the tagged ones count too, even with a clean verdict.
+        let parsed = verdict(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":2,\"medium\":0,\"low\":0}\n- [high] Bug",
+        )
+        .unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(parsed.counts.high, 2);
+        let clean = verdict(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nNo findings.",
+        )
+        .unwrap();
+        assert!(clean.clean);
+        assert!(
+            !verdict("Verdict: issues\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}")
+                .unwrap()
+                .clean
+        );
+    }
+
+    #[test]
+    fn counts_are_optional_and_read_leniently_but_never_malformed() {
+        assert!(verdict("Verdict: clean\nNo findings.").unwrap().clean);
+        assert_eq!(
+            verdict("Verdict: issues\n- [high] Bug")
+                .unwrap()
+                .counts
+                .high,
+            1
+        );
+        for text in [
+            "\u{feff}Verdict: issues\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}",
+            "# Review\n\n**Verdict:** issues\n\n**Counts:** `{\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}`",
+            "Verdict: issues\n\n\ncounts : {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}",
+        ] {
+            assert_eq!(verdict(text).unwrap().counts.high, 1, "{text}");
+        }
+        assert!(
+            verdict("Verdict: maybe\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}")
+                .is_none()
+        );
+        for counts in [
+            "{}",
+            r#"{"critical":0,"high":1,"medium":0}"#,
+            r#"{"critical":0,"high":1,"medium":0,"low":0,"extra":1}"#,
+            r#"{"critical":0,"high":0,"high":1,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":-1,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":1.5,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":4294967296,"medium":0,"low":0}"#,
+            r#"{"critical":0,"high":"1","medium":0,"low":0}"#,
+            "not json",
+        ] {
+            assert!(
+                verdict(&format!("Verdict: clean\nCounts: {counts}")).is_none(),
+                "{counts}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts_lines_away_from_the_verdict_are_prose() {
+        // Without totals beside the verdict, tags decide, whatever later lines say.
+        for later in [
+            "Counts: not json",
+            "**Counts:** 2 high, 1 low",
+            r#"Counts: {"critical":0,"high":0,"medium":0,"low":0}"#,
+            r#"Counts: {"critical":3,"high":0,"medium":0,"low":0}"#,
+        ] {
+            let text = format!("Verdict: issues\nSummary first.\n{later}\n- [high] Bug");
+            let parsed = verdict(&text).unwrap();
+            assert_eq!(
+                parsed.counts,
+                Severities {
+                    high: 1,
+                    ..Severities::default()
+                },
+                "{later}"
+            );
+        }
+        let text = "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\n\nCounts: not json\nNo findings.";
+        assert!(verdict(text).unwrap().clean);
+    }
+
+    #[test]
+    fn markdown_does_not_hide_blocking_findings() {
+        for line in [
+            "- [ ] [high] Bug",
+            "* [x] **[high]** Bug",
+            "1. [X] [**high**] Bug",
+            "| [high] | Bug |",
+            "| [**high**] | Bug |",
+            "| 1 | [**high**] | Bug |",
+            "| Bug mentions [low] | [high] |",
+            "[**high**] Bug",
+            "- [ ] [__high__] Bug",
+        ] {
+            let parsed = super::verdict(&format!("Verdict: clean\n{line}")).unwrap();
+            assert_eq!(parsed.counts.high, 1, "{line}");
+        }
+        let parsed = super::verdict(
+            "Verdict: clean\n| [high] |\n| [**high**] | [low] |\n- [ ] [high]\n\
+             ## Severity legend\n| [high] | Priority definition |\n\
+             ## Examples\n```markdown\n- [ ] [high] Example\n```",
+        )
+        .unwrap();
+        assert_eq!(parsed.counts, super::Severities::default());
+    }
+
+    #[test]
+    fn severity_count_tables_are_not_findings() {
+        for row in [
+            "| [high] | 0 |",
+            "| [**critical**] | 2 |",
+            "| 0 | [medium] |",
+            "| 1 | [low] | 0 |",
+            "| [high] | 0 | 0% |",
+        ] {
+            let parsed = super::verdict(&format!(
+                "Verdict: clean\n| Severity | Count |\n| --- | ---: |\n{row}"
+            ))
+            .unwrap();
+            assert_eq!(parsed.counts, super::Severities::default(), "{row}");
+        }
+        let parsed = super::verdict(
+            "Verdict: issues\n| [high] | 0 |\n| 1 | [high] | Bug |\n| [low] | Minor issue |",
+        )
+        .unwrap();
+        assert_eq!(parsed.counts.high, 1);
+        assert_eq!(parsed.counts.low, 1);
+    }
+
+    #[test]
+    fn bold_list_numbers_do_not_hide_blocking_findings() {
+        for line in [
+            "**1.** [high] Bug",
+            "**2)** **[high]** Bug",
+            "- **[high]** Bug",
+            "__1.__ [high] Bug",
+            "`1.` [high] Bug",
+        ] {
+            let parsed = super::verdict(&format!("Verdict: clean\n{line}")).unwrap();
+            assert_eq!(parsed.counts.high, 1, "{line}");
+        }
+    }
+
+    #[test]
+    fn parses_structured_verdicts_leniently_and_requires_the_header() {
+        use super::verdict;
+        assert!(verdict("  VERDICT : ClEaN \nNo findings.").unwrap().clean);
+        let issues =
+            verdict("Verdict: issues\n- [Critical] one\n- [HIGH] two\n[medium] three\n[low] four")
+                .unwrap();
+        assert!(!issues.clean);
+        assert_eq!(
+            issues.counts,
+            super::Severities {
+                critical: 1,
+                high: 1,
+                medium: 1,
+                low: 1
+            }
+        );
+        assert!(verdict("No findings").is_none());
+        assert!(verdict("Verdict: maybe").is_none());
+        assert!(verdict("# Findings\n**Verdict:** clean").unwrap().clean);
+        let parsed = verdict("# Review\n**Verdict:** issues\nLegend: [critical], [high], [medium], [low]\n[critical] [high] [medium] [low]\n1. **[low]** finding mentions [critical]\n### [medium] another finding\nExplanation mentions [high]").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                low: 1,
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+        let parsed = verdict("# Review\n**Verdict**: **issues**\n## Severity legend\n- [critical] highest priority\n- [low] minor\n## Findings\n1. [medium] file.rs:1: bug mentioning [critical]\n```text\n[high] example\n```").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+        let parsed = verdict("Verdict: issues\n[low] [critical] file.rs:1: finding\n[critical], [high], [medium] or [low]").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                low: 1,
+                ..Severities::default()
+            }
+        );
+        assert!(verdict("Verdict: clean.").unwrap().clean);
+        assert!(!verdict("Verdict: issues (2)").unwrap().clean);
+        let parsed = verdict("Verdict: issues\n### [high] Chart legend overlaps axis\n### Legend\n[low] example tag\n## Findings\n- [medium] real").unwrap();
+        assert_eq!(
+            parsed.counts,
+            Severities {
+                high: 1,
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+    }
+
     use super::*;
     use crate::policy::AllowAll;
     use std::fs;
@@ -608,7 +1041,7 @@ mod tests {
         }
         fn prepared(&self, command: &str) -> Result<Prepared> {
             let terminal = serde_json::from_value(serde_json::json!({"id":"agent", "name":"Agent", "kind":"agent", "command":command})).unwrap();
-            prepare(&self.project, &self.request, &terminal, &AllowAll)
+            prepare(&self.project, &self.request, &terminal, &AllowAll, None)
         }
         fn prepare(&self, command: &str) -> Result<AgentJob> {
             self.prepared(command).map(|p| p.job)
@@ -669,7 +1102,7 @@ mod tests {
             serde_json::json!({"id":"review", "name":"Review", "kind":"agent", "command":"claude"}),
         )
         .unwrap();
-        prepare(&f.project, &request, &terminal, &AllowAll).unwrap();
+        prepare(&f.project, &request, &terminal, &AllowAll, None).unwrap();
         let path = file(&worktree, "main").unwrap();
         let started: Started =
             serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
@@ -915,6 +1348,9 @@ mod tests {
                 "Do not edit",
                 "stage, commit, stash, reset or check out",
                 "file:line",
+                "Verdict: clean or Verdict: issues",
+                "[critical], [high], [medium] or [low]",
+                "say so explicitly",
                 "$PATCHBAY_REVIEW_FILE",
             ] {
                 assert!(body.contains(rule), "{rule}");

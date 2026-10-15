@@ -1,3 +1,4 @@
+import { autoWorkspace } from './autoState'
 import { useStore } from '../store'
 import {
   PLAN_SCOPE,
@@ -17,6 +18,7 @@ import { terminalStatus, type TerminalStatus } from './display'
 import { planTerminals } from './plan'
 
 export interface AttentionItem {
+  auto?: boolean
   sid: string
   componentId: string
   /** Component name, or "Planner". */
@@ -38,7 +40,7 @@ type Snapshot = Pick<
   Partial<
     Pick<
       ReturnType<typeof useStore.getState>,
-      'rootTerminals' | 'taskWorkspaces' | 'activeTask' | 'sessionRecords'
+      'auto' | 'rootTerminals' | 'taskWorkspaces' | 'activeTask' | 'sessionRecords'
     >
   >
 
@@ -136,18 +138,42 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal: r.terminal,
       })),
   ]
-  return terminals
-    .filter((t, index) => terminals.findIndex((other) => other.sid === t.sid) === index)
-    .map((t) => {
-      const session = s.sessions[t.sid]
-      return {
-        ...t,
-        status: terminalStatus(t.terminal.kind, session, now),
-        sinceMs: since(session),
-      }
-    })
-    .filter((item) => item.status.attention > 0)
-    .sort((a, b) => b.status.attention - a.status.attention || a.sinceMs - b.sinceMs)
+  const autoItems: AttentionItem[] = scopes.flatMap(([task, taskTitle]) => {
+    const run = autoWorkspace(s, task)?.auto
+    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
+    return [
+      {
+        auto: true,
+        sid: `auto:${task ?? ''}`,
+        componentId: '@auto',
+        owner: 'Auto mode',
+        task,
+        taskTitle,
+        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
+        status: {
+          health: run.status === 'failed' ? 'fail' : 'input',
+          attention: run.status === 'failed' ? 3 : 4,
+          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
+          detail: run.reason,
+        },
+        sinceMs: run.log.at(-1)?.atMs ?? 0,
+      },
+    ]
+  })
+  return [
+    ...autoItems,
+    ...terminals
+      .filter((t, index) => terminals.findIndex((other) => other.sid === t.sid) === index)
+      .map((t) => {
+        const session = s.sessions[t.sid]
+        return {
+          ...t,
+          status: terminalStatus(t.terminal.kind, session, now),
+          sinceMs: since(session),
+        }
+      })
+      .filter((item) => item.status.attention > 0),
+  ].sort((a, b) => b.status.attention - a.status.attention || a.sinceMs - b.sinceMs)
 }
 
 /**
@@ -210,8 +236,15 @@ export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
  * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
  * session's task first, except for extension and planner terminals.
  */
-export function revealTerminal(item: Pick<AttentionItem, 'sid' | 'componentId'>) {
+export function revealTerminal(
+  item: Pick<AttentionItem, 'sid' | 'componentId'> & Partial<Pick<AttentionItem, 'auto' | 'task'>>,
+) {
   const s = useStore.getState()
+  if (item.auto) {
+    s.setActiveTask(item.task ?? null, true)
+    s.showAutoPanel()
+    return
+  }
   if (isReviewAgentScope(item.componentId)) {
     s.setActiveSession(item.sid)
     s.setView(sessionView(item.componentId)!)
