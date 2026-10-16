@@ -1,14 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
 import { taskActivities } from '../../lib/ipc'
 import { applyTaskActivity } from '../../lib/tasks'
 import {
-  componentsWithoutValidator,
   hasValidator,
+  hasValidatorSuggestions,
   validatorKey,
-  validatorSuggestions,
+  validatorSetup,
   type ValidatorSuggestion,
 } from '../../lib/validators'
 import { useStore } from '../../store'
@@ -22,7 +22,7 @@ export function RunSelect() {
   const declined = useStore((s) => s.validatorDeclined)
   const validated = nodes.filter(hasValidator)
   // Check terminals that could become validators, until the user marks or declines them.
-  const setup = validatorSuggestions(nodes, declined).length > 0
+  const setup = useMemo(() => hasValidatorSuggestions(nodes, declined), [nodes, declined])
   if (!groups.length && !validated.length && !setup) return null
   return (
     <select
@@ -121,22 +121,29 @@ function ValidatorSetup() {
   )
   const updateTerminal = useStore((s) => s.updateTerminal)
   const declineValidators = useStore((s) => s.declineValidators)
+  const restoreValidators = useStore((s) => s.restoreValidators)
   // Rows the user toggled, overriding the preferred suggestion.
   const [toggled, setToggled] = useState<Record<string, boolean>>({})
   const [marked, setMarked] = useState(0)
-  const suggestions = validatorSuggestions(nodes, declined)
-  const missing = componentsWithoutValidator(nodes, declined)
-  if (!suggestions.length && !missing.length && !marked) return null
+  const {
+    suggestions,
+    missing,
+    declined: hidden,
+  } = useMemo(() => validatorSetup(nodes, declined), [nodes, declined])
+  const restore = !!hidden && (
+    <button onClick={restoreValidators}>
+      Show {hidden === 1 ? '1 dismissed check' : `${hidden} dismissed checks`}
+    </button>
+  )
+  // Only dismissed suggestions left: a compact line to bring them back.
+  if (!suggestions.length && !marked) return restore ? <div className="row">{restore}</div> : null
   const key = (s: ValidatorSuggestion) => validatorKey(s.componentId, s.terminalId)
   const checked = (s: ValidatorSuggestion) => toggled[key(s)] ?? s.preferred
   const chosen = suggestions.filter(checked)
-  // Declined suggestions and hints stay hidden, here and in the Run menu, for this project.
-  const decline = (rest: ValidatorSuggestion[], hints = false) =>
-    declineValidators([...rest.map(key), ...(hints ? missing.map((c) => validatorKey(c.id)) : [])])
   return (
     <div className="task-action-result">
       <strong>Set up validation</strong>
-      {(!!suggestions.length || !!missing.length) && (
+      {!!suggestions.length && (
         <p className="hint">
           Validation runs these checks for a changed component and everything that depends on it.
           Agents run them with <code>agent validate</code>, and the results appear here.
@@ -153,10 +160,10 @@ function ValidatorSetup() {
           {s.caution && <span className="hint flush">{s.caution}</span>}
         </label>
       ))}
-      {!!missing.length && (
+      {!!suggestions.length && !!missing.length && (
         <p className="hint">
-          No check terminal: {missing.map((c) => c.data.name).join(', ')}. Add a task terminal in
-          the Inspector and set Graph action to Validation.
+          No check terminal: {missing.map((c) => c.data.name).join(', ')} (add one in the Inspector
+          with Graph action Validation).
         </p>
       )}
       {!!marked && (
@@ -167,24 +174,25 @@ function ValidatorSetup() {
             : 'The change saves to patchbay.json with the map (see the map status).'}
         </p>
       )}
-      {(!!suggestions.length || !!missing.length) && (
-        <div className="row">
-          {!!suggestions.length && (
+      <div className="row">
+        {!!suggestions.length && (
+          <>
             <button
               disabled={!chosen.length}
               onClick={() => {
                 for (const s of chosen)
                   updateTerminal(s.componentId, s.terminalId, { action: 'validation' })
-                decline(suggestions.filter((s) => !chosen.includes(s)))
                 setMarked((n) => n + chosen.length)
               }}
             >
               Mark as Validation
             </button>
-          )}
-          <button onClick={() => decline(suggestions, true)}>Dismiss</button>
-        </div>
-      )}
+            {/* Declined suggestions stay hidden, here and in the Run menu, for this project. */}
+            <button onClick={() => declineValidators(suggestions.map(key))}>Dismiss</button>
+          </>
+        )}
+        {restore}
+      </div>
     </div>
   )
 }
@@ -230,7 +238,7 @@ export default function TaskActivityPanel() {
         </div>
         <p>Environments started or stopped and validations run in this worktree.</p>
         <ActivityStatus />
-        <ValidatorSetup />
+        <ValidatorSetup key={projectId} />
         {!own.length && <p>No activity in this worktree.</p>}
         <div className="task-activity">
           {own

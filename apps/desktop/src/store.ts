@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react'
 import { create } from 'zustand'
 import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
+import { liveDeclined } from './lib/validators'
 import type {
   AgentRoles,
   NotificationSettings,
@@ -289,7 +290,10 @@ interface State {
   setAgentRoles: (roles: AgentRoles) => void
   /** Validator suggestions the user declined in this project (workspace layout only). */
   validatorDeclined: string[]
+  /** Declines suggestions, dropping keys of terminals no longer on the map. */
   declineValidators: (keys: string[]) => void
+  /** Offers every declined suggestion again. */
+  restoreValidators: () => void
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
   setPlanActive: (id: string | null) => void
@@ -663,7 +667,10 @@ export const useStore = create<State>((set, get) => ({
   setAgentRoles: (agentRoles) => set({ agentRoles }),
   validatorDeclined: [],
   declineValidators: (keys) =>
-    set((s) => ({ validatorDeclined: [...new Set([...s.validatorDeclined, ...keys])] })),
+    set((s) => ({
+      validatorDeclined: liveDeclined(s.nodes, [...new Set([...s.validatorDeclined, ...keys])]),
+    })),
+  restoreValidators: () => set({ validatorDeclined: [] }),
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
