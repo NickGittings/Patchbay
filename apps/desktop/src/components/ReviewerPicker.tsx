@@ -44,6 +44,7 @@ export default function ReviewerPicker({
       : (choices.find((a) => a.id === selected[0])?.name ?? emptyLabel)
   return (
     <Popover
+      caret={false}
       className="reviewer-picker"
       listClassName="reviewer-options"
       label={<span className="reviewer-summary">{summary}</span>}
