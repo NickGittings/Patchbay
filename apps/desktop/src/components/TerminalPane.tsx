@@ -97,15 +97,29 @@ export default function TerminalPane({
     }
   }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId, task])
 
-  // Showing a session in a focused window acknowledges it in every window.
+  // Showing a session in a focused window acknowledges it in every window. Panes stay mounted in
+  // collapsed panels, hidden tabs and scrolled-away tiles, so only one on screen counts.
   useEffect(() => {
-    if (unseen === undefined) return
+    const host = hostRef.current
+    if (unseen === undefined || !host) return
+    let onScreen = false
     const markSeen = () => {
-      if (document.hasFocus()) terminalSeen(sid).catch(() => {})
+      if (onScreen && document.visibilityState === 'visible' && document.hasFocus())
+        terminalSeen(sid).catch(() => {})
     }
-    markSeen()
+    const observer = new IntersectionObserver((entries) => {
+      const { isIntersecting, intersectionRect } = entries[entries.length - 1]
+      onScreen = isIntersecting && intersectionRect.width > 0 && intersectionRect.height > 0
+      markSeen()
+    })
+    observer.observe(host)
     window.addEventListener('focus', markSeen)
-    return () => window.removeEventListener('focus', markSeen)
+    document.addEventListener('visibilitychange', markSeen)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('focus', markSeen)
+      document.removeEventListener('visibilitychange', markSeen)
+    }
   }, [sid, unseen])
 
   return (

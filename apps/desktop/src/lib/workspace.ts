@@ -1,4 +1,8 @@
-import { restoredNotifications } from './notifications'
+import {
+  mergeRestoredNotifications,
+  restoredNotifications,
+  sameNotifications,
+} from './notifications'
 import { restoredAgentRoles } from './agentRoles'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
@@ -198,6 +202,9 @@ export function restoredLayout(
 }
 export function initializeWorkspace() {
   initialized ??= (async () => {
+    // Settings changed during restore win over the saved ones and are saved once it ends.
+    const initialNotifications = useStore.getState().notifications
+    let restoredSettings: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
     await listen('patchbay://quit-request', async () => {
@@ -222,10 +229,15 @@ export function initializeWorkspace() {
     try {
       if (!loaded) return
       const { document, opened, errors } = loaded
-      useStore.setState({
+      restoredSettings = document.settings?.notifications
+      useStore.setState((s) => ({
         workspaceSettings: document.settings ?? {},
-        notifications: restoredNotifications(document.settings?.notifications),
-      })
+        notifications: mergeRestoredNotifications(
+          restoredSettings,
+          s.notifications,
+          initialNotifications,
+        ),
+      }))
       for (const entry of document.projects) {
         const project = opened.find((p) => p.id === entry.id)
         if (!project) {
@@ -322,6 +334,13 @@ export function initializeWorkspace() {
       clearTimeout(timer)
       timer = setTimeout(() => void flushWorkspace(), 500)
     })
+    // The subscription above missed edits made while restoring.
+    if (
+      !sameNotifications(useStore.getState().notifications, restoredNotifications(restoredSettings))
+    ) {
+      clearTimeout(timer)
+      timer = setTimeout(() => void flushWorkspace(), 500)
+    }
   })()
   return initialized
 }

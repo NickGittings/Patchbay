@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core'
-import { getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
 import { projectStateOf, useStore } from '../store'
 import {
@@ -8,6 +7,7 @@ import {
   TASK_ROOT_SCOPE,
   isReviewAgentScope,
   sessionMetadata,
+  type NotificationLink,
   type NotificationSettings,
   type SessionState,
 } from '../types'
@@ -22,8 +22,10 @@ type Snapshot = ReturnType<typeof useStore.getState>
 export type NotificationEvent = AgentEvent & {
   sid: string
   owner: string
+  label: string
   title: string
   body: string
+  project?: { id: string; name: string }
 }
 export type NotificationDelivery = {
   title: string
@@ -38,6 +40,27 @@ export function restoredNotifications(value: unknown): NotificationSettings {
     const field = (value as Record<string, unknown>)[key]
     if (typeof field === 'boolean') settings[key] = field
   }
+  return settings
+}
+
+export const sameNotifications = (a: NotificationSettings, b: NotificationSettings) =>
+  (Object.keys(DEFAULT_NOTIFICATIONS) as (keyof NotificationSettings)[]).every(
+    (key) => a[key] === b[key],
+  )
+
+/**
+ * Restored settings, keeping each field the user changed while the workspace was restoring
+ * (`current` differs from the `initial` value the store started with).
+ */
+export function mergeRestoredNotifications(
+  saved: unknown,
+  current: NotificationSettings,
+  initial: NotificationSettings,
+): NotificationSettings {
+  if (current === initial) return restoredNotifications(saved)
+  const settings = restoredNotifications(saved)
+  for (const key of Object.keys(settings) as (keyof NotificationSettings)[])
+    if (current[key] !== initial[key]) settings[key] = current[key]
   return settings
 }
 
@@ -90,6 +113,7 @@ export function sessionIdentity(s: Snapshot, sid: string) {
     projectName:
       record?.metadata.projectName ?? state?.project?.name ?? s.projects[projectId ?? '']?.name,
     terminalName: record?.metadata.name ?? terminal?.name,
+    lane: record?.metadata.lane ?? undefined,
     kind:
       record?.metadata.kind ??
       terminal?.kind ??
@@ -97,16 +121,48 @@ export function sessionIdentity(s: Snapshot, sid: string) {
   }
 }
 
+export type SessionIdentity = ReturnType<typeof sessionIdentity>
+
 export const sessionKind = (s: Snapshot, sid: string) => sessionIdentity(s, sid).kind
 
-export function describe(s: Snapshot, sid: string) {
-  const { componentId, state, task, taskTitle, projectName, terminalName } = sessionIdentity(s, sid)
+/** Whether a link to the session can be followed: its project is open in a tab. */
+export function revealable({ projectId, componentId }: SessionIdentity, s: Snapshot) {
+  return !!projectId && !!componentId && !!projectStateOf(projectId, s)?.project
+}
+
+/**
+ * Whether `event` is still what the session shows: not seen, resolved, restarted, stopped or
+ * interrupted since. Checked when an event is queued, when its batch flushes, and for every
+ * in-app link that carries its event.
+ */
+export function isCurrent(s: Snapshot, sid: string, event: AgentEvent) {
+  const session = s.sessions[sid]
+  if (
+    !session ||
+    session.interrupted ||
+    session.status?.stopped ||
+    (session.status?.seenMs ?? 0) >= event.atMs
+  )
+    return false
+  const status = terminalStatus('agent', session)
+  return (
+    status.attention > 0 &&
+    status.health === KIND_HEALTH[event.kind] &&
+    (status.unseenSince ?? session.status?.agent?.sinceMs) === event.atMs
+  )
+}
+
+export function describe(s: Snapshot, sid: string, identity = sessionIdentity(s, sid)) {
+  const { componentId, state, task, taskTitle, projectName, terminalName, lane } = identity
   const owner = sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle || (task ? task : 'Project folder')
   const agent = s.sessions[sid]?.status?.agent
   const detail = [agent?.message, agent?.prompt].filter(Boolean).join(' — ')
+  // Several reviewer lanes, merge agents or planner tabs can share an owner within one batch.
+  const terminal = terminalName ?? lane
   return {
     owner,
+    label: [owner, terminal !== owner && terminal, worktree].filter(Boolean).join(' · '),
     body: [
       [worktree, projectName, terminalName].filter(Boolean).join(' · '),
       detail && `“${detail}”`,
@@ -169,8 +225,9 @@ export async function sendTestNotification() {
 /** A notification opens its own project and session instead of the active project's menu. */
 export function revealNotification(sid: string) {
   const s = useStore.getState()
-  const { projectId, componentId } = sessionIdentity(s, sid)
-  if (!projectId || !componentId || !projectStateOf(projectId, s)?.project) return false
+  const identity = sessionIdentity(s, sid)
+  const { projectId, componentId } = identity
+  if (!revealable(identity, s) || !projectId || !componentId) return false
   if (projectId !== s.project?.id) s.activateProject(projectId)
   revealTerminal({ sid, componentId })
   return true
@@ -185,7 +242,21 @@ function summarize(events: NotificationEvent[]): NotificationDelivery {
   return { title, body: events.map((e) => `${e.owner}: ${e.body}`).join('\n'), events }
 }
 
-/** Installed only by App (the main window), watching every project's retained sessions. */
+function mainWindowFocused() {
+  // Runs only in the main window, so its own document answers without IPC.
+  try {
+    return typeof document !== 'undefined' && document.hasFocus()
+  } catch {
+    // Keep native delivery available if focus cannot be read.
+    return false
+  }
+}
+
+/**
+ * Installed only by App (the main window), watching every project's retained sessions. Sessions
+ * of projects that aren't open in a tab don't alert, since their links couldn't be followed; an
+ * in-app link drops out once its event is no longer current or its project closes.
+ */
 export function followNotifications() {
   const followerStartedMs = Date.now()
   const delivered = new Map<string, Partial<Record<AgentEvent['kind'], number>>>()
@@ -193,40 +264,18 @@ export function followNotifications() {
   const pending = new Map<string, NotificationEvent>()
   let timer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  let metadataSize = sessionMetadata.size
   const enabled = (s: Snapshot, e: NotificationEvent) =>
     s.notifications.enabled && s.notifications[e.kind]
-  const eligible = (s: Snapshot, e: NotificationEvent) => {
-    const session = s.sessions[e.sid]
-    if (
-      !session ||
-      session.interrupted ||
-      session.status?.stopped ||
-      !enabled(s, e) ||
-      delivered.get(e.sid)?.[e.kind] !== e.atMs ||
-      (session.status?.seenMs ?? 0) >= e.atMs
-    )
-      return false
-    const status = terminalStatus('agent', session)
-    return (
-      status.attention > 0 &&
-      status.health === KIND_HEALTH[e.kind] &&
-      (status.unseenSince ?? session.status?.agent?.sinceMs) === e.atMs
-    )
-  }
+  const eligible = (s: Snapshot, e: NotificationEvent) =>
+    enabled(s, e) && delivered.get(e.sid)?.[e.kind] === e.atMs && isCurrent(s, e.sid, e)
   const flush = async () => {
     timer = undefined
     const batch = [...pending.values()].filter((e) => eligible(useStore.getState(), e))
     pending.clear()
     if (!batch.length || disposed) return
-    let focused = false
-    try {
-      const main = (await getAllWebviewWindows()).find((w) => w.label === 'main')
-      focused = (await main?.isFocused()) ?? false
-    } catch {
-      /* Keep native delivery available if main-window focus cannot be read. */
-    }
     let native = false
-    if (!focused) {
+    if (!mainWindowFocused()) {
       try {
         native = !!smokeLog() || (await notificationPermission())
       } catch {
@@ -241,10 +290,13 @@ export function followNotifications() {
     // cannot detect OS suppression (for example macOS notification settings or Focus).
     useStore.getState().setNotificationToast({
       message: `${delivery.title} — ${delivery.body}`,
-      sessions: events.map((e) => ({
+      sessions: events.map((e): NotificationLink => ({
         sid: e.sid,
-        label: e.owner,
+        label: e.label,
         message: `${e.title} — ${e.body}`,
+        kind: e.kind,
+        atMs: e.atMs,
+        project: e.project,
       })),
     })
     if (native) {
@@ -256,50 +308,79 @@ export function followNotifications() {
     }
   }
 
+  const consider = (s: Snapshot, sid: string, event: AgentEvent) => {
+    unidentified.delete(sid)
+    if (event.atMs <= followerStartedMs || !isCurrent(s, sid, event)) return
+    const identity = sessionIdentity(s, sid)
+    if (!identity.kind) {
+      // Branch jobs can emit live events before their first session-record reconciliation.
+      unidentified.set(sid, event)
+      return
+    }
+    if (identity.kind !== 'agent' || event.atMs <= (delivered.get(sid)?.[event.kind] ?? 0)) return
+    delivered.set(sid, { ...delivered.get(sid), [event.kind]: event.atMs })
+    if (!revealable(identity, s)) return
+    const description = describe(s, sid, identity)
+    const entry: NotificationEvent = {
+      ...event,
+      sid,
+      ...description,
+      title: `${TITLES[event.kind]} — ${description.owner}`,
+      project: identity.projectName
+        ? { id: identity.projectId!, name: identity.projectName }
+        : undefined,
+    }
+    if (!enabled(s, entry)) return
+    pending.set(sid, entry)
+    timer ??= setTimeout(() => void flush(), 750)
+  }
+
+  const prune = (s: Snapshot) => {
+    const stale = (s.notificationToast?.sessions ?? []).filter(
+      ({ sid, kind, atMs }) =>
+        kind &&
+        atMs !== undefined &&
+        (!isCurrent(s, sid, { kind, atMs }) || !revealable(sessionIdentity(s, sid), s)),
+    )
+    for (const { sid } of stale) useStore.getState().dismissNotificationSession(sid)
+  }
+
   const unsubscribe = useStore.subscribe((s, prev) => {
-    if (s.sessions === prev.sessions && !unidentified.size) return
-    for (const sid of new Set([...delivered.keys(), ...unidentified.keys()])) {
-      if (!s.sessions[sid]) {
-        delivered.delete(sid)
-        unidentified.delete(sid)
-        pending.delete(sid)
+    const handled = new Set<string>()
+    if (s.sessions !== prev.sessions) {
+      for (const sid of new Set([...delivered.keys(), ...unidentified.keys()])) {
+        if (!s.sessions[sid]) {
+          delivered.delete(sid)
+          unidentified.delete(sid)
+          pending.delete(sid)
+        }
+      }
+      for (const [sid, session] of Object.entries(s.sessions)) {
+        if (session === prev.sessions[sid]) continue
+        const event = agentEvent(prev.sessions[sid], session) ?? unidentified.get(sid)
+        if (!event) continue
+        handled.add(sid)
+        consider(s, sid, event)
       }
     }
-    for (const [sid, session] of Object.entries(s.sessions)) {
-      const event =
-        session === prev.sessions[sid]
-          ? unidentified.get(sid)
-          : (agentEvent(prev.sessions[sid], session) ?? unidentified.get(sid))
-      unidentified.delete(sid)
-      if (!event || !(event.atMs > followerStartedMs && event.atMs > (session.status?.seenMs ?? 0)))
-        continue
-      const status = terminalStatus('agent', session)
-      if (
-        session.interrupted ||
-        session.status?.stopped ||
-        status.health !== KIND_HEALTH[event.kind] ||
-        (status.unseenSince ?? session.status?.agent?.sinceMs) !== event.atMs
-      )
-        continue
-      const kind = sessionKind(s, sid)
-      if (!kind) {
-        // Branch jobs can emit live events before their first session-record reconciliation.
-        unidentified.set(sid, event)
-        continue
-      }
-      if (kind !== 'agent' || event.atMs <= (delivered.get(sid)?.[event.kind] ?? 0)) continue
-      delivered.set(sid, { ...delivered.get(sid), [event.kind]: event.atMs })
-      const description = describe(s, sid)
-      const entry = {
-        ...event,
-        sid,
-        ...description,
-        title: `${TITLES[event.kind]} — ${description.owner}`,
-      }
-      if (!enabled(s, entry)) continue
-      pending.set(sid, entry)
-      timer ??= setTimeout(() => void flush(), 750)
-    }
+    // Identity arrives with records, runtime terminals, the shared metadata map or project maps.
+    const identitiesChanged =
+      s.sessions !== prev.sessions ||
+      s.sessionRecords !== prev.sessionRecords ||
+      s.runtimeTerminals !== prev.runtimeTerminals ||
+      s.projects !== prev.projects ||
+      s.nodes !== prev.nodes ||
+      sessionMetadata.size !== metadataSize
+    metadataSize = sessionMetadata.size
+    if (unidentified.size && identitiesChanged)
+      for (const [sid, event] of [...unidentified]) if (!handled.has(sid)) consider(s, sid, event)
+    if (
+      s.notificationToast?.sessions.length &&
+      (identitiesChanged ||
+        s.notificationToast !== prev.notificationToast ||
+        s.project !== prev.project)
+    )
+      prune(s)
   })
   return () => {
     disposed = true

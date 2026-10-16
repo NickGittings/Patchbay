@@ -544,10 +544,24 @@ export interface WorkspaceProject {
   draft: Project | null
   layout: Record<string, unknown>
 }
-/** Unread session links survive later batches until viewed or explicitly dismissed. */
+/**
+ * Unread session links survive later batches until viewed or explicitly dismissed. A link that
+ * carries its event (`kind`/`atMs`) also drops out once that event is no longer current (seen,
+ * resolved, stopped) or its project closed.
+ */
 export interface NotificationToast {
   message: string
-  sessions: { sid: string; label: string; message?: string }[]
+  sessions: NotificationLink[]
+}
+export interface NotificationLink {
+  sid: string
+  /** Owner plus terminal or lane and worktree, so links in one batch stay distinguishable. */
+  label: string
+  message?: string
+  kind?: 'finished' | 'needsInput' | 'failed'
+  atMs?: number
+  /** Named on the button only while another project is active. */
+  project?: { id: string; name: string }
 }
 export interface NotificationSettings {
   enabled: boolean

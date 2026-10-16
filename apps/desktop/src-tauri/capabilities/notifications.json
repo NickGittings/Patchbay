@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notifications",
+  "description": "Native agent notifications, sent and permission-checked by the main window only",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify"
+  ],
+  "webviews": [
+    "main"
+  ]
+}

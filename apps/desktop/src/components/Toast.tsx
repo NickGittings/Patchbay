@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { revealNotification } from '../lib/notifications'
+import { notificationLinkLabel } from '../lib/notificationToast'
 import { focusTerminal } from '../lib/terminals'
 
 const HIDE_AFTER_MS = 6000
@@ -18,7 +19,10 @@ export default function Toast() {
   const notification = useStore((s) => s.notificationToast)
   const notificationId = useStore((s) => s.notificationToastId)
   const notificationElement = useRef<HTMLDivElement>(null)
+  const activeProjectId = useStore((s) => s.project?.id ?? null)
 
+  // An alert with links hides once followNotifications has dropped its last link (each one goes
+  // when its session is seen or leaves that state); a notice without links hides on its own.
   useEffect(() => {
     if (!notification || notification.sessions.length) return
     let timer: ReturnType<typeof setTimeout>
@@ -58,17 +62,19 @@ export default function Toast() {
         <div className="toast" ref={notificationElement}>
           <div className="toast-text">
             <span className="notification-message">{notification.message}</span>
-            {notification.sessions.map(({ sid, label }) => (
+            {notification.sessions.map((link) => (
               <button
-                key={sid}
+                key={link.sid}
+                title={link.message}
                 onClick={() => {
+                  const { sid } = link
                   if (revealNotification(sid)) {
                     focusTerminal(sid)
                     useStore.getState().dismissNotificationSession(sid)
                   }
                 }}
               >
-                View {label}
+                View {notificationLinkLabel(link, activeProjectId)}
               </button>
             ))}
           </div>

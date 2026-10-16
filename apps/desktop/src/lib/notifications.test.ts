@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { mergeNotificationToast } from './notificationToast'
+import { mergeNotificationToast, removeNotificationSession } from './notificationToast'
 import {
   DEFAULT_NOTIFICATIONS,
   PLAN_SCOPE,
@@ -22,6 +22,7 @@ const mock = vi.hoisted(() => ({
   send: vi.fn(),
   message: vi.fn(),
   toast: vi.fn(),
+  dismiss: vi.fn(),
   activate: vi.fn(),
   reveal: vi.fn(),
 }))
@@ -36,7 +37,7 @@ vi.mock('../store', () => ({
     },
   },
 }))
-vi.mock('@tauri-apps/api/webviewWindow', () => ({ getAllWebviewWindows: mock.focused }))
+vi.stubGlobal('document', { hasFocus: () => mock.focused() })
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.send }))
 vi.mock('@tauri-apps/plugin-notification', () => ({
   isPermissionGranted: mock.granted,
@@ -48,6 +49,8 @@ const {
   restoredNotifications,
   sessionKind,
   describe,
+  isCurrent,
+  mergeRestoredNotifications,
   sendTestNotification,
   revealNotification,
 } = await import('./notifications')
@@ -95,18 +98,23 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   vi.resetAllMocks()
-  mock.focused.mockResolvedValue([{ label: 'main', isFocused: async () => false }])
+  mock.focused.mockReturnValue(false)
   mock.granted.mockResolvedValue(true)
   mock.request.mockResolvedValue('denied')
   mock.toast.mockImplementation((toast) => {
     mock.state.notificationToast = mergeNotificationToast(mock.state.notificationToast, toast)
+  })
+  mock.dismiss.mockImplementation((sid) => {
+    mock.state.notificationToast = removeNotificationSession(mock.state.notificationToast, sid)
   })
   mock.state = {
     sessions: { one: working, two: working, three: working },
     sessionRecords: [record('one'), record('two', { componentId: REVIEW_SCOPE }), record('three')],
     notifications: { ...DEFAULT_NOTIFICATIONS },
     runtimeTerminals: {},
-    projects: {},
+    projects: {
+      other: { state: { project: { id: 'other', name: 'Patchbay' }, nodes: [], tasks: [] } },
+    },
     nodes: [],
     devices: [],
     tasks: [],
@@ -115,6 +123,7 @@ beforeEach(() => {
     project: null,
     setMessage: mock.message,
     setNotificationToast: mock.toast,
+    dismissNotificationSession: mock.dismiss,
     activateProject: mock.activate,
     setActiveSession: mock.reveal,
     setView: vi.fn(),
@@ -173,11 +182,7 @@ test('batches projects and worktrees into one native summary', async () => {
   })
   expect(mock.message).not.toHaveBeenCalled()
 })
-test('focused pop-outs receive native delivery and sessions seen during debounce are dropped', async () => {
-  mock.focused.mockResolvedValue([
-    { label: 'main', isFocused: async () => false },
-    { label: 'component-billing', isFocused: async () => true },
-  ])
+test('an unfocused main window gets native delivery and sessions seen during debounce are dropped', async () => {
   stop = followNotifications()
   transition()
   transition('two', report('needsInput'))
@@ -187,7 +192,9 @@ test('focused pop-outs receive native delivery and sessions seen during debounce
   expect(mock.granted).toHaveBeenCalledOnce()
   expect(mock.toast).toHaveBeenCalledWith({
     message: expect.stringContaining('Needs input — Review agent'),
-    sessions: [expect.objectContaining({ sid: 'two', label: 'Review agent' })],
+    sessions: [
+      expect.objectContaining({ sid: 'two', label: 'Review agent · Claude · auth-refactor' }),
+    ],
   })
   expect(mock.toast.mock.calls[0][0].message).not.toContain('see Attention')
   expect(mock.toast.mock.calls[0][0].message).not.toContain('billing')
@@ -248,6 +255,7 @@ test('descriptions label special scopes and project folders without an active pr
     mock.state.sessionRecords = [record('one', { componentId, task: null, taskTitle: null })]
     expect(describe(mock.state, 'one')).toEqual({
       owner,
+      label: `${owner} · Claude · Project folder`,
       body: 'Project folder · Patchbay · Claude',
     })
   }
@@ -293,7 +301,9 @@ test('mixed summaries and failed native/focus calls fall back to toast', async (
   transition('one', report('review', 2500))
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).toHaveBeenCalledTimes(2)
-  mock.focused.mockRejectedValueOnce(new Error('window closed'))
+  mock.focused.mockImplementationOnce(() => {
+    throw new Error('window closed')
+  })
   transition('one', working)
   transition('one', report('review', 3500))
   await vi.advanceTimersByTimeAsync(750)
@@ -371,7 +381,7 @@ test('visible input requests and failures are cancelled at flush', async () => {
 })
 
 test('a stale activeSession does not suppress an unseen background alert', async () => {
-  mock.focused.mockResolvedValue([{ label: 'main', isFocused: async () => true }])
+  mock.focused.mockReturnValue(true)
   mock.state.activeSession = 'one'
   stop = followNotifications()
   transition()
@@ -412,7 +422,7 @@ test('only the latest state per session is included in a batch', async () => {
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).toHaveBeenCalledWith({
     message: expect.stringContaining('Needs input'),
-    sessions: [expect.objectContaining({ sid: 'one', label: 'billing' })],
+    sessions: [expect.objectContaining({ sid: 'one', label: 'billing · Claude · auth-refactor' })],
   })
   expect(mock.toast.mock.calls[0][0].message).not.toContain('Agent finished')
 })
@@ -483,7 +493,7 @@ test('stopped and interrupted sessions cancel pending alerts', async () => {
 })
 
 test('a focused main window uses the in-app alert', async () => {
-  mock.focused.mockResolvedValue([{ label: 'main', isFocused: async () => true }])
+  mock.focused.mockReturnValue(true)
   stop = followNotifications()
   transition()
   await vi.advanceTimersByTimeAsync(750)
@@ -618,4 +628,115 @@ test('branch scope metadata also supports reveal before record reconciliation', 
   expect(revealNotification(sid)).toBe(true)
   expect(mock.activate).toHaveBeenCalledWith('other')
   expect(mock.reveal).toHaveBeenCalledWith(sid)
+})
+
+test('isCurrent follows seen, resolved, stopped and restarted sessions', () => {
+  const event = { kind: 'finished', atMs: 1100 } as const
+  mock.state.sessions.one = report('review')
+  expect(isCurrent(mock.state, 'one', event)).toBe(true)
+  expect(isCurrent(mock.state, 'one', { ...event, atMs: 1000 })).toBe(false)
+  expect(isCurrent(mock.state, 'one', { kind: 'needsInput', atMs: 1100 })).toBe(false)
+  mock.state.sessions.one = {
+    ...report('review'),
+    status: { ...report('review').status!, seenMs: 1100 },
+  }
+  expect(isCurrent(mock.state, 'one', event)).toBe(false)
+  mock.state.sessions.one = {
+    ...report('review'),
+    status: { ...report('review').status!, stopped: true },
+  }
+  expect(isCurrent(mock.state, 'one', event)).toBe(false)
+  mock.state.sessions.one = working
+  expect(isCurrent(mock.state, 'one', event)).toBe(false)
+  expect(isCurrent(mock.state, 'gone', event)).toBe(false)
+})
+
+test('in-app links drop out once seen or resolved elsewhere, and the alert then hides', async () => {
+  stop = followNotifications()
+  transition('one', report('needsInput'))
+  transition('two', report('review'))
+  transition('three', { running: false, exitCode: 1, exitedMs: 1100 })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'two', 'three'])
+  // Answered in the terminal: no longer waiting for input.
+  transition('one', working)
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['two', 'three'])
+  // Seen in some other window.
+  transition('two', { ...report('review'), status: { ...report('review').status!, seenMs: 1200 } })
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['three'])
+  // Restarted.
+  transition('three', working)
+  expect(mock.state.notificationToast).toBeNull()
+})
+
+test('links without a tracked event stay until viewed or dismissed', () => {
+  stop = followNotifications()
+  update({ notificationToast: { message: 'Root', sessions: [{ sid: 'gone', label: 'Root' }] } })
+  transition('one', working)
+  expect(mock.state.notificationToast?.sessions).toHaveLength(1)
+  expect(mock.dismiss).not.toHaveBeenCalled()
+})
+
+test('sessions of projects that are not open do not alert, and closing one drops its links', async () => {
+  mock.state.sessionRecords.push(record('closed', { projectId: 'closed' }))
+  mock.state.sessions.closed = working
+  stop = followNotifications()
+  transition('closed', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  expect(mock.send).not.toHaveBeenCalled()
+  transition('one', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions).toHaveLength(1)
+  update({ projects: {} })
+  expect(mock.state.notificationToast).toBeNull()
+})
+
+test('links of one owner name their terminal or lane, worktree and other projects', async () => {
+  mock.state.sessionRecords = [
+    record('one', { componentId: REVIEW_SCOPE, name: 'Claude' }),
+    record('two', {
+      componentId: REVIEW_SCOPE,
+      name: undefined,
+      lane: 'codex',
+      task: null,
+      taskTitle: null,
+    }),
+  ]
+  stop = followNotifications()
+  transition('one')
+  transition('two')
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions).toEqual([
+    expect.objectContaining({
+      label: 'Review agent · Claude · auth-refactor',
+      project: { id: 'other', name: 'Patchbay' },
+    }),
+    expect.objectContaining({ label: 'Review agent · codex · Project folder' }),
+  ])
+})
+
+test('unidentified events are rechecked only when identity sources change', async () => {
+  stop = followNotifications()
+  transition('unidentified', working)
+  transition('unidentified', report('needsInput'))
+  // A record added in place is invisible to reference checks, so unrelated updates skip it.
+  mock.state.sessionRecords.push(record('unidentified'))
+  update({ activeSession: 'x' } as Partial<Snapshot>)
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  update({ sessionRecords: [...mock.state.sessionRecords] })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('settings changed during restore win field by field over the saved ones', () => {
+  const initial = { ...DEFAULT_NOTIFICATIONS }
+  const saved = { ...DEFAULT_NOTIFICATIONS, failed: false }
+  expect(mergeRestoredNotifications(saved, initial, initial)).toEqual(saved)
+  expect(mergeRestoredNotifications(saved, { ...initial, enabled: false }, initial)).toEqual({
+    ...saved,
+    enabled: false,
+  })
+  expect(mergeRestoredNotifications(saved, { ...initial, failed: true }, initial)).toEqual(saved)
 })

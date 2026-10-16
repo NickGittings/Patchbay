@@ -9,7 +9,6 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "notification:default",
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:window:allow-destroy",

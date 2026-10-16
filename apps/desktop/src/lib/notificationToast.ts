@@ -1,4 +1,4 @@
-import type { NotificationToast } from '../types'
+import type { NotificationLink, NotificationToast } from '../types'
 
 export function mergeNotificationToast(
   current: NotificationToast | null,
@@ -23,9 +23,16 @@ export function removeNotificationSession(
   current: NotificationToast | null,
   sid: string,
 ): NotificationToast | null {
-  if (!current) return null
+  if (!current?.sessions.some((entry) => entry.sid === sid)) return current
   const sessions = current.sessions.filter((entry) => entry.sid !== sid)
   return sessions.length
     ? { message: sessions.map((entry) => entry.message ?? current.message).join('\n'), sessions }
     : null
+}
+
+/** The button text: the project is named only when it isn't the active one. */
+export function notificationLinkLabel(link: NotificationLink, activeProjectId: string | null) {
+  return link.project && link.project.id !== activeProjectId
+    ? `${link.label} · ${link.project.name}`
+    : link.label
 }

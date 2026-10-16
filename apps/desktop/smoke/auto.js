@@ -67,8 +67,17 @@
       document.querySelector('.toast-region').textContent.includes('keep this error'),
       'Notification replaced the persistent error',
     )
-    await sleep(6500)
-    assert(state().notificationToast, 'Background notification expired before the user returned')
+    // A tracked link whose session no longer shows that event drops out; an untracked one stays.
+    state().setNotificationToast({
+      message: 'Agent finished — stale fixture',
+      sessions: [{ sid: 'stale-session', label: 'Stale', kind: 'finished', atMs: Date.now() }],
+    })
+    await until(
+      'stale notification link dropped',
+      () =>
+        state().notificationToast?.sessions.length === 1 &&
+        state().notificationToast.sessions[0].sid === notificationSid,
+    )
     document.querySelector('[aria-label="Dismiss notification"]').click()
     await until('notification dismissed', () => !state().notificationToast)
     assert(
@@ -127,6 +136,12 @@
     )
     document.querySelector('[aria-label="Dismiss notification"]').click()
     await until('remaining notification dismissed', () => !state().notificationToast)
+    // An alert left with no links hides itself.
+    state().setNotificationToast({
+      message: 'Agent finished — stale fixture',
+      sessions: [{ sid: 'stale-session', label: 'Stale', kind: 'finished', atMs: Date.now() }],
+    })
+    await until('alert without current links hidden', () => !state().notificationToast)
     state().setMessage('')
     const trees = await smoke.gitWorktrees()
     const source = trees.find((w) => w.branch === 'feature')
