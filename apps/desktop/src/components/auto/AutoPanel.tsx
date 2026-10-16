@@ -40,6 +40,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
     <Popover
       className="auto-menu"
       label={label}
+      caret={false}
       align="right"
       title="Auto mode"
       portal

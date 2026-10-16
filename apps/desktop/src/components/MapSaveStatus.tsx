@@ -32,6 +32,7 @@ export default function MapSaveStatus() {
       }
       title="Map configuration saving"
       align="right"
+      caret={false}
       className="map-save-status"
       triggerClassName={status === 'error' || status === 'conflict' ? 'map-save-error' : ''}
     >

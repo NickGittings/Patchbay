@@ -19,7 +19,13 @@ import Popover from '../Popover'
 import { CloseMenu } from '../menuContext'
 
 /** Pick the worktree where planning and implementation terminals run. */
-export default function WorktreePicker({ align = 'left' }: { align?: 'left' | 'right' }) {
+export default function WorktreePicker({
+  align = 'left',
+  caret = true,
+}: {
+  align?: 'left' | 'right'
+  caret?: boolean
+}) {
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
   const [branch, setBranch] = useState('')
@@ -77,6 +83,7 @@ export default function WorktreePicker({ align = 'left' }: { align?: 'left' | 'r
       className="worktree-picker"
       listClassName="worktree-popover"
       align={align}
+      caret={caret}
       portal
     >
       <WorktreeOverview branch={branch} onOpen={refreshBranch} />

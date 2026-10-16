@@ -67,7 +67,7 @@ export default function Toolbar() {
       {notificationsOpen && <NotificationsPanel onClose={() => setNotificationsOpen(false)} />}
       <div className="toolbar">
         <div className="toolbar-group">
-          <Menu label="Project">
+          <Menu label="Project" caret={false}>
             <MenuItem onClick={() => void openFolder()}>Open folder</MenuItem>
             {project && (
               <>
@@ -104,7 +104,7 @@ export default function Toolbar() {
               </>
             )}
           </Menu>
-          <Menu label="Tools" keepMounted>
+          <Menu label="Tools" caret={false} keepMounted>
             <MenuItem onClick={showFileSearch} shortcut={`${mod}P`}>
               Search files
             </MenuItem>
@@ -147,7 +147,9 @@ export default function Toolbar() {
           {project && (
             <>
               {/* Plan and Implementation carry the picker in their own headers. */}
-              {(view === 'navigation' || view === 'review') && <WorktreePicker align="right" />}
+              {(view === 'navigation' || view === 'review') && (
+                <WorktreePicker align="right" caret={false} />
+              )}
               <AutoPanel onIntegrations={() => setIntegrationsOpen(true)} />
               <AttentionMenu />
               <MapSaveStatus />
