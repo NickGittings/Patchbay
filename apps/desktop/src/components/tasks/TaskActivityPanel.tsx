@@ -122,8 +122,8 @@ function ValidatorSetup() {
   const updateTerminal = useStore((s) => s.updateTerminal)
   const declineValidators = useStore((s) => s.declineValidators)
   const restoreValidators = useStore((s) => s.restoreValidators)
-  // Rows the user toggled, overriding the preferred suggestion.
-  const [toggled, setToggled] = useState<Record<string, boolean>>({})
+  // Rows the user ticked; none start checked, since only the user knows which ones exit.
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(() => new Set())
   const [marked, setMarked] = useState(0)
   const {
     suggestions,
@@ -138,15 +138,15 @@ function ValidatorSetup() {
   // Only dismissed suggestions left: a compact line to bring them back.
   if (!suggestions.length && !marked) return restore ? <div className="row">{restore}</div> : null
   const key = (s: ValidatorSuggestion) => validatorKey(s.componentId, s.terminalId)
-  const checked = (s: ValidatorSuggestion) => toggled[key(s)] ?? s.preferred
+  const checked = (s: ValidatorSuggestion) => ticked.has(key(s))
   const chosen = suggestions.filter(checked)
   return (
     <div className="task-action-result">
       <strong>Set up validation</strong>
       {!!suggestions.length && (
         <p className="hint">
-          Validation runs these checks for a changed component and everything that depends on it.
-          Agents run them with <code>agent validate</code>, and the results appear here.
+          Tick checks that exit on their own: validation waits for them (also in{' '}
+          <code>agent validate</code>), so never pick a watch mode or server.
         </p>
       )}
       {suggestions.map((s) => (
@@ -154,10 +154,17 @@ function ValidatorSetup() {
           <input
             type="checkbox"
             checked={checked(s)}
-            onChange={(e) => setToggled((t) => ({ ...t, [key(s)]: e.target.checked }))}
+            onChange={(e) => {
+              const on = e.target.checked
+              setTicked((prev) => {
+                const next = new Set(prev)
+                if (on) next.add(key(s))
+                else next.delete(key(s))
+                return next
+              })
+            }}
           />
           {s.componentName} › {s.terminalName} <span className="mono hint flush">{s.command}</span>
-          {s.caution && <span className="hint flush">{s.caution}</span>}
         </label>
       ))}
       {!!suggestions.length && !!missing.length && (
