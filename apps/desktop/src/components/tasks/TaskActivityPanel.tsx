@@ -1,9 +1,16 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
 import { taskActivities } from '../../lib/ipc'
 import { applyTaskActivity } from '../../lib/tasks'
+import {
+  hasValidator,
+  hasValidatorSuggestions,
+  validatorKey,
+  validatorSetup,
+  type ValidatorSuggestion,
+} from '../../lib/validators'
 import { useStore } from '../../store'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
@@ -12,16 +19,19 @@ export function RunSelect() {
   const groups = useStore((s) => s.groups)
   const nodes = useStore((s) => s.nodes)
   const busy = useStore((s) => s.graphActionBusy)
-  const validated = nodes.filter((n) => n.data.terminals.some((t) => t.action === 'validation'))
-  // Without groups or validation terminals there is nothing to run.
-  if (!groups.length && !validated.length) return null
+  const declined = useStore((s) => s.validatorDeclined)
+  const validated = nodes.filter(hasValidator)
+  // Check terminals that could become validators, until the user marks or declines them.
+  const setup = useMemo(() => hasValidatorSuggestions(nodes, declined), [nodes, declined])
+  if (!groups.length && !validated.length && !setup) return null
   return (
     <select
       value=""
       aria-label="Run"
       onChange={(e) => {
         const [kind, id] = e.target.value.split(':')
-        if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
+        if (kind === 'setup') useStore.setState({ activityPanelOpen: true })
+        else if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
         else if (kind === 'stop') void stopGroup(id)
         else void runGraphAction({ kind: 'validateAffected', componentId: id })
       }}
@@ -56,6 +66,7 @@ export function RunSelect() {
           ))}
         </optgroup>
       )}
+      {setup && <option value="setup">Set up validation…</option>}
     </select>
   )
 }
@@ -101,6 +112,98 @@ export function ActivityStatus() {
   )
 }
 
+/** Offers to mark detected check terminals as validators; detectors never assign the role. */
+function ValidatorSetup() {
+  const nodes = useStore((s) => s.nodes)
+  const declined = useStore((s) => s.validatorDeclined)
+  const absent = useStore(
+    (s) => !!s.activeProjectId && s.projects[s.activeProjectId]?.fingerprint === 'absent',
+  )
+  const updateTerminal = useStore((s) => s.updateTerminal)
+  const declineValidators = useStore((s) => s.declineValidators)
+  const restoreValidators = useStore((s) => s.restoreValidators)
+  // Rows the user ticked; none start checked, since only the user knows which ones exit.
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(() => new Set())
+  const [marked, setMarked] = useState(0)
+  const {
+    suggestions,
+    missing,
+    declined: hidden,
+  } = useMemo(() => validatorSetup(nodes, declined), [nodes, declined])
+  const restore = !!hidden && (
+    <button onClick={restoreValidators}>
+      Show {hidden === 1 ? '1 dismissed check' : `${hidden} dismissed checks`}
+    </button>
+  )
+  // Only dismissed suggestions left: a compact line to bring them back.
+  if (!suggestions.length && !marked) return restore ? <div className="row">{restore}</div> : null
+  const key = (s: ValidatorSuggestion) => validatorKey(s.componentId, s.terminalId)
+  const checked = (s: ValidatorSuggestion) => ticked.has(key(s))
+  const chosen = suggestions.filter(checked)
+  return (
+    <div className="task-action-result">
+      <strong>Set up validation</strong>
+      {!!suggestions.length && (
+        <p className="hint">
+          Tick checks that exit on their own: validation waits for them (also in{' '}
+          <code>agent validate</code>), so never pick a watch mode or server.
+        </p>
+      )}
+      {suggestions.map((s) => (
+        <label key={key(s)} className="row">
+          <input
+            type="checkbox"
+            checked={checked(s)}
+            onChange={(e) => {
+              const on = e.target.checked
+              setTicked((prev) => {
+                const next = new Set(prev)
+                if (on) next.add(key(s))
+                else next.delete(key(s))
+                return next
+              })
+            }}
+          />
+          {s.componentName} › {s.terminalName} <span className="mono hint flush">{s.command}</span>
+        </label>
+      ))}
+      {!!suggestions.length && !!missing.length && (
+        <p className="hint">
+          No check terminal: {missing.map((c) => c.data.name).join(', ')} (add one in the Inspector
+          with Graph action Validation).
+        </p>
+      )}
+      {!!marked && (
+        <p className="hint" role="status">
+          Marked {marked === 1 ? 'a terminal' : `${marked} terminals`} as Validation.{' '}
+          {absent
+            ? 'The map isn’t saved yet: choose Create map configuration in the map status menu to keep them.'
+            : 'The change saves to patchbay.json with the map (see the map status).'}
+        </p>
+      )}
+      <div className="row">
+        {!!suggestions.length && (
+          <>
+            <button
+              disabled={!chosen.length}
+              onClick={() => {
+                for (const s of chosen)
+                  updateTerminal(s.componentId, s.terminalId, { action: 'validation' })
+                setMarked((n) => n + chosen.length)
+              }}
+            >
+              Mark as Validation
+            </button>
+            {/* Declined suggestions stay hidden, here and in the Run menu, for this project. */}
+            <button onClick={() => declineValidators(suggestions.map(key))}>Dismiss</button>
+          </>
+        )}
+        {restore}
+      </div>
+    </div>
+  )
+}
+
 export default function TaskActivityPanel() {
   const open = useStore((s) => s.activityPanelOpen)
   const projectId = useStore((s) => s.project?.id)
@@ -142,6 +245,7 @@ export default function TaskActivityPanel() {
         </div>
         <p>Environments started or stopped and validations run in this worktree.</p>
         <ActivityStatus />
+        <ValidatorSetup key={projectId} />
         {!own.length && <p>No activity in this worktree.</p>}
         <div className="task-activity">
           {own

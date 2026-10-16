@@ -75,7 +75,7 @@ export function validationFailures(reports: ActionReport[], name: (sessionId: st
         .filter((r) => !taskPassed(r))
         .map(
           (r) =>
-            `[high] Validation failed: ${name(r.sessionId)} ${r.outcome}${r.exitCode === null ? '' : ` (exit ${r.exitCode})`}`,
+            `[high] Validation failed: ${name(r.sessionId)} ${r.outcome}${r.exitCode === null ? '' : ` (exit ${r.exitCode})`}${r.message ? `: ${r.message}` : ''}`,
         ),
     )
     .join('\n')

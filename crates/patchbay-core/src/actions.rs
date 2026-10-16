@@ -291,6 +291,9 @@ pub struct TaskResult {
     pub session_id: String,
     pub outcome: TaskOutcome,
     pub exit_code: Option<i32>,
+    /// Why a task failed without an exit code (a validator that timed out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -312,6 +315,26 @@ enum Exit {
     Code(i32),
     Stopped,
     Cancelled,
+    /// Still running at the validation deadline.
+    TimedOut,
+}
+
+/// How long one validator may run before it is stopped and fails. Validation waits for
+/// each validator to exit, so one that never does (a watch mode, a server) would block
+/// `agent validate` and Auto forever. Half an hour leaves room for slow full test suites,
+/// including a cold build, while still ending a hung run the same working session.
+pub const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The failure reported for a validator stopped at its deadline.
+fn timed_out_message(timeout: Duration) -> String {
+    let after = if timeout.as_secs() >= 60 && timeout.as_secs().is_multiple_of(60) {
+        format!("{} min", timeout.as_secs() / 60)
+    } else {
+        format!("{timeout:?}")
+    };
+    format!(
+        "Timed out after {after}: validators must exit on their own; is it running in watch mode?"
+    )
 }
 
 /// Environments are per project and task: the same group runs separately in
@@ -358,10 +381,22 @@ impl State {
 
 /// Runs one coordinated operation at a time. Groups share managed sessions;
 /// manually started sessions are reused but never owned or stopped by a group.
-#[derive(Default)]
-pub struct GraphActions(Mutex<State>);
+/// The second field is the deadline for each validator ([`VALIDATION_TIMEOUT`]).
+pub struct GraphActions(Mutex<State>, Duration);
+
+impl Default for GraphActions {
+    fn default() -> Self {
+        Self::with_validation_timeout(VALIDATION_TIMEOUT)
+    }
+}
 
 impl GraphActions {
+    /// Graph actions whose validators fail once they run longer than `timeout`.
+    #[must_use]
+    pub fn with_validation_timeout(timeout: Duration) -> Self {
+        Self(Mutex::default(), timeout)
+    }
+
     /// Require affected components' managed environments and coordinated operations to be stopped.
     /// # Errors
     /// Fails while a coordinated action is active or an environment owns an affected session.
@@ -502,6 +537,7 @@ impl GraphActions {
                             session_id: spec.id.clone(),
                             outcome: TaskOutcome::Cancelled,
                             exit_code: None,
+                            message: None,
                         });
                         continue;
                     }
@@ -579,6 +615,7 @@ impl GraphActions {
                             session_id: session,
                             outcome: TaskOutcome::Cancelled,
                             exit_code: None,
+                            message: None,
                         });
                         continue;
                     };
@@ -592,23 +629,34 @@ impl GraphActions {
                                 TaskOutcome::Started
                             },
                             exit_code: None,
+                            message: None,
                         });
                         waits.push((run, ready));
                     } else {
-                        let (outcome, exit_code) = match wait_for_exit(pty, &run, &cancelled)? {
-                            Exit::Code(0) => (TaskOutcome::Passed, Some(0)),
-                            Exit::Code(code) => (TaskOutcome::Failed, Some(code)),
-                            Exit::Stopped => (TaskOutcome::Stopped, None),
-                            Exit::Cancelled => {
-                                ensure!(self.epoch() == epoch, "Graph action cancelled");
-                                pty.stop_generation(&run.id, run.generation)?;
-                                (TaskOutcome::Stopped, None)
-                            }
-                        };
+                        let deadline = Instant::now() + self.1;
+                        let mut message = None;
+                        let (outcome, exit_code) =
+                            match wait_for_exit(pty, &run, &cancelled, deadline)? {
+                                Exit::Code(0) => (TaskOutcome::Passed, Some(0)),
+                                Exit::Code(code) => (TaskOutcome::Failed, Some(code)),
+                                Exit::Stopped => (TaskOutcome::Stopped, None),
+                                Exit::Cancelled => {
+                                    ensure!(self.epoch() == epoch, "Graph action cancelled");
+                                    pty.stop_generation(&run.id, run.generation)?;
+                                    (TaskOutcome::Stopped, None)
+                                }
+                                Exit::TimedOut => {
+                                    // A hung validator fails; the others still run.
+                                    pty.stop_generation(&run.id, run.generation)?;
+                                    message = Some(timed_out_message(self.1));
+                                    (TaskOutcome::Failed, None)
+                                }
+                            };
                         results.push(TaskResult {
                             session_id: run.id,
                             outcome,
                             exit_code,
+                            message,
                         });
                     }
                 }
@@ -862,7 +910,12 @@ fn snapshot_run(pty: &dyn Terminals, run: &Run) -> Result<Snapshot> {
     Ok(snapshot)
 }
 
-fn wait_for_exit(pty: &dyn Terminals, run: &Run, cancelled: &AtomicBool) -> Result<Exit> {
+fn wait_for_exit(
+    pty: &dyn Terminals,
+    run: &Run,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<Exit> {
     loop {
         if cancelled.load(Ordering::SeqCst) {
             return Ok(Exit::Cancelled);
@@ -881,6 +934,9 @@ fn wait_for_exit(pty: &dyn Terminals, run: &Run, cancelled: &AtomicBool) -> Resu
         }
         if !snapshot.running {
             return Ok(Exit::Code(snapshot.exit_code.unwrap_or(-1)));
+        }
+        if Instant::now() >= deadline {
+            return Ok(Exit::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1725,6 +1781,32 @@ mod tests {
             assert!(!f.pty.is_running(&sid("web", "check")));
             assert!(f.pty.snapshot(&sid("app", "check")).is_none());
             assert!(!f.actions.cancel_validation());
+        }
+
+        #[test]
+        fn a_validator_that_never_exits_times_out_and_fails() {
+            let mut f = Fixture::new();
+            f.actions = Arc::new(GraphActions::with_validation_timeout(
+                Duration::from_millis(300),
+            ));
+            f.project.components[1].terminals[1].command = "sleep 30".into();
+            let report = f
+                .run(ActionRequest::ValidateAffected {
+                    component_id: "lib".into(),
+                })
+                .unwrap();
+            let api = &report.results[0];
+            assert!(matches!(api.outcome, TaskOutcome::Failed));
+            assert_eq!(api.exit_code, None);
+            assert!(api.message.as_deref().unwrap().contains("watch mode"));
+            assert!(!f.pty.is_running(&sid("api", "check")));
+            // The next validator still runs.
+            assert!(matches!(report.results[1].outcome, TaskOutcome::Passed));
+            assert!(report.failed());
+            assert_eq!(
+                timed_out_message(VALIDATION_TIMEOUT),
+                "Timed out after 30 min: validators must exit on their own; is it running in watch mode?"
+            );
         }
 
         #[test]

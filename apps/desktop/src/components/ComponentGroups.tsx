@@ -193,6 +193,7 @@ export default function ComponentGroups() {
                 className={
                   result.outcome === 'failed' || result.outcome === 'stopped' ? result.outcome : ''
                 }
+                title={result.message}
               >
                 {result.outcome}
                 {result.exitCode !== null ? ` (${result.exitCode})` : ''}
