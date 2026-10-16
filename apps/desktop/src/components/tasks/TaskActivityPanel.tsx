@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
 import { taskActivities } from '../../lib/ipc'
 import { applyTaskActivity } from '../../lib/tasks'
+import { componentsWithoutValidator, validatorSuggestions } from '../../lib/validators'
 import { useStore } from '../../store'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
@@ -13,8 +14,23 @@ export function RunSelect() {
   const nodes = useStore((s) => s.nodes)
   const busy = useStore((s) => s.graphActionBusy)
   const validated = nodes.filter((n) => n.data.terminals.some((t) => t.action === 'validation'))
-  // Without groups or validation terminals there is nothing to run.
-  if (!groups.length && !validated.length) return null
+  // Without groups or validation terminals there is nothing to run, unless
+  // check terminals could become validators.
+  if (!groups.length && !validated.length) {
+    if (!validatorSuggestions(nodes).length) return null
+    return (
+      <select
+        value=""
+        aria-label="Run"
+        onChange={() => useStore.setState({ activityPanelOpen: true })}
+      >
+        <option value="" disabled>
+          Run…
+        </option>
+        <option value="setup">Set up validation…</option>
+      </select>
+    )
+  }
   return (
     <select
       value=""
@@ -101,6 +117,60 @@ export function ActivityStatus() {
   )
 }
 
+/** Offers to mark detected check terminals as validators; detectors never assign the role. */
+function ValidatorSetup() {
+  const nodes = useStore((s) => s.nodes)
+  const updateTerminal = useStore((s) => s.updateTerminal)
+  // Unchecked rows, so new suggestions start checked.
+  const [skipped, setSkipped] = useState<string[]>([])
+  const suggestions = validatorSuggestions(nodes)
+  if (!suggestions.length) return null
+  const key = (s: { componentId: string; terminalId: string }) =>
+    JSON.stringify([s.componentId, s.terminalId])
+  const chosen = suggestions.filter((s) => !skipped.includes(key(s)))
+  const missing = componentsWithoutValidator(nodes)
+  return (
+    <div className="task-action-result">
+      <strong>Set up validation</strong>
+      <p className="hint">
+        Validation runs these checks for a changed component and everything that depends on it.
+        Agents run them with <code>agent validate</code>, and the results appear here.
+      </p>
+      {suggestions.map((s) => (
+        <label key={key(s)} className="row">
+          <input
+            type="checkbox"
+            checked={!skipped.includes(key(s))}
+            onChange={(e) =>
+              setSkipped((list) =>
+                e.target.checked ? list.filter((k) => k !== key(s)) : [...list, key(s)],
+              )
+            }
+          />
+          {s.componentName} › {s.terminalName} <span className="mono hint flush">{s.command}</span>
+        </label>
+      ))}
+      {!!missing.length && (
+        <p className="hint">
+          No check terminal: {missing.map((c) => c.data.name).join(', ')}. Add a task terminal in
+          the Inspector and set Graph action to Validation.
+        </p>
+      )}
+      <div className="row">
+        <button
+          disabled={!chosen.length}
+          onClick={() => {
+            for (const s of chosen)
+              updateTerminal(s.componentId, s.terminalId, { action: 'validation' })
+          }}
+        >
+          Mark as Validation
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function TaskActivityPanel() {
   const open = useStore((s) => s.activityPanelOpen)
   const projectId = useStore((s) => s.project?.id)
@@ -142,6 +212,7 @@ export default function TaskActivityPanel() {
         </div>
         <p>Environments started or stopped and validations run in this worktree.</p>
         <ActivityStatus />
+        <ValidatorSetup />
         {!own.length && <p>No activity in this worktree.</p>}
         <div className="task-activity">
           {own

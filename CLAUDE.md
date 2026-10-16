@@ -102,7 +102,7 @@ Claude’s opt-in status integration also captures native plans from `ExitPlanMo
 
 ### Graph actions
 
-`actions.rs` — groups (`Project.groups`) and terminal roles (`TerminalSpec.action`) drive `ActionPlan` (start a group's development tasks in startup stages, or validate the components a change may affect) and `GraphActions` (one coordinated operation at a time; environments owned per project, group and task). They run inside the session service (`Request::ActionRun`/`ActionStopGroup`/`ActionCancel`) through the `Terminals` trait, so their terminals are ordinary recorded sessions; the adapter's `graph_action_*` commands only trust, restrict and move the project into the task's worktree first. Results and the busy state land in the project they ran for (`patchProject`, `lib/actions.ts`).
+`actions.rs` — groups (`Project.groups`) and terminal roles (`TerminalSpec.action`) drive `ActionPlan` (start a group's development tasks in startup stages, or validate the components a change may affect) and `GraphActions` (one coordinated operation at a time; environments owned per project, group and task). They run inside the session service (`Request::ActionRun`/`ActionStopGroup`/`ActionCancel`) through the `Terminals` trait, so their terminals are ordinary recorded sessions; the adapter's `graph_action_*` commands only trust, restrict and move the project into the task's worktree first. Results and the busy state land in the project they ran for (`patchProject`, `lib/actions.ts`). Detectors never assign roles; the Activity panel (and `RunSelect`, when nothing is configured) offers to mark unassigned check terminals of components without a validator as Validation (`lib/validators.ts`), an ordinary map edit.
 
 ### Worktrees
 
