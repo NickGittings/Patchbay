@@ -292,6 +292,8 @@ export interface ActionReport {
     sessionId: string
     outcome: 'started' | 'reused' | 'passed' | 'failed' | 'stopped' | 'cancelled'
     exitCode: number | null
+    /** Why it failed without an exit code (a validator that timed out). */
+    message?: string
   }[]
 }
 
