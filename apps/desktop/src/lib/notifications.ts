@@ -216,6 +216,10 @@ export async function notificationPermission(): Promise<boolean> {
 /** A failed send may mean the grant was revoked, so the next one asks again. */
 export function forgetNotificationPermission() {
   permissionGranted = false
+  // A granted prompt would otherwise answer every later ask; a refused one stays at one prompt.
+  void permissionRequest?.then((granted) => {
+    if (granted) permissionRequest = undefined
+  })
 }
 
 function smokeLog() {
@@ -419,9 +423,15 @@ export function followNotifications() {
     for (const id of autoProjects) if (!open.some((p) => p.id === id)) autoProjects.delete(id)
     const pauses = new Map(autoPauses(s).map((p) => [p.sid, p]))
     for (const { id, state } of open) {
-      const known = autoProjects.has(id)
+      // Restore applies saved Auto runs after their project appears, so everything seen while
+      // restoring is a baseline, including worktrees the task list doesn't hold yet.
+      const known = autoProjects.has(id) && !s.restoring
       autoProjects.add(id)
+      const listed = new Set([null, ...(state.tasks ?? []).map((t) => t.id)])
       for (const { task, run } of autoRuns(state)) {
+        // Pauses come from the listed worktrees only; an unlisted one's state is first recorded
+        // once it is listed, so a pause it reached meanwhile still alerts.
+        if (!s.restoring && !listed.has(task)) continue
         const sid = autoSid(id, task)
         const signature = autoSignature(run)
         if (autoStates.get(sid) === signature) continue
@@ -502,7 +512,8 @@ export function followNotifications() {
       s.taskWorkspaces !== prev.taskWorkspaces ||
       s.tasks !== prev.tasks ||
       s.projects !== prev.projects ||
-      s.project !== prev.project
+      s.project !== prev.project ||
+      s.restoring !== prev.restoring
     if (autoChanged) considerAuto(s)
     if (
       s.notificationToast?.sessions.length &&

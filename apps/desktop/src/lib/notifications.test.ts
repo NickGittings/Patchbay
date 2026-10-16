@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { AutoRun } from '../types'
+import type { AutoRun, Task } from '../types'
+import type { TaskWorkspace } from '../store'
 import { mergeNotificationToast, removeNotificationSession } from './notificationToast'
 import {
   DEFAULT_NOTIFICATIONS,
@@ -947,4 +948,73 @@ test('Auto pauses respect preferences, skip input waits and restored states', as
   setAuto(autoRun({ status: 'waitingOnYou', stage: 'fix', waitingFor: 'fixBudget' }))
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).not.toHaveBeenCalled()
+})
+
+function setTaskAuto(run: AutoRun, tasks: { id: string; title: string }[] = []) {
+  const other = mock.state.projects.other!
+  update({
+    projects: {
+      ...mock.state.projects,
+      other: {
+        ...other,
+        state: {
+          ...other.state!,
+          activeTask: null,
+          tasks: tasks as Task[],
+          taskWorkspaces: { ...other.state!.taskWorkspaces, t1: { auto: run } as TaskWorkspace },
+        },
+      },
+    },
+  })
+}
+
+test('Auto runs restored after their project appears stay silent', async () => {
+  update({ restoring: true })
+  stop = followNotifications()
+  // The project's tab appears before its saved layout is applied.
+  setAuto(null)
+  setAuto(autoRun({ status: 'failed', reason: 'Failed last session' }))
+  setTaskAuto(autoRun({ runId: 'task-run', status: 'failed' }))
+  update({ restoring: false })
+  // The task list loads after restore.
+  setTaskAuto(autoRun({ runId: 'task-run', status: 'failed' }), [{ id: 't1', title: 'Feature' }])
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  setAuto(autoRun({ runId: 'next', status: 'failed', reason: 'New failure' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('a pause reached before its worktree is listed alerts once listed', async () => {
+  setAuto(autoRun())
+  stop = followNotifications()
+  setTaskAuto(autoRun({ runId: 'task-run' }))
+  setTaskAuto(autoRun({ runId: 'task-run', status: 'waitingOnYou', stage: 'mergeGate' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  setTaskAuto(autoRun({ runId: 'task-run', status: 'waitingOnYou', stage: 'mergeGate' }), [
+    { id: 't1', title: 'Feature' },
+  ])
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  expect(mock.state.notificationToast?.message).toContain('Auto mode asks to merge')
+})
+
+test('a revoked grant is asked for again after a failed send', async () => {
+  // A fresh module: earlier tests' refused prompt stays cached for the webview's lifetime.
+  vi.resetModules()
+  const { notificationPermission, forgetNotificationPermission } = await import('./notifications')
+  mock.granted.mockResolvedValue(false)
+  mock.request.mockResolvedValue('granted')
+  expect(await notificationPermission()).toBe(true)
+  forgetNotificationPermission()
+  await Promise.resolve()
+  mock.request.mockResolvedValue('denied')
+  expect(await notificationPermission()).toBe(false)
+  expect(mock.request).toHaveBeenCalledTimes(2)
+  // A refused prompt isn't repeated.
+  forgetNotificationPermission()
+  await Promise.resolve()
+  expect(await notificationPermission()).toBe(false)
+  expect(mock.request).toHaveBeenCalledTimes(2)
 })
