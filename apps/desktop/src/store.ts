@@ -153,6 +153,8 @@ export interface ProjectState {
   implementationComponents: ImplementationComponent[] | null
   planStartedWith: Record<string, string>
   agentRoles: AgentRoles
+  /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
+  validatorDeclined: string[]
   planActive: string | null
   dirty: boolean
   gitChanges: Record<string, number>
@@ -285,6 +287,9 @@ interface State {
   /** The agent preset assigned to each role in this project (workspace layout only). */
   agentRoles: AgentRoles
   setAgentRoles: (roles: AgentRoles) => void
+  /** Validator suggestions the user declined in this project (workspace layout only). */
+  validatorDeclined: string[]
+  declineValidators: (keys: string[]) => void
   /** The planner's shown terminal id (UI only). */
   planActive: string | null
   setPlanActive: (id: string | null) => void
@@ -656,6 +661,9 @@ export const useStore = create<State>((set, get) => ({
   planStartedWith: {},
   agentRoles: {},
   setAgentRoles: (agentRoles) => set({ agentRoles }),
+  validatorDeclined: [],
+  declineValidators: (keys) =>
+    set((s) => ({ validatorDeclined: [...new Set([...s.validatorDeclined, ...keys])] })),
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
@@ -993,6 +1001,7 @@ function emptyProjectState(): ProjectState {
     implementationComponents: null,
     planStartedWith: {},
     agentRoles: {},
+    validatorDeclined: [],
     planActive: null,
     dirty: false,
     gitChanges: {},
@@ -1024,6 +1033,7 @@ function projectState(s: State): ProjectState {
     implementationComponents,
     planStartedWith,
     agentRoles,
+    validatorDeclined,
     planActive,
     dirty,
     gitChanges,
@@ -1058,6 +1068,7 @@ function projectState(s: State): ProjectState {
     implementationComponents,
     planStartedWith,
     agentRoles,
+    validatorDeclined,
     planActive,
     dirty,
     gitChanges,

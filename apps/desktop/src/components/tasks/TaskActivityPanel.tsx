@@ -4,7 +4,13 @@ import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
 import { taskActivities } from '../../lib/ipc'
 import { applyTaskActivity } from '../../lib/tasks'
-import { componentsWithoutValidator, validatorSuggestions } from '../../lib/validators'
+import {
+  componentsWithoutValidator,
+  hasValidator,
+  validatorKey,
+  validatorSuggestions,
+  type ValidatorSuggestion,
+} from '../../lib/validators'
 import { useStore } from '../../store'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
@@ -13,31 +19,19 @@ export function RunSelect() {
   const groups = useStore((s) => s.groups)
   const nodes = useStore((s) => s.nodes)
   const busy = useStore((s) => s.graphActionBusy)
-  const validated = nodes.filter((n) => n.data.terminals.some((t) => t.action === 'validation'))
-  // Without groups or validation terminals there is nothing to run, unless
-  // check terminals could become validators.
-  if (!groups.length && !validated.length) {
-    if (!validatorSuggestions(nodes).length) return null
-    return (
-      <select
-        value=""
-        aria-label="Run"
-        onChange={() => useStore.setState({ activityPanelOpen: true })}
-      >
-        <option value="" disabled>
-          Run…
-        </option>
-        <option value="setup">Set up validation…</option>
-      </select>
-    )
-  }
+  const declined = useStore((s) => s.validatorDeclined)
+  const validated = nodes.filter(hasValidator)
+  // Check terminals that could become validators, until the user marks or declines them.
+  const setup = validatorSuggestions(nodes, declined).length > 0
+  if (!groups.length && !validated.length && !setup) return null
   return (
     <select
       value=""
       aria-label="Run"
       onChange={(e) => {
         const [kind, id] = e.target.value.split(':')
-        if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
+        if (kind === 'setup') useStore.setState({ activityPanelOpen: true })
+        else if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
         else if (kind === 'stop') void stopGroup(id)
         else void runGraphAction({ kind: 'validateAffected', componentId: id })
       }}
@@ -72,6 +66,7 @@ export function RunSelect() {
           ))}
         </optgroup>
       )}
+      {setup && <option value="setup">Set up validation…</option>}
     </select>
   )
 }
@@ -120,34 +115,42 @@ export function ActivityStatus() {
 /** Offers to mark detected check terminals as validators; detectors never assign the role. */
 function ValidatorSetup() {
   const nodes = useStore((s) => s.nodes)
+  const declined = useStore((s) => s.validatorDeclined)
+  const absent = useStore(
+    (s) => !!s.activeProjectId && s.projects[s.activeProjectId]?.fingerprint === 'absent',
+  )
   const updateTerminal = useStore((s) => s.updateTerminal)
-  // Unchecked rows, so new suggestions start checked.
-  const [skipped, setSkipped] = useState<string[]>([])
-  const suggestions = validatorSuggestions(nodes)
-  if (!suggestions.length) return null
-  const key = (s: { componentId: string; terminalId: string }) =>
-    JSON.stringify([s.componentId, s.terminalId])
-  const chosen = suggestions.filter((s) => !skipped.includes(key(s)))
-  const missing = componentsWithoutValidator(nodes)
+  const declineValidators = useStore((s) => s.declineValidators)
+  // Rows the user toggled, overriding the preferred suggestion.
+  const [toggled, setToggled] = useState<Record<string, boolean>>({})
+  const [marked, setMarked] = useState(0)
+  const suggestions = validatorSuggestions(nodes, declined)
+  const missing = componentsWithoutValidator(nodes, declined)
+  if (!suggestions.length && !missing.length && !marked) return null
+  const key = (s: ValidatorSuggestion) => validatorKey(s.componentId, s.terminalId)
+  const checked = (s: ValidatorSuggestion) => toggled[key(s)] ?? s.preferred
+  const chosen = suggestions.filter(checked)
+  // Declined suggestions and hints stay hidden, here and in the Run menu, for this project.
+  const decline = (rest: ValidatorSuggestion[], hints = false) =>
+    declineValidators([...rest.map(key), ...(hints ? missing.map((c) => validatorKey(c.id)) : [])])
   return (
     <div className="task-action-result">
       <strong>Set up validation</strong>
-      <p className="hint">
-        Validation runs these checks for a changed component and everything that depends on it.
-        Agents run them with <code>agent validate</code>, and the results appear here.
-      </p>
+      {(!!suggestions.length || !!missing.length) && (
+        <p className="hint">
+          Validation runs these checks for a changed component and everything that depends on it.
+          Agents run them with <code>agent validate</code>, and the results appear here.
+        </p>
+      )}
       {suggestions.map((s) => (
         <label key={key(s)} className="row">
           <input
             type="checkbox"
-            checked={!skipped.includes(key(s))}
-            onChange={(e) =>
-              setSkipped((list) =>
-                e.target.checked ? list.filter((k) => k !== key(s)) : [...list, key(s)],
-              )
-            }
+            checked={checked(s)}
+            onChange={(e) => setToggled((t) => ({ ...t, [key(s)]: e.target.checked }))}
           />
           {s.componentName} › {s.terminalName} <span className="mono hint flush">{s.command}</span>
+          {s.caution && <span className="hint flush">{s.caution}</span>}
         </label>
       ))}
       {!!missing.length && (
@@ -156,17 +159,32 @@ function ValidatorSetup() {
           the Inspector and set Graph action to Validation.
         </p>
       )}
-      <div className="row">
-        <button
-          disabled={!chosen.length}
-          onClick={() => {
-            for (const s of chosen)
-              updateTerminal(s.componentId, s.terminalId, { action: 'validation' })
-          }}
-        >
-          Mark as Validation
-        </button>
-      </div>
+      {!!marked && (
+        <p className="hint" role="status">
+          Marked {marked === 1 ? 'a terminal' : `${marked} terminals`} as Validation.{' '}
+          {absent
+            ? 'The map isn’t saved yet: choose Create map configuration in the map status menu to keep them.'
+            : 'The change saves to patchbay.json with the map (see the map status).'}
+        </p>
+      )}
+      {(!!suggestions.length || !!missing.length) && (
+        <div className="row">
+          {!!suggestions.length && (
+            <button
+              disabled={!chosen.length}
+              onClick={() => {
+                for (const s of chosen)
+                  updateTerminal(s.componentId, s.terminalId, { action: 'validation' })
+                decline(suggestions.filter((s) => !chosen.includes(s)))
+                setMarked((n) => n + chosen.length)
+              }}
+            >
+              Mark as Validation
+            </button>
+          )}
+          <button onClick={() => decline(suggestions, true)}>Dismiss</button>
+        </div>
+      )}
     </div>
   )
 }
