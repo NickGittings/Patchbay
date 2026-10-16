@@ -69,12 +69,14 @@ test('parallel reviewers and their sessions survive a restore', () => {
     laneSessions: [
       { sessionId: 'lane', startedMs: 5, turnSince: 8, observedWorking: true },
       { sessionId: 7 },
-      { sessionId: 'x' },
+      { sessionId: 'x', requestId: 'r' },
+      { sessionId: 'y', requestId: 9 },
     ],
   })
   expect(restored?.reviewers).toEqual(['claude', 'codex'])
   expect(restored?.laneSessions).toEqual([
     { sessionId: 'lane', startedMs: 5, turnSince: 8, observedWorking: true },
-    { sessionId: 'x', startedMs: undefined },
+    { sessionId: 'x', startedMs: undefined, requestId: 'r' },
+    { sessionId: 'y', startedMs: undefined },
   ])
 })

@@ -53,14 +53,14 @@ export default function ReviewAgentDialog({
       offlineText="Reconnect before starting a review agent."
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Implementation. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
-        const { sessions, errors } = await startReviewAgents(
+        const { started, errors } = await startReviewAgents(
           project,
           { worktree: source.path, branch: source.branch!, base },
           devices,
         )
         if (errors.length)
           useStore.getState().setMessage(`Some reviewers didn't start:\n${errors.join('\n')}`)
-        return sessions[0]
+        return started[0].sessionId
       }}
       close={close}
       launched={launched}

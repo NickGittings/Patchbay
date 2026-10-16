@@ -1464,23 +1464,7 @@ async fn review_agent_start(
                 service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
             metadata.branch = Some(request.branch);
             metadata.lane = request.lane.filter(|lane| !lane.is_empty());
-            match bridge.start_reporting(job.spec, metadata, request_id.clone()) {
-                Err((error, true)) => {
-                    // The service may have accepted the launch before its reply was lost.
-                    // Recover by request identity, without preparing another attempt.
-                    bridge
-                        .list()
-                        .ok()
-                        .and_then(|records| {
-                            records
-                                .into_iter()
-                                .find(|r| r.request_ids.contains(&request_id))
-                                .map(|r| r.id)
-                        })
-                        .ok_or((error, true))
-                }
-                result => result,
-            }
+            bridge.start_reporting(job.spec, metadata, request_id)
         })
     })
     .await
@@ -1808,10 +1792,6 @@ async fn session_resume(
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
-        let resume = Request::Resume {
-            id: session_id,
-            request_id,
-        };
         // A resumed review re-reviews the worktree as it is now.
         if record.metadata.component_id == model::REVIEW_SCOPE
             && let Some(attempt) =
@@ -1825,9 +1805,11 @@ async fn session_resume(
                 )
                 .map_err(err)?
         {
-            return attempt.launch(|| bridge.call_reporting(resume));
+            return attempt.launch(|| bridge.resume_reporting(session_id, request_id));
         }
-        bridge.call(resume)
+        bridge
+            .resume_reporting(session_id, request_id)
+            .map_err(|(e, _)| e)
     })
     .await
 }

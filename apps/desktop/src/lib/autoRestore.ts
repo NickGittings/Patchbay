@@ -68,6 +68,8 @@ export function restoredAuto(value: unknown): AutoRun | null {
                 {
                   sessionId: l.sessionId,
                   startedMs: finite(l.startedMs),
+                  ...(typeof l.requestId === 'string' ? { requestId: l.requestId } : {}),
+                  ...(typeof l.lane === 'string' || l.lane === null ? { lane: l.lane } : {}),
                   ...(finite(l.turnSince) !== undefined ? { turnSince: finite(l.turnSince) } : {}),
                   ...(l.observedWorking === true ? { observedWorking: true } : {}),
                 },
@@ -81,8 +83,15 @@ export function restoredAuto(value: unknown): AutoRun | null {
     // Agents outlive the app in the session service, so Auto keeps tracking (and owning) them.
     sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
     // Ownership needs the launch's start time, or a later session under the same id would count.
-    sessionOwned: r.sessionOwned === true && finite(r.sessionStartedMs) !== undefined,
+    // Owned only with a generation to check: its start time, else its launch request.
+    sessionOwned:
+      r.sessionOwned === true &&
+      (finite(r.sessionStartedMs) !== undefined || typeof r.sessionRequestId === 'string'),
     sessionStartedMs: finite(r.sessionStartedMs),
+    sessionRequestId: typeof r.sessionRequestId === 'string' ? r.sessionRequestId : undefined,
+    sessionLane:
+      typeof r.sessionLane === 'string' || r.sessionLane === null ? r.sessionLane : undefined,
+    reviewRound: typeof r.reviewRound === 'string' ? r.reviewRound : undefined,
     turnSince: finite(r.turnSince),
     launchAtMs: finite(r.launchAtMs),
     observedWorking: r.observedWorking === true,

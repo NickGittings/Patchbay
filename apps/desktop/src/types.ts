@@ -66,6 +66,22 @@ export interface EffortSettings {
 }
 export type AutoStage =
   'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
+/** The service's refusal of a launch into a session slot whose terminal still runs (`session.rs`). */
+export const TERMINAL_RUNNING = 'Terminal is already running; reconnect instead'
+/**
+ * A session Auto tracks. Auto owns one it launched while its process generation is the one it
+ * launched: its start time, else (when that couldn't be read) its launch request is still its
+ * record's latest.
+ */
+export interface AutoLaunch {
+  sessionId: string
+  startedMs?: number
+  requestId?: string
+  /** The reviewer's lane in Auto's review round (its preset id); `null` for a single reviewer. */
+  lane?: string | null
+  turnSince?: number
+  observedWorking?: boolean
+}
 export interface AutoRun {
   runId: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
@@ -80,19 +96,19 @@ export interface AutoRun {
   agents?: Partial<Record<AgentRole, string>>
   /** Presets that review together when there are several; `agents.review` reviews alone. */
   reviewers?: string[]
-  /** Reviewers launched beside the tracked session, owned while their start times match. */
-  laneSessions?: {
-    sessionId: string
-    startedMs?: number
-    turnSince?: number
-    observedWorking?: boolean
-  }[]
+  /** Reviewers launched beside the tracked session (see `AutoLaunch`). */
+  laneSessions?: AutoLaunch[]
   /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
   branch?: string
   round: number
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */
   sessionOwned?: boolean
+  /** The tracked session's launch request and review lane, as in `AutoLaunch`. */
+  sessionRequestId?: string
+  sessionLane?: string | null
+  /** The review round Auto launched; a later round in the findings was started by someone else. */
+  reviewRound?: string
   /** The reviewer whose prompt the current input wait opens. */
   inputSessionId?: string
   turnSince?: number
@@ -122,7 +138,13 @@ export interface ReviewFindings {
   text: string
   modifiedMs: number
   reviewedHead: string | null
+  /** The base branch of the findings `text` shows. */
   base: string
+  /**
+   * The latest round: `reviewers`, `verdict` and `reviewedHead` describe it, while `text` may show
+   * an earlier round's findings until one of its reviewers writes. Empty before rounds.
+   */
+  round: string
   /** When the review attempt started; later changes weren't reviewed. */
   startedMs: number
   /** Files in the branch's worktree changed after the attempt started, or couldn't be checked. */

@@ -224,6 +224,7 @@ test('findings become stale for new HEADs, newer edits and unfinished review att
     modifiedMs: 100,
     reviewedHead: 'abc',
     base: 'main',
+    round: 'r',
     startedMs: 40,
     editedSinceStart: false,
     truncated: false,
@@ -290,11 +291,16 @@ test('several reviewers start in lanes of one round; one alone keeps the single 
   const request = { worktree: '/feature', branch: 'feature', base: 'main' }
   const agent = (id: string) => ({ id, name: id, command: id, adapter: id }) as DeviceManifest
   vi.mocked(reviewAgentStart).mockImplementation(async (_p, r) => `review-${r.lane ?? 'single'}`)
-  expect(await startReviewAgents(project, request, [agent('claude')])).toEqual({
-    sessions: ['review-single'],
+  const single = await startReviewAgents(project, request, [agent('claude')])
+  expect(single).toMatchObject({
+    started: [{ sessionId: 'review-single', lane: null }],
     errors: [],
   })
-  expect(vi.mocked(reviewAgentStart).mock.lastCall?.[1]).toEqual(request)
+  // A single reviewer has no lane, but its round is still known, so Auto can recognise it.
+  expect(vi.mocked(reviewAgentStart).mock.lastCall?.[1]).toEqual({
+    ...request,
+    round: single.round,
+  })
 
   vi.mocked(reviewAgentStart).mockClear()
   vi.mocked(reviewAgentStart).mockImplementation(async (_p, r) => {
@@ -306,7 +312,7 @@ test('several reviewers start in lanes of one round; one alone keeps the single 
     agent('gone'),
     agent('codex'),
   ])
-  expect(started.sessions).toEqual(['review-claude', 'review-codex'])
+  expect(started.started.map((r) => r.sessionId)).toEqual(['review-claude', 'review-codex'])
   expect(started.errors).toEqual(['gone: Error: Unknown preset'])
   const rounds = new Set(vi.mocked(reviewAgentStart).mock.calls.map(([, r]) => r.round))
   expect(rounds.size).toBe(1)
@@ -347,7 +353,7 @@ test('all reviewer launches begin before any reviewer launch resolves', async ()
   // Reply order must not change which reviewer Auto tracks first.
   resolve[1]('second')
   resolve[0]('first')
-  expect(await pending).toEqual({ sessions: ['first', 'second'], errors: [] })
+  expect((await pending).started.map((r) => r.sessionId)).toEqual(['first', 'second'])
 })
 
 test('only a review that reported or confirmed settling stops blocking the fix handoff', async () => {
@@ -427,30 +433,28 @@ test('review scope belongs in Review and never in the implementation grid or doc
   ).toEqual([])
 })
 
-test('a review round subscribes and reconciles once, recovering a lost reply by request identity', async () => {
+test('a review round subscribes and reconciles once, reporting a start the backend could not confirm', async () => {
   const { startReviewAgents } = await import('./reviewAgents')
-  let lostRequest = ''
+  const requests: Record<string, string> = {}
   vi.mocked(reviewAgentStart).mockImplementation(
     async (_project, request, _terminal, requestId) => {
-      if (request.lane === 'lost') {
-        lostRequest = requestId
-        throw new Error('Reply lost')
-      }
+      requests[request.lane!] = requestId
+      if (request.lane === 'lost') throw new Error('Reply lost')
       return 'confirmed'
     },
   )
-  vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
-    useStore.setState({
-      sessionRecords: [{ id: 'recovered', requestIds: [lostRequest] }] as SessionRecord[],
-    })
-  })
   expect(
     await startReviewAgents(
       {} as Project,
       { worktree: '/feature', branch: 'feature', base: 'main' },
       ['ok', 'lost'].map((id) => ({ id, name: id }) as DeviceManifest),
     ),
-  ).toEqual({ sessions: ['confirmed', 'recovered'], errors: [] })
+  ).toEqual({
+    started: [{ sessionId: 'confirmed', requestId: requests.ok, lane: 'ok' }],
+    round: expect.any(String),
+    errors: ['lost: Error: Reply lost'],
+  })
+  expect(requests.ok).not.toBe(requests.lost)
   expect(listenForTerminals).toHaveBeenCalledOnce()
   expect(reconcileFreshSessions).toHaveBeenCalledOnce()
   expect(vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0]).toBeGreaterThan(
@@ -458,24 +462,45 @@ test('a review round subscribes and reconciles once, recovering a lost reply by 
   )
 })
 
-test('one reviewer also recovers a lost reply, while a failed reconcile preserves a successful start', async () => {
+test('a failed reconcile preserves a successful start; no start at all rejects', async () => {
   const { startReviewAgents } = await import('./reviewAgents')
   const request = { worktree: '/feature', branch: 'feature', base: 'main' }
   const device = { id: 'codex', name: 'Codex' } as DeviceManifest
-  vi.mocked(reviewAgentStart).mockImplementation(async (_p, _r, _t, requestId) => {
-    useStore.setState({
-      sessionRecords: [{ id: 'recovered', requestIds: [requestId] }] as SessionRecord[],
-    })
-    throw new Error('Reply lost')
-  })
-  expect(await startReviewAgents({} as Project, request, [device])).toEqual({
-    sessions: ['recovered'],
-    errors: [],
-  })
+  vi.mocked(reviewAgentStart).mockRejectedValue(new Error('Reply lost'))
+  await expect(startReviewAgents({} as Project, request, [device])).rejects.toThrow(
+    'Codex: Error: Reply lost',
+  )
   vi.mocked(reviewAgentStart).mockResolvedValue('started')
   vi.mocked(reconcileFreshSessions).mockRejectedValue(new Error('Snapshot unavailable'))
-  expect(await startReviewAgents({} as Project, request, [device])).toEqual({
-    sessions: ['started'],
+  const started = await startReviewAgents({} as Project, request, [device])
+  expect(started).toMatchObject({ started: [{ sessionId: 'started' }], errors: [] })
+})
+
+test('a start still spawning when the backend looked is adopted once the round reconciles', async () => {
+  const { startReviewAgents } = await import('./reviewAgents')
+  let lost = ''
+  vi.mocked(reviewAgentStart).mockImplementation(async (_p, request, _t, requestId) => {
+    if (request.lane === 'slow') {
+      lost = requestId
+      throw new Error('Reply lost')
+    }
+    return 'fast'
+  })
+  vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
+    useStore.setState({
+      sessionRecords: [{ id: 'slow-session', requestIds: ['older', lost] }] as SessionRecord[],
+    })
+  })
+  const started = await startReviewAgents(
+    {} as Project,
+    { worktree: '/feature', branch: 'feature', base: 'main' },
+    ['fast', 'slow'].map((id) => ({ id, name: id }) as DeviceManifest),
+  )
+  expect(started).toMatchObject({
+    started: [
+      { sessionId: 'fast', lane: 'fast' },
+      { sessionId: 'slow-session', requestId: lost, lane: 'slow' },
+    ],
     errors: [],
   })
 })

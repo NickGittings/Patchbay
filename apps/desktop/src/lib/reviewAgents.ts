@@ -14,9 +14,9 @@ import {
   type Worktree,
 } from '../types'
 import { mergeAgentStart, reviewAgentStart } from './ipc'
+import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
-import { useStore } from '../store'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
   return worktrees.filter((w) => w.branch && w.path !== source.path && w.branch !== source.branch)
@@ -159,14 +159,22 @@ export const startReviewAgent = (
 /**
  * Start one review, or several reviewers at once, each in its own lane of one round so their
  * findings combine. Every reviewer that starts keeps running; the others' errors are returned.
- * Rejects only when none started.
+ * Rejects only when none started. Each started reviewer comes with its launch request, which stays
+ * the last of its record's `requestIds` until the session is launched again, and its lane (`null`
+ * for a single reviewer). Every reviewer, even a single one, shares
+ * `round`. The backend recovers a start whose reply was lost once the launch spawned; the
+ * reconciliation after every launch settled adopts one that was still spawning then.
  */
 export async function startReviewAgents(
   project: Project,
   request: ReviewRequest,
   devices: DeviceManifest[],
   auto?: import('../types').AutoBrief,
-): Promise<{ sessions: string[]; errors: string[] }> {
+): Promise<{
+  started: { sessionId: string; requestId: string; lane: string | null }[]
+  round: string
+  errors: string[]
+}> {
   if (!devices.length) throw new Error('Choose at least one agent')
   await listenForTerminals()
   const round = crypto.randomUUID()
@@ -176,30 +184,34 @@ export async function startReviewAgents(
       launchJob(
         reviewAgentStart,
         project,
-        devices.length > 1 ? { ...request, lane: device.id, round } : request,
+        devices.length > 1 ? { ...request, lane: device.id, round } : { ...request, round },
         device,
         requests[index],
         auto,
       ),
     ),
   )
-  // One reconciliation for the whole round also recovers a start whose reply was lost.
-  // A temporary read failure must not discard sessions that already returned successfully.
+  // One reconciliation for the whole round. A temporary read failure must not discard sessions
+  // that already returned successfully.
   await reconcileFreshSessions().catch(() => {})
-  const sessions: string[] = []
+  const records = useStore.getState().sessionRecords
+  const started: { sessionId: string; requestId: string; lane: string | null }[] = []
   const errors: string[] = []
   results.forEach((result, index) => {
     const recovered =
       result.status === 'rejected'
-        ? useStore.getState().sessionRecords.find((r) => r.requestIds?.includes(requests[index]))
-            ?.id
+        ? records.find((r) => r.requestIds?.includes(requests[index]))?.id
         : undefined
-    if (result.status === 'fulfilled') sessions.push(result.value)
-    else if (recovered) sessions.push(recovered)
-    else errors.push(`${devices[index].name}: ${String(result.reason)}`)
+    if (result.status === 'fulfilled' || recovered) {
+      started.push({
+        sessionId: result.status === 'fulfilled' ? result.value : recovered!,
+        requestId: requests[index],
+        lane: devices.length > 1 ? devices[index].id : null,
+      })
+    } else errors.push(`${devices[index].name}: ${String(result.reason)}`)
   })
-  if (!sessions.length) throw new Error(errors.join('\n'))
-  return { sessions, errors }
+  if (!started.length) throw new Error(errors.join('\n'))
+  return { started, round, errors }
 }
 
 /** Bases a branch can be reviewed against: never the branch itself. */

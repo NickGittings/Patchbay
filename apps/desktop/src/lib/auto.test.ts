@@ -2,6 +2,7 @@ import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
   TASK_ROOT_SCOPE,
+  TERMINAL_RUNNING,
   type AutoRun,
   type SessionRecord,
   type ReviewFindings,
@@ -53,7 +54,15 @@ vi.mock('./reviewAgents', async () => {
             ),
           )
         await (await import('./sessions')).reconcileFreshSessions()
-        return { sessions, errors: [] }
+        return {
+          started: sessions.map((sessionId, i) => ({
+            sessionId,
+            requestId: `request-${sessionId}`,
+            lane: devices.length > 1 ? devices[i].id : null,
+          })),
+          round: 'round',
+          errors: [],
+        }
       },
     ),
   }
@@ -111,6 +120,7 @@ const findings = (
   modifiedMs: 1100,
   startedMs: 1001,
   base: 'main',
+  round: 'round',
   editedSinceStart: false,
   truncated: false,
   reviewers: [],
@@ -270,6 +280,7 @@ function load() {
       },
     ],
     restoring: false,
+    serviceConnected: true,
   })
   useStore.getState().setActiveTask('t')
   vi.mocked(ipc.terminalStop).mockResolvedValue(undefined)
@@ -1379,7 +1390,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
   },
 )
 
-test('review launches survive a missing launch snapshot without claiming ownership', async () => {
+test('review launches survive a missing launch snapshot, owned only through their launch request', async () => {
   load()
   vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
   vi.mocked(jobs.startReviewAgent).mockResolvedValue('reviewer')
@@ -1390,20 +1401,18 @@ test('review launches survive a missing launch snapshot without claiming ownersh
   const dispose = followAuto()
   try {
     await flush()
+    // Owned through its launch request, which no session record lists here.
     expect(autoRun('p', 't')).toMatchObject({
       status: 'running',
       sessionId: 'reviewer',
-      sessionOwned: false,
+      sessionStartedMs: undefined,
+      sessionRequestId: 'request-reviewer',
     })
     expect(ipc.terminalStop).not.toHaveBeenCalled()
     const startedMs = autoRun('p', 't')!.launchAtMs! + 1
     useStore.setState({ sessions: { reviewer: { running: true, startedMs } } })
     await flush()
-    expect(autoRun('p', 't')).toMatchObject({
-      status: 'running',
-      sessionId: 'reviewer',
-      sessionOwned: false,
-    })
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 'reviewer' })
     expect(ipc.terminalStop).not.toHaveBeenCalled()
     vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), startedMs })
     useStore.setState({
@@ -2830,7 +2839,8 @@ test('a partially failed round pauses immediately and keeps the successful revie
   load()
   agent('working', 1400)
   vi.mocked(jobs.startReviewAgents).mockResolvedValue({
-    sessions: ['s'],
+    started: [{ sessionId: 's', requestId: 'request-s', lane: 'codex' }],
+    round: 'round',
     errors: ['Claude: launch unconfirmed'],
   })
   useStore.getState().patchTask('p', 't', { auto: run() })
@@ -2918,4 +2928,624 @@ test('Resume re-infers the stage once every tracked reviewer has stopped', async
     laneSessions: undefined,
   })
   expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
+const reviewRecord = (id: string, lane: string | null, snapshot: SessionState, requestIds = []) =>
+  ({
+    id,
+    snapshot,
+    requestIds,
+    metadata: {
+      projectId: 'p',
+      componentId: '@review',
+      kind: 'agent',
+      name: `Review ${id}`,
+      ...(lane ? { lane } : {}),
+    },
+    spec: { cwd: tree.path },
+  }) as unknown as SessionRecord
+const reviewer = (lane: string | null, finished: boolean, error: string | null = null) => ({
+  lane,
+  finished,
+  verdict: null,
+  error,
+})
+const pausedRound = (laneStartedMs?: number) =>
+  run({
+    status: 'paused',
+    effort: 'light',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1000,
+    launchAtMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: laneStartedMs ?? 1000 }],
+  })
+
+test.each(['stopped', 'crashed', 'forgotten'] as const)(
+  'Resume reviews again when a reviewer %s before writing, stopping the round it still owns',
+  async (failure) => {
+    load()
+    const lane = reviewSession('working')
+    if (failure === 'stopped') lane.status!.stopped = true
+    if (failure === 'crashed') lane.running = false
+    const sessions = { s: reviewSession('review'), ...(failure === 'forgotten' ? {} : { lane }) }
+    useStore.setState({
+      serviceConnected: true,
+      sessions,
+      sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
+        reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
+      ),
+    })
+    vi.mocked(ipc.reviewRead).mockResolvedValue({
+      ...findings(),
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false), reviewer('codex', true)],
+    })
+    useStore.getState().patchTask('p', 't', { auto: pausedRound() })
+    await resumeAuto('p', 't')
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+    expect(ipc.terminalStop).not.toHaveBeenCalledWith('lane')
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'review',
+      status: 'running',
+      sessionId: undefined,
+      laneSessions: undefined,
+    })
+    expect(autoRun('p', 't')?.log.at(-1)?.text).toContain('the review round ended early')
+  },
+)
+
+test('Resume keeps tracking live reviewers when one that exited had already written', async () => {
+  load()
+  const sessions = { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') }
+  useStore.setState({
+    serviceConnected: true,
+    sessions,
+    sessionRecords: [
+      reviewRecord('s', 'codex', sessions.s),
+      reviewRecord('lane', 'claude', sessions.lane),
+    ],
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer('claude', false), reviewer('codex', true)],
+  })
+  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  // The live reviewer leads, keeping the ownership it had as a lane.
+  expect(autoRun('p', 't')).toMatchObject({
+    stage: 'review',
+    status: 'running',
+    sessionId: 'lane',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    launchAtMs: 1000,
+    laneSessions: undefined,
+  })
+})
+
+test('a reviewer whose launch was never confirmed pauses with what to do, and Resume reviews again', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  const sessions = { s: reviewSession('review', 1500) }
+  useStore.setState({
+    serviceConnected: true,
+    sessions,
+    sessionRecords: [reviewRecord('s', 'codex', sessions.s)],
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer('claude', false, 'Reply lost'), reviewer('codex', true)],
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1000,
+      launchAtMs: 1000,
+    }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      reason: 'claude may not have started: Reply lost. Resume to review again',
+    })
+  } finally {
+    dispose()
+  }
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  // Standard effort validates the changed work before reviewing it again.
+  expect(autoRun('p', 't')).toMatchObject({
+    stage: 'validate',
+    status: 'running',
+    sessionId: undefined,
+  })
+})
+
+test('only the reviewer an input wait opened counts as stopped when it goes idle', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      status: 'waitingOnYou',
+      waitingFor: 'agentInput',
+      inputSessionId: 'lane',
+      sessionId: 's',
+      turnSince: 1000,
+      launchAtMs: 1000,
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+    }),
+  })
+  // The primary's provider confirms it idle at its prompt; it was never seen working.
+  useStore.setState({
+    sessions: { s: reviewSession('idle', 1300), lane: reviewSession('needsInput', 1200) },
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', inputSessionId: 'lane' })
+    // Only the lane resumed: the primary still hasn't been seen working.
+    useStore.setState({
+      sessions: { s: reviewSession('idle', 1300), lane: reviewSession('working', 1400) },
+    })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      laneSessions: [{ sessionId: 'lane', observedWorking: true }],
+    })
+    expect(autoRun('p', 't')?.observedWorking).toBeFalsy()
+    // The waiting reviewer itself going idle is a stop.
+    useStore.getState().patchTask('p', 't', {
+      auto: {
+        ...autoRun('p', 't')!,
+        status: 'waitingOnYou',
+        waitingFor: 'agentInput',
+        inputSessionId: 'lane',
+        laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+      },
+    })
+    useStore.setState({
+      sessions: { s: reviewSession('idle', 1300), lane: reviewSession('idle', 1500) },
+    })
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    expect(autoRun('p', 't')?.reason).toContain('stopped while waiting for input')
+  } finally {
+    dispose()
+  }
+})
+
+test.each([true, false])(
+  'a reviewer whose start time was unreadable is stopped only while its launch is the latest (relaunched: %s)',
+  async (relaunchedByHand) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    const codex = useStore.getState().devices[0]
+    useStore.setState({ devices: [codex, { ...codex, id: 'claude' }] })
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
+      useStore.setState({ sessions: { s: reviewSession('working'), lane: { running: true } } })
+      return request.lane === 'claude' ? 'lane' : 's'
+    })
+    vi.mocked(ipc.terminalSnapshot).mockRejectedValue(new Error('Service busy'))
+    const dispose = followAuto()
+    try {
+      await startAuto('p', 't', { ...run(), effort: 'light', reviewers: ['codex', 'claude'] })
+      await flush()
+      expect(autoRun('p', 't')?.laneSessions).toMatchObject([
+        { sessionId: 'lane', startedMs: undefined, requestId: 'request-lane' },
+      ])
+      vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+        useStore.setState({
+          sessionRecords: [
+            reviewRecord('lane', 'claude', { running: true }, [
+              'request-lane',
+              ...(relaunchedByHand ? ['by-hand'] : []),
+            ] as never),
+          ],
+        })
+      })
+      vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ startedMs: 1200, running: true } as never)
+      // Records this window holds may be stale: the stop refreshes them once first.
+      useStore.setState({
+        sessionRecords: [
+          reviewRecord('lane', 'claude', { running: true }, ['request-lane'] as never),
+        ],
+      })
+      vi.mocked(awaitSessions.reconcileFreshSessions).mockClear()
+      stopAuto('p', 't')
+      await flush()
+      expect(awaitSessions.reconcileFreshSessions).toHaveBeenCalledTimes(1)
+      if (relaunchedByHand) expect(ipc.terminalStop).not.toHaveBeenCalledWith('lane')
+      else expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a lane that takes the lead without a start time stays owned through its launch request', async () => {
+  load()
+  const sessions = { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') }
+  delete (sessions.lane as Partial<SessionState>).startedMs
+  useStore.setState({
+    serviceConnected: true,
+    sessions,
+    sessionRecords: [
+      reviewRecord('s', 'codex', sessions.s),
+      reviewRecord('lane', 'claude', sessions.lane, ['req-lane'] as never),
+    ],
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer('claude', false), reviewer('codex', true)],
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      ...pausedRound(),
+      reviewRound: 'round',
+      sessionLane: 'codex',
+      laneSessions: [{ sessionId: 'lane', requestId: 'req-lane', lane: 'claude' }],
+    }),
+  })
+  await resumeAuto('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({
+    sessionId: 'lane',
+    sessionOwned: true,
+    sessionStartedMs: undefined,
+    sessionRequestId: 'req-lane',
+    sessionLane: 'claude',
+    reviewRound: 'round',
+  })
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ running: true } as never)
+  stopAuto('p', 't')
+  await flush()
+  expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
+})
+
+test('a reviewer forgotten after writing its findings does not break the round on Resume', async () => {
+  load()
+  useStore.setState({
+    serviceConnected: true,
+    sessions: { lane: reviewSession('working') },
+    sessionRecords: [reviewRecord('lane', 'claude', reviewSession('working'))],
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer('claude', false), reviewer('codex', true)],
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      ...pausedRound(),
+      reviewRound: 'round',
+      sessionLane: 'codex',
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
+    }),
+  })
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'review', sessionId: 'lane' })
+})
+
+test('Resume never stops a reviewer restarted by hand while it checked hooks', async () => {
+  load()
+  const sessions = {
+    s: { ...reviewSession('working'), running: false },
+    lane: reviewSession('working'),
+  }
+  useStore.setState({
+    serviceConnected: true,
+    sessions,
+    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
+      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
+    ),
+  })
+  vi.mocked(ipc.agentHooksCheck).mockImplementation(async () => {
+    // The user restarts the lane's tile meanwhile: a new generation.
+    useStore.setState({
+      sessions: { ...useStore.getState().sessions, lane: { ...sessions.lane, startedMs: 5000 } },
+    })
+    return { installed: true, disabled: false, reporterAvailable: true } as Awaited<
+      ReturnType<typeof ipc.agentHooksCheck>
+    >
+  })
+  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
+  // It can't be stopped, so Resume asks to close it rather than review beside it.
+  await expect(resumeAuto('p', 't')).rejects.toThrow("Close Review lane, which Auto can't tell")
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(autoRun('p', 't')?.status).toBe('paused')
+})
+
+test("a review someone else started while paused supersedes Auto's round on Resume", async () => {
+  load()
+  const sessions = { s: reviewSession('review'), lane: reviewSession('review') }
+  useStore.setState({
+    serviceConnected: true,
+    sessions,
+    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
+      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
+    ),
+  })
+  // The newer, manual round: a single reviewer whose launch error isn't Auto's.
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    round: 'manual',
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer(null, false, 'Reply lost')],
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      ...pausedRound(),
+      reviewRound: 'round',
+      sessionLane: 'codex',
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
+    }),
+  })
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
+  expect(autoRun('p', 't')).toMatchObject({ sessionId: undefined, reviewRound: undefined })
+  expect(autoRun('p', 't')?.log.at(-1)?.text).toContain("a newer review replaced Auto's round")
+})
+
+test('a reviewer that went idle at its prompt pauses, and Resume reviews again instead of re-pausing', async () => {
+  load()
+  const sessions = { s: reviewSession('idle', 1300) }
+  useStore.setState({ sessions, sessionRecords: [reviewRecord('s', null, sessions.s)] })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1000,
+      launchAtMs: 1000,
+      observedWorking: true,
+    }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
+  } finally {
+    dispose()
+  }
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: undefined })
+})
+
+test('a reviewer that idles once its input wait is no longer open still counts as stopped', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      sessionId: 's',
+      turnSince: 1000,
+      launchAtMs: 1000,
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+    }),
+  })
+  useStore.setState({
+    sessions: { s: reviewSession('working', 1100), lane: reviewSession('needsInput', 1200) },
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    // Asking for input is part of a turn, so the lane counts as seen working.
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'waitingOnYou',
+      inputSessionId: 'lane',
+      laneSessions: [{ sessionId: 'lane', observedWorking: true }],
+    })
+    // The wait no longer names it (as after Pause and Resume); then it idles without working.
+    useStore.getState().patchTask('p', 't', {
+      auto: { ...autoRun('p', 't')!, status: 'running', inputSessionId: undefined },
+    })
+    useStore.setState({
+      sessions: { s: reviewSession('working', 1100), lane: reviewSession('idle', 1400) },
+    })
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    expect(autoRun('p', 't')?.reason).toContain('Resume to review again')
+  } finally {
+    dispose()
+  }
+})
+
+test('a review started by someone else during the run pauses at completion instead of judging it', async () => {
+  load()
+  useStore.setState({ sessions: { s: reviewSession('review', 1500) } })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), round: 'manual' })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ sessionId: 's', turnSince: 1000, launchAtMs: 1000, reviewRound: 'round' }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'review',
+      status: 'paused',
+      reason: "A newer review replaced Auto's round; Resume to continue from it",
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test('Resume waits for the session service and never forgets a known start time', async () => {
+  load()
+  useStore.setState({ serviceConnected: false, sessions: {} })
+  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
+  await expect(resumeAuto('p', 't')).rejects.toThrow('Wait for the session service')
+  // Connected, but this window hasn't hydrated the sessions yet: records alone vouch for them.
+  const record = (id: string) => reviewRecord(id, null, null as unknown as SessionState)
+  useStore.setState({ serviceConnected: true, sessionRecords: [record('s'), record('lane')] })
+  await resumeAuto('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+  })
+})
+
+test.each([
+  ['the slot runs another terminal', `Codex: Error: ${TERMINAL_RUNNING}`, 'paused'],
+  ['its conversation runs elsewhere', 'Codex: Conversation is already running', 'failed'],
+] as const)('a review launch refused because %s', async (_name, error, status) => {
+  load()
+  vi.mocked(jobs.startReviewAgents).mockRejectedValue(new Error(error))
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe(status)
+    if (status === 'paused')
+      expect(autoRun('p', 't')?.reason).toBe('Close the current agent in this slot, then Resume')
+  } finally {
+    dispose()
+  }
+})
+
+const roundFindings = (claude: boolean, codex: boolean): ReviewFindings => ({
+  ...findings(),
+  reviewedHead: claude && codex ? 'abc' : null,
+  verdict: claude && codex ? findings().verdict : null,
+  reviewers: [reviewer('claude', claude), reviewer('codex', codex)],
+})
+const inputWaitRound = () =>
+  run({
+    status: 'waitingOnYou',
+    waitingFor: 'agentInput',
+    inputSessionId: 's',
+    effort: 'light',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    sessionLane: 'claude',
+    reviewRound: 'round',
+    turnSince: 1000,
+    launchAtMs: 1000,
+    observedWorking: true,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'codex' }],
+  })
+
+test('a reviewer that exits after writing during an input wait is settled, and the round completes', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  // The other reviewer wrote its findings and exited without reporting the end of its turn.
+  const exited = { ...reviewSession('working', 1100), running: false }
+  useStore.setState({ sessions: { s: reviewSession('needsInput', 1200), lane: exited } })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(roundFindings(false, true))
+  useStore.getState().patchTask('p', 't', { auto: inputWaitRound() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'waitingOnYou',
+      inputSessionId: 's',
+      laneSessions: undefined,
+    })
+    // The user answers; the waiting reviewer works and finishes.
+    useStore.setState({ sessions: { s: reviewSession('working', 1500) } })
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('running')
+    vi.mocked(ipc.reviewRead).mockResolvedValue(roundFindings(true, true))
+    useStore.setState({ sessions: { s: reviewSession('review', 1600) } })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+  } finally {
+    dispose()
+  }
+})
+
+test('Pause during the findings check of a failed reviewer is kept', async () => {
+  load()
+  const exited = { ...reviewSession('working', 1100), running: false }
+  // The round is complete: one reviewer finished its turn, the other wrote and exited.
+  useStore.setState({ sessions: { s: reviewSession('review', 1300), lane: exited } })
+  let answer!: (findings: ReviewFindings) => void
+  vi.mocked(ipc.reviewRead).mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  useStore.getState().patchTask('p', 't', {
+    auto: {
+      ...inputWaitRound(),
+      status: 'running',
+      waitingFor: undefined,
+      inputSessionId: undefined,
+    },
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    pauseAuto('p', 't')
+    answer(roundFindings(true, true))
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      reason: 'Paused by you',
+      laneSessions: [{ sessionId: 'lane' }],
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test('Resume of a superseded round stops only what Auto owns and follows the newer review', async () => {
+  load()
+  // The newer review relaunched the lane's slot; Auto's own reviewer still runs.
+  const sessions = {
+    s: reviewSession('review'),
+    lane: { ...reviewSession('working', 3000), startedMs: 5000 },
+  }
+  useStore.setState({
+    sessions,
+    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
+      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
+    ),
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue({
+    ...findings(),
+    round: 'manual',
+    reviewedHead: null,
+    verdict: null,
+    reviewers: [reviewer('claude', false)],
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      ...pausedRound(),
+      reviewRound: 'round',
+      sessionLane: 'codex',
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
+    }),
+  })
+  await resumeAuto('p', 't')
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  expect(ipc.terminalStop).not.toHaveBeenCalledWith('lane')
+  // The newer review's working reviewer is followed, not owned.
+  expect(autoRun('p', 't')).toMatchObject({
+    stage: 'review',
+    status: 'running',
+    sessionId: 'lane',
+    sessionOwned: false,
+    reviewRound: undefined,
+  })
 })

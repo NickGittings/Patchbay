@@ -51,6 +51,38 @@ struct Retirement {
     state: RetirementState,
     error: Option<String>,
 }
+/// How long, and how far apart, recovery looks for a launch whose reply was lost.
+/// The service lists a launch only once it spawned, which takes well under a second.
+const RECOVERY_DEADLINE: Duration = Duration::from_secs(2);
+const RECOVERY_PAUSE: Duration = Duration::from_millis(200);
+/// A launch `result`, or for a lost reply the session `find` recovers. `find` looks
+/// again `pause` apart until `deadline` passes; a failed look (`Err`) ends the search.
+/// A launch it never finds stays uncertain.
+fn recovered(
+    result: Result<String, (String, bool)>,
+    deadline: Duration,
+    pause: Duration,
+    mut find: impl FnMut() -> Result<Option<String>, String>,
+) -> Result<String, (String, bool)> {
+    let Err((error, true)) = result else {
+        return result;
+    };
+    let end = Instant::now() + deadline;
+    loop {
+        match find() {
+            Ok(Some(id)) => return Ok(id),
+            Ok(None) if Instant::now() + pause < end => std::thread::sleep(pause),
+            _ => return Err((error, true)),
+        }
+    }
+}
+/// The session a launch with `request_id` started, if the service recorded it.
+fn launched(records: &[Record], request_id: &str) -> Option<String> {
+    records
+        .iter()
+        .find(|r| r.request_ids.iter().any(|id| id == request_id))
+        .map(|r| r.id.clone())
+}
 impl Default for Bridge {
     fn default() -> Self {
         let nanos = std::time::SystemTime::now()
@@ -154,7 +186,8 @@ impl Bridge {
             .map_err(|(e, _)| e)
     }
     /// Like `start`; an error also says whether the session may have started anyway
-    /// (the reply was lost), so callers undo their preparation only on a certain refusal.
+    /// (the reply was lost and the session list couldn't confirm it either way), so
+    /// callers undo their preparation only on a certain refusal.
     ///
     /// # Errors
     /// Fails when the service is disconnected, refuses the launch or its reply is lost.
@@ -175,6 +208,7 @@ impl Bridge {
     ) -> Result<String, (String, bool)> {
         let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
         let metadata = Box::new(metadata);
+        let lookup = request_id.clone();
         let request = if resume {
             Request::Restart {
                 request_id,
@@ -188,9 +222,37 @@ impl Bridge {
                 spec,
             }
         };
-        let id: String = self.call_reporting(request)?;
+        let id = self.recovering(&lookup, |bridge| bridge.call_reporting(request))?;
         self.routes.lock().unwrap().insert(id.clone(), label);
         Ok(id)
+    }
+    /// Resume session `id`, recovering a lost reply as launches do.
+    ///
+    /// # Errors
+    /// Fails when the service is disconnected, refuses the resume or its reply is lost;
+    /// the flag says whether the session may have resumed anyway.
+    pub fn resume_reporting(
+        &self,
+        id: String,
+        request_id: String,
+    ) -> Result<String, (String, bool)> {
+        let resume = Request::Resume {
+            id,
+            request_id: request_id.clone(),
+        };
+        self.recovering(&request_id, |bridge| bridge.call_reporting(resume))
+    }
+    /// Run a launch; when its reply was lost, look the launch up by its request id,
+    /// which the service lists once the launch spawned, for up to `RECOVERY_DEADLINE`,
+    /// since it may still be spawning. A launch the list never shows stays uncertain.
+    fn recovering(
+        &self,
+        request_id: &str,
+        launch: impl FnOnce(&Self) -> Result<String, (String, bool)>,
+    ) -> Result<String, (String, bool)> {
+        recovered(launch(self), RECOVERY_DEADLINE, RECOVERY_PAUSE, || {
+            self.list().map(|records| launched(&records, request_id))
+        })
     }
     pub fn list(&self) -> Result<Vec<Record>, String> {
         let records: Vec<Record> = self.call(Request::List)?;
@@ -452,6 +514,46 @@ impl patchbay_core::tasks::TaskSessions for Bridge {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+
+    #[test]
+    fn only_a_lost_reply_is_recovered_and_an_unconfirmed_one_stays_uncertain() {
+        let ok = |id: &str| Ok::<_, (String, bool)>(id.to_string());
+        let (deadline, pause) = (Duration::from_secs(5), Duration::ZERO);
+        assert_eq!(
+            recovered(ok("s"), deadline, pause, || panic!("listed")),
+            ok("s")
+        );
+        let refused = Err(("refused".to_string(), false));
+        assert_eq!(
+            recovered(refused.clone(), deadline, pause, || panic!("listed")),
+            refused
+        );
+        let lost = || Err(("lost".to_string(), true));
+        // A launch still spawning is listed on a later look.
+        let mut looks = 0;
+        let found = recovered(lost(), deadline, pause, || {
+            looks += 1;
+            Ok((looks == 3).then(|| "s".into()))
+        });
+        assert_eq!((found, looks), (ok("s"), 3));
+        // A failed list ends the search at once.
+        let mut looks = 0;
+        let failed = recovered(lost(), deadline, pause, || {
+            looks += 1;
+            Err("disconnected".into())
+        });
+        assert_eq!((failed, looks), (lost(), 1));
+        // One that never shows stays uncertain once the deadline passes.
+        let start = Instant::now();
+        let missing = recovered(
+            lost(),
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+            || Ok(None),
+        );
+        assert_eq!(missing, lost());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn duplicate_stops_are_ignored_until_reconnection() {

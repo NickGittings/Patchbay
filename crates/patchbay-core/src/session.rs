@@ -31,6 +31,9 @@ pub const POLL_LIMIT: usize = 512;
 const MAX_HISTORY: usize = 3;
 /// How much of a finished run's output is searched for a provider's resume hint.
 const CAPTURE_TAIL: usize = 4096;
+/// The refusal of a launch into a session slot whose terminal still runs. Clients
+/// recognise it by this exact text (mirrored as `TERMINAL_RUNNING` in `types.ts`).
+pub const TERMINAL_RUNNING: &str = "Terminal is already running; reconnect instead";
 /// Reply timeout for quick requests; slow ones (spawning, stopping, resuming) get `SLOW_TIMEOUT`.
 const TIMEOUT: Duration = Duration::from_secs(10);
 const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
@@ -694,6 +697,11 @@ pub struct Service {
     /// projects never wait on or cancel each other.
     actions: Mutex<HashMap<String, Arc<GraphActions>>>,
     records: Mutex<BTreeMap<String, Record>>,
+    /// The session id and launch request whose process is being spawned: at most one,
+    /// since a launch holds `operation` throughout. Summaries list that request only once
+    /// its spawn succeeded, so a lookup by request id never reports a launch that may
+    /// still fail and be rolled back.
+    spawning: Mutex<Option<(String, String)>>,
     events: Mutex<Events>,
     viewers: Mutex<BTreeMap<String, Vec<Viewer>>>,
     /// Open connections per client name; viewers are dropped with the last one.
@@ -768,6 +776,7 @@ impl Service {
             pty: Arc::new(PtyManager::with_generation_floor(generation)),
             actions: Mutex::default(),
             records: Mutex::new(records),
+            spawning: Mutex::default(),
             events: Mutex::default(),
             viewers: Mutex::default(),
             connections: Mutex::default(),
@@ -850,7 +859,8 @@ impl Service {
         records
     }
     /// Records without output, environment or launch internals, for clients.
-    /// Never copies a backlog.
+    /// Never copies a backlog. Request ids are listed once their launch has spawned,
+    /// so clients can recover a launch whose reply they lost.
     fn summaries(&self) -> Vec<Record> {
         let bare = |s: &Snapshot| Snapshot {
             launch_directory: s.launch_directory.clone(),
@@ -860,9 +870,17 @@ impl Service {
             ..*s
         };
         let records = self.records.lock().unwrap();
+        let spawning = self.spawning.lock().unwrap();
         records
             .values()
             .map(|r| {
+                let mut request_ids = r.request_ids.clone();
+                if spawning
+                    .as_ref()
+                    .is_some_and(|(id, request)| *id == r.id && request_ids.last() == Some(request))
+                {
+                    request_ids.pop();
+                }
                 let mut spec = r.spec.clone();
                 spec.env.clear();
                 spec.resume_command = None;
@@ -879,7 +897,7 @@ impl Service {
                     launch_command: String::new(),
                     restart_context: None,
                     interrupted: r.interrupted,
-                    request_ids: Vec::new(),
+                    request_ids,
                 }
             })
             .collect()
@@ -1134,10 +1152,7 @@ impl Service {
         {
             return Ok(id);
         }
-        anyhow::ensure!(
-            !self.pty.is_running(&id),
-            "Terminal is already running; reconnect instead"
-        );
+        anyhow::ensure!(!self.pty.is_running(&id), TERMINAL_RUNNING);
         let cwd = spec.cwd.canonicalize()?;
         let busy = self.records.lock().unwrap().values().any(|r| {
             if !(spec.exclusive_cwd || r.spec.exclusive_cwd) || !self.pty.is_running(&r.id) {
@@ -1189,6 +1204,8 @@ impl Service {
         let mut requests = previous
             .as_ref()
             .map_or_else(Vec::new, |r| r.request_ids.clone());
+        // Under the records lock, so no summary sees the request before it is marked spawning.
+        *self.spawning.lock().unwrap() = Some((id.clone(), request.clone()));
         requests.push(request);
         // Only recent launches can be retried; older request ids are useless.
         requests.drain(..requests.len().saturating_sub(16));
@@ -1215,6 +1232,7 @@ impl Service {
         if let Err(e) = spawned {
             let mut records = self.records.lock().unwrap();
             let failed = records.remove(&id).unwrap();
+            *self.spawning.lock().unwrap() = None;
             if let Some(mut r) = previous {
                 r.history = failed.history;
                 r.history.truncate(previous_history_len);
@@ -1222,6 +1240,7 @@ impl Service {
             }
             return Err(e);
         }
+        *self.spawning.lock().unwrap() = None;
         // Trim only after success so a rejected launch preserves all of the old history.
         if let Some(r) = self.records.lock().unwrap().get_mut(&id) {
             trim_history(&mut r.history);
@@ -3918,6 +3937,67 @@ mod tests {
         }))
         .unwrap();
         (metadata, spec)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listed_sessions_carry_request_ids_only_once_their_launch_spawned() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let listed = |service: &Arc<Service>| -> Vec<String> {
+            // Through the wire format clients receive.
+            let value = service.handle("1", Request::List).unwrap();
+            let records: Vec<Record> = serde_json::from_value(value).unwrap();
+            records
+                .into_iter()
+                .flat_map(|r| r.request_ids)
+                .collect::<Vec<_>>()
+        };
+        let (metadata, spec) = restart_fixture(&dir, "printf quiet");
+        let id = service
+            .start("launch".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        wait_for_exit(&service, &id);
+        assert_eq!(listed(&service), ["launch"]);
+        assert!(service.spawning.lock().unwrap().is_none());
+        // A launch still spawning isn't listed: it may yet fail and be rolled back.
+        service
+            .spawning
+            .lock()
+            .unwrap()
+            .replace((id.clone(), "launch".into()));
+        assert!(listed(&service).is_empty());
+        service.spawning.lock().unwrap().take();
+        // A launch that spawned is listed last, and nothing stays marked as spawning.
+        service.start("next".into(), metadata, spec).unwrap();
+        assert_eq!(listed(&service), ["launch", "next"]);
+        assert!(service.spawning.lock().unwrap().is_none());
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_into_a_running_slot_is_refused_with_the_shared_text() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (mut metadata, spec) = restart_fixture(&dir, "sleep 5");
+        // No conversation, so only the slot conflicts.
+        metadata.conversation_id = None;
+        service
+            .start("first".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let error = service.start("second".into(), metadata, spec).unwrap_err();
+        assert_eq!(error.to_string(), TERMINAL_RUNNING);
+        // Pinned beside `TERMINAL_RUNNING` in `types.ts`.
+        assert_eq!(
+            TERMINAL_RUNNING,
+            "Terminal is already running; reconnect instead"
+        );
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

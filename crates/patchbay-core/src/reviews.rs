@@ -237,7 +237,10 @@ struct FindingsStamp {
 
 impl FindingsStamp {
     fn read(path: &Path) -> Option<Self> {
-        let metadata = std::fs::metadata(path).ok()?;
+        Self::of(&std::fs::metadata(path).ok()?)
+    }
+
+    fn of(metadata: &std::fs::Metadata) -> Option<Self> {
         Some(Self {
             modified: metadata.modified().ok()?,
             len: metadata.len(),
@@ -264,9 +267,30 @@ struct Started {
     /// Existing findings stay available for handoff, but cannot finish this attempt.
     #[serde(default)]
     previous_findings: Option<FindingsStamp>,
+    /// The round (`round_key`) and base of the attempt this one replaced in the same
+    /// lane, whose findings the file holds until this attempt writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<Previous>,
     /// An uncertain launch is visible until this reviewer actually writes findings.
     #[serde(default)]
     launch_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Previous {
+    round: String,
+    base: String,
+}
+
+/// What groups a round's attempts: their shared round id, else (for sidecars from
+/// before rounds) the attempt alone.
+fn round_key(started: &Started) -> String {
+    if started.round.is_empty() {
+        format!("attempt:{}", started.attempt)
+    } else {
+        format!("round:{}", started.round)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,7 +301,13 @@ pub struct Findings {
     pub modified_ms: u64,
     /// Absent when the findings predate the latest review attempt.
     pub reviewed_head: Option<String>,
+    /// The base branch of the findings `text` shows.
     pub base: String,
+    /// The latest review round: reviewers launched together share it. `reviewers`,
+    /// `verdict` and `reviewed_head` describe this round, while `text` may still show an
+    /// earlier round's findings until one of its reviewers writes. Empty for reviews
+    /// recorded before rounds.
+    pub round: String,
     /// When the review attempt started; later changes weren't reviewed.
     pub started_ms: u64,
     /// Uncommitted or untracked files in the branch's worktree changed after the
@@ -341,8 +371,15 @@ impl Attempt {
         let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
         let mut started = started.clone();
         started.previous_findings = FindingsStamp::read(&sidecar.with_extension("md"));
-        let written = serde_json::to_vec(&started)?;
         let previous = std::fs::read(&sidecar).ok();
+        started.previous = previous
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<Started>(bytes).ok())
+            .map(|old| Previous {
+                round: round_key(&old),
+                base: old.base,
+            });
+        let written = serde_json::to_vec(&started)?;
         // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
         crate::plans::write_atomic(&sidecar, &written)?;
         let cache_key = sidecar.parent().unwrap().join(name(&started.branch));
@@ -391,9 +428,10 @@ impl Attempt {
             Ok(value) => Ok(value),
             Err((error, true)) => {
                 let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
-                if std::fs::read(&self.sidecar).ok().as_deref() == Some(self.written.as_slice()) {
-                    let mut started: Started =
-                        serde_json::from_slice(&self.written).expect("recorded attempt");
+                // Best-effort: an unreadable record only loses the launch error's display.
+                if std::fs::read(&self.sidecar).ok().as_deref() == Some(self.written.as_slice())
+                    && let Ok(mut started) = serde_json::from_slice::<Started>(&self.written)
+                {
                     started.launch_error = Some(error.clone());
                     if let Ok(bytes) = serde_json::to_vec(&started) {
                         let _ = crate::plans::write_atomic(&self.sidecar, &bytes);
@@ -616,6 +654,7 @@ pub fn prepare(
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         lane: lane.map(Into::into),
         previous_findings: None,
+        previous: None,
         launch_error: None,
     };
     let briefing = context::owned_briefing(&spec);
@@ -681,6 +720,7 @@ pub fn resume_attempt(
         // forward would mix commits and could revive findings from an older round.
         round: uuid::Uuid::new_v4().to_string(),
         previous_findings: None,
+        previous: None,
         launch_error: None,
         ..old
     };
@@ -701,12 +741,56 @@ struct Saved {
     modified_ms: u64,
     started: Started,
     stamp: Option<FindingsStamp>,
+    /// An earlier round's findings, shown while the latest round has none of its own.
+    superseded: bool,
 }
 
 impl Saved {
-    /// Written since its attempt started, so it covers that attempt's HEAD.
+    /// Reviewer `file` of attempt `started`, stamped but not read yet. A missing or
+    /// unreadable file has no stamp.
+    fn stamped(file: PathBuf, started: Started, superseded: bool) -> Self {
+        let stamp = FindingsStamp::read(&file);
+        Self {
+            modified_ms: stamp
+                .as_ref()
+                .map_or(0, |s| crate::status::unix_ms(s.modified)),
+            file,
+            text: String::new(),
+            truncated: false,
+            started,
+            stamp,
+            superseded,
+        }
+    }
+
+    /// Read up to `limit` bytes of the findings, stamping the open file again so the
+    /// text and its stamp can't come from different writes.
+    fn read(mut self, limit: usize) -> Self {
+        let found = (|| {
+            let handle = std::fs::File::open(&self.file).ok()?;
+            let stamp = FindingsStamp::of(&handle.metadata().ok()?)?;
+            let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
+            Some((text, truncated, stamp))
+        })();
+        let (text, truncated, stamp) = match found {
+            Some((text, truncated, stamp)) => (text, truncated, Some(stamp)),
+            None => (String::new(), false, None),
+        };
+        self.modified_ms = stamp
+            .as_ref()
+            .map_or(0, |s| crate::status::unix_ms(s.modified));
+        self.text = text;
+        self.truncated = truncated;
+        self.stamp = stamp;
+        self
+    }
+
+    /// Written since its attempt started, so it covers that attempt's HEAD. Never
+    /// true for an earlier round's findings: a newer review hasn't written yet.
     fn fresh(&self) -> bool {
-        self.modified_ms > self.started.started_ms && self.stamp != self.started.previous_findings
+        !self.superseded
+            && self.modified_ms > self.started.started_ms
+            && self.stamp != self.started.previous_findings
     }
 
     fn lane(&self) -> &str {
@@ -714,56 +798,112 @@ impl Saved {
     }
 }
 
-/// Every reviewer of `branch`'s latest round, by lane, with up to `limit` bytes of
-/// findings between them; empty when none has a findings file. A reviewer whose file
-/// is missing or unreadable counts as one that hasn't written yet.
-fn saved(root: &Path, branch: &str, limit: usize) -> Vec<Saved> {
-    let round = round(root, branch);
-    let each = limit / round.len().max(1);
-    let read = |file: &Path| {
-        let handle = std::fs::File::open(file).ok()?;
-        let metadata = handle.metadata().ok()?;
-        let stamp = FindingsStamp {
-            modified: metadata.modified().ok()?,
-            len: metadata.len(),
-        };
-        let modified_ms = crate::status::unix_ms(stamp.modified);
-        let (text, truncated) = crate::plans::read_limited(handle, each).ok()?;
-        Some((text, truncated, modified_ms, Some(stamp)))
-    };
-    let lanes: Vec<(Saved, bool)> = round
-        .into_iter()
-        .map(|(file, started)| {
-            let found = read(&file);
-            let exists = found.is_some();
-            let (text, truncated, modified_ms, stamp) = found.unwrap_or_default();
-            let saved = Saved {
-                file,
-                text,
-                truncated,
-                modified_ms,
-                started,
-                stamp,
-            };
-            (saved, exists)
-        })
-        .collect();
-    if !lanes
-        .iter()
-        .any(|(s, exists)| *exists || s.started.launch_error.is_some())
-    {
-        return vec![];
+/// A branch's reviewers: the latest round, and the findings shown for it.
+#[derive(Default)]
+struct Lanes {
+    /// Every reviewer of the latest round (the round of the most recently started
+    /// attempt), by lane. A reviewer whose file is missing or unreadable counts as
+    /// one that hasn't written yet.
+    round: Vec<Saved>,
+    /// While no reviewer of the latest round has written, the most recently written
+    /// earlier findings, whichever reviewers wrote them; `None` shows the round's own.
+    earlier: Option<Vec<Saved>>,
+}
+
+impl Lanes {
+    /// The findings to show and hand off: never empty unless there are none at all.
+    fn shown(&self) -> &[Saved] {
+        self.earlier.as_deref().unwrap_or(&self.round)
     }
-    lanes.into_iter().map(|(saved, _)| saved).collect()
+}
+
+/// `branch`'s reviewers, with up to `limit` bytes of findings between those shown.
+/// Empty when no reviewer has a findings file or an uncertain launch to report. Every
+/// file is stamped first; only the findings shown are read.
+fn saved(root: &Path, branch: &str, limit: usize) -> Lanes {
+    let mut rounds = rounds(root, branch);
+    let Some((_, latest)) = rounds.pop() else {
+        return Lanes::default();
+    };
+    let read = |lanes: Vec<Saved>| {
+        let each = limit / lanes.len().max(1);
+        lanes.into_iter().map(|s| s.read(each)).collect::<Vec<_>>()
+    };
+    let round: Vec<Saved> = latest
+        .into_iter()
+        .map(|(file, started)| Saved::stamped(file, started, false))
+        .collect();
+    if round.iter().any(Saved::fresh) {
+        return Lanes {
+            round: read(round),
+            earlier: None,
+        };
+    }
+    // The latest round's own files may be much older than another round's findings
+    // (its lanes may differ), so show whichever round's findings were written last.
+    // A latest-round lane that hasn't written still holds the findings of the attempt
+    // it replaced, which belong to that attempt's round.
+    let mut earlier: BTreeMap<String, Vec<Saved>> = BTreeMap::new();
+    for (key, lanes) in rounds {
+        let written = lanes
+            .into_iter()
+            .map(|(file, started)| Saved::stamped(file, started, true))
+            .filter(|s| s.stamp.is_some());
+        earlier.entry(key).or_default().extend(written);
+    }
+    let mut own = vec![];
+    for lane in round.iter().filter(|s| s.stamp.is_some()) {
+        match &lane.started.previous {
+            Some(previous) => {
+                let mut started = lane.started.clone();
+                started.base.clone_from(&previous.base);
+                let held = Saved::stamped(lane.file.clone(), started, true);
+                earlier
+                    .entry(previous.round.clone())
+                    .or_default()
+                    .push(held);
+            }
+            None => own.push(lane.modified_ms),
+        }
+    }
+    let own = own.into_iter().max();
+    let shown = earlier
+        .into_values()
+        .filter_map(|mut lanes| {
+            lanes.sort_by(|a, b| a.started.lane.cmp(&b.started.lane));
+            Some((lanes.iter().map(|s| s.modified_ms).max()?, lanes))
+        })
+        .filter(|(modified, _)| own.is_none_or(|own| *modified > own))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, lanes)| read(lanes));
+    if shown.is_none()
+        && !round
+            .iter()
+            .any(|s| s.stamp.is_some() || s.started.launch_error.is_some())
+    {
+        return Lanes::default();
+    }
+    match shown {
+        Some(earlier) => Lanes {
+            round,
+            earlier: Some(earlier),
+        },
+        None => Lanes {
+            round: read(round),
+            earlier: None,
+        },
+    }
 }
 
 /// [`read`] up to `limit` bytes, combining the round's reviewers.
 fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
     let lanes = saved(root, branch, limit);
-    let first = lanes.first()?;
-    let started_ms = lanes.iter().map(|s| s.started.started_ms).min()?;
+    let round = &lanes.round;
+    let shown = lanes.shown();
+    let first = round.first()?;
+    let started_ms = round.iter().map(|s| s.started.started_ms).min()?;
     // Covered only once every reviewer wrote findings, all for the same HEAD.
-    let reviewed_head = lanes
+    let reviewed_head = round
         .iter()
         .all(|s| s.fresh() && s.started.head == first.started.head)
         .then(|| first.started.head.clone());
@@ -773,7 +913,7 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
             .iter()
             .find(|w| w.branch.as_deref() == Some(branch))
             .is_some_and(|w| git::changed_since(Path::new(&w.path), started_ms).unwrap_or(true));
-    let reviewers: Vec<Reviewer> = lanes
+    let reviewers: Vec<Reviewer> = round
         .iter()
         .map(|s| Reviewer {
             lane: s.started.lane.clone(),
@@ -784,26 +924,29 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
                 .flatten(),
         })
         .collect();
-    let (text, verdict) = match lanes.as_slice() {
-        [one] => (one.text.clone(), reviewers[0].verdict.clone()),
-        _ => (
-            lanes
-                .iter()
-                .map(|s| format!("## Reviewer: {}\n\n{}", s.lane(), s.text.trim()))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-            combined(reviewers.iter().map(|r| r.verdict.clone())),
-        ),
+    let verdict = match reviewers.as_slice() {
+        [one] => one.verdict.clone(),
+        _ => combined(reviewers.iter().map(|r| r.verdict.clone())),
+    };
+    let text = match shown {
+        [one] => one.text.clone(),
+        _ => shown
+            .iter()
+            .map(|s| format!("## Reviewer: {}\n\n{}", s.lane(), s.text.trim()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
     };
     Some(Findings {
         verdict,
         text,
-        modified_ms: lanes.iter().map(|s| s.modified_ms).max()?,
+        modified_ms: shown.iter().map(|s| s.modified_ms).max()?,
         reviewed_head,
-        base: first.started.base.clone(),
+        // The base of the findings shown, so the text never pairs with another round's base.
+        base: shown.first().unwrap_or(first).started.base.clone(),
+        round: first.started.round.clone(),
         started_ms,
         edited_since_start,
-        truncated: lanes.iter().any(|s| s.truncated),
+        truncated: shown.iter().any(|s| s.truncated),
         reviewers,
     })
 }
@@ -881,10 +1024,12 @@ fn cached_round(cache: &mut BTreeMap<PathBuf, RoundCache>, key: PathBuf) -> &mut
     entry
 }
 
-/// The findings file and attempt of each reviewer in `branch`'s latest round (the
-/// round of the most recently started attempt), sorted by lane. Only sidecars that
-/// really are `branch`'s, at the path their own branch and lane give, count.
-fn round(root: &Path, branch: &str) -> Vec<(PathBuf, Started)> {
+/// The findings file and attempt of each of `branch`'s reviewers, grouped by round
+/// (sidecars from before rounds were recorded stand alone), each sorted by lane, in
+/// the order their latest attempts started: the last is the latest round. Only
+/// sidecars that really are `branch`'s, at the path their own branch and lane give,
+/// count. One folder scan; unchanged sidecars aren't read again.
+fn rounds(root: &Path, branch: &str) -> Vec<(String, Vec<(PathBuf, Started)>)> {
     let Some(folder) = existing_dir(root) else {
         return vec![];
     };
@@ -920,31 +1065,28 @@ fn round(root: &Path, branch: &str) -> Vec<(PathBuf, Started)> {
             .collect();
         entry.stamps = stamps;
     }
-    let mut all = entry.records.clone();
+    let all = entry.records.clone();
     drop(cache);
-    let Some((round, attempt)) = all
-        .iter()
-        .max_by_key(|(_, s)| s.started_ms)
-        .map(|(_, s)| (s.round.clone(), s.attempt.clone()))
-    else {
-        return vec![];
-    };
-    // Sidecars from before rounds were recorded stand alone.
-    all.retain(|(_, s)| {
-        if round.is_empty() {
-            s.attempt == attempt
-        } else {
-            s.round == round
-        }
-    });
-    all.sort_by(|a, b| a.1.lane.cmp(&b.1.lane));
-    all
+    let mut rounds: BTreeMap<String, Vec<(PathBuf, Started)>> = BTreeMap::new();
+    for (file, started) in all {
+        rounds
+            .entry(round_key(&started))
+            .or_default()
+            .push((file, started));
+    }
+    let mut rounds: Vec<_> = rounds.into_iter().collect();
+    for (_, lanes) in &mut rounds {
+        lanes.sort_by(|a, b| a.1.lane.cmp(&b.1.lane));
+    }
+    rounds.sort_by_key(|(_, lanes)| lanes.iter().map(|(_, s)| s.started_ms).max());
+    rounds
 }
 
 /// Whether `branch` has nonempty findings saved, without reading their
 /// freshness or more than the start of each file.
 fn has_findings(worktree: &Path, branch: &str) -> bool {
     saved(worktree, branch, 4096)
+        .shown()
         .iter()
         // A long file counts even if it were blank throughout; `handoff` still checks.
         .any(|s| s.truncated || !s.text.trim().is_empty())
@@ -986,8 +1128,8 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
         git::repo_root(root).as_ref() == Some(&worktree),
         "This launch isn't in the reviewed worktree"
     );
-    let all = saved(&worktree, branch, HANDOFF_LIMIT);
-    let body = findings_body(&all, branch, true).ok_or_else(|| no_findings(branch))?;
+    let lanes = saved(&worktree, branch, HANDOFF_LIMIT);
+    let body = findings_body(lanes.shown(), branch, true).ok_or_else(|| no_findings(branch))?;
     Ok(context::ContextSection {
         title: "Review findings".into(),
         body,
@@ -998,10 +1140,13 @@ pub fn handoff(root: &Path, session: &Session) -> Result<context::ContextSection
 /// The caller has already validated the source worktree and its HEAD.
 #[must_use]
 pub fn merge_handoff(root: &Path, branch: &str, head: &str) -> Option<context::ContextSection> {
-    let all = saved(root, branch, HANDOFF_LIMIT);
-    let body = findings_body(&all, branch, false)?;
-    let modified_ms = all.iter().map(|s| s.modified_ms).max()?;
-    let matches = all.iter().all(|s| s.fresh() && s.started.head == head);
+    let lanes = saved(root, branch, HANDOFF_LIMIT);
+    let body = findings_body(lanes.shown(), branch, false)?;
+    let modified_ms = lanes.shown().iter().map(|s| s.modified_ms).max()?;
+    let matches = lanes
+        .round
+        .iter()
+        .all(|s| s.fresh() && s.started.head == head);
     Some(context::ContextSection {
         title: "Review findings".into(),
         body: format!(
@@ -1947,6 +2092,14 @@ mod tests {
         let sidecar = file(&f.dir, &f.request.branch)
             .unwrap()
             .with_extension("json");
+        // The replaced attempt is recorded in the next one, so give the original a
+        // record of the same size: the metadata then stays identical.
+        let mut original: Started = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        original.previous = Some(Previous {
+            round: format!("round:{}", "y".repeat(original.round.len())),
+            base: original.base.clone(),
+        });
+        fs::write(&sidecar, serde_json::to_vec(&original).unwrap()).unwrap();
         let previous = fs::read(&sidecar).unwrap();
         let modified = fs::metadata(&sidecar).unwrap().modified().unwrap();
         let mut next: Started = serde_json::from_slice(&previous).unwrap();
@@ -1961,13 +2114,23 @@ mod tests {
             .unwrap()
             .set_modified(modified)
             .unwrap();
-        assert_eq!(round(&f.dir, &f.request.branch)[0].1.round, next.round);
+        assert_eq!(
+            rounds(&f.dir, &f.request.branch).last().unwrap().1[0]
+                .1
+                .round,
+            next.round
+        );
         attempt.rollback();
         fs::File::open(&sidecar)
             .unwrap()
             .set_modified(modified)
             .unwrap();
-        assert_eq!(round(&f.dir, &f.request.branch)[0].1.round, old_round);
+        assert_eq!(
+            rounds(&f.dir, &f.request.branch).last().unwrap().1[0]
+                .1
+                .round,
+            old_round
+        );
         cleanup([job]);
     }
 
@@ -2406,8 +2569,9 @@ mod tests {
             .unwrap();
         let stale = read(&f.dir, &f.request.branch).unwrap();
         assert_eq!(stale.reviewers.len(), 1);
-        assert!(stale.text.contains("Saved finding"));
-        assert!(stale.reviewed_head.is_none());
+        // The newer single review's findings, not the lane's own older ones.
+        assert_eq!(stale.text, "Verdict: clean");
+        assert!(stale.reviewed_head.is_none() && stale.verdict.is_none());
         save_at(&path, "Verdict: clean", true);
         assert!(
             read(&f.dir, &f.request.branch)
@@ -2421,6 +2585,101 @@ mod tests {
             None
         );
         cleanup([old, newer]);
+    }
+
+    #[test]
+    fn a_new_lane_set_shows_the_latest_earlier_findings_until_it_writes() {
+        for old_single_file in [true, false] {
+            let f = Fixture::new();
+            if old_single_file {
+                // A single review long ago, whose file the next single review reuses.
+                let old = f.prepare("claude").unwrap();
+                f.save("Verdict: issues\n- [high] Weeks-old finding", true);
+                cleanup([old]);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let (a, a_file) = prepare_lane(&f, "claude", "r1");
+            let (b, b_file) = prepare_lane(&f, "codex", "r1");
+            save_at(&a_file, "Verdict: issues\n- [high] Round one A", true);
+            save_at(&b_file, "Verdict: issues\n- [low] Round one B", true);
+            std::thread::sleep(Duration::from_millis(5));
+            let single = f.prepare("claude").unwrap();
+            let stale = read(&f.dir, &f.request.branch).unwrap();
+            assert!(stale.text.contains("Round one A") && stale.text.contains("Round one B"));
+            assert!(!stale.text.contains("Weeks-old"));
+            assert!(stale.verdict.is_none() && stale.reviewed_head.is_none());
+            assert_eq!(stale.reviewers.len(), 1);
+            assert!(stale.reviewers[0].lane.is_none() && !stale.reviewers[0].finished);
+            let body = fix_body(&f);
+            assert!(body.contains("Round one A") && !body.contains("Weeks-old"));
+            assert!(
+                body.contains("an earlier attempt; a newer review hasn't written findings yet")
+            );
+            let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
+            let merge = merge_handoff(&f.dir, &f.request.branch, &head)
+                .unwrap()
+                .body;
+            assert!(merge.contains("Round one B"));
+            assert!(merge.contains("Reviewed HEAD matches source HEAD: false"));
+            // Once the new reviewer writes, only its findings count.
+            f.save("Verdict: clean", true);
+            let current = read(&f.dir, &f.request.branch).unwrap();
+            assert_eq!(current.text, "Verdict: clean");
+            assert!(current.verdict.unwrap().clean && current.reviewed_head.is_some());
+            cleanup([a, b, single]);
+        }
+    }
+
+    #[test]
+    fn shown_findings_keep_their_own_base_and_report_the_latest_round() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        save_at(&a_file, "Verdict: issues\n- [high] Against main", true);
+        assert_eq!(read(&f.dir, &f.request.branch).unwrap().round, "r1");
+        std::thread::sleep(Duration::from_millis(5));
+        git::run(git::git(&f.dir).args(["branch", "other", "main"])).unwrap();
+        let mut request = f.request.clone();
+        request.base = "other".into();
+        request.round = Some("r2".into());
+        let terminal = serde_json::from_value(
+            serde_json::json!({"id":"agent", "name":"Agent", "kind":"agent", "command":"claude"}),
+        )
+        .unwrap();
+        let single = prepare(&f.project, &request, &terminal, &AllowAll, None)
+            .unwrap()
+            .job;
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert!(stale.text.contains("Against main"));
+        assert_eq!((stale.base.as_str(), stale.round.as_str()), ("main", "r2"));
+        f.save("Verdict: clean", true);
+        let current = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(
+            (current.base.as_str(), current.text.as_str()),
+            ("other", "Verdict: clean")
+        );
+        cleanup([a, single]);
+    }
+
+    #[test]
+    fn earlier_findings_include_a_lane_the_latest_round_reused() {
+        let f = Fixture::new();
+        let (a, a_file) = prepare_lane(&f, "claude", "r1");
+        let (b, b_file) = prepare_lane(&f, "codex", "r1");
+        save_at(&a_file, "Verdict: issues\n- [high] Round one claude", true);
+        save_at(&b_file, "Verdict: issues\n- [low] Round one codex", true);
+        std::thread::sleep(Duration::from_millis(5));
+        // The next round reuses claude's lane, whose file still holds round one's findings.
+        let (c, _) = prepare_lane(&f, "claude", "r2");
+        let (d, _) = prepare_lane(&f, "gemini", "r2");
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert!(stale.text.contains("Round one claude"), "{}", stale.text);
+        assert!(stale.text.contains("Round one codex"), "{}", stale.text);
+        assert_eq!((stale.round.as_str(), stale.reviewers.len()), ("r2", 2));
+        assert!(stale.verdict.is_none() && stale.reviewed_head.is_none());
+        let body = fix_body(&f);
+        assert!(body.contains("Round one claude") && body.contains("Round one codex"));
+        assert!(body.contains("2 reviewers reviewed this branch independently"));
+        cleanup([a, b, c, d]);
     }
 
     #[test]
