@@ -544,7 +544,25 @@ export interface WorkspaceProject {
   draft: Project | null
   layout: Record<string, unknown>
 }
+/** Unread session links survive later batches until viewed or explicitly dismissed. */
+export interface NotificationToast {
+  message: string
+  sessions: { sid: string; label: string; message?: string }[]
+}
+export interface NotificationSettings {
+  enabled: boolean
+  finished: boolean
+  needsInput: boolean
+  failed: boolean
+}
+export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  enabled: true,
+  finished: true,
+  needsInput: true,
+  failed: true,
+}
 export interface WorkspaceDocument {
+  settings?: Record<string, unknown> & { notifications?: NotificationSettings }
   version: number
   projects: WorkspaceProject[]
   activeProject: string | null

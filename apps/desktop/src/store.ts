@@ -10,8 +10,11 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { create } from 'zustand'
+import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
 import type {
   AgentRoles,
+  NotificationSettings,
+  NotificationToast,
   ExtensionRegistry,
   CommandContribution,
   MenuContribution,
@@ -34,6 +37,7 @@ import type {
   TaskActivity,
 } from './types'
 import {
+  DEFAULT_NOTIFICATIONS,
   TASK_ROOT_SCOPE,
   isReviewAgentScope,
   showsInDock,
@@ -183,6 +187,13 @@ export interface ProjectEntry {
   unavailableLayout?: Record<string, unknown>
 }
 interface State {
+  workspaceSettings: Record<string, unknown>
+  notificationToast: NotificationToast | null
+  notificationToastId: number
+  setNotificationToast: (toast: State['notificationToast']) => void
+  dismissNotificationSession: (sid: string) => void
+  notifications: NotificationSettings
+  setNotifications: (settings: NotificationSettings) => void
   taskWorkspaces: Record<string, TaskWorkspace>
   rootTerminals: TerminalSpec[]
   componentTerminals: TaskComponentTerminal[]
@@ -576,6 +587,18 @@ export const useStore = create<State>((set, get) => ({
   menus: {},
   extensionBadges: {},
   extensionViews: {},
+  workspaceSettings: {},
+  notificationToast: null,
+  notificationToastId: 0,
+  setNotificationToast: (notificationToast) =>
+    set((s) => ({
+      notificationToast: mergeNotificationToast(s.notificationToast, notificationToast),
+      notificationToastId: s.notificationToastId + 1,
+    })),
+  dismissNotificationSession: (sid) =>
+    set((s) => ({ notificationToast: removeNotificationSession(s.notificationToast, sid) })),
+  notifications: { ...DEFAULT_NOTIFICATIONS },
+  setNotifications: (notifications) => set({ notifications }),
   runtimeTerminals: {},
   extensionsPanelOpen: false,
   paletteOpen: false,

@@ -171,6 +171,8 @@ pub struct Workspace {
     pub active_project: Option<String>,
     #[serde(default)]
     pub windows: serde_json::Value,
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -179,6 +181,7 @@ impl Default for Workspace {
             projects: vec![],
             active_project: None,
             windows: serde_json::Value::Null,
+            settings: serde_json::Value::Null,
         }
     }
 }
@@ -380,6 +383,19 @@ mod tests {
         assert_eq!(first, project_id(&state, &moved).unwrap());
         assert_ne!(first, project_id(&state, &one).unwrap());
         assert!(project_id(&state, &dir.join("missing")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn workspace_settings_round_trip_and_legacy_default() {
+        let dir = scratch();
+        let path = dir.join("workspace.json");
+        atomic_write(&path, br#"{"version":1,"projects":[],"windows":{}}"#).unwrap();
+        let mut doc = Workspace::load(&path).unwrap();
+        assert!(doc.settings.is_null());
+        doc.settings = serde_json::json!({"notifications": {"enabled": false}, "future": 42});
+        doc.save(&path).unwrap();
+        assert_eq!(Workspace::load(&path).unwrap().settings, doc.settings);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

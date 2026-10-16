@@ -69,6 +69,7 @@ describe('terminalStatus', () => {
       health: 'input',
       attention: 4,
       detail: 'Waiting for your answer — for 1m',
+      unseenSince: NOW - 60_000,
     })
     expect(terminalStatus('agent', running({ agent: agent('review') }), NOW)).toMatchObject({
       health: 'review',
@@ -78,6 +79,16 @@ describe('terminalStatus', () => {
     expect(terminalStatus('agent', running({ agent: agent('working') }), NOW)).toMatchObject({
       label: 'Working',
       attention: 0,
+    })
+  })
+
+  test('input requests stay in attention after acknowledgement without remaining unseen', () => {
+    expect(
+      terminalStatus('agent', running({ agent: agent('needsInput'), seenMs: NOW }), NOW),
+    ).toMatchObject({
+      health: 'input',
+      attention: 4,
+      unseenSince: undefined,
     })
   })
 

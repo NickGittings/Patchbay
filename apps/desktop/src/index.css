@@ -490,6 +490,9 @@ input[type='radio'] {
   height: 28px;
 }
 .toast-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   position: absolute;
   top: calc(100% + 8px);
   right: 12px;
@@ -513,6 +516,9 @@ input[type='radio'] {
   overflow-wrap: anywhere;
   max-height: 40vh;
   overflow-y: auto;
+}
+.notification-message {
+  white-space: pre-line;
 }
 .toolbar .toast .toast-close {
   flex: none;

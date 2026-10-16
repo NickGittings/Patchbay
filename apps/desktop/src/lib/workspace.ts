@@ -1,3 +1,4 @@
+import { restoredNotifications } from './notifications'
 import { restoredAgentRoles } from './agentRoles'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
@@ -37,6 +38,7 @@ export function workspaceDocument(): WorkspaceDocument {
     version: 1,
     activeProject: s.activeProjectId,
     windows: {},
+    settings: { ...s.workspaceSettings, notifications: s.notifications },
     projects: s.projectOrder.map((id) => {
       const p = projects[id]
       const state = p.state
@@ -220,6 +222,10 @@ export function initializeWorkspace() {
     try {
       if (!loaded) return
       const { document, opened, errors } = loaded
+      useStore.setState({
+        workspaceSettings: document.settings ?? {},
+        notifications: restoredNotifications(document.settings?.notifications),
+      })
       for (const entry of document.projects) {
         const project = opened.find((p) => p.id === entry.id)
         if (!project) {
@@ -299,6 +305,8 @@ export function initializeWorkspace() {
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
           s.agentRoles === prev.agentRoles &&
+          s.notifications === prev.notifications &&
+          s.workspaceSettings === prev.workspaceSettings &&
           s.viewport === prev.viewport &&
           s.panels === prev.panels &&
           s.groups === prev.groups &&

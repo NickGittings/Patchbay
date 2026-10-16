@@ -12,6 +12,7 @@ import {
   sessionId,
   sessionTask,
   type SessionState,
+  type SessionRecord,
   type TerminalSpec,
 } from '../types'
 import { terminalStatus, type TerminalStatus } from './display'
@@ -43,6 +44,22 @@ type Snapshot = Pick<
       'auto' | 'rootTerminals' | 'taskWorkspaces' | 'activeTask' | 'sessionRecords'
     >
   >
+
+/** Shared labels and task lookup for attention items and notifications. */
+export function sessionOwner(componentId: string | undefined, nodes: Snapshot['nodes']) {
+  if (componentId === PLAN_SCOPE) return 'Planner'
+  if (componentId === TASK_ROOT_SCOPE) return 'Task root'
+  if (componentId === REVIEW_SCOPE) return 'Review agent'
+  if (componentId === MERGE_SCOPE) return 'Merge agent'
+  return nodes.find((n) => n.id === componentId)?.data.name ?? componentId ?? 'Agent'
+}
+
+export function recordTask(record: SessionRecord, tasks: Snapshot['tasks']) {
+  // Review and merge records carry branch scope; their cwd identifies the task.
+  return isReviewAgentScope(record.metadata.componentId)
+    ? tasks.find((t) => !t.missing && t.worktree === record.spec.cwd)
+    : tasks.find((t) => t.id === record.metadata.task)
+}
 
 function since(session: SessionState | undefined) {
   return session?.status?.agent?.sinceMs ?? session?.exitedMs ?? session?.startedMs ?? 0
@@ -98,11 +115,11 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
           isReviewAgentScope(r.metadata.componentId),
       )
       .map((r) => {
-        const task = s.tasks.find((t) => !t.missing && t.worktree === r.spec.cwd)
+        const task = recordTask(r, s.tasks)
         return {
           sid: r.id,
           componentId: r.metadata.componentId,
-          owner: r.metadata.componentId === REVIEW_SCOPE ? 'Review agent' : 'Merge agent',
+          owner: sessionOwner(r.metadata.componentId, s.nodes),
           task: task?.id ?? null,
           taskTitle: task?.title,
           terminal: {
@@ -124,15 +141,7 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
       .map(([sid, r]) => ({
         sid,
         componentId: r.componentId,
-        owner:
-          s.nodes.find((n) => n.id === r.componentId)?.data.name ??
-          (r.componentId === REVIEW_SCOPE
-            ? 'Review agent'
-            : r.componentId === MERGE_SCOPE
-              ? 'Merge agent'
-              : r.componentId === TASK_ROOT_SCOPE
-                ? 'Task root'
-                : r.componentId),
+        owner: sessionOwner(r.componentId, s.nodes),
         task: r.taskId ?? sessionTask(sid),
         taskTitle: s.tasks.find((t) => t.id === (r.taskId ?? sessionTask(sid)))?.title,
         terminal: r.terminal,

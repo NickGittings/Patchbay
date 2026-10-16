@@ -103,6 +103,7 @@ export function terminalStatus(
           label: 'Needs input',
           detail: join(agent.message ?? 'Waiting for your answer', since),
           attention: 4,
+          unseenSince: seenMs < agent.sinceMs ? agent.sinceMs : undefined,
         }
       case 'working':
         return {
