@@ -73,7 +73,8 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
         </fieldset>
         <p className="hint">
           Turn ends rely on Agent status integration. Agents without status hooks only notify when
-          they fail.
+          they fail. While Auto mode drives a worktree, its agents' turn ends don't notify; Auto
+          notifies when it waits on you (under Needs input) or fails.
         </p>
         <p className="hint">
           When Patchbay is focused, background sessions show a toast. Otherwise, alerts use native
@@ -85,7 +86,16 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           onClick={async () => {
             setTesting(true)
             try {
-              setPermission((await sendTestNotification()) ? 'Granted' : 'Not granted')
+              const result = await sendTestNotification()
+              setPermission(
+                result.status === 'granted'
+                  ? 'Granted'
+                  : result.status === 'denied'
+                    ? 'Not granted'
+                    : result.granted
+                      ? `Granted, but sending failed: ${result.error}`
+                      : `Unavailable: ${result.error}`,
+              )
             } catch (e) {
               setPermission('Unavailable')
               useStore.getState().setMessage(String(e))

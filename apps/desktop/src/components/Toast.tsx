@@ -68,8 +68,8 @@ export default function Toast() {
                 title={link.message}
                 onClick={() => {
                   const { sid } = link
-                  if (revealNotification(sid)) {
-                    focusTerminal(sid)
+                  if (revealNotification(sid, link.auto)) {
+                    if (!link.auto) focusTerminal(sid)
                     useStore.getState().dismissNotificationSession(sid)
                   }
                 }}

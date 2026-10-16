@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import type { AutoRun } from '../types'
 import { mergeNotificationToast, removeNotificationSession } from './notificationToast'
 import {
   DEFAULT_NOTIFICATIONS,
@@ -46,14 +47,14 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
 const {
   agentEvent,
   followNotifications,
-  restoredNotifications,
-  sessionKind,
+  forgetNotificationPermission,
+  sessionIdentity,
   describe,
   isCurrent,
-  mergeRestoredNotifications,
   sendTestNotification,
   revealNotification,
 } = await import('./notifications')
+const sessionKind = (s: Snapshot, sid: string) => sessionIdentity(s, sid).kind
 const working: SessionState = { running: true }
 function report(state: 'review' | 'needsInput' | 'working', sinceMs = 1100): SessionState {
   return {
@@ -98,6 +99,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   vi.resetAllMocks()
+  forgetNotificationPermission()
   mock.focused.mockReturnValue(false)
   mock.granted.mockResolvedValue(true)
   mock.request.mockResolvedValue('denied')
@@ -127,6 +129,8 @@ beforeEach(() => {
     activateProject: mock.activate,
     setActiveSession: mock.reveal,
     setView: vi.fn(),
+    setActiveTask: vi.fn(),
+    showAutoPanel: vi.fn(),
   } as unknown as Snapshot
 })
 afterEach(() => {
@@ -322,14 +326,6 @@ test('permission denial prompts once across events and the test button', async (
   expect(mock.send).not.toHaveBeenCalled()
   expect(mock.toast).toHaveBeenCalledTimes(3)
 })
-test('restore validates boolean fields and defaults garbage', () => {
-  for (const value of [null, undefined, [], 1, true, 'bad'])
-    expect(restoredNotifications(value)).toEqual(DEFAULT_NOTIFICATIONS)
-  expect(
-    restoredNotifications({ enabled: false, finished: 'no', needsInput: false, failed: 0 }),
-  ).toEqual({ ...DEFAULT_NOTIFICATIONS, enabled: false, needsInput: false })
-})
-
 test('review and merge records without task metadata resolve their worktree title', () => {
   for (const componentId of [REVIEW_SCOPE, MERGE_SCOPE]) {
     mock.state.sessionRecords = [
@@ -452,7 +448,11 @@ test('notification links switch projects before revealing the exact review sessi
 
 test('test notifications also handle asynchronous native failures', async () => {
   mock.send.mockRejectedValueOnce(new Error('native failed'))
-  expect(await sendTestNotification()).toBe(false)
+  expect(await sendTestNotification()).toEqual({
+    status: 'failed',
+    error: 'Error: native failed',
+    granted: true,
+  })
   expect(mock.toast).toHaveBeenCalledWith({
     message: expect.stringContaining('unavailable'),
     sessions: [],
@@ -730,13 +730,221 @@ test('unidentified events are rechecked only when identity sources change', asyn
   expect(mock.toast).toHaveBeenCalledOnce()
 })
 
-test('settings changed during restore win field by field over the saved ones', () => {
-  const initial = { ...DEFAULT_NOTIFICATIONS }
-  const saved = { ...DEFAULT_NOTIFICATIONS, failed: false }
-  expect(mergeRestoredNotifications(saved, initial, initial)).toEqual(saved)
-  expect(mergeRestoredNotifications(saved, { ...initial, enabled: false }, initial)).toEqual({
-    ...saved,
-    enabled: false,
+test('an event of a closed project alerts once its tab opens, while still current', async () => {
+  mock.state.sessionRecords.push(record('closed', { projectId: 'closed' }))
+  mock.state.sessions.closed = working
+  stop = followNotifications()
+  transition('closed', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  const open = (name: string) => ({
+    ...mock.state.projects,
+    closed: { state: { project: { id: 'closed', name }, nodes: [], tasks: [] } },
   })
-  expect(mergeRestoredNotifications(saved, { ...initial, failed: true }, initial)).toEqual(saved)
+  update({ projects: open('Closed') as unknown as Snapshot['projects'] })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  expect(mock.state.notificationToast?.sessions[0].sid).toBe('closed')
+  // Delivered once; later project changes don't repeat it.
+  update({ projects: open('Renamed') as unknown as Snapshot['projects'] })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('an event that stopped being current while its project was closed stays silent', async () => {
+  mock.state.sessionRecords.push(record('closed', { projectId: 'closed' }))
+  mock.state.sessions.closed = working
+  stop = followNotifications()
+  transition('closed', report('review'))
+  transition('closed', working)
+  update({
+    projects: {
+      ...mock.state.projects,
+      closed: { state: { project: { id: 'closed', name: 'Closed' }, nodes: [], tasks: [] } },
+    } as unknown as Snapshot['projects'],
+  })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+})
+
+test('overwriting known session metadata rechecks unidentified events', async () => {
+  sessionMetadata.set('meta', {
+    projectId: 'other',
+    componentId: 'unknown',
+    terminalId: 'agent',
+    task: null,
+  })
+  stop = followNotifications()
+  transition('meta', working)
+  transition('meta', report('needsInput'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  // Same key, same map size: only the version reveals the change.
+  sessionMetadata.set('meta', {
+    projectId: 'other',
+    componentId: REVIEW_SCOPE,
+    terminalId: 'agent',
+    task: null,
+  })
+  update({ activeSession: 'x' } as Partial<Snapshot>)
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  sessionMetadata.delete('meta')
+})
+
+test('unchanged metadata writes keep the version', () => {
+  const value = { projectId: 'p', componentId: 'c', terminalId: 't', task: null }
+  sessionMetadata.set('same', value)
+  const version = sessionMetadata.version
+  sessionMetadata.set('same', { ...value })
+  expect(sessionMetadata.version).toBe(version)
+  sessionMetadata.set('same', { ...value, task: 'x' })
+  expect(sessionMetadata.version).toBe(version + 1)
+  sessionMetadata.delete('same')
+  expect(sessionMetadata.version).toBe(version + 2)
+})
+
+test('test notifications report denial apart from failures and still show their hint', async () => {
+  mock.granted.mockResolvedValue(false)
+  update({
+    notificationToast: {
+      message: 'one needs input',
+      sessions: [{ sid: 'one', label: 'one', message: 'one needs input' }],
+    },
+  })
+  expect(await sendTestNotification()).toEqual({ status: 'denied' })
+  expect(mock.state.notificationToast?.message).toContain('unavailable')
+  expect(mock.state.notificationToast?.sessions).toHaveLength(1)
+  mock.granted.mockRejectedValueOnce(new Error('no plugin'))
+  expect(await sendTestNotification()).toEqual({
+    status: 'failed',
+    error: 'Error: no plugin',
+    granted: false,
+  })
+  mock.granted.mockResolvedValue(true)
+  expect(await sendTestNotification()).toEqual({ status: 'granted' })
+})
+
+test('a granted permission is cached until a send fails', async () => {
+  stop = followNotifications()
+  transition()
+  await vi.advanceTimersByTimeAsync(750)
+  transition('one', working)
+  transition('one', report('review', 2000))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.send).toHaveBeenCalledTimes(2)
+  expect(mock.granted).toHaveBeenCalledOnce()
+  mock.send.mockRejectedValueOnce(new Error('not permitted'))
+  transition('one', working)
+  transition('one', report('review', 3000))
+  await vi.advanceTimersByTimeAsync(750)
+  transition('one', working)
+  transition('one', report('review', 4000))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.granted).toHaveBeenCalledTimes(2)
+  expect(mock.send).toHaveBeenCalledTimes(4)
+})
+
+test('links are pruned on session, project, record or toast changes, not unrelated ones', async () => {
+  stop = followNotifications()
+  transition('one', report('needsInput'))
+  await vi.advanceTimersByTimeAsync(750)
+  // Resolved in place, invisible to reference checks.
+  mock.state.sessions.one = working
+  update({ nodes: [] })
+  update({ runtimeTerminals: {} })
+  expect(mock.dismiss).not.toHaveBeenCalled()
+  update({ sessionRecords: [...mock.state.sessionRecords] })
+  expect(mock.dismiss).toHaveBeenCalledWith('one')
+})
+
+function autoRun(patch: Partial<AutoRun> = {}): AutoRun {
+  return {
+    runId: 'run',
+    status: 'running',
+    stage: 'review',
+    goal: 'Ship',
+    effort: 'standard',
+    merge: { mode: 'ask', destinationBranch: 'main' },
+    device: 'claude',
+    round: 0,
+    sessionId: 'one',
+    laneSessions: [{ sessionId: 'three' }],
+    log: [{ atMs: 1500, text: 'Reviewing' }],
+    ...patch,
+  }
+}
+function setAuto(run: AutoRun | null) {
+  const other = mock.state.projects.other!
+  update({
+    projects: {
+      ...mock.state.projects,
+      other: { ...other, state: { ...other.state!, activeTask: null, auto: run } },
+    },
+  })
+}
+
+test('turn ends of sessions a running Auto run tracks stay silent; input and failures alert', async () => {
+  setAuto(autoRun())
+  stop = followNotifications()
+  transition('one', report('review'))
+  transition('three', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  transition('one', report('needsInput', 1200))
+  transition('three', { running: false, exitCode: 1, exitedMs: 1200 })
+  transition('two', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'three', 'two'])
+})
+
+test('a paused Auto run no longer suppresses its sessions', async () => {
+  setAuto(autoRun({ status: 'paused' }))
+  stop = followNotifications()
+  transition('one', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('an Auto run alerts once per pause, links to its panel and drops out when resumed', async () => {
+  setAuto(autoRun())
+  stop = followNotifications()
+  setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate', reason: 'Approve the merge' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  const link = mock.state.notificationToast!.sessions[0]
+  expect(link).toMatchObject({
+    sid: 'auto:other:',
+    kind: 'needsInput',
+    label: 'Auto mode · Project folder',
+    auto: { projectId: 'other', task: null },
+  })
+  expect(link.message).toContain('Auto mode asks to merge')
+  expect(link.message).toContain('Approve the merge')
+  // The same pause, republished, doesn't alert again.
+  setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate', reason: 'Approve the merge' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  expect(revealNotification(link.sid, link.auto)).toBe(true)
+  expect(mock.activate).toHaveBeenCalledWith('other')
+  expect(mock.state.showAutoPanel).toHaveBeenCalled()
+  setAuto(autoRun({ stage: 'merge' }))
+  expect(mock.state.notificationToast).toBeNull()
+  setAuto(autoRun({ status: 'failed', stage: 'merge', reason: 'Merge conflict' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledTimes(2)
+  expect(mock.state.notificationToast?.message).toContain('Auto mode failed')
+})
+
+test('Auto pauses respect preferences, skip input waits and restored states', async () => {
+  setAuto(autoRun({ status: 'failed' }))
+  stop = followNotifications()
+  // Already failed when the follower started.
+  setAuto(autoRun({ status: 'failed', reason: 'Still failed' }))
+  // Its agent's own input request alerts instead.
+  setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
+  update({ notifications: { ...DEFAULT_NOTIFICATIONS, needsInput: false } })
+  setAuto(autoRun({ status: 'waitingOnYou', stage: 'fix', waitingFor: 'fixBudget' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
 })

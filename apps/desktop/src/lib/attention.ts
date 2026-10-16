@@ -11,6 +11,7 @@ import {
   plannerSessionId,
   sessionId,
   sessionTask,
+  type AutoRun,
   type SessionState,
   type SessionRecord,
   type TerminalSpec,
@@ -65,15 +66,48 @@ function since(session: SessionState | undefined) {
   return session?.status?.agent?.sinceMs ?? session?.exitedMs ?? session?.startedMs ?? 0
 }
 
+type AutoSnapshot = Pick<Snapshot, 'tasks' | 'auto' | 'taskWorkspaces' | 'activeTask'>
+
+function worktreeScopes(s: Pick<Snapshot, 'tasks'>): [string | null, string | undefined][] {
+  return [[null, undefined], ...(s.tasks ?? []).map((t): [string, string] => [t.id, t.title])]
+}
+
+/**
+ * Auto runs of a project that want the user: waiting on you (an input wait, a pause it can't
+ * resolve, or the merge gate asking for approval) or failed.
+ */
+export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: AutoRun })[] {
+  return worktreeScopes(s).flatMap(([task, taskTitle]) => {
+    const run = autoWorkspace(s, task)?.auto
+    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
+    return [
+      {
+        auto: true,
+        run,
+        sid: `auto:${task ?? ''}`,
+        componentId: '@auto',
+        owner: 'Auto mode',
+        task,
+        taskTitle,
+        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
+        status: {
+          health: run.status === 'failed' ? 'fail' : 'input',
+          attention: run.status === 'failed' ? 3 : 4,
+          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
+          detail: run.reason,
+        },
+        sinceMs: run.log.at(-1)?.atMs ?? 0,
+      },
+    ]
+  })
+}
+
 /**
  * Every terminal that wants the user, in the open worktree and in every task, most urgent first,
  * oldest first within a level.
  */
 export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
-  const scopes: [string | null, string | undefined][] = [
-    [null, undefined],
-    ...(s.tasks ?? []).map((t): [string, string] => [t.id, t.title]),
-  ]
+  const scopes = worktreeScopes(s)
   const terminals: Omit<AttentionItem, 'status' | 'sinceMs'>[] = [
     ...scopes.flatMap(([task, taskTitle]) => [
       ...s.nodes.flatMap((n) =>
@@ -147,28 +181,7 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         terminal: r.terminal,
       })),
   ]
-  const autoItems: AttentionItem[] = scopes.flatMap(([task, taskTitle]) => {
-    const run = autoWorkspace(s, task)?.auto
-    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
-    return [
-      {
-        auto: true,
-        sid: `auto:${task ?? ''}`,
-        componentId: '@auto',
-        owner: 'Auto mode',
-        task,
-        taskTitle,
-        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
-        status: {
-          health: run.status === 'failed' ? 'fail' : 'input',
-          attention: run.status === 'failed' ? 3 : 4,
-          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
-          detail: run.reason,
-        },
-        sinceMs: run.log.at(-1)?.atMs ?? 0,
-      },
-    ]
-  })
+  const autoItems = autoAttentionItems(s)
   return [
     ...autoItems,
     ...terminals

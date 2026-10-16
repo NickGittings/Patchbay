@@ -5,8 +5,14 @@ export function mergeNotificationToast(
   incoming: NotificationToast | null,
 ): NotificationToast | null {
   if (!incoming || !current?.sessions.length) return incoming
-  // A test-delivery hint must also leave unread agent links available.
-  if (!incoming.sessions.length) return current
+  // A hint without links shows above the unread agent links, which stay available; it goes once
+  // they are viewed, since each link's own message rebuilds the text.
+  if (!incoming.sessions.length) {
+    const links = current.sessions.every((entry) => entry.message !== undefined)
+      ? current.sessions.map((entry) => entry.message).join('\n')
+      : current.message
+    return { message: `${incoming.message}\n${links}`, sessions: current.sessions }
+  }
   const sessions = new Map(
     current.sessions.map((entry) => [
       entry.sid,

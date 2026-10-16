@@ -2,7 +2,7 @@ import {
   mergeRestoredNotifications,
   restoredNotifications,
   sameNotifications,
-} from './notifications'
+} from './notificationSettings'
 import { restoredAgentRoles } from './agentRoles'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
