@@ -18,7 +18,7 @@
   try {
     await until('restore', () => !state().restoring && state().serviceConnected)
     const notifications = await until('Notifications menu without a project', () =>
-      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Notifications…'),
+      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Notifications'),
     )
     assert(!notifications.disabled, 'Notifications requires a project')
     notifications.click()
@@ -205,7 +205,7 @@
       'Auto merge approval missing from attention',
     )
     const button = [...document.querySelectorAll('button')].find((b) =>
-      b.textContent.startsWith('Auto ·'),
+      b.textContent.startsWith('Auto:'),
     )
     button.click()
     const merge = await until('Merge now button', () =>

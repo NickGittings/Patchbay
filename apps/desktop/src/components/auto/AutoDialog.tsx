@@ -202,9 +202,9 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
             setOverrides({})
           }}
         >
-          <option value="light">Light · 1 fix round</option>
-          <option value="standard">Standard · 3 fix rounds</option>
-          <option value="thorough">Thorough · 5 fix rounds</option>
+          <option value="light">Light (1 fix round)</option>
+          <option value="standard">Standard (3 fix rounds)</option>
+          <option value="thorough">Thorough (5 fix rounds)</option>
         </select>
       </label>
       <details>
@@ -270,10 +270,15 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       <fieldset className="auto-agents">
         <legend>Agents</legend>
         {AGENT_ROLES.map((stage) =>
-          stage === 'review' && agents.length > 1 ? (
+          stage === 'review' ? (
             <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
               {ROLE_LABELS[stage]}
-              <ReviewerPicker agents={agents} selected={reviewers} onChange={setReviewers} />
+              <ReviewerPicker
+                agents={agents}
+                selected={reviewers}
+                onChange={setReviewers}
+                dropdown
+              />
             </div>
           ) : (
             <label key={stage}>
@@ -295,7 +300,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       {!integration && (
         <p>
           Auto needs authoritative agent status.{' '}
-          <button onClick={onIntegrations}>Agent status integration…</button>
+          <button onClick={onIntegrations}>Agent status integration</button>
         </p>
       )}
       {error && <p role="alert">{error}</p>}

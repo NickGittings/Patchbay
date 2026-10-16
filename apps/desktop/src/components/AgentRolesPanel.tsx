@@ -19,12 +19,14 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   const setRoles = useStore((s) => s.setAgentRoles)
   const agents = agentDevices(devices)
   const reviewers = (
-    <fieldset key="review" className="agent-job-agents">
-      <legend>Review</legend>
+    <div key="review" className="agent-role-field">
+      <span>Review</span>
       <ReviewerPicker
         agents={agents}
         selected={roles.review ?? []}
         showMissing
+        dropdown
+        emptyLabel={`Default: ${DEFAULTS.review}`}
         onChange={(next) => {
           const { review: _, ...rest } = roles
           setRoles(next.length ? { ...rest, review: next } : rest)
@@ -33,9 +35,9 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
       <p className="hint flush">
         {agents.filter((a) => roles.review?.includes(a.id)).length > 1
           ? 'These agents review independently, and the fix receives all their findings.'
-          : 'Check several to have them review in parallel. None: the first agent preset.'}
+          : 'Select several agents to review in parallel. None: the first agent preset.'}
       </p>
-    </fieldset>
+    </div>
   )
   return (
     <div className="extension-overlay" onClick={onClose}>
@@ -64,27 +66,25 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           const id = roles[role]?.[0] ?? ''
           const missing = id && !agents.some((a) => a.id === id)
           return (
-            <p key={role}>
-              <label>
-                {ROLE_LABELS[role]}{' '}
-                <select
-                  aria-label={ROLE_LABELS[role]}
-                  value={id}
-                  onChange={(e) => {
-                    const { [role]: _, ...rest } = roles
-                    setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
-                  }}
-                >
-                  <option value="">Default: {DEFAULTS[role]}</option>
-                  {missing && <option value={id}>{id} (not installed)</option>}
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </p>
+            <label key={role} className="agent-role-field">
+              {ROLE_LABELS[role]}{' '}
+              <select
+                aria-label={ROLE_LABELS[role]}
+                value={id}
+                onChange={(e) => {
+                  const { [role]: _, ...rest } = roles
+                  setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
+                }}
+              >
+                <option value="">Default: {DEFAULTS[role]}</option>
+                {missing && <option value={id}>{id} (not installed)</option>}
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           )
         })}
       </div>

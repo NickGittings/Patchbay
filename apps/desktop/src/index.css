@@ -2774,6 +2774,37 @@ kbd {
 .task-action-result.failed strong {
   color: var(--red);
 }
+.validator-suggestions {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.validator-suggestion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.validator-suggestion:hover {
+  background: var(--hover);
+}
+.validator-suggestion input {
+  width: auto;
+  margin: 3px 0 0;
+}
+.validator-suggestion-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.validator-suggestion-details code {
+  color: var(--muted);
+  white-space: pre-wrap;
+}
 
 /* Job agents stay beside the reviewed source, regardless of the active task. */
 .review-title-row {
@@ -2806,6 +2837,58 @@ kbd {
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
   font-size: 11px;
+}
+.agent-role-field {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.agent-role-field > select,
+.agent-role-field > .reviewer-picker {
+  width: min(360px, 100%);
+}
+.agent-role-field > .hint {
+  margin: 0;
+}
+.reviewer-picker {
+  min-width: 0;
+}
+.reviewer-picker > .menu-trigger {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  text-align: left;
+}
+.reviewer-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.reviewer-picker > .reviewer-options {
+  /* Stay inside scrolling forms, including Auto's popover, without clipping choices. */
+  position: static;
+  min-width: 0;
+  max-height: min(240px, 40vh);
+  margin-top: 4px;
+  border: 1px solid var(--border-strong);
+  box-shadow: none;
+}
+.reviewer-options > label,
+.auto-content .reviewer-options > label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.reviewer-options > label:hover {
+  background: var(--hover);
+}
+.reviewer-options input {
+  width: auto;
+  flex: none;
+  margin: 0;
 }
 .agent-job-agents {
   margin: 0;

@@ -82,7 +82,7 @@
     tools.click()
     await until('integration menu', () =>
       [...document.querySelectorAll('[role="menuitem"]')].find(
-        (b) => b.textContent === 'Agent status integration…',
+        (b) => b.textContent === 'Agent status integration',
       ),
     ).then((b) => b.click())
     await until('integration dialog', () =>

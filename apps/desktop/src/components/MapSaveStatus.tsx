@@ -17,7 +17,7 @@ export default function MapSaveStatus() {
       : status === 'conflict'
         ? 'Map changed externally'
         : status === 'saving'
-          ? 'Saving map…'
+          ? 'Saving map'
           : absent
             ? 'Map not saved'
             : dirty

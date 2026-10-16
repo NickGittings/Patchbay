@@ -37,7 +37,7 @@ export function RunSelect() {
       }}
     >
       <option value="" disabled>
-        Run…
+        Run
       </option>
       {!!groups.length && (
         <optgroup label="Start environment">
@@ -66,7 +66,7 @@ export function RunSelect() {
           ))}
         </optgroup>
       )}
-      {setup && <option value="setup">Set up validation…</option>}
+      {setup && <option value="setup">Set up validation</option>}
     </select>
   )
 }
@@ -90,7 +90,7 @@ export function ActivityButton() {
   )
   return (
     <button onClick={() => useStore.setState({ activityPanelOpen: true })}>
-      Activity{running ? ' · running' : ''}
+      Activity{running ? ' (running)' : ''}
     </button>
   )
 }
@@ -149,24 +149,31 @@ function ValidatorSetup() {
           <code>agent validate</code>), so never pick a watch mode or server.
         </p>
       )}
-      {suggestions.map((s) => (
-        <label key={key(s)} className="row">
-          <input
-            type="checkbox"
-            checked={checked(s)}
-            onChange={(e) => {
-              const on = e.target.checked
-              setTicked((prev) => {
-                const next = new Set(prev)
-                if (on) next.add(key(s))
-                else next.delete(key(s))
-                return next
-              })
-            }}
-          />
-          {s.componentName} › {s.terminalName} <span className="mono hint flush">{s.command}</span>
-        </label>
-      ))}
+      <div className="validator-suggestions">
+        {suggestions.map((s) => (
+          <label key={key(s)} className="validator-suggestion">
+            <input
+              type="checkbox"
+              checked={checked(s)}
+              onChange={(e) => {
+                const on = e.target.checked
+                setTicked((prev) => {
+                  const next = new Set(prev)
+                  if (on) next.add(key(s))
+                  else next.delete(key(s))
+                  return next
+                })
+              }}
+            />
+            <span className="validator-suggestion-details">
+              <span>
+                {s.componentName} › {s.terminalName}
+              </span>
+              <code>{s.command}</code>
+            </span>
+          </label>
+        ))}
+      </div>
       {!!suggestions.length && !!missing.length && (
         <p className="hint">
           No check terminal: {missing.map((c) => c.data.name).join(', ')} (add one in the Inspector

@@ -31,8 +31,8 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
   const label = !run
     ? 'Auto'
     : run.status === 'running'
-      ? `Auto · ${STAGE_LABELS[run.stage]} · ${run.round}/${effortSettings(run).maxRounds}`
-      : `Auto · ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
+      ? `Auto: ${STAGE_LABELS[run.stage]} (${run.round}/${effortSettings(run).maxRounds})`
+      : `Auto: ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
   const act = (fn: (id: string, task: string | null) => void | Promise<void>) => {
     if (projectId) void Promise.resolve(fn(projectId, task)).catch((e) => setError(String(e)))
   }
@@ -50,7 +50,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
         <AutoDialog key={JSON.stringify([projectId, task])} onIntegrations={onIntegrations} />
       ) : (
         <div className="auto-content">
-          <strong>Auto mode · {run.status}</strong>
+          <strong>Auto mode: {run.status}</strong>
           <p>{run.goal}</p>
           <ol className="auto-stages">
             {STAGES.map((stage) => (
@@ -60,7 +60,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
             ))}
           </ol>
           <p>
-            Fix rounds: {run.round}/{effortSettings(run).maxRounds} · Merge into{' '}
+            Fix rounds: {run.round}/{effortSettings(run).maxRounds}; merge into{' '}
             {run.merge.destinationBranch}
           </p>
           {run.reason && <p>{run.reason}</p>}

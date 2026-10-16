@@ -68,7 +68,7 @@ export default function Toolbar() {
       <div className="toolbar">
         <div className="toolbar-group">
           <Menu label="Project">
-            <MenuItem onClick={() => void openFolder()}>Open folder…</MenuItem>
+            <MenuItem onClick={() => void openFolder()}>Open folder</MenuItem>
             {project && (
               <>
                 <MenuSeparator />
@@ -98,7 +98,7 @@ export default function Toolbar() {
                   onClick={() => void addRepo()}
                   title="Add a repo beside this project, or a folder Rescan missed"
                 >
-                  Add repo…
+                  Add repo
                 </MenuItem>
                 {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
               </>
@@ -106,23 +106,23 @@ export default function Toolbar() {
           </Menu>
           <Menu label="Tools" keepMounted>
             <MenuItem onClick={showFileSearch} shortcut={`${mod}P`}>
-              Search files…
+              Search files
             </MenuItem>
-            <MenuItem onClick={() => configureEditor()}>Preferred editor…</MenuItem>
+            <MenuItem onClick={() => configureEditor()}>Preferred editor</MenuItem>
             <MenuItem
               onClick={() => useStore.getState().setPaletteOpen(true)}
               shortcut={`${shiftMod}P`}
             >
-              Commands…
+              Commands
             </MenuItem>
             <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
-              Extensions…
+              Extensions
             </MenuItem>
-            <MenuItem onClick={() => setIntegrationsOpen(true)}>Agent status integration…</MenuItem>
+            <MenuItem onClick={() => setIntegrationsOpen(true)}>Agent status integration</MenuItem>
             <MenuItem disabled={!project} onClick={() => setRolesOpen(true)}>
-              Agent roles…
+              Agent roles
             </MenuItem>
-            <MenuItem onClick={() => setNotificationsOpen(true)}>Notifications…</MenuItem>
+            <MenuItem onClick={() => setNotificationsOpen(true)}>Notifications</MenuItem>
             <ExtensionMenu slot="toolbar" asMenuItems />
           </Menu>
         </div>

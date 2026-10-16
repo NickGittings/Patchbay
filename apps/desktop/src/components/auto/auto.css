@@ -33,11 +33,6 @@
 .auto-reviewers {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.auto-content .auto-reviewers label {
-  flex-direction: row;
-  align-items: center;
   gap: 4px;
 }
 .auto-agents legend {

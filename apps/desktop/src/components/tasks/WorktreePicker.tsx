@@ -56,7 +56,7 @@ export default function WorktreePicker({ align = 'left' }: { align?: 'left' | 'r
         <>
           <span className="worktree-picker-label">
             {label}
-            {currentBranch ? ` · ${currentBranch}` : ''}
+            {currentBranch ? ` (${currentBranch})` : ''}
           </span>
           {attention > 0 && (
             <span className="worktree-attention-dot" title={`${attention} terminals need you`}>
@@ -315,10 +315,10 @@ export function WorktreeRow({
         >
           Review
         </button>
-        {task && <button onClick={() => setRename(!rename)}>Rename…</button>}
+        {task && <button onClick={() => setRename(!rename)}>Rename</button>}
         {task && !confirming && (
           <button className="danger" onClick={() => setConfirming(true)}>
-            Remove…
+            Remove
           </button>
         )}
       </header>
@@ -407,7 +407,7 @@ export function WorktreeRow({
                   revealTerminal({ sid, componentId })
                 }}
               >
-                {name} · {t.name}
+                {name}: {t.name}
               </button>
             ))
           ) : (
@@ -417,7 +417,7 @@ export function WorktreeRow({
       </div>
       {task && (
         <details className="worktree-notes-detail">
-          <summary>Notes{notes ? ` · ${notes.split('\n')[0]}` : ''}</summary>
+          <summary>Notes{notes ? `: ${notes.split('\n')[0]}` : ''}</summary>
           <textarea
             aria-label={`Notes for ${task.title}`}
             className="worktree-notes"

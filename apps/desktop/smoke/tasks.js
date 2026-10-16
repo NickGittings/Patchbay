@@ -359,7 +359,7 @@
       ),
     )
     assert(closedRow.textContent.includes('tab closed'), 'closed task has no marker')
-    click(button(closedRow, 'Remove…'))
+    click(button(closedRow, 'Remove'))
     await until('closed task removal options', () => closedRow.querySelector('.worktree-confirm'))
     assert(button(closedRow, 'Forget only'), 'closed task cannot be forgotten')
     assert(button(closedRow, 'Remove worktree'), 'closed worktree cannot be removed')
@@ -675,7 +675,7 @@
     // git refuses to remove a dirty worktree; the task stays.
     click(viewButton('Implementation'))
     await openPicker()
-    click(button(document.querySelector('.worktree-row.active'), 'Remove…'))
+    click(button(document.querySelector('.worktree-row.active'), 'Remove'))
     const confirm = await until('removal options', () =>
       document.querySelector('.worktree-confirm'),
     )

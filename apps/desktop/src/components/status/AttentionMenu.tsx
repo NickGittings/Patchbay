@@ -41,7 +41,7 @@ export default function AttentionMenu() {
   const counts = new Map<string, number>()
   for (const item of items)
     counts.set(item.status.health, (counts.get(item.status.health) ?? 0) + 1)
-  const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(' · ')
+  const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(', ')
 
   return (
     <Menu
@@ -71,8 +71,8 @@ export default function AttentionMenu() {
           <span className="status-dot" />
           <span className="attention-what">
             <span>
-              <strong>{item.owner}</strong> · {item.terminal.name}
-              {item.taskTitle && <em className="attention-task"> · {item.taskTitle}</em>}
+              <strong>{item.owner}</strong>: {item.terminal.name}
+              {item.taskTitle && <em className="attention-task"> ({item.taskTitle})</em>}
             </span>
             {item.status.detail && <small>{item.status.detail}</small>}
           </span>

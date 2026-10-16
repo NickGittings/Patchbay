@@ -44,8 +44,8 @@ export default function WorkspaceTabs() {
                 title={entry.root}
               >
                 {entry.name}
-                {entry.unavailable ? ' · unavailable' : ''}
-                {count ? ` · ${count} running` : ''}
+                {entry.unavailable ? ' (unavailable)' : ''}
+                {count ? ` (${count} running)` : ''}
               </button>
               <button aria-label={`Close ${entry.name}`} onClick={() => void close(id)}>
                 ×
@@ -97,7 +97,7 @@ export default function WorkspaceTabs() {
                 .catch((e) => s.setMessage(String(e)))
             }
           >
-            Locate folder…
+            Locate folder
           </button>
           <button onClick={() => void close(active.id)}>Remove</button>
         </div>
