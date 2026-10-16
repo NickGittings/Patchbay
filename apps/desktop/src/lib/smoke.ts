@@ -64,7 +64,10 @@ import { startAuto, mergeNow, pauseAuto, resumeAuto, stopAuto } from './auto'
 import { gitWorktrees, taskCreate, mergeOutcome } from './ipc'
 import { attentionItems } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
+import type { NotificationDelivery } from './notifications'
 const hooks = {
+  stubNotifications: window.__patchbaySmokeRun === true,
+  notificationLog: [] as NotificationDelivery[],
   startAuto,
   mergeNow,
   pauseAuto,
@@ -163,6 +166,7 @@ const hooks = {
 
 declare global {
   interface Window {
+    __patchbaySmokeRun?: boolean
     __patchbaySmoke?: typeof hooks
   }
 }

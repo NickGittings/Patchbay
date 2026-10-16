@@ -11,7 +11,9 @@ import {
   plannerSessionId,
   sessionId,
   sessionTask,
+  type AutoRun,
   type SessionState,
+  type SessionRecord,
   type TerminalSpec,
 } from '../types'
 import { terminalStatus, type TerminalStatus } from './display'
@@ -44,8 +46,60 @@ type Snapshot = Pick<
     >
   >
 
+/** Shared labels and task lookup for attention items and notifications. */
+export function sessionOwner(componentId: string | undefined, nodes: Snapshot['nodes']) {
+  if (componentId === PLAN_SCOPE) return 'Planner'
+  if (componentId === TASK_ROOT_SCOPE) return 'Task root'
+  if (componentId === REVIEW_SCOPE) return 'Review agent'
+  if (componentId === MERGE_SCOPE) return 'Merge agent'
+  return nodes.find((n) => n.id === componentId)?.data.name ?? componentId ?? 'Agent'
+}
+
+export function recordTask(record: SessionRecord, tasks: Snapshot['tasks']) {
+  // Review and merge records carry branch scope; their cwd identifies the task.
+  return isReviewAgentScope(record.metadata.componentId)
+    ? tasks.find((t) => !t.missing && t.worktree === record.spec.cwd)
+    : tasks.find((t) => t.id === record.metadata.task)
+}
+
 function since(session: SessionState | undefined) {
   return session?.status?.agent?.sinceMs ?? session?.exitedMs ?? session?.startedMs ?? 0
+}
+
+type AutoSnapshot = Pick<Snapshot, 'tasks' | 'auto' | 'taskWorkspaces' | 'activeTask'>
+
+function worktreeScopes(s: Pick<Snapshot, 'tasks'>): [string | null, string | undefined][] {
+  return [[null, undefined], ...(s.tasks ?? []).map((t): [string, string] => [t.id, t.title])]
+}
+
+/**
+ * Auto runs of a project that want the user: waiting on you (an input wait, a pause it can't
+ * resolve, or the merge gate asking for approval) or failed.
+ */
+export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: AutoRun })[] {
+  return worktreeScopes(s).flatMap(([task, taskTitle]) => {
+    const run = autoWorkspace(s, task)?.auto
+    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
+    return [
+      {
+        auto: true,
+        run,
+        sid: `auto:${task ?? ''}`,
+        componentId: '@auto',
+        owner: 'Auto mode',
+        task,
+        taskTitle,
+        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
+        status: {
+          health: run.status === 'failed' ? 'fail' : 'input',
+          attention: run.status === 'failed' ? 3 : 4,
+          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
+          detail: run.reason,
+        },
+        sinceMs: run.log.at(-1)?.atMs ?? 0,
+      },
+    ]
+  })
 }
 
 /**
@@ -53,10 +107,7 @@ function since(session: SessionState | undefined) {
  * oldest first within a level.
  */
 export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
-  const scopes: [string | null, string | undefined][] = [
-    [null, undefined],
-    ...(s.tasks ?? []).map((t): [string, string] => [t.id, t.title]),
-  ]
+  const scopes = worktreeScopes(s)
   const terminals: Omit<AttentionItem, 'status' | 'sinceMs'>[] = [
     ...scopes.flatMap(([task, taskTitle]) => [
       ...s.nodes.flatMap((n) =>
@@ -98,11 +149,11 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
           isReviewAgentScope(r.metadata.componentId),
       )
       .map((r) => {
-        const task = s.tasks.find((t) => !t.missing && t.worktree === r.spec.cwd)
+        const task = recordTask(r, s.tasks)
         return {
           sid: r.id,
           componentId: r.metadata.componentId,
-          owner: r.metadata.componentId === REVIEW_SCOPE ? 'Review agent' : 'Merge agent',
+          owner: sessionOwner(r.metadata.componentId, s.nodes),
           task: task?.id ?? null,
           taskTitle: task?.title,
           terminal: {
@@ -124,42 +175,13 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
       .map(([sid, r]) => ({
         sid,
         componentId: r.componentId,
-        owner:
-          s.nodes.find((n) => n.id === r.componentId)?.data.name ??
-          (r.componentId === REVIEW_SCOPE
-            ? 'Review agent'
-            : r.componentId === MERGE_SCOPE
-              ? 'Merge agent'
-              : r.componentId === TASK_ROOT_SCOPE
-                ? 'Task root'
-                : r.componentId),
+        owner: sessionOwner(r.componentId, s.nodes),
         task: r.taskId ?? sessionTask(sid),
         taskTitle: s.tasks.find((t) => t.id === (r.taskId ?? sessionTask(sid)))?.title,
         terminal: r.terminal,
       })),
   ]
-  const autoItems: AttentionItem[] = scopes.flatMap(([task, taskTitle]) => {
-    const run = autoWorkspace(s, task)?.auto
-    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
-    return [
-      {
-        auto: true,
-        sid: `auto:${task ?? ''}`,
-        componentId: '@auto',
-        owner: 'Auto mode',
-        task,
-        taskTitle,
-        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
-        status: {
-          health: run.status === 'failed' ? 'fail' : 'input',
-          attention: run.status === 'failed' ? 3 : 4,
-          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
-          detail: run.reason,
-        },
-        sinceMs: run.log.at(-1)?.atMs ?? 0,
-      },
-    ]
-  })
+  const autoItems = autoAttentionItems(s)
   return [
     ...autoItems,
     ...terminals

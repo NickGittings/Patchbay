@@ -2075,6 +2075,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("patchbay-ext", extension_protocol)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
             layout::event(window, event);
             match event {

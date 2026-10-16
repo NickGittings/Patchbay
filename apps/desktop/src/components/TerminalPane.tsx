@@ -97,15 +97,40 @@ export default function TerminalPane({
     }
   }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId, task])
 
-  // Showing a session in a focused window acknowledges it in every window.
+  // Showing a session in a focused window acknowledges it in every window. Panes stay mounted in
+  // collapsed panels, hidden tabs and scrolled-away tiles, so only one on screen counts. An
+  // IntersectionObserver doesn't report a pane growing from or shrinking to zero size (its ratio
+  // stays the same), so size changes, focus and visibility re-observe it for a fresh entry.
   useEffect(() => {
-    if (unseen === undefined) return
-    const markSeen = () => {
-      if (document.hasFocus()) terminalSeen(sid).catch(() => {})
+    const host = hostRef.current
+    if (unseen === undefined || !host) return
+    const observer = new IntersectionObserver((entries) => {
+      const { isIntersecting, intersectionRect } = entries[entries.length - 1]
+      const { width, height } = host.getBoundingClientRect()
+      const onScreen =
+        isIntersecting &&
+        intersectionRect.width > 0 &&
+        intersectionRect.height > 0 &&
+        width > 0 &&
+        height > 0
+      if (onScreen && document.visibilityState === 'visible' && document.hasFocus())
+        terminalSeen(sid).catch(() => {})
+    })
+    const recheck = () => {
+      observer.unobserve(host)
+      observer.observe(host)
     }
-    markSeen()
-    window.addEventListener('focus', markSeen)
-    return () => window.removeEventListener('focus', markSeen)
+    // Its first callback observes the host as well.
+    const resizes = new ResizeObserver(recheck)
+    resizes.observe(host)
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', recheck)
+    return () => {
+      resizes.disconnect()
+      observer.disconnect()
+      window.removeEventListener('focus', recheck)
+      document.removeEventListener('visibilitychange', recheck)
+    }
   }, [sid, unseen])
 
   return (

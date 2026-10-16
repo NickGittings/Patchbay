@@ -1,3 +1,4 @@
+import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
 import WorkspaceTabs from './components/WorkspaceTabs'
 import SessionsPanel from './components/SessionsPanel'
@@ -128,12 +129,14 @@ export default function App() {
     const stopWindows = syncComponentWindows()
     const stopTasks = followActiveTask()
     const stopAuto = followAuto()
+    const stopNotifications = followNotifications()
     return () => {
       stopHost()
       stopMaintenance()
       stopWindows()
       stopTasks()
       stopAuto()
+      stopNotifications()
     }
   }, [])
   useEffect(() => {

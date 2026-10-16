@@ -112,3 +112,55 @@ test('Auto persists per worktree without dirtying the map and restores paused', 
       reason: 'Finished',
     })
 })
+
+test('notification settings stay global, persist without projects and never dirty the map', () => {
+  const settings = { enabled: false, finished: true, needsInput: false, failed: true }
+  expect(useStore.getState().dirty).toBe(false)
+  useStore.getState().setNotifications(settings)
+  expect(workspaceDocument().settings).toEqual({ notifications: settings })
+  expect(useStore.getState().dirty).toBe(false)
+  expect(workspaceDocument().projects[0].layout).not.toHaveProperty('notifications')
+  useStore.getState().loadProject({
+    projectId: 'second',
+    root: '/second',
+    name: 'Second',
+    schemaVersion: 4,
+    links: [],
+    components: [],
+  })
+  expect(useStore.getState().notifications).toEqual(settings)
+  useStore.getState().closeProject('second')
+  useStore.getState().closeProject('p')
+  expect(workspaceDocument().settings).toEqual({ notifications: settings })
+})
+
+test('saving notifications retains opaque workspace settings', () => {
+  const workspaceSettings = {
+    future: 42,
+    nested: { untouched: true },
+    notifications: { enabled: false },
+  }
+  useStore.setState({ workspaceSettings })
+  const notifications = { ...useStore.getState().notifications, needsInput: false }
+  useStore.getState().setNotifications(notifications)
+  expect(workspaceDocument().settings).toEqual({ ...workspaceSettings, notifications })
+  expect(workspaceSettings.notifications).toEqual({ enabled: false })
+})
+
+test('showing and dismissing notifications preserves persistent errors', () => {
+  useStore.getState().setMessage('Could not save the workspace')
+  const original = useStore.getState().messageId
+  useStore.getState().setNotificationToast({ message: 'Agent finished', sessions: [] })
+  expect(useStore.getState()).toMatchObject({
+    message: 'Could not save the workspace',
+    messageId: original,
+    messageTransient: false,
+    notificationToast: { message: 'Agent finished', sessions: [] },
+  })
+  useStore.getState().setNotificationToast(null)
+  expect(useStore.getState()).toMatchObject({
+    message: 'Could not save the workspace',
+    messageId: original,
+    messageTransient: false,
+  })
+})

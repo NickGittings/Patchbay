@@ -1,3 +1,4 @@
+import NotificationsPanel from './NotificationsPanel'
 import { configureEditor, showFileSearch } from '../lib/navigation'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import { useReactFlow } from '@xyflow/react'
@@ -25,6 +26,7 @@ const views: { id: View; label: string }[] = [
 export default function Toolbar() {
   const [integrationsOpen, setIntegrationsOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const project = useStore((s) => s.project)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
@@ -62,6 +64,7 @@ export default function Toolbar() {
     <>
       {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
       {rolesOpen && <AgentRolesPanel onClose={() => setRolesOpen(false)} />}
+      {notificationsOpen && <NotificationsPanel onClose={() => setNotificationsOpen(false)} />}
       <div className="toolbar">
         <div className="toolbar-group">
           <Menu label="Project">
@@ -119,6 +122,7 @@ export default function Toolbar() {
             <MenuItem disabled={!project} onClick={() => setRolesOpen(true)}>
               Agent roles…
             </MenuItem>
+            <MenuItem onClick={() => setNotificationsOpen(true)}>Notifications…</MenuItem>
             <ExtensionMenu slot="toolbar" asMenuItems />
           </Menu>
         </div>

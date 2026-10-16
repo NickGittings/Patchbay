@@ -17,9 +17,132 @@
   const state = () => smoke.store.getState()
   try {
     await until('restore', () => !state().restoring && state().serviceConnected)
+    const notifications = await until('Notifications menu without a project', () =>
+      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Notifications…'),
+    )
+    assert(!notifications.disabled, 'Notifications requires a project')
+    notifications.click()
+    const panel = await until('Notifications panel', () =>
+      document.querySelector('[role="dialog"][aria-label="Notifications"]'),
+    )
+    const toggles = [...panel.querySelectorAll('input[type="checkbox"]')]
+    assert(toggles.length === 4, 'Missing notification settings')
+    toggles[0].click()
+    await until('notifications disabled', () => !state().notifications.enabled)
+    assert(
+      toggles.slice(1).every((input) => input.matches(':disabled')),
+      'Event controls remain enabled',
+    )
+    toggles[0].click()
+    await until('notifications enabled', () => state().notifications.enabled)
+    for (const [index, key] of ['finished', 'needsInput', 'failed'].entries()) {
+      toggles[index + 1].click()
+      await until(`${key} disabled`, () => !state().notifications[key])
+      assert(
+        smoke.workspaceDocument().settings.notifications[key] === false,
+        'Setting not persisted',
+      )
+      toggles[index + 1].click()
+      await until(`${key} enabled`, () => state().notifications[key])
+    }
+    ;[...panel.querySelectorAll('button')]
+      .find((b) => b.textContent === 'Send test notification')
+      .click()
+    await until('test notification recorded', () => smoke.notificationLog.length > 0)
+    ;[...panel.querySelectorAll('button')].find((b) => b.textContent === 'Close').click()
+    smoke.notificationLog.length = 0
     await smoke.agentHooksConfigure('codex', true)
     smoke.acceptOpened(await smoke.openProject())
     const projectId = state().project.id
+    state().setMessage('Notification regression: keep this error')
+    const notificationSid = smoke.sessionId('root', 'validate')
+    state().setNotificationToast({
+      message: 'Agent finished — notification fixture',
+      sessions: [{ sid: notificationSid, label: 'Root' }],
+    })
+    await until('independent notification toast', () =>
+      document.querySelector('[aria-label="Dismiss notification"]'),
+    )
+    assert(
+      document.querySelector('.toast-region').textContent.includes('keep this error'),
+      'Notification replaced the persistent error',
+    )
+    // A tracked link whose session no longer shows that event drops out; an untracked one stays.
+    state().setNotificationToast({
+      message: 'Agent finished — stale fixture',
+      sessions: [{ sid: 'stale-session', label: 'Stale', kind: 'finished', atMs: Date.now() }],
+    })
+    await until(
+      'stale notification link dropped',
+      () =>
+        state().notificationToast?.sessions.length === 1 &&
+        state().notificationToast.sessions[0].sid === notificationSid,
+    )
+    document.querySelector('[aria-label="Dismiss notification"]').click()
+    await until('notification dismissed', () => !state().notificationToast)
+    assert(
+      state().message === 'Notification regression: keep this error',
+      'Dismissing notification cleared the persistent error',
+    )
+    const plannerNotificationSid = smoke.sessionId(
+      '@plan',
+      state().devices.find((d) => d.kind === 'agent')?.id ?? 'claude',
+    )
+    state().setNotificationToast({
+      message: 'Root needs input',
+      sessions: [{ sid: notificationSid, label: 'Root', message: 'Root needs input' }],
+    })
+    // A later batch must retain the first unread link even if native delivery was suppressed.
+    state().setNotificationToast({
+      message: 'Planner finished',
+      sessions: [{ sid: plannerNotificationSid, label: 'Planner', message: 'Planner finished' }],
+    })
+    await until(
+      'both unread notification links',
+      () => document.querySelectorAll('.toast-text button').length === 2,
+    )
+    const notificationMessage = document.querySelector('.notification-message')
+    assert(
+      notificationMessage.textContent.includes('\n'),
+      'Notification lines lost their separator',
+    )
+    assert(
+      getComputedStyle(notificationMessage).whiteSpace === 'pre-line',
+      'Notification lines collapse when rendered',
+    )
+    const viewNotification = await until('notification session link', () =>
+      [...document.querySelectorAll('.toast button')].find((b) => b.textContent === 'View Root'),
+    )
+    viewNotification.click()
+    await until(
+      'notification reveals its session',
+      () => state().view === 'implementation' && state().activeSession === notificationSid,
+    )
+    await until(
+      'viewing one notification retains the other link',
+      () =>
+        state().notificationToast?.sessions.length === 1 &&
+        [...document.querySelectorAll('.toast button')].some(
+          (b) => b.textContent === 'View Planner',
+        ),
+    )
+    assert(
+      state().notificationToast.sessions[0].sid === plannerNotificationSid,
+      'Viewing Root cleared the Planner notification',
+    )
+    assert(
+      state().message === 'Notification regression: keep this error',
+      'Following notification cleared the persistent error',
+    )
+    document.querySelector('[aria-label="Dismiss notification"]').click()
+    await until('remaining notification dismissed', () => !state().notificationToast)
+    // An alert left with no links hides itself.
+    state().setNotificationToast({
+      message: 'Agent finished — stale fixture',
+      sessions: [{ sid: 'stale-session', label: 'Stale', kind: 'finished', atMs: Date.now() }],
+    })
+    await until('alert without current links hidden', () => !state().notificationToast)
+    state().setMessage('')
     const trees = await smoke.gitWorktrees()
     const source = trees.find((w) => w.branch === 'feature')
     const task = await smoke.taskAttach(source.path, 'Auto fixture', [])

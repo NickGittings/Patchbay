@@ -464,8 +464,34 @@ export interface SessionIdentity {
   /** The task whose worktree the terminal runs in; `null` for the project's own. */
   task: string | null
 }
-/** What each opaque session id stands for; ids are never parsed. */
-export const sessionMetadata = new Map<string, SessionIdentity>()
+/** A map whose `version` changes whenever an entry is added, changed or removed. */
+class VersionedMap<K, V extends object> extends Map<K, V> {
+  version = 0
+  override set(key: K, value: V) {
+    const current = this.get(key)
+    const same =
+      current !== undefined &&
+      Object.keys(current).length === Object.keys(value).length &&
+      Object.entries(value).every(([k, v]) => (current as Record<string, unknown>)[k] === v)
+    if (!same) this.version += 1
+    return super.set(key, value)
+  }
+  override delete(key: K) {
+    const removed = super.delete(key)
+    if (removed) this.version += 1
+    return removed
+  }
+  override clear() {
+    if (this.size) this.version += 1
+    super.clear()
+  }
+}
+
+/**
+ * What each opaque session id stands for; ids are never parsed. Its `version` tells followers
+ * when an identity appeared or changed.
+ */
+export const sessionMetadata = new VersionedMap<string, SessionIdentity>()
 
 /**
  * Mirrors `model::task_session_id`: the opaque id of a terminal of a project's component, run
@@ -566,7 +592,47 @@ export interface WorkspaceProject {
   draft: Project | null
   layout: Record<string, unknown>
 }
+/**
+ * Unread session links survive later batches until viewed or explicitly dismissed. A link that
+ * carries its event (`kind`/`atMs`, or an Auto pause's `auto`) also drops out once that event is
+ * no longer current (seen, resolved, stopped, resumed) or its project closed.
+ */
+export interface NotificationToast {
+  message: string
+  sessions: NotificationLink[]
+}
+export interface NotificationLink {
+  sid: string
+  /** Owner plus terminal or lane and worktree, so links in one batch stay distinguishable. */
+  label: string
+  message?: string
+  kind?: 'finished' | 'needsInput' | 'failed'
+  atMs?: number
+  /** Named on the button only while another project is active. */
+  project?: { id: string; name: string }
+  /** An Auto run's pause: the link opens its worktree's Auto panel while the pause lasts. */
+  auto?: AutoPauseTarget
+}
+export interface AutoPauseTarget {
+  projectId: string
+  task: string | null
+  /** The run, status, stage and wait the alert was for; a later pause gets a new one. */
+  signature: string
+}
+export interface NotificationSettings {
+  enabled: boolean
+  finished: boolean
+  needsInput: boolean
+  failed: boolean
+}
+export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  enabled: true,
+  finished: true,
+  needsInput: true,
+  failed: true,
+}
 export interface WorkspaceDocument {
+  settings?: Record<string, unknown> & { notifications?: NotificationSettings }
   version: number
   projects: WorkspaceProject[]
   activeProject: string | null

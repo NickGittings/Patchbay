@@ -52,7 +52,9 @@ pub fn window<'a>(
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return builder;
     }
-    builder.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    builder
+        .initialization_script("window.__patchbaySmokeRun = true;")
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
 }
 
 pub fn setup(app: &mut tauri::App) {
