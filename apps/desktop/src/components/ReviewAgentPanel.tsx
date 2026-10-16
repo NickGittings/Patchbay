@@ -119,12 +119,14 @@ export default function ReviewAgentPanel({
       </div>
       {isReview && findings ? (
         <div className="review-findings" aria-label="Review findings">
-          {(loaded?.findings?.reviewers.length ?? 0) > 1 && (
+          {((loaded?.findings?.reviewers.length ?? 0) > 1 ||
+            loaded?.findings?.reviewers.some((r) => r.error)) && (
             <p className="hint" role="status">
               Reviewers:{' '}
               {loaded!
                 .findings!.reviewers.map(
-                  (r) => `${r.lane ?? 'reviewer'} ${r.finished ? '(done)' : '(writing…)'}`,
+                  (r) =>
+                    `${r.lane ?? 'reviewer'} ${r.finished ? '(done)' : r.error ? `(launch unconfirmed: ${r.error})` : '(writing…)'}`,
                 )
                 .join(', ')}
             </p>

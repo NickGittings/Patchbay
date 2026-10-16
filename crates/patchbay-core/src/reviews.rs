@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,6 +229,22 @@ pub struct ReviewRequest {
     pub round: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FindingsStamp {
+    modified: SystemTime,
+    len: u64,
+}
+
+impl FindingsStamp {
+    fn read(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Started {
@@ -245,6 +261,12 @@ struct Started {
     round: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lane: Option<String>,
+    /// Existing findings stay available for handoff, but cannot finish this attempt.
+    #[serde(default)]
+    previous_findings: Option<FindingsStamp>,
+    /// An uncertain launch is visible until this reviewer actually writes findings.
+    #[serde(default)]
+    launch_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,6 +296,7 @@ pub struct Reviewer {
     /// It wrote findings since its attempt started.
     pub finished: bool,
     pub verdict: Option<Verdict>,
+    pub error: Option<String>,
 }
 
 /// The verdict of several reviewers: issues if any reports issues, and per severity
@@ -310,27 +333,16 @@ pub struct Attempt {
     previous: Option<Vec<u8>>,
     written: Vec<u8>,
     briefing: Option<PathBuf>,
-    previous_findings: Option<(Vec<u8>, SystemTime)>,
     cache_key: PathBuf,
 }
 
 impl Attempt {
     fn record(sidecar: PathBuf, started: &Started, briefing: Option<PathBuf>) -> Result<Self> {
-        let written = serde_json::to_vec(started)?;
         let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut started = started.clone();
+        started.previous_findings = FindingsStamp::read(&sidecar.with_extension("md"));
+        let written = serde_json::to_vec(&started)?;
         let previous = std::fs::read(&sidecar).ok();
-        let findings = sidecar.with_extension("md");
-        let previous_findings = match std::fs::File::open(&findings) {
-            Ok(mut file) => {
-                use std::io::Read;
-                let modified = file.metadata()?.modified()?;
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                Some((bytes, modified))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
         // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
         crate::plans::write_atomic(&sidecar, &written)?;
         let cache_key = sidecar.parent().unwrap().join(name(&started.branch));
@@ -338,22 +350,13 @@ impl Attempt {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&cache_key);
-        let attempt = Self {
+        Ok(Self {
             sidecar,
             previous,
             written,
             briefing,
-            previous_findings,
             cache_key,
-        };
-        if let Err(error) = std::fs::remove_file(&findings)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            drop(_guard);
-            attempt.rollback();
-            return Err(error.into());
-        }
-        Ok(attempt)
+        })
     }
 
     /// Put back the sidecar this attempt replaced, best-effort, unless a later attempt
@@ -366,19 +369,6 @@ impl Attempt {
                     Some(bytes) => crate::plans::write_atomic(&self.sidecar, bytes),
                     None => std::fs::remove_file(&self.sidecar).map_err(Into::into),
                 };
-                // A refused launch restores both the findings and their original freshness.
-                // Never replace findings another writer has produced in the meantime.
-                if let Some((bytes, modified)) = &self.previous_findings {
-                    use std::io::Write;
-                    if let Ok(mut file) = std::fs::File::options()
-                        .write(true)
-                        .create_new(true)
-                        .open(self.sidecar.with_extension("md"))
-                        && file.write_all(bytes).is_ok()
-                    {
-                        let _ = file.set_modified(*modified);
-                    }
-                }
                 ROUNDS
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -399,7 +389,22 @@ impl Attempt {
     pub fn launch<T>(self, start: impl FnOnce() -> Result<T, (String, bool)>) -> Result<T, String> {
         match start() {
             Ok(value) => Ok(value),
-            Err((error, true)) => Err(error),
+            Err((error, true)) => {
+                let _guard = SIDECARS.lock().unwrap_or_else(PoisonError::into_inner);
+                if std::fs::read(&self.sidecar).ok().as_deref() == Some(self.written.as_slice()) {
+                    let mut started: Started =
+                        serde_json::from_slice(&self.written).expect("recorded attempt");
+                    started.launch_error = Some(error.clone());
+                    if let Ok(bytes) = serde_json::to_vec(&started) {
+                        let _ = crate::plans::write_atomic(&self.sidecar, &bytes);
+                    }
+                    ROUNDS
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&self.cache_key);
+                }
+                Err(error)
+            }
             Err((error, false)) => {
                 // A refused launch must not invalidate or re-attribute saved findings.
                 self.rollback();
@@ -610,6 +615,8 @@ pub fn prepare(
             .filter(|r| !r.is_empty())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         lane: lane.map(Into::into),
+        previous_findings: None,
+        launch_error: None,
     };
     let briefing = context::owned_briefing(&spec);
     match Attempt::record(findings.with_extension("json"), &started, briefing.clone()) {
@@ -628,7 +635,7 @@ pub fn prepare(
 
 /// Record a new attempt for a review session about to resume, so findings it writes
 /// count for its worktree's current HEAD. `None` when the HEAD and worktree are
-/// unchanged since the last attempt and it still belongs to the latest round, so
+/// unchanged since the last attempt, so
 /// resuming alone doesn't age current findings.
 ///
 /// # Errors
@@ -660,11 +667,7 @@ pub fn resume_attempt(
         old.branch
     );
     let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
-    let current_round = round(root, &old.branch)
-        .iter()
-        .any(|(file, started)| *file == findings && started.attempt == old.attempt);
-    if current_round && head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true)
-    {
+    if head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true) {
         return Ok(None);
     }
     let merge_base = git::run(git::git(cwd).args(["merge-base", &old.base, "HEAD"]))
@@ -677,6 +680,8 @@ pub fn resume_attempt(
         // A resumed reviewer covers the new tree on its own. Pulling its old peers
         // forward would mix commits and could revive findings from an older round.
         round: uuid::Uuid::new_v4().to_string(),
+        previous_findings: None,
+        launch_error: None,
         ..old
     };
     Attempt::record(sidecar, &started, None).map(Some)
@@ -695,12 +700,13 @@ struct Saved {
     truncated: bool,
     modified_ms: u64,
     started: Started,
+    stamp: Option<FindingsStamp>,
 }
 
 impl Saved {
     /// Written since its attempt started, so it covers that attempt's HEAD.
     fn fresh(&self) -> bool {
-        self.modified_ms > self.started.started_ms
+        self.modified_ms > self.started.started_ms && self.stamp != self.started.previous_findings
     }
 
     fn lane(&self) -> &str {
@@ -716,27 +722,36 @@ fn saved(root: &Path, branch: &str, limit: usize) -> Vec<Saved> {
     let each = limit / round.len().max(1);
     let read = |file: &Path| {
         let handle = std::fs::File::open(file).ok()?;
-        let modified_ms = crate::status::unix_ms(handle.metadata().ok()?.modified().ok()?);
+        let metadata = handle.metadata().ok()?;
+        let stamp = FindingsStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        };
+        let modified_ms = crate::status::unix_ms(stamp.modified);
         let (text, truncated) = crate::plans::read_limited(handle, each).ok()?;
-        Some((text, truncated, modified_ms))
+        Some((text, truncated, modified_ms, Some(stamp)))
     };
     let lanes: Vec<(Saved, bool)> = round
         .into_iter()
         .map(|(file, started)| {
             let found = read(&file);
             let exists = found.is_some();
-            let (text, truncated, modified_ms) = found.unwrap_or_default();
+            let (text, truncated, modified_ms, stamp) = found.unwrap_or_default();
             let saved = Saved {
                 file,
                 text,
                 truncated,
                 modified_ms,
                 started,
+                stamp,
             };
             (saved, exists)
         })
         .collect();
-    if !lanes.iter().any(|(_, exists)| *exists) {
+    if !lanes
+        .iter()
+        .any(|(s, exists)| *exists || s.started.launch_error.is_some())
+    {
         return vec![];
     }
     lanes.into_iter().map(|(saved, _)| saved).collect()
@@ -764,6 +779,9 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
             lane: s.started.lane.clone(),
             finished: s.fresh(),
             verdict: s.fresh().then(|| verdict(&s.text)).flatten(),
+            error: (!s.fresh())
+                .then(|| s.started.launch_error.clone())
+                .flatten(),
         })
         .collect();
     let (text, verdict) = match lanes.as_slice() {
@@ -840,9 +858,28 @@ fn no_findings(branch: &str) -> anyhow::Error {
 struct RoundCache {
     stamps: Vec<(PathBuf, SystemTime, u64)>,
     records: Vec<(PathBuf, Started)>,
+    last_used: Option<Instant>,
 }
 
 static ROUNDS: Mutex<BTreeMap<PathBuf, RoundCache>> = Mutex::new(BTreeMap::new());
+
+const ROUND_CACHE_LIMIT: usize = 128;
+
+fn cached_round(cache: &mut BTreeMap<PathBuf, RoundCache>, key: PathBuf) -> &mut RoundCache {
+    // Keep polling cheap without retaining every project/branch ever opened.
+    if !cache.contains_key(&key)
+        && cache.len() >= ROUND_CACHE_LIMIT
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone())
+    {
+        cache.remove(&oldest);
+    }
+    let entry = cache.entry(key).or_default();
+    entry.last_used = Some(Instant::now());
+    entry
+}
 
 /// The findings file and attempt of each reviewer in `branch`'s latest round (the
 /// round of the most recently started attempt), sorted by lane. Only sidecars that
@@ -868,7 +905,7 @@ fn round(root: &Path, branch: &str) -> Vec<(PathBuf, Started)> {
         .collect();
     stamps.sort_by(|a, b| a.0.cmp(&b.0));
     let mut cache = ROUNDS.lock().unwrap_or_else(PoisonError::into_inner);
-    let entry = cache.entry(folder.join(&prefix)).or_default();
+    let entry = cached_round(&mut cache, folder.join(&prefix));
     if entry.stamps != stamps {
         entry.records = stamps
             .iter()
@@ -1063,6 +1100,12 @@ pub fn remove(root: &Path, branch: &str) -> Result<()> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
+    }
+    if let Some(folder) = file.parent() {
+        ROUNDS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&folder.join(prefix));
     }
     Ok(())
 }
@@ -1941,7 +1984,14 @@ mod tests {
             lost.launch(|_| Err::<(), _>(("lost".into(), true)))
                 .is_err()
         );
-        assert_eq!(fs::read(&sidecar).unwrap(), written);
+        let lost_record: Started = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        let original: Started = serde_json::from_slice(&written).unwrap();
+        assert_eq!(lost_record.attempt, original.attempt);
+        assert_eq!(lost_record.launch_error.as_deref(), Some("lost"));
+        let failed = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(failed.reviewers[0].error.as_deref(), Some("lost"));
+        assert!(failed.verdict.is_none());
+        let written = fs::read(&sidecar).unwrap();
         context::remove_owned_briefing_file(&briefing);
         let refused = f.prepared("claude").unwrap();
         assert!(
@@ -2001,8 +2051,19 @@ mod tests {
         let attempt = resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
             .unwrap()
             .unwrap();
-        // A new attempt has no findings until the agent rewrites them.
-        assert!(read(&f.dir, &f.request.branch).is_none());
+        // Restart has no review kickoff. Keep the saved findings for Fix and Merge,
+        // but never attribute them to the new HEAD until the agent rewrites them.
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(stale.text, "findings");
+        assert!(stale.reviewed_head.is_none());
+        assert!(stale.verdict.is_none());
+        assert!(fix_body(&f).contains("findings"));
+        assert!(
+            merge_handoff(&f.dir, &f.request.branch, &head)
+                .unwrap()
+                .body
+                .contains("findings")
+        );
         attempt.rollback();
         assert!(
             read(&f.dir, &f.request.branch)
@@ -2230,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_round_clears_prior_findings_and_waits_for_every_reviewer() {
+    fn a_new_round_preserves_stale_findings_and_waits_for_every_reviewer() {
         let f = Fixture::new();
         let (a, a_file) = prepare_lane(&f, "claude", "r1");
         let (b, b_file) = prepare_lane(&f, "codex", "r1");
@@ -2246,8 +2307,10 @@ mod tests {
 
         let (next_a, _) = prepare_lane(&f, "claude", "r2");
         let (next_b, _) = prepare_lane(&f, "codex", "r2");
-        assert!(!a_file.exists() && !b_file.exists());
-        assert!(read(&f.dir, &f.request.branch).is_none());
+        assert!(a_file.exists() && b_file.exists());
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert!(stale.verdict.is_none() && stale.reviewed_head.is_none());
+        assert!(stale.reviewers.iter().all(|r| !r.finished));
         save_at(&a_file, "Verdict: clean", true);
         let partial = read(&f.dir, &f.request.branch).unwrap();
         assert!(partial.verdict.is_none() && partial.reviewed_head.is_none());
@@ -2283,7 +2346,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(b_file.with_extension("json")).unwrap(), before);
-        assert!(read(&f.dir, &f.request.branch).is_none());
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(stale.text, "findings");
+        assert!(stale.reviewed_head.is_none());
         save_at(&a_file, "Verdict: clean", true);
         let head = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
         assert_eq!(
@@ -2300,32 +2365,124 @@ mod tests {
     }
 
     #[test]
-    fn resuming_an_old_lane_does_not_revive_its_rounds_other_findings() {
+    fn resuming_an_unchanged_old_lane_keeps_the_latest_multi_reviewer_round() {
         let f = Fixture::new();
-        let (a, a_file) = prepare_lane(&f, "claude", "r1");
-        let (b, b_file) = prepare_lane(&f, "codex", "r1");
-        save_at(&a_file, "Verdict: clean", true);
-        save_at(&b_file, "Verdict: issues\n- [high] Old finding", true);
+        let (a, a_file) = prepare_lane(&f, "old", "r1");
+        save_at(&a_file, "Verdict: issues\n- [high] Old finding", true);
+        std::thread::sleep(Duration::from_millis(5));
+        let (b, b_file) = prepare_lane(&f, "claude", "r2");
+        let (c, c_file) = prepare_lane(&f, "codex", "r2");
+        save_at(&b_file, "Verdict: clean", true);
+        save_at(&c_file, "Verdict: issues\n- [low] Current finding", true);
+        let before = fs::read(a_file.with_extension("json")).unwrap();
+        assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 2);
+        assert!(
+            resume_attempt(&f.dir, &a.spec, &f.request.branch, Some("old"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fs::read(a_file.with_extension("json")).unwrap(), before);
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.reviewers.len(), 2);
+        assert_eq!(findings.verdict.unwrap().counts.low, 1);
+        assert!(findings.reviewed_head.is_some());
+        assert!(fix_body(&f).contains("Current finding"));
+        assert!(!fix_body(&f).contains("Old finding"));
+        cleanup([a, b, c]);
+    }
+
+    #[test]
+    fn an_old_lane_resumed_after_tree_changes_starts_a_round_and_keeps_stale_findings() {
+        let f = Fixture::new();
+        let (old, path) = prepare_lane(&f, "old", "r1");
+        save_at(&path, "Verdict: issues\n- [high] Saved finding", true);
         std::thread::sleep(Duration::from_millis(5));
         let newer = f.prepare("claude").unwrap();
         f.save("Verdict: clean", true);
-        // Populate the cache before a later attempt replaces the old sidecar.
-        assert_eq!(read(&f.dir, &f.request.branch).unwrap().reviewers.len(), 1);
-        // No tree changes: an older lane must still move to a current round.
-        let attempt = resume_attempt(&f.dir, &a.spec, &f.request.branch, Some("claude"))
+        fs::write(f.dir.join("file.txt"), "new work\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "new"])).unwrap();
+        let attempt = resume_attempt(&f.dir, &old.spec, &f.request.branch, Some("old"))
             .unwrap()
             .unwrap();
-        save_at(&a_file, "Verdict: clean", true);
-        let findings = read(&f.dir, &f.request.branch).unwrap();
-        assert_eq!(findings.reviewers.len(), 1);
-        assert!(findings.verdict.unwrap().clean);
-        assert!(findings.reviewed_head.is_some());
-        // Rollback also invalidates the cached latest round.
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(stale.reviewers.len(), 1);
+        assert!(stale.text.contains("Saved finding"));
+        assert!(stale.reviewed_head.is_none());
+        save_at(&path, "Verdict: clean", true);
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .reviewed_head
+                .is_some()
+        );
         attempt.rollback();
-        let findings = read(&f.dir, &f.request.branch).unwrap();
-        assert_eq!(findings.reviewers[0].lane, None);
-        assert!(findings.verdict.unwrap().clean);
-        cleanup([a, b, newer]);
+        assert_eq!(
+            read(&f.dir, &f.request.branch).unwrap().reviewers[0].lane,
+            None
+        );
+        cleanup([old, newer]);
+    }
+
+    #[test]
+    fn round_cache_evicts_the_least_recently_used_branch() {
+        let mut cache = BTreeMap::new();
+        for index in 0..ROUND_CACHE_LIMIT {
+            cached_round(&mut cache, PathBuf::from(index.to_string()));
+        }
+        // Reading an existing entry refreshes it without evicting another branch.
+        cached_round(&mut cache, PathBuf::from("0"));
+        assert_eq!(cache.len(), ROUND_CACHE_LIMIT);
+        cached_round(&mut cache, PathBuf::from("new branch"));
+        assert_eq!(cache.len(), ROUND_CACHE_LIMIT);
+        assert!(cache.contains_key(&PathBuf::from("0")));
+        assert!(!cache.contains_key(&PathBuf::from("1")));
+    }
+
+    #[test]
+    fn recording_an_attempt_preserves_large_findings_and_their_timestamp() {
+        let f = Fixture::new();
+        let first = f.prepare("claude").unwrap();
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        let bytes = "Saved finding\n".repeat(HANDOFF_LIMIT);
+        f.save(&bytes, true);
+        let stamp = FindingsStamp::read(&path).unwrap();
+        let next = f.prepared("claude").unwrap();
+        assert_eq!(FindingsStamp::read(&path).unwrap(), stamp);
+        let stale = read(&f.dir, &f.request.branch).unwrap();
+        assert!(stale.truncated && stale.reviewed_head.is_none());
+        next.rollback();
+        assert_eq!(FindingsStamp::read(&path).unwrap(), stamp);
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .reviewed_head
+                .is_some()
+        );
+        cleanup([first]);
+    }
+
+    #[test]
+    fn fresh_findings_resolve_an_uncertain_launch_error() {
+        let f = Fixture::new();
+        let prepared = f.prepared("claude").unwrap();
+        let briefing = context::owned_briefing(&prepared.job.spec).unwrap();
+        assert!(
+            prepared
+                .launch(|_| Err::<(), _>(("lost reply".into(), true)))
+                .is_err()
+        );
+        assert!(
+            read(&f.dir, &f.request.branch).unwrap().reviewers[0]
+                .error
+                .is_some()
+        );
+        f.save("Verdict: clean", true);
+        let complete = read(&f.dir, &f.request.branch).unwrap();
+        assert!(complete.verdict.unwrap().clean);
+        assert!(complete.reviewed_head.is_some());
+        assert!(complete.reviewers[0].error.is_none());
+        context::remove_owned_briefing_file(&briefing);
     }
 
     #[test]

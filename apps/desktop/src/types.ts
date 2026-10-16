@@ -81,7 +81,12 @@ export interface AutoRun {
   /** Presets that review together when there are several; `agents.review` reviews alone. */
   reviewers?: string[]
   /** Reviewers launched beside the tracked session, owned while their start times match. */
-  laneSessions?: { sessionId: string; startedMs?: number }[]
+  laneSessions?: {
+    sessionId: string
+    startedMs?: number
+    turnSince?: number
+    observedWorking?: boolean
+  }[]
   /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
   branch?: string
   round: number
@@ -131,6 +136,8 @@ export interface ReviewerStatus {
   /** It wrote findings since its attempt started. */
   finished: boolean
   verdict: Verdict | null
+  /** Launch could not be confirmed; cleared by fresh findings. */
+  error?: string | null
 }
 
 /** Reserved id for changed files under the project root that no component contains. */
@@ -498,6 +505,8 @@ export function retask(sid: string, task: string | null): string {
 
 export interface SessionRecord {
   id: string
+  /** Launch request identities retained by the session service. */
+  requestIds?: string[]
   metadata: {
     projectId: string
     projectRoot: string

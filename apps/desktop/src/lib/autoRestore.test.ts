@@ -66,11 +66,15 @@ test('parallel reviewers and their sessions survive a restore', () => {
   const restored = restoredAuto({
     ...saved,
     reviewers: ['claude', 'codex', 'codex', 3],
-    laneSessions: [{ sessionId: 'lane', startedMs: 5 }, { sessionId: 7 }, { sessionId: 'x' }],
+    laneSessions: [
+      { sessionId: 'lane', startedMs: 5, turnSince: 8, observedWorking: true },
+      { sessionId: 7 },
+      { sessionId: 'x' },
+    ],
   })
   expect(restored?.reviewers).toEqual(['claude', 'codex'])
   expect(restored?.laneSessions).toEqual([
-    { sessionId: 'lane', startedMs: 5 },
+    { sessionId: 'lane', startedMs: 5, turnSince: 8, observedWorking: true },
     { sessionId: 'x', startedMs: undefined },
   ])
 })

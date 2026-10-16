@@ -1464,7 +1464,23 @@ async fn review_agent_start(
                 service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
             metadata.branch = Some(request.branch);
             metadata.lane = request.lane.filter(|lane| !lane.is_empty());
-            bridge.start_reporting(job.spec, metadata, request_id)
+            match bridge.start_reporting(job.spec, metadata, request_id.clone()) {
+                Err((error, true)) => {
+                    // The service may have accepted the launch before its reply was lost.
+                    // Recover by request identity, without preparing another attempt.
+                    bridge
+                        .list()
+                        .ok()
+                        .and_then(|records| {
+                            records
+                                .into_iter()
+                                .find(|r| r.request_ids.contains(&request_id))
+                                .map(|r| r.id)
+                        })
+                        .ok_or((error, true))
+                }
+                result => result,
+            }
         })
     })
     .await

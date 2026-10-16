@@ -39,22 +39,23 @@ vi.mock('./reviewAgents', async () => {
     startReviewAgent,
     startMergeAgent: vi.fn(),
     // Through the mocked single launch, as the real one does, with a lane per reviewer of a round.
-    startReviewAgents: async (
-      ...[project, request, devices, auto]: Parameters<typeof actual.startReviewAgents>
-    ) => {
-      const sessions: string[] = []
-      for (const device of devices)
-        sessions.push(
-          await startReviewAgent(
-            project,
-            devices.length > 1 ? { ...request, lane: device.id, round: 'round' } : request,
-            device,
-            'request',
-            auto,
-          ),
-        )
-      return { sessions, errors: [] }
-    },
+    startReviewAgents: vi.fn(
+      async (...[project, request, devices, auto]: Parameters<typeof actual.startReviewAgents>) => {
+        const sessions: string[] = []
+        for (const device of devices)
+          sessions.push(
+            await startReviewAgent(
+              project,
+              devices.length > 1 ? { ...request, lane: device.id, round: 'round' } : request,
+              device,
+              'request',
+              auto,
+            ),
+          )
+        await (await import('./sessions')).reconcileFreshSessions()
+        return { sessions, errors: [] }
+      },
+    ),
   }
 })
 const {
@@ -512,7 +513,7 @@ test.each(['crashed', 'ended', 'stopped', 'relaunched', 'forgotten'] as const)(
 )
 
 test.each(['review', 'implement'] as const)(
-  'a busy manual %s agent holds a completed Auto review open',
+  'a completed Auto review waits for another reviewer or follows manual implementation',
   async (stage) => {
     load()
     useStore.setState({
@@ -537,16 +538,19 @@ test.each(['review', 'implement'] as const)(
     try {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
-        stage: 'review',
-        sessionId: 's',
-        reason: 'Waiting for another agent in this worktree to finish',
+        stage,
+        sessionId: stage === 'review' ? 's' : 'manual',
+        reason:
+          stage === 'review'
+            ? 'Waiting for another agent in this worktree to finish'
+            : 'Waiting for the current agent',
       })
       expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
       useStore.setState({
-        sessions: { ...useStore.getState().sessions, manual: reviewSession('review') },
+        sessions: { ...useStore.getState().sessions, manual: reviewSession('review', 1500) },
       })
       await flush()
-      expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+      expect(autoRun('p', 't')?.stage).toBe(stage === 'review' ? 'mergeGate' : 'review')
     } finally {
       dispose()
     }
@@ -588,7 +592,7 @@ test('Resume keeps the original primary while a second reviewer needs input', as
   }
 })
 
-test('Resume stops completed reviewers before starting a review of changed work', async () => {
+test('Resume keeps completed reviewers while checking changed work', async () => {
   load()
   useStore.setState({ sessions: { s: reviewSession('review'), lane: reviewSession('review') } })
   useStore.getState().patchTask('p', 't', {
@@ -605,11 +609,10 @@ test('Resume stops completed reviewers before starting a review of changed work'
   expect(autoRun('p', 't')).toMatchObject({
     stage: 'review',
     status: 'running',
-    sessionId: undefined,
-    laneSessions: undefined,
+    sessionId: 's',
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
-  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
-  expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
 })
 
 test.each(['stop', 'skip', 'finish'] as const)(
@@ -634,8 +637,12 @@ test.each(['stop', 'skip', 'finish'] as const)(
       })
       await flush()
       expect(ipc.terminalSnapshot).toHaveBeenCalledWith('lane')
-      expect(autoRun('p', 't')?.laneSessions).toEqual([{ sessionId: 'lane', startedMs: 1000 }])
-      useStore.setState({ sessions: { s: reviewSession('review'), lane: reviewSession('review') } })
+      expect(autoRun('p', 't')?.laneSessions).toMatchObject([
+        { sessionId: 'lane', startedMs: 1000 },
+      ])
+      useStore.setState({
+        sessions: { s: reviewSession('review', 1300), lane: reviewSession('review', 1300) },
+      })
       vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
       if (action === 'stop') stopAuto('p', 't')
       else if (action === 'skip') {
@@ -1372,7 +1379,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
   },
 )
 
-test('review launches still require confirmed start times', async () => {
+test('review launches survive a missing launch snapshot without claiming ownership', async () => {
   load()
   vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
   vi.mocked(jobs.startReviewAgent).mockResolvedValue('reviewer')
@@ -1383,8 +1390,28 @@ test('review launches still require confirmed start times', async () => {
   const dispose = followAuto()
   try {
     await flush()
-    expect(autoRun('p', 't')?.status).toBe('failed')
-    expect(ipc.terminalStop).toHaveBeenCalledWith('reviewer')
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      sessionId: 'reviewer',
+      sessionOwned: false,
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    const startedMs = autoRun('p', 't')!.launchAtMs! + 1
+    useStore.setState({ sessions: { reviewer: { running: true, startedMs } } })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      sessionId: 'reviewer',
+      sessionOwned: false,
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), startedMs })
+    useStore.setState({
+      sessions: { reviewer: { ...reviewSession('review', startedMs + 10), startedMs } },
+    })
+    await flush()
+    expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
   } finally {
     dispose()
   }
@@ -2720,4 +2747,175 @@ test('a finished fix re-runs failed validation even when the effort skips valida
   } finally {
     dispose()
   }
+})
+
+test.each(['review', 'merge'] as const)(
+  'Auto follows a manual %s agent after its implementation finishes',
+  async (stage) => {
+    load()
+    agent('review', 1400)
+    useStore.setState({
+      sessionRecords: [
+        {
+          id: 'manual',
+          metadata: {
+            projectId: 'p',
+            componentId: stage === 'review' ? '@review' : '@merge',
+            kind: 'agent',
+          },
+          spec: { cwd: stage === 'review' ? tree.path : '/p', merge_source: tree.path },
+          snapshot: reviewSession('working', 1500),
+        },
+      ] as SessionRecord[],
+    })
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        stage: 'implement',
+        sessionId: 's',
+        turnSince: 1000,
+        sessionOwned: true,
+        sessionStartedMs: 1000,
+      }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        stage,
+        sessionId: 'manual',
+        sessionOwned: false,
+        turnSince: 1500,
+        status: 'running',
+      })
+      expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+      expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
+      expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each([false, true])('Resume preserves idle reviewers (multiple: %s)', async (multiple) => {
+  load()
+  agent('idle', 1400)
+  if (multiple)
+    useStore.setState({
+      sessions: { ...useStore.getState().sessions, lane: reviewSession('idle', 1400) },
+    })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      status: 'paused',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1000,
+      laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
+    }),
+  })
+  await resumeAuto('p', 't')
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'review', sessionId: 's' })
+  } finally {
+    dispose()
+  }
+})
+
+test('a partially failed round pauses immediately and keeps the successful reviewer tracked', async () => {
+  load()
+  agent('working', 1400)
+  vi.mocked(jobs.startReviewAgents).mockResolvedValue({
+    sessions: ['s'],
+    errors: ['Claude: launch unconfirmed'],
+  })
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      sessionId: 's',
+      sessionOwned: true,
+    })
+    expect(autoRun('p', 't')?.reason).toContain('Claude: launch unconfirmed')
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    stopAuto('p', 't')
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  } finally {
+    dispose()
+  }
+})
+
+test.each([false, true])(
+  'all reviewer completions must follow their own latest working turn (multiple: %s)',
+  async (multiple) => {
+    load()
+    const sessions = {
+      s: reviewSession('working', 2000),
+      ...(multiple ? { lane: reviewSession('working', 2100) } : {}),
+    }
+    useStore.setState({ sessions })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        sessionId: 's',
+        turnSince: 1000,
+        launchAtMs: 1000,
+        laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
+      }),
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      useStore.setState({
+        sessions: {
+          s: reviewSession('review', multiple ? 2200 : 1500),
+          ...(multiple ? { lane: reviewSession('review', 1500) } : {}),
+        },
+      })
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'running' })
+      expect(ipc.reviewRead).not.toHaveBeenCalled()
+      useStore.setState({
+        sessions: {
+          s: reviewSession('review', 2200),
+          ...(multiple ? { lane: reviewSession('review', 2300) } : {}),
+        },
+      })
+      await flush()
+      expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('Resume re-infers the stage once every tracked reviewer has stopped', async () => {
+  load()
+  useStore.setState({
+    sessions: { s: { running: false, startedMs: 1000 }, lane: { running: false, startedMs: 1000 } },
+  })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      status: 'paused',
+      effort: 'light',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
+    }),
+  })
+  await resumeAuto('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({
+    stage: 'review',
+    status: 'running',
+    sessionId: undefined,
+    laneSessions: undefined,
+  })
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
 })

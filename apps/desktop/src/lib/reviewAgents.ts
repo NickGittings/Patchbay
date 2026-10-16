@@ -16,6 +16,7 @@ import {
 import { mergeAgentStart, reviewAgentStart } from './ipc'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
+import { useStore } from '../store'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
   return worktrees.filter((w) => w.branch && w.path !== source.path && w.branch !== source.branch)
@@ -111,7 +112,20 @@ async function startJobAgent<R>(
   auto?: import('../types').AutoBrief,
 ) {
   await listenForTerminals()
-  const sid = await start(
+  const sid = await launchJob(start, project, request, device, requestId, auto)
+  await reconcileFreshSessions()
+  return sid
+}
+
+function launchJob<R>(
+  start: Parameters<typeof startJobAgent<R>>[0],
+  project: Project,
+  request: R,
+  device: DeviceManifest,
+  requestId: string,
+  auto?: import('../types').AutoBrief,
+) {
+  return start(
     project,
     request,
     {
@@ -124,8 +138,6 @@ async function startJobAgent<R>(
     requestId,
     ...(auto ? [auto] : []),
   )
-  await reconcileFreshSessions()
-  return sid
 }
 
 export const startMergeAgent = (
@@ -155,30 +167,35 @@ export async function startReviewAgents(
   devices: DeviceManifest[],
   auto?: import('../types').AutoBrief,
 ): Promise<{ sessions: string[]; errors: string[] }> {
-  if (devices.length <= 1) {
-    const device = devices[0]
-    if (!device) throw new Error('Choose at least one agent')
-    return {
-      sessions: [await startReviewAgent(project, request, device, crypto.randomUUID(), auto)],
-      errors: [],
-    }
-  }
+  if (!devices.length) throw new Error('Choose at least one agent')
+  await listenForTerminals()
   const round = crypto.randomUUID()
-  const sessions: string[] = []
-  const errors: string[] = []
+  const requests = devices.map(() => crypto.randomUUID())
   const results = await Promise.allSettled(
-    devices.map((device) =>
-      startReviewAgent(
+    devices.map((device, index) =>
+      launchJob(
+        reviewAgentStart,
         project,
-        { ...request, lane: device.id, round },
+        devices.length > 1 ? { ...request, lane: device.id, round } : request,
         device,
-        crypto.randomUUID(),
+        requests[index],
         auto,
       ),
     ),
   )
+  // One reconciliation for the whole round also recovers a start whose reply was lost.
+  // A temporary read failure must not discard sessions that already returned successfully.
+  await reconcileFreshSessions().catch(() => {})
+  const sessions: string[] = []
+  const errors: string[] = []
   results.forEach((result, index) => {
+    const recovered =
+      result.status === 'rejected'
+        ? useStore.getState().sessionRecords.find((r) => r.requestIds?.includes(requests[index]))
+            ?.id
+        : undefined
     if (result.status === 'fulfilled') sessions.push(result.value)
+    else if (recovered) sessions.push(recovered)
     else errors.push(`${devices[index].name}: ${String(result.reason)}`)
   })
   if (!sessions.length) throw new Error(errors.join('\n'))

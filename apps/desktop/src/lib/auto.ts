@@ -595,14 +595,17 @@ export async function resumeAuto(projectId: string, task: string | null) {
     throw new Error('Auto is still starting an agent; Resume once it has started')
   // Pause preserves runId; a new status or another Pause still cancels this Resume.
   if (autoRun(projectId, task) !== run) return
-  const reviewerIds =
-    run.stage === 'review' && run.sessionId && run.laneSessions?.length
-      ? [run.sessionId, ...run.laneSessions.map((lane) => lane.sessionId)]
-      : []
-  const reviewing = snapshot.agents.some(
-    (agent) =>
-      reviewerIds.includes(agent.sessionId) && ['working', 'needsInput'].includes(agent.state),
-  )
+  // Resume keeps the tracked round, including reviewers at an interactive prompt.
+  // Completion or an interrupted session is handled by the same loop as normal polling.
+  const state = useStore.getState()
+  const reviewing =
+    run.stage === 'review' &&
+    !!run.sessionId &&
+    [run.sessionId, ...(run.laneSessions ?? []).map((lane) => lane.sessionId)].some((id) => {
+      const record = state.sessionRecords.find((r) => r.id === id)
+      const session = state.sessions[id] ?? record?.snapshot
+      return session?.running ?? (!!record || !state.serviceConnected)
+    })
   const decision: Decision = reviewing
     ? {
         stage: 'review',
@@ -619,11 +622,6 @@ export async function resumeAuto(projectId: string, task: string | null) {
     throw new Error('Auto is still starting an agent; Resume once it has started')
   if (autoRun(projectId, task) !== run) return
   assertSessionAvailable(projectId, task, decision.sessionId)
-  if (reviewerIds.length && !reviewing) {
-    await stopLanes(run)
-    if (ownsSession(run)) await terminalStop(run.sessionId!)
-    if (autoRun(projectId, task) !== run) return
-  }
   patch(
     projectId,
     task,
@@ -638,8 +636,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
           ? snapshot.findings?.text.slice(0, 2000)
           : run.findingsSummary,
       runId: crypto.randomUUID(),
-      launchAtMs:
-        decision.sessionId === run.sessionId && ownsSession(run) ? run.launchAtMs : undefined,
+      launchAtMs: decision.sessionId === run.sessionId ? run.launchAtMs : undefined,
       sessionId: decision.sessionId,
       sessionOwned: decision.sessionId === run.sessionId && ownsSession(run),
       turnSince: decision.turnSince,
@@ -656,20 +653,21 @@ function startedOf(sid: string) {
     s.sessions[sid]?.startedMs ?? s.sessionRecords.find((r) => r.id === sid)?.snapshot?.startedMs
   )
 }
-function ownsSession(run: AutoRun, sessionId = run.sessionId) {
-  return (
-    !!sessionId &&
-    run.sessionOwned === true &&
-    sessionId === run.sessionId &&
-    // Without the launch's start time, a later session under this id would count as Auto's.
-    run.sessionStartedMs !== undefined &&
-    startedOf(sessionId) === run.sessionStartedMs
-  )
+function ownsSession(
+  run: AutoRun,
+  sessionId = run.sessionId,
+  observedStart = sessionId ? startedOf(sessionId) : undefined,
+) {
+  if (!sessionId || observedStart === undefined) return false
+  const generation =
+    sessionId === run.sessionId
+      ? run.sessionOwned
+        ? run.sessionStartedMs
+        : undefined
+      : run.laneSessions?.find((lane) => lane.sessionId === sessionId)?.startedMs
+  return generation !== undefined && observedStart === generation
 }
-/**
- * Stop the extra reviewers a run launched that still run as it launched them; `undefined` when
- * none does.
- */
+/** Stop extra reviewers only while their process generations still belong to this run. */
 function stopLanes(run: AutoRun) {
   const lanes = run.laneSessions ?? []
   if (!lanes.length) return undefined
@@ -680,12 +678,9 @@ function stopLanes(run: AutoRun) {
       let session: Pick<SessionState, 'startedMs' | 'running'> | null | undefined =
         state.sessions[lane.sessionId] ??
         state.sessionRecords.find((r) => r.id === lane.sessionId)?.snapshot
-      // An event may have arrived before this window received the launch snapshot.
-      // Confirm the generation with the service before stopping it.
-      if (startedOf(lane.sessionId) === undefined)
-        session = (await terminalSnapshot(lane.sessionId)) ?? undefined
-      const startedMs = session?.startedMs ?? startedOf(lane.sessionId)
-      if (session?.running && startedMs === lane.startedMs) await terminalStop(lane.sessionId)
+      if (startedOf(lane.sessionId) === undefined) session = await terminalSnapshot(lane.sessionId)
+      if (session?.running && ownsSession(run, lane.sessionId, session.startedMs))
+        await terminalStop(lane.sessionId)
     }),
   ).then(
     () => {},
@@ -879,98 +874,38 @@ async function drive(projectId: string, task: string | null) {
       const session =
         state.sessions[run.sessionId] ??
         state.sessionRecords.find((r) => r.id === run.sessionId)?.snapshot
-      let completedAt = session?.status?.agent?.sinceMs ?? 0
-      if (run.stage === 'review' && run.laneSessions?.length) {
-        const since = run.launchAtMs ?? run.turnSince ?? 0
-        const reviewers = [
-          { sessionId: run.sessionId, startedMs: run.sessionStartedMs },
-          ...run.laneSessions,
-        ].map((lane) => {
-          const record = state.sessionRecords.find((r) => r.id === lane.sessionId)
-          const snapshot = state.sessions[lane.sessionId] ?? record?.snapshot
-          const agent = snapshot?.status?.agent
-          return {
-            ...lane,
-            snapshot,
-            agent,
-            name: record?.metadata.name ?? `Reviewer ${lane.sessionId}`,
-            forgotten: !snapshot && state.serviceConnected && !record,
-            done: agent?.authoritative && agent.state === 'review' && agent.sinceMs > since,
-          }
-        })
-        const failed = reviewers.find(
-          (r) =>
-            r.forgotten ||
-            r.snapshot?.status?.stopped ||
-            (r.startedMs !== undefined &&
-              r.snapshot?.startedMs !== undefined &&
-              r.startedMs !== r.snapshot.startedMs) ||
-            (!r.done &&
-              r.snapshot &&
-              (!r.snapshot.running ||
-                (r.agent?.authoritative &&
-                  ['idle', 'ended'].includes(r.agent.state) &&
-                  r.agent.sinceMs >= since))),
-        )
-        if (failed) {
-          pauseAuto(
-            projectId,
-            task,
-            `${failed.name}: ${failed.forgotten ? 'session was forgotten' : 'stopped or relaunched before finishing its turn'}${failed.agent?.message ? ': ' + failed.agent.message : ''}`,
-          )
-          return
+      const tracked = [
+        {
+          sessionId: run.sessionId,
+          startedMs: run.sessionStartedMs,
+          observedWorking: run.observedWorking,
+          turnSince: run.turnSince,
+        },
+        ...(run.stage === 'review' ? (run.laneSessions ?? []) : []),
+      ]
+      const reviewers = tracked.map((lane) => {
+        const record = state.sessionRecords.find((r) => r.id === lane.sessionId)
+        const snapshot = state.sessions[lane.sessionId] ?? record?.snapshot
+        const agent = snapshot?.status?.agent
+        const since = lane.turnSince ?? run.launchAtMs ?? run.turnSince ?? 0
+        return {
+          ...lane,
+          since,
+          snapshot,
+          agent,
+          name:
+            run.stage === 'review'
+              ? (record?.metadata.name ?? `Reviewer ${lane.sessionId}`)
+              : 'Agent',
+          forgotten:
+            !snapshot &&
+            state.serviceConnected &&
+            !record &&
+            (run.launchAtMs === undefined || Date.now() - run.launchAtMs > 5000),
+          done: agent?.authoritative && agent.state === 'review' && agent.sinceMs > since,
         }
-        const input = reviewers.find(
-          (r) => r.agent?.authoritative && r.agent.state === 'needsInput',
-        )
-        if (input) {
-          if (run.status !== 'waitingOnYou' || run.inputSessionId !== input.sessionId)
-            patch(
-              projectId,
-              task,
-              {
-                status: 'waitingOnYou',
-                waitingFor: 'agentInput',
-                inputSessionId: input.sessionId,
-                reason: `${input.name} needs input${input.agent?.message ? ': ' + input.agent.message : ''}`,
-              },
-              'Reviewer needs input',
-            )
-          return
-        }
-        if (run.status === 'waitingOnYou') {
-          if (run.waitingFor !== 'agentInput') return
-          patch(
-            projectId,
-            task,
-            {
-              status: 'running',
-              inputSessionId: undefined,
-              reason: undefined,
-            },
-            'Reviewers resumed work',
-          )
-          run = live()!
-        }
-        completedAt = Math.max(...reviewers.map((r) => r.agent?.sinceMs ?? 0))
-        if (!reviewers.every((r) => r.done)) {
-          controller.completionPoll = undefined
-          const reason = 'Waiting for reviewers to finish'
-          if (run.reason !== reason) patch(projectId, task, { reason }, reason)
-          return
-        }
-      }
+      })
       const agent = session?.status?.agent
-      const forgotten =
-        !session &&
-        useStore.getState().serviceConnected &&
-        !useStore.getState().sessionRecords.some((r) => r.id === run.sessionId)
-      const stoppedWaiting =
-        run.status === 'waitingOnYou' &&
-        session &&
-        (!session.running ||
-          session.status?.stopped ||
-          (agent?.state === 'idle' && agent.sinceMs >= (run.turnSince ?? 0)))
       // A merge agent that ended may have left the merge done: the user may have resolved and
       // committed it before closing the agent. True once this settled the run.
       const mergedByHand = async () => {
@@ -990,65 +925,85 @@ async function drive(projectId: string, task: string | null) {
         settleIntegrated(projectId, task, current)
         return true
       }
-      if ((forgotten || stoppedWaiting) && (await mergedByHand())) return
-      if (forgotten) {
-        pauseAuto(projectId, task, 'The tracked session was forgotten')
+      const failed = reviewers.find(
+        (r) =>
+          r.forgotten ||
+          r.snapshot?.status?.stopped ||
+          (r.startedMs !== undefined &&
+            r.snapshot?.startedMs !== undefined &&
+            r.startedMs !== r.snapshot.startedMs) ||
+          (!r.done &&
+            r.snapshot &&
+            (!r.snapshot.running ||
+              (r.agent &&
+                ['idle', 'ended'].includes(r.agent.state) &&
+                (r.observedWorking || r.agent.state === 'ended' || run.status === 'waitingOnYou') &&
+                r.agent.sinceMs >= r.since))),
+      )
+      if (failed) {
+        if (await mergedByHand()) return
+        const primary = failed.sessionId === run.sessionId
+        const reason = primary
+          ? failed.forgotten
+            ? 'The tracked session was forgotten'
+            : run.status === 'waitingOnYou'
+              ? 'Agent stopped while waiting for input'
+              : failed.snapshot?.status?.stopped ||
+                  (failed.startedMs !== undefined &&
+                    failed.snapshot?.startedMs !== failed.startedMs)
+                ? 'The tracked session was stopped or relaunched by hand'
+                : failed.agent?.message || 'Agent stopped before finishing its turn'
+          : `${failed.name}: ${failed.forgotten ? 'session was forgotten' : 'stopped or relaunched before finishing its turn'}${failed.agent?.message ? ': ' + failed.agent.message : ''}`
+        pauseAuto(projectId, task, reason)
         return
       }
-      if (stoppedWaiting) {
-        pauseAuto(projectId, task, 'Agent stopped while waiting for input')
+      const input = reviewers.find((r) => r.agent?.authoritative && r.agent.state === 'needsInput')
+      if (input) {
+        const reason = `${input.name} needs input${input.agent?.message ? ': ' + input.agent.message : ''}`
+        if (
+          run.status !== 'waitingOnYou' ||
+          run.inputSessionId !== input.sessionId ||
+          run.reason !== reason
+        )
+          patch(
+            projectId,
+            task,
+            {
+              status: 'waitingOnYou',
+              waitingFor: 'agentInput',
+              inputSessionId: input.sessionId,
+              reason,
+            },
+            reason,
+          )
         return
       }
       if (run.status === 'waitingOnYou') {
         if (
           run.waitingFor !== 'agentInput' ||
-          !agent?.authoritative ||
-          !['working', 'review'].includes(agent.state) ||
-          agent.sinceMs <= (run.turnSince ?? 0)
+          !reviewers.some(
+            (r) =>
+              r.agent?.authoritative &&
+              ['working', 'review'].includes(r.agent.state) &&
+              r.agent.sinceMs > (run.turnSince ?? 0),
+          )
         )
           return
-        // Completion can arrive before the monitor ever observes working.
         patch(
           projectId,
           task,
           {
             status: 'running',
-            turnSince: agent.state === 'working' ? agent.sinceMs : run.turnSince,
+            inputSessionId: undefined,
             observedWorking: true,
             reason: undefined,
           },
-          agent.state === 'review' ? 'Agent finished work' : 'Agent resumed work',
+          'Agent resumed work',
         )
         run = live()!
       }
-      if (
-        session?.status?.stopped ||
-        (run.sessionStartedMs !== undefined &&
-          session?.startedMs !== undefined &&
-          session.startedMs !== run.sessionStartedMs)
-      ) {
-        if (await mergedByHand()) return
-        pauseAuto(projectId, task, 'The tracked session was stopped or relaunched by hand')
-        return
-      }
-      if (agent?.state === 'needsInput' && agent.authoritative) {
-        patch(
-          projectId,
-          task,
-          {
-            status: 'waitingOnYou',
-            waitingFor: 'agentInput',
-            reason: `Agent needs input${agent.message ? ': ' + agent.message : ''}`,
-          },
-          'Agent needs input',
-        )
-        return
-      }
-      if (
-        agent?.state === 'review' &&
-        agent.authoritative &&
-        agent.sinceMs > (run.turnSince ?? 0)
-      ) {
+      const completedAt = Math.max(...reviewers.map((r) => r.agent?.sinceMs ?? 0))
+      if (reviewers.every((r) => r.done)) {
         const turn = JSON.stringify([run.runId, run.sessionId, completedAt])
         const previous = controller.completionPoll
         if (previous?.turn === turn && Date.now() - previous.atMs < 5000) return
@@ -1058,21 +1013,31 @@ async function drive(projectId: string, task: string | null) {
         const reviewing = new Set(
           run.stage === 'review' ? run.laneSessions?.map((lane) => lane.sessionId) : [],
         )
-        const other = snapshot.agents.find(
-          (a) =>
-            a.sessionId !== run.sessionId &&
-            !reviewing.has(a.sessionId) &&
-            ['working', 'needsInput'].includes(a.state) &&
-            (run.stage === 'review' || a.stage === run.stage),
+        const otherAgents = snapshot.agents.filter(
+          (a) => a.sessionId !== run.sessionId && !reviewing.has(a.sessionId),
         )
+        const other = otherAgents.find(
+          (a) => ['working', 'needsInput'].includes(a.state) && a.stage === run.stage,
+        )
+        const following = otherAgents.some((a) => ['working', 'needsInput'].includes(a.state))
         if (other) {
           controller.completionPoll = undefined
           const reason = 'Waiting for another agent in this worktree to finish'
           if (run.reason !== reason) patch(projectId, task, { reason }, reason)
           return
         }
+        const launchErrors = snapshot.findings?.reviewers.filter((r) => r.error)
+        if (!following && run.stage === 'review' && launchErrors?.length) {
+          pauseAuto(
+            projectId,
+            task,
+            launchErrors.map((r) => `${r.lane ?? 'Reviewer'}: ${r.error}`).join('; '),
+          )
+          return
+        }
         // Never advance on a previous attempt's saved findings.
         if (
+          !following &&
           run.stage === 'review' &&
           (!snapshot.findings?.reviewedHead ||
             (run.launchAtMs !== undefined && snapshot.findings.startedMs < run.launchAtMs))
@@ -1083,6 +1048,7 @@ async function drive(projectId: string, task: string | null) {
         }
         // A plan saved before this planner launched is no answer to its goal.
         if (
+          !following &&
           run.stage === 'plan' &&
           ((!snapshot.plan.trim() && !snapshot.proposal) ||
             (run.planMark !== undefined && snapshot.planMark === run.planMark))
@@ -1090,11 +1056,15 @@ async function drive(projectId: string, task: string | null) {
           pauseAuto(projectId, task, 'Planner finished without saving a new plan')
           return
         }
-        const decision = other
-          ? inferStage(snapshot, run)
+        const decision = following
+          ? inferStage({ ...snapshot, agents: otherAgents }, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
-        if (run.stage === 'review' && snapshot.freshness !== 'current') {
-          pauseAuto(projectId, task, 'The branch changed during review; Resume to review again')
+        if (!following && run.stage === 'review' && snapshot.freshness !== 'current') {
+          pauseAuto(
+            projectId,
+            task,
+            'The branch changed during review; close the reviewers and Resume to review again',
+          )
           return
         }
         assertSessionAvailable(projectId, task, decision.sessionId)
@@ -1132,9 +1102,13 @@ async function drive(projectId: string, task: string | null) {
               : {}),
             reason:
               run.stage === 'merge' && decision.status === 'waitingOnYou'
-                ? `${decision.reason}${agent.message ? ': ' + agent.message : ''}`
+                ? `${decision.reason}${agent?.message ? ': ' + agent.message : ''}`
                 : decision.reason,
-            turnSince: decision.waitingFor === 'agentInput' ? agent.sinceMs : decision.turnSince,
+            turnSince: decision.sessionId
+              ? decision.turnSince
+              : decision.waitingFor === 'agentInput'
+                ? agent?.sinceMs
+                : decision.turnSince,
             observedWorking: decision.observedWorking ?? false,
             reviewedHead: run.stage === 'review' ? mergeableHead(snapshot, run) : run.reviewedHead,
             findingsSummary:
@@ -1144,27 +1118,32 @@ async function drive(projectId: string, task: string | null) {
         )
         return
       }
-      if (
-        session &&
-        (!session.running ||
-          (agent &&
-            (run.observedWorking || agent.state === 'ended') &&
-            ['idle', 'ended'].includes(agent.state) &&
-            agent.sinceMs >= (run.turnSince ?? 0)))
-      ) {
-        if (await mergedByHand()) return
-        pauseAuto(projectId, task, agent?.message || 'Agent stopped before finishing its turn')
-        return
-      }
-      if (
-        agent?.state === 'working' &&
-        agent.authoritative &&
-        (!run.observedWorking || agent.sinceMs > (run.turnSince ?? 0))
-      )
+      controller.completionPoll = undefined
+      const working = reviewers.filter((r) => r.agent?.state === 'working' && r.agent.authoritative)
+      if (working.some((r) => !r.observedWorking || r.agent!.sinceMs > r.since)) {
         patch(projectId, task, {
-          turnSince: Math.max(run.turnSince ?? 0, agent.sinceMs),
-          observedWorking: true,
+          observedWorking:
+            run.observedWorking || working.some((r) => r.sessionId === run.sessionId),
+          turnSince: Math.max(
+            run.turnSince ?? 0,
+            working.find((r) => r.sessionId === run.sessionId)?.agent?.sinceMs ?? 0,
+          ),
+          laneSessions: run.laneSessions?.map((lane) => ({
+            ...lane,
+            turnSince: Math.max(
+              lane.turnSince ?? run.launchAtMs ?? run.turnSince ?? 0,
+              working.find((r) => r.sessionId === lane.sessionId)?.agent?.sinceMs ?? 0,
+            ),
+            ...(working.some((r) => r.sessionId === lane.sessionId)
+              ? { observedWorking: true }
+              : {}),
+          })),
         })
+      }
+      if (run.stage === 'review') {
+        const reason = 'Waiting for reviewers to finish'
+        if (run.reason !== reason) patch(projectId, task, { reason }, reason)
+      }
       return
     }
     controller.completionPoll = undefined
@@ -1290,6 +1269,7 @@ async function drive(projectId: string, task: string | null) {
     const since = Date.now()
     let sid: string
     let lanes: string[] = []
+    let reviewErrors: string[] = []
     const brief = briefing(run)
     patch(
       projectId,
@@ -1336,8 +1316,7 @@ async function drive(projectId: string, task: string | null) {
           brief,
         )
         ;[sid, ...lanes] = sessions
-        if (errors.length)
-          patch(projectId, task, {}, `Some reviewers didn't start: ${errors.join('; ')}`)
+        reviewErrors = errors
         break
       }
       case 'fix':
@@ -1362,8 +1341,9 @@ async function drive(projectId: string, task: string | null) {
         throw new Error(`Unsupported Auto stage ${run.stage}`)
     }
     if (!sid) throw new Error('Agent launch returned no session')
-    await reconcileFreshSessions()
+    if (run.stage !== 'review') await reconcileFreshSessions()
     if (
+      run.stage !== 'review' &&
       !useStore.getState().sessions[sid] &&
       !useStore.getState().sessionRecords.some((r) => r.id === sid)
     )
@@ -1374,10 +1354,6 @@ async function drive(projectId: string, task: string | null) {
         startedMs: startedOf(id) ?? (await terminalSnapshot(id).catch(() => null))?.startedMs,
       })),
     )
-    if (run.stage === 'review' && generations.some((g) => g.startedMs === undefined)) {
-      await Promise.all([sid, ...lanes].map((id) => terminalStop(id)))
-      throw new Error('Reviewer launch time was not confirmed; Resume to try again')
-    }
     const startedMs = generations[0].startedMs
     const latest = autoRun(projectId, task)
     if (latest?.runId !== runId || latest.status === 'stopped' || latest.status === 'done') {
@@ -1396,6 +1372,9 @@ async function drive(projectId: string, task: string | null) {
         kickoff: run.stage === 'plan' ? { kind: 'plan' } : undefined,
       },
       turnSince: since,
+      ...(reviewErrors.length
+        ? { status: 'paused', reason: `Some reviewers didn't start: ${reviewErrors.join('; ')}` }
+        : {}),
     })
   } catch (e) {
     const latest = autoRun(projectId, task)

@@ -64,7 +64,14 @@ export function restoredAuto(value: unknown): AutoRun | null {
     laneSessions: Array.isArray(r.laneSessions)
       ? r.laneSessions.flatMap((l) =>
           l && typeof l.sessionId === 'string'
-            ? [{ sessionId: l.sessionId, startedMs: finite(l.startedMs) }]
+            ? [
+                {
+                  sessionId: l.sessionId,
+                  startedMs: finite(l.startedMs),
+                  ...(finite(l.turnSince) !== undefined ? { turnSince: finite(l.turnSince) } : {}),
+                  ...(l.observedWorking === true ? { observedWorking: true } : {}),
+                },
+              ]
             : [],
         )
       : undefined,

@@ -1,4 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest'
+import { useStore } from '../store'
 import {
   MERGE_SCOPE,
   REVIEW_SCOPE,
@@ -26,7 +27,11 @@ const tree = (path: string, branch: string | undefined, current = false): Worktr
 })
 const source = tree('/feature', 'feature')
 
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  useStore.setState(useStore.getInitialState())
+  vi.mocked(reconcileFreshSessions).mockResolvedValue(undefined)
+})
 
 test('destinations exclude the source, matching branch, and detached worktrees', () => {
   const trees = [
@@ -420,4 +425,57 @@ test('review scope belongs in Review and never in the implementation grid or doc
       { review: { running: true } },
     ),
   ).toEqual([])
+})
+
+test('a review round subscribes and reconciles once, recovering a lost reply by request identity', async () => {
+  const { startReviewAgents } = await import('./reviewAgents')
+  let lostRequest = ''
+  vi.mocked(reviewAgentStart).mockImplementation(
+    async (_project, request, _terminal, requestId) => {
+      if (request.lane === 'lost') {
+        lostRequest = requestId
+        throw new Error('Reply lost')
+      }
+      return 'confirmed'
+    },
+  )
+  vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
+    useStore.setState({
+      sessionRecords: [{ id: 'recovered', requestIds: [lostRequest] }] as SessionRecord[],
+    })
+  })
+  expect(
+    await startReviewAgents(
+      {} as Project,
+      { worktree: '/feature', branch: 'feature', base: 'main' },
+      ['ok', 'lost'].map((id) => ({ id, name: id }) as DeviceManifest),
+    ),
+  ).toEqual({ sessions: ['confirmed', 'recovered'], errors: [] })
+  expect(listenForTerminals).toHaveBeenCalledOnce()
+  expect(reconcileFreshSessions).toHaveBeenCalledOnce()
+  expect(vi.mocked(reconcileFreshSessions).mock.invocationCallOrder[0]).toBeGreaterThan(
+    vi.mocked(reviewAgentStart).mock.invocationCallOrder[1],
+  )
+})
+
+test('one reviewer also recovers a lost reply, while a failed reconcile preserves a successful start', async () => {
+  const { startReviewAgents } = await import('./reviewAgents')
+  const request = { worktree: '/feature', branch: 'feature', base: 'main' }
+  const device = { id: 'codex', name: 'Codex' } as DeviceManifest
+  vi.mocked(reviewAgentStart).mockImplementation(async (_p, _r, _t, requestId) => {
+    useStore.setState({
+      sessionRecords: [{ id: 'recovered', requestIds: [requestId] }] as SessionRecord[],
+    })
+    throw new Error('Reply lost')
+  })
+  expect(await startReviewAgents({} as Project, request, [device])).toEqual({
+    sessions: ['recovered'],
+    errors: [],
+  })
+  vi.mocked(reviewAgentStart).mockResolvedValue('started')
+  vi.mocked(reconcileFreshSessions).mockRejectedValue(new Error('Snapshot unavailable'))
+  expect(await startReviewAgents({} as Project, request, [device])).toEqual({
+    sessions: ['started'],
+    errors: [],
+  })
 })
