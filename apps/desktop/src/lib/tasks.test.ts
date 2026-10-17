@@ -11,23 +11,27 @@ vi.mock('./ipc', () => ({
   taskList: vi.fn(),
   taskActivate: vi.fn(async () => {}),
   taskCreate: vi.fn(),
+  taskAttach: vi.fn(),
   taskRemove: vi.fn(async () => true),
+  planRead: vi.fn(async () => ({ text: '', cut: false })),
+  planWrite: vi.fn(async () => true),
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
 const {
+  attachTask,
   branchFor,
   cancelNewTask,
   createTask,
   followActiveTask,
   seedNewTask,
-  seedPlannedTask,
   refreshTasks,
   removeTask,
   titleFor,
 } = await import('./tasks')
 const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')
-const { taskCreate, taskUpdate, taskList, taskRemove } = await import('./ipc')
+const { planRead, planWrite, taskAttach, taskCreate, taskUpdate, taskList, taskRemove } =
+  await import('./ipc')
 const { reconcileFreshSessions } = await import('./sessions')
 
 let stop: (() => void) | undefined
@@ -116,7 +120,7 @@ test('cancelling the worktree dialog clears its pending follow-up', async () => 
   vi.mocked(taskCreate).mockResolvedValue(task)
   vi.mocked(taskList).mockResolvedValue([task])
   const then = vi.fn()
-  seedNewTask(then, 'Optimize tokens')
+  seedNewTask(then, { title: 'Optimize tokens' })
   expect(useStore.getState().newTask?.title).toBe('Optimize tokens')
   cancelNewTask()
   expect(useStore.getState().newTask).toBeNull()
@@ -213,39 +217,67 @@ test('a removal that succeeded is cleaned up even when refreshing the list fails
   expect(useStore.getState().activeTask).toBeNull()
 })
 
-test('a worktree created from Plan remembers it was planned from the project plan', async () => {
+const fresh = { id: 'n', title: 'N', components: [] } as unknown as Task
+
+test('a new worktree asked to copy the plan starts with the project plan, before its follow-up', async () => {
   removalProject(null)
-  const task = { id: 'n', title: 'N', components: [] } as unknown as Task
-  vi.mocked(taskCreate).mockResolvedValue(task)
-  vi.mocked(taskList).mockResolvedValue([task])
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue({ text: '# Plan', cut: false })
   const then = vi.fn()
-  seedPlannedTask(then)
+  seedNewTask(then, { copyPlan: true })
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(useStore.getState().activeTask).toBe('n')
-  expect(useStore.getState().plannedFromProject).toBe(true)
-  expect(then).toHaveBeenCalledExactlyOnceWith(task, 'p')
-  const other = { id: 'o', title: 'O', components: [] } as unknown as Task
-  vi.mocked(taskCreate).mockResolvedValue(other)
-  vi.mocked(taskList).mockResolvedValue([task, other])
+  expect(planRead).toHaveBeenCalledWith('p')
+  // Only into a worktree that has no plan yet.
+  expect(planWrite).toHaveBeenCalledExactlyOnceWith('p', 'n', '# Plan', '')
+  expect(then).toHaveBeenCalledExactlyOnceWith(fresh, 'p')
+  expect(vi.mocked(planWrite).mock.invocationCallOrder[0]).toBeLessThan(
+    then.mock.invocationCallOrder[0],
+  )
+})
+
+test('an attached worktree, or one not asked to copy, keeps its own plan', async () => {
+  removalProject(null)
+  vi.mocked(planRead).mockResolvedValue({ text: '# Plan', cut: false })
+  vi.mocked(taskAttach).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  seedNewTask(undefined, { copyPlan: true })
+  await attachTask('/p-n', [])
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  // Outside Plan, and in Plan too: only the caller decides.
+  useStore.getState().setView('plan')
   seedNewTask()
-  await createTask({ title: 'O', branch: 'o', components: [] })
-  expect(useStore.getState().activeTask).toBe('o')
-  expect(useStore.getState().plannedFromProject).toBe(false)
+  await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(planRead).not.toHaveBeenCalled()
+  expect(planWrite).not.toHaveBeenCalled()
 })
 
 test.each([
-  ['plan', true],
-  ['navigation', false],
-] as const)('a worktree seeded while in %s borrows the project plan: %s', async (view, planned) => {
+  ['empty', { text: '  \n', cut: false }],
+  ['cut', { text: '# Long plan', cut: true }],
+])('an %s project plan is not copied', async (_, plan) => {
   removalProject(null)
-  useStore.getState().setView(view)
-  const task = { id: 'n', title: 'N', components: [] } as unknown as Task
-  vi.mocked(taskCreate).mockResolvedValue(task)
-  vi.mocked(taskList).mockResolvedValue([task])
-  seedNewTask()
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue(plan)
+  seedNewTask(undefined, { copyPlan: true })
   await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(planWrite).not.toHaveBeenCalled()
+})
+
+test('a failed copy keeps the new worktree and says so', async () => {
+  removalProject(null)
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue({ text: '# Plan', cut: false })
+  vi.mocked(planWrite).mockRejectedValueOnce(new Error('disk full'))
+  const then = vi.fn()
+  seedNewTask(then, { copyPlan: true })
+  await expect(createTask({ title: 'N', branch: 'n', components: [] })).resolves.toBe(fresh)
   expect(useStore.getState().activeTask).toBe('n')
-  expect(useStore.getState().plannedFromProject).toBe(planned)
+  expect(then).toHaveBeenCalledOnce()
+  expect(useStore.getState().message).toMatch('could not be copied')
 })
 
 test('a cut title never splits an emoji', () => {
@@ -274,4 +306,35 @@ test('branch names from titles stay short', () => {
   const branch = branchFor('Make the planner hand its plan over '.repeat(10))
   expect(branch.length).toBeLessThanOrEqual(60)
   expect(branch).not.toMatch(/^[-./]|[-./]$/)
+})
+
+test('a task list asked for before a later one is never applied', async () => {
+  removalProject()
+  let answer!: (tasks: Task[]) => void
+  vi.mocked(taskList).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+  const stale = refreshTasks('p')
+  // A worktree created meanwhile is listed by the later request, and gets a draft.
+  const listed = [{ id: 't', components: [] }, fresh] as unknown as Task[]
+  vi.mocked(taskList).mockResolvedValueOnce(listed)
+  await refreshTasks('p')
+  autoDrafts.set(autoDraftKey('p', 'n'), { ...emptyAutoDraft(), goal: 'Typed goal' })
+  answer([{ id: 't', components: [] } as unknown as Task])
+  await stale
+  expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['t', 'n'])
+  expect(autoDrafts.get(autoDraftKey('p', 'n'))?.goal).toBe('Typed goal')
+})
+
+test('an earlier request waits for the latest list before returning', async () => {
+  removalProject()
+  let answer!: (tasks: Task[]) => void
+  vi.mocked(taskList).mockResolvedValueOnce([])
+  vi.mocked(taskList).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+  let done = false
+  const earlier = refreshTasks('p').then(() => (done = true))
+  const latest = refreshTasks('p')
+  await new Promise((resolve) => setTimeout(resolve))
+  expect(done).toBe(false)
+  answer([fresh])
+  await Promise.all([earlier, latest])
+  expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['n'])
 })

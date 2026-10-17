@@ -33,6 +33,21 @@ import {
 } from '../../lib/autoDrafts'
 import { seedAutoTask } from '../../lib/autoWorktree'
 
+/**
+ * Apply one change to the draft shown and the one kept under `key`: to a kept draft, else, for the
+ * user's own edit, to the `shown` one.
+ */
+function changeDraft(
+  key: string,
+  setDraft: (change: (d: AutoDraft) => AutoDraft) => void,
+  change: (d: AutoDraft) => AutoDraft,
+  shown?: AutoDraft,
+) {
+  setDraft(change)
+  const kept = autoDrafts.get(key) ?? shown
+  if (kept) autoDrafts.set(key, savedAutoDraft(change(kept)))
+}
+
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
@@ -43,11 +58,8 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const draftKey = autoDraftKey(projectId, task)
   const [draft, setDraft] = useState(() => autoDrafts.get(draftKey) ?? emptyAutoDraft())
   // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
-  const edit = (patch: Partial<AutoDraft>) => {
-    const next = { ...draft, ...patch }
-    setDraft(next)
-    autoDrafts.set(draftKey, savedAutoDraft(next))
-  }
+  const edit = (patch: Partial<AutoDraft>) =>
+    changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
   // This run's choices; unpicked stages follow the project's agent roles.
   const { picked, reviewers: pickedReviewers, effort, overrides, mode, stage } = draft
   const reviewers = useMemo(() => {
@@ -89,8 +101,9 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [error, setError] = useState('')
   // The worktree's branch can't be reviewed or merged into itself, so the run needs a new one.
   const [needsWorktree, setNeedsWorktree] = useState<NoReviewBase | null>(null)
-  // That view checks the branches on every Git refresh (focus, terminal exits, file changes) and
-  // loads again only once they changed, so a branch checked out meanwhile leaves it.
+  // That view checks the base's inputs on every Git refresh (focus, terminal exits, file changes)
+  // and task list change, and loads again only once they changed, so a branch checked out or a
+  // worktree with a base attached meanwhile leaves it.
   const [recheck, setRecheck] = useState(0)
   useEffect(() => {
     if (!needsWorktree || !projectId) return
@@ -113,7 +126,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         })
     }
     const unsubscribe = useStore.subscribe((s, prev) => {
-      if (s.gitChanges === prev.gitChanges) return
+      if (s.gitChanges === prev.gitChanges && s.tasks === prev.tasks) return
       if (checking) again = true
       else check()
     })
@@ -167,10 +180,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         })
         // A restored destination no longer offered gives way to the filled-in one, also when the
         // dialog reopens, so its first load doesn't preview the stale one again.
-        const stored = autoDrafts.get(draftKey)
-        if (stored?.destination && !branches.includes(stored.destination))
-          autoDrafts.set(draftKey, savedAutoDraft({ ...stored, destination: undefined }))
-        setDraft((d) =>
+        changeDraft(draftKey, setDraft, (d) =>
           d.destination && !branches.includes(d.destination) ? { ...d, destination: undefined } : d,
         )
         setSnapshot(snapshot)
@@ -244,8 +254,11 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           Task goal
           <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
         </label>
-        {/* Only a typed goal moves; the new worktree infers its own from the project plan. */}
-        <button onClick={() => seedAutoTask(draftKey, draft.goal ?? '')}>New worktree…</button>
+        {/* The goal shown titles the worktree; only a typed one moves, since the copied project
+            plan fills in the same goal there. */}
+        <button onClick={() => seedAutoTask(draftKey, goal, goal === filled.goal)}>
+          New worktree…
+        </button>
       </div>
     )
   return (

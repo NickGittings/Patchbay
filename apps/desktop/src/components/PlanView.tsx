@@ -14,7 +14,7 @@ import {
 import { roleDevice } from '../lib/agentRoles'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
-import { activeTaskOf, refreshTasks, seedPlannedTask } from '../lib/tasks'
+import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type PlannerProposal } from '../types'
 import Canvas from './Canvas'
@@ -275,10 +275,10 @@ export default function PlanView() {
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
               </button>
-              <WorktreePicker />
+              <WorktreePicker copyPlan />
               <button
-                title="Create a branch and worktree for the highlighted components, or the selected one. The planner and its plan stay."
-                onClick={() => seedPlannedTask()}
+                title="Create a branch and worktree for the highlighted components, or the selected one, starting with a copy of the plan. The planner and its plan stay."
+                onClick={() => seedNewTask(undefined, { copyPlan: true })}
               >
                 ＋ New task
               </button>
@@ -299,8 +299,9 @@ export default function PlanView() {
                 <Menu label={implementLabel} title="Choose where to implement the plan">
                   <MenuItem
                     onClick={() =>
-                      seedPlannedTask(
+                      seedNewTask(
                         (created) => void implement(`${projectId ?? ''}\n${created.id}`),
+                        { copyPlan: true },
                       )
                     }
                   >

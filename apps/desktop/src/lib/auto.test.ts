@@ -1251,21 +1251,6 @@ test("a new task's goal is its own, never the project's leftover plan", async ()
   expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
 })
 
-test('a worktree created from Plan borrows the project plan until it has its own', async () => {
-  load()
-  useStore.getState().patchTask('p', 't', { plannedFromProject: true })
-  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
-    text: task ? '' : '# Planned goal',
-    cut: false,
-  }))
-  expect((await autoSnapshot('p', 't', run())).goal).toBe('Planned goal')
-  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
-    text: task ? '# Task plan' : '# Planned goal',
-    cut: false,
-  }))
-  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
-})
-
 test('the default branch in the project folder asks for a worktree', async () => {
   const { NoReviewBase, wantsNewWorktree } = await import('./auto')
   load()
@@ -3605,21 +3590,32 @@ test('Resume of a superseded round stops only what Auto owns and follows the new
   })
 })
 
-test('the needs-worktree view reloads only once the branches it was judged from change', async () => {
+test('the needs-worktree view reloads only once the base it was judged from may change', async () => {
   const { NoReviewBase, reviewBaseMoved } = await import('./auto')
-  const judged = new NoReviewBase(null, 'main', ['main'])
-  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
-    tree,
-    { ...tree, path: '/p', branch: 'main', current: true },
-  ])
+  load()
+  const folder = { ...tree, path: '/p', branch: 'main', current: true }
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
-  expect(await reviewBaseMoved('p', judged)).toBe(false)
+  const judged = await autoSnapshot('p', null, run()).then(
+    () => null,
+    (e: unknown) => e as InstanceType<typeof NoReviewBase>,
+  )
+  expect(judged).toBeInstanceOf(NoReviewBase)
+  vi.mocked(ipc.planRead).mockClear()
+  expect(await reviewBaseMoved('p', judged!)).toBe(false)
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'feature'])
-  expect(await reviewBaseMoved('p', judged)).toBe(true)
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
-  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
-    { ...tree, path: '/p', branch: 'feature', current: true },
-  ])
-  expect(await reviewBaseMoved('p', judged)).toBe(true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, { ...folder, branch: 'feature' }])
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
+  // Attaching the project folder as a worktree with a base gives it something to review against.
+  useStore
+    .getState()
+    .setTasks([
+      ...useStore.getState().tasks,
+      { ...useStore.getState().tasks[0], id: 'f', worktree: '/p', branch: 'main', base: 'develop' },
+    ])
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
   expect(ipc.planRead).not.toHaveBeenCalled()
 })

@@ -74,7 +74,6 @@ export function workspaceDocument(): WorkspaceDocument {
               maximizedTerminal: state.maximizedTerminal,
               auto: state.auto,
               graphActionReport: state.graphActionReport,
-              plannedFromProject: state.plannedFromProject,
             }
           : (p.unavailableLayout ?? {}),
       }
@@ -172,18 +171,11 @@ export function restoredLayout(
     )
   if (typeof layout.maximizedTerminal === 'string' || layout.maximizedTerminal === null)
     out.maximizedTerminal = layout.maximizedTerminal
-  if (typeof layout.plannedFromProject === 'boolean')
-    out.plannedFromProject = layout.plannedFromProject
-  // A worktree's layout saved before the flag existed may be one made from Plan, so it keeps
-  // borrowing the project plan while it has none; saves always write the flag from then on.
-  else if (!nested && typeof out.activeTask === 'string') out.plannedFromProject = true
   if (!nested && layout.taskWorkspaces && typeof layout.taskWorkspaces === 'object') {
     out.taskWorkspaces = {}
     for (const [key, value] of Object.entries(layout.taskWorkspaces)) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue
       const restored = restoredLayout(value as Record<string, unknown>, true)
-      // As above, for the worktrees that weren't active; the project folder borrows nothing.
-      if (key && restored.plannedFromProject === undefined) restored.plannedFromProject = true
       out.taskWorkspaces[key] = { ...emptyTaskWorkspace(), ...restored }
     }
   }
@@ -343,8 +335,7 @@ export function initializeWorkspace() {
           s.taskWorkspaces === prev.taskWorkspaces &&
           s.rootTerminals === prev.rootTerminals &&
           s.componentTerminals === prev.componentTerminals &&
-          s.maximizedTerminal === prev.maximizedTerminal &&
-          s.plannedFromProject === prev.plannedFromProject)
+          s.maximizedTerminal === prev.maximizedTerminal)
       )
         return
       clearTimeout(timer)

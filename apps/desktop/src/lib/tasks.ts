@@ -9,10 +9,19 @@ import {
 } from '../store'
 import type { Task, TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
-import { forgetAutoDrafts, pruneAutoDrafts } from './autoDrafts'
+import { forgetAutoDrafts } from './autoDrafts'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions } from './sessions'
-import { taskActivate, taskAttach, taskCreate, taskList, taskRemove, taskUpdate } from './ipc'
+import {
+  planRead,
+  planWrite,
+  taskActivate,
+  taskAttach,
+  taskCreate,
+  taskList,
+  taskRemove,
+  taskUpdate,
+} from './ipc'
 
 type Snapshot = Pick<ReturnType<typeof useStore.getState>, 'tasks' | 'activeTask'>
 
@@ -29,18 +38,35 @@ export function activeWorktree(s: Snapshot): string | undefined {
   return task && !task.current ? task.worktree : undefined
 }
 
+/** Each project's latest task list request; only its answer is applied. */
+const refreshing = new Map<string, Promise<void>>()
+
 /**
  * Reload a project's task list from the backend (main window only; pop-outs get it broadcast). A
- * failure keeps the list as it was (a project outside a git repo simply has none).
+ * failure keeps the list as it was (a project outside a git repo simply has none). A list asked
+ * for before a later request may miss a worktree created since, which would drop it as the active
+ * task and prune its draft, so an earlier request waits for the latest one instead.
  */
 export async function refreshTasks(projectId = useStore.getState().project?.id) {
   if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
-  try {
-    applyTasks(projectId, await taskList(projectId))
-  } catch (e) {
-    if (useStore.getState().project?.id === projectId && useStore.getState().tasks.length)
-      useStore.getState().setMessage(String(e))
-  }
+  const latest = () => refreshing.get(projectId) === request
+  const request: Promise<void> = (async () => {
+    try {
+      const tasks = await taskList(projectId)
+      if (latest()) return applyTasks(projectId, tasks)
+    } catch (e) {
+      if (latest()) {
+        if (useStore.getState().project?.id === projectId && useStore.getState().tasks.length)
+          useStore.getState().setMessage(String(e))
+        return
+      }
+    }
+    await refreshing.get(projectId)
+  })().finally(() => {
+    if (latest()) refreshing.delete(projectId)
+  })
+  refreshing.set(projectId, request)
+  await request
 }
 
 /** Set a project's tasks, whether or not its tab is active, dropping a vanished active task. */
@@ -54,10 +80,8 @@ function applyTasks(projectId: string, tasks: Task[]) {
     }))
   }
   // Worktrees removed elsewhere (another window, the CLI, by hand) leave no draft behind.
-  pruneAutoDrafts(
-    projectId,
-    tasks.map((t) => t.id),
-  )
+  const listed = new Set(tasks.map((t) => t.id))
+  forgetAutoDrafts(projectId, (task) => task !== null && !listed.has(task))
   const s = useStore.getState()
   if (s.project?.id === projectId) {
     s.setTasks(tasks)
@@ -174,7 +198,7 @@ export async function createTask(draft: TaskDraft): Promise<Task> {
   const task = await taskCreate(draft, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  afterNewTask(task, projectId)
+  await afterNewTask(task, projectId, true)
   return task
 }
 
@@ -188,7 +212,7 @@ export async function attachTask(
   const task = await taskAttach(worktree, title, components, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  afterNewTask(task, projectId)
+  await afterNewTask(task, projectId, false)
   return task
 }
 
@@ -210,7 +234,8 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   // The removal succeeded; refreshing the lists must neither report it as failed nor skip the
   // cleanup after it.
   await refreshTasks(projectId).catch(() => {})
-  forgetAutoDrafts(projectId, id)
+  // Also when the refresh failed and the list still holds it.
+  forgetAutoDrafts(projectId, (task) => task === id)
   const state = useStore.getState().captureProjects()[projectId]?.state
   if (state?.activeTask === id) activateTaskIn(projectId, null)
   await reconcileFreshSessions().catch(() => {})
@@ -224,53 +249,65 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
       )
 }
 
-/** What to do with the worktree the open New worktree dialog creates, once it is active. */
-let onNewTask: ((task: Task, projectId: string) => void) | null = null
+/** How the open New worktree dialog was asked for. */
+interface NewTaskSeed {
+  /** The worktree's title to start from. */
+  title?: string
+  /** A new worktree (not an attached one) starts with a copy of the project plan. */
+  copyPlan?: boolean
+}
+/** What to do with the worktree the open New worktree dialog makes, once it is active. */
+let onNewTask: {
+  then?: (task: Task, projectId: string) => void
+  copyPlan: boolean
+} | null = null
 /** Close the dialog without leaving its follow-up attached to a later worktree. */
 export function cancelNewTask() {
   onNewTask = null
   useStore.getState().setNewTask(null)
 }
 
-function afterNewTask(task: Task, projectId: string) {
-  const then = onNewTask
+async function afterNewTask(task: Task, projectId: string, created: boolean) {
+  const pending = onNewTask
   onNewTask = null
-  then?.(task, projectId)
+  if (!pending) return
+  // Before the follow-up, so an Auto panel it opens already infers its goal from the copy.
+  if (created && pending.copyPlan) await copyProjectPlan(projectId, task.id)
+  pending.then?.(task, projectId)
 }
 
-/** Open the new-worktree dialog; a `planned` worktree takes the project plan as its own. */
-function seed(
-  planned: boolean,
-  then: ((task: Task, projectId: string) => void) | undefined,
-  title: string | undefined,
+/**
+ * Give a new worktree the project plan as its own plan, which its agents and Auto read, when the
+ * project plan is whole and nonempty and the worktree has none. The worktree exists already, so a
+ * failed copy only says so.
+ */
+async function copyProjectPlan(projectId: string, task: string) {
+  try {
+    const { text, cut } = await planRead(projectId)
+    if (!cut && text.trim()) await planWrite(projectId, task, text, '')
+  } catch (e) {
+    useStore
+      .getState()
+      .setMessage(
+        `Worktree created, but the project plan could not be copied into it: ${String(e)}`,
+      )
+  }
+}
+
+/**
+ * Open the new-worktree dialog for the highlighted components, else the selected one; `then` runs
+ * once it has created or attached a worktree and made it active.
+ */
+export function seedNewTask(
+  then?: (task: Task, projectId: string) => void,
+  { title, copyPlan = false }: NewTaskSeed = {},
 ) {
-  onNewTask =
-    planned || then
-      ? (task, projectId) => {
-          if (planned)
-            useStore.getState().patchTask(projectId, task.id, { plannedFromProject: true })
-          then?.(task, projectId)
-        }
-      : null
+  onNewTask = then || copyPlan ? { then, copyPlan } : null
   const s = useStore.getState()
   s.setNewTask({
     components: s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [],
     title,
   })
-}
-
-/**
- * Open the new-worktree dialog for the highlighted components, else the selected one, with an
- * optional goal `title`; `then` runs once it has created and activated a worktree. One made while
- * in Plan remembers that the project plan is its plan until Implement copies it there.
- */
-export function seedNewTask(then?: (task: Task, projectId: string) => void, title?: string) {
-  seed(useStore.getState().view === 'plan', then, title)
-}
-
-/** `seedNewTask` for a worktree that borrows the project plan from any view (Auto's prompt). */
-export function seedPlannedTask(then?: (task: Task, projectId: string) => void, title?: string) {
-  seed(true, then, title)
 }
 
 /** A worktree title from a goal: its first nonempty line, without a heading mark, kept short. */

@@ -14,10 +14,18 @@ vi.mock('./ipc', () => ({
     { path: '/p-n', branch: 'n', head: 'a', current: false, main: false },
   ]),
   mergeOutcome: vi.fn(),
+  // The saved plans, by task ('' for the project's).
   planRead: vi.fn(async (_projectId: string, task?: string) => ({
-    text: task ? '' : '# Planned goal\n\nDo the work.',
+    text: plans.get(task ?? '') ?? '',
     cut: false,
   })),
+  planWrite: vi.fn(
+    async (_projectId: string, task: string | undefined, text: string, expected: string | null) => {
+      if (expected !== null && (plans.get(task ?? '') ?? '') !== expected) return false
+      plans.set(task ?? '', text)
+      return true
+    },
+  ),
   proposalRead: vi.fn(async () => null),
   reviewRead: vi.fn(async () => null),
   taskActivate: vi.fn(async () => {}),
@@ -25,6 +33,7 @@ vi.mock('./ipc', () => ({
   taskCreate: vi.fn(),
   taskList: vi.fn(),
 }))
+const plans = new Map<string, string>()
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
 vi.mock('./sessions', () => ({
   startTerminal: vi.fn(),
@@ -78,6 +87,8 @@ const open = (id: string) =>
 beforeEach(() => {
   vi.clearAllMocks()
   autoDrafts.clear()
+  plans.clear()
+  plans.set('', '# Planned goal\n\nDo the work.')
   useStore.setState(useStore.getInitialState())
   open('p')
   useStore.setState({ restoring: false })
@@ -85,17 +96,33 @@ beforeEach(() => {
   vi.mocked(ipc.taskList).mockResolvedValue([created])
 })
 
-test("a worktree from Auto's prompt takes the project plan as its goal", async () => {
-  // Outside Plan, as the dialog is in Navigation, the prompt still marks the worktree.
+test("a worktree from Auto's prompt takes a copy of the project plan as its goal", async () => {
+  // Outside Plan, as the dialog is in Navigation, the prompt still copies the plan.
   expect(useStore.getState().view).toBe('navigation')
-  seedAutoTask(folder, '')
-  expect(useStore.getState().newTask?.title).toBeUndefined()
+  // The goal the dialog filled in titles the worktree but isn't kept as typed.
+  seedAutoTask(folder, 'Planned goal', true)
+  expect(useStore.getState().newTask?.title).toBe('Planned goal')
+  let goal = ''
+  const panel = useStore.subscribe((s, prev) => {
+    // The panel's first snapshot already sees the copy.
+    if (s.autoPanelRequest !== prev.autoPanelRequest)
+      void autoSnapshot('p', 'n', run, true).then((snapshot) => (goal = snapshot.goal))
+  })
   await createTask({ title: 'N', branch: 'n', components: [] })
+  panel()
   expect(useStore.getState().activeTask).toBe('n')
-  expect(useStore.getState().plannedFromProject).toBe(true)
+  expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
   expect(autoDrafts.has(target)).toBe(false)
-  expect((await autoSnapshot('p', 'n', run, true)).goal).toBe('Planned goal')
   expect(useStore.getState().autoPanelRequest).toBe(1)
+  await vi.waitFor(() => expect(goal).toBe('Planned goal'))
+})
+
+test("attaching a worktree from Auto's prompt copies no plan", async () => {
+  vi.mocked(ipc.taskAttach).mockResolvedValue(created)
+  seedAutoTask(folder, '')
+  await attachTask('/p-n', [])
+  expect(ipc.planWrite).not.toHaveBeenCalled()
+  expect((await autoSnapshot('p', 'n', run, true)).goal).toBe('N')
 })
 
 test('a typed goal titles the worktree and moves to its draft with the other choices', async () => {
@@ -133,6 +160,6 @@ test('the Auto panel opens only while the new worktree is still the active one',
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(useStore.getState().project?.id).toBe('q')
   expect(useStore.getState().autoPanelRequest).toBe(0)
-  // The worktree still borrows the plan in its own project.
-  expect(useStore.getState().captureProjects().p.state?.plannedFromProject).toBe(true)
+  // The worktree still has the plan in its own project.
+  expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
 })

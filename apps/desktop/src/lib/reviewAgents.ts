@@ -251,6 +251,21 @@ export function defaultReviewBase(
   return candidates.find((b): b is string => !!b && b !== source.branch) ?? ''
 }
 
+/** What `defaultReviewBase` decides from, so a change to any of it can be noticed. */
+export const reviewBaseInputs = (
+  source: Worktree,
+  tasks: Task[],
+  worktrees: Worktree[],
+  branches: string[] = [],
+) =>
+  JSON.stringify([
+    source.path,
+    source.branch,
+    tasks.find((t) => !t.missing && t.worktree === source.path)?.base ?? null,
+    worktrees.find((w) => w.current)?.branch ?? null,
+    branches,
+  ])
+
 export function reviewState(
   findings: ReviewFindings | null | undefined,
   source: Worktree | undefined,

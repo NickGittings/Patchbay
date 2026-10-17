@@ -38,19 +38,13 @@ export const autoDrafts = new Map<string, AutoDraft>()
 export const autoDraftKey = (projectId: string | undefined, task: string | null) =>
   JSON.stringify([projectId ?? '', task])
 
-/** Drop a closed project's drafts, or with `task`, only that removed worktree's. */
-export function forgetAutoDrafts(projectId: string, task?: string) {
+/** Drop a project's drafts, all of them when it closes, else the worktrees' that `drop` picks. */
+export function forgetAutoDrafts(
+  projectId: string,
+  drop: (task: string | null) => boolean = () => true,
+) {
   for (const key of autoDrafts.keys()) {
     const [p, t] = JSON.parse(key) as [string, string | null]
-    if (p === projectId && (task === undefined || t === task)) autoDrafts.delete(key)
-  }
-}
-
-/** Drop the drafts of a project's worktrees its task list no longer holds, however they went. */
-export function pruneAutoDrafts(projectId: string, tasks: readonly string[]) {
-  const known = new Set(tasks)
-  for (const key of autoDrafts.keys()) {
-    const [p, t] = JSON.parse(key) as [string, string | null]
-    if (p === projectId && t !== null && !known.has(t)) autoDrafts.delete(key)
+    if (p === projectId && drop(t)) autoDrafts.delete(key)
   }
 }

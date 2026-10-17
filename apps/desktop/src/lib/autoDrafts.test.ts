@@ -4,7 +4,6 @@ import {
   autoDrafts,
   emptyAutoDraft,
   forgetAutoDrafts,
-  pruneAutoDrafts,
   savedAutoDraft,
 } from './autoDrafts'
 
@@ -20,7 +19,7 @@ test("a removed worktree's draft goes, its project's other drafts stay", () => {
   keep('p', null)
   keep('p', 't')
   keep('q', 't')
-  forgetAutoDrafts('p', 't')
+  forgetAutoDrafts('p', (t) => t === 't')
   expect([...autoDrafts.keys()]).toEqual([autoDraftKey('p', null), autoDraftKey('q', 't')])
 })
 
@@ -36,17 +35,4 @@ test('a blank goal or destination is inferred again rather than kept', () => {
   const draft = { ...emptyAutoDraft(), goal: '  \n ', destination: '', mode: 'auto' as const }
   expect(savedAutoDraft(draft)).toEqual({ ...draft, goal: undefined, destination: undefined })
   expect(savedAutoDraft({ ...draft, goal: ' Goal ' }).goal).toBe(' Goal ')
-})
-
-test("drafts of a project's worktrees no longer listed go, its folder's and others' stay", () => {
-  keep('p', null)
-  keep('p', 't')
-  keep('p', 'gone')
-  keep('q', 'gone')
-  pruneAutoDrafts('p', ['t', 'u'])
-  expect([...autoDrafts.keys()]).toEqual([
-    autoDraftKey('p', null),
-    autoDraftKey('p', 't'),
-    autoDraftKey('q', 'gone'),
-  ])
 })

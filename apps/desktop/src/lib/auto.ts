@@ -44,6 +44,7 @@ import { fixReviewFindings } from './reviewHandoff'
 import {
   DEFAULT_BRANCHES,
   defaultReviewBase,
+  reviewBaseInputs,
   reviewState,
   startMergeAgent,
   startReviewAgents,
@@ -307,13 +308,18 @@ export class BranchMoved extends Error {}
 /** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
 export class NoReviewBase extends Error {
   readonly task: string | null
+  readonly path: string
   readonly branch: string
   readonly branches: string[]
-  constructor(task: string | null, branch: string, branches: string[]) {
+  /** What the base was judged from (`reviewBaseInputs`). */
+  readonly inputs: string
+  constructor(task: string | null, source: Worktree, branches: string[], inputs: string) {
     super('No review base found; choose another worktree')
     this.task = task
-    this.branch = branch
+    this.path = source.path
+    this.branch = source.branch ?? ''
     this.branches = branches
+    this.inputs = inputs
   }
 }
 /**
@@ -323,15 +329,14 @@ export class NoReviewBase extends Error {
 export const wantsNewWorktree = (e: NoReviewBase) =>
   !e.task && (e.branches.length <= 1 || DEFAULT_BRANCHES.includes(e.branch))
 /**
- * Whether what `e` was judged from, the project folder's checked-out branch and the branches, has
- * changed: two Git reads instead of a whole `autoSnapshot`.
+ * Whether what `e` was judged from, the worktree's checked-out branch, its task's base, the open
+ * worktree's branch and the branches, has changed: two Git reads instead of a whole `autoSnapshot`.
  */
 export async function reviewBaseMoved(projectId: string, e: NoReviewBase) {
   const [worktrees, branches] = await Promise.all([gitWorktrees(projectId), gitBranches(projectId)])
-  return (
-    worktrees.find((w) => w.current)?.branch !== e.branch ||
-    branches.join('\n') !== e.branches.join('\n')
-  )
+  const source = worktrees.find((w) => (e.task ? w.path === e.path : w.current))
+  const tasks = projectStateOf(projectId)?.tasks ?? []
+  return !source || reviewBaseInputs(source, tasks, worktrees, branches) !== e.inputs
 }
 /**
  * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
@@ -389,7 +394,13 @@ export async function autoSnapshot(
     destination && destination !== source.branch && branches.includes(destination)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
-  if (!base) throw new NoReviewBase(task, source.branch, branches)
+  if (!base)
+    throw new NoReviewBase(
+      task,
+      source,
+      branches,
+      reviewBaseInputs(source, tasks, worktrees, branches),
+    )
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
     reviewRead(projectId, source.branch),
@@ -440,12 +451,9 @@ export async function autoSnapshot(
     plan: plannerPlan.text,
     proposal: !!proposal,
     planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
-    // A task's goal is its own: the project plan may be left over from earlier work, unless the
-    // worktree was created from Plan and Implement hasn't copied the plan into it yet.
+    // A task's goal is its own: the project plan may be left over from earlier work.
     goal: inferredGoal(
-      task && (saved.text.trim() || !workspace(projectId, task)?.plannedFromProject)
-        ? saved.text
-        : plannerPlan.text,
+      task ? saved.text : plannerPlan.text,
       tasks.find((t) => t.id === task)?.title ?? '',
       tasks.find((t) => t.id === task)?.notes ?? '',
       source.branch,
