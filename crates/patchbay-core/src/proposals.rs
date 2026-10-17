@@ -211,7 +211,9 @@ pub(crate) fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::t
 
 /// `task`'s saved plan when it was written after its pending proposal was submitted.
 fn newer_plan(root: &Path, task: Option<&str>) -> Result<Option<String>> {
-    let submitted = std::fs::metadata(file(root, task, false)?)?.modified()?;
+    let Some(submitted) = submitted(root, task)? else {
+        return Ok(None);
+    };
     let saved = match std::fs::metadata(plans::plan_file(root, task)?) {
         Ok(meta) => meta.modified()?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

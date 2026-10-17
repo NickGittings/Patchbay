@@ -218,8 +218,9 @@ pub fn write(root: &Path, task: Option<&str>, text: &str) -> Result<()> {
     write_locked(root, task, text, None)
 }
 
-/// Save `text` as `task`'s plan; `current` is the uncut text the caller already
-/// read under [`WRITING`], else the file is read here.
+/// Save `text` as `task`'s plan. `current` is the uncut text the caller read
+/// under [`WRITING`]; only then may an unchanged plan keep its file, since an
+/// agent may write the file directly at any time.
 pub(crate) fn write_locked(
     root: &Path,
     task: Option<&str>,
@@ -230,20 +231,21 @@ pub(crate) fn write_locked(
         bail!("The plan is longer than {} KiB", PLAN_LIMIT / 1024);
     }
     let file = plan_file(root, task)?;
-    let unchanged = match current {
-        Some(current) => current == text,
-        None => load(root, task)?.is_some_and(|s| !s.cut && s.text == text),
+    // A missing file reads as empty text; it is still created.
+    let kept = match current {
+        Some(current) if current == text => match std::fs::metadata(&file) {
+            Ok(meta) => Some(meta.modified()?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        },
+        _ => None,
     };
-    if unchanged {
+    if let Some(modified) = kept {
         // An unchanged plan keeps its file, and with it the save time agents are
         // told, so Restart still resumes them. It still counts as saved after a
         // pending proposal, which a newer plan beats (see `proposals::apply`).
-        let modified = std::fs::metadata(&file)?.modified()?;
         if crate::proposals::submitted(root, task)?.is_some_and(|at| modified <= at) {
-            std::fs::File::options()
-                .write(true)
-                .open(&file)?
-                .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))?;
+            touch(&file, SystemTime::now())?;
         }
     } else {
         std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
@@ -252,6 +254,16 @@ pub(crate) fn write_locked(
     // Any save forgets applied assignments.
     crate::proposals::invalidate(root, task)?;
     Ok(())
+}
+
+/// Set `file`'s modification time. Plans and proposals are ordered by mtime, which
+/// assumes a filesystem with fine timestamps (APFS, ext4 and NTFS have them); on a
+/// coarse one, writes within the same tick can tie.
+pub(crate) fn touch(file: &Path, at: SystemTime) -> std::io::Result<()> {
+    std::fs::File::options()
+        .write(true)
+        .open(file)?
+        .set_times(std::fs::FileTimes::new().set_modified(at))
 }
 
 /// A plan an agent presented for approval in its provider's dialog, and the text it
@@ -418,12 +430,7 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
 /// Set `file`'s modification time, for tests.
 #[cfg(test)]
 pub(crate) fn set_modified(file: &Path, at: SystemTime) {
-    std::fs::File::options()
-        .write(true)
-        .open(file)
-        .unwrap()
-        .set_times(std::fs::FileTimes::new().set_modified(at))
-        .unwrap();
+    touch(file, at).unwrap();
 }
 
 #[cfg(test)]
@@ -554,10 +561,13 @@ mod tests {
         let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let modified = || fs::metadata(&file).unwrap().modified().unwrap();
         set_modified(&file, earlier);
-        write(&root, None, "agreed").unwrap();
         assert!(write_if(&root, None, "agreed", Some("agreed")).unwrap());
         assert!(!capture(&root, None, "agreed", false).unwrap());
         assert_eq!(modified(), earlier);
+        // Without a read under the lock, the plan is written as before.
+        write(&root, None, "agreed").unwrap();
+        assert_ne!(modified(), earlier);
+        set_modified(&file, earlier);
         assert!(
             section(&root, None)
                 .unwrap()
@@ -566,6 +576,9 @@ mod tests {
         );
         write(&root, None, "revised").unwrap();
         assert_ne!(modified(), earlier);
+        // An empty plan that was never saved is still created.
+        assert!(write_if(&root, Some("t1"), "", Some("")).unwrap());
+        assert!(plan_file(&root, Some("t1")).unwrap().is_file());
         let _ = fs::remove_dir_all(root);
     }
 

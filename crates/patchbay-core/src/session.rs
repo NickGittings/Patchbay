@@ -3932,7 +3932,15 @@ mod tests {
             assert_eq!(restart.resume_command.as_ref(), Some(&resume));
             assert_eq!(restart_context(&metadata, &restart).unwrap(), recorded);
             // Saving the same text again keeps the saved time.
-            assert!(crate::plans::write_if(&dir, None, "Implement the change", None).unwrap());
+            assert!(
+                crate::plans::write_if(
+                    &dir,
+                    None,
+                    "Implement the change",
+                    Some("Implement the change")
+                )
+                .unwrap()
+            );
             assert_eq!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
             // Another saved time, another plan, or none, starts fresh.
             crate::plans::set_modified(&plan, minute);
