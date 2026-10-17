@@ -41,7 +41,14 @@ import { agentDevices } from './plan'
 import { implementPlannerPlan } from './planHandoff'
 import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
-import { defaultReviewBase, reviewState, startMergeAgent, startReviewAgents } from './reviewAgents'
+import {
+  DEFAULT_BRANCHES,
+  defaultReviewBase,
+  reviewBaseInputs,
+  reviewState,
+  startMergeAgent,
+  startReviewAgents,
+} from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
 import {
@@ -298,6 +305,39 @@ function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run:
 }
 /** The run's worktree no longer has the run's branch checked out. */
 export class BranchMoved extends Error {}
+/** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
+export class NoReviewBase extends Error {
+  readonly task: string | null
+  readonly path: string
+  readonly branch: string
+  readonly branches: string[]
+  /** What the base was judged from (`reviewBaseInputs`). */
+  readonly inputs: string
+  constructor(task: string | null, source: Worktree, branches: string[], inputs: string) {
+    super('No review base found; choose another worktree')
+    this.task = task
+    this.path = source.path
+    this.branch = source.branch ?? ''
+    this.branches = branches
+    this.inputs = inputs
+  }
+}
+/**
+ * Whether a new worktree would give the run a base: only for the project folder on its default
+ * (or only) branch, since other worktrees and branches can choose another one.
+ */
+export const wantsNewWorktree = (e: NoReviewBase) =>
+  !e.task && (e.branches.length <= 1 || DEFAULT_BRANCHES.includes(e.branch))
+/**
+ * Whether what `e` was judged from, the worktree's checked-out branch, its task's base, the open
+ * worktree's branch and the branches, has changed: two Git reads instead of a whole `autoSnapshot`.
+ */
+export async function reviewBaseMoved(projectId: string, e: NoReviewBase) {
+  const [worktrees, branches] = await Promise.all([gitWorktrees(projectId), gitBranches(projectId)])
+  const source = worktrees.find((w) => (e.task ? w.path === e.path : w.current))
+  const tasks = projectStateOf(projectId)?.tasks ?? []
+  return !source || reviewBaseInputs(source, tasks, worktrees, branches) !== e.inputs
+}
 /**
  * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
  * above a project in a subfolder. A run that recorded its `branch` never judges another branch
@@ -354,7 +394,13 @@ export async function autoSnapshot(
     destination && destination !== source.branch && branches.includes(destination)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
-  if (!base) throw new Error('No review base found; choose another worktree')
+  if (!base)
+    throw new NoReviewBase(
+      task,
+      source,
+      branches,
+      reviewBaseInputs(source, tasks, worktrees, branches),
+    )
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
     reviewRead(projectId, source.branch),
@@ -405,8 +451,9 @@ export async function autoSnapshot(
     plan: plannerPlan.text,
     proposal: !!proposal,
     planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
+    // A task's goal is its own: the project plan may be left over from earlier work.
     goal: inferredGoal(
-      saved.text || plannerPlan.text,
+      task ? saved.text : plannerPlan.text,
       tasks.find((t) => t.id === task)?.title ?? '',
       tasks.find((t) => t.id === task)?.notes ?? '',
       source.branch,

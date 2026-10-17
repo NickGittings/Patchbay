@@ -275,10 +275,10 @@ export default function PlanView() {
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
               </button>
-              <WorktreePicker />
+              <WorktreePicker copyPlan />
               <button
-                title="Create a branch and worktree for the highlighted components, or the selected one. The planner and its plan stay."
-                onClick={() => seedNewTask()}
+                title="Create a branch and worktree for the highlighted components, or the selected one, starting with a copy of the plan. The planner and its plan stay."
+                onClick={() => seedNewTask(undefined, { copyPlan: true })}
               >
                 ＋ New task
               </button>
@@ -299,7 +299,10 @@ export default function PlanView() {
                 <Menu label={implementLabel} title="Choose where to implement the plan">
                   <MenuItem
                     onClick={() =>
-                      seedNewTask((created) => void implement(`${projectId ?? ''}\n${created.id}`))
+                      seedNewTask(
+                        (created) => void implement(`${projectId ?? ''}\n${created.id}`),
+                        { copyPlan: true },
+                      )
                     }
                   >
                     New worktree…

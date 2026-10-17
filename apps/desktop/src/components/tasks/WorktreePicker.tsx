@@ -18,13 +18,18 @@ import {
 import Popover from '../Popover'
 import { CloseMenu } from '../menuContext'
 
-/** Pick the worktree where planning and implementation terminals run. */
+/**
+ * Pick the worktree where planning and implementation terminals run; with `copyPlan` (Plan's
+ * Planner scope), a new one starts with a copy of the project plan.
+ */
 export default function WorktreePicker({
   align = 'left',
   caret = true,
+  copyPlan = false,
 }: {
   align?: 'left' | 'right'
   caret?: boolean
+  copyPlan?: boolean
 }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
@@ -86,7 +91,7 @@ export default function WorktreePicker({
       caret={caret}
       portal
     >
-      <WorktreeOverview branch={branch} onOpen={refreshBranch} />
+      <WorktreeOverview branch={branch} onOpen={refreshBranch} copyPlan={copyPlan} />
     </Popover>
   )
 }
@@ -95,10 +100,12 @@ export function WorktreeOverview({
   branch,
   onOpen,
   attention,
+  copyPlan = false,
 }: {
   branch?: string
   onOpen?: () => void
   attention?: Record<string, number>
+  copyPlan?: boolean
 }) {
   const tasks = useStore((s) => s.tasks)
   const terminalCounts = JSON.parse(useStore(attentionCounts)) as Record<string, number>
@@ -122,7 +129,7 @@ export function WorktreeOverview({
         className="worktree-new"
         onClick={() => {
           close()
-          seedNewTask()
+          seedNewTask(undefined, { copyPlan })
         }}
       >
         ＋ New task

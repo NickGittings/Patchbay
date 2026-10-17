@@ -12,6 +12,7 @@ import {
 import { create } from 'zustand'
 import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
 import { liveDeclined } from './lib/validators'
+import { forgetAutoDrafts } from './lib/autoDrafts'
 import type {
   AgentRoles,
   NotificationSettings,
@@ -316,9 +317,9 @@ interface State {
   setTasks: (tasks: Task[]) => void
   setActiveTask: (id: string | null, exact?: boolean) => void
   closeTaskTab: (id: string) => void
-  /** Components to seed the new-task dialog with while it is open (UI only). */
-  newTask: string[] | null
-  setNewTask: (components: string[] | null) => void
+  /** Components and goal title to seed the new-task dialog with while it is open (UI only). */
+  newTask: { components: string[]; title?: string } | null
+  setNewTask: (seed: { components: string[]; title?: string } | null) => void
   /** Bumped to open the toolbar's Auto panel, from the attention list (UI only). */
   autoPanelRequest: number
   showAutoPanel: () => void
@@ -549,6 +550,7 @@ export const useStore = create<State>((set, get) => ({
     } as Partial<State>)
   },
   closeProject: (id) => {
+    forgetAutoDrafts(id)
     const projects = get().captureProjects()
     delete projects[id]
     const projectOrder = get().projectOrder.filter((p) => p !== id)

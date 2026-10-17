@@ -9,17 +9,17 @@ export default function NewTaskDialog() {
   const seed = useStore((s) => s.newTask)
   return seed ? <Dialog seed={seed} /> : null
 }
-function Dialog({ seed }: { seed: string[] }) {
+function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
   const nodes = useStore((s) => s.nodes)
   const tasks = useStore((s) => s.tasks)
   const projectId = useStore((s) => s.project?.id)
   const close = cancelNewTask
   const [mode, setMode] = useState<'new' | 'attach'>('new')
-  const [title, setTitle] = useState('')
-  const [branch, setBranch] = useState('')
+  const [title, setTitle] = useState(seed.title ?? '')
+  const [branch, setBranch] = useState(() => branchFor(seed.title ?? ''))
   const [branchEdited, setBranchEdited] = useState(false)
   const [base, setBase] = useState('')
-  const [components, setComponents] = useState(seed)
+  const [components, setComponents] = useState(seed.components)
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const [worktree, setWorktree] = useState('')
   const [busy, setBusy] = useState(false)

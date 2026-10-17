@@ -1237,6 +1237,46 @@ test('a new goal plans before implementing an unrelated saved plan or proposal',
   )
 })
 
+test("a new task's goal is its own, never the project's leftover plan", async () => {
+  load()
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '' : '# Unrelated old goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task')
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '# Task plan' : '# Unrelated old goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
+})
+
+test('the default branch in the project folder asks for a worktree', async () => {
+  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
+  load()
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'main', current: true },
+  ])
+  // Runs keep the message; only the dialog offers a new worktree for it.
+  const error = await autoSnapshot('p', null, run()).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(NoReviewBase)
+  expect(String(error)).toMatch('No review base found; choose another worktree')
+  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(true)
+})
+
+test('a branch that is not the default asks for another worktree, not a new one', async () => {
+  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
+  load()
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['feature', 'develop'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'feature', current: true },
+  ])
+  const error = await autoSnapshot('p', null, run({ runId: '' })).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(NoReviewBase)
+  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(false)
+})
+
 test('needsInput can go directly to review without an observed working tick', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)
@@ -3548,4 +3588,34 @@ test('Resume of a superseded round stops only what Auto owns and follows the new
     sessionOwned: false,
     reviewRound: undefined,
   })
+})
+
+test('the needs-worktree view reloads only once the base it was judged from may change', async () => {
+  const { NoReviewBase, reviewBaseMoved } = await import('./auto')
+  load()
+  const folder = { ...tree, path: '/p', branch: 'main', current: true }
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  const judged = await autoSnapshot('p', null, run()).then(
+    () => null,
+    (e: unknown) => e as InstanceType<typeof NoReviewBase>,
+  )
+  expect(judged).toBeInstanceOf(NoReviewBase)
+  vi.mocked(ipc.planRead).mockClear()
+  expect(await reviewBaseMoved('p', judged!)).toBe(false)
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'feature'])
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, { ...folder, branch: 'feature' }])
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
+  // Attaching the project folder as a worktree with a base gives it something to review against.
+  useStore
+    .getState()
+    .setTasks([
+      ...useStore.getState().tasks,
+      { ...useStore.getState().tasks[0], id: 'f', worktree: '/p', branch: 'main', base: 'develop' },
+    ])
+  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  expect(ipc.planRead).not.toHaveBeenCalled()
 })

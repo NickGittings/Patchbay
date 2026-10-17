@@ -14,6 +14,7 @@ import {
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
+import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
 import './auto.css'
@@ -48,7 +49,7 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
       openRequest={openRequest}
     >
       {!run || newRun ? (
-        <AutoDialog key={JSON.stringify([projectId, task])} onIntegrations={onIntegrations} />
+        <AutoDialog key={autoDraftKey(projectId, task)} onIntegrations={onIntegrations} />
       ) : (
         <div className="auto-content">
           <strong>Auto mode: {run.status}</strong>

@@ -164,3 +164,13 @@ test('showing and dismissing notifications preserves persistent errors', () => {
     messageTransient: false,
   })
 })
+test('a layout saved with the retired plannedFromProject flag restores without it', () => {
+  const layout = restoredLayout({
+    activeTask: 'old',
+    plannedFromProject: true,
+    taskWorkspaces: { old: { plannedFromProject: true }, '': {} },
+  })
+  expect(layout.activeTask).toBe('old')
+  expect(layout).not.toHaveProperty('plannedFromProject')
+  expect(layout.taskWorkspaces?.old).not.toHaveProperty('plannedFromProject')
+})
