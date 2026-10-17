@@ -14,6 +14,7 @@ import {
   EFFORT,
   inferStage,
   NoReviewBase,
+  reviewBaseMoved,
   startAuto,
   STAGES,
   STAGE_LABELS,
@@ -30,7 +31,7 @@ import {
   emptyAutoDraft,
   savedAutoDraft,
 } from '../../lib/autoDrafts'
-import { seedNewTask, titleFor } from '../../lib/tasks'
+import { seedAutoTask } from '../../lib/autoWorktree'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -87,16 +88,40 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [snapshot, setSnapshot] = useState<AutoSnapshot | null>(null)
   const [error, setError] = useState('')
   // The worktree's branch can't be reviewed or merged into itself, so the run needs a new one.
-  const [needsWorktree, setNeedsWorktree] = useState('')
-  // That view loads again on every Git refresh (focus, terminal exits, file changes), so a branch
-  // checked out meanwhile leaves it.
+  const [needsWorktree, setNeedsWorktree] = useState<NoReviewBase | null>(null)
+  // That view checks the branches on every Git refresh (focus, terminal exits, file changes) and
+  // loads again only once they changed, so a branch checked out meanwhile leaves it.
   const [recheck, setRecheck] = useState(0)
   useEffect(() => {
-    if (!needsWorktree) return
-    return useStore.subscribe((s, prev) => {
-      if (s.gitChanges !== prev.gitChanges) setRecheck((n) => n + 1)
+    if (!needsWorktree || !projectId) return
+    // One check at a time; a refresh during one checks again after it.
+    let checking = false
+    let again = false
+    let done = false
+    const check = () => {
+      checking = true
+      again = false
+      void reviewBaseMoved(projectId, needsWorktree)
+        .then((moved) => {
+          if (moved && !done) setRecheck((n) => n + 1)
+          return moved
+        })
+        .catch(() => false)
+        .then((moved) => {
+          checking = false
+          if (again && !moved && !done) check()
+        })
+    }
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.gitChanges === prev.gitChanges) return
+      if (checking) again = true
+      else check()
     })
-  }, [needsWorktree])
+    return () => {
+      done = true
+      unsubscribe()
+    }
+  }, [needsWorktree, projectId])
   const [integrationCheck, setIntegrationCheck] = useState<{
     distinct: string[]
     devices: typeof devices
@@ -140,23 +165,25 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
             snapshot.worktrees.find((w) => w.current && w.path !== snapshot.source.path)?.branch ||
             '',
         })
-        // A restored destination no longer offered gives way to the filled-in one.
+        // A restored destination no longer offered gives way to the filled-in one, also when the
+        // dialog reopens, so its first load doesn't preview the stale one again.
+        const stored = autoDrafts.get(draftKey)
+        if (stored?.destination && !branches.includes(stored.destination))
+          autoDrafts.set(draftKey, savedAutoDraft({ ...stored, destination: undefined }))
         setDraft((d) =>
           d.destination && !branches.includes(d.destination) ? { ...d, destination: undefined } : d,
         )
         setSnapshot(snapshot)
         setError('')
-        setNeedsWorktree('')
+        setNeedsWorktree(null)
       })
       .catch((e) => {
         if (cancelled) return
         if (e instanceof NoReviewBase && wantsNewWorktree(e)) {
-          setNeedsWorktree(
-            `Auto needs a branch other than ${e.branch}; create a worktree for this task`,
-          )
+          setNeedsWorktree(e)
           setError('')
         } else {
-          setNeedsWorktree('')
+          setNeedsWorktree(null)
           setError(String(e))
         }
       })
@@ -166,7 +193,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     return () => {
       cancelled = true
     }
-  }, [projectId, task, destination, requestKey, recheck])
+  }, [projectId, task, destination, draftKey, requestKey, recheck])
   useEffect(() => {
     let cancelled = false
     void Promise.all(distinct.map(checkAutoHooks))
@@ -210,34 +237,15 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     return (
       <div className="auto-content">
         <strong>Auto mode</strong>
-        <p>{needsWorktree}.</p>
+        <p>
+          Auto needs a branch other than {needsWorktree.branch}; create a worktree for this task.
+        </p>
         <label>
           Task goal
           <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
         </label>
-        <button
-          onClick={() => {
-            const carried = goal.trim()
-            const saved = autoDrafts.get(draftKey)
-            seedNewTask(
-              (created, projectId) => {
-                // The goal moves to the new worktree's dialog, with this run's other choices.
-                autoDrafts.delete(draftKey)
-                if (saved || carried)
-                  autoDrafts.set(autoDraftKey(projectId, created.id), {
-                    ...(saved ?? emptyAutoDraft()),
-                    goal: carried || undefined,
-                    destination: undefined,
-                    stage: '',
-                  })
-                useStore.getState().showAutoPanel()
-              },
-              titleFor(carried) || undefined,
-            )
-          }}
-        >
-          New worktree…
-        </button>
+        {/* Only a typed goal moves; the new worktree infers its own from the project plan. */}
+        <button onClick={() => seedAutoTask(draftKey, draft.goal ?? '')}>New worktree…</button>
       </div>
     )
   return (

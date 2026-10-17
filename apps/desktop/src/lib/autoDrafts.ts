@@ -45,3 +45,12 @@ export function forgetAutoDrafts(projectId: string, task?: string) {
     if (p === projectId && (task === undefined || t === task)) autoDrafts.delete(key)
   }
 }
+
+/** Drop the drafts of a project's worktrees its task list no longer holds, however they went. */
+export function pruneAutoDrafts(projectId: string, tasks: readonly string[]) {
+  const known = new Set(tasks)
+  for (const key of autoDrafts.keys()) {
+    const [p, t] = JSON.parse(key) as [string, string | null]
+    if (p === projectId && t !== null && !known.has(t)) autoDrafts.delete(key)
+  }
+}

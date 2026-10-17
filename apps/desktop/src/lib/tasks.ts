@@ -9,7 +9,7 @@ import {
 } from '../store'
 import type { Task, TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
-import { forgetAutoDrafts } from './autoDrafts'
+import { forgetAutoDrafts, pruneAutoDrafts } from './autoDrafts'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions } from './sessions'
 import { taskActivate, taskAttach, taskCreate, taskList, taskRemove, taskUpdate } from './ipc'
@@ -53,6 +53,11 @@ function applyTasks(projectId: string, tasks: Task[]) {
       components: task.components.filter((id) => ids.has(id)),
     }))
   }
+  // Worktrees removed elsewhere (another window, the CLI, by hand) leave no draft behind.
+  pruneAutoDrafts(
+    projectId,
+    tasks.map((t) => t.id),
+  )
   const s = useStore.getState()
   if (s.project?.id === projectId) {
     s.setTasks(tasks)
@@ -233,12 +238,20 @@ function afterNewTask(task: Task, projectId: string) {
   then?.(task, projectId)
 }
 
-/**
- * Open the new-worktree dialog for the highlighted components, else the selected one, with an
- * optional goal `title`; `then` runs once it has created and activated a worktree.
- */
-export function seedNewTask(then?: (task: Task, projectId: string) => void, title?: string) {
-  onNewTask = then ?? null
+/** Open the new-worktree dialog; a `planned` worktree takes the project plan as its own. */
+function seed(
+  planned: boolean,
+  then: ((task: Task, projectId: string) => void) | undefined,
+  title: string | undefined,
+) {
+  onNewTask =
+    planned || then
+      ? (task, projectId) => {
+          if (planned)
+            useStore.getState().patchTask(projectId, task.id, { plannedFromProject: true })
+          then?.(task, projectId)
+        }
+      : null
   const s = useStore.getState()
   s.setNewTask({
     components: s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [],
@@ -247,14 +260,17 @@ export function seedNewTask(then?: (task: Task, projectId: string) => void, titl
 }
 
 /**
- * `seedNewTask` from Plan: the new worktree remembers that the project plan is its plan until
- * Implement copies it there.
+ * Open the new-worktree dialog for the highlighted components, else the selected one, with an
+ * optional goal `title`; `then` runs once it has created and activated a worktree. One made while
+ * in Plan remembers that the project plan is its plan until Implement copies it there.
  */
-export function seedPlannedTask(then?: (task: Task, projectId: string) => void) {
-  seedNewTask((task, projectId) => {
-    useStore.getState().patchTask(projectId, task.id, { plannedFromProject: true })
-    then?.(task, projectId)
-  })
+export function seedNewTask(then?: (task: Task, projectId: string) => void, title?: string) {
+  seed(useStore.getState().view === 'plan', then, title)
+}
+
+/** `seedNewTask` for a worktree that borrows the project plan from any view (Auto's prompt). */
+export function seedPlannedTask(then?: (task: Task, projectId: string) => void, title?: string) {
+  seed(true, then, title)
 }
 
 /** A worktree title from a goal: its first nonempty line, without a heading mark, kept short. */
@@ -264,13 +280,16 @@ export function titleFor(goal: string, max = 72) {
       .split('\n')
       .map((l) => l.replace(/^\s*#+\s*/, '').trim())
       .find(Boolean) ?? ''
-  if (line.length <= max) return line
+  // Counted in code points, so a cut never splits an emoji's surrogate pair.
+  const chars = Array.from(line)
+  if (chars.length <= max) return line
   // At a word boundary, keeping a word the cut ends right after, unless that loses most of it.
-  const words = line
+  const words = chars
     .slice(0, max + 1)
+    .join('')
     .replace(/\S*$/, '')
     .trimEnd()
-  return words.length >= max / 2 ? words : line.slice(0, max).trimEnd()
+  return Array.from(words).length >= max / 2 ? words : chars.slice(0, max).join('').trimEnd()
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */

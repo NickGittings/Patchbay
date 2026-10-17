@@ -174,11 +174,16 @@ export function restoredLayout(
     out.maximizedTerminal = layout.maximizedTerminal
   if (typeof layout.plannedFromProject === 'boolean')
     out.plannedFromProject = layout.plannedFromProject
+  // A worktree's layout saved before the flag existed may be one made from Plan, so it keeps
+  // borrowing the project plan while it has none; saves always write the flag from then on.
+  else if (!nested && typeof out.activeTask === 'string') out.plannedFromProject = true
   if (!nested && layout.taskWorkspaces && typeof layout.taskWorkspaces === 'object') {
     out.taskWorkspaces = {}
     for (const [key, value] of Object.entries(layout.taskWorkspaces)) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue
       const restored = restoredLayout(value as Record<string, unknown>, true)
+      // As above, for the worktrees that weren't active; the project folder borrows nothing.
+      if (key && restored.plannedFromProject === undefined) restored.plannedFromProject = true
       out.taskWorkspaces[key] = { ...emptyTaskWorkspace(), ...restored }
     }
   }

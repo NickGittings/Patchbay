@@ -3604,3 +3604,22 @@ test('Resume of a superseded round stops only what Auto owns and follows the new
     reviewRound: undefined,
   })
 })
+
+test('the needs-worktree view reloads only once the branches it was judged from change', async () => {
+  const { NoReviewBase, reviewBaseMoved } = await import('./auto')
+  const judged = new NoReviewBase(null, 'main', ['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    tree,
+    { ...tree, path: '/p', branch: 'main', current: true },
+  ])
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  expect(await reviewBaseMoved('p', judged)).toBe(false)
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'feature'])
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'feature', current: true },
+  ])
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
+  expect(ipc.planRead).not.toHaveBeenCalled()
+})

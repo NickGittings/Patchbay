@@ -164,3 +164,22 @@ test('showing and dismissing notifications preserves persistent errors', () => {
     messageTransient: false,
   })
 })
+test("a worktree's layout saved before plannedFromProject keeps borrowing the project plan", () => {
+  const layout = restoredLayout({
+    activeTask: 'old',
+    taskWorkspaces: { '': {}, other: {}, kept: { plannedFromProject: false } },
+  })
+  // Entries without the flag are from before it; the active one is the top-level layout.
+  expect(layout.plannedFromProject).toBe(true)
+  expect(layout.taskWorkspaces?.old.plannedFromProject).toBe(true)
+  expect(layout.taskWorkspaces?.other.plannedFromProject).toBe(true)
+  // An explicit flag is kept, and the project folder borrows nothing.
+  expect(layout.taskWorkspaces?.kept.plannedFromProject).toBe(false)
+  expect(layout.taskWorkspaces?.[''].plannedFromProject).toBe(false)
+  const current = restoredLayout({ activeTask: 'new', plannedFromProject: false })
+  expect(current.plannedFromProject).toBe(false)
+  expect(current.taskWorkspaces?.new.plannedFromProject).toBe(false)
+  // A worktree with no saved layout at all starts unmarked.
+  expect(restoredLayout({}).plannedFromProject).toBeUndefined()
+  expect(restoredLayout({ activeTask: null }).plannedFromProject).toBeUndefined()
+})

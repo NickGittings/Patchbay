@@ -22,6 +22,7 @@ const {
   followActiveTask,
   seedNewTask,
   seedPlannedTask,
+  refreshTasks,
   removeTask,
   titleFor,
 } = await import('./tasks')
@@ -230,6 +231,42 @@ test('a worktree created from Plan remembers it was planned from the project pla
   await createTask({ title: 'O', branch: 'o', components: [] })
   expect(useStore.getState().activeTask).toBe('o')
   expect(useStore.getState().plannedFromProject).toBe(false)
+})
+
+test.each([
+  ['plan', true],
+  ['navigation', false],
+] as const)('a worktree seeded while in %s borrows the project plan: %s', async (view, planned) => {
+  removalProject(null)
+  useStore.getState().setView(view)
+  const task = { id: 'n', title: 'N', components: [] } as unknown as Task
+  vi.mocked(taskCreate).mockResolvedValue(task)
+  vi.mocked(taskList).mockResolvedValue([task])
+  seedNewTask()
+  await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(useStore.getState().activeTask).toBe('n')
+  expect(useStore.getState().plannedFromProject).toBe(planned)
+})
+
+test('a cut title never splits an emoji', () => {
+  // The 72nd code unit is the first half of the emoji's surrogate pair.
+  const goal = `${'a'.repeat(71)}😀${'b'.repeat(10)}`
+  const title = titleFor(goal)
+  expect(title).toBe(`${'a'.repeat(71)}😀`)
+  expect(title).not.toMatch(/[\uD800-\uDBFF]$/)
+})
+
+test('a worktree that left the task list takes its Auto draft along', async () => {
+  removalProject()
+  autoDrafts.set(autoDraftKey('p', 't'), emptyAutoDraft())
+  autoDrafts.set(autoDraftKey('p', 'gone'), emptyAutoDraft())
+  autoDrafts.set(autoDraftKey('p', null), emptyAutoDraft())
+  autoDrafts.set(autoDraftKey('q', 'gone'), emptyAutoDraft())
+  await refreshTasks('p')
+  expect(autoDrafts.has(autoDraftKey('p', 't'))).toBe(true)
+  expect(autoDrafts.has(autoDraftKey('p', 'gone'))).toBe(false)
+  expect(autoDrafts.has(autoDraftKey('p', null))).toBe(true)
+  expect(autoDrafts.has(autoDraftKey('q', 'gone'))).toBe(true)
 })
 
 test('branch names from titles stay short', () => {

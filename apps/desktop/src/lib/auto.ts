@@ -323,6 +323,17 @@ export class NoReviewBase extends Error {
 export const wantsNewWorktree = (e: NoReviewBase) =>
   !e.task && (e.branches.length <= 1 || DEFAULT_BRANCHES.includes(e.branch))
 /**
+ * Whether what `e` was judged from, the project folder's checked-out branch and the branches, has
+ * changed: two Git reads instead of a whole `autoSnapshot`.
+ */
+export async function reviewBaseMoved(projectId: string, e: NoReviewBase) {
+  const [worktrees, branches] = await Promise.all([gitWorktrees(projectId), gitBranches(projectId)])
+  return (
+    worktrees.find((w) => w.current)?.branch !== e.branch ||
+    branches.join('\n') !== e.branches.join('\n')
+  )
+}
+/**
  * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
  * above a project in a subfolder. A run that recorded its `branch` never judges another branch
  * checked out there.
