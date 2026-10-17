@@ -1284,12 +1284,8 @@ impl Service {
         let context = restart_context(&metadata, &spec).ok().flatten();
         if metadata.kind == TerminalKind::Agent
             && metadata.adapter.is_some()
-            && restart_matches(
-                &metadata,
-                &spec,
-                context.as_deref(),
-                recorded_context.as_deref(),
-            )
+            && context.is_some()
+            && context == recorded_context
         {
             // Read the final native hooks and output only for a matching restart.
             self.refresh_restart_conversation(&id);
@@ -1840,62 +1836,15 @@ fn prepare_resume(
 }
 
 /// A stable digest: temporary bridge credentials and decorated resume commands are excluded.
-/// A briefing a resume command carries inline (Codex's) is normalized like the
-/// briefing file, so a plan's age never stops a resume.
 fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<String>> {
-    restart_digest(metadata, spec, true)
-}
-
-/// Whether a record's fingerprint `recorded` matches this launch's `context`.
-/// Root agents without a kickoff once had no resume command, which resumes with
-/// the launch command; records hashed that way still match a launch whose resume
-/// command is its launch command.
-fn restart_matches(
-    metadata: &Metadata,
-    spec: &SessionSpec,
-    context: Option<&str>,
-    recorded: Option<&str>,
-) -> bool {
-    recorded.is_some()
-        && (context == recorded
-            || (spec.resume_command.as_ref() == Some(&spec.command)
-                && restart_digest(metadata, spec, false)
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == recorded))
-}
-
-/// [`restart_context`], hashing the resume command only with `resume`.
-fn restart_digest(metadata: &Metadata, spec: &SessionSpec, resume: bool) -> Result<Option<String>> {
     if metadata.kind != TerminalKind::Agent {
         return Ok(None);
     }
-    let text = spec
+    let briefing = spec
         .env
         .get(crate::context::CONTEXT_ENV)
         .map(std::fs::read_to_string)
         .transpose()?;
-    let briefing = text
-        .as_deref()
-        .map(|text| {
-            crate::plans::restart_briefing(
-                text,
-                Path::new(&metadata.project_root),
-                metadata.task.as_deref(),
-            )
-        })
-        .transpose()?;
-    let resume_command = spec
-        .resume_command
-        .as_deref()
-        .filter(|_| resume)
-        .map(|command| match (&text, &briefing) {
-            (Some(text), Some(briefing)) if text != briefing => {
-                crate::context::normalize_inline_briefing(command, text, briefing)
-            }
-            _ => command.to_owned(),
-        });
     let settings = serde_json::to_string(&(
         &metadata.command,
         metadata.kind,
@@ -1904,7 +1853,7 @@ fn restart_digest(metadata: &Metadata, spec: &SessionSpec, resume: bool) -> Resu
         &spec.dirs,
         &spec.ready_when,
         spec.service,
-        &resume_command,
+        &spec.resume_command,
         &briefing,
     ))?;
     Ok(Some(crate::workspace::session_id("restart", &settings, "")))
@@ -3923,49 +3872,11 @@ mod tests {
         assert_eq!(before, restart_context(&metadata, &changed_spec).unwrap());
         std::fs::write(&file, "Changed highlights, peers, and plan").unwrap();
         assert_ne!(before, restart_context(&metadata, &spec).unwrap());
-
-        assert!(
-            std::process::Command::new("git")
-                .args(["init", "-q"])
-                .arg(&dir)
-                .status()
-                .unwrap()
-                .success()
-        );
-        crate::plans::write(&dir, None, "Implement the change").unwrap();
-        let section = crate::plans::section(&dir, None).unwrap();
-        let briefing = format!(
-            "## {}\n\n{}\n\n## Peers\n\nKeep these",
-            section.title, section.body
-        );
-        std::fs::write(&file, &briefing).unwrap();
-        let before = restart_context(&metadata, &spec).unwrap();
-        std::fs::write(
-            &file,
-            briefing.replace("saved just now", "saved 2 minutes ago"),
-        )
-        .unwrap();
-        assert_eq!(before, restart_context(&metadata, &spec).unwrap());
-        let plan = crate::plans::plan_file(&dir, None).unwrap();
-        let handle = std::fs::File::options().write(true).open(&plan).unwrap();
-        let modified = handle.metadata().unwrap().modified().unwrap();
-        handle
-            .set_times(std::fs::FileTimes::new().set_modified(modified + Duration::from_secs(60)))
-            .unwrap();
-        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
-        handle
-            .set_times(std::fs::FileTimes::new().set_modified(modified))
-            .unwrap();
-        assert_eq!(before, restart_context(&metadata, &spec).unwrap());
-        crate::plans::write(&dir, None, "A different plan").unwrap();
-        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
-        crate::plans::remove(&dir, None).unwrap();
-        assert_ne!(before, restart_context(&metadata, &spec).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn restart_resumes_a_codex_root_whose_inline_plan_aged() {
+    fn restart_resumes_a_codex_root_while_its_plan_is_unchanged() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
         assert!(
@@ -3993,104 +3904,44 @@ mod tests {
             "name": "Codex", "kind": "agent", "adapter": "codex", "command": "codex"
         }))
         .unwrap();
-        let fresh = crate::plans::section(&dir, None).unwrap();
-        assert!(fresh.body.contains("(saved just now)"));
-        let mut aged = fresh.clone();
-        aged.body = aged.body.replace("saved just now", "saved 2 minutes ago");
-        let spec = |section: &crate::context::ContextSection, kickoff| {
+        let spec = |kickoff| {
+            let section = crate::plans::section(&dir, None).unwrap();
             crate::context::task_root_session_spec(
                 &project,
                 &[],
                 &terminal,
                 None,
                 &crate::policy::AllowAll,
-                std::slice::from_ref(section),
+                &[section],
                 kickoff,
             )
             .unwrap()
         };
-        let launch = spec(
-            &fresh,
-            Some(crate::context::Kickoff::ImplementPlan { subagents: None }),
-        );
+        let launch = spec(Some(crate::context::Kickoff::ImplementPlan {
+            subagents: None,
+        }));
         let recorded = restart_context(&metadata, &launch).unwrap();
-        let restart = spec(&aged, None);
-        // Codex carries the briefing, and with it the plan's age, in its command.
-        let resume = restart.resume_command.as_deref().unwrap();
-        assert_ne!(launch.resume_command.as_deref(), Some(resume));
-        let context = restart_context(&metadata, &restart).unwrap();
-        assert_eq!(context, recorded);
-        assert!(restart_matches(
-            &metadata,
-            &restart,
-            context.as_deref(),
-            recorded.as_deref()
-        ));
-        // A different plan still starts fresh.
+        // Codex carries the briefing, and with it when the plan was saved, inline.
+        let resume = launch.resume_command.as_deref().unwrap();
+        assert!(resume.contains("Implement the change"));
+        // The section names an absolute time, so a later Restart rebuilds the same one.
+        let plan = crate::plans::plan_file(&dir, None).unwrap();
+        let handle = std::fs::File::options().write(true).open(&plan).unwrap();
+        let modified = handle.metadata().unwrap().modified().unwrap();
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(modified - Duration::from_secs(720)))
+            .unwrap();
+        let earlier = spec(None);
+        assert_ne!(restart_context(&metadata, &earlier).unwrap(), recorded);
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let restart = spec(None);
+        assert_eq!(restart.resume_command.as_deref(), Some(resume));
+        assert_eq!(restart_context(&metadata, &restart).unwrap(), recorded);
+        // A different plan starts fresh.
         crate::plans::write(&dir, None, "Another change").unwrap();
-        let changed = crate::plans::section(&dir, None).unwrap();
-        let changed = spec(&changed, None);
-        assert_ne!(restart_context(&metadata, &changed).unwrap(), recorded);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn restart_matches_records_hashed_without_a_resume_command() {
-        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("briefing.md");
-        std::fs::write(&file, "Briefing").unwrap();
-        let metadata: Metadata = serde_json::from_value(serde_json::json!({
-            "projectId": "p", "projectName": "P", "projectRoot": dir,
-            "componentId": "@task", "terminalId": "agent", "name": "Agent",
-            "kind": "agent", "adapter": "codex", "command": "codex"
-        }))
-        .unwrap();
-        let old = SessionSpec {
-            id: "s".into(),
-            command: "codex -c briefing".into(),
-            resume_command: None,
-            owns_briefing: false,
-            exclusive_cwd: false,
-            merge_source: None,
-            cwd: dir.clone(),
-            env: BTreeMap::from([(
-                crate::context::CONTEXT_ENV.into(),
-                file.display().to_string(),
-            )]),
-            ready_when: String::new(),
-            service: false,
-            notice: None,
-            dirs: vec![],
-        };
-        // Earlier versions hashed a missing resume command as none.
-        let recorded = restart_digest(&metadata, &old, false).unwrap();
-        let mut restart = old.clone();
-        restart.resume_command = Some(restart.command.clone());
-        let context = restart_context(&metadata, &restart).unwrap();
-        assert_ne!(context, recorded);
-        assert!(restart_matches(
-            &metadata,
-            &restart,
-            context.as_deref(),
-            recorded.as_deref()
-        ));
-        // Only a launch that resumes with its own command matches such a record.
-        let mut kickoff = restart.clone();
-        kickoff.command.push_str(" 'Implement it'");
-        let context = restart_context(&metadata, &kickoff).unwrap();
-        assert!(!restart_matches(
-            &metadata,
-            &kickoff,
-            context.as_deref(),
-            recorded.as_deref()
-        ));
-        assert!(!restart_matches(
-            &metadata,
-            &restart,
-            context.as_deref(),
-            None
-        ));
+        assert_ne!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -973,21 +973,6 @@ const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay 
 
 pub(crate) const REVIEW_PROMPT: &str = "Review the whole branch described in your Patchbay briefing. Report findings to PATCHBAY_REVIEW_FILE and do not modify the worktree.";
 
-/// `command` with the briefing it carries inline (Codex's `developer_instructions`)
-/// replaced by `normalized`, so Restart's fingerprint reads it as it reads the
-/// briefing file (see [`crate::plans::restart_briefing`]). The TOML and shell
-/// encodings both work character by character, so the encoded briefing is a
-/// substring of the encoded instructions, whatever the user's own precede it.
-pub(crate) fn normalize_inline_briefing(command: &str, briefing: &str, normalized: &str) -> String {
-    let shell = Shell::current();
-    let encoded = |text: &str| {
-        let toml = toml_string(shell, text);
-        let quoted = shell.quote(&toml[1..toml.len() - 1]);
-        quoted[1..quoted.len() - 1].to_owned()
-    };
-    command.replacen(&encoded(briefing), &encoded(normalized), 1)
-}
-
 /// Drop only the exact trailing kickoff Patchbay appended, preserving all provider options.
 fn job_resume_command(command: &str, prompt: &str) -> String {
     let suffix = format!(" {}", Shell::current().quote(prompt));
@@ -1457,8 +1442,7 @@ fn root_session_spec(
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
         // A resumed conversation is never prompted again. A fix and an Auto planner pass
         // their kickoff again on Restart, and an implement restart passes none, so every
-        // root start resumes with the same command and Restart's fingerprint matches
-        // (which reads an inline briefing's plan age as it reads the file's).
+        // root start resumes with the same command and Restart's fingerprint matches.
         if let Some(prompt) = &prompt {
             resume_command = Some(job_resume_command(&command, prompt));
         } else if !planning {
@@ -2977,11 +2961,7 @@ mod tests {
                 if let Some(prompt) = prompt {
                     assert!(command.ends_with(&shell.quote(prompt)));
                 }
-                let length = match shell {
-                    Shell::Windows => cmd_expanded_len(&command, &BTreeMap::new()),
-                    Shell::Unix => command.len(),
-                };
-                assert!(length <= budget);
+                assert!(command_len(shell, &command, &BTreeMap::new()) <= budget);
             }
             let mut plain = base;
             let briefing = Briefing {

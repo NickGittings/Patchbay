@@ -311,43 +311,29 @@ pub fn withdraw(root: &Path, task: Option<&str>) -> Result<bool> {
     Ok(true)
 }
 
-/// How long ago `then` was, roughly ("3 hours ago").
-pub(crate) fn ago(then: SystemTime) -> String {
-    let secs = SystemTime::now()
-        .duration_since(then)
+/// When `then` was, in UTC to the minute ("2026-10-17 14:03 UTC"). Absolute
+/// rather than relative, so a briefing stays the same while its plan does:
+/// Restart's fingerprint covers the briefing, which Codex carries inline.
+fn saved_at(then: SystemTime) -> String {
+    let secs = then
+        .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs();
-    let (n, unit) = match secs {
-        0..60 => return "just now".into(),
-        60..3600 => (secs / 60, "minute"),
-        3600..86_400 => (secs / 3600, "hour"),
-        _ => (secs / 86_400, "day"),
-    };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
-}
-
-const SECTION_PREFIX: &str = "The planner agreed this plan for the change";
-const SECTION_SUFFIX: &str = "; the selected scope";
-
-/// Replace only the generated plan age with the saved text and modification time.
-/// Other briefing content, including the plan body, still participates in Restart.
-pub(crate) fn restart_briefing(text: &str, root: &Path, task: Option<&str>) -> Result<String> {
-    let prefix = format!("## Shared plan\n\n{SECTION_PREFIX}");
-    let Some((before, rest)) = text.split_once(&prefix) else {
-        return Ok(text.into());
-    };
-    let Some((age, after)) = rest.split_once(SECTION_SUFFIX) else {
-        return Ok(text.into());
-    };
-    if !age.is_empty() && !(age.starts_with(" (saved ") && age.ends_with(')')) {
-        return Ok(text.into());
-    }
-    let saved = load(root, task)?;
-    let identity = saved.map(|s| (s.text, s.cut, s.modified));
-    Ok(format!(
-        "{before}{prefix}{}{SECTION_SUFFIX}{after}",
-        serde_json::to_string(&identity)?
-    ))
+    let (days, time) = (secs / 86_400, secs % 86_400);
+    // Howard Hinnant's `civil_from_days`, for days since 1970.
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        time / 3600,
+        time % 3600 / 60
+    )
 }
 
 /// The briefing section carrying a saved plan; `None` for a missing or blank one.
@@ -362,7 +348,7 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
     }
     let when = saved
         .modified
-        .map(|t| format!(" (saved {})", ago(t)))
+        .map(|t| format!(" (saved {})", saved_at(t)))
         .unwrap_or_default();
     let cut = if saved.cut {
         format!(
@@ -377,7 +363,7 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
     Some(ContextSection {
         title: "Shared plan".into(),
         body: format!(
-            "{SECTION_PREFIX}{when}{SECTION_SUFFIX} \
+            "The planner agreed this plan for the change{when}; the selected scope \
              is yours to implement. If it doesn't match the change you were started for, \
              ask before acting on it.\n\n{text}{cut}"
         ),
@@ -420,12 +406,10 @@ mod tests {
         let file = plan_file(&root, None).unwrap();
         assert!(file.starts_with(root.join(".git")));
         assert!(section(&root, None).unwrap().body.contains("1. do it"));
-        assert!(
-            section(&root, None)
-                .unwrap()
-                .body
-                .contains("(saved just now)")
-        );
+        assert!(section(&root, None).unwrap().body.contains(&format!(
+            "(saved {})",
+            saved_at(fs::metadata(&file).unwrap().modified().unwrap())
+        )));
         write(&root, None, "  \n").unwrap();
         assert!(section(&root, None).is_none());
         remove(&root, Some("t1")).unwrap();
@@ -507,12 +491,12 @@ mod tests {
     }
 
     #[test]
-    fn ages_read_naturally() {
-        let now = SystemTime::now();
-        assert_eq!(ago(now), "just now");
-        assert_eq!(ago(now - Duration::from_secs(60)), "1 minute ago");
-        assert_eq!(ago(now - Duration::from_secs(3 * 3600)), "3 hours ago");
-        assert_eq!(ago(now - Duration::from_secs(2 * 86_400 + 5)), "2 days ago");
+    fn saved_times_are_absolute_utc_minutes() {
+        let at = |secs| saved_at(SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+        assert_eq!(at(0), "1970-01-01 00:00 UTC");
+        assert_eq!(at(951_868_799), "2000-02-29 23:59 UTC");
+        assert_eq!(at(951_868_800), "2000-03-01 00:00 UTC");
+        assert_eq!(at(1_700_000_000), "2023-11-14 22:13 UTC");
     }
 
     #[test]
