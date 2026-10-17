@@ -865,9 +865,34 @@ struct Briefing<'a> {
     text: &'a str,
     dirs: &'a [PathBuf],
     prompt: Option<&'a str>,
-    /// The longest prompt another start of the same session may get. Codex's budget
-    /// counts it, so whether the briefing is inlined doesn't depend on the kickoff.
-    reserve: Option<&'a str>,
+    /// Room for the longest prompt another start of the same session may get, as
+    /// [`command_len`] measures it (0 for none). Codex's budget counts it, so whether
+    /// the briefing is inlined doesn't depend on the kickoff.
+    reserve: usize,
+}
+
+/// A command's length as its shell's limit counts it.
+fn command_len(shell: Shell, command: &str, env: &BTreeMap<String, String>) -> usize {
+    match shell {
+        Shell::Windows => cmd_expanded_len(command, env),
+        Shell::Unix => command.len(),
+    }
+}
+
+/// [`Briefing::reserve`] for a root agent: its longest kickoff, quoted.
+/// Kickoff prompts hold no `%`, so the environment can't change their length.
+fn root_reserve(shell: Shell) -> usize {
+    [&*implement_prompt(Some(MAX_SUBAGENTS)), FIX_FINDINGS_PROMPT]
+        .iter()
+        .map(|prompt| {
+            command_len(
+                shell,
+                &format!(" {}", shell.quote(prompt)),
+                &BTreeMap::new(),
+            )
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Returns false when Codex receives a file pointer instead of the full text.
@@ -884,13 +909,10 @@ fn decorate_agent(
         let _ = write!(command, " --add-dir {}", quote_path(shell, dir, env));
     }
     // The prompt goes last, but counts against the budget alongside the instructions.
-    let quoted = |prompt: &str| format!(" {}", shell.quote(prompt));
-    let prompt = briefing.prompt.map(quoted).unwrap_or_default();
-    let budgeted = briefing
-        .reserve
-        .map(quoted)
-        .filter(|reserve| reserve.len() > prompt.len())
-        .unwrap_or_else(|| prompt.clone());
+    let prompt = briefing
+        .prompt
+        .map(|prompt| format!(" {}", shell.quote(prompt)))
+        .unwrap_or_default();
     let inlined = match agent {
         Agent::Claude => {
             // Interactive sessions honour the file flag (checked with Claude Code 2.1.289).
@@ -918,12 +940,13 @@ fn decorate_agent(
                 )
             };
             let inline = argument(briefing.text);
-            let too_long = match shell {
-                Shell::Windows => {
-                    cmd_expanded_len(&format!("{command}{inline}{budgeted}"), env) > CMD_BUDGET
-                }
-                Shell::Unix => command.len() + inline.len() + budgeted.len() > SHELL_ARG_BUDGET,
+            let budget = match shell {
+                Shell::Windows => CMD_BUDGET,
+                Shell::Unix => SHELL_ARG_BUDGET,
             };
+            let len = |text: &str| command_len(shell, text, env);
+            let too_long =
+                len(&format!("{command}{inline}")) + len(&prompt).max(briefing.reserve) > budget;
             if too_long {
                 command.push_str(&argument(&format!(
                     "Your Patchbay briefing is in {}; read it before starting.",
@@ -1024,7 +1047,7 @@ pub fn job_agent_spec(
             text,
             dirs: &dirs,
             prompt: Some(prompt),
-            reserve: None,
+            reserve: 0,
         },
         Shell::current(),
         &mut env,
@@ -1311,7 +1334,7 @@ fn implement_prompt(subagents: Option<u8>) -> Cow<'static, str> {
     match subagents.unwrap_or(0).min(MAX_SUBAGENTS) {
         n if n < MIN_SUBAGENTS => Cow::Borrowed(IMPLEMENT_PROMPT),
         n => Cow::Owned(format!(
-            "{IMPLEMENT_PROMPT} If your tool supports subagents, split independent parts of the plan (by component or applied assignment) across up to {n} parallel subagents, keep any one file to a single subagent, then integrate their work and run the checks yourself."
+            "{IMPLEMENT_PROMPT} If your tool supports subagents, split independent parts of the plan, such as separate components or applied assignments, across up to {n} parallel subagents, keep any one file to a single subagent, then integrate their work and run the checks yourself."
         )),
     }
 }
@@ -1398,13 +1421,17 @@ fn root_session_spec(
             Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
         });
         // Implement's Restart has no kickoff, so a root start budgets for the longest one.
-        let reserve = (!planning).then(|| implement_prompt(Some(MAX_SUBAGENTS)));
+        let reserve = if planning {
+            0
+        } else {
+            root_reserve(Shell::current())
+        };
         let briefing = Briefing {
             file: &file,
             text: &briefing,
             dirs,
             prompt: prompt.as_deref(),
-            reserve: reserve.as_deref(),
+            reserve,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
         // A resumed conversation is never prompted again. A fix and an Auto planner pass
@@ -1525,7 +1552,7 @@ pub fn session_spec_with(
             text: &briefing,
             dirs: &context_dirs,
             prompt: None,
-            reserve: None,
+            reserve: 0,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1808,7 +1835,7 @@ mod tests {
             text: "",
             dirs: &[],
             prompt: None,
-            reserve: None,
+            reserve: 0,
         };
         for command in [
             "claude --settings ./team.json",
@@ -2085,6 +2112,23 @@ mod tests {
     }
 
     #[test]
+    fn kickoff_prompts_hold_no_cmd_sensitive_characters() {
+        // Prompts are bare quoted arguments, which npm and pnpm cmd shims expand
+        // inside `IF (...)` blocks, unlike the TOML-escaped instructions.
+        let subagents = implement_prompt(Some(MAX_SUBAGENTS));
+        for prompt in [
+            IMPLEMENT_PROMPT,
+            &subagents,
+            FIX_FINDINGS_PROMPT,
+            PLAN_PROMPT,
+            MERGE_PROMPT,
+            REVIEW_PROMPT,
+        ] {
+            assert!(!prompt.contains(['(', ')', '%', '!', '^', '&', '|', '<', '>', '"']));
+        }
+    }
+
+    #[test]
     fn subagent_limits_match_the_frontend() {
         // Pinned in `apps/desktop/src/types.test.ts` too.
         assert_eq!((MIN_SUBAGENTS, MAX_SUBAGENTS), (2, 8));
@@ -2103,7 +2147,7 @@ mod tests {
                     text: "Shared plan: fix login",
                     dirs: &[],
                     prompt: Some(&prompt),
-                    reserve: None,
+                    reserve: 0,
                 };
                 assert!(brief_agent(&mut command, &briefing, shell, &mut env).is_none());
                 assert!(!command.contains(['\r', '\n']), "{command}");
@@ -2334,7 +2378,7 @@ mod tests {
             text,
             dirs,
             prompt: None,
-            reserve: None,
+            reserve: 0,
         }
     }
 
@@ -2864,7 +2908,7 @@ mod tests {
                 text: &text,
                 dirs: &[],
                 prompt: Some(&prompt),
-                reserve: None,
+                reserve: 0,
             };
             let mut command = "codex".to_owned();
             assert!(!decorate_agent(
@@ -2893,7 +2937,6 @@ mod tests {
         ] {
             // Fits with the ordinary Implement prompt, but not with the longest kickoff.
             let base = format!("codex -c {}", shell.quote("developer_instructions=\"\""));
-            let reserve = implement_prompt(Some(MAX_SUBAGENTS));
             let text = "x".repeat(budget - 350);
             let subagents = implement_prompt(Some(3));
             for prompt in [None, Some(IMPLEMENT_PROMPT), Some(&*subagents)] {
@@ -2902,7 +2945,7 @@ mod tests {
                     text: &text,
                     dirs: &[],
                     prompt,
-                    reserve: Some(&reserve),
+                    reserve: root_reserve(shell),
                 };
                 let mut command = base.clone();
                 let notice = brief_agent(&mut command, &briefing, shell, &mut BTreeMap::new())
@@ -2912,11 +2955,7 @@ mod tests {
                 if let Some(prompt) = prompt {
                     assert!(command.ends_with(&shell.quote(prompt)));
                 }
-                let length = match shell {
-                    Shell::Windows => cmd_expanded_len(&command, &BTreeMap::new()),
-                    Shell::Unix => command.len(),
-                };
-                assert!(length <= budget);
+                assert!(command_len(shell, &command, &BTreeMap::new()) <= budget);
             }
             let mut plain = base;
             let briefing = Briefing {
@@ -2924,7 +2963,7 @@ mod tests {
                 text: &text,
                 dirs: &[],
                 prompt: Some(IMPLEMENT_PROMPT),
-                reserve: None,
+                reserve: 0,
             };
             assert!(brief_agent(&mut plain, &briefing, shell, &mut BTreeMap::new()).is_none());
             assert!(plain.contains(&text));
