@@ -9,6 +9,7 @@ import {
 } from '../store'
 import type { Task, TaskDraft } from '../types'
 import { taskActionState } from './taskActions'
+import { forgetAutoDrafts } from './autoDrafts'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions } from './sessions'
 import { taskActivate, taskAttach, taskCreate, taskList, taskRemove, taskUpdate } from './ipc'
@@ -200,6 +201,7 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   } finally {
     await refreshTasks(projectId)
   }
+  forgetAutoDrafts(projectId, id)
   const state = useStore.getState().captureProjects()[projectId]?.state
   if (state?.activeTask === id) activateTaskIn(projectId, null)
   // The removal succeeded; refreshing the list must not report it as failed.
@@ -241,12 +243,29 @@ export function seedNewTask(then?: (task: Task) => void, title?: string) {
   })
 }
 
+/** A worktree title from a goal: its first nonempty line, without a heading mark, kept short. */
+export function titleFor(goal: string, max = 72) {
+  const line =
+    goal
+      .split('\n')
+      .map((l) => l.replace(/^\s*#+\s*/, '').trim())
+      .find(Boolean) ?? ''
+  if (line.length <= max) return line
+  const cut = line.slice(0, max)
+  // At a word boundary when there is one.
+  return (cut.includes(' ') ? cut.replace(/\s+\S*$/, '') : cut).trimEnd()
+}
+
+/** Branch names, and the worktree folders named after them, stay this short. */
+const BRANCH_LIMIT = 60
+
 /** A branch name from a title: `Fix login bug` → `fix-login-bug`. */
 export function branchFor(title: string) {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9/._-]+/g, '-')
     .replace(/-{2,}/g, '-')
+    .slice(0, BRANCH_LIMIT)
     .replace(/^[-./]+|[-./]+$/g, '')
 }
 

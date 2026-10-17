@@ -15,8 +15,16 @@ vi.mock('./ipc', () => ({
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
-const { cancelNewTask, createTask, followActiveTask, seedNewTask, removeTask } =
-  await import('./tasks')
+const {
+  branchFor,
+  cancelNewTask,
+  createTask,
+  followActiveTask,
+  seedNewTask,
+  removeTask,
+  titleFor,
+} = await import('./tasks')
+const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')
 const { taskCreate, taskUpdate, taskList, taskRemove } = await import('./ipc')
 const { reconcileFreshSessions } = await import('./sessions')
 
@@ -165,4 +173,29 @@ test('rapid highlights write only the latest scope without listing worktrees aga
   expect(taskUpdate).toHaveBeenCalledWith('t', { components: ['web'] }, 'p')
   expect(taskList).not.toHaveBeenCalled()
   expect(useStore.getState().tasks[0].components).toEqual(['web'])
+})
+
+test("removing a worktree drops its Auto draft, not the project folder's", async () => {
+  removalProject()
+  autoDrafts.set(autoDraftKey('p', 't'), emptyAutoDraft())
+  autoDrafts.set(autoDraftKey('p', null), emptyAutoDraft())
+  await removeTask('t', true)
+  expect(autoDrafts.has(autoDraftKey('p', 't'))).toBe(false)
+  expect(autoDrafts.has(autoDraftKey('p', null))).toBe(true)
+})
+
+test('a goal seeds a short, single-line worktree title', () => {
+  expect(titleFor('\n## Optimize tokens\n\nCut the briefing in half.')).toBe('Optimize tokens')
+  expect(titleFor('   ')).toBe('')
+  const long = titleFor('word '.repeat(40))
+  expect(long.length).toBeLessThanOrEqual(72)
+  expect(long).not.toMatch(/\s$/)
+  expect(titleFor('x'.repeat(100))).toHaveLength(72)
+})
+
+test('branch names from titles stay short', () => {
+  expect(branchFor('Fix login bug')).toBe('fix-login-bug')
+  const branch = branchFor('Make the planner hand its plan over '.repeat(10))
+  expect(branch.length).toBeLessThanOrEqual(60)
+  expect(branch).not.toMatch(/^[-./]|[-./]$/)
 })

@@ -12,6 +12,7 @@ import {
 import { create } from 'zustand'
 import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
 import { liveDeclined } from './lib/validators'
+import { forgetAutoDrafts } from './lib/autoDrafts'
 import type {
   AgentRoles,
   NotificationSettings,
@@ -549,6 +550,7 @@ export const useStore = create<State>((set, get) => ({
     } as Partial<State>)
   },
   closeProject: (id) => {
+    forgetAutoDrafts(id)
     const projects = get().captureProjects()
     delete projects[id]
     const projectOrder = get().projectOrder.filter((p) => p !== id)

@@ -1,21 +1,40 @@
 import type { AgentRole, AutoRun, AutoStage, EffortSettings } from '../types'
 
-/** What the Auto dialog was given, kept while its popover is closed until a run starts. */
+/**
+ * What the user gave the Auto dialog, kept while its popover is closed until a run starts. Only
+ * the user's own choices are kept: what the dialog fills in itself is inferred again on reopen.
+ */
 export interface AutoDraft {
-  goal: string
-  /** The goal the dialog filled in itself, withdrawn once a load finds the branch merged. */
-  filledGoal: string
+  /** The goal as the user typed it; absent, the dialog infers one. */
+  goal?: string
   effort: AutoRun['effort']
   overrides: Partial<EffortSettings>
   mode: 'ask' | 'auto'
-  destination: string
+  /** The destination the user picked; absent, the dialog picks one. */
+  destination?: string
   picked: Partial<Record<AgentRole, string>>
   reviewers?: string[]
   stage: AutoStage | ''
 }
+
+export const emptyAutoDraft = (): AutoDraft => ({
+  effort: 'standard',
+  overrides: {},
+  mode: 'ask',
+  picked: {},
+  stage: '',
+})
 
 /** Drafts per project and worktree (UI only, like `planDrafts`). */
 export const autoDrafts = new Map<string, AutoDraft>()
 
 export const autoDraftKey = (projectId: string | undefined, task: string | null) =>
   JSON.stringify([projectId ?? '', task])
+
+/** Drop a closed project's drafts, or with `task`, only that removed worktree's. */
+export function forgetAutoDrafts(projectId: string, task?: string) {
+  for (const key of autoDrafts.keys()) {
+    const [p, t] = JSON.parse(key) as [string, string | null]
+    if (p === projectId && (task === undefined || t === task)) autoDrafts.delete(key)
+  }
+}

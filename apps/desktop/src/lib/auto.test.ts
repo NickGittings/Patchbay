@@ -1258,7 +1258,23 @@ test('the default branch in the project folder asks for a worktree', async () =>
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([
     { ...tree, path: '/p', branch: 'main', current: true },
   ])
-  await expect(autoSnapshot('p', null, run())).rejects.toBeInstanceOf(NeedsWorktree)
+  await expect(autoSnapshot('p', null, run({ runId: '' }))).rejects.toBeInstanceOf(NeedsWorktree)
+  // A run that already started can't be helped by a new worktree.
+  const started = autoSnapshot('p', null, run())
+  await expect(started).rejects.toThrow('No review base found; choose another worktree')
+  await expect(started).rejects.not.toBeInstanceOf(NeedsWorktree)
+})
+
+test('a branch that is not the default asks for another worktree, not a new one', async () => {
+  const { NeedsWorktree } = await import('./auto')
+  load()
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['feature', 'develop'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'feature', current: true },
+  ])
+  const preview = autoSnapshot('p', null, run({ runId: '' }))
+  await expect(preview).rejects.toThrow('No review base found; choose another worktree')
+  await expect(preview).rejects.not.toBeInstanceOf(NeedsWorktree)
 })
 
 test('needsInput can go directly to review without an observed working tick', async () => {

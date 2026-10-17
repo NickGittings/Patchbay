@@ -356,10 +356,15 @@ export async function autoSnapshot(
     destination && destination !== source.branch && branches.includes(destination)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
-  if (!base)
-    throw new NeedsWorktree(
-      `Auto needs a branch other than ${source.branch}; create a worktree for this task`,
-    )
+  if (!base) {
+    // Only the dialog's preview (no run yet) of the project folder on its default (or only)
+    // branch is helped by a new worktree; runs, and other worktrees, choose another one.
+    if (!task && !run.runId && (branches.length <= 1 || ['main', 'master'].includes(source.branch)))
+      throw new NeedsWorktree(
+        `Auto needs a branch other than ${source.branch}; create a worktree for this task`,
+      )
+    throw new Error('No review base found; choose another worktree')
+  }
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
     reviewRead(projectId, source.branch),
