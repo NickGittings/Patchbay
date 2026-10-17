@@ -87,6 +87,11 @@ export interface TaskWorkspace {
   graphAction: ActionRequest | null
   auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
+  /**
+   * Created from Plan, so the project plan is this worktree's until Implement copies it here
+   * (workspace layout only).
+   */
+  plannedFromProject: boolean
 }
 export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
   return {
@@ -102,6 +107,7 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
     graphAction: null,
     auto: null,
     graphActionReport: null,
+    plannedFromProject: false,
   }
 }
 export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
@@ -118,6 +124,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     graphAction,
     auto,
     graphActionReport,
+    plannedFromProject,
   } = s
   return {
     highlighted,
@@ -132,6 +139,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     graphAction,
     auto,
     graphActionReport,
+    plannedFromProject,
   }
 }
 
@@ -170,6 +178,7 @@ export interface ProjectState {
   graphAction: ActionRequest | null
   auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
+  plannedFromProject: boolean
   tasks: Task[]
   activeTask: string | null
   closedTaskIds: string[]
@@ -257,6 +266,7 @@ interface State {
   graphAction: ActionRequest | null
   auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
+  plannedFromProject: boolean
   extensions: ExtensionRegistry
   commands: CommandContribution[]
   menus: Record<string, MenuContribution[]>
@@ -573,6 +583,7 @@ export const useStore = create<State>((set, get) => ({
   graphAction: null,
   auto: null,
   graphActionReport: null,
+  plannedFromProject: false,
   addGroup: (name, componentIds) =>
     set((s) => ({
       groups: [
@@ -1023,6 +1034,7 @@ function emptyProjectState(): ProjectState {
     graphAction: null,
     auto: null,
     graphActionReport: null,
+    plannedFromProject: false,
     tasks: [],
     activeTask: null,
     closedTaskIds: [],
@@ -1056,6 +1068,7 @@ function projectState(s: State): ProjectState {
     graphAction,
     auto,
     graphActionReport,
+    plannedFromProject,
     tasks,
     activeTask,
     closedTaskIds,
@@ -1091,6 +1104,7 @@ function projectState(s: State): ProjectState {
     graphAction,
     auto,
     graphActionReport,
+    plannedFromProject,
     tasks,
     activeTask,
     closedTaskIds,

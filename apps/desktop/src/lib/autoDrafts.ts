@@ -25,6 +25,13 @@ export const emptyAutoDraft = (): AutoDraft => ({
   stage: '',
 })
 
+/** The draft to keep: an emptied or blank goal, or an emptied destination, is inferred again. */
+export const savedAutoDraft = (draft: AutoDraft): AutoDraft => ({
+  ...draft,
+  goal: draft.goal?.trim() ? draft.goal : undefined,
+  destination: draft.destination || undefined,
+})
+
 /** Drafts per project and worktree (UI only, like `planDrafts`). */
 export const autoDrafts = new Map<string, AutoDraft>()
 

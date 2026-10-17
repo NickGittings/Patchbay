@@ -1,5 +1,11 @@
 import { beforeEach, expect, test } from 'vitest'
-import { autoDraftKey, autoDrafts, emptyAutoDraft, forgetAutoDrafts } from './autoDrafts'
+import {
+  autoDraftKey,
+  autoDrafts,
+  emptyAutoDraft,
+  forgetAutoDrafts,
+  savedAutoDraft,
+} from './autoDrafts'
 
 beforeEach(() => autoDrafts.clear())
 
@@ -23,4 +29,10 @@ test("a closed project's drafts all go", () => {
   keep('q', null)
   forgetAutoDrafts('p')
   expect([...autoDrafts.keys()]).toEqual([autoDraftKey('q', null)])
+})
+
+test('a blank goal or destination is inferred again rather than kept', () => {
+  const draft = { ...emptyAutoDraft(), goal: '  \n ', destination: '', mode: 'auto' as const }
+  expect(savedAutoDraft(draft)).toEqual({ ...draft, goal: undefined, destination: undefined })
+  expect(savedAutoDraft({ ...draft, goal: ' Goal ' }).goal).toBe(' Goal ')
 })

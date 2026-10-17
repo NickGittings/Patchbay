@@ -13,16 +13,23 @@ import {
   checkAutoHooks,
   EFFORT,
   inferStage,
-  NeedsWorktree,
+  NoReviewBase,
   startAuto,
   STAGES,
   STAGE_LABELS,
   type AutoSnapshot,
+  wantsNewWorktree,
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
 import { integrated, MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
-import { type AutoDraft, autoDraftKey, autoDrafts, emptyAutoDraft } from '../../lib/autoDrafts'
+import {
+  type AutoDraft,
+  autoDraftKey,
+  autoDrafts,
+  emptyAutoDraft,
+  savedAutoDraft,
+} from '../../lib/autoDrafts'
 import { seedNewTask, titleFor } from '../../lib/tasks'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
@@ -34,17 +41,23 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   // Closing the popover unmounts the dialog; what the user gave it waits for it to reopen.
   const draftKey = autoDraftKey(projectId, task)
   const [draft, setDraft] = useState(() => autoDrafts.get(draftKey) ?? emptyAutoDraft())
-  const edit = (patch: Partial<AutoDraft>) => setDraft((d) => ({ ...d, ...patch }))
+  // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
+  const edit = (patch: Partial<AutoDraft>) => {
+    const next = { ...draft, ...patch }
+    setDraft(next)
+    autoDrafts.set(draftKey, savedAutoDraft(next))
+  }
   // This run's choices; unpicked stages follow the project's agent roles.
   const { picked, reviewers: pickedReviewers, effort, overrides, mode, stage } = draft
-  const reviewers = useMemo(
-    () =>
-      (pickedReviewers
-        ? agents.filter((a) => pickedReviewers.includes(a.id))
+  const reviewers = useMemo(() => {
+    const kept = pickedReviewers && agents.filter((a) => pickedReviewers.includes(a.id))
+    // Picks whose presets were all removed since give way to the role, as unpicked agents do.
+    return (
+      kept && (kept.length || !pickedReviewers.length)
+        ? kept
         : roleDevices(devices, roles, 'review')
-      ).map((a) => a.id),
-    [agents, devices, pickedReviewers, roles],
-  )
+    ).map((a) => a.id)
+  }, [agents, devices, pickedReviewers, roles])
   const runAgents = useMemo(() => {
     const out = {} as Record<AgentRole, string>
     const fallback = { implement: 'plan', fix: 'review' } as Partial<Record<AgentRole, AgentRole>>
@@ -75,14 +88,15 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const [error, setError] = useState('')
   // The worktree's branch can't be reviewed or merged into itself, so the run needs a new one.
   const [needsWorktree, setNeedsWorktree] = useState('')
+  // That view loads again on every Git refresh (focus, terminal exits, file changes), so a branch
+  // checked out meanwhile leaves it.
+  const [recheck, setRecheck] = useState(0)
   useEffect(() => {
-    // An emptied field is inferred again on reopen.
-    autoDrafts.set(draftKey, {
-      ...draft,
-      goal: draft.goal || undefined,
-      destination: draft.destination || undefined,
+    if (!needsWorktree) return
+    return useStore.subscribe((s, prev) => {
+      if (s.gitChanges !== prev.gitChanges) setRecheck((n) => n + 1)
     })
-  }, [draftKey, draft])
+  }, [needsWorktree])
   const [integrationCheck, setIntegrationCheck] = useState<{
     distinct: string[]
     devices: typeof devices
@@ -136,8 +150,10 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       })
       .catch((e) => {
         if (cancelled) return
-        if (e instanceof NeedsWorktree) {
-          setNeedsWorktree(e.message)
+        if (e instanceof NoReviewBase && wantsNewWorktree(e)) {
+          setNeedsWorktree(
+            `Auto needs a branch other than ${e.branch}; create a worktree for this task`,
+          )
           setError('')
         } else {
           setNeedsWorktree('')
@@ -150,7 +166,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     return () => {
       cancelled = true
     }
-  }, [projectId, task, destination, requestKey])
+  }, [projectId, task, destination, requestKey, recheck])
   useEffect(() => {
     let cancelled = false
     void Promise.all(distinct.map(checkAutoHooks))
@@ -202,14 +218,15 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         <button
           onClick={() => {
             const carried = goal.trim()
+            const saved = autoDrafts.get(draftKey)
             seedNewTask(
-              (created) => {
+              (created, projectId) => {
                 // The goal moves to the new worktree's dialog, with this run's other choices.
                 autoDrafts.delete(draftKey)
-                if (carried)
+                if (saved || carried)
                   autoDrafts.set(autoDraftKey(projectId, created.id), {
-                    ...draft,
-                    goal: carried,
+                    ...(saved ?? emptyAutoDraft()),
+                    goal: carried || undefined,
                     destination: undefined,
                     stage: '',
                   })

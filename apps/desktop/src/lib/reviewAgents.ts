@@ -230,9 +230,12 @@ export function reviewBases(
   ]
 }
 
+/** A repository's usual default branches, in the order they are preferred. */
+export const DEFAULT_BRANCHES = ['main', 'master']
+
 /**
- * The source's task base, else the open worktree's branch, else a local `main` or
- * `master`; never the source branch.
+ * The source's task base, else the open worktree's branch, else a local `DEFAULT_BRANCHES` one;
+ * never the source branch.
  */
 export function defaultReviewBase(
   source: Worktree,
@@ -243,7 +246,7 @@ export function defaultReviewBase(
   const candidates = [
     tasks.find((t) => !t.missing && t.worktree === source.path)?.base,
     worktrees.find((w) => w.current)?.branch,
-    ...['main', 'master'].filter((b) => branches.includes(b)),
+    ...DEFAULT_BRANCHES.filter((b) => branches.includes(b)),
   ]
   return candidates.find((b): b is string => !!b && b !== source.branch) ?? ''
 }

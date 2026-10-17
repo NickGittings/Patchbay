@@ -1251,30 +1251,45 @@ test("a new task's goal is its own, never the project's leftover plan", async ()
   expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
 })
 
+test('a worktree created from Plan borrows the project plan until it has its own', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { plannedFromProject: true })
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '' : '# Planned goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Planned goal')
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '# Task plan' : '# Planned goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
+})
+
 test('the default branch in the project folder asks for a worktree', async () => {
-  const { NeedsWorktree } = await import('./auto')
+  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
   load()
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([
     { ...tree, path: '/p', branch: 'main', current: true },
   ])
-  await expect(autoSnapshot('p', null, run({ runId: '' }))).rejects.toBeInstanceOf(NeedsWorktree)
-  // A run that already started can't be helped by a new worktree.
-  const started = autoSnapshot('p', null, run())
-  await expect(started).rejects.toThrow('No review base found; choose another worktree')
-  await expect(started).rejects.not.toBeInstanceOf(NeedsWorktree)
+  // Runs keep the message; only the dialog offers a new worktree for it.
+  const error = await autoSnapshot('p', null, run()).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(NoReviewBase)
+  expect(String(error)).toMatch('No review base found; choose another worktree')
+  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(true)
 })
 
 test('a branch that is not the default asks for another worktree, not a new one', async () => {
-  const { NeedsWorktree } = await import('./auto')
+  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
   load()
   vi.mocked(ipc.gitBranches).mockResolvedValue(['feature', 'develop'])
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([
     { ...tree, path: '/p', branch: 'feature', current: true },
   ])
-  const preview = autoSnapshot('p', null, run({ runId: '' }))
-  await expect(preview).rejects.toThrow('No review base found; choose another worktree')
-  await expect(preview).rejects.not.toBeInstanceOf(NeedsWorktree)
+  const error = await autoSnapshot('p', null, run({ runId: '' })).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(NoReviewBase)
+  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(false)
 })
 
 test('needsInput can go directly to review without an observed working tick', async () => {

@@ -193,12 +193,18 @@ test('switching tasks while reading the plan cannot launch into another task', a
 
 test('a plan made on the project folder is copied into the worktree it is implemented in', async () => {
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
-  useStore.setState({ sessions: { [sid]: { running: true } }, activeTask: 'later' })
+  useStore.setState({
+    sessions: { [sid]: { running: true } },
+    activeTask: 'later',
+    plannedFromProject: true,
+  })
   vi.mocked(ipc.planRead).mockImplementation(async (_, task) =>
     task ? { text: '# Copied', cut: false } : { text: '# Plan', cut: false },
   )
   await implementPlannerPlan('claude')
   expect(ipc.planWrite).toHaveBeenCalledWith('p', 'later', '# Plan', null)
+  // The worktree has its own plan now.
+  expect(useStore.getState().plannedFromProject).toBe(false)
   expect(ipc.terminalStop).toHaveBeenCalledWith(sid)
   expect(startTerminal).toHaveBeenCalledWith(
     TASK_ROOT_SCOPE,

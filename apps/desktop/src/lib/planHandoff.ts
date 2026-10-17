@@ -58,7 +58,8 @@ async function handoffPlannerPlan(
     throw new Error(
       'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Tools → Agent status integration.',
     )
-  current()
+  // The worktree holds its own plan now, so it no longer borrows the project's.
+  if (task) current().patchTask(projectId, task, { plannedFromProject: false })
   // Accepting a plan ends its planner, including one Auto took over manually.
   const sid = plannerSessionId(plannerId, projectId)
   if (current().sessions[sid]?.running) await terminalStop(sid)

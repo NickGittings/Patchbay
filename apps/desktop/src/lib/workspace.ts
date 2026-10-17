@@ -74,6 +74,7 @@ export function workspaceDocument(): WorkspaceDocument {
               maximizedTerminal: state.maximizedTerminal,
               auto: state.auto,
               graphActionReport: state.graphActionReport,
+              plannedFromProject: state.plannedFromProject,
             }
           : (p.unavailableLayout ?? {}),
       }
@@ -171,6 +172,8 @@ export function restoredLayout(
     )
   if (typeof layout.maximizedTerminal === 'string' || layout.maximizedTerminal === null)
     out.maximizedTerminal = layout.maximizedTerminal
+  if (typeof layout.plannedFromProject === 'boolean')
+    out.plannedFromProject = layout.plannedFromProject
   if (!nested && layout.taskWorkspaces && typeof layout.taskWorkspaces === 'object') {
     out.taskWorkspaces = {}
     for (const [key, value] of Object.entries(layout.taskWorkspaces)) {
@@ -335,7 +338,8 @@ export function initializeWorkspace() {
           s.taskWorkspaces === prev.taskWorkspaces &&
           s.rootTerminals === prev.rootTerminals &&
           s.componentTerminals === prev.componentTerminals &&
-          s.maximizedTerminal === prev.maximizedTerminal)
+          s.maximizedTerminal === prev.maximizedTerminal &&
+          s.plannedFromProject === prev.plannedFromProject)
       )
         return
       clearTimeout(timer)

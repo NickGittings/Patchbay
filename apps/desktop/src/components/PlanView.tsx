@@ -14,7 +14,7 @@ import {
 import { roleDevice } from '../lib/agentRoles'
 import { nearbyIds, planTerminals } from '../lib/plan'
 import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
-import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
+import { activeTaskOf, refreshTasks, seedPlannedTask } from '../lib/tasks'
 import { useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type PlannerProposal } from '../types'
 import Canvas from './Canvas'
@@ -278,7 +278,7 @@ export default function PlanView() {
               <WorktreePicker />
               <button
                 title="Create a branch and worktree for the highlighted components, or the selected one. The planner and its plan stay."
-                onClick={() => seedNewTask()}
+                onClick={() => seedPlannedTask()}
               >
                 ＋ New task
               </button>
@@ -299,7 +299,9 @@ export default function PlanView() {
                 <Menu label={implementLabel} title="Choose where to implement the plan">
                   <MenuItem
                     onClick={() =>
-                      seedNewTask((created) => void implement(`${projectId ?? ''}\n${created.id}`))
+                      seedPlannedTask(
+                        (created) => void implement(`${projectId ?? ''}\n${created.id}`),
+                      )
                     }
                   >
                     New worktree…

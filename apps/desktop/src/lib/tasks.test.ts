@@ -21,6 +21,7 @@ const {
   createTask,
   followActiveTask,
   seedNewTask,
+  seedPlannedTask,
   removeTask,
   titleFor,
 } = await import('./tasks')
@@ -123,7 +124,7 @@ test('cancelling the worktree dialog clears its pending follow-up', async () => 
   expect(then).not.toHaveBeenCalled()
   seedNewTask(then)
   await createTask({ title: 'T', branch: 't', components: [] })
-  expect(then).toHaveBeenCalledExactlyOnceWith(task)
+  expect(then).toHaveBeenCalledExactlyOnceWith(task, 'p')
 })
 
 test('rapid highlights write only the latest scope without listing worktrees again', async () => {
@@ -191,6 +192,44 @@ test('a goal seeds a short, single-line worktree title', () => {
   expect(long.length).toBeLessThanOrEqual(72)
   expect(long).not.toMatch(/\s$/)
   expect(titleFor('x'.repeat(100))).toHaveLength(72)
+})
+
+test('a long title keeps a word ending at the limit and cuts a long word hard', () => {
+  // The 73rd character is a space, so the 72nd ends a whole word.
+  const exact = `${'a'.repeat(70)} b c`
+  expect(titleFor(exact)).toBe(`${'a'.repeat(70)} b`)
+  // A boundary that would leave only the first word cuts mid-word instead.
+  const path = `Fix ${'apps/desktop/src/components/'.repeat(4)}`
+  expect(titleFor(path)).toBe(path.slice(0, 72))
+})
+
+test('a removal that succeeded is cleaned up even when refreshing the list fails', async () => {
+  removalProject()
+  autoDrafts.set(autoDraftKey('p', 't'), emptyAutoDraft())
+  vi.mocked(taskList).mockRejectedValue(new Error('offline'))
+  await expect(removeTask('t', true)).resolves.toBeUndefined()
+  expect(autoDrafts.has(autoDraftKey('p', 't'))).toBe(false)
+  expect(useStore.getState().activeTask).toBeNull()
+})
+
+test('a worktree created from Plan remembers it was planned from the project plan', async () => {
+  removalProject(null)
+  const task = { id: 'n', title: 'N', components: [] } as unknown as Task
+  vi.mocked(taskCreate).mockResolvedValue(task)
+  vi.mocked(taskList).mockResolvedValue([task])
+  const then = vi.fn()
+  seedPlannedTask(then)
+  await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(useStore.getState().activeTask).toBe('n')
+  expect(useStore.getState().plannedFromProject).toBe(true)
+  expect(then).toHaveBeenCalledExactlyOnceWith(task, 'p')
+  const other = { id: 'o', title: 'O', components: [] } as unknown as Task
+  vi.mocked(taskCreate).mockResolvedValue(other)
+  vi.mocked(taskList).mockResolvedValue([task, other])
+  seedNewTask()
+  await createTask({ title: 'O', branch: 'o', components: [] })
+  expect(useStore.getState().activeTask).toBe('o')
+  expect(useStore.getState().plannedFromProject).toBe(false)
 })
 
 test('branch names from titles stay short', () => {

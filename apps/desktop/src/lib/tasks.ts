@@ -169,7 +169,7 @@ export async function createTask(draft: TaskDraft): Promise<Task> {
   const task = await taskCreate(draft, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  afterNewTask(task)
+  afterNewTask(task, projectId)
   return task
 }
 
@@ -183,7 +183,7 @@ export async function attachTask(
   const task = await taskAttach(worktree, title, components, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  afterNewTask(task)
+  afterNewTask(task, projectId)
   return task
 }
 
@@ -198,13 +198,16 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
   let cleared: boolean
   try {
     cleared = await taskRemove(id, deleteWorktree, projectId)
-  } finally {
-    await refreshTasks(projectId)
+  } catch (e) {
+    await refreshTasks(projectId).catch(() => {})
+    throw e
   }
+  // The removal succeeded; refreshing the lists must neither report it as failed nor skip the
+  // cleanup after it.
+  await refreshTasks(projectId).catch(() => {})
   forgetAutoDrafts(projectId, id)
   const state = useStore.getState().captureProjects()[projectId]?.state
   if (state?.activeTask === id) activateTaskIn(projectId, null)
-  // The removal succeeded; refreshing the list must not report it as failed.
   await reconcileFreshSessions().catch(() => {})
   if (!cleared)
     useStore
@@ -217,29 +220,40 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
 }
 
 /** What to do with the worktree the open New worktree dialog creates, once it is active. */
-let onNewTask: ((task: Task) => void) | null = null
+let onNewTask: ((task: Task, projectId: string) => void) | null = null
 /** Close the dialog without leaving its follow-up attached to a later worktree. */
 export function cancelNewTask() {
   onNewTask = null
   useStore.getState().setNewTask(null)
 }
 
-function afterNewTask(task: Task) {
+function afterNewTask(task: Task, projectId: string) {
   const then = onNewTask
   onNewTask = null
-  then?.(task)
+  then?.(task, projectId)
 }
 
 /**
  * Open the new-worktree dialog for the highlighted components, else the selected one, with an
  * optional goal `title`; `then` runs once it has created and activated a worktree.
  */
-export function seedNewTask(then?: (task: Task) => void, title?: string) {
+export function seedNewTask(then?: (task: Task, projectId: string) => void, title?: string) {
   onNewTask = then ?? null
   const s = useStore.getState()
   s.setNewTask({
     components: s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [],
     title,
+  })
+}
+
+/**
+ * `seedNewTask` from Plan: the new worktree remembers that the project plan is its plan until
+ * Implement copies it there.
+ */
+export function seedPlannedTask(then?: (task: Task, projectId: string) => void) {
+  seedNewTask((task, projectId) => {
+    useStore.getState().patchTask(projectId, task.id, { plannedFromProject: true })
+    then?.(task, projectId)
   })
 }
 
@@ -251,9 +265,12 @@ export function titleFor(goal: string, max = 72) {
       .map((l) => l.replace(/^\s*#+\s*/, '').trim())
       .find(Boolean) ?? ''
   if (line.length <= max) return line
-  const cut = line.slice(0, max)
-  // At a word boundary when there is one.
-  return (cut.includes(' ') ? cut.replace(/\s+\S*$/, '') : cut).trimEnd()
+  // At a word boundary, keeping a word the cut ends right after, unless that loses most of it.
+  const words = line
+    .slice(0, max + 1)
+    .replace(/\S*$/, '')
+    .trimEnd()
+  return words.length >= max / 2 ? words : line.slice(0, max).trimEnd()
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */
