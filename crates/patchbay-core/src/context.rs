@@ -8,6 +8,7 @@ use crate::model::{
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
 use anyhow::{Result, anyhow};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -93,9 +94,9 @@ impl AutoBrief {
 /// The first task of a fresh agent: a root agent implements the plan or fixes
 /// review findings; an Auto planner plans.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Kickoff {
-    ImplementPlan,
+    ImplementPlan { subagents: Option<u8> },
     FixFindings,
     Plan,
 }
@@ -864,6 +865,9 @@ struct Briefing<'a> {
     text: &'a str,
     dirs: &'a [PathBuf],
     prompt: Option<&'a str>,
+    /// The longest prompt another start of the same session may get. Codex's budget
+    /// counts it, so whether the briefing is inlined doesn't depend on the kickoff.
+    reserve: Option<&'a str>,
 }
 
 /// Returns false when Codex receives a file pointer instead of the full text.
@@ -880,10 +884,13 @@ fn decorate_agent(
         let _ = write!(command, " --add-dir {}", quote_path(shell, dir, env));
     }
     // The prompt goes last, but counts against the budget alongside the instructions.
-    let prompt = briefing
-        .prompt
-        .map(|prompt| format!(" {}", shell.quote(prompt)))
-        .unwrap_or_default();
+    let quoted = |prompt: &str| format!(" {}", shell.quote(prompt));
+    let prompt = briefing.prompt.map(quoted).unwrap_or_default();
+    let budgeted = briefing
+        .reserve
+        .map(quoted)
+        .filter(|reserve| reserve.len() > prompt.len())
+        .unwrap_or_else(|| prompt.clone());
     let inlined = match agent {
         Agent::Claude => {
             // Interactive sessions honour the file flag (checked with Claude Code 2.1.289).
@@ -913,9 +920,9 @@ fn decorate_agent(
             let inline = argument(briefing.text);
             let too_long = match shell {
                 Shell::Windows => {
-                    cmd_expanded_len(&format!("{command}{inline}{prompt}"), env) > CMD_BUDGET
+                    cmd_expanded_len(&format!("{command}{inline}{budgeted}"), env) > CMD_BUDGET
                 }
-                Shell::Unix => command.len() + inline.len() + prompt.len() > SHELL_ARG_BUDGET,
+                Shell::Unix => command.len() + inline.len() + budgeted.len() > SHELL_ARG_BUDGET,
             };
             if too_long {
                 command.push_str(&argument(&format!(
@@ -1017,6 +1024,7 @@ pub fn job_agent_spec(
             text,
             dirs: &dirs,
             prompt: Some(prompt),
+            reserve: None,
         },
         Shell::current(),
         &mut env,
@@ -1216,13 +1224,12 @@ pub fn plan_session_spec_for(
 }
 
 /// Root implementation and shell sessions, separate from all planner sessions.
-/// A `kickoff` shapes an agent's briefing and gives it a first prompt. A fix
-/// keeps its kickoff on every later start, so it resumes without that prompt
-/// (`resume_command`), while a fresh start still gets it.
+/// A `kickoff` shapes an agent's briefing and gives it a first prompt. Every
+/// root agent resumes without that prompt (`resume_command`), while a fresh
+/// start with a kickoff still gets it.
 ///
 /// # Errors
 /// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
-#[allow(clippy::too_many_arguments)]
 pub fn task_root_session_spec(
     project: &Project,
     component_ids: &[String],
@@ -1295,6 +1302,20 @@ const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefi
 
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
+/// Maximum parallel subagents requested by an implementation kickoff.
+pub const MAX_SUBAGENTS: u8 = 8;
+/// Minimum count that enables parallel implementation subagents.
+pub const MIN_SUBAGENTS: u8 = 2;
+
+fn implement_prompt(subagents: Option<u8>) -> Cow<'static, str> {
+    match subagents.unwrap_or(0).min(MAX_SUBAGENTS) {
+        n if n < MIN_SUBAGENTS => Cow::Borrowed(IMPLEMENT_PROMPT),
+        n => Cow::Owned(format!(
+            "{IMPLEMENT_PROMPT} If your tool supports subagents, split independent parts of the plan (by component or applied assignment) across up to {n} parallel subagents, keep any one file to a single subagent, then integrate their work and run the checks yourself."
+        )),
+    }
+}
+
 const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing. Fix the ones that still apply; for any already resolved or that you disagree with, say why instead of changing code. Run the relevant checks and report each finding's outcome.";
 
 #[allow(clippy::too_many_arguments)]
@@ -1371,28 +1392,28 @@ fn root_session_spec(
                 }
             }
         }
+        let prompt = kickoff.map(|k| match k {
+            Kickoff::ImplementPlan { subagents } => implement_prompt(subagents),
+            Kickoff::FixFindings => Cow::Borrowed(FIX_FINDINGS_PROMPT),
+            Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
+        });
+        // Implement's Restart has no kickoff, so a root start budgets for the longest one.
+        let reserve = (!planning).then(|| implement_prompt(Some(MAX_SUBAGENTS)));
         let briefing = Briefing {
             file: &file,
             text: &briefing,
             dirs,
-            prompt: kickoff.map(|k| match k {
-                Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
-                Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
-                Kickoff::Plan => PLAN_PROMPT,
-            }),
+            prompt: prompt.as_deref(),
+            reserve: reserve.as_deref(),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
-        // A fix and an Auto planner pass their kickoff again on Restart, so their resume
-        // command stays the same across starts and a resumed conversation isn't prompted
-        // again; an implement restart keeps resuming as before.
-        match kickoff {
-            Some(Kickoff::FixFindings) => {
-                resume_command = Some(job_resume_command(&command, FIX_FINDINGS_PROMPT));
-            }
-            Some(Kickoff::Plan) => {
-                resume_command = Some(job_resume_command(&command, PLAN_PROMPT));
-            }
-            _ => {}
+        // A resumed conversation is never prompted again. A fix and an Auto planner pass
+        // their kickoff again on Restart, and an implement restart passes none, so every
+        // root start resumes with the same command and Restart's fingerprint matches.
+        if let Some(prompt) = &prompt {
+            resume_command = Some(job_resume_command(&command, prompt));
+        } else if !planning {
+            resume_command = Some(command.clone());
         }
     }
     policy
@@ -1504,6 +1525,7 @@ pub fn session_spec_with(
             text: &briefing,
             dirs: &context_dirs,
             prompt: None,
+            reserve: None,
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
     }
@@ -1595,7 +1617,7 @@ mod tests {
             "Stage: fix"
         );
         assert_eq!(
-            stage(auto.root_section(Some(super::Kickoff::ImplementPlan))),
+            stage(auto.root_section(Some(super::Kickoff::ImplementPlan { subagents: None }))),
             "Stage: implement"
         );
         assert_eq!(stage(auto.root_section(None)), "Stage: implement");
@@ -1786,6 +1808,7 @@ mod tests {
             text: "",
             dirs: &[],
             prompt: None,
+            reserve: None,
         };
         for command in [
             "claude --settings ./team.json",
@@ -2000,6 +2023,7 @@ mod tests {
     fn implementation_starts_with_a_task_prompt_without_changing_planner_launches() {
         for provider in ["claude", "codex"] {
             let mut terminal = planner();
+            terminal.id = format!("implement-prompt-{provider}-{}", uuid::Uuid::new_v4());
             terminal.command = provider.into();
             let sections = [ContextSection {
                 title: "Shared plan".into(),
@@ -2012,7 +2036,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &sections,
-                Some(Kickoff::ImplementPlan),
+                Some(Kickoff::ImplementPlan { subagents: None }),
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -2035,7 +2059,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &[],
-                Some(Kickoff::ImplementPlan),
+                Some(Kickoff::ImplementPlan { subagents: None }),
             )
             .unwrap();
             assert_eq!(
@@ -2043,6 +2067,124 @@ mod tests {
                 prompted,
                 "{command}"
             );
+        }
+    }
+
+    #[test]
+    fn implementation_prompt_requests_bounded_parallel_subagents() {
+        for count in [None, Some(0), Some(1)] {
+            assert_eq!(implement_prompt(count), IMPLEMENT_PROMPT);
+        }
+        assert!(implement_prompt(Some(3)).contains("up to 3 parallel subagents"));
+        assert!(implement_prompt(Some(3)).starts_with(IMPLEMENT_PROMPT));
+        assert_eq!(
+            implement_prompt(Some(u8::MAX)),
+            implement_prompt(Some(MAX_SUBAGENTS))
+        );
+        assert!(implement_prompt(Some(u8::MAX)).contains("up to 8 parallel subagents"));
+    }
+
+    #[test]
+    fn subagent_limits_match_the_frontend() {
+        // Pinned in `apps/desktop/src/types.test.ts` too.
+        assert_eq!((MIN_SUBAGENTS, MAX_SUBAGENTS), (2, 8));
+    }
+
+    #[test]
+    fn implementation_subagent_prompt_is_one_argument_in_both_shells() {
+        let prompt = implement_prompt(Some(3));
+        assert!(!prompt.contains(['\r', '\n']));
+        for shell in [Shell::Unix, Shell::Windows] {
+            for provider in ["claude", "codex"] {
+                let mut command = provider.to_string();
+                let mut env = BTreeMap::new();
+                let briefing = Briefing {
+                    file: Path::new("briefing.md"),
+                    text: "Shared plan: fix login",
+                    dirs: &[],
+                    prompt: Some(&prompt),
+                    reserve: None,
+                };
+                assert!(brief_agent(&mut command, &briefing, shell, &mut env).is_none());
+                assert!(!command.contains(['\r', '\n']), "{command}");
+                let words = command_tokens(&command, shell).unwrap();
+                assert_eq!(words.last().unwrap(), &*prompt);
+            }
+        }
+    }
+
+    #[test]
+    fn kickoffs_deserialize_the_frontend_tagged_shape() {
+        for (json, kickoff) in [
+            (
+                serde_json::json!({"kind": "implementPlan", "subagents": 3}),
+                Kickoff::ImplementPlan { subagents: Some(3) },
+            ),
+            (
+                serde_json::json!({"kind": "implementPlan"}),
+                Kickoff::ImplementPlan { subagents: None },
+            ),
+            (
+                serde_json::json!({"kind": "fixFindings"}),
+                Kickoff::FixFindings,
+            ),
+            (serde_json::json!({"kind": "plan"}), Kickoff::Plan),
+        ] {
+            assert_eq!(serde_json::from_value::<Kickoff>(json).unwrap(), kickoff);
+        }
+    }
+
+    #[test]
+    fn implementation_subagents_change_only_the_kickoff_prompt() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            // Launches below intentionally share a file, but no other test may write it.
+            terminal.id = format!("subagents-{provider}-{}", uuid::Uuid::new_v4());
+            terminal.command = provider.into();
+            let sections = [ContextSection {
+                title: "Shared plan".into(),
+                body: "Fix login".into(),
+            }];
+            let spec = |kickoff| {
+                task_root_session_spec(
+                    &project(),
+                    &[],
+                    &terminal,
+                    None,
+                    &AllowAll,
+                    &sections,
+                    kickoff,
+                )
+                .unwrap()
+            };
+            let plain = spec(Some(Kickoff::ImplementPlan { subagents: None }));
+            let text = std::fs::read_to_string(&plain.env[CONTEXT_ENV]).unwrap();
+            let parallel = spec(Some(Kickoff::ImplementPlan { subagents: Some(3) }));
+            assert_eq!(
+                text,
+                std::fs::read_to_string(&parallel.env[CONTEXT_ENV]).unwrap()
+            );
+            assert_eq!(plain.env, parallel.env);
+            assert_eq!(plain.id, parallel.id);
+            let mut plain_words = command_tokens(&plain.command, Shell::current()).unwrap();
+            let mut parallel_words = command_tokens(&parallel.command, Shell::current()).unwrap();
+            assert_eq!(plain_words.pop().unwrap(), IMPLEMENT_PROMPT);
+            assert_eq!(parallel_words.pop().unwrap(), implement_prompt(Some(3)));
+            // In particular, Codex's inline briefing is identical.
+            assert_eq!(plain_words, parallel_words);
+            let restart = spec(None);
+            assert_eq!(
+                text,
+                std::fs::read_to_string(&restart.env[CONTEXT_ENV]).unwrap()
+            );
+            assert_eq!(
+                command_tokens(&restart.command, Shell::current()).unwrap(),
+                plain_words
+            );
+            // Every start resumes without a kickoff prompt, so Restart's fingerprint matches.
+            for launch in [&plain, &parallel, &restart] {
+                assert_eq!(launch.resume_command.as_ref(), Some(&restart.command));
+            }
         }
     }
 
@@ -2094,6 +2236,7 @@ mod tests {
     fn fix_findings_starts_with_its_prompt_and_review_instructions() {
         for provider in ["claude", "codex"] {
             let mut terminal = planner();
+            terminal.id = format!("fix-prompt-{provider}-{}", uuid::Uuid::new_v4());
             terminal.command = provider.into();
             let sections = [ContextSection {
                 title: "Review findings".into(),
@@ -2191,6 +2334,7 @@ mod tests {
             text,
             dirs,
             prompt: None,
+            reserve: None,
         }
     }
 
@@ -2720,6 +2864,7 @@ mod tests {
                 text: &text,
                 dirs: &[],
                 prompt: Some(&prompt),
+                reserve: None,
             };
             let mut command = "codex".to_owned();
             assert!(!decorate_agent(
@@ -2733,6 +2878,56 @@ mod tests {
             assert!(command.contains("read it before starting"));
             assert!(command.contains(&prompt));
             assert!(command.len() < budget);
+        }
+    }
+
+    #[test]
+    fn codex_inlines_a_root_briefing_alike_with_or_without_a_kickoff() {
+        for (shell, budget, file) in [
+            (
+                Shell::Windows,
+                CMD_BUDGET,
+                Path::new(r"C:\Temp\briefing.md"),
+            ),
+            (Shell::Unix, SHELL_ARG_BUDGET, Path::new("/tmp/briefing.md")),
+        ] {
+            // Fits with the ordinary Implement prompt, but not with the longest kickoff.
+            let base = format!("codex -c {}", shell.quote("developer_instructions=\"\""));
+            let reserve = implement_prompt(Some(MAX_SUBAGENTS));
+            let text = "x".repeat(budget - 350);
+            let subagents = implement_prompt(Some(3));
+            for prompt in [None, Some(IMPLEMENT_PROMPT), Some(&*subagents)] {
+                let briefing = Briefing {
+                    file,
+                    text: &text,
+                    dirs: &[],
+                    prompt,
+                    reserve: Some(&reserve),
+                };
+                let mut command = base.clone();
+                let notice = brief_agent(&mut command, &briefing, shell, &mut BTreeMap::new())
+                    .expect("the reserved kickoff pushes the briefing into its file");
+                assert!(notice.starts_with("Briefing too long"));
+                assert!(command.contains("read it before starting"));
+                if let Some(prompt) = prompt {
+                    assert!(command.ends_with(&shell.quote(prompt)));
+                }
+                let length = match shell {
+                    Shell::Windows => cmd_expanded_len(&command, &BTreeMap::new()),
+                    Shell::Unix => command.len(),
+                };
+                assert!(length <= budget);
+            }
+            let mut plain = base;
+            let briefing = Briefing {
+                file,
+                text: &text,
+                dirs: &[],
+                prompt: Some(IMPLEMENT_PROMPT),
+                reserve: None,
+            };
+            assert!(brief_agent(&mut plain, &briefing, shell, &mut BTreeMap::new()).is_none());
+            assert!(plain.contains(&text));
         }
     }
 

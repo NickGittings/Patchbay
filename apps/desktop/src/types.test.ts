@@ -1,5 +1,19 @@
 import { expect, test } from 'vitest'
-import { PLAN_SCOPE, PROJECT_SCOPE, parseSessionId, retask, sessionId, sessionTask } from './types'
+import {
+  MAX_SUBAGENTS,
+  MIN_SUBAGENTS,
+  PLAN_SCOPE,
+  PROJECT_SCOPE,
+  parseSessionId,
+  retask,
+  sessionId,
+  sessionTask,
+} from './types'
+
+// Pinned in `crates/patchbay-core/src/context.rs` too (`subagent_limits_match_the_frontend`).
+test('subagent limits match the backend', () => {
+  expect([MIN_SUBAGENTS, MAX_SUBAGENTS]).toEqual([2, 8])
+})
 
 // Pinned in `crates/patchbay-core/src/workspace.rs` too (`session_ids_match_the_frontend`):
 // the frontend and the service must hash the same id for a session.

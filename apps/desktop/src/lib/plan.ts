@@ -10,7 +10,7 @@ const FALLBACK_AGENT: DeviceManifest = {
   source: 'builtin',
 }
 
-/** Agent presets (planners and "Agent in each"), else the built-in Claude. */
+/** Agent presets for planning and implementation, else the built-in Claude. */
 export const agentDevices = (devices: DeviceManifest[]) => {
   const agents = devices.filter((d) => d.kind === 'agent')
   return agents.length ? agents : [FALLBACK_AGENT]

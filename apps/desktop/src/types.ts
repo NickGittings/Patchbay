@@ -4,6 +4,16 @@ export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
+/** Mirrors context::{MIN_SUBAGENTS, MAX_SUBAGENTS}. */
+export const MIN_SUBAGENTS = 2
+export const MAX_SUBAGENTS = 8
+/** Implement's subagent choices: 0 (Off), then MIN_SUBAGENTS..=MAX_SUBAGENTS. */
+export const SUBAGENT_COUNTS: readonly number[] = [
+  0,
+  ...Array.from({ length: MAX_SUBAGENTS - MIN_SUBAGENTS + 1 }, (_, i) => i + MIN_SUBAGENTS),
+]
+export const isSubagentCount = (n: unknown): n is number =>
+  typeof n === 'number' && SUBAGENT_COUNTS.includes(n)
 
 /**
  * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
@@ -12,7 +22,9 @@ export const REVIEW_SCOPE = '@review'
  * prompts an Auto planner.
  */
 export type Kickoff =
-  { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string } | { kind: 'plan' }
+  | { kind: 'implementPlan'; subagents?: number }
+  | { kind: 'fixFindings'; reviewSession?: string }
+  | { kind: 'plan' }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 

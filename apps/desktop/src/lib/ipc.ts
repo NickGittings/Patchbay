@@ -200,7 +200,7 @@ export const planStart = async (
     terminal,
     requestId,
     auto,
-    kickoff: kickoff?.kind,
+    kickoff,
     resume,
     extraContext: await extraContext(project, componentIds),
   })
@@ -447,7 +447,7 @@ export const taskRootStart = async (
     requestId,
     auto,
     resume,
-    kickoff: kickoff?.kind,
+    kickoff: kickoff?.kind === 'fixFindings' ? { kind: kickoff.kind } : kickoff,
     reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],

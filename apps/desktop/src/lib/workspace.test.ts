@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
+import { MAX_SUBAGENTS, MIN_SUBAGENTS, SUBAGENT_COUNTS } from '../types'
 vi.mock('./ipc', () => ({ quitPatchbay: vi.fn(), workspaceLoad: vi.fn(), workspaceSave: vi.fn() }))
 vi.mock('./windows', () => ({ openComponentWindow: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileSessions: vi.fn() }))
@@ -173,4 +174,52 @@ test('a layout saved with the retired plannedFromProject flag restores without i
   expect(layout.activeTask).toBe('old')
   expect(layout).not.toHaveProperty('plannedFromProject')
   expect(layout.taskWorkspaces?.old).not.toHaveProperty('plannedFromProject')
+})
+
+test('Implement subagents restore Off or supported integer counts', () => {
+  expect(SUBAGENT_COUNTS).toEqual([0, 2, 3, 4, 5, 6, 7, 8])
+  for (const implementSubagents of SUBAGENT_COUNTS)
+    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(implementSubagents)
+  for (const implementSubagents of [
+    undefined,
+    null,
+    '3',
+    true,
+    -1,
+    MIN_SUBAGENTS - 1,
+    MAX_SUBAGENTS + 1,
+    MIN_SUBAGENTS + 0.5,
+    NaN,
+    Infinity,
+    {},
+  ])
+    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(0)
+  const restored = restoredLayout({
+    implementSubagents: 3,
+    taskWorkspaces: { other: { implementSubagents: 7 } },
+  })
+  expect(restored.taskWorkspaces?.other).not.toHaveProperty('implementSubagents')
+  expect(restored.taskWorkspaces?.['']).not.toHaveProperty('implementSubagents')
+})
+
+test('Implement subagents persist per project without dirtying the map', () => {
+  const firstProject = useStore.getState().toProject()
+  useStore.getState().setImplementSubagents(3)
+  expect(useStore.getState().dirty).toBe(false)
+  expect(useStore.getState().toProject()).toEqual(firstProject)
+  const layout = workspaceDocument().projects[0].layout
+  expect(restoredLayout(layout).implementSubagents).toBe(3)
+  useStore.getState().loadProject({
+    projectId: 'second',
+    root: '/second',
+    name: 'Second',
+    schemaVersion: 4,
+    links: [],
+    components: [],
+  })
+  expect(useStore.getState().implementSubagents).toBe(0)
+  useStore.getState().setImplementSubagents(5)
+  useStore.getState().activateProject('p')
+  expect(useStore.getState().implementSubagents).toBe(3)
+  expect(workspaceDocument().projects[1].layout.implementSubagents).toBe(5)
 })

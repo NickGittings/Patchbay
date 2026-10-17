@@ -8,7 +8,7 @@ import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { emptyTaskWorkspace, projectFrom, useStore, type ProjectState } from '../store'
-import type { OpenedProject, Project, WorkspaceDocument } from '../types'
+import { isSubagentCount, type OpenedProject, type Project, type WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
 import { reconcileSessions } from './sessions'
@@ -63,6 +63,7 @@ export function workspaceDocument(): WorkspaceDocument {
               planActive: state.planActive,
               planStartedWith: state.planStartedWith,
               agentRoles: state.agentRoles,
+              implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
               viewport: state.viewport,
               panels: state.panels,
@@ -135,7 +136,11 @@ export function restoredLayout(
     out.panels = layout.panels as ProjectState['panels']
   if (layout.planStartedWith && typeof layout.planStartedWith === 'object')
     out.planStartedWith = layout.planStartedWith as Record<string, string>
-  if (!nested) out.agentRoles = restoredAgentRoles(layout.agentRoles)
+  if (!nested) {
+    out.agentRoles = restoredAgentRoles(layout.agentRoles)
+    const subagents = layout.implementSubagents
+    out.implementSubagents = isSubagentCount(subagents) ? subagents : 0
+  }
   if (!nested)
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
@@ -198,6 +203,7 @@ export function restoredLayout(
                 'viewport',
                 'planStartedWith',
                 'agentRoles',
+                'implementSubagents',
                 'validatorDeclined',
               ].includes(key),
           ),
@@ -323,6 +329,7 @@ export function initializeWorkspace() {
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
           s.agentRoles === prev.agentRoles &&
+          s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
           s.notifications === prev.notifications &&
           s.workspaceSettings === prev.workspaceSettings &&
