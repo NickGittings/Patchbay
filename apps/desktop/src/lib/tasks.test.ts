@@ -338,3 +338,15 @@ test('an earlier request waits for the latest list before returning', async () =
   await Promise.all([earlier, latest])
   expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['n'])
 })
+
+test("a later request's failure still lets an earlier list land", async () => {
+  removalProject()
+  let answer!: (tasks: Task[]) => void
+  vi.mocked(taskList).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+  const earlier = refreshTasks('p')
+  vi.mocked(taskList).mockRejectedValueOnce(new Error('transient'))
+  const later = refreshTasks('p')
+  answer([fresh])
+  await Promise.all([earlier, later])
+  expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['n'])
+})

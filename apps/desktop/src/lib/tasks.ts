@@ -38,35 +38,40 @@ export function activeWorktree(s: Snapshot): string | undefined {
   return task && !task.current ? task.worktree : undefined
 }
 
-/** Each project's latest task list request; only its answer is applied. */
-const refreshing = new Map<string, Promise<void>>()
+/** Each project's latest task list request, and the newest one whose list was applied. */
+const requested = new Map<string, number>()
+const applied = new Map<string, number>()
+const pending = new Map<string, Promise<void>>()
 
 /**
  * Reload a project's task list from the backend (main window only; pop-outs get it broadcast). A
- * failure keeps the list as it was (a project outside a git repo simply has none). A list asked
- * for before a later request may miss a worktree created since, which would drop it as the active
- * task and prune its draft, so an earlier request waits for the latest one instead.
+ * failure keeps the list as it was (a project outside a git repo simply has none). A list older
+ * than one already applied may miss a worktree created since, which would drop it as the active
+ * task and prune its draft, so it is ignored; callers return once the newest request settles.
  */
 export async function refreshTasks(projectId = useStore.getState().project?.id) {
   if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
-  const latest = () => refreshing.get(projectId) === request
-  const request: Promise<void> = (async () => {
+  const seq = (requested.get(projectId) ?? 0) + 1
+  requested.set(projectId, seq)
+  const request = (async () => {
     try {
       const tasks = await taskList(projectId)
-      if (latest()) return applyTasks(projectId, tasks)
+      if (seq <= (applied.get(projectId) ?? 0)) return
+      applied.set(projectId, seq)
+      applyTasks(projectId, tasks)
     } catch (e) {
-      if (latest()) {
-        if (useStore.getState().project?.id === projectId && useStore.getState().tasks.length)
-          useStore.getState().setMessage(String(e))
-        return
-      }
+      const s = useStore.getState()
+      if (seq === requested.get(projectId) && s.project?.id === projectId && s.tasks.length)
+        s.setMessage(String(e))
     }
-    await refreshing.get(projectId)
-  })().finally(() => {
-    if (latest()) refreshing.delete(projectId)
-  })
-  refreshing.set(projectId, request)
-  await request
+  })()
+  pending.set(projectId, request)
+  let settled = request
+  await settled
+  while (pending.get(projectId) !== settled) {
+    settled = pending.get(projectId)!
+    await settled
+  }
 }
 
 /** Set a project's tasks, whether or not its tab is active, dropping a vanished active task. */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
 import { useStore } from '../../store'
 import {
@@ -32,6 +32,7 @@ import {
   savedAutoDraft,
 } from '../../lib/autoDrafts'
 import { seedAutoTask } from '../../lib/autoWorktree'
+import { CloseMenu } from '../menuContext'
 
 /**
  * Apply one change to the draft shown and the one kept under `key`: to a kept draft, else, for the
@@ -51,6 +52,7 @@ function changeDraft(
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
+  const closeMenu = useContext(CloseMenu)
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const agents = useMemo(() => agentDevices(devices), [devices])
@@ -256,7 +258,14 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         </label>
         {/* The goal shown titles the worktree; only a typed one moves, since the copied project
             plan fills in the same goal there. */}
-        <button onClick={() => seedAutoTask(draftKey, goal, goal === filled.goal)}>
+        <button
+          onClick={() => {
+            // Close the popover first, as the worktree picker does, so activating the new worktree
+            // can't remount this dialog under the New worktree dialog before its draft moves.
+            closeMenu()
+            seedAutoTask(draftKey, goal, goal === filled.goal)
+          }}
+        >
           New worktree…
         </button>
       </div>
