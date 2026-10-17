@@ -12,7 +12,9 @@ export const REVIEW_SCOPE = '@review'
  * prompts an Auto planner.
  */
 export type Kickoff =
-  { kind: 'implementPlan' } | { kind: 'fixFindings'; reviewSession?: string } | { kind: 'plan' }
+  | { kind: 'implementPlan'; subagents?: number }
+  | { kind: 'fixFindings'; reviewSession?: string }
+  | { kind: 'plan' }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 

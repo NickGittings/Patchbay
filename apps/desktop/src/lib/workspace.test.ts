@@ -174,3 +174,38 @@ test('a layout saved with the retired plannedFromProject flag restores without i
   expect(layout).not.toHaveProperty('plannedFromProject')
   expect(layout.taskWorkspaces?.old).not.toHaveProperty('plannedFromProject')
 })
+
+test('Implement subagents restore only integer counts from 0 to 8', () => {
+  for (const implementSubagents of [0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(implementSubagents)
+  for (const implementSubagents of [undefined, null, '3', true, -1, 9, 2.5, NaN, Infinity, {}])
+    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(0)
+  const restored = restoredLayout({
+    implementSubagents: 3,
+    taskWorkspaces: { other: { implementSubagents: 7 } },
+  })
+  expect(restored.taskWorkspaces?.other).not.toHaveProperty('implementSubagents')
+  expect(restored.taskWorkspaces?.['']).not.toHaveProperty('implementSubagents')
+})
+
+test('Implement subagents persist per project without dirtying the map', () => {
+  const firstProject = useStore.getState().toProject()
+  useStore.getState().setImplementSubagents(3)
+  expect(useStore.getState().dirty).toBe(false)
+  expect(useStore.getState().toProject()).toEqual(firstProject)
+  const layout = workspaceDocument().projects[0].layout
+  expect(restoredLayout(layout).implementSubagents).toBe(3)
+  useStore.getState().loadProject({
+    projectId: 'second',
+    root: '/second',
+    name: 'Second',
+    schemaVersion: 4,
+    links: [],
+    components: [],
+  })
+  expect(useStore.getState().implementSubagents).toBe(0)
+  useStore.getState().setImplementSubagents(5)
+  useStore.getState().activateProject('p')
+  expect(useStore.getState().implementSubagents).toBe(3)
+  expect(workspaceDocument().projects[1].layout.implementSubagents).toBe(5)
+})

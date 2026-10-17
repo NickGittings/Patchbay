@@ -17,6 +17,8 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const setRoles = useStore((s) => s.setAgentRoles)
+  const subagents = useStore((s) => s.implementSubagents)
+  const setSubagents = useStore((s) => s.setImplementSubagents)
   const agents = agentDevices(devices)
   const reviewers = (
     <div key="review" className="agent-role-field">
@@ -66,8 +68,8 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           const id = roles[role]?.[0] ?? ''
           const missing = id && !agents.some((a) => a.id === id)
           return (
-            <label key={role} className="agent-role-field">
-              {ROLE_LABELS[role]}{' '}
+            <div key={role} className="agent-role-field">
+              <span>{ROLE_LABELS[role]}</span>
               <select
                 aria-label={ROLE_LABELS[role]}
                 value={id}
@@ -84,7 +86,29 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
                   </option>
                 ))}
               </select>
-            </label>
+              {role === 'implement' && (
+                <>
+                  <label className="row">
+                    Subagents
+                    <select
+                      value={subagents}
+                      onChange={(e) => setSubagents(Number(e.target.value))}
+                    >
+                      <option value={0}>Off</option>
+                      {[2, 3, 4, 5, 6, 7, 8].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="hint flush">
+                    Asks the implementation agent to split the plan across this many parallel
+                    subagents, if its tool supports them.
+                  </p>
+                </>
+              )}
+            </div>
           )
         })}
       </div>

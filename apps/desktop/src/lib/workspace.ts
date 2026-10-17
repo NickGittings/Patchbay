@@ -63,6 +63,7 @@ export function workspaceDocument(): WorkspaceDocument {
               planActive: state.planActive,
               planStartedWith: state.planStartedWith,
               agentRoles: state.agentRoles,
+              implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
               viewport: state.viewport,
               panels: state.panels,
@@ -135,7 +136,17 @@ export function restoredLayout(
     out.panels = layout.panels as ProjectState['panels']
   if (layout.planStartedWith && typeof layout.planStartedWith === 'object')
     out.planStartedWith = layout.planStartedWith as Record<string, string>
-  if (!nested) out.agentRoles = restoredAgentRoles(layout.agentRoles)
+  if (!nested) {
+    out.agentRoles = restoredAgentRoles(layout.agentRoles)
+    const subagents = layout.implementSubagents
+    out.implementSubagents =
+      typeof subagents === 'number' &&
+      Number.isInteger(subagents) &&
+      subagents >= 0 &&
+      subagents <= 8
+        ? subagents
+        : 0
+  }
   if (!nested)
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
@@ -198,6 +209,7 @@ export function restoredLayout(
                 'viewport',
                 'planStartedWith',
                 'agentRoles',
+                'implementSubagents',
                 'validatorDeclined',
               ].includes(key),
           ),
@@ -323,6 +335,7 @@ export function initializeWorkspace() {
           s.planActive === prev.planActive &&
           s.planStartedWith === prev.planStartedWith &&
           s.agentRoles === prev.agentRoles &&
+          s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
           s.notifications === prev.notifications &&
           s.workspaceSettings === prev.workspaceSettings &&

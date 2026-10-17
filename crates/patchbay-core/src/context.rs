@@ -8,6 +8,7 @@ use crate::model::{
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
 use anyhow::{Result, anyhow};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -1182,6 +1183,7 @@ pub fn plan_session_spec(
                 sections,
                 true,
                 kickoff,
+                None,
             )
         }
         Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
@@ -1212,6 +1214,7 @@ pub fn plan_session_spec_for(
         sections,
         true,
         None,
+        None,
     )
 }
 
@@ -1221,7 +1224,8 @@ pub fn plan_session_spec_for(
 /// (`resume_command`), while a fresh start still gets it.
 ///
 /// # Errors
-/// As [`plan_session_spec`], or if a `kickoff` terminal is not an agent.
+/// As [`plan_session_spec`], if a `kickoff` terminal is not an agent, or if subagents
+/// are requested without an Implement kickoff.
 #[allow(clippy::too_many_arguments)]
 pub fn task_root_session_spec(
     project: &Project,
@@ -1231,6 +1235,7 @@ pub fn task_root_session_spec(
     policy: &dyn Policy,
     sections: &[ContextSection],
     kickoff: Option<Kickoff>,
+    subagents: Option<u8>,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
         kickoff.is_none() || terminal.kind == TerminalKind::Agent,
@@ -1246,6 +1251,7 @@ pub fn task_root_session_spec(
         sections,
         false,
         kickoff,
+        subagents,
     )
 }
 
@@ -1295,6 +1301,18 @@ const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefi
 
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
+/// Maximum parallel subagents requested by an implementation kickoff.
+pub const MAX_SUBAGENTS: u8 = 8;
+
+fn implement_prompt(subagents: Option<u8>) -> Cow<'static, str> {
+    match subagents.unwrap_or(0).min(MAX_SUBAGENTS) {
+        0 | 1 => Cow::Borrowed(IMPLEMENT_PROMPT),
+        n => Cow::Owned(format!(
+            "{IMPLEMENT_PROMPT}\n\nIf your tool supports subagents, split independent parts of the plan (by component or applied assignment) across up to {n} parallel subagents, keep any one file to a single subagent, then integrate their work and run the checks yourself."
+        )),
+    }
+}
+
 const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing. Fix the ones that still apply; for any already resolved or that you disagree with, say why instead of changing code. Run the relevant checks and report each finding's outcome.";
 
 #[allow(clippy::too_many_arguments)]
@@ -1307,7 +1325,12 @@ fn root_session_spec(
     sections: &[ContextSection],
     planning: bool,
     kickoff: Option<Kickoff>,
+    subagents: Option<u8>,
 ) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        subagents.is_none() || kickoff == Some(Kickoff::ImplementPlan),
+        "Subagents require an implementation kickoff"
+    );
     let scope = if planning {
         PLAN_SCOPE
     } else {
@@ -1371,15 +1394,16 @@ fn root_session_spec(
                 }
             }
         }
+        let prompt = kickoff.map(|k| match k {
+            Kickoff::ImplementPlan => implement_prompt(subagents),
+            Kickoff::FixFindings => Cow::Borrowed(FIX_FINDINGS_PROMPT),
+            Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
+        });
         let briefing = Briefing {
             file: &file,
             text: &briefing,
             dirs,
-            prompt: kickoff.map(|k| match k {
-                Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
-                Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
-                Kickoff::Plan => PLAN_PROMPT,
-            }),
+            prompt: prompt.as_deref(),
         };
         notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
         // A fix and an Auto planner pass their kickoff again on Restart, so their resume
@@ -1887,6 +1911,7 @@ mod tests {
                     body: "api: Fix login".into(),
                 }],
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -2013,6 +2038,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::ImplementPlan),
+                None,
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -2036,12 +2062,100 @@ mod tests {
                 &AllowAll,
                 &[],
                 Some(Kickoff::ImplementPlan),
+                None,
             )
             .unwrap();
             assert_eq!(
                 spec.command.contains("Implement the shared plan"),
                 prompted,
                 "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn implementation_prompt_requests_bounded_parallel_subagents() {
+        for count in [None, Some(0), Some(1)] {
+            assert_eq!(implement_prompt(count), IMPLEMENT_PROMPT);
+        }
+        assert!(implement_prompt(Some(3)).contains("up to 3 parallel subagents"));
+        assert!(implement_prompt(Some(3)).starts_with(IMPLEMENT_PROMPT));
+        assert_eq!(
+            implement_prompt(Some(u8::MAX)),
+            implement_prompt(Some(MAX_SUBAGENTS))
+        );
+        assert!(implement_prompt(Some(u8::MAX)).contains("up to 8 parallel subagents"));
+    }
+
+    #[test]
+    fn implementation_subagents_change_only_the_kickoff_prompt() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = provider.into();
+            let sections = [ContextSection {
+                title: "Shared plan".into(),
+                body: "Fix login".into(),
+            }];
+            let spec = |kickoff, subagents| {
+                task_root_session_spec(
+                    &project(),
+                    &[],
+                    &terminal,
+                    None,
+                    &AllowAll,
+                    &sections,
+                    kickoff,
+                    subagents,
+                )
+                .unwrap()
+            };
+            let plain = spec(Some(Kickoff::ImplementPlan), None);
+            let text = std::fs::read_to_string(&plain.env[CONTEXT_ENV]).unwrap();
+            let parallel = spec(Some(Kickoff::ImplementPlan), Some(3));
+            assert_eq!(
+                text,
+                std::fs::read_to_string(&parallel.env[CONTEXT_ENV]).unwrap()
+            );
+            assert_eq!(plain.env, parallel.env);
+            assert_eq!(plain.id, parallel.id);
+            assert!(parallel.resume_command.is_none());
+            let mut plain_words = command_tokens(&plain.command, Shell::current()).unwrap();
+            let mut parallel_words = command_tokens(&parallel.command, Shell::current()).unwrap();
+            assert_eq!(plain_words.pop().unwrap(), IMPLEMENT_PROMPT);
+            assert_eq!(parallel_words.pop().unwrap(), implement_prompt(Some(3)));
+            // In particular, Codex's inline briefing is identical.
+            assert_eq!(plain_words, parallel_words);
+            let restart = spec(None, None);
+            assert_eq!(
+                text,
+                std::fs::read_to_string(&restart.env[CONTEXT_ENV]).unwrap()
+            );
+            assert_eq!(
+                command_tokens(&restart.command, Shell::current()).unwrap(),
+                plain_words
+            );
+            assert!(restart.resume_command.is_none());
+        }
+    }
+
+    #[test]
+    fn subagents_require_an_implementation_kickoff() {
+        for kickoff in [None, Some(Kickoff::FixFindings)] {
+            let error = task_root_session_spec(
+                &project(),
+                &[],
+                &planner(),
+                None,
+                &AllowAll,
+                &[],
+                kickoff,
+                Some(3),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                error.to_string(),
+                "Subagents require an implementation kickoff"
             );
         }
     }
@@ -2085,6 +2199,7 @@ mod tests {
                 &AllowAll,
                 &[],
                 Some(Kickoff::Plan),
+                None,
             );
             assert!(root.is_err());
         }
@@ -2107,6 +2222,7 @@ mod tests {
                 &AllowAll,
                 &sections,
                 Some(Kickoff::FixFindings),
+                None,
             )
             .unwrap();
             let words = command_tokens(&spec.command, Shell::current()).unwrap();

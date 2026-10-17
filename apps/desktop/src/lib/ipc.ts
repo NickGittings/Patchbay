@@ -448,6 +448,7 @@ export const taskRootStart = async (
     auto,
     resume,
     kickoff: kickoff?.kind,
+    subagents: kickoff?.kind === 'implementPlan' ? kickoff.subagents : undefined,
     reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:
       terminal.kind === 'agent' ? await extraContext(project, componentIds, undefined, task) : [],

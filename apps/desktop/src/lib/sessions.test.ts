@@ -671,3 +671,14 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
   await restartTerminal(PLAN_SCOPE, 'claude')
   expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([undefined, undefined])
 })
+
+test('Restart resumes Implement without repeating its subagent kickoff', async () => {
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  const kickoff = { kind: 'implementPlan', subagents: 3 } as const
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff })
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual(kickoff)
+  await restartTerminal(TASK_ROOT_SCOPE, terminalId)
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toBeUndefined()
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[6]).toBe(true)
+})

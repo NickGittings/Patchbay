@@ -155,6 +155,8 @@ export interface ProjectState {
   implementationComponents: ImplementationComponent[] | null
   planStartedWith: Record<string, string>
   agentRoles: AgentRoles
+  /** Parallel subagents requested by Implement; 0 disables it (workspace layout only). */
+  implementSubagents: number
   /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
   validatorDeclined: string[]
   planActive: string | null
@@ -288,7 +290,10 @@ interface State {
   planStartedWith: Record<string, string>
   /** The agent preset assigned to each role in this project (workspace layout only). */
   agentRoles: AgentRoles
+  /** Parallel subagents requested by Implement; 0 disables it (workspace layout only). */
+  implementSubagents: number
   setAgentRoles: (roles: AgentRoles) => void
+  setImplementSubagents: (subagents: number) => void
   /** Validator suggestions the user declined in this project (workspace layout only). */
   validatorDeclined: string[]
   /** Declines suggestions, dropping keys of terminals no longer on the map. */
@@ -667,6 +672,8 @@ export const useStore = create<State>((set, get) => ({
   planStartedWith: {},
   agentRoles: {},
   setAgentRoles: (agentRoles) => set({ agentRoles }),
+  implementSubagents: 0,
+  setImplementSubagents: (implementSubagents) => set({ implementSubagents }),
   validatorDeclined: [],
   declineValidators: (keys) =>
     set((s) => ({
@@ -1010,6 +1017,7 @@ function emptyProjectState(): ProjectState {
     implementationComponents: null,
     planStartedWith: {},
     agentRoles: {},
+    implementSubagents: 0,
     validatorDeclined: [],
     planActive: null,
     dirty: false,
@@ -1042,6 +1050,7 @@ function projectState(s: State): ProjectState {
     implementationComponents,
     planStartedWith,
     agentRoles,
+    implementSubagents,
     validatorDeclined,
     planActive,
     dirty,
@@ -1077,6 +1086,7 @@ function projectState(s: State): ProjectState {
     implementationComponents,
     planStartedWith,
     agentRoles,
+    implementSubagents,
     validatorDeclined,
     planActive,
     dirty,

@@ -86,6 +86,32 @@
       'navigation layout',
       () => document.querySelector('.hierarchy') && nodeElement('alpha'),
     )
+    click([...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Tools')))
+    click(
+      await until('Agent roles menu', () =>
+        [...document.querySelectorAll('button')].find((b) => b.textContent === 'Agent roles'),
+      ),
+    )
+    const rolesPanel = await until('Agent roles panel', () =>
+      document.querySelector('[aria-label="Agent roles"]'),
+    )
+    const subagents = [...rolesPanel.querySelectorAll('label')]
+      .find((el) => el.textContent.includes('Subagents'))
+      ?.querySelector('select')
+    assert(subagents, 'missing subagent control')
+    assert(
+      [...subagents.options].map((o) => o.value).join() === '0,2,3,4,5,6,7,8',
+      'incorrect subagent choices',
+    )
+    const beforeSubagents = JSON.stringify(state().toProject())
+    const wasDirty = state().dirty
+    choose(subagents, '3')
+    await until('subagents selected', () => state().implementSubagents === 3)
+    assert(
+      state().dirty === wasDirty && JSON.stringify(state().toProject()) === beforeSubagents,
+      'subagent setting changed the project map',
+    )
+    click([...rolesPanel.querySelectorAll('button')].find((b) => b.textContent === 'Close'))
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
     const visible = (selector) => {
