@@ -219,6 +219,13 @@ pub(crate) fn write_locked(root: &Path, task: Option<&str>, text: &str) -> Resul
         bail!("The plan is longer than {} KiB", PLAN_LIMIT / 1024);
     }
     let file = plan_file(root, task)?;
+    // An unchanged plan keeps its file, and with it the save time agents are told
+    // (so Restart still resumes them) and any applied assignments.
+    if std::fs::metadata(&file).is_ok_and(|m| u64::try_from(text.len()) == Ok(m.len()))
+        && std::fs::read(&file).is_ok_and(|bytes| bytes == text.as_bytes())
+    {
+        return Ok(());
+    }
     std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
     write_atomic(&file, text.as_bytes())?;
     crate::proposals::invalidate(root, task)?;
@@ -336,6 +343,20 @@ fn saved_at(then: SystemTime) -> String {
     )
 }
 
+/// How a section points to the rest of a cut plan, before and after its file.
+const CUT_NOTE: (&str, &str) = (" KiB; read the rest in ", ".]");
+
+/// The size and exact modification time of the cut plan a briefing points to. Its
+/// cut text and to-the-minute save time can't show a change past the cut, so
+/// Restart's fingerprint adds these. `None` when the briefing cut no plan.
+pub(crate) fn cut_identity(briefing: &str) -> Option<(u64, u128)> {
+    let (_, rest) = briefing.split_once(CUT_NOTE.0)?;
+    let (file, _) = rest.split_once(CUT_NOTE.1)?;
+    let meta = std::fs::metadata(file).ok()?;
+    let modified = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH);
+    Some((meta.len(), modified.ok()?.as_nanos()))
+}
+
 /// The briefing section carrying a saved plan; `None` for a missing or blank one.
 /// It says when the plan was saved, so an agent can tell an old one from the
 /// change it was started for, and whether the plan was cut.
@@ -352,10 +373,12 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
         .unwrap_or_default();
     let cut = if saved.cut {
         format!(
-            "\n\n[The plan continues past {} KiB; read the rest in {}.]",
+            "\n\n[The plan continues past {}{}{}{}",
             PLAN_LIMIT / 1024,
+            CUT_NOTE.0,
             plan_file(root, task)
-                .map_or_else(|_| "the plan file".into(), |f| f.display().to_string())
+                .map_or_else(|_| "the plan file".into(), |f| f.display().to_string()),
+            CUT_NOTE.1
         )
     } else {
         String::new()
@@ -364,7 +387,8 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
         title: "Shared plan".into(),
         body: format!(
             "The planner agreed this plan for the change{when}; the selected scope \
-             is yours to implement. If it doesn't match the change you were started for, \
+             is yours to implement. Compare that time with the current UTC time: if the \
+             plan looks older than the change you were started for, or doesn't match it, \
              ask before acting on it.\n\n{text}{cut}"
         ),
     })
@@ -487,6 +511,53 @@ mod tests {
         assert_eq!(read(&root, None).unwrap().text, "planner's");
         assert!(write_if(&root, None, "forced", None).unwrap());
         assert_eq!(read(&root, None).unwrap().text, "forced");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_the_same_plan_keeps_its_file() {
+        let Some(root) = repo() else { return };
+        write(&root, None, "agreed").unwrap();
+        let file = plan_file(&root, None).unwrap();
+        let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let stamp = |at| {
+            fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(at))
+                .unwrap();
+        };
+        let modified = || fs::metadata(&file).unwrap().modified().unwrap();
+        stamp(earlier);
+        write(&root, None, "agreed").unwrap();
+        assert!(write_if(&root, None, "agreed", Some("agreed")).unwrap());
+        assert!(!capture(&root, None, "agreed", false).unwrap());
+        assert_eq!(modified(), earlier);
+        assert!(
+            section(&root, None)
+                .unwrap()
+                .body
+                .contains("2023-11-14 22:13 UTC")
+        );
+        write(&root, None, "revised").unwrap();
+        assert_ne!(modified(), earlier);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cut_plan_is_identified_past_its_cut() {
+        let Some(root) = repo() else { return };
+        write(&root, None, "short").unwrap();
+        let body = section(&root, None).unwrap().body;
+        assert_eq!(cut_identity(&body), None);
+        let file = plan_file(&root, None).unwrap();
+        fs::write(&file, "x".repeat(PLAN_LIMIT + 10)).unwrap();
+        let body = section(&root, None).unwrap().body;
+        let identity = cut_identity(&body).unwrap();
+        assert_eq!(identity.0, u64::try_from(PLAN_LIMIT + 10).unwrap());
+        fs::write(&file, "x".repeat(PLAN_LIMIT + 11)).unwrap();
+        assert_ne!(cut_identity(&body), Some(identity));
         let _ = fs::remove_dir_all(root);
     }
 

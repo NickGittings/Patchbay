@@ -12,7 +12,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -883,22 +882,17 @@ fn command_len(shell: Shell, command: &str, env: &BTreeMap<String, String>) -> u
 /// [`Briefing::reserve`] for a root agent: its longest kickoff, quoted.
 /// Kickoff prompts hold no `%`, so the environment can't change their length.
 fn root_reserve(shell: Shell) -> usize {
-    static RESERVE: LazyLock<[usize; 2]> = LazyLock::new(|| {
-        [Shell::Unix, Shell::Windows].map(|shell| {
-            [&*implement_prompt(Some(MAX_SUBAGENTS)), FIX_FINDINGS_PROMPT]
-                .iter()
-                .map(|prompt| {
-                    command_len(
-                        shell,
-                        &format!(" {}", shell.quote(prompt)),
-                        &BTreeMap::new(),
-                    )
-                })
-                .max()
-                .unwrap_or(0)
+    [&*implement_prompt(Some(MAX_SUBAGENTS)), FIX_FINDINGS_PROMPT]
+        .iter()
+        .map(|prompt| {
+            command_len(
+                shell,
+                &format!(" {}", shell.quote(prompt)),
+                &BTreeMap::new(),
+            )
         })
-    });
-    RESERVE[usize::from(shell == Shell::Windows)]
+        .max()
+        .unwrap_or(0)
 }
 
 /// Returns false when Codex receives a file pointer instead of the full text.

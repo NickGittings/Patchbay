@@ -1844,7 +1844,11 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
         .env
         .get(crate::context::CONTEXT_ENV)
         .map(std::fs::read_to_string)
-        .transpose()?;
+        .transpose()?
+        .map(|text| match crate::plans::cut_identity(&text) {
+            Some(cut) => format!("{text}\n{cut:?}"),
+            None => text,
+        });
     let settings = serde_json::to_string(&(
         &metadata.command,
         metadata.kind,
@@ -3875,8 +3879,18 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Sets `file`'s modification time.
+    fn set_modified(file: &Path, at: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(at))
+            .unwrap();
+    }
+
     #[test]
-    fn restart_resumes_a_codex_root_while_its_plan_is_unchanged() {
+    fn restart_resumes_a_root_agent_while_its_plan_is_unchanged() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
         assert!(
@@ -3888,23 +3902,77 @@ mod tests {
                 .success()
         );
         let dir = dir.canonicalize().unwrap();
-        crate::plans::write(&dir, None, "Implement the change").unwrap();
         let project: crate::Project = serde_json::from_value(serde_json::json!({
             "name": "P", "root": dir, "components": []
         }))
         .unwrap();
+        let plan = crate::plans::plan_file(&dir, None).unwrap();
+        // A minute boundary, so a second later is the same saved minute.
+        let minute = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_040);
+        // Codex carries the briefing inline; Claude only reads its file.
+        for (provider, inline) in [("codex", true), ("claude", false)] {
+            crate::plans::write(&dir, None, "Implement the change").unwrap();
+            let terminal: crate::TerminalSpec = serde_json::from_value(serde_json::json!({
+                "id": "restart-plan", "name": provider, "command": provider, "kind": "agent"
+            }))
+            .unwrap();
+            let metadata: Metadata = serde_json::from_value(serde_json::json!({
+                "projectId": "p", "projectName": "P", "projectRoot": dir,
+                "componentId": crate::model::TASK_ROOT_SCOPE, "terminalId": terminal.id,
+                "name": provider, "kind": "agent", "adapter": provider, "command": provider
+            }))
+            .unwrap();
+            let spec = |kickoff| {
+                let sections: Vec<_> = crate::plans::section(&dir, None).into_iter().collect();
+                crate::context::task_root_session_spec(
+                    &project,
+                    &[],
+                    &terminal,
+                    None,
+                    &crate::policy::AllowAll,
+                    &sections,
+                    kickoff,
+                )
+                .unwrap()
+            };
+            let launch = spec(Some(crate::context::Kickoff::ImplementPlan {
+                subagents: None,
+            }));
+            let recorded = restart_context(&metadata, &launch).unwrap();
+            let resume = launch.resume_command.clone().unwrap();
+            assert_eq!(resume.contains("Implement the change"), inline);
+            // The section names when the plan was saved, never how long ago.
+            let restart = spec(None);
+            assert_eq!(restart.resume_command.as_ref(), Some(&resume));
+            assert_eq!(restart_context(&metadata, &restart).unwrap(), recorded);
+            // Saving the same text again keeps the saved time.
+            assert!(crate::plans::write_if(&dir, None, "Implement the change", None).unwrap());
+            assert_eq!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
+            // Another saved time, another plan, or none, starts fresh.
+            set_modified(&plan, minute);
+            assert_ne!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
+            crate::plans::write(&dir, None, "Another change").unwrap();
+            assert_ne!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
+            crate::plans::remove(&dir, None).unwrap();
+            let unplanned = spec(None);
+            assert_ne!(restart_context(&metadata, &unplanned).unwrap(), recorded);
+            std::fs::remove_file(&unplanned.env[crate::context::CONTEXT_ENV]).unwrap();
+        }
+
+        // A cut plan changed only past the cut within the same minute still starts
+        // fresh, though its briefing reads the same.
         let terminal: crate::TerminalSpec = serde_json::from_value(serde_json::json!({
-            "id": uuid::Uuid::new_v4().to_string(), "name": "Codex",
-            "command": "codex", "kind": "agent"
+            "id": "restart-cut-plan", "name": "Claude", "command": "claude", "kind": "agent"
         }))
         .unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({
             "projectId": "p", "projectName": "P", "projectRoot": dir,
             "componentId": crate::model::TASK_ROOT_SCOPE, "terminalId": terminal.id,
-            "name": "Codex", "kind": "agent", "adapter": "codex", "command": "codex"
+            "name": "Claude", "kind": "agent", "adapter": "claude", "command": "claude"
         }))
         .unwrap();
-        let spec = |kickoff| {
+        let long = "x".repeat(crate::plans::PLAN_LIMIT);
+        let spec = || {
             let section = crate::plans::section(&dir, None).unwrap();
             crate::context::task_root_session_spec(
                 &project,
@@ -3913,35 +3981,23 @@ mod tests {
                 None,
                 &crate::policy::AllowAll,
                 &[section],
-                kickoff,
+                None,
             )
             .unwrap()
         };
-        let launch = spec(Some(crate::context::Kickoff::ImplementPlan {
-            subagents: None,
-        }));
+        std::fs::write(&plan, format!("{long}first")).unwrap();
+        set_modified(&plan, minute);
+        let launch = spec();
+        let briefing = std::fs::read_to_string(&launch.env[crate::context::CONTEXT_ENV]).unwrap();
         let recorded = restart_context(&metadata, &launch).unwrap();
-        // Codex carries the briefing, and with it when the plan was saved, inline.
-        let resume = launch.resume_command.as_deref().unwrap();
-        assert!(resume.contains("Implement the change"));
-        // The section names an absolute time, so a later Restart rebuilds the same one.
-        let plan = crate::plans::plan_file(&dir, None).unwrap();
-        let handle = std::fs::File::options().write(true).open(&plan).unwrap();
-        let modified = handle.metadata().unwrap().modified().unwrap();
-        handle
-            .set_times(std::fs::FileTimes::new().set_modified(modified - Duration::from_secs(720)))
-            .unwrap();
-        let earlier = spec(None);
-        assert_ne!(restart_context(&metadata, &earlier).unwrap(), recorded);
-        handle
-            .set_times(std::fs::FileTimes::new().set_modified(modified))
-            .unwrap();
-        let restart = spec(None);
-        assert_eq!(restart.resume_command.as_deref(), Some(resume));
-        assert_eq!(restart_context(&metadata, &restart).unwrap(), recorded);
-        // A different plan starts fresh.
-        crate::plans::write(&dir, None, "Another change").unwrap();
-        assert_ne!(restart_context(&metadata, &spec(None)).unwrap(), recorded);
+        assert_eq!(restart_context(&metadata, &spec()).unwrap(), recorded);
+        std::fs::write(&plan, format!("{long}other")).unwrap();
+        set_modified(&plan, minute + Duration::from_secs(1));
+        let restart = spec();
+        let file = &restart.env[crate::context::CONTEXT_ENV];
+        assert_eq!(std::fs::read_to_string(file).unwrap(), briefing);
+        assert_ne!(restart_context(&metadata, &restart).unwrap(), recorded);
+        std::fs::remove_file(file).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 
