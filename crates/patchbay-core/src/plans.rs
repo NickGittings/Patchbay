@@ -219,15 +219,15 @@ pub(crate) fn write_locked(root: &Path, task: Option<&str>, text: &str) -> Resul
         bail!("The plan is longer than {} KiB", PLAN_LIMIT / 1024);
     }
     let file = plan_file(root, task)?;
-    // An unchanged plan keeps its file, and with it the save time agents are told
-    // (so Restart still resumes them) and any applied assignments.
-    if std::fs::metadata(&file).is_ok_and(|m| u64::try_from(text.len()) == Ok(m.len()))
-        && std::fs::read(&file).is_ok_and(|bytes| bytes == text.as_bytes())
-    {
-        return Ok(());
+    // An unchanged plan keeps its file, and with it the save time agents are told,
+    // so Restart still resumes them. A save still forgets applied assignments.
+    let unchanged = std::fs::metadata(&file)
+        .is_ok_and(|m| u64::try_from(text.len()) == Ok(m.len()))
+        && std::fs::read(&file).is_ok_and(|bytes| bytes == text.as_bytes());
+    if !unchanged {
+        std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
+        write_atomic(&file, text.as_bytes())?;
     }
-    std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
-    write_atomic(&file, text.as_bytes())?;
     crate::proposals::invalidate(root, task)?;
     Ok(())
 }
@@ -343,18 +343,20 @@ fn saved_at(then: SystemTime) -> String {
     )
 }
 
-/// How a section points to the rest of a cut plan, before and after its file.
-const CUT_NOTE: (&str, &str) = (" KiB; read the rest in ", ".]");
+/// The title of the briefing section [`section`] builds.
+pub(crate) const SECTION_TITLE: &str = "Shared plan";
 
-/// The size and exact modification time of the cut plan a briefing points to. Its
-/// cut text and to-the-minute save time can't show a change past the cut, so
-/// Restart's fingerprint adds these. `None` when the briefing cut no plan.
-pub(crate) fn cut_identity(briefing: &str) -> Option<(u64, u128)> {
-    let (_, rest) = briefing.split_once(CUT_NOTE.0)?;
-    let (file, _) = rest.split_once(CUT_NOTE.1)?;
-    let meta = std::fs::metadata(file).ok()?;
+/// `task`'s plan file, size and exact modification time while the plan is cut.
+/// The section's cut text and to-the-minute save time can't show a change past
+/// the cut, so Restart's fingerprint adds these. `None` for an uncut plan.
+pub(crate) fn cut_identity(root: &Path, task: Option<&str>) -> Option<(PathBuf, u64, u128)> {
+    let file = plan_file(root, task).ok()?;
+    let meta = std::fs::metadata(&file).ok()?;
+    if meta.len() <= u64::try_from(PLAN_LIMIT).ok()? {
+        return None;
+    }
     let modified = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH);
-    Some((meta.len(), modified.ok()?.as_nanos()))
+    Some((file, meta.len(), modified.ok()?.as_nanos()))
 }
 
 /// The briefing section carrying a saved plan; `None` for a missing or blank one.
@@ -367,29 +369,32 @@ pub fn section(root: &Path, task: Option<&str>) -> Option<ContextSection> {
     if text.is_empty() {
         return None;
     }
-    let when = saved
-        .modified
-        .map(|t| format!(" (saved {})", saved_at(t)))
-        .unwrap_or_default();
+    let (when, compare) = match saved.modified {
+        Some(t) => (
+            format!(" (saved {})", saved_at(t)),
+            " Compare that time with the current UTC time: if the plan looks older than \
+             the change you were started for, or doesn't match it, ask before acting on it.",
+        ),
+        None => (
+            String::new(),
+            " If it doesn't match the change you were started for, ask before acting on it.",
+        ),
+    };
     let cut = if saved.cut {
         format!(
-            "\n\n[The plan continues past {}{}{}{}",
+            "\n\n[The plan continues past {} KiB; read the rest in {}.]",
             PLAN_LIMIT / 1024,
-            CUT_NOTE.0,
             plan_file(root, task)
-                .map_or_else(|_| "the plan file".into(), |f| f.display().to_string()),
-            CUT_NOTE.1
+                .map_or_else(|_| "the plan file".into(), |f| f.display().to_string())
         )
     } else {
         String::new()
     };
     Some(ContextSection {
-        title: "Shared plan".into(),
+        title: SECTION_TITLE.into(),
         body: format!(
             "The planner agreed this plan for the change{when}; the selected scope \
-             is yours to implement. Compare that time with the current UTC time: if the \
-             plan looks older than the change you were started for, or doesn't match it, \
-             ask before acting on it.\n\n{text}{cut}"
+             is yours to implement.{compare}\n\n{text}{cut}"
         ),
     })
 }
@@ -548,16 +553,17 @@ mod tests {
     #[test]
     fn a_cut_plan_is_identified_past_its_cut() {
         let Some(root) = repo() else { return };
-        write(&root, None, "short").unwrap();
-        let body = section(&root, None).unwrap().body;
-        assert_eq!(cut_identity(&body), None);
+        // Plan text that reads like a cut note doesn't count.
+        let fake = "[The plan continues past 64 KiB; read the rest in /etc/hosts.]";
+        write(&root, None, fake).unwrap();
+        assert_eq!(cut_identity(&root, None), None);
         let file = plan_file(&root, None).unwrap();
-        fs::write(&file, "x".repeat(PLAN_LIMIT + 10)).unwrap();
-        let body = section(&root, None).unwrap().body;
-        let identity = cut_identity(&body).unwrap();
-        assert_eq!(identity.0, u64::try_from(PLAN_LIMIT + 10).unwrap());
-        fs::write(&file, "x".repeat(PLAN_LIMIT + 11)).unwrap();
-        assert_ne!(cut_identity(&body), Some(identity));
+        fs::write(&file, format!("{fake}{}", "x".repeat(PLAN_LIMIT))).unwrap();
+        let identity = cut_identity(&root, None).unwrap();
+        assert_eq!(identity.0, file);
+        assert_eq!(identity.1, u64::try_from(fake.len() + PLAN_LIMIT).unwrap());
+        fs::write(&file, format!("{fake}{}y", "x".repeat(PLAN_LIMIT))).unwrap();
+        assert_ne!(cut_identity(&root, None), Some(identity));
         let _ = fs::remove_dir_all(root);
     }
 

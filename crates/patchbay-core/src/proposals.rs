@@ -438,6 +438,26 @@ mod tests {
                     .contains("Add button")
             );
         }
+        // Handing the same plan to a worktree still forgets the project folder's
+        // applied assignments, though its plan file is left as it was.
+        let first = proposal();
+        plans::write(&root, None, &first.plan).unwrap();
+        // Older than the proposals, so neither apply prefers the saved plan.
+        std::fs::File::options()
+            .write(true)
+            .open(plans::plan_file(&root, None).unwrap())
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        submit(&p, None, &first).unwrap();
+        apply(&p, None, None, &first).unwrap();
+        assert_eq!(read(&root, None, true).unwrap(), Some(first.clone()));
+        let mut second = first.clone();
+        second.assignments[0].assignment = "Add link".into();
+        submit(&p, None, &second).unwrap();
+        apply(&p, None, Some(&task.id), &second).unwrap();
+        assert_eq!(read(&root, None, true).unwrap(), None);
+        assert_eq!(read(&root, Some(&task.id), true).unwrap(), Some(second));
         std::fs::remove_dir_all(base).unwrap();
     }
 }

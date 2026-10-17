@@ -1845,9 +1845,21 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
         .get(crate::context::CONTEXT_ENV)
         .map(std::fs::read_to_string)
         .transpose()?
-        .map(|text| match crate::plans::cut_identity(&text) {
-            Some(cut) => format!("{text}\n{cut:?}"),
-            None => text,
+        .map(|text| {
+            // A Shared plan section can't show a cut plan's change past the cut.
+            let cut = text
+                .contains(&format!("## {}\n", crate::plans::SECTION_TITLE))
+                .then(|| {
+                    crate::plans::cut_identity(
+                        Path::new(&metadata.project_root),
+                        metadata.task.as_deref(),
+                    )
+                })
+                .flatten();
+            match cut {
+                Some(cut) => format!("{text}\n{cut:?}"),
+                None => text,
+            }
         });
     let settings = serde_json::to_string(&(
         &metadata.command,
@@ -3985,6 +3997,8 @@ mod tests {
             )
             .unwrap()
         };
+        // Plan text reading like a cut note doesn't hide the real one.
+        let long = format!("[The plan continues past 1 KiB; read the rest in /etc/hosts.]{long}");
         std::fs::write(&plan, format!("{long}first")).unwrap();
         set_modified(&plan, minute);
         let launch = spec();
