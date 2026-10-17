@@ -190,14 +190,23 @@ pub fn apply(
     if let Some(newer) = newer_plan(root, from)? {
         applied.plan = newer;
     }
-    plans::write_locked(root, to, &applied.plan)?;
+    plans::write_locked(root, to, &applied.plan, None)?;
     // The planner's own plan follows what it agreed, so its editor shows what was handed off.
     if from != to {
-        plans::write_locked(root, from, &applied.plan)?;
+        plans::write_locked(root, from, &applied.plan, None)?;
     }
     save(root, to, &applied, true)?;
     std::fs::remove_file(file(root, from, false)?)?;
     Ok(ids)
+}
+
+/// When `task`'s pending proposal was submitted, if it has one.
+pub(crate) fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::time::SystemTime>> {
+    match std::fs::metadata(file(root, task, false)?) {
+        Ok(meta) => Ok(Some(meta.modified()?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// `task`'s saved plan when it was written after its pending proposal was submitted.
@@ -330,12 +339,7 @@ mod tests {
         let path = plans::plan_file(&root, None).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::fs::write(&path, "Changed text").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(modified))
-            .unwrap();
+        plans::set_modified(&path, modified);
         assert!(read(&root, None, true).unwrap().is_none());
         submit(&p, None, &proposed).unwrap();
         apply(&p, None, None, &proposed).unwrap();
@@ -415,15 +419,7 @@ mod tests {
                 .unwrap()
                 .modified()
                 .unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_times(
-                    std::fs::FileTimes::new()
-                        .set_modified(submitted + std::time::Duration::from_secs(1)),
-                )
-                .unwrap();
+            plans::set_modified(&path, submitted + std::time::Duration::from_secs(1));
             assert_eq!(apply(&p, None, target, &proposed).unwrap(), ["web"]);
             let applied = read(&root, target, true).unwrap().unwrap();
             assert_eq!(applied.plan, "# Revised plan\nKeep the newer requirements");
@@ -443,12 +439,10 @@ mod tests {
         let first = proposal();
         plans::write(&root, None, &first.plan).unwrap();
         // Older than the proposals, so neither apply prefers the saved plan.
-        std::fs::File::options()
-            .write(true)
-            .open(plans::plan_file(&root, None).unwrap())
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
-            .unwrap();
+        plans::set_modified(
+            &plans::plan_file(&root, None).unwrap(),
+            std::time::UNIX_EPOCH,
+        );
         submit(&p, None, &first).unwrap();
         apply(&p, None, None, &first).unwrap();
         assert_eq!(read(&root, None, true).unwrap(), Some(first.clone()));
@@ -458,6 +452,19 @@ mod tests {
         apply(&p, None, Some(&task.id), &second).unwrap();
         assert_eq!(read(&root, None, true).unwrap(), None);
         assert_eq!(read(&root, Some(&task.id), true).unwrap(), Some(second));
+        // Saving the plan again, even unchanged, after a proposal still beats it.
+        let saved = "# Saved\nKeep this";
+        plans::write(&root, None, saved).unwrap();
+        plans::set_modified(
+            &plans::plan_file(&root, None).unwrap(),
+            std::time::UNIX_EPOCH,
+        );
+        let proposed = proposal();
+        submit(&p, None, &proposed).unwrap();
+        assert!(plans::write_if(&root, None, saved, Some(saved)).unwrap());
+        apply(&p, None, None, &proposed).unwrap();
+        assert_eq!(plans::read(&root, None).unwrap().text, saved);
+        assert_eq!(read(&root, None, true).unwrap().unwrap().plan, saved);
         std::fs::remove_dir_all(base).unwrap();
     }
 }
