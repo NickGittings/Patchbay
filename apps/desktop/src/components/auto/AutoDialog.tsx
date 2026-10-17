@@ -14,6 +14,7 @@ import {
   checkAutoHooks,
   EFFORT,
   inferStage,
+  NeedsWorktree,
   startAuto,
   STAGES,
   STAGE_LABELS,
@@ -22,6 +23,8 @@ import {
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
 import { integrated, MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
+import { autoDraftKey, autoDrafts } from '../../lib/autoDrafts'
+import { seedNewTask } from '../../lib/tasks'
 
 export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
   const projectId = useStore((s) => s.project?.id)
@@ -29,9 +32,12 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const agents = useMemo(() => agentDevices(devices), [devices])
+  // Closing the popover unmounts the dialog; what it was given waits for it to reopen.
+  const draftKey = autoDraftKey(projectId, task)
+  const [draft] = useState(() => autoDrafts.get(draftKey))
   // This run's choices; unpicked stages follow the project's agent roles.
-  const [picked, setPicked] = useState<Partial<Record<AgentRole, string>>>({})
-  const [pickedReviewers, setReviewers] = useState<string[]>()
+  const [picked, setPicked] = useState<Partial<Record<AgentRole, string>>>(draft?.picked ?? {})
+  const [pickedReviewers, setReviewers] = useState<string[] | undefined>(draft?.reviewers)
   const reviewers = useMemo(
     () =>
       (pickedReviewers
@@ -60,17 +66,32 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     () => [...new Set([...Object.values(runAgents), ...reviewers])],
     [runAgents, reviewers],
   )
-  const [goal, setGoal] = useState('')
+  const [goal, setGoal] = useState(draft?.goal ?? '')
   // The goal this dialog filled in itself, withdrawn once a load finds the branch merged.
-  const filledGoal = useRef('')
-  const [effort, setEffort] = useState<AutoRun['effort']>('standard')
-  const [overrides, setOverrides] = useState<Partial<EffortSettings>>({})
-  const [mode, setMode] = useState<'ask' | 'auto'>('ask')
-  const [destination, setDestination] = useState('')
+  const filledGoal = useRef(draft?.filledGoal ?? '')
+  const [effort, setEffort] = useState<AutoRun['effort']>(draft?.effort ?? 'standard')
+  const [overrides, setOverrides] = useState<Partial<EffortSettings>>(draft?.overrides ?? {})
+  const [mode, setMode] = useState<'ask' | 'auto'>(draft?.mode ?? 'ask')
+  const [destination, setDestination] = useState(draft?.destination ?? '')
   const [destinations, setDestinations] = useState<string[]>([])
   const [snapshot, setSnapshot] = useState<AutoSnapshot | null>(null)
-  const [stage, setStage] = useState<AutoStage | ''>('')
+  const [stage, setStage] = useState<AutoStage | ''>(draft?.stage ?? '')
   const [error, setError] = useState('')
+  // The worktree's branch can't be reviewed or merged into itself, so the run needs a new one.
+  const [needsWorktree, setNeedsWorktree] = useState('')
+  useEffect(() => {
+    autoDrafts.set(draftKey, {
+      goal,
+      filledGoal: filledGoal.current,
+      effort,
+      overrides,
+      mode,
+      destination,
+      picked,
+      reviewers: pickedReviewers,
+      stage,
+    })
+  }, [draftKey, goal, effort, overrides, mode, destination, picked, pickedReviewers, stage])
   const [integrationCheck, setIntegrationCheck] = useState<{
     distinct: string[]
     devices: typeof devices
@@ -124,9 +145,14 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
         )
         setSnapshot(snapshot)
         setError('')
+        setNeedsWorktree('')
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e))
+        if (cancelled) return
+        if (e instanceof NeedsWorktree) {
+          setNeedsWorktree(e.message)
+          setError('')
+        } else setError(String(e))
       })
       .finally(() => {
         if (!cancelled) setLoadedKey(requestKey)
@@ -174,6 +200,24 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
     ? `${STAGE_LABELS[decision.stage]} (${decision.reason})`
     : 'Detecting current work…'
 
+  if (needsWorktree)
+    return (
+      <div className="auto-content">
+        <strong>Auto mode</strong>
+        <p>{needsWorktree}.</p>
+        <label>
+          Task goal
+          <textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={4} />
+        </label>
+        <button
+          onClick={() =>
+            seedNewTask(() => useStore.getState().showAutoPanel(), goal.trim() || undefined)
+          }
+        >
+          New worktree…
+        </button>
+      </div>
+    )
   return (
     <div className="auto-content">
       <strong>Auto mode</strong>
@@ -321,6 +365,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
             reviewers: reviewers.length > 1 ? reviewers : undefined,
             stage: stage || undefined,
           })
+            .then(() => autoDrafts.delete(draftKey))
             .catch((e) => setError(String(e)))
             .finally(() => setStarting(false))
         }}

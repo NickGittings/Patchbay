@@ -229,13 +229,16 @@ function afterNewTask(task: Task) {
 }
 
 /**
- * Open the new-worktree dialog for the highlighted components, else the selected one; `then` runs
- * once it has created and activated a worktree.
+ * Open the new-worktree dialog for the highlighted components, else the selected one, with an
+ * optional goal `title`; `then` runs once it has created and activated a worktree.
  */
-export function seedNewTask(then?: (task: Task) => void) {
+export function seedNewTask(then?: (task: Task) => void, title?: string) {
   onNewTask = then ?? null
   const s = useStore.getState()
-  s.setNewTask(s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [])
+  s.setNewTask({
+    components: s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [],
+    title,
+  })
 }
 
 /** A branch name from a title: `Fix login bug` → `fix-login-bug`. */

@@ -1237,6 +1237,30 @@ test('a new goal plans before implementing an unrelated saved plan or proposal',
   )
 })
 
+test("a new task's goal is its own, never the project's leftover plan", async () => {
+  load()
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '' : '# Unrelated old goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task')
+  vi.mocked(ipc.planRead).mockImplementation(async (_projectId, task) => ({
+    text: task ? '# Task plan' : '# Unrelated old goal',
+    cut: false,
+  }))
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
+})
+
+test('the default branch in the project folder asks for a worktree', async () => {
+  const { NeedsWorktree } = await import('./auto')
+  load()
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'main', current: true },
+  ])
+  await expect(autoSnapshot('p', null, run())).rejects.toBeInstanceOf(NeedsWorktree)
+})
+
 test('needsInput can go directly to review without an observed working tick', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)

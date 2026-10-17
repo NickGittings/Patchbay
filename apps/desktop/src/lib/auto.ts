@@ -298,6 +298,8 @@ function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run:
 }
 /** The run's worktree no longer has the run's branch checked out. */
 export class BranchMoved extends Error {}
+/** The worktree's branch has nothing to review against, such as `main` in the project folder. */
+export class NeedsWorktree extends Error {}
 /**
  * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
  * above a project in a subfolder. A run that recorded its `branch` never judges another branch
@@ -354,7 +356,10 @@ export async function autoSnapshot(
     destination && destination !== source.branch && branches.includes(destination)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
-  if (!base) throw new Error('No review base found; choose another worktree')
+  if (!base)
+    throw new NeedsWorktree(
+      `Auto needs a branch other than ${source.branch}; create a worktree for this task`,
+    )
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
     reviewRead(projectId, source.branch),
@@ -405,8 +410,9 @@ export async function autoSnapshot(
     plan: plannerPlan.text,
     proposal: !!proposal,
     planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
+    // A task's goal is its own: the project plan may be left over from earlier work.
     goal: inferredGoal(
-      saved.text || plannerPlan.text,
+      task ? saved.text : plannerPlan.text,
       tasks.find((t) => t.id === task)?.title ?? '',
       tasks.find((t) => t.id === task)?.notes ?? '',
       source.branch,
