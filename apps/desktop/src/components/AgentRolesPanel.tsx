@@ -1,8 +1,9 @@
+import { Fragment, useId } from 'react'
 import ReviewerPicker from './ReviewerPicker'
 import { ROLE_LABELS } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
-import { AGENT_ROLES, type AgentRole } from '../types'
+import { AGENT_ROLES, SUBAGENT_COUNTS, type AgentRole } from '../types'
 
 const DEFAULTS: Record<AgentRole, string> = {
   plan: 'the first agent preset',
@@ -14,6 +15,7 @@ const DEFAULTS: Record<AgentRole, string> = {
 
 /** The project's agent per role; dialogs and Auto start from it and may override it per run. */
 export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
+  const subagentsId = useId()
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const setRoles = useStore((s) => s.setAgentRoles)
@@ -68,47 +70,47 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           const id = roles[role]?.[0] ?? ''
           const missing = id && !agents.some((a) => a.id === id)
           return (
-            <div key={role} className="agent-role-field">
-              <span>{ROLE_LABELS[role]}</span>
-              <select
-                aria-label={ROLE_LABELS[role]}
-                value={id}
-                onChange={(e) => {
-                  const { [role]: _, ...rest } = roles
-                  setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
-                }}
-              >
-                <option value="">Default: {DEFAULTS[role]}</option>
-                {missing && <option value={id}>{id} (not installed)</option>}
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
+            <Fragment key={role}>
+              <label className="agent-role-field">
+                {ROLE_LABELS[role]}
+                <select
+                  aria-label={ROLE_LABELS[role]}
+                  value={id}
+                  onChange={(e) => {
+                    const { [role]: _, ...rest } = roles
+                    setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
+                  }}
+                >
+                  <option value="">Default: {DEFAULTS[role]}</option>
+                  {missing && <option value={id}>{id} (not installed)</option>}
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {role === 'implement' && (
-                <>
-                  <label className="row">
-                    Subagents
-                    <select
-                      value={subagents}
-                      onChange={(e) => setSubagents(Number(e.target.value))}
-                    >
-                      <option value={0}>Off</option>
-                      {[2, 3, 4, 5, 6, 7, 8].map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                <div className="agent-role-field">
+                  <label htmlFor={subagentsId}>Subagents</label>
+                  <select
+                    id={subagentsId}
+                    value={subagents}
+                    onChange={(e) => setSubagents(Number(e.target.value))}
+                  >
+                    {SUBAGENT_COUNTS.map((n) => (
+                      <option key={n} value={n}>
+                        {n || 'Off'}
+                      </option>
+                    ))}
+                  </select>
                   <p className="hint flush">
                     Asks the implementation agent to split the plan across this many parallel
                     subagents, if its tool supports them.
                   </p>
-                </>
+                </div>
               )}
-            </div>
+            </Fragment>
           )
         })}
       </div>

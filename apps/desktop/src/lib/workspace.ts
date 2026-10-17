@@ -8,7 +8,7 @@ import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { emptyTaskWorkspace, projectFrom, useStore, type ProjectState } from '../store'
-import type { OpenedProject, Project, WorkspaceDocument } from '../types'
+import { isSubagentCount, type OpenedProject, type Project, type WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
 import { reconcileSessions } from './sessions'
@@ -139,13 +139,7 @@ export function restoredLayout(
   if (!nested) {
     out.agentRoles = restoredAgentRoles(layout.agentRoles)
     const subagents = layout.implementSubagents
-    out.implementSubagents =
-      typeof subagents === 'number' &&
-      Number.isInteger(subagents) &&
-      subagents >= 0 &&
-      subagents <= 8
-        ? subagents
-        : 0
+    out.implementSubagents = isSubagentCount(subagents) ? subagents : 0
   }
   if (!nested)
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)

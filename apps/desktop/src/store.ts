@@ -42,6 +42,7 @@ import {
   DEFAULT_NOTIFICATIONS,
   TASK_ROOT_SCOPE,
   isReviewAgentScope,
+  isSubagentCount,
   showsInDock,
   sessionId,
   sessionTask,
@@ -673,7 +674,7 @@ export const useStore = create<State>((set, get) => ({
   agentRoles: {},
   setAgentRoles: (agentRoles) => set({ agentRoles }),
   implementSubagents: 0,
-  setImplementSubagents: (implementSubagents) => set({ implementSubagents }),
+  setImplementSubagents: (n) => set({ implementSubagents: isSubagentCount(n) ? n : 0 }),
   validatorDeclined: [],
   declineValidators: (keys) =>
     set((s) => ({

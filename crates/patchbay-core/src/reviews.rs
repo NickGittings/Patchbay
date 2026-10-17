@@ -1790,7 +1790,6 @@ mod tests {
             &AllowAll,
             &[section],
             Some(context::Kickoff::FixFindings),
-            None,
         )
         .unwrap();
         assert!(!spec.dirs.iter().any(|d| d.ends_with("reviews")));

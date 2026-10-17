@@ -313,3 +313,29 @@ test('manual and Auto implementation kickoffs use the project subagent count', a
     )
   }
 })
+
+test('Implement reads the latest subagent setting after awaiting the planner stop', async () => {
+  const planner = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  useStore.setState({ sessions: { [planner]: { running: true } } })
+  useStore.getState().setImplementSubagents(3)
+  let finish!: () => void
+  vi.mocked(ipc.terminalStop).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const handoff = implementPlannerPlan('claude')
+  await vi.waitFor(() => expect(ipc.terminalStop).toHaveBeenCalledWith(planner))
+  expect(startTerminal).not.toHaveBeenCalled()
+  useStore.getState().setImplementSubagents(5)
+  finish()
+  await handoff
+  expect(startTerminal).toHaveBeenCalledWith(
+    TASK_ROOT_SCOPE,
+    useStore.getState().rootTerminals.at(-1)!.id,
+    null,
+    'p',
+    { kickoff: { kind: 'implementPlan', subagents: 5 } },
+  )
+})

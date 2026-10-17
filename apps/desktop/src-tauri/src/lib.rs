@@ -1316,7 +1316,6 @@ async fn task_root_start(
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
     review_session: Option<String>,
-    subagents: Option<u8>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1378,7 +1377,6 @@ async fn task_root_start(
             &AllowAll,
             &sections,
             kickoff,
-            subagents,
         )
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {

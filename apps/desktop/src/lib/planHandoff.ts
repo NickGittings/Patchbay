@@ -67,7 +67,7 @@ async function handoffPlannerPlan(
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
   await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-    kickoff: { kind: 'implementPlan', subagents: initial.implementSubagents || undefined },
+    kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
     auto,
   })
   // The agent is running now, so a later switch away only skips the view change; its caller
