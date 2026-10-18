@@ -24,6 +24,7 @@ pub trait Host {
     fn activities(&self) -> Vec<Activity>;
     fn emit_activity(&self, activity: &Activity);
     fn proposal_submitted(&self, launch: &LaunchContext);
+    fn links_proposed(&self, launch: &LaunchContext);
 }
 
 pub struct ProjectScope {
@@ -293,6 +294,17 @@ fn planner_root(
 pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Result<Value> {
     let state = app;
     let scoped = state.project(&launch.project_id)?;
+    anyhow::ensure!(
+        !launch.mapper
+            || matches!(
+                action,
+                Action::Context {}
+                    | Action::Status {}
+                    | Action::Logs { .. }
+                    | Action::ProposeLinks { .. }
+            ),
+        "Dependency detection can only read context and propose links"
+    );
     match action {
         Action::Context {} => {
             let project = scoped.project()?;
@@ -375,6 +387,20 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 app.proposal_submitted(launch);
             }
             Ok(json!({"withdrawn":withdrawn}))
+        }
+        Action::ProposeLinks { proposal } => {
+            anyhow::ensure!(
+                launch.mapper,
+                "Only dependency detection sessions can propose links"
+            );
+            // Locked components are unknown ids to the agent.
+            let readable = scoped.access.restrict(scoped.project()?, &[])?;
+            let pending =
+                crate::link_proposals::submit(&readable, &launch.agent_session, &proposal)?;
+            app.links_proposed(launch);
+            Ok(
+                json!({"submitted":pending.links.len(),"alreadyOnMap":pending.skipped.len(),"applied":false}),
+            )
         }
         Action::Propose { proposal } => {
             let project = scoped.project()?;
@@ -462,6 +488,7 @@ impl TryFrom<Action> for ActionRequest {
             | Action::Logs { .. }
             | Action::EnvironmentStop { .. }
             | Action::Propose { .. }
+            | Action::ProposeLinks { .. }
             | Action::SavePlan { .. }
             | Action::WithdrawPlan { .. } => anyhow::bail!("Unsupported graph command"),
         }
@@ -549,6 +576,9 @@ mod tests {
         fn proposal_submitted(&self, _: &LaunchContext) {
             *self.saves.lock().unwrap() += 1;
         }
+        fn links_proposed(&self, _: &LaunchContext) {
+            *self.saves.lock().unwrap() += 1;
+        }
     }
     fn record(id: &str, task: &str) -> Value {
         json!({"id":id,"metadata":{"projectId":"p","projectName":"P","projectRoot":"/missing",
@@ -562,6 +592,7 @@ mod tests {
             task: Some("task".into()),
             agent_session: "one".into(),
             planner: false,
+            mapper: false,
         }
     }
     #[test]
@@ -604,6 +635,56 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn link_proposals_are_mapper_only_and_mappers_run_nothing_else() {
+        let host = Fixture {
+            calls: Mutex::default(),
+            saves: Mutex::default(),
+            project: Some(Project {
+                schema_version: crate::model::SCHEMA_VERSION,
+                name: "Map fixture".into(),
+                root: std::env::temp_dir().display().to_string(),
+                components: vec![],
+                links: vec![],
+                groups: vec![],
+            }),
+        };
+        let propose = || Action::ProposeLinks {
+            proposal: serde_json::from_value(json!({"version":1,"links":[]})).unwrap(),
+        };
+        let mut session = launch();
+        session.task = None;
+        let err = dispatch(&host, &session, propose())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Only dependency detection"), "{err}");
+        session.mapper = true;
+        // Validated before anything is saved.
+        let err = dispatch(&host, &session, propose())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs links"), "{err}");
+        for action in [
+            Action::Validate {
+                component_id: "web".into(),
+            },
+            Action::EnvironmentStart {
+                group_id: "env".into(),
+            },
+            Action::Propose {
+                proposal: serde_json::from_value(
+                    json!({"version":1,"plan":"p","assignments":[{"componentId":"web","assignment":"a"}]}),
+                )
+                .unwrap(),
+            },
+        ] {
+            let err = dispatch(&host, &session, action).unwrap_err().to_string();
+            assert!(err.contains("only read context and propose links"), "{err}");
+        }
+        assert_eq!(*host.saves.lock().unwrap(), 0);
+        assert!(host.calls.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import type { TaskWorkspace, FlowNode } from '../store'
 import {
+  MAP_SCOPE,
   TASK_ROOT_SCOPE,
   showsInDock,
   sessionId,
@@ -55,7 +56,9 @@ export function taskTerminals(
     }
   for (const [sid, runtime] of Object.entries(runtimes)) {
     if (
+      // Dependency detection belongs to the project, not a worktree's work.
       !showsInDock(runtime.componentId) ||
+      runtime.componentId === MAP_SCOPE ||
       !sessions[sid]?.running ||
       runtime.projectId !== projectId ||
       (runtime.taskId ?? null) !== task ||

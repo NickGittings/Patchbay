@@ -46,6 +46,8 @@ pub struct LaunchContext {
     pub task: Option<String>,
     pub agent_session: String,
     pub planner: bool,
+    /// A dependency detection session (`MAP_SCOPE`): it may only read context and propose links.
+    pub mapper: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +90,10 @@ pub enum Action {
     /// The provider's approval dialog closed without approving the presented plan.
     WithdrawPlan {
         conversation: Option<String>,
+    },
+    /// Dependencies a detection agent proposes for the user to review.
+    ProposeLinks {
+        proposal: crate::link_proposals::LinkProposal,
     },
 }
 
@@ -329,6 +335,7 @@ mod tests {
                     agent_session: task.clone(),
                     task: Some(task),
                     planner: false,
+                    mapper: false,
                 })
             },
             handler,
@@ -354,6 +361,17 @@ mod tests {
     }
 
     #[test]
+    fn link_proposals_have_a_strict_wire_format() {
+        let wire = serde_json::json!({"kind":"proposeLinks","proposal":{"version":1,
+            "links":[{"source":"app","target":"api","label":"REST","reason":"App/API.swift:3"}]}});
+        let action: Action = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&action).unwrap(), wire);
+        let mut extra = wire;
+        extra["proposal"]["links"][0]["confidence"] = 1.into();
+        assert!(serde_json::from_value::<Action>(extra).is_err());
+    }
+
+    #[test]
     fn listener_recovers_after_interrupted_and_resource_errors() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -374,6 +392,7 @@ mod tests {
                         task: None,
                         agent_session: "one".into(),
                         planner: false,
+                        mapper: false,
                     })
                 }),
                 Arc::new(|_, _| Ok(serde_json::json!({"recovered":true}))),
@@ -441,6 +460,7 @@ mod tests {
                     agent_session: task.clone(),
                     task: Some(task),
                     planner: false,
+                    mapper: false,
                 })
             },
             ok,

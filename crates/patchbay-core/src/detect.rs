@@ -3,7 +3,9 @@
 //! Every folder with a recognised manifest (`package.json`, `Cargo.toml`,
 //! `pyproject.toml`, `requirements.txt`, `go.mod`) or native app project (Xcode
 //! or Android Gradle) becomes a component, as does any nested git repo without
-//! one. Dependencies between detected packages become links.
+//! one. Dependencies between detected packages become links, as do manifests
+//! that point at another component's folder (`-r ../api/requirements.txt`,
+//! `file:../lib`, path dependencies, Go replacements, Gradle included builds).
 
 use crate::extensions::DetectorContribution;
 use crate::model::{
@@ -39,6 +41,8 @@ struct Candidate {
     kind: ComponentKind,
     tasks: Vec<TerminalSpec>,
     deps: HashSet<String>,
+    /// Canonical paths the folder's manifests refer to.
+    refs: Vec<PathBuf>,
 }
 
 fn task(id: &str, name: &str, command: String) -> TerminalSpec {
@@ -179,6 +183,7 @@ fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
         kind,
         tasks,
         deps,
+        refs: Vec::new(),
     })
 }
 
@@ -219,6 +224,7 @@ fn from_cargo_toml(dir: &Path, text: &str) -> Option<Candidate> {
         kind,
         tasks,
         deps,
+        refs: Vec::new(),
     })
 }
 
@@ -260,6 +266,7 @@ fn python_candidate(dir: &Path, name: String, deps: HashSet<String>) -> Candidat
         kind,
         tasks,
         deps,
+        refs: Vec::new(),
     }
 }
 
@@ -333,6 +340,7 @@ fn from_go_mod(dir: &Path, text: &str) -> Candidate {
         kind,
         tasks,
         deps: HashSet::new(),
+        refs: Vec::new(),
     }
 }
 
@@ -342,6 +350,265 @@ fn read(dir: &Path, file: &str, root: &Path) -> Option<String> {
         return None;
     }
     std::fs::read_to_string(path).ok()
+}
+
+/// A local path from a dependency spec (`../lib`, `file:../lib`, `file:///abs`),
+/// without extras or a URL fragment. `bare` also accepts a plain relative name,
+/// as `-r base.txt` does; otherwise it must start like a path.
+fn local_path(spec: &str, bare: bool) -> Option<String> {
+    let spec = spec.trim();
+    let (spec, bare) = if let Some(rest) = spec.strip_prefix("file://") {
+        (rest, true)
+    } else if let Some(rest) = spec.strip_prefix("file:") {
+        (rest, true)
+    } else {
+        (spec, bare)
+    };
+    if spec.is_empty() || spec.contains("://") || spec.starts_with("git+") {
+        return None;
+    }
+    let spec = spec.split('#').next().unwrap_or(spec);
+    let spec = spec.split('[').next().unwrap_or(spec).trim();
+    let path_like = spec.starts_with('.') || spec.starts_with('/');
+    (!spec.is_empty() && (bare || path_like)).then(|| spec.to_string())
+}
+
+/// Folders and files a requirements file points at: `-r`/`-c` files,
+/// editable or plain local paths, and `name @ file:…` requirements.
+fn requirement_refs(text: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for line in text.lines() {
+        let line = line.split(" #").next().unwrap_or(line).trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let option = [
+            ("--requirement", true),
+            ("--constraint", true),
+            ("--editable", false),
+            ("-r", true),
+            ("-c", true),
+            ("-e", false),
+        ]
+        .into_iter()
+        .find_map(|(flag, bare)| {
+            let rest = line.strip_prefix(flag)?;
+            // `-rbase.txt` is valid; `--requirementbase.txt` isn't.
+            let separated = flag.len() == 2 || rest.starts_with([' ', '\t', '=']);
+            separated.then_some((rest.strip_prefix('=').unwrap_or(rest), bare))
+        });
+        let found = match option {
+            Some((rest, bare)) => local_path(rest, bare),
+            None if line.starts_with('-') => None,
+            None => match line.split_once(" @ ").or_else(|| line.split_once('@')) {
+                Some((_, url)) if url.trim().starts_with("file:") => local_path(url, false),
+                _ => local_path(line, false),
+            },
+        };
+        refs.extend(found);
+    }
+    refs
+}
+
+/// `file:`, `link:` and `portal:` dependencies of a `package.json`.
+fn package_refs(text: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ]
+    .iter()
+    .filter_map(|k| v[*k].as_object())
+    .flat_map(|o| o.values())
+    .filter_map(serde_json::Value::as_str)
+    .filter_map(|spec| {
+        ["file:", "link:", "portal:"]
+            .iter()
+            .find_map(|p| spec.strip_prefix(p))
+            .and_then(|rest| local_path(rest, true))
+    })
+    .collect()
+}
+
+/// `path` values of the dependency tables in a TOML value.
+fn toml_paths<'a>(tables: impl Iterator<Item = &'a toml::Value>) -> Vec<String> {
+    tables
+        .filter_map(toml::Value::as_table)
+        .flat_map(|t| t.values())
+        .filter_map(|dep| dep.get("path")?.as_str())
+        .filter_map(|path| local_path(path, true))
+        .collect()
+}
+
+/// `path` dependencies of a `Cargo.toml`, including per-target ones.
+fn cargo_refs(text: &str) -> Vec<String> {
+    let Ok(t) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    const TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let mut tables: Vec<&toml::Value> = TABLES.iter().filter_map(|k| t.get(*k)).collect();
+    if let Some(targets) = t.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values() {
+            tables.extend(TABLES.iter().filter_map(|k| target.get(*k)));
+        }
+    }
+    if let Some(deps) = t.get("workspace").and_then(|w| w.get("dependencies")) {
+        tables.push(deps);
+    }
+    toml_paths(tables.into_iter())
+}
+
+/// Local path dependencies of a `pyproject.toml`: PEP 621 `name @ file:…`,
+/// Poetry `{ path = … }` (also in groups) and uv path sources.
+fn pyproject_refs(text: &str) -> Vec<String> {
+    let Ok(t) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let project = t.get("project");
+    let mut specs: Vec<&str> = project
+        .and_then(|p| p.get("dependencies"))
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    if let Some(optional) = project
+        .and_then(|p| p.get("optional-dependencies"))
+        .and_then(toml::Value::as_table)
+    {
+        specs.extend(
+            optional
+                .values()
+                .filter_map(toml::Value::as_array)
+                .flatten()
+                .filter_map(toml::Value::as_str),
+        );
+    }
+    let mut refs: Vec<String> = specs
+        .into_iter()
+        .filter_map(|spec| spec.split_once('@'))
+        .filter(|(_, url)| url.trim().starts_with("file:"))
+        .filter_map(|(_, url)| local_path(url, false))
+        .collect();
+    let tool = t.get("tool");
+    let poetry = tool.and_then(|x| x.get("poetry"));
+    let mut tables: Vec<&toml::Value> = ["dependencies", "dev-dependencies"]
+        .iter()
+        .filter_map(|k| poetry.and_then(|p| p.get(*k)))
+        .collect();
+    if let Some(groups) = poetry
+        .and_then(|p| p.get("group"))
+        .and_then(toml::Value::as_table)
+    {
+        tables.extend(groups.values().filter_map(|g| g.get("dependencies")));
+    }
+    tables.extend(tool.and_then(|x| x.get("uv")?.get("sources")));
+    refs.extend(toml_paths(tables.into_iter()));
+    refs
+}
+
+/// Local targets of `replace` directives in a `go.mod`.
+fn go_replace_refs(text: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut block = false;
+    for line in text.lines() {
+        let line = line.split("//").next().unwrap_or(line).trim();
+        let directive = if block {
+            if line.starts_with(')') {
+                block = false;
+                continue;
+            }
+            line
+        } else if let Some(rest) = line.strip_prefix("replace") {
+            let rest = rest.trim();
+            if rest.starts_with('(') {
+                block = true;
+                continue;
+            }
+            rest
+        } else {
+            continue;
+        };
+        if let Some((_, target)) = directive.split_once("=>") {
+            let target = target.split_whitespace().next().unwrap_or("");
+            refs.extend(local_path(target, false));
+        }
+    }
+    refs
+}
+
+/// Quoted strings that follow `keyword` (`includeBuild("../x")`, `includeBuild '../x'`).
+fn quoted_after(text: &str, keyword: &str) -> Vec<String> {
+    text.match_indices(keyword)
+        .filter_map(|(at, _)| {
+            let rest = text[at + keyword.len()..].trim_start();
+            let rest = rest.strip_prefix('(').unwrap_or(rest).trim_start();
+            let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let body = &rest[1..];
+            Some(body[..body.find(quote)?].to_string())
+        })
+        .collect()
+}
+
+/// Included builds and explicit project folders in a Gradle settings file.
+fn gradle_refs(text: &str) -> Vec<String> {
+    let mut refs = quoted_after(text, "includeBuild");
+    for line in text.lines().filter(|l| l.contains("projectDir")) {
+        refs.extend(quoted_after(line, "file"));
+    }
+    refs.into_iter()
+        .filter_map(|r| local_path(&r, true))
+        .collect()
+}
+
+type RefParser = fn(&str) -> Vec<String>;
+
+/// Canonical paths that the manifests in `dir` refer to. Relative references
+/// resolve against `dir`; ones that don't exist are dropped.
+fn folder_refs(dir: &Path, root: &Path) -> Vec<PathBuf> {
+    let mut refs = Vec::new();
+    let mut requirements: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with("requirements") && n.ends_with(".txt"))
+        .collect();
+    requirements.sort();
+    for file in requirements {
+        refs.extend(
+            read(dir, &file, root)
+                .map(|t| requirement_refs(&t))
+                .unwrap_or_default(),
+        );
+    }
+    let parsers: [(&str, RefParser); 6] = [
+        ("package.json", package_refs),
+        ("Cargo.toml", cargo_refs),
+        ("pyproject.toml", pyproject_refs),
+        ("go.mod", go_replace_refs),
+        ("settings.gradle", gradle_refs),
+        ("settings.gradle.kts", gradle_refs),
+    ];
+    for (file, parse) in parsers {
+        refs.extend(read(dir, file, root).map(|t| parse(&t)).unwrap_or_default());
+    }
+    refs.iter()
+        .filter_map(|r| dir.join(r).canonicalize().ok())
+        .collect()
+}
+
+/// The candidate whose folder most specifically contains `path`.
+fn owner_of(path: &Path, dirs: &[PathBuf]) -> Option<usize> {
+    dirs.iter()
+        .enumerate()
+        .filter(|(_, d)| path.starts_with(d))
+        .max_by_key(|(_, d)| d.components().count())
+        .map(|(i, _)| i)
 }
 
 fn has_gradle_settings(dir: &Path) -> bool {
@@ -421,6 +688,7 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
         kind: ComponentKind::App,
         tasks: Vec::new(),
         deps: HashSet::new(),
+        refs: Vec::new(),
     })
 }
 
@@ -504,6 +772,7 @@ fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) ->
                     .map(|t| TerminalSpec { action: None, ..t })
                     .collect(),
                 deps: HashSet::new(),
+                refs: Vec::new(),
             });
         }
     }
@@ -519,6 +788,7 @@ fn repo_candidate(dir: &Path) -> Candidate {
         kind: ComponentKind::Other,
         tasks: Vec::new(),
         deps: HashSet::new(),
+        refs: Vec::new(),
     }
 }
 
@@ -532,6 +802,7 @@ fn walk(
     let candidate = candidate_for(dir, root, detectors)
         .or_else(|| (dir != root && dir.join(".git").exists()).then(|| repo_candidate(dir)));
     if let Some(mut c) = candidate {
+        c.refs = folder_refs(dir, root);
         let rel = dir.strip_prefix(root).unwrap_or(dir);
         c.rel = if rel.as_os_str().is_empty() {
             ".".into()
@@ -656,6 +927,7 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
             kind: ComponentKind::Other,
             tasks: Vec::new(),
             deps: HashSet::new(),
+            refs: Vec::new(),
         });
     }
 
@@ -723,6 +995,48 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
                 target: id.clone(),
                 label: Some("Tauri IPC".into()),
             });
+        }
+    }
+
+    // A manifest that points into another component's folder depends on it,
+    // whatever that package is called. A component never depends on one that
+    // contains it (a root package, or its own `-r requirements.txt`).
+    let dirs: Vec<PathBuf> = found
+        .iter()
+        .map(|c| {
+            if c.rel == "." {
+                root.to_path_buf()
+            } else {
+                root.join(&c.rel)
+            }
+        })
+        .collect();
+    let mut linked: HashSet<(String, String)> = links
+        .iter()
+        .map(|l| (l.source.clone(), l.target.clone()))
+        .collect();
+    for (i, c) in found.iter().enumerate() {
+        let mut targets: Vec<usize> = c
+            .refs
+            .iter()
+            .filter_map(|r| owner_of(r, &dirs))
+            .filter(|&t| !dirs[i].starts_with(&dirs[t]))
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        for t in targets {
+            if linked.insert((ids[i].clone(), ids[t].clone())) {
+                links.push(Link {
+                    detection: Some(crate::model::DetectionProvenance {
+                        detector: "builtin".into(),
+                        package_identity: None,
+                    }),
+                    id: format!("{}->{}", ids[i], ids[t]),
+                    source: ids[i].clone(),
+                    target: ids[t].clone(),
+                    label: None,
+                });
+            }
         }
     }
 
@@ -1210,6 +1524,106 @@ mod tests {
         assert_eq!(existing.components[0].name, "Renamed");
         assert_eq!(existing.components.len(), 3);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_folder_references_of_each_manifest() {
+        assert_eq!(
+            requirement_refs(
+                "django\n-r ../api/requirements.txt  # shared\n-rbase.txt\n--constraint=../c.txt\n\
+                 -e ../lib[dev]\n-e git+https://x/y.git#egg=y\n--index-url https://x\n\
+                 ./local\nsdk @ file:../sdk\nother @ https://x/y.whl\n# -r ignored.txt\n"
+            ),
+            [
+                "../api/requirements.txt",
+                "base.txt",
+                "../c.txt",
+                "../lib",
+                "./local",
+                "../sdk"
+            ]
+        );
+        assert_eq!(
+            package_refs(
+                r#"{"dependencies":{"a":"file:../a","b":"^1"},"devDependencies":{"c":"link:../c"},
+                   "optionalDependencies":{"d":"portal:./d"},"peerDependencies":{"e":"workspace:*"}}"#
+            ),
+            ["../a", "../c", "./d"]
+        );
+        assert_eq!(
+            cargo_refs(
+                "[dependencies]\ncore = { path = \"../core\" }\nserde = \"1\"\n\
+                 [target.'cfg(unix)'.dev-dependencies]\nnix = { path = \"../nix\" }\n"
+            ),
+            ["../core", "../nix"]
+        );
+        assert_eq!(
+            pyproject_refs(
+                "[project]\nname = \"x\"\ndependencies = [\"lib @ file:///abs/lib\", \"requests\"]\n\
+                 [tool.poetry.group.dev.dependencies]\nshared = { path = \"../shared\", develop = true }\n\
+                 [tool.uv.sources]\nmodels = { path = \"../models\" }\nother = { git = \"https://x\" }\n"
+            ),
+            ["/abs/lib", "../shared", "../models"]
+        );
+        assert_eq!(
+            go_replace_refs(
+                "module x\nreplace example.com/a => ../a\nreplace (\n  example.com/b v1 => ./b // local\n  \
+                 example.com/c => example.com/d v2\n)\n"
+            ),
+            ["../a", "./b"]
+        );
+        assert_eq!(
+            gradle_refs(
+                "includeBuild(\"../shared\")\nincludeBuild '../plugins'\ninclude(\":lib\")\n\
+                 project(\":lib\").projectDir = file(\"../lib\")\n"
+            ),
+            ["../shared", "../plugins", "../lib"]
+        );
+    }
+
+    #[test]
+    fn folder_references_link_components_once() {
+        let root = env::temp_dir().join(format!("patchbay-folder-refs-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write(&root, "requirements.txt", "requests\n");
+        write(&root, "Backend/requirements.txt", "django\n");
+        write(
+            &root,
+            "CronJobs/requirements.txt",
+            "-r ../Backend/requirements.txt\n-r ../requirements.txt\n",
+        );
+        write(
+            &root,
+            "CronJobs/requirements-dev.txt",
+            "-r requirements.txt\n",
+        );
+        write(
+            &root,
+            "web/package.json",
+            r#"{"name":"web","dependencies":{"shared-ui":"file:../lib","lib":"*"}}"#,
+        );
+        write(&root, "lib/package.json", r#"{"name":"lib"}"#);
+        write(
+            &root,
+            "tools/go.mod",
+            "module tools\nreplace x => ../../outside\n",
+        );
+        let p = detect(&root).unwrap();
+        let mut pairs: Vec<_> = p
+            .links
+            .iter()
+            .map(|l| (l.source.as_str(), l.target.as_str()))
+            .collect();
+        pairs.sort_unstable();
+        // The root package is never a dependency of its children, a self `-r` adds
+        // nothing, and the name match and folder reference make one web link.
+        assert_eq!(pairs, [("cronjobs", "backend"), ("web", "lib")]);
+        assert!(
+            p.links
+                .iter()
+                .all(|l| l.detection.as_ref().unwrap().detector == "builtin")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

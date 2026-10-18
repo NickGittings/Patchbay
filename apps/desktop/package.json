@@ -33,6 +33,7 @@
     "smoke:lifecycle": "node scripts/smoke-all.mjs lifecycle",
     "smoke:navigation": "node scripts/smoke-all.mjs navigation",
     "smoke:maintenance": "node scripts/smoke-all.mjs maintenance",
+    "smoke:dependencies": "node scripts/smoke-all.mjs dependencies",
     "smoke:integrations": "node scripts/smoke-all.mjs integrations"
   },
   "dependencies": {

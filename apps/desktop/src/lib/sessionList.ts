@@ -1,4 +1,5 @@
 import {
+  MAP_SCOPE,
   PLAN_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
@@ -24,6 +25,8 @@ export function sessionRole(metadata: SessionMetadata): SessionRole {
       return { role: 'Review', tone: 'review' }
     case MERGE_SCOPE:
       return { role: 'Merge', tone: 'merge' }
+    case MAP_SCOPE:
+      return { role: 'Dependencies', tone: 'plan' }
     default:
       // Root terminals and component terminals alike: agents implement, the rest run tasks.
       return metadata.kind === 'agent'

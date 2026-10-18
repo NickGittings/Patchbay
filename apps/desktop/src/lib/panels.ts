@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useStore } from '../store'
-import { showsInDock, sessionId, sessionMetadata, type TerminalSpec } from '../types'
+import { MAP_SCOPE, showsInDock, sessionId, sessionMetadata, type TerminalSpec } from '../types'
 
 type State = ReturnType<typeof useStore.getState>
 
@@ -58,7 +58,8 @@ export function dockTabs(s: DockState): DockTab[] {
         ([, t]) =>
           showsInDock(t.componentId) &&
           t.projectId === s.project?.id &&
-          (t.taskId ?? null) === task,
+          // Dependency detection belongs to the project, whatever the worktree.
+          ((t.taskId ?? null) === task || t.componentId === MAP_SCOPE),
       )
       .filter(([sid]) => !all.some((t) => t.sid === sid))
       .map(([sid, t]) => ({
@@ -99,7 +100,7 @@ export function hasDockTabs(s: DockState): boolean {
       !!runtime &&
       showsInDock(runtime.componentId) &&
       runtime.projectId === s.project?.id &&
-      (runtime.taskId ?? null) === s.activeTask
+      ((runtime.taskId ?? null) === s.activeTask || runtime.componentId === MAP_SCOPE)
     )
   }
   return Object.keys(s.sessions).some(inDock)

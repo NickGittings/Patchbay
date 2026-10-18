@@ -1,5 +1,6 @@
 import { useStore } from '../store'
 import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
+import { offerDependencies } from '../lib/dependencies'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 
 export default function MapSaveStatus() {
@@ -64,6 +65,9 @@ export default function MapSaveStatus() {
               : 'Save map configuration now'}
         </MenuItem>
       )}
+      <MenuItem disabled={blocked} onClick={() => offerDependencies(id)}>
+        Detect dependencies…
+      </MenuItem>
     </Menu>
   )
 }

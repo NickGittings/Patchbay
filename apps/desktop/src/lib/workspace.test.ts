@@ -223,3 +223,19 @@ test('Implement subagents persist per project without dirtying the map', () => {
   expect(useStore.getState().implementSubagents).toBe(3)
   expect(workspaceDocument().projects[1].layout.implementSubagents).toBe(5)
 })
+
+test('declining dependency detection persists per project without dirtying the map', () => {
+  const firstProject = useStore.getState().toProject()
+  useStore.getState().patchProject('p', { dependencyPromptDismissed: true })
+  expect(useStore.getState().dirty).toBe(false)
+  expect(useStore.getState().toProject()).toEqual(firstProject)
+  const layout = workspaceDocument().projects[0].layout
+  expect(restoredLayout(layout).dependencyPromptDismissed).toBe(true)
+  expect(restoredLayout({}).dependencyPromptDismissed).toBe(false)
+  expect(restoredLayout({ dependencyPromptDismissed: 'yes' }).dependencyPromptDismissed).toBe(false)
+  const restored = restoredLayout({
+    dependencyPromptDismissed: true,
+    taskWorkspaces: { other: { dependencyPromptDismissed: true } },
+  })
+  expect(restored.taskWorkspaces?.other).not.toHaveProperty('dependencyPromptDismissed')
+})

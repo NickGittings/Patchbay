@@ -381,6 +381,32 @@ pub fn preview(
     })
 }
 
+/// Detected dependencies between components already on the map that aren't
+/// linked yet, in either label. Locked and unreadable folders are skipped as
+/// in [`preview`]; nothing on the map changes.
+///
+/// # Errors
+/// Fails if the project or its root cannot be scanned.
+pub fn new_links(
+    project: &Project,
+    access: &AccessSnapshot,
+    detectors: &[DetectorContribution],
+) -> Result<Vec<Link>> {
+    Ok(preview(project, access, detectors)?
+        .proposals
+        .into_iter()
+        .filter_map(|p| match p.change {
+            Change::AddLink { link }
+                if project.component(&link.source).is_some()
+                    && project.component(&link.target).is_some() =>
+            {
+                Some(link)
+            }
+            _ => None,
+        })
+        .collect())
+}
+
 /// Components whose paths or existence will change, requiring stopped work.
 #[must_use]
 pub fn affected(preview: &ReconciliationPreview, selected: &[String]) -> Vec<String> {
@@ -687,6 +713,41 @@ mod tests {
         let review = preview(&project, &access.snapshot(), &[]).unwrap();
         assert!(review.proposals.is_empty());
         assert!(project.links[0].detection.is_none());
+    }
+
+    #[test]
+    fn new_links_offer_folder_references_between_existing_components_once() {
+        let f = Fixture::new();
+        f.package("web", "web", &[]);
+        f.package("lib", "shared", &[]);
+        let (mut project, access) = f.detected();
+        assert!(
+            new_links(&project, &access.snapshot(), &[])
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(
+            f.0.join("web/package.json"),
+            json!({"name":"web","dependencies":{"x":"file:../lib"}}).to_string(),
+        )
+        .unwrap();
+        f.package("new", "new", &["web"]);
+        let links = new_links(&project, &access.snapshot(), &[]).unwrap();
+        // The new folder's link waits for Rescan to add its component.
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            (links[0].source.as_str(), links[0].target.as_str()),
+            ("web", "lib")
+        );
+        project.links.push(
+            serde_json::from_value(json!({"id":"mine","source":"web","target":"lib","label":"UI"}))
+                .unwrap(),
+        );
+        assert!(
+            new_links(&project, &access.snapshot(), &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@ import { extensionTerminalRun } from './ipc'
 import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
+  MAP_AGENT_TERMINAL,
+  MAP_SCOPE,
   PLAN_SCOPE,
   showsInDock,
   isReservedScope,
@@ -20,8 +22,10 @@ import {
   sessionId,
   type TerminalEvent,
   type TerminalSnapshot,
+  type TerminalSpec,
 } from '../types'
 import {
+  mapAgentStart,
   onTerminalEvent,
   taskRootStart,
   planStart,
@@ -31,6 +35,7 @@ import {
   serviceRetire,
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
+import { roleDevice } from './agentRoles'
 import { savePlanDraft } from './planDrafts'
 import { autoRuns } from './autoState'
 import { unfinished } from './autoSettings'
@@ -183,7 +188,8 @@ function captureLaunch(
   if (!id || !project) throw new Error('Open a project first')
   const state = projectStateOf(id, s)
   // The planner belongs to the project, whatever the worktree, and plans what is highlighted now.
-  const planner = componentId === PLAN_SCOPE
+  // Dependency detection belongs to the project too.
+  const planner = componentId === PLAN_SCOPE || componentId === MAP_SCOPE
   const scope = planner ? null : task === undefined ? (state?.activeTask ?? null) : task
   const workspace =
     planner || state?.activeTask === scope
@@ -268,6 +274,36 @@ function autoBriefOf(projectId: string, sid: string) {
   )?.sessionBrief
 }
 
+/** Presets chosen for dependency detection launches the session list doesn't record yet. */
+const mapPresets = new Map<string, string>()
+
+/**
+ * The agent preset a dependency detection session runs: the one just chosen, else the one its
+ * record keeps (`metadata.lane`), else the planner's role. Never the recorded command, which
+ * already carries its briefing.
+ */
+function mapPreset(projectId: string, sid: string): TerminalSpec {
+  const s = useStore.getState()
+  const terminals = planTerminals(s.devices)
+  const id =
+    mapPresets.get(sid) ?? s.sessionRecords.find((r) => r.id === sid)?.metadata.lane ?? undefined
+  const preset =
+    terminals.find((t) => t.id === id) ??
+    terminals.find(
+      (t) =>
+        t.id === roleDevice(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')?.id,
+    )
+  if (!preset) throw new Error('Add an agent preset to detect dependencies')
+  return preset
+}
+
+/** Start `projectId`'s dependency detection agent with agent preset `preset`. */
+export function startMapAgent(projectId: string, preset: TerminalSpec): Promise<void> {
+  const launch = captureLaunch(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+  mapPresets.set(launch.sid, preset.id)
+  return launchTerminal(launch)
+}
+
 /** A handoff or Auto launch, whose caller reports every failure itself. */
 const reports = (launch: Launch) => !!(launch.kickoff || launch.auto)
 
@@ -320,7 +356,12 @@ function launchTerminal(launch: Launch): Promise<void> {
         ? { kind: 'fixFindings' }
         : (launch.kickoff ?? (componentId === PLAN_SCOPE ? recorded?.kickoff : undefined))
       const fix = kickoff?.kind === 'fixFindings'
-      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
+      if (
+        componentId !== PLAN_SCOPE &&
+        componentId !== MAP_SCOPE &&
+        terminal?.kind === 'agent' &&
+        !fix
+      )
         await savePlanDraft(launch.projectId, launch.task)
       if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
@@ -348,6 +389,8 @@ function launchTerminal(launch: Launch): Promise<void> {
           runtime.key,
           task,
         )
+      else if (componentId === MAP_SCOPE)
+        await mapAgentStart(project, mapPreset(launch.projectId, sid), requestId, !!launch.restart)
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)

@@ -160,6 +160,8 @@ export interface ProjectState {
   implementSubagents: number
   /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
   validatorDeclined: string[]
+  /** "Not now" on the offer to detect dependencies (workspace layout only). */
+  dependencyPromptDismissed: boolean
   planActive: string | null
   dirty: boolean
   gitChanges: Record<string, number>
@@ -299,6 +301,8 @@ interface State {
   validatorDeclined: string[]
   /** Declines suggestions, dropping keys of terminals no longer on the map. */
   declineValidators: (keys: string[]) => void
+  /** "Not now" on the offer to detect dependencies (workspace layout only). */
+  dependencyPromptDismissed: boolean
   /** Offers every declined suggestion again. */
   restoreValidators: () => void
   /** The planner's shown terminal id (UI only). */
@@ -681,6 +685,7 @@ export const useStore = create<State>((set, get) => ({
       validatorDeclined: liveDeclined(s.nodes, [...new Set([...s.validatorDeclined, ...keys])]),
     })),
   restoreValidators: () => set({ validatorDeclined: [] }),
+  dependencyPromptDismissed: false,
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
@@ -1020,6 +1025,7 @@ function emptyProjectState(): ProjectState {
     agentRoles: {},
     implementSubagents: 0,
     validatorDeclined: [],
+    dependencyPromptDismissed: false,
     planActive: null,
     dirty: false,
     gitChanges: {},
@@ -1053,6 +1059,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    dependencyPromptDismissed,
     planActive,
     dirty,
     gitChanges,
@@ -1089,6 +1096,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    dependencyPromptDismissed,
     planActive,
     dirty,
     gitChanges,

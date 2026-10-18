@@ -6,6 +6,7 @@ import {
   disposeMapAutosave,
   flushMapSaves,
   initializeMapAutosave,
+  onMapCreated,
   reloadSavedMap,
   saveMap,
   saveMapNow,
@@ -78,6 +79,24 @@ describe('map autosave', () => {
     await vi.advanceTimersByTimeAsync(750)
     expect(save).toHaveBeenCalledTimes(2)
     expect(save.mock.calls[1][1]).toBe('saved-1')
+  })
+
+  test('announces only the first creation, not later saves or conflicts', async () => {
+    const created = vi.fn()
+    const stop = onMapCreated(created)
+    open('one', 'absent')
+    useStore.setState({ dirty: true })
+    initializeMapAutosave()
+    save.mockResolvedValueOnce({ status: 'conflict', fingerprint: 'external' })
+    expect(await saveMap('one')).toBe(false)
+    expect(created).not.toHaveBeenCalled()
+    expect(await saveMap('one', true)).toBe(true)
+    expect(created).toHaveBeenCalledExactlyOnceWith('one')
+    edit('later')
+    await vi.advanceTimersByTimeAsync(750)
+    expect(save).toHaveBeenCalledTimes(3)
+    expect(created).toHaveBeenCalledTimes(1)
+    stop()
   })
 
   test('debounces map changes but ignores selection, sessions and layout', async () => {

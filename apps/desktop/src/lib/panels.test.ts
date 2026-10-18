@@ -91,3 +91,23 @@ test('merge and planner sessions never enter Navigation, even when running or re
     }
   }
 })
+
+test('the dependency agent stays in the dock whichever worktree is active', () => {
+  const sid = 'detect'
+  const s = state(
+    { [sid]: running },
+    {
+      activeTask: 'other-task',
+      runtimeTerminals: {
+        [sid]: {
+          projectId: 'p-1',
+          taskId: null,
+          componentId: '@map',
+          terminal: terminal('detect'),
+        },
+      },
+    },
+  )
+  expect(labels(s)).toEqual(['detect'])
+  expect(hasDockTabs(s)).toBe(true)
+})

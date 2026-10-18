@@ -14,6 +14,8 @@ pub const TASK_ROOT_SCOPE: &str = "@task";
 pub const MERGE_SCOPE: &str = "@merge";
 /// Reserved scope for whole-branch review agents.
 pub const REVIEW_SCOPE: &str = "@review";
+/// Reserved scope for the agent that proposes the map's dependencies.
+pub const MAP_SCOPE: &str = "@map";
 /// Reserved component id for changed files under the project root that no
 /// component contains (root files like `README.md`), as git reports them.
 pub const PROJECT_SCOPE: &str = "@project";
@@ -293,7 +295,7 @@ impl Project {
         if self.components.iter().any(|c| c.id == TASK_ROOT_SCOPE) {
             anyhow::bail!("Component id {TASK_ROOT_SCOPE} is reserved for task root sessions");
         }
-        for scope in [MERGE_SCOPE, REVIEW_SCOPE] {
+        for scope in [MERGE_SCOPE, REVIEW_SCOPE, MAP_SCOPE] {
             if self.components.iter().any(|c| c.id == scope) {
                 anyhow::bail!("Component id {scope} is reserved for job agent sessions");
             }
@@ -525,6 +527,26 @@ pub fn task_session_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_scopes_are_not_component_ids() {
+        for scope in [
+            TASK_ROOT_SCOPE,
+            PLAN_SCOPE,
+            MERGE_SCOPE,
+            REVIEW_SCOPE,
+            MAP_SCOPE,
+            PROJECT_SCOPE,
+        ] {
+            let project: Project = serde_json::from_value(serde_json::json!({
+                "schemaVersion": SCHEMA_VERSION, "name": "p", "root": "/p",
+                "components": [{"id": scope, "name": "x", "kind": "other", "path": "x", "terminals": []}],
+                "links": []
+            }))
+            .unwrap();
+            assert!(project.validate().is_err(), "{scope}");
+        }
+    }
 
     #[test]
     fn saving_legacy_map_upgrades_schema_and_retains_optional_provenance() {

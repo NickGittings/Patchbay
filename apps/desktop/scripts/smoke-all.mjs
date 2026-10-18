@@ -82,6 +82,14 @@ const SCRIPTS = {
     },
     'maintenance-fixture.sh',
   ),
+  dependencies: smoke(
+    'dependencies.js',
+    {
+      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-dependencies/project'),
+      PATCHBAY_SMOKE_ROOT_2: join(temp, 'patchbay-smoke-dependencies/second'),
+    },
+    'dependencies-fixture.sh',
+  ),
   integrations: smoke(
     'integrations.js',
     {

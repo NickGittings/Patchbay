@@ -4,6 +4,10 @@ export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
+/** Mirrors `model::MAP_SCOPE`: the agent that proposes the map's dependencies. */
+export const MAP_SCOPE = '@map'
+/** Mirrors `link_proposals::MAP_TERMINAL`, the one detection terminal of a project. */
+export const MAP_AGENT_TERMINAL = 'detect'
 /** Mirrors context::{MIN_SUBAGENTS, MAX_SUBAGENTS}. */
 export const MIN_SUBAGENTS = 2
 export const MAX_SUBAGENTS = 8
@@ -29,7 +33,10 @@ export type Kickoff =
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
 export const isReservedScope = (scope: string) =>
-  scope === PLAN_SCOPE || scope === TASK_ROOT_SCOPE || isReviewAgentScope(scope)
+  scope === PLAN_SCOPE ||
+  scope === TASK_ROOT_SCOPE ||
+  scope === MAP_SCOPE ||
+  isReviewAgentScope(scope)
 
 /** Scopes rendered in their own panels instead of Navigation's dock. */
 export const showsInDock = (scope: string) => scope !== PLAN_SCOPE && !isReviewAgentScope(scope)
@@ -258,6 +265,22 @@ export interface Link {
   source: string
   target: string
   label?: string | null
+}
+
+/** Mirrors `link_proposals::ProposedLink`: a dependency a detection agent proposes. */
+export interface ProposedLink {
+  source: string
+  target: string
+  label?: string | null
+  reason: string
+}
+
+/** Mirrors `link_proposals::Pending`; `skipped` were already on the map when submitted. */
+export interface PendingLinks {
+  sessionId: string
+  submittedMs: number
+  links: ProposedLink[]
+  skipped: ProposedLink[]
 }
 
 /** What a rescan or Add repo… put on the map: new components and their links, with final ids. */

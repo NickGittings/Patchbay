@@ -46,6 +46,12 @@ impl Host for Desktop {
             serde_json::json!({"projectId":launch.project_id,"task":launch.task}),
         );
     }
+    fn links_proposed(&self, launch: &LaunchContext) {
+        let _ = self.0.emit(
+            "patchbay://map-links",
+            serde_json::json!({"projectId":launch.project_id}),
+        );
+    }
 }
 
 pub fn run_action(
@@ -110,6 +116,7 @@ fn authenticate(app: &AppHandle, token: &str) -> Option<LaunchContext> {
     let session = session?;
     Some(LaunchContext {
         planner: session.metadata.component_id == patchbay_core::model::PLAN_SCOPE,
+        mapper: session.metadata.component_id == patchbay_core::model::MAP_SCOPE,
         project_id: session.metadata.project_id,
         task: session.metadata.task,
         agent_session: session.id,
@@ -157,6 +164,37 @@ pub fn task_activities(project_id: String, state: State<'_, AppState>) -> CmdRes
         .into_iter()
         .filter(|a| a.project_id == project_id)
         .collect())
+}
+
+fn project_root(state: &AppState, project_id: &str) -> CmdResult<String> {
+    let root = state
+        .project(project_id)?
+        .access
+        .snapshot()
+        .root()
+        .ok_or("No project is open")?;
+    Ok(root.display().to_string())
+}
+
+/// Dependencies a detection agent proposed for the project, awaiting review.
+#[tauri::command]
+pub async fn map_links_read(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<patchbay_core::link_proposals::Pending>> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::link_proposals::read(&root).map_err(err)).await
+}
+
+/// Forget a reviewed proposal; a newer submission stays.
+#[tauri::command]
+pub async fn map_links_clear(
+    project_id: String,
+    submitted_ms: u64,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::link_proposals::clear(&root, submitted_ms).map_err(err)).await
 }
 
 #[tauri::command]

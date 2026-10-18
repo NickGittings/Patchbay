@@ -7,6 +7,13 @@ const writing = new Map<string, Promise<boolean>>()
 const observed = new Map<string, string>()
 let unsubscribe: (() => void) | undefined
 let reconciling = false
+const created = new Set<(id: string) => void>()
+
+/** Call `listener` with a project's id once its first `patchbay.json` is written. */
+export function onMapCreated(listener: (id: string) => void) {
+  created.add(listener)
+  return () => void created.delete(listener)
+}
 
 function entryFor(id: string) {
   return useStore.getState().captureProjects()[id]
@@ -116,6 +123,7 @@ export function saveMap(id: string, replace = false): Promise<boolean> {
         return false
       if (entry.mapSave?.status === 'conflict' && !replace) return false
       setStatus(id, { status: 'saving' })
+      const first = entry.fingerprint === 'absent'
       try {
         const result = await saveProject(captured, replace ? null : entry.fingerprint)
         if (!entryFor(id)) return false
@@ -140,6 +148,7 @@ export function saveMap(id: string, replace = false): Promise<boolean> {
             },
           },
         }))
+        if (first) for (const listener of created) listener(id)
         return true
       } catch (error) {
         setStatus(id, { status: 'error', error: String(error) })

@@ -65,6 +65,7 @@ export function workspaceDocument(): WorkspaceDocument {
               agentRoles: state.agentRoles,
               implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
+              dependencyPromptDismissed: state.dependencyPromptDismissed,
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
@@ -145,6 +146,7 @@ export function restoredLayout(
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
       : []
+  if (!nested) out.dependencyPromptDismissed = layout.dependencyPromptDismissed === true
   if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
     const report = layout.graphActionReport as ProjectState['graphActionReport']
     if (
@@ -205,6 +207,7 @@ export function restoredLayout(
                 'agentRoles',
                 'implementSubagents',
                 'validatorDeclined',
+                'dependencyPromptDismissed',
               ].includes(key),
           ),
         ),
@@ -331,6 +334,7 @@ export function initializeWorkspace() {
           s.agentRoles === prev.agentRoles &&
           s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
+          s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
           s.notifications === prev.notifications &&
           s.workspaceSettings === prev.workspaceSettings &&
           s.viewport === prev.viewport &&

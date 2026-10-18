@@ -3,6 +3,7 @@ import {
   PLAN_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  MAP_SCOPE,
   TASK_ROOT_SCOPE,
   type SessionRecord,
   type Task,
@@ -96,6 +97,7 @@ describe('session labels', () => {
     { componentId: PLAN_SCOPE, kind: 'agent', role: 'Planner', tone: 'plan' },
     { componentId: REVIEW_SCOPE, kind: 'agent', role: 'Review', tone: 'review' },
     { componentId: MERGE_SCOPE, kind: 'agent', role: 'Merge', tone: 'merge' },
+    { componentId: MAP_SCOPE, kind: 'agent', role: 'Dependencies', tone: 'plan' },
     { componentId: TASK_ROOT_SCOPE, kind: 'agent', role: 'Implementation', tone: 'implement' },
     { componentId: 'api', kind: 'agent', role: 'Implementation', tone: 'implement' },
     { componentId: 'web', kind: 'task', role: 'Task', tone: 'task' },
@@ -129,9 +131,12 @@ describe('session labels', () => {
     expect(subject({ ...running.metadata, componentId: REVIEW_SCOPE })).toBeUndefined()
   })
 
-  test.each([PLAN_SCOPE, MERGE_SCOPE, TASK_ROOT_SCOPE])('%s has no subject', (componentId) => {
-    expect(subject({ ...running.metadata, componentId, branch: 'feature-x' })).toBeUndefined()
-  })
+  test.each([PLAN_SCOPE, MERGE_SCOPE, MAP_SCOPE, TASK_ROOT_SCOPE])(
+    '%s has no subject',
+    (componentId) => {
+      expect(subject({ ...running.metadata, componentId, branch: 'feature-x' })).toBeUndefined()
+    },
+  )
 })
 
 describe('projectSessions', () => {

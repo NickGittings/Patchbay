@@ -163,11 +163,19 @@ mod tests {
                 "--file",
                 "proposal.json",
             ],
+            vec![
+                "patchbay-cli",
+                "agent",
+                "propose-links",
+                "--file",
+                "links.json",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["patchbay-cli", "agent", "validate"]).is_err());
         assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose"]).is_err());
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose-links"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "patchbay-cli",
@@ -458,7 +466,13 @@ enum AgentCmd {
     Logs {
         session_id: String,
     },
+    /// Propose a plan and assignments (`-` reads stdin).
     Propose {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Propose dependencies between the map's components (`-` reads stdin).
+    ProposeLinks {
         #[arg(long)]
         file: PathBuf,
     },
@@ -468,6 +482,22 @@ enum EnvironmentCmd {
     Start { group_id: String },
     Stop { group_id: String },
 }
+/// A proposal's JSON from `file`, or stdin for `-`, up to 1 MiB.
+fn read_proposal<T: serde::de::DeserializeOwned>(file: &std::path::Path) -> Result<T> {
+    use std::io::Read;
+    const LIMIT: u64 = 1024 * 1024;
+    let mut bytes = Vec::new();
+    if file.as_os_str() == "-" {
+        std::io::stdin().take(LIMIT + 1).read_to_end(&mut bytes)?;
+    } else {
+        std::fs::File::open(file)?
+            .take(LIMIT + 1)
+            .read_to_end(&mut bytes)?;
+    }
+    anyhow::ensure!(bytes.len() as u64 <= LIMIT, "Proposal file is too large");
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn agent(command: AgentCmd) -> Result<bool> {
     use patchbay_core::agent_bridge::{self, Action, Response};
     let response = Response::from_result((|| {
@@ -482,15 +512,12 @@ fn agent(command: AgentCmd) -> Result<bool> {
             AgentCmd::Environment {
                 command: EnvironmentCmd::Stop { group_id },
             } => Action::EnvironmentStop { group_id },
-            AgentCmd::Propose { file } => {
-                anyhow::ensure!(
-                    file.metadata()?.len() <= 1024 * 1024,
-                    "Proposal file is too large"
-                );
-                Action::Propose {
-                    proposal: serde_json::from_slice(&std::fs::read(file)?)?,
-                }
-            }
+            AgentCmd::ProposeLinks { file } => Action::ProposeLinks {
+                proposal: read_proposal(&file)?,
+            },
+            AgentCmd::Propose { file } => Action::Propose {
+                proposal: read_proposal(&file)?,
+            },
         };
         let response = agent_bridge::call_from_env(action)?;
         if !response.ok {
