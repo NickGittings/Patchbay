@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { projectOf, projectStateOf, useStore } from '../store'
+import { appendToMap, projectOf, projectStateOf, useStore } from '../store'
 import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
@@ -12,7 +12,8 @@ import {
 import { detectLinks, mapLinksClear, mapLinksRead, onMapLinks } from './ipc'
 import { onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
-import { startMapAgent } from './sessions'
+import { planTerminals } from './plan'
+import { mapPresetId, startMapAgent } from './sessions'
 
 /** A dependency to review: found in manifests, or proposed by the detection agent. */
 export interface FoundLink {
@@ -39,10 +40,35 @@ export type DependencyDialog =
     }
 
 interface DependencyState {
-  dialog: DependencyDialog | null
-  busy: boolean
+  /**
+   * One dialog per project, queued until its tab is active: only the active project's shows, and a
+   * dialog never blocks another project's.
+   */
+  dialogs: Record<string, DependencyDialog>
+  /** Projects scanning or clearing a submission, whose dialog waits. */
+  busy: Record<string, true>
 }
-export const useDependencies = create<DependencyState>(() => ({ dialog: null, busy: false }))
+export const useDependencies = create<DependencyState>(() => ({ dialogs: {}, busy: {} }))
+
+const dialogOf = (projectId: string) => useDependencies.getState().dialogs[projectId]
+
+function setDialog(projectId: string, dialog: DependencyDialog | null) {
+  useDependencies.setState(({ dialogs }) => {
+    const next = { ...dialogs }
+    if (dialog) next[projectId] = dialog
+    else delete next[projectId]
+    return { dialogs: next }
+  })
+}
+
+function setBusy(projectId: string, busy: boolean) {
+  useDependencies.setState((s) => {
+    const next = { ...s.busy }
+    if (busy) next[projectId] = true
+    else delete next[projectId]
+    return { busy: next }
+  })
+}
 
 /** Components no link touches. */
 export function unlinked(project: {
@@ -98,14 +124,11 @@ export function newLinks(
 
 /** Add `found` to the map as it is now, as an ordinary edit that autosaves. Returns how many. */
 export function appendLinks(projectId: string, found: FoundLink[]): number {
-  const current = projectOf(projectId)
-  if (!current) return 0
-  const links = newLinks(current, found)
-  if (!links.length) return 0
-  const s = useStore.getState()
-  s.syncProject({ ...current, projectId, links: [...current.links, ...links] })
-  s.patchProject(projectId, { dirty: true })
-  return links.length
+  const added = appendToMap(projectId, (current) => {
+    const links = newLinks(current, found)
+    return links.length ? { links } : null
+  })
+  return added?.links.length ?? 0
 }
 
 function message(projectId: string, text: string, transient = false) {
@@ -113,7 +136,9 @@ function message(projectId: string, text: string, transient = false) {
 }
 
 /** Agent submissions the user closed undecided, per project; the menu shows them again. */
-const deferred = new Map<string, number>()
+const deferred = new Map<string, string>()
+/** Submissions cleared (or being cleared), per project, which a stale read must not reopen. */
+const cleared = new Map<string, string>()
 
 /**
  * Scan manifests for links the map lacks. The review and `appendLinks` check each one against the
@@ -133,113 +158,142 @@ async function scan(projectId: string): Promise<FoundLink[]> {
 
 /** Scan manifests and review what they name, or say that they name nothing. */
 export async function scanDependencies(projectId: string) {
-  if (useDependencies.getState().busy) return
-  useDependencies.setState({ busy: true })
+  if (useDependencies.getState().busy[projectId]) return
+  setBusy(projectId, true)
   try {
     const found = await scan(projectId)
-    useDependencies.setState({
-      dialog: found.length
+    // The project may have closed meanwhile.
+    if (!projectStateOf(projectId)) return
+    setDialog(
+      projectId,
+      found.length
         ? { mode: 'review', projectId, links: found }
         : { mode: 'offer', projectId, scanned: true },
-    })
+    )
   } catch (e) {
     message(projectId, String(e))
   } finally {
-    useDependencies.setState({ busy: false })
+    setBusy(projectId, false)
   }
 }
 
 /** From a menu: review the agent's waiting submission, else offer detection. */
 export function offerDependencies(projectId: string) {
   void reviewPending(projectId, true).then((shown) => {
-    if (!shown && !useDependencies.getState().dialog)
-      useDependencies.setState({ dialog: { mode: 'offer', projectId, scanned: false } })
+    if (!shown && !dialogOf(projectId) && projectStateOf(projectId))
+      setDialog(projectId, { mode: 'offer', projectId, scanned: false })
   })
 }
 
-/** Close the dialog. An agent's submission closed undecided stays for the menu to show again. */
-export function closeDependencies() {
-  const dialog = useDependencies.getState().dialog
-  useDependencies.setState({ dialog: null })
-  if (dialog?.mode === 'review' && dialog.pending)
-    deferred.set(dialog.projectId, dialog.pending.submittedMs)
-  // Submissions that arrived while the dialog was open.
-  for (const id of Object.keys(useStore.getState().projects)) void reviewPending(id)
+/**
+ * Close `projectId`'s dialog. An agent's submission closed undecided stays for the menu to show
+ * again; one that arrived while the dialog was open shows now.
+ */
+export function closeDependencies(projectId: string) {
+  const dialog = dialogOf(projectId)
+  setDialog(projectId, null)
+  if (dialog?.mode === 'review' && dialog.pending) deferred.set(projectId, dialog.pending.id)
+  void reviewPending(projectId)
 }
 
 /** "Not now": stop offering detection for this project after its map is created. */
 export function dismissDependencies(projectId: string) {
   useStore.getState().patchProject(projectId, { dependencyPromptDismissed: true })
-  closeDependencies()
+  closeDependencies(projectId)
 }
 
-/** Start the detection agent with `preset`, or show the one already running. */
+/**
+ * Start the detection agent with `preset`. One already running is shown instead, and the user is
+ * told when it runs another preset; an exited one restarts with `preset`.
+ */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
-  closeDependencies()
+  closeDependencies(projectId)
   const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
   const s = useStore.getState()
   if (s.sessions[sid]?.running) {
-    revealTerminal({ sid, componentId: MAP_SCOPE })
+    const running = mapPresetId(sid)
+    if (running && running !== preset.id) {
+      const name = planTerminals(s.devices).find((t) => t.id === running)?.name ?? running
+      message(
+        projectId,
+        `Dependency detection is already running with ${name}. Stop it to detect with ${preset.name}.`,
+      )
+    }
+    if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
     return
   }
-  if (!s.runtimeTerminals[sid])
-    s.addRuntimeTerminal(sid, {
-      projectId,
-      taskId: null,
-      componentId: MAP_SCOPE,
-      terminal: {
-        id: MAP_AGENT_TERMINAL,
-        name: `Detect dependencies · ${preset.name}`,
-        kind: 'agent',
-        command: preset.command,
-      },
-    })
+  // The tab names the preset this launch runs, also when an earlier one ran another.
+  s.addRuntimeTerminal(sid, {
+    projectId,
+    taskId: null,
+    componentId: MAP_SCOPE,
+    terminal: {
+      id: MAP_AGENT_TERMINAL,
+      name: `Detect dependencies · ${preset.name}`,
+      kind: 'agent',
+      command: preset.command,
+    },
+  })
   await startMapAgent(projectId, preset)
   if (useStore.getState().project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
 }
 
 /**
- * Review a submission waiting for `projectId`. A dialog in use is never replaced, and one the user
- * closed undecided only shows again when `explicit`. Returns whether it is shown.
+ * Review a submission waiting for `projectId`. A dialog in use is never replaced, a submission
+ * already cleared never shows again, and one the user closed undecided only shows again when
+ * `explicit`. Returns whether it is shown.
  */
 async function reviewPending(projectId: string, explicit = false): Promise<boolean> {
   const pending = await mapLinksRead(projectId).catch(() => null)
-  if (!pending || (!explicit && deferred.get(projectId) === pending.submittedMs)) return false
-  const open = useDependencies.getState().dialog
-  if (open && !(open.mode === 'offer' && open.projectId === projectId)) return false
+  if (!pending || !projectStateOf(projectId) || cleared.get(projectId) === pending.id) return false
+  if (!explicit && deferred.get(projectId) === pending.id) return false
+  const open = dialogOf(projectId)
+  if (open && open.mode !== 'offer') return false
   deferred.delete(projectId)
   const links: FoundLink[] = pending.links.map((l) => ({ ...l, detector: 'agent' }))
-  useDependencies.setState({ dialog: { mode: 'review', projectId, links, pending } })
+  setDialog(projectId, { mode: 'review', projectId, links, pending })
   return true
 }
 
 /** Add the chosen links and forget the submission they came from. */
-export async function acceptDependencies(chosen: FoundLink[]) {
-  const dialog = useDependencies.getState().dialog
-  if (dialog?.mode !== 'review') return
-  const added = appendLinks(dialog.projectId, chosen)
+export async function acceptDependencies(projectId: string, chosen: FoundLink[]) {
+  if (dialogOf(projectId)?.mode !== 'review') return
+  const added = appendLinks(projectId, chosen)
   message(
-    dialog.projectId,
+    projectId,
     added ? `Added ${added} dependenc${added === 1 ? 'y' : 'ies'}` : 'Nothing new to add',
     true,
   )
-  await discardDependencies()
+  await discardDependencies(projectId)
 }
 
-/** Close the review, forgetting the agent's submission unless a newer one replaced it. */
-export async function discardDependencies() {
-  const dialog = useDependencies.getState().dialog
-  closeDependencies()
-  if (dialog?.mode !== 'review' || !dialog.pending) return
-  try {
-    await mapLinksClear(dialog.projectId, dialog.pending.submittedMs)
-    if (deferred.get(dialog.projectId) === dialog.pending.submittedMs)
-      deferred.delete(dialog.projectId)
-  } catch (e) {
-    message(dialog.projectId, String(e))
+/**
+ * Close the review, first forgetting the agent's submission unless a newer one replaced it, then
+ * showing any newer one.
+ */
+export async function discardDependencies(projectId: string) {
+  const dialog = dialogOf(projectId)
+  if (dialog?.mode === 'review' && dialog.pending) {
+    const { id } = dialog.pending
+    // Reads still on their way must not bring it back.
+    cleared.set(projectId, id)
+    setBusy(projectId, true)
+    try {
+      await mapLinksClear(projectId, id)
+      if (deferred.get(projectId) === id) deferred.delete(projectId)
+    } catch (e) {
+      // Still on disk: the menu can show it again.
+      cleared.delete(projectId)
+      deferred.set(projectId, id)
+      message(projectId, String(e))
+    } finally {
+      setBusy(projectId, false)
+    }
   }
+  // Only the dialog this call handled; another may have replaced it meanwhile.
+  if (dialogOf(projectId) === dialog) setDialog(projectId, null)
   // A newer submission arrived while this one was open.
-  await reviewPending(dialog.projectId)
+  await reviewPending(projectId)
 }
 
 /** After the first save of a map without links, scan manifests and offer what they name. */
@@ -247,7 +301,7 @@ async function afterCreated(projectId: string) {
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state || !project || !shouldOfferDetection(project, state.dependencyPromptDismissed)) return
-  if (useDependencies.getState().dialog) return
+  if (dialogOf(projectId)) return
   let found: FoundLink[] | null = null
   try {
     found = await scan(projectId)
@@ -255,12 +309,25 @@ async function afterCreated(projectId: string) {
     // Offer detection anyway, without claiming the manifests named nothing.
     message(projectId, `Couldn’t scan for dependencies: ${String(e)}`)
   }
-  if (useDependencies.getState().dialog) return
-  useDependencies.setState({
-    dialog: found?.length
+  if (dialogOf(projectId) || !projectStateOf(projectId)) return
+  setDialog(
+    projectId,
+    found?.length
       ? { mode: 'review', projectId, links: found }
       : { mode: 'offer', projectId, scanned: !!found },
-  })
+  )
+}
+
+/** Forget everything about projects no longer open. */
+function forgetClosed(open: Record<string, unknown>) {
+  for (const map of [deferred, cleared]) for (const id of map.keys()) if (!open[id]) map.delete(id)
+  const { dialogs, busy } = useDependencies.getState()
+  const closed = [...Object.keys(dialogs), ...Object.keys(busy)].filter((id) => !open[id])
+  if (closed.length)
+    useDependencies.setState({
+      dialogs: Object.fromEntries(Object.entries(dialogs).filter(([id]) => open[id])),
+      busy: Object.fromEntries(Object.entries(busy).filter(([id]) => open[id])),
+    })
 }
 
 let stop: (() => void) | undefined
@@ -270,10 +337,13 @@ export function initializeDependencyDetection(): () => void {
   const unlisten = onMapLinks(({ projectId }) => void reviewPending(projectId))
   const unsubscribe = onMapCreated((id) => void afterCreated(id))
   // A submission made while the app was closed waits for its project's tab, once the backend has
-  // the project open: never while restoring or while its folder is unavailable.
+  // the project open: never while restoring or while its folder is unavailable. Only project and
+  // restore changes are looked at.
   const checked = new Set<string>()
-  const opened = useStore.subscribe((s) => {
+  const opened = useStore.subscribe((s, prev) => {
+    if (s.projects === prev.projects && s.restoring === prev.restoring) return
     for (const id of checked) if (!s.projects[id]) checked.delete(id)
+    forgetClosed(s.projects)
     if (s.restoring) return
     for (const [id, entry] of Object.entries(s.projects))
       if (!entry.unavailable && !checked.has(id)) {

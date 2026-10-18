@@ -467,8 +467,9 @@ export const onMapLinks = (handler: (event: { projectId: string }) => void): Pro
   listen<{ projectId: string }>(MAP_LINKS_EVENT, (e) => handler(e.payload))
 export const mapLinksRead = (projectId: string) =>
   invoke<import('../types').PendingLinks | null>('map_links_read', { projectId })
-export const mapLinksClear = (projectId: string, submittedMs: number) =>
-  invoke<boolean>('map_links_clear', { projectId, submittedMs })
+/** Forget submission `id`; a newer one stays. */
+export const mapLinksClear = (projectId: string, id: string) =>
+  invoke<boolean>('map_links_clear', { projectId, id })
 /** Launch the dependency detection agent with agent preset `terminal`. */
 export const mapAgentStart = (
   project: Project,

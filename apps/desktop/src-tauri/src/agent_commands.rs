@@ -167,13 +167,7 @@ pub fn task_activities(project_id: String, state: State<'_, AppState>) -> CmdRes
 }
 
 fn project_root(state: &AppState, project_id: &str) -> CmdResult<String> {
-    let root = state
-        .project(project_id)?
-        .access
-        .snapshot()
-        .root()
-        .ok_or("No project is open")?;
-    Ok(root.display().to_string())
+    Ok(crate::task_repo(state, project_id)?.0.display().to_string())
 }
 
 /// Dependencies a detection agent proposed for the project, awaiting review.
@@ -190,11 +184,11 @@ pub async fn map_links_read(
 #[tauri::command]
 pub async fn map_links_clear(
     project_id: String,
-    submitted_ms: u64,
+    id: String,
     state: State<'_, AppState>,
 ) -> CmdResult<bool> {
     let root = project_root(&state, &project_id)?;
-    blocking(move || patchbay_core::link_proposals::clear(&root, submitted_ms).map_err(err)).await
+    blocking(move || patchbay_core::link_proposals::clear(&root, &id).map_err(err)).await
 }
 
 #[tauri::command]

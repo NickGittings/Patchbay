@@ -275,8 +275,12 @@ export interface ProposedLink {
   reason: string
 }
 
-/** Mirrors `link_proposals::Pending`; `skipped` were already on the map when submitted. */
+/**
+ * Mirrors `link_proposals::Pending`; `skipped` were already on the map when submitted. `id` is
+ * unique per submission.
+ */
 export interface PendingLinks {
+  id: string
   sessionId: string
   submittedMs: number
   links: ProposedLink[]

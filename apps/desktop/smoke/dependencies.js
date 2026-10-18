@@ -91,7 +91,8 @@
     await until('agent link added', () =>
       s().edges.some((e) => e.source === web && e.target === api),
     )
-    assert(!dialog(), 'the review must close')
+    // The review closes once the proposal is cleared, so no stale read can bring it back.
+    await until('the review closes', () => !dialog())
     assert((await smoke.mapLinksRead(one.id)) === null, 'the reviewed proposal must be cleared')
     await until('autosave', () => !s().dirty)
     const saved = (await smoke.openProject()).project.links

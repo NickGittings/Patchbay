@@ -17,28 +17,35 @@ import {
   type FoundLink,
 } from '../lib/dependencies'
 
-/** Offers dependency detection for the active project, and reviews what it found. */
+/**
+ * Offers dependency detection for the active project, and reviews what it found. Other projects'
+ * dialogs wait for their tab.
+ */
 export default function DependencyDialog() {
-  const dialog = useDependencies((s) => s.dialog)
   const projectId = useStore((s) => s.project?.id)
-  if (!dialog || dialog.projectId !== projectId) return null
+  const dialog = useDependencies((s) => (projectId ? s.dialogs[projectId] : undefined))
+  if (!dialog) return null
   return dialog.mode === 'offer' ? (
     <Offer dialog={dialog} />
   ) : (
-    <Review key={dialog.pending?.submittedMs ?? 'manifests'} dialog={dialog} />
+    <Review key={dialog.pending?.id ?? 'manifests'} dialog={dialog} />
   )
 }
 
+const useBusy = (projectId: string) => useDependencies((s) => !!s.busy[projectId])
+
 function Shell({
+  projectId,
   title,
   close,
   children,
 }: {
+  projectId: string
   title: string
   close: () => void
   children: React.ReactNode
 }) {
-  const busy = useDependencies((s) => s.busy)
+  const busy = useBusy(projectId)
   return (
     <div className="maintenance-backdrop" onClick={() => !busy && close()}>
       <section
@@ -72,7 +79,7 @@ function AgentLauncher({
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const connected = useStore((s) => s.serviceConnected)
-  const busy = useDependencies((s) => s.busy)
+  const busy = useBusy(projectId)
   const presets = planTerminals(devices)
   const [picked, setPicked] = useState<string>()
   const preset =
@@ -112,12 +119,13 @@ function AgentLauncher({
 }
 
 function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
-  const busy = useDependencies((s) => s.busy)
+  const busy = useBusy(dialog.projectId)
+  const close = () => closeDependencies(dialog.projectId)
   const nodes = useStore((s) => s.nodes)
   const edges = useStore((s) => s.edges)
   const alone = unlinked({ components: nodes, links: edges }).length
   return (
-    <Shell title="Detect dependencies" close={closeDependencies}>
+    <Shell projectId={dialog.projectId} title="Detect dependencies" close={close}>
       <p className="hint flush">
         {dialog.scanned &&
           (alone === nodes.length
@@ -140,7 +148,7 @@ function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
             Not now
           </button>
         ) : (
-          <button disabled={busy} onClick={closeDependencies}>
+          <button disabled={busy} onClick={close}>
             Cancel
           </button>
         )}
@@ -154,7 +162,7 @@ const key = (l: FoundLink) => `${l.source}\n${l.target}`
 function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
   const nodes = useStore((s) => s.nodes)
   const edges = useStore((s) => s.edges)
-  const busy = useDependencies((s) => s.busy)
+  const busy = useBusy(dialog.projectId)
   // Re-checked against the map as it is now: an end may be gone or the pair linked meanwhile.
   const project = {
     components: nodes.map((n) => ({ id: n.id })),
@@ -168,9 +176,10 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
   const skipped = dialog.pending?.skipped.length ?? 0
   return (
     <Shell
+      projectId={dialog.projectId}
       title={agent ? 'Review proposed dependencies' : 'Review detected dependencies'}
       // Dismissing keeps an agent's proposal for later; only Discard forgets it.
-      close={closeDependencies}
+      close={() => closeDependencies(dialog.projectId)}
     >
       <p className="hint flush">
         {agent
@@ -224,13 +233,13 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
         </>
       )}
       <div className="row">
-        <button disabled={busy} onClick={() => void discardDependencies()}>
+        <button disabled={busy} onClick={() => void discardDependencies(dialog.projectId)}>
           {agent ? 'Discard' : 'Cancel'}
         </button>
         <button
           className="primary"
           disabled={busy || !chosen.length}
-          onClick={() => void acceptDependencies(chosen)}
+          onClick={() => void acceptDependencies(dialog.projectId, chosen)}
         >
           Add selected
         </button>

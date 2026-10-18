@@ -298,10 +298,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         !launch.mapper
             || matches!(
                 action,
-                Action::Context {}
-                    | Action::Status {}
-                    | Action::Logs { .. }
-                    | Action::ProposeLinks { .. }
+                Action::Context {} | Action::Status {} | Action::ProposeLinks { .. }
             ),
         "Dependency detection can only read context and propose links"
     );
@@ -669,6 +666,9 @@ mod tests {
         for action in [
             Action::Validate {
                 component_id: "web".into(),
+            },
+            Action::Logs {
+                session_id: "other".into(),
             },
             Action::EnvironmentStart {
                 group_id: "env".into(),

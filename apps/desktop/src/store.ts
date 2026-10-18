@@ -970,6 +970,30 @@ export function projectOf(id: string): Project | null {
   return state?.project ? projectFrom(state) : null
 }
 
+/**
+ * Append to open project `projectId`'s map as it is now, as an ordinary edit that autosaves and
+ * keeps live session and git state. `extend` gets the current map and returns what to add, or null
+ * for nothing; that is returned, else null when the project isn't open.
+ */
+export function appendToMap<T extends { components?: Component[]; links?: Link[] }>(
+  projectId: string | null | undefined,
+  extend: (current: Project) => T | null,
+): T | null {
+  const current = projectId ? projectOf(projectId) : null
+  if (!projectId || !current) return null
+  const added = extend(current)
+  if (!added) return null
+  const s = useStore.getState()
+  s.syncProject({
+    ...current,
+    projectId,
+    components: [...current.components, ...(added.components ?? [])],
+    links: [...current.links, ...(added.links ?? [])],
+  })
+  s.patchProject(projectId, { dirty: true })
+  return added
+}
+
 /** A project state as a `Project` (the map `patchbay.json` holds). */
 export function projectFrom({
   project,

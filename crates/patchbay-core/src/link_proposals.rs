@@ -37,9 +37,11 @@ pub struct LinkProposal {
 }
 
 /// A submission awaiting review. `skipped` were already on the map when submitted.
+/// `id` is unique per submission, so clearing one never removes a newer one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pending {
+    pub id: String,
     pub session_id: String,
     pub submitted_ms: u64,
     pub links: Vec<ProposedLink>,
@@ -134,6 +136,7 @@ fn submit_in(
         })
         .partition(|l| linked.contains(&(l.source.as_str(), l.target.as_str())));
     let pending = Pending {
+        id: uuid::Uuid::new_v4().to_string(),
         session_id: session.into(),
         submitted_ms: now_ms,
         links,
@@ -154,12 +157,12 @@ fn read_in(store: &Path, root: &str) -> Result<Option<Pending>> {
     }
 }
 
-fn clear_in(store: &Path, root: &str, submitted_ms: u64) -> Result<bool> {
+fn clear_in(store: &Path, root: &str, id: &str) -> Result<bool> {
     let _guard = SUBMISSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A newer submission arrived while the user reviewed this one; keep it.
-    if read_in(store, root)?.is_none_or(|p| p.submitted_ms != submitted_ms) {
+    if read_in(store, root)?.is_none_or(|p| p.id != id) {
         return Ok(false);
     }
     std::fs::remove_file(file(store, root))?;
@@ -182,12 +185,12 @@ pub fn read(root: &str) -> Result<Option<Pending>> {
     read_in(&store()?, root)
 }
 
-/// Forget the reviewed proposal, unless a newer one has replaced it.
+/// Forget the reviewed proposal `id`, unless a newer one has replaced it.
 ///
 /// # Errors
 /// Fails if the file can't be read or removed.
-pub fn clear(root: &str, submitted_ms: u64) -> Result<bool> {
-    clear_in(&store()?, root, submitted_ms)
+pub fn clear(root: &str, id: &str) -> Result<bool> {
+    clear_in(&store()?, root, id)
 }
 
 /// The detection agent's briefing: the map as it stands and how to submit.
@@ -357,15 +360,17 @@ mod tests {
         assert_eq!(first.links.len(), 1);
         assert_eq!(first.links[0].label.as_deref(), Some("REST"));
         assert_eq!(first.skipped[0].source, "jobs");
-        assert_eq!(read_in(&store, &p.root).unwrap(), Some(first));
-        submit_in(&store, &p, "s-1", &proposal(links), 20).unwrap();
+        assert_eq!(read_in(&store, &p.root).unwrap().as_ref(), Some(&first));
+        // The same millisecond: only the id tells them apart.
+        let second = submit_in(&store, &p, "s-1", &proposal(links), 10).unwrap();
+        assert_ne!(first.id, second.id);
         assert!(
-            !clear_in(&store, &p.root, 10).unwrap(),
+            !clear_in(&store, &p.root, &first.id).unwrap(),
             "a newer submission stays"
         );
-        assert!(clear_in(&store, &p.root, 20).unwrap());
+        assert!(clear_in(&store, &p.root, &second.id).unwrap());
         assert_eq!(read_in(&store, &p.root).unwrap(), None);
-        assert!(!clear_in(&store, &p.root, 20).unwrap());
+        assert!(!clear_in(&store, &p.root, &second.id).unwrap());
         let _ = std::fs::remove_dir_all(store);
     }
 

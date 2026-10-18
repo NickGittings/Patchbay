@@ -1,11 +1,26 @@
 import { expect, test, vi } from 'vitest'
 
-vi.mock('../store', () => ({ useStore: { getState: () => ({}), subscribe: () => () => {} } }))
-vi.mock('./ipc', () => ({}))
+const ipc = vi.hoisted(() => ({
+  mapLinksRead: vi.fn<(projectId: string) => Promise<unknown>>(async () => null),
+  mapLinksClear: vi.fn<(projectId: string, id: string) => Promise<boolean>>(async () => true),
+}))
+vi.mock('../store', () => ({
+  useStore: { getState: () => ({ project: { id: 'a' } }), subscribe: () => () => {} },
+  projectStateOf: (id: string) => (['a', 'b'].includes(id) ? {} : undefined),
+}))
+vi.mock('./ipc', () => ipc)
 vi.mock('./mapSave', () => ({}))
 vi.mock('./attention', () => ({}))
 vi.mock('./sessions', () => ({}))
-const { newLinks, shouldOfferDetection, unlinked } = await import('./dependencies')
+const {
+  closeDependencies,
+  discardDependencies,
+  newLinks,
+  offerDependencies,
+  shouldOfferDetection,
+  unlinked,
+  useDependencies,
+} = await import('./dependencies')
 
 const project = {
   components: [{ id: 'app' }, { id: 'api' }, { id: 'jobs' }],
@@ -60,4 +75,44 @@ test('detection is offered for unlinked maps of two or more components until dec
   expect(shouldOfferDetection({ components: [{ id: 'one' }] as never, links: [] }, false)).toBe(
     false,
   )
+})
+
+const pending = (id: string) => ({ id, sessionId: 's', submittedMs: 1, links: [], skipped: [] })
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test("a project's dialog never blocks another project's", async () => {
+  useDependencies.setState({ dialogs: {}, busy: {} })
+  offerDependencies('b')
+  await settle()
+  offerDependencies('a')
+  await settle()
+  const { dialogs } = useDependencies.getState()
+  expect(dialogs.a?.mode).toBe('offer')
+  expect(dialogs.b?.mode).toBe('offer')
+  closeDependencies('b')
+  await settle()
+  expect(Object.keys(useDependencies.getState().dialogs)).toEqual(['a'])
+})
+
+test('a discarded submission is cleared before the review closes, and stale reads keep it closed', async () => {
+  useDependencies.setState({ dialogs: {}, busy: {} })
+  ipc.mapLinksRead.mockResolvedValue(pending('one'))
+  offerDependencies('a')
+  await settle()
+  expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
+  let finish = (_: boolean) => {}
+  ipc.mapLinksClear.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+  const discarded = discardDependencies('a')
+  // Still open, and waiting, until the backend has forgotten it.
+  expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
+  expect(useDependencies.getState().busy.a).toBe(true)
+  finish(true)
+  await discarded
+  expect(ipc.mapLinksClear).toHaveBeenCalledWith('a', 'one')
+  // The read made after clearing still returned the old submission: it stays closed.
+  expect(useDependencies.getState().dialogs.a).toBeUndefined()
+  offerDependencies('a')
+  await settle()
+  expect(useDependencies.getState().dialogs.a?.mode).toBe('offer')
+  ipc.mapLinksRead.mockResolvedValue(null)
 })

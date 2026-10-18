@@ -285,8 +285,7 @@ const mapPresets = new Map<string, string>()
 function mapPreset(projectId: string, sid: string): TerminalSpec {
   const s = useStore.getState()
   const terminals = planTerminals(s.devices)
-  const id =
-    mapPresets.get(sid) ?? s.sessionRecords.find((r) => r.id === sid)?.metadata.lane ?? undefined
+  const id = mapPresetId(sid)
   const preset =
     terminals.find((t) => t.id === id) ??
     terminals.find(
@@ -295,6 +294,15 @@ function mapPreset(projectId: string, sid: string): TerminalSpec {
     )
   if (!preset) throw new Error('Add an agent preset to detect dependencies')
   return preset
+}
+
+/** The preset id dependency detection session `sid` was last launched with, when known. */
+export function mapPresetId(sid: string): string | undefined {
+  return (
+    mapPresets.get(sid) ??
+    useStore.getState().sessionRecords.find((r) => r.id === sid)?.metadata.lane ??
+    undefined
+  )
 }
 
 /** Start `projectId`'s dependency detection agent with agent preset `preset`. */

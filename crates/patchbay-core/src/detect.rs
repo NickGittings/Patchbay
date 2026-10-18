@@ -13,6 +13,7 @@ use crate::model::{
     check_component_dir, normalize, relative_path, resolve_dir,
 };
 use anyhow::{Result, bail};
+use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -111,8 +112,7 @@ fn package_manager(dir: &Path, root: &Path) -> &'static str {
 }
 
 /// Returns `None` for workspace roots that only group other packages.
-fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+fn from_package_json(dir: &Path, root: &Path, v: &serde_json::Value) -> Option<Candidate> {
     let scripts: HashSet<String> = v["scripts"]
         .as_object()
         .map(|o| o.keys().cloned().collect())
@@ -187,8 +187,7 @@ fn from_package_json(dir: &Path, root: &Path, text: &str) -> Option<Candidate> {
     })
 }
 
-fn from_cargo_toml(dir: &Path, text: &str) -> Option<Candidate> {
-    let t: toml::Table = text.parse().ok()?;
+fn from_cargo_toml(dir: &Path, t: &toml::Table) -> Option<Candidate> {
     // A virtual workspace manifest has no [package].
     let name = t.get("package")?.get("name")?.as_str()?.to_string();
     let deps: HashSet<String> = ["dependencies", "dev-dependencies", "build-dependencies"]
@@ -270,8 +269,7 @@ fn python_candidate(dir: &Path, name: String, deps: HashSet<String>) -> Candidat
     }
 }
 
-fn from_pyproject(dir: &Path, text: &str) -> Option<Candidate> {
-    let t: toml::Table = text.parse().ok()?;
+fn from_pyproject(dir: &Path, t: &toml::Table) -> Candidate {
     let project = t.get("project");
     let poetry = t.get("tool").and_then(|x| x.get("poetry"));
     let name = project
@@ -293,7 +291,7 @@ fn from_pyproject(dir: &Path, text: &str) -> Option<Candidate> {
     {
         deps.extend(d.keys().map(|k| k.to_lowercase()));
     }
-    Some(python_candidate(dir, name, deps))
+    python_candidate(dir, name, deps)
 }
 
 fn from_requirements(dir: &Path, text: &str) -> Candidate {
@@ -411,10 +409,7 @@ fn requirement_refs(text: &str) -> Vec<String> {
 }
 
 /// `file:`, `link:` and `portal:` dependencies of a `package.json`.
-fn package_refs(text: &str) -> Vec<String> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Vec::new();
-    };
+fn package_refs(v: &serde_json::Value) -> Vec<String> {
     [
         "dependencies",
         "devDependencies",
@@ -444,11 +439,10 @@ fn toml_paths<'a>(tables: impl Iterator<Item = &'a toml::Value>) -> Vec<String> 
         .collect()
 }
 
-/// `path` dependencies of a `Cargo.toml`, including per-target ones.
-fn cargo_refs(text: &str) -> Vec<String> {
-    let Ok(t) = text.parse::<toml::Table>() else {
-        return Vec::new();
-    };
+/// `path` dependencies of a `Cargo.toml`, including per-target ones. A
+/// workspace's `[workspace.dependencies]` only declare versions for members to
+/// inherit, so they aren't dependencies of the folder itself.
+fn cargo_refs(t: &toml::Table) -> Vec<String> {
     const TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
     let mut tables: Vec<&toml::Value> = TABLES.iter().filter_map(|k| t.get(*k)).collect();
     if let Some(targets) = t.get("target").and_then(toml::Value::as_table) {
@@ -456,18 +450,12 @@ fn cargo_refs(text: &str) -> Vec<String> {
             tables.extend(TABLES.iter().filter_map(|k| target.get(*k)));
         }
     }
-    if let Some(deps) = t.get("workspace").and_then(|w| w.get("dependencies")) {
-        tables.push(deps);
-    }
     toml_paths(tables.into_iter())
 }
 
 /// Local path dependencies of a `pyproject.toml`: PEP 621 `name @ file:…`,
 /// Poetry `{ path = … }` (also in groups) and uv path sources.
-fn pyproject_refs(text: &str) -> Vec<String> {
-    let Ok(t) = text.parse::<toml::Table>() else {
-        return Vec::new();
-    };
+fn pyproject_refs(t: &toml::Table) -> Vec<String> {
     let project = t.get("project");
     let mut specs: Vec<&str> = project
         .and_then(|p| p.get("dependencies"))
@@ -554,8 +542,49 @@ fn quoted_after(text: &str, keyword: &str) -> Vec<String> {
         .collect()
 }
 
+/// Groovy or Kotlin source without its `//` and `/* */` comments, keeping
+/// strings (which may contain either) and line breaks.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                out.push(c);
+                while let Some(d) = chars.next() {
+                    out.push(d);
+                    if d == '\\' {
+                        out.extend(chars.next());
+                    } else if d == c || d == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => while chars.next_if(|d| *d != '\n').is_some() {},
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for d in chars.by_ref() {
+                    if d == '\n' {
+                        out.push('\n');
+                    }
+                    if last == '*' && d == '/' {
+                        break;
+                    }
+                    last = d;
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Included builds and explicit project folders in a Gradle settings file.
 fn gradle_refs(text: &str) -> Vec<String> {
+    let text = strip_comments(text);
+    let text = text.as_str();
     let mut refs = quoted_after(text, "includeBuild");
     for line in text.lines().filter(|l| l.contains("projectDir")) {
         refs.extend(quoted_after(line, "file"));
@@ -565,41 +594,97 @@ fn gradle_refs(text: &str) -> Vec<String> {
         .collect()
 }
 
-type RefParser = fn(&str) -> Vec<String>;
+/// Manifest files a folder's detection and its folder references read.
+const MANIFESTS: [&str; 7] = [
+    "package.json",
+    "Cargo.toml",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    "settings.gradle",
+    "settings.gradle.kts",
+];
 
-/// Canonical paths that the manifests in `dir` refer to. Relative references
-/// resolve against `dir`; ones that don't exist are dropped.
-fn folder_refs(dir: &Path, root: &Path) -> Vec<PathBuf> {
-    let mut refs = Vec::new();
-    let mut requirements: Vec<String> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.starts_with("requirements") && n.ends_with(".txt"))
-        .collect();
-    requirements.sort();
-    for file in requirements {
-        refs.extend(
-            read(dir, &file, root)
-                .map(|t| requirement_refs(&t))
-                .unwrap_or_default(),
-        );
+/// One folder's manifests, each read and parsed at most once, whether by
+/// detection or by its folder references.
+struct Manifests<'a> {
+    dir: &'a Path,
+    root: &'a Path,
+    /// The names of the folder's entries, listed once by `walk`.
+    names: &'a [String],
+    texts: [OnceCell<Option<String>>; MANIFESTS.len()],
+    package: OnceCell<Option<serde_json::Value>>,
+    cargo: OnceCell<Option<toml::Table>>,
+    pyproject: OnceCell<Option<toml::Table>>,
+}
+
+impl<'a> Manifests<'a> {
+    fn new(dir: &'a Path, root: &'a Path, names: &'a [String]) -> Self {
+        Self {
+            dir,
+            root,
+            names,
+            texts: Default::default(),
+            package: OnceCell::new(),
+            cargo: OnceCell::new(),
+            pyproject: OnceCell::new(),
+        }
     }
-    let parsers: [(&str, RefParser); 6] = [
-        ("package.json", package_refs),
-        ("Cargo.toml", cargo_refs),
-        ("pyproject.toml", pyproject_refs),
-        ("go.mod", go_replace_refs),
-        ("settings.gradle", gradle_refs),
-        ("settings.gradle.kts", gradle_refs),
-    ];
-    for (file, parse) in parsers {
-        refs.extend(read(dir, file, root).map(|t| parse(&t)).unwrap_or_default());
+
+    /// The text of `file`, one of `MANIFESTS` (`None` for any other).
+    fn text(&self, file: &str) -> Option<&str> {
+        let at = MANIFESTS.iter().position(|m| *m == file)?;
+        self.texts[at]
+            .get_or_init(|| read(self.dir, file, self.root))
+            .as_deref()
     }
-    refs.iter()
-        .filter_map(|r| dir.join(r).canonicalize().ok())
-        .collect()
+
+    fn package(&self) -> Option<&serde_json::Value> {
+        self.package
+            .get_or_init(|| serde_json::from_str(self.text("package.json")?).ok())
+            .as_ref()
+    }
+
+    fn cargo(&self) -> Option<&toml::Table> {
+        self.cargo
+            .get_or_init(|| self.text("Cargo.toml")?.parse().ok())
+            .as_ref()
+    }
+
+    fn pyproject(&self) -> Option<&toml::Table> {
+        self.pyproject
+            .get_or_init(|| self.text("pyproject.toml")?.parse().ok())
+            .as_ref()
+    }
+
+    /// Canonical paths the folder's manifests refer to. Relative references
+    /// resolve against the folder; ones that don't exist are dropped.
+    fn refs(&self) -> Vec<PathBuf> {
+        let mut refs = Vec::new();
+        let mut requirements: Vec<&String> = self
+            .names
+            .iter()
+            .filter(|n| n.starts_with("requirements") && n.ends_with(".txt"))
+            .collect();
+        requirements.sort();
+        for file in requirements {
+            if file == "requirements.txt" {
+                refs.extend(self.text(file).map(requirement_refs).unwrap_or_default());
+            } else if let Some(text) = read(self.dir, file, self.root) {
+                refs.extend(requirement_refs(&text));
+            }
+        }
+        refs.extend(self.package().map(package_refs).unwrap_or_default());
+        refs.extend(self.cargo().map(cargo_refs).unwrap_or_default());
+        refs.extend(self.pyproject().map(pyproject_refs).unwrap_or_default());
+        refs.extend(self.text("go.mod").map(go_replace_refs).unwrap_or_default());
+        for file in ["settings.gradle", "settings.gradle.kts"] {
+            refs.extend(self.text(file).map(gradle_refs).unwrap_or_default());
+        }
+        refs.iter()
+            .filter_map(|r| self.dir.join(r).canonicalize().ok())
+            .collect()
+    }
 }
 
 /// The candidate whose folder most specifically contains `path`.
@@ -734,21 +819,26 @@ fn provenance(dir: &Path, root: &Path, detector: &str) -> crate::model::Detectio
     }
 }
 
-fn candidate_for(dir: &Path, root: &Path, detectors: &[DetectorContribution]) -> Option<Candidate> {
-    if let Some(text) = read(dir, "package.json", root) {
-        return from_package_json(dir, root, &text);
+fn candidate_for(
+    manifests: &Manifests,
+    dir: &Path,
+    root: &Path,
+    detectors: &[DetectorContribution],
+) -> Option<Candidate> {
+    if manifests.text("package.json").is_some() {
+        return from_package_json(dir, root, manifests.package()?);
     }
-    if let Some(text) = read(dir, "Cargo.toml", root) {
-        return from_cargo_toml(dir, &text);
+    if manifests.text("Cargo.toml").is_some() {
+        return from_cargo_toml(dir, manifests.cargo()?);
     }
-    if let Some(text) = read(dir, "pyproject.toml", root) {
-        return from_pyproject(dir, &text);
+    if manifests.text("pyproject.toml").is_some() {
+        return Some(from_pyproject(dir, manifests.pyproject()?));
     }
-    if let Some(text) = read(dir, "requirements.txt", root) {
-        return Some(from_requirements(dir, &text));
+    if let Some(text) = manifests.text("requirements.txt") {
+        return Some(from_requirements(dir, text));
     }
-    if let Some(text) = read(dir, "go.mod", root) {
-        return Some(from_go_mod(dir, &text));
+    if let Some(text) = manifests.text("go.mod") {
+        return Some(from_go_mod(dir, text));
     }
     if let Some(candidate) = from_native_project(dir, root) {
         return Some(candidate);
@@ -799,10 +889,19 @@ fn walk(
     out: &mut Vec<Candidate>,
     detectors: &[DetectorContribution],
 ) {
-    let candidate = candidate_for(dir, root, detectors)
+    // Listed once, for both requirement files and subfolders.
+    let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)
+        .map(|e| e.flatten().collect())
+        .unwrap_or_default();
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    let manifests = Manifests::new(dir, root, &names);
+    let candidate = candidate_for(&manifests, dir, root, detectors)
         .or_else(|| (dir != root && dir.join(".git").exists()).then(|| repo_candidate(dir)));
     if let Some(mut c) = candidate {
-        c.refs = folder_refs(dir, root);
+        c.refs = manifests.refs();
         let rel = dir.strip_prefix(root).unwrap_or(dir);
         c.rel = if rel.as_os_str().is_empty() {
             ".".into()
@@ -814,13 +913,10 @@ fn walk(
     if depth >= MAX_DEPTH {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
     let mut dirs: Vec<_> = entries
-        .flatten()
+        .iter()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
+        .map(std::fs::DirEntry::path)
         .filter(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy();
             !name.starts_with('.')
@@ -1502,13 +1598,12 @@ mod tests {
     #[test]
     fn react_native_and_expo_with_react_are_classified_as_apps() {
         for dependency in ["react-native", "expo"] {
-            let text = serde_json::json!({
+            let package = serde_json::json!({
                 "name": "mobile",
                 "dependencies": { "react": "*", dependency: "*" },
-            })
-            .to_string();
+            });
             let candidate =
-                from_package_json(Path::new("mobile"), Path::new("mobile"), &text).unwrap();
+                from_package_json(Path::new("mobile"), Path::new("mobile"), &package).unwrap();
             assert_eq!(candidate.kind, ComponentKind::App);
         }
     }
@@ -1545,23 +1640,42 @@ mod tests {
         );
         assert_eq!(
             package_refs(
-                r#"{"dependencies":{"a":"file:../a","b":"^1"},"devDependencies":{"c":"link:../c"},
+                &serde_json::from_str(
+                    r#"{"dependencies":{"a":"file:../a","b":"^1"},"devDependencies":{"c":"link:../c"},
                    "optionalDependencies":{"d":"portal:./d"},"peerDependencies":{"e":"workspace:*"}}"#
+                )
+                .unwrap()
             ),
             ["../a", "../c", "./d"]
         );
         assert_eq!(
             cargo_refs(
-                "[dependencies]\ncore = { path = \"../core\" }\nserde = \"1\"\n\
+                &"[dependencies]\ncore = { path = \"../core\" }\nserde = \"1\"\n\
                  [target.'cfg(unix)'.dev-dependencies]\nnix = { path = \"../nix\" }\n"
+                    .parse()
+                    .unwrap()
             ),
             ["../core", "../nix"]
         );
+        // Workspace dependencies are versions for members to inherit, not the
+        // root folder's own dependencies.
+        assert_eq!(
+            cargo_refs(
+                &"[workspace]\nmembers = [\"crates/*\"]\n\
+                 [workspace.dependencies]\ncore = { path = \"crates/core\" }\n\
+                 [dependencies]\ncli = { path = \"crates/cli\" }\n"
+                    .parse()
+                    .unwrap()
+            ),
+            ["crates/cli"]
+        );
         assert_eq!(
             pyproject_refs(
-                "[project]\nname = \"x\"\ndependencies = [\"lib @ file:///abs/lib\", \"requests\"]\n\
+                &"[project]\nname = \"x\"\ndependencies = [\"lib @ file:///abs/lib\", \"requests\"]\n\
                  [tool.poetry.group.dev.dependencies]\nshared = { path = \"../shared\", develop = true }\n\
                  [tool.uv.sources]\nmodels = { path = \"../models\" }\nother = { git = \"https://x\" }\n"
+                    .parse()
+                    .unwrap()
             ),
             ["/abs/lib", "../shared", "../models"]
         );
@@ -1578,6 +1692,16 @@ mod tests {
                  project(\":lib\").projectDir = file(\"../lib\")\n"
             ),
             ["../shared", "../plugins", "../lib"]
+        );
+        assert_eq!(
+            gradle_refs(
+                "// includeBuild(\"../commented\")\n/* includeBuild '../block'\n\
+                 project(\":x\").projectDir = file(\"../x\") */\n\
+                 includeBuild(\"../real\") // includeBuild(\"../trailing\")\n\
+                 includeBuild(\"../a//b\")\n\
+                 project(\":y\").projectDir /* file(\"../no\") */ = file(\"../y\")\n"
+            ),
+            ["../real", "../a//b", "../y"]
         );
     }
 
