@@ -3,18 +3,29 @@ import { expect, test, vi } from 'vitest'
 const ipc = vi.hoisted(() => ({
   mapLinksRead: vi.fn<(projectId: string) => Promise<unknown>>(async () => null),
   mapLinksClear: vi.fn<(projectId: string, id: string) => Promise<boolean>>(async () => true),
+  detectLinks: vi.fn<(project: unknown) => Promise<unknown[]>>(async () => []),
+  onMapLinks: vi.fn(async () => () => {}),
 }))
+const created = vi.hoisted(() => ({ listener: (_id: string) => {} }))
 vi.mock('../store', () => ({
   useStore: { getState: () => ({ project: { id: 'a' } }), subscribe: () => () => {} },
   projectStateOf: (id: string) => (['a', 'b'].includes(id) ? {} : undefined),
+  projectOf: (id: string) =>
+    ['a', 'b'].includes(id) ? { components: [{ id: 'app' }, { id: 'api' }], links: [] } : undefined,
 }))
 vi.mock('./ipc', () => ipc)
-vi.mock('./mapSave', () => ({}))
+vi.mock('./mapSave', () => ({
+  onMapCreated: (listener: (id: string) => void) => {
+    created.listener = listener
+    return () => {}
+  },
+}))
 vi.mock('./attention', () => ({}))
 vi.mock('./sessions', () => ({}))
 const {
   closeDependencies,
   discardDependencies,
+  initializeDependencyDetection,
   newLinks,
   offerDependencies,
   shouldOfferDetection,
@@ -105,7 +116,7 @@ test('a discarded submission is cleared before the review closes, and stale read
   const discarded = discardDependencies('a')
   // Still open, and waiting, until the backend has forgotten it.
   expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
-  expect(useDependencies.getState().busy.a).toBe(true)
+  expect(useDependencies.getState().busy.a).toBe(1)
   finish(true)
   await discarded
   expect(ipc.mapLinksClear).toHaveBeenCalledWith('a', 'one')
@@ -115,4 +126,32 @@ test('a discarded submission is cleared before the review closes, and stale read
   await settle()
   expect(useDependencies.getState().dialogs.a?.mode).toBe('offer')
   ipc.mapLinksRead.mockResolvedValue(null)
+})
+
+test("the first save's scan keeps the project busy and fills an offer opened meanwhile", async () => {
+  useDependencies.setState({ dialogs: {}, busy: {} })
+  const stop = initializeDependencyDetection()
+  let finish: (links: unknown[]) => void = () => {}
+  ipc.detectLinks.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+  created.listener('a')
+  await settle()
+  expect(useDependencies.getState().busy.a).toBe(1)
+  // The menu's offer opens while the scan runs; its Scan button waits on the busy project.
+  offerDependencies('a')
+  await settle()
+  expect(useDependencies.getState().dialogs.a).toEqual({
+    mode: 'offer',
+    projectId: 'a',
+    scanned: false,
+  })
+  finish([{ source: 'app', target: 'api', label: null }])
+  await settle()
+  expect(useDependencies.getState().busy.a).toBeUndefined()
+  expect(useDependencies.getState().dialogs.a).toEqual({
+    mode: 'review',
+    projectId: 'a',
+    links: [{ source: 'app', target: 'api', label: null, detector: 'builtin' }],
+  })
+  closeDependencies('a')
+  stop()
 })

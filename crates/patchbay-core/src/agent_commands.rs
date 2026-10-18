@@ -1,6 +1,6 @@
 //! Headless orchestration for authenticated agent commands and manual graph actions.
 use crate::actions::{ActionPlan, ActionReport, ActionRequest};
-use crate::agent_bridge::{Action, LaunchContext};
+use crate::agent_bridge::{Action, LaunchContext, Role};
 use crate::session::{Record, Request};
 use crate::{Project, access::AccessSnapshot, context, tasks};
 use anyhow::Result;
@@ -265,7 +265,10 @@ fn planner_root(
     launch: &LaunchContext,
     conversation: Option<&str>,
 ) -> Result<PathBuf> {
-    anyhow::ensure!(launch.planner, "Only planner sessions can save plans");
+    anyhow::ensure!(
+        launch.role == Role::Planner,
+        "Only planner sessions can save plans"
+    );
     let snapshot: Option<crate::pty::Snapshot> = call(
         state,
         Request::Snapshot {
@@ -295,7 +298,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
     let state = app;
     let scoped = state.project(&launch.project_id)?;
     anyhow::ensure!(
-        !launch.mapper
+        launch.role != Role::Mapper
             || matches!(
                 action,
                 Action::Context {} | Action::Status {} | Action::ProposeLinks { .. }
@@ -387,7 +390,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         }
         Action::ProposeLinks { proposal } => {
             anyhow::ensure!(
-                launch.mapper,
+                launch.role == Role::Mapper,
                 "Only dependency detection sessions can propose links"
             );
             // Locked components are unknown ids to the agent.
@@ -403,7 +406,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             let project = scoped.project()?;
             let readable = scoped.access.restrict(project, &[])?;
             let (mapped, _, _) = for_task(readable, launch.task.as_deref(), &[], scoped.roots)?;
-            if !launch.planner {
+            if launch.role != Role::Planner {
                 anyhow::bail!("Only planner sessions can submit proposals");
             }
             crate::proposals::submit(&mapped, launch.task.as_deref(), &proposal)?;
@@ -429,7 +432,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         | Action::ValidateChanged { .. }) => {
             let request = ActionRequest::try_from(action)?;
             let validation = !matches!(request, ActionRequest::StartGroup { .. });
-            if launch.planner {
+            if launch.role == Role::Planner {
                 anyhow::bail!(
                     "Switch to implementation before {}",
                     if validation {
@@ -588,8 +591,7 @@ mod tests {
             project_id: "p".into(),
             task: Some("task".into()),
             agent_session: "one".into(),
-            planner: false,
-            mapper: false,
+            role: Role::Component,
         }
     }
     #[test]
@@ -657,7 +659,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Only dependency detection"), "{err}");
-        session.mapper = true;
+        session.role = Role::Mapper;
         // Validated before anything is saved.
         let err = dispatch(&host, &session, propose())
             .unwrap_err()
@@ -723,7 +725,7 @@ mod tests {
         };
         assert!(dispatch(&host, &planner, save()).is_err());
         assert!(crate::plans::read(&root, None).unwrap().text.is_empty());
-        planner.planner = true;
+        planner.role = Role::Planner;
         crate::plans::write(&root, Some("other"), "Other task's plan").unwrap();
         dispatch(&host, &planner, save()).unwrap();
         let stamp = std::fs::metadata(crate::plans::plan_file(&root, None).unwrap())

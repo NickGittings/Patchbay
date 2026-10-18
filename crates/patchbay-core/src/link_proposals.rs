@@ -243,11 +243,12 @@ pub fn map_context(project: &Project) -> String {
          Only read; don't edit project files, install anything or start servers. Use only the \
          component ids above. For each dependency give a short label (at most {LABEL_LIMIT} \
          characters, such as REST API or shared models) and a reason with file:line evidence.\n\n\
-         Write JSON {{\"version\":1,\"links\":[{{\"source\":\"id\",\"target\":\"id\",\"label\":\"REST API\",\
-         \"reason\":\"Krilo/API.swift:12 calls the backend's /api routes\"}}]}} to a file outside \
-         the project and run {}. Submitting again replaces the earlier proposal. The user \
-         reviews the links before any are added to the map.\n",
-        context::agent_command("propose-links --file <json>")
+         Submit JSON {{\"version\":1,\"links\":[{{\"source\":\"id\",\"target\":\"id\",\"label\":\"REST API\",\
+         \"reason\":\"Krilo/API.swift:12 calls the backend's /api routes\"}}]}} by piping it to \
+         {} on standard input; don't write it to a file. Submitting again \
+         replaces the earlier proposal. The user reviews the links before any are added to the \
+         map.\n",
+        context::agent_command("propose-links --file -")
     );
     out
 }
@@ -379,6 +380,7 @@ mod tests {
         let text = map_context(&project());
         assert!(text.contains("- `app`: App (App) at `App`"));
         assert!(text.contains("- `jobs` → `api`"));
-        assert!(text.contains("agent propose-links --file <json>"));
+        assert!(text.contains("agent propose-links --file -"));
+        assert!(text.contains("standard input"));
     }
 }

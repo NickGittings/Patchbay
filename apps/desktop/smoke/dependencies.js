@@ -72,7 +72,12 @@
       category: 'agent',
       kind: 'agent',
       source: 'builtin',
-      command: `printf '%s' '${JSON.stringify(links)}' | "$PATCHBAY_CLI" agent propose-links --file -; exec cat`,
+      // With its own token it may read status, but running a check must be refused, before it
+      // submits its proposal.
+      command:
+        `"$PATCHBAY_CLI" agent status >/dev/null && echo status-ok; ` +
+        `"$PATCHBAY_CLI" agent validate ${api} 2>&1; echo "validate-exit:$?"; ` +
+        `printf '%s' '${JSON.stringify(links)}' | "$PATCHBAY_CLI" agent propose-links --file -; exec cat`,
     }
     s().setDevices([agent])
     await click('Add selected and detect with an agent')
@@ -101,11 +106,15 @@
     const agentLink = byPair[`${web}->${api}`]
     assert(agentLink?.detection?.detector === 'agent', 'agent link not saved with its origin')
     assert(agentLink.label === 'REST', 'agent label not saved')
-    // The detection agent can't run graph actions.
+    // The detection agent's token reads status but can't run graph actions.
+    const output = smoke.terminalText(sid).text.replace(/\s+/g, '')
+    assert(output.includes('status-ok'), `status must be readable: ${output}`)
     assert(
-      smoke.terminalText(sid).text.length > 0 && s().sessions[sid]?.running,
-      'the detection agent should still run',
+      output.includes('onlyreadcontextandproposelinks'),
+      `validate must be refused for its role: ${output}`,
     )
+    assert(/validate-exit:[1-9]/.test(output), `a refused validate must fail: ${output}`)
+    assert(s().sessions[sid]?.running, 'the detection agent should still run')
 
     const two = await smoke.openSecondProject()
     smoke.acceptOpened(two)

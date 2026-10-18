@@ -35,7 +35,7 @@ import {
   serviceRetire,
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
-import { roleDevice } from './agentRoles'
+import { roleTerminal } from './agentRoles'
 import { savePlanDraft } from './planDrafts'
 import { autoRuns } from './autoState'
 import { unfinished } from './autoSettings'
@@ -170,6 +170,8 @@ interface Launch {
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
   restart?: boolean
+  /** Set once this launch's session is known to have started (also after a lost reply). */
+  started?: boolean
 }
 
 /**
@@ -284,14 +286,10 @@ const mapPresets = new Map<string, string>()
  */
 function mapPreset(projectId: string, sid: string): TerminalSpec {
   const s = useStore.getState()
-  const terminals = planTerminals(s.devices)
   const id = mapPresetId(sid)
   const preset =
-    terminals.find((t) => t.id === id) ??
-    terminals.find(
-      (t) =>
-        t.id === roleDevice(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')?.id,
-    )
+    planTerminals(s.devices).find((t) => t.id === id) ??
+    roleTerminal(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')
   if (!preset) throw new Error('Add an agent preset to detect dependencies')
   return preset
 }
@@ -305,11 +303,20 @@ export function mapPresetId(sid: string): string | undefined {
   )
 }
 
-/** Start `projectId`'s dependency detection agent with agent preset `preset`. */
-export function startMapAgent(projectId: string, preset: TerminalSpec): Promise<void> {
+/** Whether a launch or restart of `sid` is on its way. */
+export const launching = (sid: string) => starting.has(sid) || restarting.has(sid)
+
+/**
+ * Start `projectId`'s dependency detection agent with agent preset `preset`. Resolves whether it
+ * started; failures are shown as a message. A launch already on its way keeps its own preset, so
+ * this one starts nothing.
+ */
+export async function startMapAgent(projectId: string, preset: TerminalSpec): Promise<boolean> {
   const launch = captureLaunch(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+  if (launching(launch.sid)) return false
   mapPresets.set(launch.sid, preset.id)
-  return launchTerminal(launch)
+  await launchTerminal(launch)
+  return !!launch.started
 }
 
 /** A handoff or Auto launch, whose caller reports every failure itself. */
@@ -419,6 +426,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       launchRequests.delete(sid)
       // A reset hung the new session up, so a handoff or Auto must not count it as running.
       if (requestedEpoch !== epoch) return await cancelled(launch)
+      launch.started = true
       if (componentId === PLAN_SCOPE) markPlanStarted(launch.projectId, sid, launch.highlighted)
     } catch (e) {
       // Nothing was requested, so there is nothing to check; the handoff reports it.
@@ -429,7 +437,10 @@ function launchTerminal(launch: Launch): Promise<void> {
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       const fresh = componentId === TASK_ROOT_SCOPE && !!launch.kickoff
       const started = fresh ? !!snapshot : !!snapshot?.running
-      if (started) launchRequests.delete(sid)
+      if (started) {
+        launchRequests.delete(sid)
+        launch.started = true
+      }
       if (!started) {
         // A handoff reports its own failure and removes its fresh tile, so nothing retries it.
         if (reports(launch)) {

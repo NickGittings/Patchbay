@@ -13,7 +13,7 @@ import { detectLinks, mapLinksClear, mapLinksRead, onMapLinks } from './ipc'
 import { onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
 import { planTerminals } from './plan'
-import { mapPresetId, startMapAgent } from './sessions'
+import { launching, mapPresetId, startMapAgent } from './sessions'
 
 /** A dependency to review: found in manifests, or proposed by the detection agent. */
 export interface FoundLink {
@@ -45,8 +45,8 @@ interface DependencyState {
    * dialog never blocks another project's.
    */
   dialogs: Record<string, DependencyDialog>
-  /** Projects scanning or clearing a submission, whose dialog waits. */
-  busy: Record<string, true>
+  /** Projects scanning or clearing a submission, whose dialog waits: how many such jobs run. */
+  busy: Record<string, number>
 }
 export const useDependencies = create<DependencyState>(() => ({ dialogs: {}, busy: {} }))
 
@@ -61,14 +61,18 @@ function setDialog(projectId: string, dialog: DependencyDialog | null) {
   })
 }
 
+/** Count a job for `projectId` in (`busy`) or out, so overlapping jobs keep it busy. */
 function setBusy(projectId: string, busy: boolean) {
   useDependencies.setState((s) => {
     const next = { ...s.busy }
-    if (busy) next[projectId] = true
+    const count = (next[projectId] ?? 0) + (busy ? 1 : -1)
+    if (count > 0) next[projectId] = count
     else delete next[projectId]
     return { busy: next }
   })
 }
+
+const isBusy = (projectId: string) => !!useDependencies.getState().busy[projectId]
 
 /** Components no link touches. */
 export function unlinked(project: {
@@ -158,7 +162,7 @@ async function scan(projectId: string): Promise<FoundLink[]> {
 
 /** Scan manifests and review what they name, or say that they name nothing. */
 export async function scanDependencies(projectId: string) {
-  if (useDependencies.getState().busy[projectId]) return
+  if (isBusy(projectId)) return
   setBusy(projectId, true)
   try {
     const found = await scan(projectId)
@@ -203,14 +207,16 @@ export function dismissDependencies(projectId: string) {
 }
 
 /**
- * Start the detection agent with `preset`. One already running is shown instead, and the user is
- * told when it runs another preset; an exited one restarts with `preset`.
+ * Start the detection agent with `preset`. One already running or on its way is shown instead, and
+ * the user is told when it runs another preset; an exited one restarts with `preset`. Only a
+ * session that started is revealed.
  */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
   closeDependencies(projectId)
   const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
   const s = useStore.getState()
-  if (s.sessions[sid]?.running) {
+  // A launch on its way keeps the preset and tab it started with.
+  if (s.sessions[sid]?.running || launching(sid)) {
     const running = mapPresetId(sid)
     if (running && running !== preset.id) {
       const name = planTerminals(s.devices).find((t) => t.id === running)?.name ?? running
@@ -234,8 +240,9 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
       command: preset.command,
     },
   })
-  await startMapAgent(projectId, preset)
-  if (useStore.getState().project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
+  const started = await startMapAgent(projectId, preset)
+  if (started && useStore.getState().project?.id === projectId)
+    revealTerminal({ sid, componentId: MAP_SCOPE })
 }
 
 /**
@@ -296,20 +303,30 @@ export async function discardDependencies(projectId: string) {
   await reviewPending(projectId)
 }
 
-/** After the first save of a map without links, scan manifests and offer what they name. */
+/**
+ * After the first save of a map without links, scan manifests and offer what they name. The
+ * project is busy meanwhile, so a manual scan waits; an unscanned offer opened meanwhile from a
+ * menu receives the result.
+ */
 async function afterCreated(projectId: string) {
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state || !project || !shouldOfferDetection(project, state.dependencyPromptDismissed)) return
-  if (dialogOf(projectId)) return
+  if (dialogOf(projectId) || isBusy(projectId)) return
   let found: FoundLink[] | null = null
+  setBusy(projectId, true)
   try {
     found = await scan(projectId)
   } catch (e) {
     // Offer detection anyway, without claiming the manifests named nothing.
     message(projectId, `Couldn’t scan for dependencies: ${String(e)}`)
+  } finally {
+    setBusy(projectId, false)
   }
-  if (dialogOf(projectId) || !projectStateOf(projectId)) return
+  if (!projectStateOf(projectId)) return
+  // A review, or an offer that already knows the scan's result, stays.
+  const open = dialogOf(projectId)
+  if (open && (open.mode !== 'offer' || open.scanned)) return
   setDialog(
     projectId,
     found?.length

@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
+import { mapBlocked, reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { offerDependencies } from '../lib/dependencies'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 
@@ -10,7 +10,7 @@ export default function MapSaveStatus() {
   if (!id || !entry) return null
   const absent = entry.fingerprint === 'absent'
   const status = entry.mapSave?.status
-  const blocked = !!entry.conflict || !!entry.unavailable
+  const blocked = mapBlocked(entry)
   const label = blocked
     ? 'Map needs recovery'
     : status === 'error'

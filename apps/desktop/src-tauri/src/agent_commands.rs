@@ -1,6 +1,6 @@
 //! Tauri integration for the core agent-command engine.
 use crate::{AppState, CmdResult, Project, blocking, err, for_task};
-use patchbay_core::agent_bridge::{LaunchContext, Server};
+use patchbay_core::agent_bridge::{LaunchContext, Role, Server};
 pub use patchbay_core::agent_commands::Activity;
 use patchbay_core::agent_commands::{Host, ProjectScope};
 use patchbay_core::session::{AgentSession, Request};
@@ -115,8 +115,7 @@ fn authenticate(app: &AppHandle, token: &str) -> Option<LaunchContext> {
         .ok()?;
     let session = session?;
     Some(LaunchContext {
-        planner: session.metadata.component_id == patchbay_core::model::PLAN_SCOPE,
-        mapper: session.metadata.component_id == patchbay_core::model::MAP_SCOPE,
+        role: Role::of(&session.metadata.component_id),
         project_id: session.metadata.project_id,
         task: session.metadata.task,
         agent_session: session.id,

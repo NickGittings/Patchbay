@@ -351,9 +351,16 @@ fn read(dir: &Path, file: &str, root: &Path) -> Option<String> {
 }
 
 /// A local path from a dependency spec (`../lib`, `file:../lib`, `file:///abs`),
-/// without extras or a URL fragment. `bare` also accepts a plain relative name,
+/// without extras, a URL fragment, PEP 508 environment markers (`; python_version…`)
+/// or trailing pip options (` --hash=…`). `bare` also accepts a plain relative name,
 /// as `-r base.txt` does; otherwise it must start like a path.
 fn local_path(spec: &str, bare: bool) -> Option<String> {
+    let spec = spec.split(';').next().unwrap_or(spec).trim_start();
+    // Options follow the path after whitespace: `./lib --hash=sha256:…`.
+    let spec = spec
+        .match_indices(char::is_whitespace)
+        .find(|&(i, _)| spec[i..].trim_start().starts_with('-'))
+        .map_or(spec, |(i, _)| &spec[..i]);
     let spec = spec.trim();
     let (spec, bare) = if let Some(rest) = spec.strip_prefix("file://") {
         (rest, true)
@@ -1619,6 +1626,32 @@ mod tests {
         assert_eq!(existing.components[0].name, "Renamed");
         assert_eq!(existing.components.len(), 3);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn requirement_paths_drop_markers_and_pip_options() {
+        assert_eq!(
+            requirement_refs(
+                "./lib ; python_version < \"3.12\"\n./tight;sys_platform == \"linux\"\n\
+                 ../pinned --hash=sha256:abc --hash=sha256:def\n\
+                 -e ../editable --config-settings editable_mode=compat\n\
+                 sdk @ file:../sdk ; python_version >= \"3.8\"\n\
+                 -r ../base.txt\t--no-binary :all:\n"
+            ),
+            [
+                "./lib",
+                "./tight",
+                "../pinned",
+                "../editable",
+                "../sdk",
+                "../base.txt"
+            ]
+        );
+        assert_eq!(
+            local_path("  ./spaced  ", false).as_deref(),
+            Some("./spaced")
+        );
+        assert_eq!(local_path("; marker", true), None);
     }
 
     #[test]

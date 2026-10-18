@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-import { roleDevice } from '../lib/agentRoles'
+import { roleTerminal } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
 import {
   acceptDependencies,
@@ -28,7 +28,7 @@ export default function DependencyDialog() {
   return dialog.mode === 'offer' ? (
     <Offer dialog={dialog} />
   ) : (
-    <Review key={dialog.pending?.id ?? 'manifests'} dialog={dialog} />
+    <Review key={`${dialog.projectId}\n${dialog.pending?.id ?? 'manifests'}`} dialog={dialog} />
   )
 }
 
@@ -82,9 +82,7 @@ function AgentLauncher({
   const busy = useBusy(projectId)
   const presets = planTerminals(devices)
   const [picked, setPicked] = useState<string>()
-  const preset =
-    presets.find((t) => t.id === picked) ??
-    presets.find((t) => t.id === roleDevice(devices, roles, 'plan')?.id)
+  const preset = presets.find((t) => t.id === picked) ?? roleTerminal(devices, roles, 'plan')
   if (!presets.length)
     return <p className="hint flush">Add an agent preset to detect with an agent.</p>
   return (

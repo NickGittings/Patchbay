@@ -45,9 +45,30 @@ pub struct LaunchContext {
     pub project_id: String,
     pub task: Option<String>,
     pub agent_session: String,
-    pub planner: bool,
-    /// A dependency detection session (`MAP_SCOPE`): it may only read context and propose links.
-    pub mapper: bool,
+    pub role: Role,
+}
+
+/// What kind of session holds a token, which decides the actions it may run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// A component's or task root's agent.
+    Component,
+    /// The project's planner (`PLAN_SCOPE`): it saves plans and proposals, and runs nothing.
+    Planner,
+    /// Dependency detection (`MAP_SCOPE`): it may only read context and propose links.
+    Mapper,
+}
+
+impl Role {
+    /// The role of a session at `component_id`.
+    #[must_use]
+    pub fn of(component_id: &str) -> Self {
+        match component_id {
+            crate::model::PLAN_SCOPE => Self::Planner,
+            crate::model::MAP_SCOPE => Self::Mapper,
+            _ => Self::Component,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,8 +355,7 @@ mod tests {
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),
-                    planner: false,
-                    mapper: false,
+                    role: Role::Component,
                 })
             },
             handler,
@@ -391,8 +411,7 @@ mod tests {
                         project_id: "p".into(),
                         task: None,
                         agent_session: "one".into(),
-                        planner: false,
-                        mapper: false,
+                        role: Role::Component,
                     })
                 }),
                 Arc::new(|_, _| Ok(serde_json::json!({"recovered":true}))),
@@ -459,8 +478,7 @@ mod tests {
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),
-                    planner: false,
-                    mapper: false,
+                    role: Role::Component,
                 })
             },
             ok,
