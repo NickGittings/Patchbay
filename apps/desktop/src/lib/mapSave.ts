@@ -13,6 +13,10 @@ const created = new Set<(id: string) => void>()
 export const mapBlocked = (entry: Pick<ProjectEntry, 'conflict' | 'unavailable'> | undefined) =>
   !!entry?.conflict || !!entry?.unavailable
 
+/** Map edits and dependency reviews must also wait for saved-map conflicts to be resolved. */
+export const mapEditsBlocked = (entry: ProjectEntry | undefined) =>
+  mapBlocked(entry) || entry?.mapSave?.status === 'conflict'
+
 /** Call `listener` with a project's id once its first `patchbay.json` is written. */
 export function onMapCreated(listener: (id: string) => void) {
   created.add(listener)

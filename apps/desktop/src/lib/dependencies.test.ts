@@ -14,7 +14,7 @@ const agents = vi.hoisted(() => ({
 const created = vi.hoisted(() => ({ listener: (_id: string) => {} }))
 const store = vi.hoisted(() => ({
   projects: {} as Record<string, import('../store').ProjectEntry>,
-  appendToMap: vi.fn(() => null),
+  appendToMap: vi.fn<(id: string, extend: (p: unknown) => unknown) => unknown>(() => null),
   setMessage: vi.fn(),
   runtimeTerminals: {} as Record<string, unknown>,
   addRuntimeTerminal: vi.fn((sid: string, t: unknown) => {
@@ -54,9 +54,15 @@ vi.mock('./mapSave', async (importOriginal) => ({
 }))
 vi.mock('./attention', () => ({ revealTerminal: vi.fn() }))
 vi.mock('./sessions', () => agents)
+const arranged = vi.hoisted(() => ({
+  arrangeMap: vi.fn<(id: string) => unknown>(() => ({ app: { x: 0, y: 0 } })),
+  undoArrange: vi.fn(() => ({ label: 'Undo layout', run: () => {} })),
+}))
+vi.mock('./arrange', () => arranged)
 const {
   acceptDependencies,
   appendLinks,
+  addDependencies,
   closeDependencies,
   discardDependencies,
   initializeDependencyDetection,
@@ -136,6 +142,46 @@ test('detection is offered for unlinked maps of two or more components until dec
 
 const pending = (id: string) => ({ id, sessionId: 's', submittedMs: 1, links: [], skipped: [] })
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test('accepting new links rearranges the map and offers Undo', async () => {
+  arranged.arrangeMap.mockClear()
+  store.appendToMap.mockImplementationOnce(
+    (_id: string, extend: (p: unknown) => unknown) =>
+      extend({ components: [{ id: 'app' }, { id: 'api' }], links: [] }) as never,
+  )
+  useDependencies.setState({
+    dialogs: { a: { mode: 'review', projectId: 'a', links: [] } },
+  })
+  await acceptDependencies('a', [{ source: 'app', target: 'api', detector: 'builtin' }])
+  expect(arranged.arrangeMap).toHaveBeenCalledWith('a')
+  expect(store.setMessage).toHaveBeenCalledWith(
+    'Added 1 dependency and rearranged the map',
+    true,
+    expect.objectContaining({ label: 'Undo layout' }),
+  )
+})
+
+test('adding selected links before launching an agent also offers layout Undo', () => {
+  store.appendToMap.mockImplementationOnce((_id, extend) =>
+    extend({ components: [{ id: 'app' }, { id: 'api' }], links: [] }),
+  )
+  addDependencies('a', [{ source: 'app', target: 'api', detector: 'builtin' }])
+  expect(store.setMessage).toHaveBeenCalledWith(
+    'Added 1 dependency and rearranged the map',
+    true,
+    expect.objectContaining({ label: 'Undo layout' }),
+  )
+})
+
+test('nothing added leaves the layout alone', async () => {
+  arranged.arrangeMap.mockClear()
+  useDependencies.setState({
+    dialogs: { a: { mode: 'review', projectId: 'a', links: [] } },
+  })
+  await acceptDependencies('a', [{ source: 'app', target: 'api', detector: 'builtin' }])
+  expect(arranged.arrangeMap).not.toHaveBeenCalled()
+  expect(store.setMessage).toHaveBeenCalledWith('Nothing new to add', true, undefined)
+})
 
 test("a project's dialog never blocks another project's", async () => {
   useDependencies.setState({ dialogs: {}, busy: {} })

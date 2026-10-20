@@ -5,10 +5,14 @@ import {
   MiniMap,
   Panel,
   ReactFlow,
+  useReactFlow,
   type Connection,
   type Edge,
 } from '@xyflow/react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { onArranged } from '../lib/arrange'
+import type { Position } from '../lib/layout'
 import { KIND_COLOR } from '../lib/display'
 import { showsInspector } from '../lib/panels'
 import { useStore, type FlowNode } from '../store'
@@ -17,6 +21,90 @@ import Welcome from './Welcome'
 import { removeComponents } from '../lib/maintenance'
 
 const nodeTypes = { component: ComponentNode }
+
+const ARRANGE_MS = 400
+
+const ease = (t: number) => 1 - (1 - t) ** 3
+
+/**
+ * While an arrangement of this project settles, where its moved nodes are drawn: on their way from
+ * where they were, so edges follow them. Null otherwise. The store already holds the end state.
+ */
+function useArranging(projectId: string | undefined) {
+  const { fitView, getNode } = useReactFlow()
+  const [tween, setTween] = useState<{
+    from: Record<string, Position>
+    t: number
+    fit: boolean
+  } | null>(null)
+  const current = useRef(tween)
+  current.current = tween
+  useEffect(() => {
+    let frame = 0
+    const off = onArranged((id, moved) => {
+      if (id !== projectId) return
+      cancelAnimationFrame(frame)
+      // Another arrangement may interrupt this one: nodes still on their way keep going, and
+      // every node starts where it is drawn now.
+      const from: Record<string, Position> = {}
+      for (const [id, position] of Object.entries({ ...current.current?.from, ...moved }))
+        from[id] = getNode(id)?.position ?? position
+      const start = performance.now()
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / ARRANGE_MS)
+        setTween((current) => (current ? { ...current, t: ease(t) } : null))
+        if (t < 1) frame = requestAnimationFrame(step)
+      }
+      setTween({ from, t: 0, fit: true })
+      frame = requestAnimationFrame(step)
+    })
+    return () => {
+      off()
+      cancelAnimationFrame(frame)
+    }
+  }, [getNode, projectId])
+  useEffect(() => {
+    if (!tween || tween.t !== 1) return
+    // Let React Flow receive the final positions before it queues a fit. Both this render and
+    // the next show the destination, so fitting cannot frame the tween's starting positions.
+    const frame = requestAnimationFrame(() => {
+      if (tween.fit) void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
+      setTween(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [fitView, tween])
+  const interrupt = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    setTween((current) => {
+      if (!current) return null
+      const from = { ...current.from }
+      for (const id of ids) delete from[id]
+      // A user taking control of the map also cancels the automatic viewport move.
+      return { ...current, from, fit: false }
+    })
+  }, [])
+  /** A pan or zoom by the user cancels the automatic viewport move too. */
+  const keepViewport = useCallback(
+    () => setTween((current) => (current?.fit ? { ...current, fit: false } : current)),
+    [],
+  )
+  return { tween, interrupt, keepViewport }
+}
+
+function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {
+  if (!tween || tween.t === 1) return nodes
+  return nodes.map((n) => {
+    const from = tween.from[n.id]
+    if (!from || n.dragging) return n
+    return {
+      ...n,
+      position: {
+        x: from.x + (n.position.x - from.x) * tween.t,
+        y: from.y + (n.position.y - from.y) * tween.t,
+      },
+    }
+  })
+}
 
 /** One link per pair, never to self. */
 function isValidConnection(c: Connection | Edge) {
@@ -59,23 +147,43 @@ export default function Canvas() {
     })),
   )
   const inspectorShown = useStore(showsInspector)
-
-  if (!project) return <Welcome />
+  const { tween, interrupt, keepViewport } = useArranging(project?.id)
+  // React Flow's node drag callbacks also cover selection-box drags.
+  const updateDrag = (dragged: FlowNode[], dragging: boolean) => {
+    if (dragging) interrupt(dragged.map((n) => n.id))
+    // The store holds the destination; a drag must start at the displayed position instead.
+    onNodesChange(
+      dragged.map((n) => ({
+        id: n.id,
+        type: 'position',
+        position: n.position,
+        dragging,
+      })),
+    )
+  }
 
   const planning = view === 'plan'
-  const scope = new Set(highlighted)
-  const visibleEdges = planning
-    ? edges.map((e) => ({
-        ...e,
-        selected: false,
-        className: scope.has(e.source) && scope.has(e.target) ? 'plan-active-edge' : '',
-      }))
-    : edges
+  // Stable between tween frames, so React Flow only re-adopts the nodes that move.
+  const shownNodes = useMemo(
+    () => (planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes),
+    [nodes, planning],
+  )
+  const visibleEdges = useMemo(() => {
+    if (!planning) return edges
+    const scope = new Set(highlighted)
+    return edges.map((e) => ({
+      ...e,
+      selected: false,
+      className: scope.has(e.source) && scope.has(e.target) ? 'plan-active-edge' : '',
+    }))
+  }, [edges, highlighted, planning])
+
+  if (!project) return <Welcome />
 
   return (
     <div className="canvas">
       <ReactFlow
-        nodes={planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes}
+        nodes={tweened(shownNodes, tween)}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
         onBeforeDelete={async ({ nodes: removedNodes, edges: removedEdges }) => {
@@ -98,7 +206,12 @@ export default function Canvas() {
           }
           return false
         }}
-        onNodesChange={onNodesChange}
+        onNodesChange={(changes) => {
+          interrupt(changes.filter((c) => c.type === 'position').map((c) => c.id))
+          onNodesChange(changes)
+        }}
+        onNodeDragStart={(_, _node, dragged) => updateDrag(dragged, true)}
+        onNodeDragStop={(_, _node, dragged) => updateDrag(dragged, false)}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
@@ -113,6 +226,10 @@ export default function Canvas() {
         }}
         colorMode="dark"
         defaultViewport={useStore.getState().viewport}
+        onMoveStart={(event) => {
+          // Programmatic moves, such as the fit itself, come without an event.
+          if (event) keepViewport()
+        }}
         onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
         fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}

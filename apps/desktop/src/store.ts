@@ -63,6 +63,19 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
+/** A button on the app message (`setMessage`). */
+export interface MessageAction {
+  label: string
+  run: () => void
+  /** A project action is only available while its originating tab is active. */
+  projectId?: string
+  /**
+   * Keep offering it beside later messages without an action of their own (an error that follows
+   * a layout change must not take its Undo away), until the toast hides or is dismissed.
+   */
+  persist?: boolean
+}
+
 export interface ImplementationComponent {
   id: string
   visible: boolean
@@ -342,6 +355,8 @@ interface State {
   messageId: number
   /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
   messageTransient: boolean
+  /** A button the message offers, such as Undo; dropped by the next message. */
+  messageAction: MessageAction | null
 
   loadProject: (p: Project) => void
   syncProject: (p: Project) => void
@@ -363,7 +378,7 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string, transient?: boolean) => void
+  setMessage: (m: string, transient?: boolean, action?: MessageAction) => void
   markSaved: () => void
 }
 
@@ -432,6 +447,9 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   )
   return { tasks, closedTaskIds, ...switched, taskWorkspaces }
 }
+
+/** Where each node being dragged was before its drag, to tell whether the drag moved it. */
+const dragOrigins = new Map<string, Component['position']>()
 
 export const useStore = create<State>((set, get) => ({
   taskWorkspaces: {},
@@ -665,6 +683,7 @@ export const useStore = create<State>((set, get) => ({
   message: '',
   messageId: 0,
   messageTransient: false,
+  messageAction: null,
   view: 'navigation',
   highlighted: [],
   implementationComponents: null,
@@ -774,11 +793,27 @@ export const useStore = create<State>((set, get) => ({
     // Removal is a reviewed map edit: Canvas.onBeforeDelete runs removeComponents and
     // cancels React Flow's own removal, so a remove change never applies directly.
     changes = changes.filter((c) => c.type !== 'remove')
-    const edits = changes.some((c) => c.type === 'position' && !c.dragging)
-    set((s) => ({
-      nodes: applyNodeChanges(changes, s.nodes),
-      dirty: s.dirty || edits,
-    }))
+    set((s) => {
+      const current = new Map(s.nodes.map((n) => [n.id, n.position]))
+      let edits = false
+      for (const c of changes) {
+        if (c.type !== 'position') continue
+        const now = current.get(c.id)
+        if (!now) continue
+        // A drag dirties the map once it ends away from where it started, so nothing keyed on
+        // `dirty` (autosave, the workspace draft) sees a half-dragged position. A drag stop may
+        // repeat the current position or only clear `dragging`.
+        if (c.dragging) {
+          if (!dragOrigins.has(c.id)) dragOrigins.set(c.id, now)
+          continue
+        }
+        const from = dragOrigins.get(c.id) ?? now
+        dragOrigins.delete(c.id)
+        const to = c.position ?? now
+        if (from.x !== to.x || from.y !== to.y) edits = true
+      }
+      return { nodes: applyNodeChanges(changes, s.nodes), dirty: s.dirty || edits }
+    })
   },
   onEdgesChange: (changes) =>
     set((s) => ({
@@ -954,8 +989,31 @@ export const useStore = create<State>((set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message, transient = false) =>
-    set((s) => ({ message, messageTransient: transient, messageId: s.messageId + 1 })),
+  setMessage: (message, transient = false, action) =>
+    set((s) => {
+      const projectId = action?.projectId ?? s.project?.id
+      const kept =
+        message && s.messageAction?.persist && s.messageAction.projectId === s.project?.id
+          ? s.messageAction
+          : null
+      return {
+        message,
+        messageTransient: transient,
+        messageAction: action
+          ? {
+              ...action,
+              projectId,
+              run: () => {
+                if (projectId && get().project?.id !== projectId) return
+                // Its own feedback replaces it, rather than offering it again.
+                set({ messageAction: null })
+                action.run()
+              },
+            }
+          : kept,
+        messageId: s.messageId + 1,
+      }
+    }),
   markSaved: () => set({ dirty: false }),
 }))
 
@@ -970,6 +1028,21 @@ export function projectOf(id: string): Project | null {
   return state?.project ? projectFrom(state) : null
 }
 
+/** Apply an ordinary map edit, keeping live state and marking either tab dirty for autosave. */
+function editMap<T>(
+  projectId: string | null | undefined,
+  edit: (
+    state: ProjectState,
+  ) => { patch: Pick<Partial<ProjectState>, 'nodes' | 'edges'>; result: T } | null,
+): T | null {
+  const state = projectId ? projectStateOf(projectId) : undefined
+  if (!projectId || !state?.project) return null
+  const edited = edit(state)
+  if (!edited) return null
+  useStore.getState().patchProject(projectId, { ...edited.patch, dirty: true })
+  return edited.result
+}
+
 /**
  * Append to open project `projectId`'s map as it is now, as an ordinary edit that autosaves and
  * keeps live session and git state. `extend` gets the current map and returns what to add, or null
@@ -979,19 +1052,38 @@ export function appendToMap<T extends { components?: Component[]; links?: Link[]
   projectId: string | null | undefined,
   extend: (current: Project) => T | null,
 ): T | null {
-  const current = projectId ? projectOf(projectId) : null
-  if (!projectId || !current) return null
-  const added = extend(current)
-  if (!added) return null
-  const s = useStore.getState()
-  s.syncProject({
-    ...current,
-    projectId,
-    components: [...current.components, ...(added.components ?? [])],
-    links: [...current.links, ...(added.links ?? [])],
+  return editMap(projectId, (state) => {
+    const added = extend(projectFrom(state))
+    return added
+      ? {
+          patch: {
+            nodes: [...state.nodes, ...(added.components ?? []).map(componentToNode)],
+            edges: [...state.edges, ...(added.links ?? []).map(linkToEdge)],
+          },
+          result: added,
+        }
+      : null
   })
-  s.patchProject(projectId, { dirty: true })
-  return added
+}
+
+/**
+ * Move open project `projectId`'s components to `positions` (others stay), as an ordinary edit
+ * that autosaves. Returns the positions the moved ones had, or null when none moved.
+ */
+export function moveComponents(
+  projectId: string,
+  positions: Record<string, Component['position']>,
+): Record<string, Component['position']> | null {
+  return editMap(projectId, (state) => {
+    const previous: Record<string, Component['position']> = {}
+    const nodes = state.nodes.map((c) => {
+      const to = positions[c.id]
+      if (!to || (to.x === c.position.x && to.y === c.position.y)) return c
+      previous[c.id] = c.position
+      return { ...c, position: to }
+    })
+    return Object.keys(previous).length ? { patch: { nodes }, result: previous } : null
+  })
 }
 
 /** A project state as a `Project` (the map `patchbay.json` holds). */

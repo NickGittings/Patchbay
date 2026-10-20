@@ -1,13 +1,13 @@
+import { mapEditsBlocked } from '../lib/mapSave'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { roleTerminal } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
 import {
   acceptDependencies,
-  appendLinks,
+  addDependencies,
   closeDependencies,
   discardDependencies,
-  dependencyMapBlocked,
   dismissDependencies,
   newLinks,
   scanDependencies,
@@ -33,8 +33,7 @@ export default function DependencyDialog() {
   )
 }
 
-const useBlocked = (projectId: string) =>
-  useStore((s) => dependencyMapBlocked(s.projects[projectId]))
+const useBlocked = (projectId: string) => useStore((s) => mapEditsBlocked(s.projects[projectId]))
 
 const useBusy = (projectId: string) => useDependencies((s) => !!s.busy[projectId])
 
@@ -247,7 +246,9 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
           <AgentLauncher
             projectId={dialog.projectId}
             label={chosen.length ? 'Add selected and detect with an agent' : 'Detect with an agent'}
-            before={() => appendLinks(dialog.projectId, chosen)}
+            before={
+              chosen.length ? () => void addDependencies(dialog.projectId, chosen) : undefined
+            }
           />
         </>
       )}

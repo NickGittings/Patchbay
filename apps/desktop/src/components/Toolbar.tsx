@@ -1,3 +1,4 @@
+import { mapEditsBlocked } from '../lib/mapSave'
 import NotificationsPanel from './NotificationsPanel'
 import { configureEditor, showFileSearch } from '../lib/navigation'
 import ExtensionMenu from '../extensions/ExtensionMenu'
@@ -6,7 +7,8 @@ import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
-import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
+import { offerDependencies } from '../lib/dependencies'
+import { arrangeNow } from '../lib/arrange'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
@@ -32,6 +34,7 @@ export default function Toolbar() {
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
+  const nodeCount = useStore((s) => s.nodes.length)
   const openFolder = useOpenProject()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -96,7 +99,7 @@ export default function Toolbar() {
                   Rescan
                 </MenuItem>
                 <MenuItem
-                  disabled={dependencyMapBlocked(entry)}
+                  disabled={mapEditsBlocked(entry)}
                   onClick={() => {
                     const id = useStore.getState().project?.id
                     if (id) offerDependencies(id)
@@ -104,6 +107,16 @@ export default function Toolbar() {
                   title="Find how components depend on each other, from manifests or with an agent"
                 >
                   Detect dependencies…
+                </MenuItem>
+                <MenuItem
+                  disabled={mapEditsBlocked(entry) || nodeCount < 2}
+                  onClick={() => {
+                    const id = useStore.getState().project?.id
+                    if (id) arrangeNow(id)
+                  }}
+                  title="Lay the map out by dependencies: dependents on the left, foundations on the right"
+                >
+                  Arrange map
                 </MenuItem>
                 <MenuItem
                   onClick={() => void addRepo()}
