@@ -1,6 +1,6 @@
 import { useStore } from '../store'
 import { mapBlocked, reloadSavedMap, saveMapNow } from '../lib/mapSave'
-import { offerDependencies } from '../lib/dependencies'
+import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 
 export default function MapSaveStatus() {
@@ -65,7 +65,7 @@ export default function MapSaveStatus() {
               : 'Save map configuration now'}
         </MenuItem>
       )}
-      <MenuItem disabled={blocked} onClick={() => offerDependencies(id)}>
+      <MenuItem disabled={dependencyMapBlocked(entry)} onClick={() => offerDependencies(id)}>
         Detect dependencies…
       </MenuItem>
     </Menu>

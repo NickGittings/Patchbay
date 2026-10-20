@@ -10,7 +10,7 @@
 use crate::extensions::DetectorContribution;
 use crate::model::{
     Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
-    check_component_dir, normalize, relative_path, resolve_dir,
+    check_component_dir, relative_path, resolve_dir,
 };
 use anyhow::{Result, bail};
 use std::cell::OnceCell;
@@ -1019,7 +1019,17 @@ pub fn detect(root: &Path) -> Result<Project> {
 /// Fails for inaccessible or invalid folders.
 pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Project> {
     let root = root.canonicalize()?;
-    let root = root.as_path();
+    let found = scan_candidates(&root, detectors);
+    let ids = candidate_ids(&found);
+    Ok(build_project(
+        &root,
+        found,
+        ids,
+        std::slice::from_ref(&root),
+    ))
+}
+
+fn scan_candidates(root: &Path, detectors: &[DetectorContribution]) -> Vec<Candidate> {
     let mut found = Vec::new();
     walk(root, root, 0, &mut found, detectors);
     if found.is_empty() {
@@ -1033,9 +1043,12 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
             refs: Vec::new(),
         });
     }
+    found
+}
 
+fn candidate_ids(found: &[Candidate]) -> Vec<String> {
     let mut used = HashSet::new();
-    let ids: Vec<String> = found
+    found
         .iter()
         .map(|c| {
             let base = slug(&c.rel);
@@ -1047,19 +1060,47 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
             }
             id
         })
-        .collect();
+        .collect()
+}
 
-    let by_name: HashMap<&str, &str> = found
+/// Resolve dependencies only after all scan roots share one component namespace.
+fn build_project(
+    root: &Path,
+    found: Vec<Candidate>,
+    ids: Vec<String>,
+    scan_roots: &[PathBuf],
+) -> Project {
+    let dirs: Vec<PathBuf> = found
+        .iter()
+        .map(|c| resolve_dir(&root.join(&c.rel)))
+        .collect();
+    let origins: Vec<_> = dirs.iter().map(|dir| owner_of(dir, scan_roots)).collect();
+    let by_name: HashMap<_, _> = found
         .iter()
         .zip(&ids)
-        .map(|(c, id)| (c.name.as_str(), id.as_str()))
+        .zip(&origins)
+        .map(|((c, id), origin)| ((origin, c.name.as_str()), id.as_str()))
         .collect();
-    let mut links = Vec::new();
+    let mut global_names: HashMap<&str, Vec<&str>> = HashMap::new();
     for (c, id) in found.iter().zip(&ids) {
+        global_names.entry(&c.name).or_default().push(id);
+    }
+    let mut links = Vec::new();
+    for (i, (c, id)) in found.iter().zip(&ids).enumerate() {
         let mut targets: Vec<&str> = c
             .deps
             .iter()
-            .filter_map(|d| by_name.get(d.as_str()).copied())
+            .filter_map(|d| {
+                // Preserve within-repo name resolution; outside it, only unique names
+                // are evidence of a dependency. Folder references disambiguate the rest.
+                by_name
+                    .get(&(&origins[i], d.as_str()))
+                    .copied()
+                    .or_else(|| {
+                        let matches = global_names.get(d.as_str())?;
+                        (matches.len() == 1).then(|| matches[0])
+                    })
+            })
             .filter(|t| t != id)
             .collect();
         targets.sort_unstable();
@@ -1104,16 +1145,6 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
     // A manifest that points into another component's folder depends on it,
     // whatever that package is called. A component never depends on one that
     // contains it (a root package, or its own `-r requirements.txt`).
-    let dirs: Vec<PathBuf> = found
-        .iter()
-        .map(|c| {
-            if c.rel == "." {
-                root.to_path_buf()
-            } else {
-                root.join(&c.rel)
-            }
-        })
-        .collect();
     let mut linked: HashSet<(String, String)> = links
         .iter()
         .map(|l| (l.source.clone(), l.target.clone()))
@@ -1153,7 +1184,9 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         .into_iter()
         .zip(ids)
         .map(|(c, id)| {
-            let detection = provenance(&root.join(&c.rel), root, &c.detector);
+            let dir = resolve_dir(&root.join(&c.rel));
+            let scan_root = owner_of(&dir, scan_roots).map_or(root, |i| scan_roots[i].as_path());
+            let detection = provenance(&dir, scan_root, &c.detector);
             let name = if name_counts[&c.name] > 1 {
                 let folder = c.rel.rsplit('/').next().unwrap_or(&c.rel);
                 format!("{} ({folder})", c.name)
@@ -1176,14 +1209,14 @@ pub fn detect_with(root: &Path, detectors: &[DetectorContribution]) -> Result<Pr
         .collect();
     layout(&mut components, &links);
 
-    Ok(Project {
+    Project {
         schema_version: SCHEMA_VERSION,
         name: dir_name(root),
         root: root.display().to_string(),
         components,
         links,
         groups: vec![],
-    })
+    }
 }
 
 /// Add components (and their links) found by `detected` whose folder is not
@@ -1315,6 +1348,64 @@ pub fn detect_folder_with(
     Ok(found)
 }
 
+/// Scan the project and the supplied external component folders together. Callers must
+/// supply only permitted roots; referenced paths never cause another folder to be scanned.
+///
+/// # Errors
+/// Fails if the project root cannot be resolved. Unavailable external folders are skipped.
+pub fn detect_roots_with(
+    project: &Project,
+    folders: &[PathBuf],
+    detectors: &[DetectorContribution],
+) -> Result<Project> {
+    let root = Path::new(&project.root).canonicalize()?;
+    let mut found = scan_candidates(&root, detectors);
+    let mut ids = candidate_ids(&found);
+    let mut taken: HashSet<_> = ids.iter().cloned().collect();
+    let mut seen: HashSet<_> = found
+        .iter()
+        .map(|c| resolve_dir(&root.join(&c.rel)))
+        .collect();
+    let folders: BTreeSet<_> = folders
+        .iter()
+        .filter_map(|d| d.canonicalize().ok())
+        .collect();
+    let mut scan_roots = vec![root.clone()];
+    for dir in &folders {
+        if dir.starts_with(&root)
+            || check_component_dir(&root, dir).is_err()
+            || folders.iter().any(|o| o != dir && dir.starts_with(o))
+        {
+            continue;
+        }
+        scan_roots.push(dir.clone());
+        let candidates = scan_candidates(dir, detectors);
+        let prefix = slug(&dir_name(dir));
+        let candidate_ids = candidate_ids(&candidates);
+        for (mut c, id) in candidates.into_iter().zip(candidate_ids) {
+            let path = resolve_dir(&dir.join(&c.rel));
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let base = if id == "root" {
+                prefix.clone()
+            } else {
+                format!("{prefix}-{id}")
+            };
+            let mut id = base.clone();
+            let mut n = 2;
+            while !taken.insert(id.clone()) {
+                id = format!("{base}-{n}");
+                n += 1;
+            }
+            c.rel = relative_path(&root, &path);
+            ids.push(id);
+            found.push(c);
+        }
+    }
+    Ok(build_project(&root, found, ids, &scan_roots))
+}
+
 /// Add components for new folders under the project root and under each of
 /// `folders` (usually [`Project::external_dirs`]: the external folders already
 /// on the map, not their enclosing repos, so a rescan never reaches beyond what
@@ -1335,20 +1426,8 @@ pub fn rescan_with(
     folders: &[PathBuf],
     detectors: &[DetectorContribution],
 ) -> Result<usize> {
-    let mut added = merge_new(project, detect_with(Path::new(&project.root), detectors)?);
-    let folders: BTreeSet<_> = folders.iter().map(|d| normalize(d)).collect();
-    // Scanning a folder covers everything below it.
-    let tops: Vec<_> = folders
-        .iter()
-        .filter(|d| !folders.iter().any(|o| o != *d && d.starts_with(o)))
-        .collect();
-    for dir in tops {
-        // A folder that vanished (or now contains the root) is simply skipped.
-        if let Ok(found) = detect_folder_with(project, dir, detectors) {
-            added += merge_new(project, found);
-        }
-    }
-    Ok(added)
+    let found = detect_roots_with(project, folders, detectors)?;
+    Ok(merge_new(project, found))
 }
 
 #[cfg(test)]
@@ -1830,15 +1909,44 @@ mod tests {
 
         assert_eq!(merge_new(&mut project, found), 2);
         // Rescanning picks up a new folder in the external repo, not duplicates.
-        write(&base, "billing/cmd/api/go.mod", "module example.com/api\n");
+        write(
+            &base,
+            "billing/cmd/api/go.mod",
+            "module example.com/api\nreplace example.com/shop => ../../../shop\n",
+        );
+        write(
+            &base,
+            "shop/package.json",
+            r#"{"name":"shop","dependencies":{"api":"file:../billing/cmd/api"}}"#,
+        );
         let externals = project.external_dirs();
         assert_eq!(rescan(&mut project, &externals).unwrap(), 1);
         assert_eq!(rescan(&mut project, &externals).unwrap(), 0);
+        let api = project
+            .components
+            .iter()
+            .find(|c| c.path == "../billing/cmd/api")
+            .unwrap();
+        assert_eq!(
+            api.detection.as_ref().unwrap().package_identity.as_deref(),
+            Some("go:example.com/api")
+        );
         assert!(
             project
-                .components
+                .links
                 .iter()
-                .any(|c| c.path == "../billing/cmd/api")
+                .any(|l| l.source == "root" && l.target == api.id)
+        );
+        assert!(
+            project
+                .links
+                .iter()
+                .any(|l| l.source == api.id && l.target == "root")
+        );
+        assert_eq!(
+            project.links.len(),
+            2,
+            "rescanning must not duplicate cross-repo links"
         );
         let _ = fs::remove_dir_all(base);
     }

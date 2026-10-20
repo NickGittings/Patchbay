@@ -7,6 +7,7 @@ import {
   appendLinks,
   closeDependencies,
   discardDependencies,
+  dependencyMapBlocked,
   dismissDependencies,
   newLinks,
   scanDependencies,
@@ -31,6 +32,9 @@ export default function DependencyDialog() {
     <Review key={`${dialog.projectId}\n${dialog.pending?.id ?? 'manifests'}`} dialog={dialog} />
   )
 }
+
+const useBlocked = (projectId: string) =>
+  useStore((s) => dependencyMapBlocked(s.projects[projectId]))
 
 const useBusy = (projectId: string) => useDependencies((s) => !!s.busy[projectId])
 
@@ -80,6 +84,7 @@ function AgentLauncher({
   const roles = useStore((s) => s.agentRoles)
   const connected = useStore((s) => s.serviceConnected)
   const busy = useBusy(projectId)
+  const blocked = useBlocked(projectId)
   const presets = planTerminals(devices)
   const [picked, setPicked] = useState<string>()
   const preset = presets.find((t) => t.id === picked) ?? roleTerminal(devices, roles, 'plan')
@@ -90,7 +95,7 @@ function AgentLauncher({
       <select
         aria-label="Agent"
         value={preset?.id}
-        disabled={busy}
+        disabled={busy || blocked}
         onChange={(e) => setPicked(e.target.value)}
       >
         {presets.map((t) => (
@@ -100,7 +105,7 @@ function AgentLauncher({
         ))}
       </select>
       <button
-        disabled={busy || !preset || !connected}
+        disabled={busy || blocked || !preset || !connected}
         title={connected ? undefined : 'Reconnect before starting an agent'}
         onClick={() => {
           if (!preset) return
@@ -118,6 +123,7 @@ function AgentLauncher({
 
 function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
   const busy = useBusy(dialog.projectId)
+  const blocked = useBlocked(dialog.projectId)
   const close = () => closeDependencies(dialog.projectId)
   const nodes = useStore((s) => s.nodes)
   const edges = useStore((s) => s.edges)
@@ -137,7 +143,10 @@ function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
       <AgentLauncher projectId={dialog.projectId} label="Detect with an agent" />
       <div className="row">
         {!dialog.scanned && (
-          <button disabled={busy} onClick={() => void scanDependencies(dialog.projectId)}>
+          <button
+            disabled={busy || blocked}
+            onClick={() => void scanDependencies(dialog.projectId)}
+          >
             {busy ? 'Scanning…' : 'Scan manifests'}
           </button>
         )}
@@ -161,6 +170,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
   const nodes = useStore((s) => s.nodes)
   const edges = useStore((s) => s.edges)
   const busy = useBusy(dialog.projectId)
+  const blocked = useBlocked(dialog.projectId)
   // Re-checked against the map as it is now: an end may be gone or the pair linked meanwhile.
   const project = {
     components: nodes.map((n) => ({ id: n.id })),
@@ -186,6 +196,12 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
         “A → B” means A depends on B. Selected ones are added to the map, which saves automatically.
         {skipped > 0 && ` ${skipped} already on the map were left out.`}
       </p>
+      {blocked && (
+        <p className="hint file-tree-error" role="alert">
+          Resolve the map conflict or project recovery before adding dependencies. The proposal
+          stays available for review.
+        </p>
+      )}
       <div className="maintenance-proposals">
         {dialog.links.map((link) => {
           const k = key(link)
@@ -195,7 +211,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
               <input
                 type="checkbox"
                 checked={ok && selected.has(k)}
-                disabled={busy || !ok}
+                disabled={busy || blocked || !ok}
                 onChange={(e) =>
                   setSelected((s) => {
                     const next = new Set(s)
@@ -236,7 +252,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
         </button>
         <button
           className="primary"
-          disabled={busy || !chosen.length}
+          disabled={busy || blocked || !chosen.length}
           onClick={() => void acceptDependencies(dialog.projectId, chosen)}
         >
           Add selected

@@ -159,35 +159,6 @@ fn responsible_scan(
     true
 }
 
-/// Append one folder's scan to the combined result. Every scan numbers its ids on its own,
-/// and the later id-keyed maps would conflate two components sharing one, so colliding ids
-/// are renamed (and that scan's links rewritten) first.
-fn append_scan(into: &mut Project, found: Project) {
-    let mut taken: HashSet<String> = into.components.iter().map(|c| c.id.clone()).collect();
-    let mut renamed = HashMap::new();
-    for mut c in found.components {
-        let mut id = c.id.clone();
-        let mut n = 2;
-        while !taken.insert(id.clone()) {
-            id = format!("{}-{n}", c.id);
-            n += 1;
-        }
-        if id != c.id {
-            renamed.insert(std::mem::replace(&mut c.id, id.clone()), id);
-        }
-        into.components.push(c);
-    }
-    for mut link in found.links {
-        for end in [&mut link.source, &mut link.target] {
-            if let Some(id) = renamed.get(end.as_str()) {
-                end.clone_from(id);
-            }
-        }
-        link.id = format!("{}->{}", link.source, link.target);
-        into.links.push(link);
-    }
-}
-
 /// Build proposals using only canonical allowed roots. Existing records are never rewritten.
 /// # Errors
 /// Fails if the project or its root cannot be scanned.
@@ -204,17 +175,12 @@ pub fn preview(
         .filter(|i| i.kind == IssueKind::Missing)
         .map(|i| i.component_id.clone())
         .collect();
-    let mut detected = detect::detect_with(Path::new(&project.root), detectors)?;
-    let roots: std::collections::BTreeSet<_> = project.external_dirs().into_iter().collect();
-    for dir in &roots {
-        if !access.is_granted(dir) || roots.iter().any(|o| o != dir && dir.starts_with(o)) {
-            continue;
-        }
-        if let Ok(found) = detect::detect_folder_with(project, dir, detectors) {
-            // Collect every scanned dependency, including links between pre-existing nodes.
-            append_scan(&mut detected, found);
-        }
-    }
+    let roots: Vec<_> = project
+        .external_dirs()
+        .into_iter()
+        .filter(|dir| access.is_granted(dir))
+        .collect();
+    let mut detected = detect::detect_roots_with(project, &roots, detectors)?;
     let mut scanned_folders = HashSet::new();
     detected.components.retain(|c| {
         access.readable(&c.path).is_some()
@@ -804,10 +770,118 @@ mod tests {
     }
 
     #[test]
+    fn cross_repo_references_use_all_granted_components_and_survive_rescan() {
+        let f = Fixture::new();
+        f.package("proj/web", "web", &[]);
+        f.package("api/client", "client", &[]);
+        f.package("api/server", "server", &["web"]);
+        f.package("api/private", "private", &["web"]);
+        std::fs::write(
+            f.0.join("proj/web/package.json"),
+            json!({"name":"web", "dependencies":{"local-client":"file:../../api/client"}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            f.0.join("api/client/requirements.txt"),
+            "-r ../../proj/web/requirements.txt",
+        )
+        .unwrap();
+        std::fs::write(f.0.join("proj/web/requirements.txt"), "").unwrap();
+        std::fs::write(
+            f.0.join("api/server/requirements.txt"),
+            "-r ../client/requirements.txt",
+        )
+        .unwrap();
+        let mut project = detect::detect(&f.0.join("proj")).unwrap();
+        let external = detect::detect_folder(&project, &f.0.join("api")).unwrap();
+        detect::merge_new(&mut project, external);
+        // Stable user ids must survive the combined scan's remapping.
+        let web = project
+            .components
+            .iter_mut()
+            .find(|c| c.path == "web")
+            .unwrap();
+        web.id = "custom-web".into();
+        let access = Access::default();
+        access.open(&project).unwrap();
+        let client = project
+            .components
+            .iter()
+            .find(|c| c.path == "../api/client")
+            .unwrap()
+            .id
+            .clone();
+        let server = project
+            .components
+            .iter()
+            .find(|c| c.path == "../api/server")
+            .unwrap()
+            .id
+            .clone();
+        // This link was found when Add repo scanned the whole external repo. It must
+        // survive when subsequent scans see its two component folders as separate roots.
+        assert!(
+            project
+                .links
+                .iter()
+                .any(|l| l.source == server && l.target == client)
+        );
+        // Grant only the component folders: their enclosing repo must not be scanned.
+        access.grant(&f.0.join("api/client")).unwrap();
+        access.grant(&f.0.join("api/server")).unwrap();
+        let links = new_links(&project, &access.snapshot(), &[]).unwrap();
+        let pairs: HashSet<_> = links
+            .iter()
+            .map(|l| (l.source.as_str(), l.target.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            HashSet::from([
+                ("custom-web", client.as_str()),
+                (client.as_str(), "custom-web"),
+                (server.as_str(), "custom-web"),
+            ])
+        );
+        project.links.extend(links);
+        let review = preview(&project, &access.snapshot(), &[]).unwrap();
+        assert_eq!(
+            removals(&review),
+            0,
+            "valid cross-repo links must not become stale"
+        );
+        assert!(
+            new_links(&project, &access.snapshot(), &[])
+                .unwrap()
+                .is_empty()
+        );
+        // Removing a reference really does make its detected link stale.
+        f.package("proj/web", "web", &[]);
+        let review = preview(&project, &access.snapshot(), &[]).unwrap();
+        assert_eq!(removals(&review), 1);
+        // Locked endpoints must not yield new links, even with references pointing at them.
+        project.links.clear();
+        std::fs::write(
+            f.0.join("proj/web/package.json"),
+            json!({"name":"web", "dependencies":{"local-client":"file:../../api/client"}})
+                .to_string(),
+        )
+        .unwrap();
+        let locked = Access::default();
+        locked.open(&project).unwrap();
+        assert!(
+            new_links(&project, &locked.snapshot(), &[])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn external_scans_sharing_an_id_keep_each_components_relationships() {
         let f = Fixture::new();
         f.package("proj/api", "api", &["lib"]);
         f.package("proj/lib", "lib", &[]);
+        f.package("proj/web", "web", &["api"]);
         f.package("api", "api", &[]);
         let root = f.0.join("proj");
         let mut project = detect::detect(&root).unwrap();

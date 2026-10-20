@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { appendToMap, projectOf, projectStateOf, useStore } from '../store'
+import { appendToMap, projectOf, projectStateOf, useStore, type ProjectEntry } from '../store'
 import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
@@ -10,7 +10,7 @@ import {
   type TerminalSpec,
 } from '../types'
 import { detectLinks, mapLinksClear, mapLinksRead, onMapLinks } from './ipc'
-import { onMapCreated } from './mapSave'
+import { mapBlocked, onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
 import { planTerminals } from './plan'
 import { launching, mapPresetId, startMapAgent } from './sessions'
@@ -50,9 +50,20 @@ interface DependencyState {
 }
 export const useDependencies = create<DependencyState>(() => ({ dialogs: {}, busy: {} }))
 
+/** Dependency reviews must wait until either kind of saved-map conflict is resolved. */
+export const dependencyMapBlocked = (entry: ProjectEntry | undefined) =>
+  mapBlocked(entry) || entry?.mapSave?.status === 'conflict'
+
+function canDetect(projectId: string) {
+  return (
+    !!projectStateOf(projectId) && !dependencyMapBlocked(useStore.getState().projects[projectId])
+  )
+}
+
 const dialogOf = (projectId: string) => useDependencies.getState().dialogs[projectId]
 
 function setDialog(projectId: string, dialog: DependencyDialog | null) {
+  if (dialog && !canDetect(projectId)) return
   useDependencies.setState(({ dialogs }) => {
     const next = { ...dialogs }
     if (dialog) next[projectId] = dialog
@@ -128,6 +139,7 @@ export function newLinks(
 
 /** Add `found` to the map as it is now, as an ordinary edit that autosaves. Returns how many. */
 export function appendLinks(projectId: string, found: FoundLink[]): number {
+  if (!canDetect(projectId)) return 0
   const added = appendToMap(projectId, (current) => {
     const links = newLinks(current, found)
     return links.length ? { links } : null
@@ -162,7 +174,7 @@ async function scan(projectId: string): Promise<FoundLink[]> {
 
 /** Scan manifests and review what they name, or say that they name nothing. */
 export async function scanDependencies(projectId: string) {
-  if (isBusy(projectId)) return
+  if (!canDetect(projectId) || isBusy(projectId)) return
   setBusy(projectId, true)
   try {
     const found = await scan(projectId)
@@ -183,6 +195,7 @@ export async function scanDependencies(projectId: string) {
 
 /** From a menu: review the agent's waiting submission, else offer detection. */
 export function offerDependencies(projectId: string) {
+  if (!canDetect(projectId)) return
   void reviewPending(projectId, true).then((shown) => {
     if (!shown && !dialogOf(projectId) && projectStateOf(projectId))
       setDialog(projectId, { mode: 'offer', projectId, scanned: false })
@@ -212,6 +225,7 @@ export function dismissDependencies(projectId: string) {
  * session that started is revealed.
  */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
+  if (!canDetect(projectId)) return
   closeDependencies(projectId)
   const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
   const s = useStore.getState()
@@ -251,8 +265,9 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
  * `explicit`. Returns whether it is shown.
  */
 async function reviewPending(projectId: string, explicit = false): Promise<boolean> {
+  if (!canDetect(projectId)) return false
   const pending = await mapLinksRead(projectId).catch(() => null)
-  if (!pending || !projectStateOf(projectId) || cleared.get(projectId) === pending.id) return false
+  if (!pending || !canDetect(projectId) || cleared.get(projectId) === pending.id) return false
   if (!explicit && deferred.get(projectId) === pending.id) return false
   const open = dialogOf(projectId)
   if (open && open.mode !== 'offer') return false
@@ -264,7 +279,7 @@ async function reviewPending(projectId: string, explicit = false): Promise<boole
 
 /** Add the chosen links and forget the submission they came from. */
 export async function acceptDependencies(projectId: string, chosen: FoundLink[]) {
-  if (dialogOf(projectId)?.mode !== 'review') return
+  if (!canDetect(projectId) || dialogOf(projectId)?.mode !== 'review') return
   const added = appendLinks(projectId, chosen)
   message(
     projectId,
@@ -311,7 +326,13 @@ export async function discardDependencies(projectId: string) {
 async function afterCreated(projectId: string) {
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
-  if (!state || !project || !shouldOfferDetection(project, state.dependencyPromptDismissed)) return
+  if (
+    !canDetect(projectId) ||
+    !state ||
+    !project ||
+    !shouldOfferDetection(project, state.dependencyPromptDismissed)
+  )
+    return
   if (dialogOf(projectId) || isBusy(projectId)) return
   let found: FoundLink[] | null = null
   setBusy(projectId, true)
@@ -359,11 +380,12 @@ export function initializeDependencyDetection(): () => void {
   const checked = new Set<string>()
   const opened = useStore.subscribe((s, prev) => {
     if (s.projects === prev.projects && s.restoring === prev.restoring) return
-    for (const id of checked) if (!s.projects[id]) checked.delete(id)
+    for (const id of checked)
+      if (!s.projects[id] || dependencyMapBlocked(s.projects[id])) checked.delete(id)
     forgetClosed(s.projects)
     if (s.restoring) return
     for (const [id, entry] of Object.entries(s.projects))
-      if (!entry.unavailable && !checked.has(id)) {
+      if (!dependencyMapBlocked(entry) && !checked.has(id)) {
         checked.add(id)
         void reviewPending(id)
       }

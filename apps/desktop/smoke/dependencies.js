@@ -92,6 +92,23 @@
       dialog()?.textContent.includes('Review proposed dependencies'),
     )
     assert(dialog().textContent.includes('web/src/api.ts:1'), 'the reason must be shown')
+    // A conflict arriving while the review is open must stop both the controls and edits.
+    await until('manifest autosave before conflict', () => !s().dirty)
+    await smoke.saveProject({ ...s().toProject(), name: 'Edited externally' }, null)
+    s().updateComponent(web, { notes: 'Local edit during dependency review' })
+    await until('map conflict', () => s().projects[one.id].mapSave?.status === 'conflict')
+    await until('blocked dependency review', () => button('Add selected')?.disabled)
+    assert(
+      Array.from(dialog().querySelectorAll('input[type="checkbox"]')).every((c) => c.disabled),
+      'a conflicted review must disable its selections',
+    )
+    button('Add selected').click()
+    assert(!s().edges.some((e) => e.source === web && e.target === api), 'conflict added a link')
+    assert(await smoke.mapLinksRead(one.id), 'a blocked review must retain its proposal')
+    assert((await smoke.openProject()).project.name === 'Edited externally', 'external edit lost')
+    // Explicit replacement resolves the conflict; the same review can then apply normally.
+    assert(await smoke.saveMap(one.id, true), 'conflict replacement failed')
+    await until('review enabled after recovery', () => !button('Add selected')?.disabled)
     await click('Add selected')
     await until('agent link added', () =>
       s().edges.some((e) => e.source === web && e.target === api),

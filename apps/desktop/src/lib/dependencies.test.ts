@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 
 const ipc = vi.hoisted(() => ({
   mapLinksRead: vi.fn<(projectId: string) => Promise<unknown>>(async () => null),
@@ -7,14 +7,32 @@ const ipc = vi.hoisted(() => ({
   onMapLinks: vi.fn(async () => () => {}),
 }))
 const created = vi.hoisted(() => ({ listener: (_id: string) => {} }))
+const store = vi.hoisted(() => ({
+  projects: {} as Record<string, import('../store').ProjectEntry>,
+  appendToMap: vi.fn(() => null),
+  setMessage: vi.fn(),
+  listener: (_s: unknown, _prev: unknown) => {},
+}))
 vi.mock('../store', () => ({
-  useStore: { getState: () => ({ project: { id: 'a' } }), subscribe: () => () => {} },
-  projectStateOf: (id: string) => (['a', 'b'].includes(id) ? {} : undefined),
+  appendToMap: store.appendToMap,
+  useStore: {
+    getState: () => ({
+      project: { id: 'a' },
+      projects: store.projects,
+      setMessage: store.setMessage,
+    }),
+    subscribe: (listener: typeof store.listener) => {
+      store.listener = listener
+      return () => {}
+    },
+  },
+  projectStateOf: (id: string) => (store.projects[id] ? {} : undefined),
   projectOf: (id: string) =>
-    ['a', 'b'].includes(id) ? { components: [{ id: 'app' }, { id: 'api' }], links: [] } : undefined,
+    store.projects[id] ? { components: [{ id: 'app' }, { id: 'api' }], links: [] } : undefined,
 }))
 vi.mock('./ipc', () => ipc)
-vi.mock('./mapSave', () => ({
+vi.mock('./mapSave', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./mapSave')>()),
   onMapCreated: (listener: (id: string) => void) => {
     created.listener = listener
     return () => {}
@@ -23,15 +41,29 @@ vi.mock('./mapSave', () => ({
 vi.mock('./attention', () => ({}))
 vi.mock('./sessions', () => ({}))
 const {
+  acceptDependencies,
+  appendLinks,
   closeDependencies,
   discardDependencies,
   initializeDependencyDetection,
   newLinks,
   offerDependencies,
+  scanDependencies,
+  startDependencyAgent,
   shouldOfferDetection,
   unlinked,
   useDependencies,
 } = await import('./dependencies')
+
+beforeEach(() => {
+  store.projects = Object.fromEntries(
+    ['a', 'b'].map((id) => [id, { id } as import('../store').ProjectEntry]),
+  )
+  store.appendToMap.mockClear()
+  store.setMessage.mockClear()
+  ipc.mapLinksRead.mockResolvedValue(null)
+  useDependencies.setState({ dialogs: {}, busy: {} })
+})
 
 const project = {
   components: [{ id: 'app' }, { id: 'api' }, { id: 'jobs' }],
@@ -111,7 +143,7 @@ test('a discarded submission is cleared before the review closes, and stale read
   offerDependencies('a')
   await settle()
   expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
-  let finish = (_: boolean) => {}
+  let finish: (value: boolean) => void = () => {}
   ipc.mapLinksClear.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
   const discarded = discardDependencies('a')
   // Still open, and waiting, until the backend has forgotten it.
@@ -153,5 +185,86 @@ test("the first save's scan keeps the project busy and fills an offer opened mea
     links: [{ source: 'app', target: 'api', label: null, detector: 'builtin' }],
   })
   closeDependencies('a')
+  stop()
+})
+
+const proposedLink = {
+  source: 'app',
+  target: 'api',
+  reason: 'web/src/api.ts:1',
+  detector: 'agent' as const,
+}
+
+for (const blocked of [
+  { conflict: {} },
+  { mapSave: { status: 'conflict' } },
+  { unavailable: 'Missing project folder' },
+]) {
+  test(`blocked maps defer proposals and refuse dependency edits: ${JSON.stringify(blocked)}`, async () => {
+    const proposal = { ...pending(`blocked-${JSON.stringify(blocked)}`), links: [proposedLink] }
+    ipc.mapLinksRead.mockResolvedValue(proposal)
+    store.projects.a = { ...store.projects.a, ...blocked } as never
+    offerDependencies('a')
+    await scanDependencies('a')
+    await startDependencyAgent('a', {} as never)
+    await settle()
+    expect(useDependencies.getState().dialogs.a).toBeUndefined()
+
+    // An already-open review must also refuse an edit and keep its pending submission.
+    const dialog = {
+      mode: 'review' as const,
+      projectId: 'a',
+      links: [proposedLink],
+      pending: proposal,
+    }
+    useDependencies.setState({ dialogs: { a: dialog } })
+    ipc.mapLinksClear.mockClear()
+    expect(appendLinks('a', [proposedLink])).toBe(0)
+    await acceptDependencies('a', [proposedLink])
+    expect(store.appendToMap).not.toHaveBeenCalled()
+    expect(ipc.mapLinksClear).not.toHaveBeenCalled()
+    expect(useDependencies.getState().dialogs.a).toBe(dialog)
+
+    // Recovery makes that same proposal reviewable again.
+    store.projects.a = { id: 'a' } as never
+    useDependencies.setState({ dialogs: {} })
+    offerDependencies('a')
+    await settle()
+    expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
+  })
+}
+
+test('a conflict arriving during a proposal read prevents the review from opening', async () => {
+  let finish: (value: unknown) => void = () => {}
+  ipc.mapLinksRead.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+  offerDependencies('a')
+  store.projects.a.mapSave = { status: 'conflict' }
+  finish({ ...pending('conflict-during-read'), links: [proposedLink] })
+  await settle()
+  expect(useDependencies.getState().dialogs.a).toBeUndefined()
+})
+
+test('a conflict arriving during a manifest scan prevents the review from opening', async () => {
+  let finish: (value: unknown[]) => void = () => {}
+  ipc.detectLinks.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+  const scanning = scanDependencies('a')
+  store.projects.a.mapSave = { status: 'conflict' }
+  finish([proposedLink])
+  await scanning
+  expect(useDependencies.getState().dialogs.a).toBeUndefined()
+})
+
+test('a proposal deferred by a conflict is surfaced when recovery finishes', async () => {
+  const stop = initializeDependencyDetection()
+  ipc.mapLinksRead.mockResolvedValue({ ...pending('recovered'), links: [proposedLink] })
+  store.projects.a.mapSave = { status: 'conflict' }
+  store.listener({ projects: store.projects }, { projects: {} })
+  await settle()
+  expect(useDependencies.getState().dialogs.a).toBeUndefined()
+  const previous = store.projects
+  store.projects = { ...previous, a: { ...previous.a, mapSave: undefined } }
+  store.listener({ projects: store.projects }, { projects: previous })
+  await settle()
+  expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
   stop()
 })

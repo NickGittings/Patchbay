@@ -6,8 +6,7 @@ import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
-import { offerDependencies } from '../lib/dependencies'
-import { mapBlocked } from '../lib/mapSave'
+import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
@@ -97,7 +96,7 @@ export default function Toolbar() {
                   Rescan
                 </MenuItem>
                 <MenuItem
-                  disabled={mapBlocked(entry)}
+                  disabled={dependencyMapBlocked(entry)}
                   onClick={() => {
                     const id = useStore.getState().project?.id
                     if (id) offerDependencies(id)
