@@ -785,11 +785,18 @@ export const useStore = create<State>((set, get) => ({
     // Removal is a reviewed map edit: Canvas.onBeforeDelete runs removeComponents and
     // cancels React Flow's own removal, so a remove change never applies directly.
     changes = changes.filter((c) => c.type !== 'remove')
-    const edits = changes.some((c) => c.type === 'position' && !c.dragging)
-    set((s) => ({
-      nodes: applyNodeChanges(changes, s.nodes),
-      dirty: s.dirty || edits,
-    }))
+    set((s) => {
+      const positions = new Map<string, Component['position']>()
+      for (const c of changes)
+        if (c.type === 'position' && c.position) positions.set(c.id, c.position)
+      // A drag stop can repeat the current position or only clear `dragging`. Actual moves
+      // dirty the map as they happen; autosave already waits until the drag has finished.
+      const edits = s.nodes.some((n) => {
+        const after = positions.get(n.id)
+        return after && (n.position.x !== after.x || n.position.y !== after.y)
+      })
+      return { nodes: applyNodeChanges(changes, s.nodes), dirty: s.dirty || edits }
+    })
   },
   onEdgesChange: (changes) =>
     set((s) => ({
@@ -1001,13 +1008,12 @@ export function projectOf(id: string): Project | null {
 function editMap<T>(
   projectId: string | null | undefined,
   edit: (
-    current: Project,
     state: ProjectState,
   ) => { patch: Pick<Partial<ProjectState>, 'nodes' | 'edges'>; result: T } | null,
 ): T | null {
   const state = projectId ? projectStateOf(projectId) : undefined
   if (!projectId || !state?.project) return null
-  const edited = edit(projectFrom(state), state)
+  const edited = edit(state)
   if (!edited) return null
   useStore.getState().patchProject(projectId, { ...edited.patch, dirty: true })
   return edited.result
@@ -1022,8 +1028,8 @@ export function appendToMap<T extends { components?: Component[]; links?: Link[]
   projectId: string | null | undefined,
   extend: (current: Project) => T | null,
 ): T | null {
-  return editMap(projectId, (current, state) => {
-    const added = extend(current)
+  return editMap(projectId, (state) => {
+    const added = extend(projectFrom(state))
     return added
       ? {
           patch: {
@@ -1044,7 +1050,7 @@ export function moveComponents(
   projectId: string,
   positions: Record<string, Component['position']>,
 ): Record<string, Component['position']> | null {
-  return editMap(projectId, (_current, state) => {
+  return editMap(projectId, (state) => {
     const previous: Record<string, Component['position']> = {}
     const nodes = state.nodes.map((c) => {
       const to = positions[c.id]

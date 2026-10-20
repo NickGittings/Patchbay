@@ -46,31 +46,34 @@ export function undoArrange(projectId: string, { before, after }: Arrangement): 
     projectId,
     run: () => {
       const s = useStore.getState()
-      if (s.project?.id !== projectId) return
       if (mapEditsBlocked(s.projects[projectId])) {
         s.setMessage('Resolve the map conflict or project recovery before undoing the layout')
         return
       }
       const positions: Record<string, Position> = {}
+      let keptLaterEdits = false
       for (const node of projectStateOf(projectId)?.nodes ?? []) {
+        if (!before[node.id]) continue
         const expected = after[node.id]
         if (
-          before[node.id] &&
           expected &&
           !node.dragging &&
           node.position.x === expected.x &&
           node.position.y === expected.y
         )
           positions[node.id] = before[node.id]
+        else keptLaterEdits = true
       }
       const restored = moved(projectId, positions)
       const count = Object.keys(restored ?? {}).length
       s.setMessage(
-        count === Object.keys(before).length
-          ? 'Restored the previous layout'
-          : count
+        count
+          ? keptLaterEdits
             ? 'Restored previous positions; kept later layout edits'
-            : 'No layout positions to restore; kept later edits',
+            : 'Restored the previous layout'
+          : keptLaterEdits
+            ? 'No layout positions to restore; kept later edits'
+            : 'No layout positions to restore',
         true,
       )
     },

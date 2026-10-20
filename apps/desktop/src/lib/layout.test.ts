@@ -30,6 +30,38 @@ test('a cycle still gets a layout', () => {
   expect(p.a).not.toEqual(p.b)
 })
 
+test('arranging a cycle settles after one run regardless of its initial reading order', () => {
+  const components = [component('b', 0, 20), component('a', 0, 40), component('c', 0, 0)]
+  const links = [link('a', 'b'), link('b', 'c'), link('c', 'a')]
+  const first = arrange(components, links)
+  const arranged = components.map((c) => ({ ...c, position: first[c.id] }))
+  expect(arrange(arranged, links)).toEqual(first)
+  expect(arrange([...arranged].reverse(), links)).toEqual(first)
+})
+
+test('random maps, including cycles, settle after one arrangement', () => {
+  let seed = 12345
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    return seed / 2 ** 32
+  }
+  for (let i = 0; i < 3000; i++) {
+    const components = Array.from({ length: 2 + Math.floor(random() * 15) }, (_, j) =>
+      component(`node-${j}`, Math.floor(random() * 1000), Math.floor(random() * 1000)),
+    )
+    const links = components.flatMap((a) =>
+      components.filter((b) => a !== b && random() < 0.15).map((b) => link(a.id, b.id)),
+    )
+    const first = arrange(components, links)
+    expect(
+      arrange(
+        components.map((c) => ({ ...c, position: first[c.id] })),
+        links,
+      ),
+    ).toEqual(first)
+  }
+})
+
 test('rows follow neighbours, so links stop crossing', () => {
   // a1 → b2 and a2 → b1, listed so that keeping the current order would cross.
   const p = arrange(

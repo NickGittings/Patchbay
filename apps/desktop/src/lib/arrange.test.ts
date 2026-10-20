@@ -80,6 +80,18 @@ test('Undo ignores removed nodes and leaves components added later in place', ()
   undoArrange('one', arrangement).run()
   expect(positions().api).toBeUndefined()
   expect(positions().new).toEqual(later.position)
+  expect(state().message).toBe('Restored the previous layout')
+})
+
+test('Undo reports nothing to restore when all arranged components were deleted', () => {
+  const arrangement = arranged()
+  state().patchProject('one', {
+    nodes: state().nodes.filter((n) => !arrangement.before[n.id]),
+  })
+  state().markSaved()
+  undoArrange('one', arrangement).run()
+  expect(state().message).toBe('No layout positions to restore')
+  expect(state().dirty).toBe(false)
 })
 
 test('Undo reports no change without making the map dirty when all moved nodes were edited', () => {
@@ -151,6 +163,18 @@ for (const count of [0, 1]) {
 }
 
 test('an already arranged map does not become dirty or emit an animation', () => {
+  arranged()
+  const listener = vi.fn()
+  const stop = onArranged(listener)
+  arrangeNow('one')
+  stop()
+  expect(listener).not.toHaveBeenCalled()
+  expect(state().message).toBe('The map is already arranged')
+  expect(state().dirty).toBe(false)
+})
+
+test('a cyclic map does not become dirty or animate on a second arrangement', () => {
+  appendToMap('one', () => ({ links: [{ id: 'api->app', source: 'api', target: 'app' }] }))
   arranged()
   const listener = vi.fn()
   const stop = onArranged(listener)

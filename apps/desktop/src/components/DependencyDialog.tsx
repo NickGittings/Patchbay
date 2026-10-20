@@ -246,7 +246,9 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
           <AgentLauncher
             projectId={dialog.projectId}
             label={chosen.length ? 'Add selected and detect with an agent' : 'Detect with an agent'}
-            before={() => void addDependencies(dialog.projectId, chosen)}
+            before={
+              chosen.length ? () => void addDependencies(dialog.projectId, chosen) : undefined
+            }
           />
         </>
       )}

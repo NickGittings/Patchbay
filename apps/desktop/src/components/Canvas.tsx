@@ -33,16 +33,10 @@ const ease = (t: number) => 1 - (1 - t) ** 3
 function useArranging(projectId: string | undefined) {
   const { fitView, getNode } = useReactFlow()
   const [tween, setTween] = useState<{
-    projectId: string
     from: Record<string, Position>
     t: number
     fit: boolean
   } | null>(null)
-  const [previousProjectId, setPreviousProjectId] = useState(projectId)
-  if (projectId !== previousProjectId) {
-    setPreviousProjectId(projectId)
-    setTween(null)
-  }
   useEffect(() => {
     let frame = 0
     const off = onArranged((id, from) => {
@@ -58,7 +52,7 @@ function useArranging(projectId: string | undefined) {
         setTween((current) => (current ? { ...current, t: ease(t) } : null))
         if (t < 1) frame = requestAnimationFrame(step)
       }
-      setTween({ projectId: id, from, t: 0, fit: true })
+      setTween({ from, t: 0, fit: true })
       frame = requestAnimationFrame(step)
     })
     return () => {
@@ -67,7 +61,7 @@ function useArranging(projectId: string | undefined) {
     }
   }, [getNode, projectId])
   useEffect(() => {
-    if (!tween || tween.projectId !== projectId || tween.t !== 1) return
+    if (!tween || tween.t !== 1) return
     // Let React Flow receive the final positions before it queues a fit. Both this render and
     // the next show the destination, so fitting cannot frame the tween's starting positions.
     const frame = requestAnimationFrame(() => {
@@ -75,7 +69,7 @@ function useArranging(projectId: string | undefined) {
       setTween(null)
     })
     return () => cancelAnimationFrame(frame)
-  }, [fitView, projectId, tween])
+  }, [fitView, tween])
   const interrupt = useCallback((ids: string[]) => {
     if (!ids.length) return
     setTween((current) => {
@@ -86,7 +80,7 @@ function useArranging(projectId: string | undefined) {
       return { ...current, from, fit: false }
     })
   }, [])
-  return { tween: tween?.projectId === projectId ? tween : null, interrupt }
+  return { tween, interrupt }
 }
 
 function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {
@@ -146,6 +140,7 @@ export default function Canvas() {
   )
   const inspectorShown = useStore(showsInspector)
   const { tween, interrupt } = useArranging(project?.id)
+  // React Flow's node drag callbacks also cover selection-box drags.
   const updateDrag = (dragged: FlowNode[], dragging: boolean) => {
     if (dragging) interrupt(dragged.map((n) => n.id))
     // The store holds the destination; a drag must start at the displayed position instead.
@@ -202,9 +197,7 @@ export default function Canvas() {
           onNodesChange(changes)
         }}
         onNodeDragStart={(_, _node, dragged) => updateDrag(dragged, true)}
-        onSelectionDragStart={(_, dragged) => updateDrag(dragged, true)}
         onNodeDragStop={(_, _node, dragged) => updateDrag(dragged, false)}
-        onSelectionDragStop={(_, dragged) => updateDrag(dragged, false)}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}

@@ -134,6 +134,35 @@ describe('map autosave', () => {
     expect(save.mock.calls[0][0].components[0].position).toEqual({ x: 30, y: 40 })
   })
 
+  test('a drag without movement clears dragging without dirtying or autosaving the map', async () => {
+    open()
+    initializeMapAutosave()
+    for (const dragging of [true, false]) {
+      state().onNodesChange([{ id: 'web', type: 'position', position: { x: 0, y: 0 }, dragging }])
+      expect(state().dirty).toBe(false)
+    }
+    expect(state().nodes[0].dragging).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  test.each([undefined, { x: 10, y: 20 }])(
+    'saves a real drag when the stop supplies position %j',
+    async (position) => {
+      open()
+      initializeMapAutosave()
+      state().onNodesChange([
+        { id: 'web', type: 'position', position: { x: 10, y: 20 }, dragging: true },
+      ])
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(save).not.toHaveBeenCalled()
+      state().onNodesChange([{ id: 'web', type: 'position', position, dragging: false }])
+      await vi.advanceTimersByTimeAsync(750)
+      expect(save).toHaveBeenCalledTimes(1)
+      expect(save.mock.calls[0][0].components[0].position).toEqual({ x: 10, y: 20 })
+    },
+  )
+
   test('saves an inactive tab without cleaning the active tab', async () => {
     open()
     initializeMapAutosave()

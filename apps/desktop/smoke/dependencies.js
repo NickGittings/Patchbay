@@ -78,6 +78,7 @@
       dialog()?.textContent.includes('Review detected dependencies'),
     )
     assert(dialog().textContent.includes('→'), 'the manifest link must be listed')
+    const manifestReview = smoke.dependencies.getState().dialogs[one.id]
 
     const links = {
       version: 1,
@@ -164,6 +165,31 @@
     assert(/validate-exit:[1-9]/.test(output), `a refused validate must fail: ${output}`)
     assert(s().sessions[sid]?.running, 'the detection agent should still run')
 
+    // Review a manifest link again with every proposal unchecked. Starting (or revealing) the
+    // agent must leave the map and feedback alone instead of saying "Nothing new to add".
+    const savedEdges = s().edges
+    smoke.store.setState({
+      edges: savedEdges.filter((e) => !(e.source === jobs && e.target === api)),
+    })
+    smoke.dependencies.setState((state) => ({
+      dialogs: { ...state.dialogs, [one.id]: manifestReview },
+    }))
+    await until('manifest review reopened', () =>
+      dialog()?.textContent.includes('Review detected dependencies'),
+    )
+    for (const checkbox of dialog().querySelectorAll('input[type="checkbox"]')) {
+      if (checkbox.checked) checkbox.click()
+    }
+    await until('no dependencies selected', () => button('Detect with an agent'))
+    s().setMessage('Detecting dependencies')
+    const messageId = s().messageId
+    await click('Detect with an agent')
+    await until('detection review closed', () => !dialog())
+    assert(s().messageId === messageId, 'launching without selected links changed the feedback')
+    assert(s().edges.length === savedEdges.length - 1, 'launching added unchecked links')
+    assert(!s().dirty, 'launching without selected links dirtied the map')
+    smoke.store.setState({ edges: savedEdges })
+
     // Starting from a compact cluster makes fitting the old bounds visibly wrong.
     const cluster = () =>
       smoke.store.setState({
@@ -231,6 +257,88 @@
     assert(Math.abs(settled.top - dragged.top) < 3, 'node moved after release')
     undoButton().click()
     assert(JSON.stringify(positions()[api]) === JSON.stringify(dropped), 'Undo lost the later drag')
+
+    // Crossing only the drag threshold starts and stops the drag without moving a node. This
+    // must clear the dragging flag while leaving a saved map clean.
+    await until('Undo autosaved', () => !s().dirty)
+    await sleep(500)
+    const stationary = node.getBoundingClientRect()
+    const stationaryX = stationary.left + stationary.width / 2
+    const stationaryY = stationary.top + 15
+    mouse(node, 'mousedown', stationaryX, stationaryY)
+    mouse(window, 'mousemove', stationaryX + 2, stationaryY + 2)
+    mouse(window, 'mouseup', stationaryX + 2, stationaryY + 2)
+    assert(!s().nodes.some((n) => n.dragging), 'a stationary drag left autosave waiting')
+    assert(!s().dirty, 'a stationary drag dirtied the map')
+    await sleep(50)
+
+    // Selection-box drags also fire node drag callbacks. Each node's start and stop should
+    // reach the map once, including when no actual movement follows the threshold.
+    s().onNodesChange(s().nodes.map((n) => ({ id: n.id, type: 'select', selected: false })))
+    await sleep(50)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', code: 'ShiftLeft' }))
+    const pane = await until('selection mode', () =>
+      document.querySelector('.react-flow__pane.selection'),
+    )
+    const bounds = Array.from(document.querySelectorAll('.react-flow__node')).map((n) =>
+      n.getBoundingClientRect(),
+    )
+    // Synthetic pointers cannot be captured by the OS; dispatch the entire gesture to the pane.
+    pane.setPointerCapture = () => {}
+    pane.releasePointerCapture = () => {}
+    const pointer = (type, x, y) =>
+      pane.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          isPrimary: true,
+          pointerId: 1,
+          pointerType: 'mouse',
+          button: 0,
+          buttons: type === 'pointerup' ? 0 : 1,
+          clientX: x,
+          clientY: y,
+        }),
+      )
+    const left = Math.min(...bounds.map((b) => b.left)) - 5
+    const top = Math.min(...bounds.map((b) => b.top)) - 5
+    const right = Math.max(...bounds.map((b) => b.right)) + 5
+    const bottom = Math.max(...bounds.map((b) => b.bottom)) + 5
+    pointer('pointerdown', left, top)
+    await sleep(50)
+    pointer('pointermove', right, bottom)
+    await sleep(50)
+    await until('nodes selected by the box', () => s().nodes.every((n) => n.selected))
+    await sleep(50)
+    pointer('pointerup', right, bottom)
+    delete pane.setPointerCapture
+    delete pane.releasePointerCapture
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', code: 'ShiftLeft' }))
+    const selection = await until('selection box', () =>
+      document.querySelector('.react-flow__nodesselection-rect'),
+    )
+    const updateNodes = s().onNodesChange
+    const dragUpdates = []
+    smoke.store.setState({
+      onNodesChange: (changes) => {
+        dragUpdates.push(...changes.filter((c) => c.type === 'position'))
+        updateNodes(changes)
+      },
+    })
+    await sleep(50)
+    const box = selection.getBoundingClientRect()
+    const boxX = box.left + box.width / 2
+    const boxY = box.top + 5
+    mouse(selection, 'mousedown', boxX, boxY)
+    mouse(window, 'mousemove', boxX + 2, boxY + 2)
+    mouse(window, 'mouseup', boxX + 2, boxY + 2)
+    smoke.store.setState({ onNodesChange: updateNodes })
+    for (const n of s().nodes) {
+      const updates = dragUpdates.filter((c) => c.id === n.id)
+      assert(updates.length === 2, `selection drag sent ${updates.length} updates for ${n.id}`)
+      assert(updates[0].dragging && !updates[1].dragging, 'selection drag did not finish')
+    }
+    assert(!s().dirty, 'a stationary selection drag dirtied the map')
+    s().onNodesChange(s().nodes.map((n) => ({ id: n.id, type: 'select', selected: false })))
 
     // Project actions disappear in another tab and even a retained callback cannot edit it.
     await sleep(900)

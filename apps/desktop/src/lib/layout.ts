@@ -27,8 +27,10 @@ export function arrange(
   const out = new Map<string, string[]>()
   const into = new Map<string, string[]>()
   for (const { source, target } of edges) {
-    out.set(source, [...(out.get(source) ?? []), target])
-    into.set(target, [...(into.get(target) ?? []), source])
+    if (!out.has(source)) out.set(source, [])
+    if (!into.has(target)) into.set(target, [])
+    out.get(source)!.push(target)
+    into.get(target)!.push(source)
   }
 
   // Longest path to a foundation; a cycle counts as ending where it closes.
@@ -48,7 +50,9 @@ export function arrange(
   const ordered = [...components].sort(byPosition)
   const linked = ordered.filter((c) => out.has(c.id) || into.has(c.id))
   const loose = ordered.filter((c) => !out.has(c.id) && !into.has(c.id))
-  for (const c of linked) depthOf(c.id)
+  // Cycle depths depend on which member is visited first. Use IDs so arranging again cannot
+  // change the depths just because the previous arrangement changed the reading order.
+  for (const id of [...out.keys()].sort()) depthOf(id)
   const deepest = Math.max(0, ...linked.map((c) => depth.get(c.id) ?? 0))
   const columnOf = (id: string) => deepest - (depth.get(id) ?? 0)
 
