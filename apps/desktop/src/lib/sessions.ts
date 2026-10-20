@@ -314,9 +314,17 @@ export const launching = (sid: string) => starting.has(sid) || restarting.has(si
 export async function startMapAgent(projectId: string, preset: TerminalSpec): Promise<boolean> {
   const launch = captureLaunch(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
   if (launching(launch.sid)) return false
+  const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
-  await launchTerminal(launch)
-  return !!launch.started
+  try {
+    await launchTerminal(launch)
+    return !!launch.started
+  } finally {
+    if (!launch.started) {
+      if (previous === undefined) mapPresets.delete(launch.sid)
+      else mapPresets.set(launch.sid, previous)
+    }
+  }
 }
 
 /** A handoff or Auto launch, whose caller reports every failure itself. */

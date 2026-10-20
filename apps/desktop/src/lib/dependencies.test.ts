@@ -6,11 +6,17 @@ const ipc = vi.hoisted(() => ({
   detectLinks: vi.fn<(project: unknown) => Promise<unknown[]>>(async () => []),
   onMapLinks: vi.fn(async () => () => {}),
 }))
+const agents = vi.hoisted(() => ({
+  launching: vi.fn(() => false),
+  mapPresetId: vi.fn(),
+  startMapAgent: vi.fn(async () => true),
+}))
 const created = vi.hoisted(() => ({ listener: (_id: string) => {} }))
 const store = vi.hoisted(() => ({
   projects: {} as Record<string, import('../store').ProjectEntry>,
   appendToMap: vi.fn(() => null),
   setMessage: vi.fn(),
+  addRuntimeTerminal: vi.fn(),
   listener: (_s: unknown, _prev: unknown) => {},
 }))
 vi.mock('../store', () => ({
@@ -20,6 +26,8 @@ vi.mock('../store', () => ({
       project: { id: 'a' },
       projects: store.projects,
       setMessage: store.setMessage,
+      sessions: {},
+      addRuntimeTerminal: store.addRuntimeTerminal,
     }),
     subscribe: (listener: typeof store.listener) => {
       store.listener = listener
@@ -38,8 +46,8 @@ vi.mock('./mapSave', async (importOriginal) => ({
     return () => {}
   },
 }))
-vi.mock('./attention', () => ({}))
-vi.mock('./sessions', () => ({}))
+vi.mock('./attention', () => ({ revealTerminal: vi.fn() }))
+vi.mock('./sessions', () => agents)
 const {
   acceptDependencies,
   appendLinks,
@@ -267,4 +275,39 @@ test('a proposal deferred by a conflict is surfaced when recovery finishes', asy
   await settle()
   expect(useDependencies.getState().dialogs.a?.mode).toBe('review')
   stop()
+})
+
+for (const found of [[], [{ source: 'app', target: 'api', label: null }]]) {
+  test(`a completed manifest scan preserves an agent review (${found.length} links found)`, async () => {
+    let finish: (value: unknown[]) => void = () => {}
+    ipc.detectLinks.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+    const scanning = scanDependencies('a')
+    ipc.mapLinksRead.mockResolvedValue({ ...pending('during-scan'), links: [proposedLink] })
+    offerDependencies('a')
+    await settle()
+    const review = useDependencies.getState().dialogs.a
+    expect(review?.mode === 'review' && review.pending?.id).toBe('during-scan')
+    finish(found)
+    await scanning
+    expect(useDependencies.getState().dialogs.a).toBe(review)
+    expect(useDependencies.getState().busy.a).toBeUndefined()
+  })
+}
+
+test('starting a new agent from a manifest review does not open an older waiting submission', async () => {
+  useDependencies.setState({
+    dialogs: { a: { mode: 'review', projectId: 'a', links: [] } },
+  })
+  ipc.mapLinksRead.mockClear()
+  ipc.mapLinksRead.mockResolvedValue({ ...pending('older-run'), links: [proposedLink] })
+  await startDependencyAgent('a', {
+    id: 'claude',
+    name: 'Claude',
+    kind: 'agent',
+    command: 'claude',
+  })
+  await settle()
+  expect(agents.startMapAgent).toHaveBeenCalledWith('a', expect.objectContaining({ id: 'claude' }))
+  expect(useDependencies.getState().dialogs.a).toBeUndefined()
+  expect(ipc.mapLinksRead).not.toHaveBeenCalled()
 })

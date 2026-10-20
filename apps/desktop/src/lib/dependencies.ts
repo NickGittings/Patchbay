@@ -180,6 +180,9 @@ export async function scanDependencies(projectId: string) {
     const found = await scan(projectId)
     // The project may have closed meanwhile.
     if (!projectStateOf(projectId)) return
+    // An agent submission that arrived during the scan keeps its review.
+    const open = dialogOf(projectId)
+    if (open?.mode === 'review' && open.pending) return
     setDialog(
       projectId,
       found.length
@@ -202,14 +205,18 @@ export function offerDependencies(projectId: string) {
   })
 }
 
+function closeDialog(projectId: string) {
+  const dialog = dialogOf(projectId)
+  setDialog(projectId, null)
+  if (dialog?.mode === 'review' && dialog.pending) deferred.set(projectId, dialog.pending.id)
+}
+
 /**
  * Close `projectId`'s dialog. An agent's submission closed undecided stays for the menu to show
  * again; one that arrived while the dialog was open shows now.
  */
 export function closeDependencies(projectId: string) {
-  const dialog = dialogOf(projectId)
-  setDialog(projectId, null)
-  if (dialog?.mode === 'review' && dialog.pending) deferred.set(projectId, dialog.pending.id)
+  closeDialog(projectId)
   void reviewPending(projectId)
 }
 
@@ -226,7 +233,8 @@ export function dismissDependencies(projectId: string) {
  */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
   if (!canDetect(projectId)) return
-  closeDependencies(projectId)
+  // Starting a new detection run must not surface an older waiting submission.
+  closeDialog(projectId)
   const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
   const s = useStore.getState()
   // A launch on its way keeps the preset and tab it started with.

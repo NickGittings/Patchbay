@@ -37,6 +37,7 @@ const ROW_HEIGHT: f64 = 230.0;
 
 struct Candidate {
     detector: String,
+    package_identity: Option<String>,
     rel: String,
     name: String,
     kind: ComponentKind,
@@ -176,6 +177,7 @@ fn from_package_json(dir: &Path, root: &Path, v: &serde_json::Value) -> Option<C
 
     Some(Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name: v["name"]
             .as_str()
@@ -218,6 +220,7 @@ fn from_cargo_toml(dir: &Path, t: &toml::Table) -> Option<Candidate> {
 
     Some(Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name,
         kind,
@@ -260,6 +263,7 @@ fn python_candidate(dir: &Path, name: String, deps: HashSet<String>) -> Candidat
     }
     Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name,
         kind,
@@ -333,6 +337,7 @@ fn from_go_mod(dir: &Path, text: &str) -> Candidate {
     tasks.push(task("test", "Tests", "go test ./...".into()));
     Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name,
         kind,
@@ -602,7 +607,7 @@ fn gradle_refs(text: &str) -> Vec<String> {
 }
 
 /// Manifest files a folder's detection and its folder references read.
-const MANIFESTS: [&str; 7] = [
+pub(crate) const MANIFESTS: [&str; 7] = [
     "package.json",
     "Cargo.toml",
     "pyproject.toml",
@@ -611,6 +616,10 @@ const MANIFESTS: [&str; 7] = [
     "settings.gradle",
     "settings.gradle.kts",
 ];
+
+pub(crate) fn is_requirements_file(name: &str) -> bool {
+    name.starts_with("requirements") && name.ends_with(".txt")
+}
 
 /// One folder's manifests, each read and parsed at most once, whether by
 /// detection or by its folder references.
@@ -671,7 +680,7 @@ impl<'a> Manifests<'a> {
         let mut requirements: Vec<&String> = self
             .names
             .iter()
-            .filter(|n| n.starts_with("requirements") && n.ends_with(".txt"))
+            .filter(|n| is_requirements_file(n))
             .collect();
         requirements.sort();
         for file in requirements {
@@ -775,6 +784,7 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
     }
     Some(Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name: dir_name(dir),
         kind: ComponentKind::App,
@@ -784,45 +794,35 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
     })
 }
 
-/// Identify the detector and stable package identity before user display-name edits.
-fn provenance(dir: &Path, root: &Path, detector: &str) -> crate::model::DetectionProvenance {
+/// Stable package identity from the cached manifests, before user display-name edits.
+fn provenance(manifests: &Manifests, detector: &str) -> Option<String> {
     if detector != "builtin" {
-        return crate::model::DetectionProvenance {
-            detector: detector.into(),
-            package_identity: None,
-        };
+        return None;
     }
-    let declared = if let Some(text) = read(dir, "package.json", root) {
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v["name"].as_str().map(|name| format!("npm:{name}")))
-    } else if let Some(text) = read(dir, "Cargo.toml", root) {
-        toml::from_str::<toml::Value>(&text).ok().and_then(|v| {
-            v.get("package")?
-                .get("name")?
-                .as_str()
-                .map(|name| format!("cargo:{name}"))
-        })
-    } else if let Some(text) = read(dir, "pyproject.toml", root) {
-        toml::from_str::<toml::Value>(&text).ok().and_then(|v| {
-            v.get("project")
-                .or_else(|| v.get("tool")?.get("poetry"))?
-                .get("name")?
-                .as_str()
-                .map(|name| format!("python:{name}"))
-        })
-    } else if let Some(text) = read(dir, "go.mod", root) {
-        text.lines().find_map(|line| {
+    if manifests.text("package.json").is_some() {
+        manifests.package()?["name"]
+            .as_str()
+            .map(|name| format!("npm:{name}"))
+    } else if manifests.text("Cargo.toml").is_some() {
+        manifests
+            .cargo()?
+            .get("package")?
+            .get("name")?
+            .as_str()
+            .map(|name| format!("cargo:{name}"))
+    } else if manifests.text("pyproject.toml").is_some() {
+        let v = manifests.pyproject()?;
+        v.get("project")
+            .or_else(|| v.get("tool")?.get("poetry"))?
+            .get("name")?
+            .as_str()
+            .map(|name| format!("python:{name}"))
+    } else {
+        manifests.text("go.mod")?.lines().find_map(|line| {
             line.trim()
                 .strip_prefix("module ")
                 .map(|name| format!("go:{}", name.trim()))
         })
-    } else {
-        None
-    };
-    crate::model::DetectionProvenance {
-        detector: "builtin".into(),
-        package_identity: declared,
     }
 }
 
@@ -858,6 +858,7 @@ fn candidate_for(
         }) {
             return Some(Candidate {
                 detector: detector.id.clone(),
+                package_identity: None,
                 rel: String::new(),
                 name: dir_name(dir),
                 kind: detector.kind,
@@ -880,6 +881,7 @@ fn candidate_for(
 fn repo_candidate(dir: &Path) -> Candidate {
     Candidate {
         detector: "builtin".into(),
+        package_identity: None,
         rel: String::new(),
         name: dir_name(dir),
         kind: ComponentKind::Other,
@@ -909,6 +911,7 @@ fn walk(
         .or_else(|| (dir != root && dir.join(".git").exists()).then(|| repo_candidate(dir)));
     if let Some(mut c) = candidate {
         c.refs = manifests.refs();
+        c.package_identity = provenance(&manifests, &c.detector);
         let rel = dir.strip_prefix(root).unwrap_or(dir);
         c.rel = if rel.as_os_str().is_empty() {
             ".".into()
@@ -1035,6 +1038,7 @@ fn scan_candidates(root: &Path, detectors: &[DetectorContribution]) -> Vec<Candi
     if found.is_empty() {
         found.push(Candidate {
             detector: "builtin".into(),
+            package_identity: None,
             rel: ".".into(),
             name: dir_name(root),
             kind: ComponentKind::Other,
@@ -1081,26 +1085,14 @@ fn build_project(
         .zip(&origins)
         .map(|((c, id), origin)| ((origin, c.name.as_str()), id.as_str()))
         .collect();
-    let mut global_names: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (c, id) in found.iter().zip(&ids) {
-        global_names.entry(&c.name).or_default().push(id);
-    }
     let mut links = Vec::new();
     for (i, (c, id)) in found.iter().zip(&ids).enumerate() {
         let mut targets: Vec<&str> = c
             .deps
             .iter()
-            .filter_map(|d| {
-                // Preserve within-repo name resolution; outside it, only unique names
-                // are evidence of a dependency. Folder references disambiguate the rest.
-                by_name
-                    .get(&(&origins[i], d.as_str()))
-                    .copied()
-                    .or_else(|| {
-                        let matches = global_names.get(d.as_str())?;
-                        (matches.len() == 1).then(|| matches[0])
-                    })
-            })
+            // Names identify local packages only inside the same scan root.
+            // Relationships across roots require an explicit folder reference.
+            .filter_map(|d| by_name.get(&(&origins[i], d.as_str())).copied())
             .filter(|t| t != id)
             .collect();
         targets.sort_unstable();
@@ -1184,9 +1176,10 @@ fn build_project(
         .into_iter()
         .zip(ids)
         .map(|(c, id)| {
-            let dir = resolve_dir(&root.join(&c.rel));
-            let scan_root = owner_of(&dir, scan_roots).map_or(root, |i| scan_roots[i].as_path());
-            let detection = provenance(&dir, scan_root, &c.detector);
+            let detection = crate::model::DetectionProvenance {
+                detector: c.detector,
+                package_identity: c.package_identity,
+            };
             let name = if name_counts[&c.name] > 1 {
                 let folder = c.rel.rsplit('/').next().unwrap_or(&c.rel);
                 format!("{} ({folder})", c.name)
@@ -1304,7 +1297,10 @@ pub fn merge_new(existing: &mut Project, detected: Project) -> usize {
 /// outside the project root, or a subfolder detection missed. Paths are
 /// rewritten relative to the project root (`../billing` for a sibling) and ids
 /// are prefixed with the folder name so they don't collide with the project's
-/// own. A folder with no manifest still yields one component.
+/// own. A folder with no manifest still yields one component. Existing endpoints
+/// are included to let [`merge_new`] preserve links to and from the new components.
+/// External folders already on the map are scanned too; callers enforcing access
+/// grants should use [`detect_folder_in_roots_with`].
 ///
 /// # Errors
 /// Fails if `dir` or the project root cannot be resolved, or `dir` is the
@@ -1321,30 +1317,61 @@ pub fn detect_folder_with(
     dir: &Path,
     detectors: &[DetectorContribution],
 ) -> Result<Project> {
+    detect_folder_in_roots_with(project, dir, &project.external_dirs(), detectors)
+}
+
+/// Detect a picked folder together with the project's permitted external roots.
+/// Only components in the picked folder and existing endpoints of their links are returned.
+/// Callers must supply only permitted roots; references never authorize another scan.
+///
+/// # Errors
+/// Fails if the picked folder or project root cannot be resolved, or the picked folder
+/// is the project root or contains it.
+pub fn detect_folder_in_roots_with(
+    project: &Project,
+    dir: &Path,
+    folders: &[PathBuf],
+    detectors: &[DetectorContribution],
+) -> Result<Project> {
     let dir = dir.canonicalize()?;
     let root = Path::new(&project.root).canonicalize()?;
     if dir == root {
         bail!("That is the project folder itself; use Rescan instead");
     }
     check_component_dir(&root, &dir)?;
-    let mut found = detect_with(&dir, detectors)?;
-    let prefix = slug(&dir_name(&dir));
-    let rename = |id: &str| {
-        if id == "root" {
-            prefix.clone()
-        } else {
-            format!("{prefix}-{id}")
-        }
-    };
-    for c in &mut found.components {
-        c.id = rename(&c.id);
-        c.path = relative_path(&root, &dir.join(&c.path));
-    }
-    for l in &mut found.links {
-        l.source = rename(&l.source);
-        l.target = rename(&l.target);
-        l.id = format!("{}->{}", l.source, l.target);
-    }
+    let mut roots = folders.to_vec();
+    roots.push(dir.clone());
+    let mut found = detect_roots_with(project, &roots, detectors)?;
+    let existing: HashSet<_> = project
+        .components
+        .iter()
+        .map(|c| project.component_dir(c))
+        .collect();
+    found.components.retain(|c| {
+        let path = resolve_dir(&root.join(&c.path));
+        path.starts_with(&dir) || existing.contains(&path)
+    });
+    let ids: HashSet<_> = found.components.iter().map(|c| c.id.clone()).collect();
+    let picked: HashSet<_> = found
+        .components
+        .iter()
+        .filter(|c| resolve_dir(&root.join(&c.path)).starts_with(&dir))
+        .map(|c| c.id.clone())
+        .collect();
+    found.links.retain(|l| {
+        ids.contains(&l.source)
+            && ids.contains(&l.target)
+            && (picked.contains(&l.source) || picked.contains(&l.target))
+    });
+    let endpoints: HashSet<_> = found
+        .links
+        .iter()
+        .flat_map(|l| [&l.source, &l.target])
+        .cloned()
+        .collect();
+    found
+        .components
+        .retain(|c| picked.contains(&c.id) || endpoints.contains(&c.id));
     Ok(found)
 }
 
@@ -1372,13 +1399,15 @@ pub fn detect_roots_with(
         .collect();
     let mut scan_roots = vec![root.clone()];
     for dir in &folders {
-        if dir.starts_with(&root)
+        if dir == &root
             || check_component_dir(&root, dir).is_err()
             || folders.iter().any(|o| o != dir && dir.starts_with(o))
         {
             continue;
         }
-        scan_roots.push(dir.clone());
+        if !dir.starts_with(&root) {
+            scan_roots.push(dir.clone());
+        }
         let candidates = scan_candidates(dir, detectors);
         let prefix = slug(&dir_name(dir));
         let candidate_ids = candidate_ids(&candidates);
@@ -1387,7 +1416,9 @@ pub fn detect_roots_with(
             if !seen.insert(path.clone()) {
                 continue;
             }
-            let base = if id == "root" {
+            let base = if dir.starts_with(&root) {
+                slug(&relative_path(&root, &path))
+            } else if id == "root" {
                 prefix.clone()
             } else {
                 format!("{prefix}-{id}")
@@ -1881,6 +1912,74 @@ mod tests {
         assert_eq!(paths, vec!["infra", "web"]);
         assert_eq!(p.components[0].kind, ComponentKind::Other);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn names_never_resolve_to_unrelated_packages_in_another_repo() {
+        let base = env::temp_dir().join(format!("patchbay-names-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(
+            &base,
+            "shop/package.json",
+            r#"{"name":"shop","dependencies":{"config":"*"}}"#,
+        );
+        write(&base, "infra/config/package.json", r#"{"name":"config"}"#);
+        let project = detect(&base.join("shop")).unwrap();
+        let found = detect_folder(&project, &base.join("infra")).unwrap();
+        assert!(found.links.is_empty());
+        write(
+            &base,
+            "shop/package.json",
+            r#"{"name":"shop","dependencies":{"config":"file:../infra/config"}}"#,
+        );
+        let found = detect_folder(&project, &base.join("infra")).unwrap();
+        assert_eq!(found.links.len(), 1);
+        assert_eq!(found.links[0].target, "infra-config");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn adding_a_repo_resolves_existing_external_endpoints_without_adding_unrelated_folders() {
+        let base = env::temp_dir().join(format!("patchbay-add-roots-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(&base, "shop/package.json", r#"{"name":"shop"}"#);
+        write(&base, "api/client/package.json", r#"{"name":"client"}"#);
+        let mut project = detect(&base.join("shop")).unwrap();
+        let found = detect_folder(&project, &base.join("api/client")).unwrap();
+        merge_new(&mut project, found);
+        project.components.last_mut().unwrap().id = "custom-client".into();
+        write(
+            &base,
+            "shop/unrelated/package.json",
+            r#"{"name":"unrelated"}"#,
+        );
+        write(&base, "api/private/package.json", r#"{"name":"private"}"#);
+        write(
+            &base,
+            "jobs/package.json",
+            r#"{"name":"jobs","dependencies":{"client":"file:../api/client"}}"#,
+        );
+        write(
+            &base,
+            "api/client/package.json",
+            r#"{"name":"client","dependencies":{"jobs":"file:../../jobs"}}"#,
+        );
+        let found = detect_folder(&project, &base.join("jobs")).unwrap();
+        assert_eq!(merge_new(&mut project, found), 1);
+        assert_eq!(project.components.len(), 3);
+        let pairs: HashSet<_> = project
+            .links
+            .iter()
+            .map(|l| (l.source.as_str(), l.target.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            HashSet::from([("custom-client", "jobs"), ("jobs", "custom-client")])
+        );
+        // The desktop supplies only granted external roots; a locked endpoint stays out.
+        let found = detect_folder_in_roots_with(&project, &base.join("jobs"), &[], &[]).unwrap();
+        assert!(found.links.is_empty());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

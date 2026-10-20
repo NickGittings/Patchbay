@@ -670,7 +670,14 @@ async fn add_folder(
         let Some(dir) = pick_folder(&window, "Add a repo or folder", root.parent())? else {
             return Ok(None);
         };
-        let found = detect::detect_folder_with(&project, &dir, &detectors).map_err(err)?;
+        let snapshot = access.snapshot();
+        let roots: Vec<_> = project
+            .external_dirs()
+            .into_iter()
+            .filter(|folder| snapshot.is_granted(folder))
+            .collect();
+        let found =
+            detect::detect_folder_in_roots_with(&project, &dir, &roots, &detectors).map_err(err)?;
         let (components, links) = (project.components.len(), project.links.len());
         detect::merge_new(&mut project, found);
         access.grant(&dir).map_err(err)?;

@@ -9,11 +9,11 @@ let unsubscribe: (() => void) | undefined
 let reconciling = false
 const created = new Set<(id: string) => void>()
 
-/** Call `listener` with a project's id once its first `patchbay.json` is written. */
 /** A map that needs recovery (conflicted, or its folder unavailable) takes no edits or saves. */
 export const mapBlocked = (entry: Pick<ProjectEntry, 'conflict' | 'unavailable'> | undefined) =>
   !!entry?.conflict || !!entry?.unavailable
 
+/** Call `listener` with a project's id once its first `patchbay.json` is written. */
 export function onMapCreated(listener: (id: string) => void) {
   created.add(listener)
   return () => void created.delete(listener)
