@@ -25,18 +25,21 @@ function moved(projectId: string, positions: Record<string, Position>) {
   return previous
 }
 
-/** Lay out the map as an ordinary edit, recording both ends of the move for conditional Undo. */
-export function arrangeMap(projectId: string): Arrangement | null {
+type Refusal = 'blocked' | 'small' | 'unchanged'
+
+function arrangeOutcome(projectId: string): Arrangement | Refusal {
   const project = projectOf(projectId)
-  if (
-    !project ||
-    project.components.length < 2 ||
-    mapEditsBlocked(useStore.getState().projects[projectId])
-  )
-    return null
+  if (mapEditsBlocked(useStore.getState().projects[projectId])) return 'blocked'
+  if (!project || project.components.length < 2) return 'small'
   const after = arrange(project.components, project.links)
   const before = moved(projectId, after)
-  return before ? { before, after } : null
+  return before ? { before, after } : 'unchanged'
+}
+
+/** Lay out the map as an ordinary edit, recording both ends of the move for conditional Undo. */
+export function arrangeMap(projectId: string): Arrangement | null {
+  const outcome = arrangeOutcome(projectId)
+  return typeof outcome === 'string' ? null : outcome
 }
 
 /** Restore only nodes still at the arranged position, preserving later drags and other edits. */
@@ -44,6 +47,7 @@ export function undoArrange(projectId: string, { before, after }: Arrangement): 
   return {
     label: 'Undo layout',
     projectId,
+    persist: true,
     run: () => {
       const s = useStore.getState()
       if (mapEditsBlocked(s.projects[projectId])) {
@@ -84,16 +88,11 @@ export function undoArrange(projectId: string, { before, after }: Arrangement): 
 export function arrangeNow(projectId: string) {
   const s = useStore.getState()
   if (s.project?.id !== projectId) return
-  if (mapEditsBlocked(s.projects[projectId])) {
+  const outcome = arrangeOutcome(projectId)
+  if (outcome === 'blocked')
     s.setMessage('Resolve the map conflict or project recovery before arranging the map')
-    return
-  }
-  if (s.nodes.length < 2) {
+  else if (outcome === 'small')
     s.setMessage('Add at least two components before arranging the map', true)
-    return
-  }
-  const arrangement = arrangeMap(projectId)
-  if (arrangement)
-    s.setMessage('Arranged the map by dependencies', true, undoArrange(projectId, arrangement))
-  else s.setMessage('The map is already arranged', true)
+  else if (outcome === 'unchanged') s.setMessage('The map is already arranged', true)
+  else s.setMessage('Arranged the map by dependencies', true, undoArrange(projectId, outcome))
 }

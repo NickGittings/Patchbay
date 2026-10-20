@@ -9,7 +9,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { onArranged } from '../lib/arrange'
 import type { Position } from '../lib/layout'
@@ -37,15 +37,18 @@ function useArranging(projectId: string | undefined) {
     t: number
     fit: boolean
   } | null>(null)
+  const current = useRef(tween)
+  current.current = tween
   useEffect(() => {
     let frame = 0
-    const off = onArranged((id, from) => {
+    const off = onArranged((id, moved) => {
       if (id !== projectId) return
       cancelAnimationFrame(frame)
-      // Another arrangement may interrupt this one; start where the nodes are drawn now.
-      from = Object.fromEntries(
-        Object.entries(from).map(([id, position]) => [id, getNode(id)?.position ?? position]),
-      )
+      // Another arrangement may interrupt this one: nodes still on their way keep going, and
+      // every node starts where it is drawn now.
+      const from: Record<string, Position> = {}
+      for (const [id, position] of Object.entries({ ...current.current?.from, ...moved }))
+        from[id] = getNode(id)?.position ?? position
       const start = performance.now()
       const step = (now: number) => {
         const t = Math.min(1, (now - start) / ARRANGE_MS)
@@ -80,7 +83,12 @@ function useArranging(projectId: string | undefined) {
       return { ...current, from, fit: false }
     })
   }, [])
-  return { tween, interrupt }
+  /** A pan or zoom by the user cancels the automatic viewport move too. */
+  const keepViewport = useCallback(
+    () => setTween((current) => (current?.fit ? { ...current, fit: false } : current)),
+    [],
+  )
+  return { tween, interrupt, keepViewport }
 }
 
 function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {
@@ -139,7 +147,7 @@ export default function Canvas() {
     })),
   )
   const inspectorShown = useStore(showsInspector)
-  const { tween, interrupt } = useArranging(project?.id)
+  const { tween, interrupt, keepViewport } = useArranging(project?.id)
   // React Flow's node drag callbacks also cover selection-box drags.
   const updateDrag = (dragged: FlowNode[], dragging: boolean) => {
     if (dragging) interrupt(dragged.map((n) => n.id))
@@ -154,22 +162,28 @@ export default function Canvas() {
     )
   }
 
-  if (!project) return <Welcome />
-
   const planning = view === 'plan'
-  const scope = new Set(highlighted)
-  const visibleEdges = planning
-    ? edges.map((e) => ({
-        ...e,
-        selected: false,
-        className: scope.has(e.source) && scope.has(e.target) ? 'plan-active-edge' : '',
-      }))
-    : edges
+  // Stable between tween frames, so React Flow only re-adopts the nodes that move.
+  const shownNodes = useMemo(
+    () => (planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes),
+    [nodes, planning],
+  )
+  const visibleEdges = useMemo(() => {
+    if (!planning) return edges
+    const scope = new Set(highlighted)
+    return edges.map((e) => ({
+      ...e,
+      selected: false,
+      className: scope.has(e.source) && scope.has(e.target) ? 'plan-active-edge' : '',
+    }))
+  }, [edges, highlighted, planning])
+
+  if (!project) return <Welcome />
 
   return (
     <div className="canvas">
       <ReactFlow
-        nodes={tweened(planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes, tween)}
+        nodes={tweened(shownNodes, tween)}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
         onBeforeDelete={async ({ nodes: removedNodes, edges: removedEdges }) => {
@@ -212,6 +226,10 @@ export default function Canvas() {
         }}
         colorMode="dark"
         defaultViewport={useStore.getState().viewport}
+        onMoveStart={(event) => {
+          // Programmatic moves, such as the fit itself, come without an event.
+          if (event) keepViewport()
+        }}
         onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
         fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}

@@ -144,6 +144,24 @@ test('toast Undo is bound to its project, including stale callbacks', () => {
   expect(state().message).toBe('Restored the previous layout')
 })
 
+test('layout Undo survives a later message until the toast clears or it runs', () => {
+  arrangeNow('one')
+  const undo = state().messageAction
+  state().setMessage('Could not clear the submission')
+  expect(state().messageAction).toBe(undo)
+  undo!.run()
+  expect(state().message).toBe('Restored the previous layout')
+  expect(state().messageAction).toBeNull()
+  arrangeNow('one')
+  state().setMessage('')
+  state().setMessage('Unrelated')
+  expect(state().messageAction).toBeNull()
+  // Other actions are dropped by the next message.
+  state().setMessage('Action', true, { label: 'Do it', run: vi.fn() })
+  state().setMessage('Next')
+  expect(state().messageAction).toBeNull()
+})
+
 test('setMessage guards other project actions after switching tabs', () => {
   const run = vi.fn()
   state().setMessage('Action', true, { label: 'Do it', run })

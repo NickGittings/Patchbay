@@ -6,7 +6,8 @@ export type Position = Component['position']
 export const COLUMN_WIDTH = 340
 export const ROW_HEIGHT = 230
 
-const SWEEPS = 4
+/** Sweeps stop once they repeat an order, so arranging again keeps the result; this caps them. */
+const MAX_SWEEPS = 64
 
 /** Current reading order: top to bottom, then left to right, so a rearranged map stays familiar. */
 const byPosition = (a: Component, b: Component) =>
@@ -53,17 +54,27 @@ export function arrange(
   // Cycle depths depend on which member is visited first. Use IDs so arranging again cannot
   // change the depths just because the previous arrangement changed the reading order.
   for (const id of [...out.keys()].sort()) depthOf(id)
-  const deepest = Math.max(0, ...linked.map((c) => depth.get(c.id) ?? 0))
+  const depths = linked.map((c) => depth.get(c.id) ?? 0)
+  const deepest = Math.max(0, ...depths)
+  // A cycle with no way out has no foundation at depth 0; it still ends at the right edge.
+  const shallowest = Math.min(deepest, ...depths)
   const columnOf = (id: string) => deepest - (depth.get(id) ?? 0)
 
-  const columns: string[][] = Array.from({ length: linked.length ? deepest + 1 : 0 }, () => [])
+  const columns: string[][] = Array.from(
+    { length: linked.length ? deepest - shallowest + 1 : 0 },
+    () => [],
+  )
   for (const c of linked) columns[columnOf(c.id)].push(c.id)
+  const tallest = Math.max(0, ...columns.map((col) => col.length))
+  // Columns are centred on the tallest one, so rows compare by where they are drawn.
+  const offset = (c: number) => (tallest - columns[c].length) / 2
 
-  // Barycenter sweeps: order each column by the mean row of its neighbours on the side just
-  // placed; a component without any there keeps its row.
+  // Barycenter sweeps: order each column by the mean drawn row of its neighbours on the side
+  // just placed; a component without any there keeps its row.
   const rowOf = new Map<string, number>()
   const index = () => columns.forEach((col) => col.forEach((id, row) => rowOf.set(id, row)))
   index()
+  const drawnRow = (id: string) => (rowOf.get(id) ?? 0) + offset(columnOf(id))
   const reorder = (col: string[], before: (other: number) => boolean, c: number) => {
     const key = new Map<string, number>()
     for (const id of col) {
@@ -72,28 +83,36 @@ export function arrange(
       )
       key.set(
         id,
-        near.length
-          ? near.reduce((sum, n) => sum + (rowOf.get(n) ?? 0), 0) / near.length
-          : (rowOf.get(id) ?? 0),
+        near.length ? near.reduce((sum, n) => sum + drawnRow(n), 0) / near.length : drawnRow(id),
       )
     }
     col.sort((a, b) => (key.get(a) ?? 0) - (key.get(b) ?? 0))
     col.forEach((id, row) => rowOf.set(id, row))
   }
-  for (let i = 0; i < SWEEPS; i++) {
+  // Sweeping from a settled order must give it back. When the sweeps cycle instead, take the
+  // cycle's least order, which every order on that cycle reaches too.
+  const orders: string[] = []
+  const snapshots: string[][][] = []
+  for (let i = 0; i <= MAX_SWEEPS; i++) {
+    const order = JSON.stringify(columns)
+    const seen = orders.indexOf(order)
+    if (seen >= 0) {
+      const cycle = orders.slice(seen)
+      const least = cycle.indexOf([...cycle].sort()[0])
+      snapshots[seen + least].forEach((col, c) => (columns[c] = [...col]))
+      break
+    }
+    orders.push(order)
+    snapshots.push(columns.map((col) => [...col]))
     for (let c = 1; c < columns.length; c++) reorder(columns[c], (d) => d < 0, c)
     for (let c = columns.length - 2; c >= 0; c--) reorder(columns[c], (d) => d > 0, c)
   }
   index()
 
   const placed = new Map<string, Position>()
-  const tallest = Math.max(0, ...columns.map((col) => col.length))
   columns.forEach((col, c) =>
     col.forEach((id, row) =>
-      placed.set(id, {
-        x: c * COLUMN_WIDTH,
-        y: (row + (tallest - col.length) / 2) * ROW_HEIGHT,
-      }),
+      placed.set(id, { x: c * COLUMN_WIDTH, y: (row + offset(c)) * ROW_HEIGHT }),
     ),
   )
   const perRow = Math.max(columns.length, Math.ceil(Math.sqrt(loose.length)), 1)

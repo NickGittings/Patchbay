@@ -87,3 +87,22 @@ test('ignores links to components not on the map', () => {
   const p = arrange([component('a')], [link('a', 'gone')])
   expect(p).toEqual({ a: { x: 0, y: 0 } })
 })
+
+test('a closed cycle leaves no empty column, so unlinked components wrap to its width', () => {
+  const loose = ['l0', 'l1', 'l2', 'l3'].map((id) => component(id))
+  const p = arrange([component('a'), component('b'), ...loose], [link('a', 'b'), link('b', 'a')])
+  expect(new Set([p.a.x, p.b.x])).toEqual(new Set([0, COLUMN_WIDTH]))
+  expect(Math.max(...loose.map((c) => p[c.id].x))).toBe(COLUMN_WIDTH)
+})
+
+test('rows are ordered by where neighbours are drawn in centred columns', () => {
+  // A lone dependent is drawn in the middle of five foundations, so its target moves down from
+  // the top row towards it rather than staying where its row index alone would keep it.
+  const targets = ['mid', 't1', 't2', 't3', 't4']
+  const p = arrange(
+    [component('app', 0, -10), ...targets.map((id, i) => component(id, 0, i * 10)), component('z')],
+    [link('app', 'mid'), ...targets.map((id) => link(id, 'z'))],
+  )
+  const rows = targets.map((id) => p[id].y)
+  expect(p.mid.y).toBeGreaterThan(Math.min(...rows))
+})

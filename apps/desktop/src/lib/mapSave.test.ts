@@ -154,9 +154,12 @@ describe('map autosave', () => {
       state().onNodesChange([
         { id: 'web', type: 'position', position: { x: 10, y: 20 }, dragging: true },
       ])
+      // The workspace draft must not record a half-dragged position.
+      expect(state().dirty).toBe(false)
       await vi.advanceTimersByTimeAsync(1000)
       expect(save).not.toHaveBeenCalled()
       state().onNodesChange([{ id: 'web', type: 'position', position, dragging: false }])
+      expect(state().dirty).toBe(true)
       await vi.advanceTimersByTimeAsync(750)
       expect(save).toHaveBeenCalledTimes(1)
       expect(save.mock.calls[0][0].components[0].position).toEqual({ x: 10, y: 20 })

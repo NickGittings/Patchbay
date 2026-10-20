@@ -69,6 +69,11 @@ export interface MessageAction {
   run: () => void
   /** A project action is only available while its originating tab is active. */
   projectId?: string
+  /**
+   * Keep offering it beside later messages without an action of their own (an error that follows
+   * a layout change must not take its Undo away), until the toast hides or is dismissed.
+   */
+  persist?: boolean
 }
 
 export interface ImplementationComponent {
@@ -443,6 +448,9 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   return { tasks, closedTaskIds, ...switched, taskWorkspaces }
 }
 
+/** Where each node being dragged was before its drag, to tell whether the drag moved it. */
+const dragOrigins = new Map<string, Component['position']>()
+
 export const useStore = create<State>((set, get) => ({
   taskWorkspaces: {},
   rootTerminals: emptyTaskWorkspace().rootTerminals,
@@ -786,15 +794,24 @@ export const useStore = create<State>((set, get) => ({
     // cancels React Flow's own removal, so a remove change never applies directly.
     changes = changes.filter((c) => c.type !== 'remove')
     set((s) => {
-      const positions = new Map<string, Component['position']>()
-      for (const c of changes)
-        if (c.type === 'position' && c.position) positions.set(c.id, c.position)
-      // A drag stop can repeat the current position or only clear `dragging`. Actual moves
-      // dirty the map as they happen; autosave already waits until the drag has finished.
-      const edits = s.nodes.some((n) => {
-        const after = positions.get(n.id)
-        return after && (n.position.x !== after.x || n.position.y !== after.y)
-      })
+      const current = new Map(s.nodes.map((n) => [n.id, n.position]))
+      let edits = false
+      for (const c of changes) {
+        if (c.type !== 'position') continue
+        const now = current.get(c.id)
+        if (!now) continue
+        // A drag dirties the map once it ends away from where it started, so nothing keyed on
+        // `dirty` (autosave, the workspace draft) sees a half-dragged position. A drag stop may
+        // repeat the current position or only clear `dragging`.
+        if (c.dragging) {
+          if (!dragOrigins.has(c.id)) dragOrigins.set(c.id, now)
+          continue
+        }
+        const from = dragOrigins.get(c.id) ?? now
+        dragOrigins.delete(c.id)
+        const to = c.position ?? now
+        if (from.x !== to.x || from.y !== to.y) edits = true
+      }
       return { nodes: applyNodeChanges(changes, s.nodes), dirty: s.dirty || edits }
     })
   },
@@ -975,6 +992,10 @@ export const useStore = create<State>((set, get) => ({
   setMessage: (message, transient = false, action) =>
     set((s) => {
       const projectId = action?.projectId ?? s.project?.id
+      const kept =
+        message && s.messageAction?.persist && s.messageAction.projectId === s.project?.id
+          ? s.messageAction
+          : null
       return {
         message,
         messageTransient: transient,
@@ -983,10 +1004,13 @@ export const useStore = create<State>((set, get) => ({
               ...action,
               projectId,
               run: () => {
-                if (!projectId || get().project?.id === projectId) action.run()
+                if (projectId && get().project?.id !== projectId) return
+                // Its own feedback replaces it, rather than offering it again.
+                set({ messageAction: null })
+                action.run()
               },
             }
-          : null,
+          : kept,
         messageId: s.messageId + 1,
       }
     }),
