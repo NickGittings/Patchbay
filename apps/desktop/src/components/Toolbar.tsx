@@ -1,3 +1,4 @@
+import { mapEditsBlocked } from '../lib/mapSave'
 import NotificationsPanel from './NotificationsPanel'
 import { configureEditor, showFileSearch } from '../lib/navigation'
 import ExtensionMenu from '../extensions/ExtensionMenu'
@@ -6,7 +7,7 @@ import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
-import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
+import { offerDependencies } from '../lib/dependencies'
 import { arrangeNow } from '../lib/arrange'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
@@ -98,7 +99,7 @@ export default function Toolbar() {
                   Rescan
                 </MenuItem>
                 <MenuItem
-                  disabled={dependencyMapBlocked(entry)}
+                  disabled={mapEditsBlocked(entry)}
                   onClick={() => {
                     const id = useStore.getState().project?.id
                     if (id) offerDependencies(id)
@@ -108,7 +109,7 @@ export default function Toolbar() {
                   Detect dependencies…
                 </MenuItem>
                 <MenuItem
-                  disabled={dependencyMapBlocked(entry) || nodeCount < 2}
+                  disabled={mapEditsBlocked(entry) || nodeCount < 2}
                   onClick={() => {
                     const id = useStore.getState().project?.id
                     if (id) arrangeNow(id)

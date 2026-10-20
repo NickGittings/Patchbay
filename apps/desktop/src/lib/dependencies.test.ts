@@ -56,12 +56,13 @@ vi.mock('./attention', () => ({ revealTerminal: vi.fn() }))
 vi.mock('./sessions', () => agents)
 const arranged = vi.hoisted(() => ({
   arrangeMap: vi.fn<(id: string) => unknown>(() => ({ app: { x: 0, y: 0 } })),
-  undoArrange: vi.fn(() => ({ label: 'Undo', run: () => {} })),
+  undoArrange: vi.fn(() => ({ label: 'Undo layout', run: () => {} })),
 }))
 vi.mock('./arrange', () => arranged)
 const {
   acceptDependencies,
   appendLinks,
+  addDependencies,
   closeDependencies,
   discardDependencies,
   initializeDependencyDetection,
@@ -156,7 +157,19 @@ test('accepting new links rearranges the map and offers Undo', async () => {
   expect(store.setMessage).toHaveBeenCalledWith(
     'Added 1 dependency and rearranged the map',
     true,
-    expect.objectContaining({ label: 'Undo' }),
+    expect.objectContaining({ label: 'Undo layout' }),
+  )
+})
+
+test('adding selected links before launching an agent also offers layout Undo', () => {
+  store.appendToMap.mockImplementationOnce((_id, extend) =>
+    extend({ components: [{ id: 'app' }, { id: 'api' }], links: [] }),
+  )
+  addDependencies('a', [{ source: 'app', target: 'api', detector: 'builtin' }])
+  expect(store.setMessage).toHaveBeenCalledWith(
+    'Added 1 dependency and rearranged the map',
+    true,
+    expect.objectContaining({ label: 'Undo layout' }),
   )
 })
 

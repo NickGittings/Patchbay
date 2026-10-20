@@ -1,8 +1,9 @@
+import { mapEditsBlocked } from '../lib/mapSave'
 import { configureEditor, showFileSearch } from '../lib/navigation'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
-import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
+import { offerDependencies } from '../lib/dependencies'
 import { arrangeNow } from '../lib/arrange'
 import { executeExtensionCommand } from '../extensions/host'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
@@ -11,6 +12,7 @@ export default function CommandPalette() {
   const open = useStore((s) => s.paletteOpen)
   const commands = useStore((s) => s.commands)
   const project = useStore((s) => s.project)
+  const nodeCount = useStore((s) => s.nodes.length)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -57,7 +59,7 @@ export default function CommandPalette() {
             run: saveCurrentProject,
           },
           { id: 'rescan', title: 'Rescan project', run: rescan },
-          ...(dependencyMapBlocked(entry)
+          ...(mapEditsBlocked(entry)
             ? []
             : [
                 {
@@ -65,11 +67,15 @@ export default function CommandPalette() {
                   title: 'Detect dependencies…',
                   run: () => offerDependencies(project.id),
                 },
-                {
-                  id: 'arrange-map',
-                  title: 'Arrange map',
-                  run: () => arrangeNow(project.id),
-                },
+                ...(nodeCount < 2
+                  ? []
+                  : [
+                      {
+                        id: 'arrange-map',
+                        title: 'Arrange map',
+                        run: () => arrangeNow(project.id),
+                      },
+                    ]),
               ]),
           { id: 'add-folder', title: 'Add repo…', run: addFolder },
           ...(['navigation', 'plan', 'implementation'] as const).map((view) => ({

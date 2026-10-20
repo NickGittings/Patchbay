@@ -88,7 +88,7 @@ export default function Toast() {
           </button>
         </div>
       )}
-      {message && (
+      {message && (!action?.projectId || action.projectId === activeProjectId) && (
         <div className="toast" ref={toast}>
           <span className="toast-text">{message}</span>
           {action && <button onClick={action.run}>{action.label}</button>}

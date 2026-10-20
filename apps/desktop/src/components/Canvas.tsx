@@ -9,7 +9,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { onArranged } from '../lib/arrange'
 import type { Position } from '../lib/layout'
@@ -31,36 +31,69 @@ const ease = (t: number) => 1 - (1 - t) ** 3
  * where they were, so edges follow them. Null otherwise. The store already holds the end state.
  */
 function useArranging(projectId: string | undefined) {
-  const { fitView } = useReactFlow()
-  const [tween, setTween] = useState<{ from: Record<string, Position>; t: number } | null>(null)
+  const { fitView, getNode } = useReactFlow()
+  const [tween, setTween] = useState<{
+    projectId: string
+    from: Record<string, Position>
+    t: number
+    fit: boolean
+  } | null>(null)
+  const [previousProjectId, setPreviousProjectId] = useState(projectId)
+  if (projectId !== previousProjectId) {
+    setPreviousProjectId(projectId)
+    setTween(null)
+  }
   useEffect(() => {
     let frame = 0
     const off = onArranged((id, from) => {
       if (id !== projectId) return
       cancelAnimationFrame(frame)
+      // Another arrangement may interrupt this one; start where the nodes are drawn now.
+      from = Object.fromEntries(
+        Object.entries(from).map(([id, position]) => [id, getNode(id)?.position ?? position]),
+      )
       const start = performance.now()
       const step = (now: number) => {
         const t = Math.min(1, (now - start) / ARRANGE_MS)
-        setTween(t < 1 ? { from, t: ease(t) } : null)
+        setTween((current) => (current ? { ...current, t: ease(t) } : null))
         if (t < 1) frame = requestAnimationFrame(step)
       }
-      setTween({ from, t: 0 })
+      setTween({ projectId: id, from, t: 0, fit: true })
       frame = requestAnimationFrame(step)
-      void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
     })
     return () => {
       off()
       cancelAnimationFrame(frame)
     }
-  }, [fitView, projectId])
-  return tween
+  }, [getNode, projectId])
+  useEffect(() => {
+    if (!tween || tween.projectId !== projectId || tween.t !== 1) return
+    // Let React Flow receive the final positions before it queues a fit. Both this render and
+    // the next show the destination, so fitting cannot frame the tween's starting positions.
+    const frame = requestAnimationFrame(() => {
+      if (tween.fit) void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
+      setTween(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [fitView, projectId, tween])
+  const interrupt = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    setTween((current) => {
+      if (!current) return null
+      const from = { ...current.from }
+      for (const id of ids) delete from[id]
+      // A user taking control of the map also cancels the automatic viewport move.
+      return { ...current, from, fit: false }
+    })
+  }, [])
+  return { tween: tween?.projectId === projectId ? tween : null, interrupt }
 }
 
-function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>) {
-  if (!tween) return nodes
+function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {
+  if (!tween || tween.t === 1) return nodes
   return nodes.map((n) => {
     const from = tween.from[n.id]
-    if (!from) return n
+    if (!from || n.dragging) return n
     return {
       ...n,
       position: {
@@ -112,7 +145,19 @@ export default function Canvas() {
     })),
   )
   const inspectorShown = useStore(showsInspector)
-  const tween = useArranging(project?.id)
+  const { tween, interrupt } = useArranging(project?.id)
+  const updateDrag = (dragged: FlowNode[], dragging: boolean) => {
+    if (dragging) interrupt(dragged.map((n) => n.id))
+    // The store holds the destination; a drag must start at the displayed position instead.
+    onNodesChange(
+      dragged.map((n) => ({
+        id: n.id,
+        type: 'position',
+        position: n.position,
+        dragging,
+      })),
+    )
+  }
 
   if (!project) return <Welcome />
 
@@ -152,7 +197,14 @@ export default function Canvas() {
           }
           return false
         }}
-        onNodesChange={onNodesChange}
+        onNodesChange={(changes) => {
+          interrupt(changes.filter((c) => c.type === 'position').map((c) => c.id))
+          onNodesChange(changes)
+        }}
+        onNodeDragStart={(_, _node, dragged) => updateDrag(dragged, true)}
+        onSelectionDragStart={(_, dragged) => updateDrag(dragged, true)}
+        onNodeDragStop={(_, _node, dragged) => updateDrag(dragged, false)}
+        onSelectionDragStop={(_, dragged) => updateDrag(dragged, false)}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}

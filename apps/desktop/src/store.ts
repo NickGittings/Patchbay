@@ -67,6 +67,8 @@ export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProven
 export interface MessageAction {
   label: string
   run: () => void
+  /** A project action is only available while its originating tab is active. */
+  projectId?: string
 }
 
 export interface ImplementationComponent {
@@ -964,12 +966,23 @@ export const useStore = create<State>((set, get) => ({
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
   setMessage: (message, transient = false, action) =>
-    set((s) => ({
-      message,
-      messageTransient: transient,
-      messageAction: action ?? null,
-      messageId: s.messageId + 1,
-    })),
+    set((s) => {
+      const projectId = action?.projectId ?? s.project?.id
+      return {
+        message,
+        messageTransient: transient,
+        messageAction: action
+          ? {
+              ...action,
+              projectId,
+              run: () => {
+                if (!projectId || get().project?.id === projectId) action.run()
+              },
+            }
+          : null,
+        messageId: s.messageId + 1,
+      }
+    }),
   markSaved: () => set({ dirty: false }),
 }))
 
@@ -984,6 +997,22 @@ export function projectOf(id: string): Project | null {
   return state?.project ? projectFrom(state) : null
 }
 
+/** Apply an ordinary map edit, keeping live state and marking either tab dirty for autosave. */
+function editMap<T>(
+  projectId: string | null | undefined,
+  edit: (
+    current: Project,
+    state: ProjectState,
+  ) => { patch: Pick<Partial<ProjectState>, 'nodes' | 'edges'>; result: T } | null,
+): T | null {
+  const state = projectId ? projectStateOf(projectId) : undefined
+  if (!projectId || !state?.project) return null
+  const edited = edit(projectFrom(state), state)
+  if (!edited) return null
+  useStore.getState().patchProject(projectId, { ...edited.patch, dirty: true })
+  return edited.result
+}
+
 /**
  * Append to open project `projectId`'s map as it is now, as an ordinary edit that autosaves and
  * keeps live session and git state. `extend` gets the current map and returns what to add, or null
@@ -993,19 +1022,18 @@ export function appendToMap<T extends { components?: Component[]; links?: Link[]
   projectId: string | null | undefined,
   extend: (current: Project) => T | null,
 ): T | null {
-  const current = projectId ? projectOf(projectId) : null
-  if (!projectId || !current) return null
-  const added = extend(current)
-  if (!added) return null
-  const s = useStore.getState()
-  s.syncProject({
-    ...current,
-    projectId,
-    components: [...current.components, ...(added.components ?? [])],
-    links: [...current.links, ...(added.links ?? [])],
+  return editMap(projectId, (current, state) => {
+    const added = extend(current)
+    return added
+      ? {
+          patch: {
+            nodes: [...state.nodes, ...(added.components ?? []).map(componentToNode)],
+            edges: [...state.edges, ...(added.links ?? []).map(linkToEdge)],
+          },
+          result: added,
+        }
+      : null
   })
-  s.patchProject(projectId, { dirty: true })
-  return added
 }
 
 /**
@@ -1016,20 +1044,16 @@ export function moveComponents(
   projectId: string,
   positions: Record<string, Component['position']>,
 ): Record<string, Component['position']> | null {
-  const current = projectOf(projectId)
-  if (!current) return null
-  const previous: Record<string, Component['position']> = {}
-  const components = current.components.map((c) => {
-    const to = positions[c.id]
-    if (!to || (to.x === c.position.x && to.y === c.position.y)) return c
-    previous[c.id] = c.position
-    return { ...c, position: to }
+  return editMap(projectId, (_current, state) => {
+    const previous: Record<string, Component['position']> = {}
+    const nodes = state.nodes.map((c) => {
+      const to = positions[c.id]
+      if (!to || (to.x === c.position.x && to.y === c.position.y)) return c
+      previous[c.id] = c.position
+      return { ...c, position: to }
+    })
+    return Object.keys(previous).length ? { patch: { nodes }, result: previous } : null
   })
-  if (!Object.keys(previous).length) return null
-  const s = useStore.getState()
-  s.syncProject({ ...current, projectId, components })
-  s.patchProject(projectId, { dirty: true })
-  return previous
 }
 
 /** A project state as a `Project` (the map `patchbay.json` holds). */

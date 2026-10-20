@@ -1,12 +1,5 @@
 import { create } from 'zustand'
-import {
-  appendToMap,
-  projectOf,
-  projectStateOf,
-  useStore,
-  type MessageAction,
-  type ProjectEntry,
-} from '../store'
+import { appendToMap, projectOf, projectStateOf, useStore, type MessageAction } from '../store'
 import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
@@ -17,7 +10,7 @@ import {
   type TerminalSpec,
 } from '../types'
 import { detectLinks, mapLinksClear, mapLinksRead, onMapLinks } from './ipc'
-import { mapBlocked, onMapCreated } from './mapSave'
+import { mapEditsBlocked, onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
 import { arrangeMap, undoArrange } from './arrange'
 import { planTerminals } from './plan'
@@ -58,14 +51,8 @@ interface DependencyState {
 }
 export const useDependencies = create<DependencyState>(() => ({ dialogs: {}, busy: {} }))
 
-/** Dependency reviews must wait until either kind of saved-map conflict is resolved. */
-export const dependencyMapBlocked = (entry: ProjectEntry | undefined) =>
-  mapBlocked(entry) || entry?.mapSave?.status === 'conflict'
-
 function canDetect(projectId: string) {
-  return (
-    !!projectStateOf(projectId) && !dependencyMapBlocked(useStore.getState().projects[projectId])
-  )
+  return !!projectStateOf(projectId) && !mapEditsBlocked(useStore.getState().projects[projectId])
 }
 
 const dialogOf = (projectId: string) => useDependencies.getState().dialogs[projectId]
@@ -157,11 +144,20 @@ export function appendLinks(projectId: string, found: FoundLink[]): number {
 
 /**
  * `appendLinks`, then lay the map out so the new links read clearly. Returns how many it added
- * and the positions the layout replaced, for Undo.
+ * and the layout change, with feedback and an action to undo just the layout.
  */
 export function addDependencies(projectId: string, found: FoundLink[]) {
   const added = appendLinks(projectId, found)
-  return { added, previous: added ? arrangeMap(projectId) : null }
+  const arrangement = added ? arrangeMap(projectId) : null
+  message(
+    projectId,
+    added
+      ? `Added ${added} dependenc${added === 1 ? 'y' : 'ies'}${arrangement ? ' and rearranged the map' : ''}`
+      : 'Nothing new to add',
+    true,
+    arrangement ? undoArrange(projectId, arrangement) : undefined,
+  )
+  return { added, arrangement }
 }
 
 function message(projectId: string, text: string, transient = false, action?: MessageAction) {
@@ -320,15 +316,7 @@ async function reviewPending(projectId: string, explicit = false): Promise<boole
 /** Add the chosen links and forget the submission they came from. */
 export async function acceptDependencies(projectId: string, chosen: FoundLink[]) {
   if (!canDetect(projectId) || dialogOf(projectId)?.mode !== 'review') return
-  const { added, previous } = addDependencies(projectId, chosen)
-  message(
-    projectId,
-    added
-      ? `Added ${added} dependenc${added === 1 ? 'y' : 'ies'}${previous ? ' and rearranged the map' : ''}`
-      : 'Nothing new to add',
-    true,
-    previous ? undoArrange(projectId, previous) : undefined,
-  )
+  addDependencies(projectId, chosen)
   await discardDependencies(projectId)
 }
 
@@ -424,11 +412,11 @@ export function initializeDependencyDetection(): () => void {
   const opened = useStore.subscribe((s, prev) => {
     if (s.projects === prev.projects && s.restoring === prev.restoring) return
     for (const id of checked)
-      if (!s.projects[id] || dependencyMapBlocked(s.projects[id])) checked.delete(id)
+      if (!s.projects[id] || mapEditsBlocked(s.projects[id])) checked.delete(id)
     forgetClosed(s.projects)
     if (s.restoring) return
     for (const [id, entry] of Object.entries(s.projects))
-      if (!dependencyMapBlocked(entry) && !checked.has(id)) {
+      if (!mapEditsBlocked(entry) && !checked.has(id)) {
         checked.add(id)
         void reviewPending(id)
       }

@@ -1,6 +1,11 @@
-import { moveComponents, projectOf, useStore, type MessageAction } from '../store'
-import { dependencyMapBlocked } from './dependencies'
+import { moveComponents, projectOf, projectStateOf, useStore, type MessageAction } from '../store'
+import { mapEditsBlocked } from './mapSave'
 import { arrange, type Position } from './layout'
+
+interface Arrangement {
+  before: Record<string, Position>
+  after: Record<string, Position>
+}
 
 type Listener = (projectId: string, from: Record<string, Position>) => void
 const listeners = new Set<Listener>()
@@ -20,32 +25,72 @@ function moved(projectId: string, positions: Record<string, Position>) {
   return previous
 }
 
-/**
- * Lay out `projectId`'s whole map by its dependencies (`layout.ts`), as an ordinary edit. Returns
- * the positions it replaced, or null when the map is blocked or nothing moved.
- */
-export function arrangeMap(projectId: string): Record<string, Position> | null {
+/** Lay out the map as an ordinary edit, recording both ends of the move for conditional Undo. */
+export function arrangeMap(projectId: string): Arrangement | null {
   const project = projectOf(projectId)
-  if (!project || dependencyMapBlocked(useStore.getState().projects[projectId])) return null
-  return moved(projectId, arrange(project.components, project.links))
+  if (
+    !project ||
+    project.components.length < 2 ||
+    mapEditsBlocked(useStore.getState().projects[projectId])
+  )
+    return null
+  const after = arrange(project.components, project.links)
+  const before = moved(projectId, after)
+  return before ? { before, after } : null
 }
 
-/** Undo for an arrangement: puts the components still on the map back where they were. */
-export function undoArrange(projectId: string, previous: Record<string, Position>): MessageAction {
+/** Restore only nodes still at the arranged position, preserving later drags and other edits. */
+export function undoArrange(projectId: string, { before, after }: Arrangement): MessageAction {
   return {
-    label: 'Undo',
+    label: 'Undo layout',
+    projectId,
     run: () => {
-      moved(projectId, previous)
-      useStore.getState().setMessage('Restored the previous layout', true)
+      const s = useStore.getState()
+      if (s.project?.id !== projectId) return
+      if (mapEditsBlocked(s.projects[projectId])) {
+        s.setMessage('Resolve the map conflict or project recovery before undoing the layout')
+        return
+      }
+      const positions: Record<string, Position> = {}
+      for (const node of projectStateOf(projectId)?.nodes ?? []) {
+        const expected = after[node.id]
+        if (
+          before[node.id] &&
+          expected &&
+          !node.dragging &&
+          node.position.x === expected.x &&
+          node.position.y === expected.y
+        )
+          positions[node.id] = before[node.id]
+      }
+      const restored = moved(projectId, positions)
+      const count = Object.keys(restored ?? {}).length
+      s.setMessage(
+        count === Object.keys(before).length
+          ? 'Restored the previous layout'
+          : count
+            ? 'Restored previous positions; kept later layout edits'
+            : 'No layout positions to restore; kept later edits',
+        true,
+      )
     },
   }
 }
 
 /** Project → Arrange map. */
 export function arrangeNow(projectId: string) {
-  const previous = arrangeMap(projectId)
   const s = useStore.getState()
-  if (previous)
-    s.setMessage('Arranged the map by dependencies', true, undoArrange(projectId, previous))
+  if (s.project?.id !== projectId) return
+  if (mapEditsBlocked(s.projects[projectId])) {
+    s.setMessage('Resolve the map conflict or project recovery before arranging the map')
+    return
+  }
+  if (s.nodes.length < 2) {
+    s.setMessage('Add at least two components before arranging the map', true)
+    return
+  }
+  const arrangement = arrangeMap(projectId)
+  if (arrangement)
+    s.setMessage('Arranged the map by dependencies', true, undoArrange(projectId, arrangement))
   else s.setMessage('The map is already arranged', true)
 }

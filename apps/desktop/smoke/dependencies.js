@@ -39,6 +39,19 @@
     item.click()
   }
   const pair = (l) => `${l.source}->${l.target}`
+  const positions = () => Object.fromEntries(s().nodes.map((n) => [n.id, { ...n.position }]))
+  const undoButton = () =>
+    Array.from(document.querySelectorAll('.toast button')).find(
+      (b) => b.textContent.trim() === 'Undo layout',
+    )
+  const arrange = async () => {
+    s().setPaletteOpen(true)
+    const command = await until('Arrange command', () =>
+      document.querySelector('[data-command-id="arrange-map"]'),
+    )
+    command.click()
+    await until('layout action', undoButton)
+  }
   try {
     await until('restoration', () => !s().restoring)
     const one = await smoke.openProject()
@@ -54,7 +67,11 @@
       'opening must already link a folder reference',
     )
     // A map with that link wouldn't be offered detection, so start from none.
-    smoke.store.setState({ edges: [], dirty: true })
+    smoke.store.setState({
+      edges: [],
+      nodes: s().nodes.map((n, i) => ({ ...n, position: { x: 0, y: i * 30 } })),
+      dirty: true,
+    })
 
     await create()
     await until('manifest review after the first save', () =>
@@ -84,6 +101,8 @@
     await until('manifest link added', () =>
       s().edges.some((e) => e.source === jobs && e.target === api),
     )
+    const manifestUndo = s().messageAction
+    assert(manifestUndo?.label === 'Undo layout', 'adding before an agent must offer layout Undo')
     const sid = smoke.sessionId('@map', 'detect', null)
     await until('agent submission', () =>
       smoke.terminalText(sid).text.replace(/\s+/g, '').includes('"submitted":1'),
@@ -106,10 +125,13 @@
     assert(!s().edges.some((e) => e.source === web && e.target === api), 'conflict added a link')
     assert(await smoke.mapLinksRead(one.id), 'a blocked review must retain its proposal')
     assert((await smoke.openProject()).project.name === 'Edited externally', 'external edit lost')
+    const conflictedPositions = JSON.stringify(positions())
+    manifestUndo.run()
+    assert(JSON.stringify(positions()) === conflictedPositions, 'Undo edited a conflicted map')
+    assert(!s().message.includes('Restored'), 'blocked Undo reported success')
     // Explicit replacement resolves the conflict; the same review can then apply normally.
     assert(await smoke.saveMap(one.id, true), 'conflict replacement failed')
     await until('review enabled after recovery', () => !button('Add selected')?.disabled)
-    const positions = () => Object.fromEntries(s().nodes.map((n) => [n.id, { ...n.position }]))
     const before = positions()
     await click('Add selected')
     await until('agent link added', () =>
@@ -119,11 +141,7 @@
     const after = positions()
     assert(after[web].x < after[api].x, `web must sit left of api: ${JSON.stringify(after)}`)
     assert(after[jobs].x < after[api].x, `jobs must sit left of api: ${JSON.stringify(after)}`)
-    const undo = await until('Undo in the toast', () =>
-      Array.from(document.querySelectorAll('.toast button')).find(
-        (b) => b.textContent.trim() === 'Undo',
-      ),
-    )
+    const undo = await until('Undo in the toast', undoButton)
     undo.click()
     await until('layout restored', () => JSON.stringify(positions()) === JSON.stringify(before))
     // The review closes once the proposal is cleared, so no stale read can bring it back.
@@ -146,8 +164,101 @@
     assert(/validate-exit:[1-9]/.test(output), `a refused validate must fail: ${output}`)
     assert(s().sessions[sid]?.running, 'the detection agent should still run')
 
+    // Starting from a compact cluster makes fitting the old bounds visibly wrong.
+    const cluster = () =>
+      smoke.store.setState({
+        nodes: s().nodes.map((n, i) => ({ ...n, position: { x: 0, y: i * 30 } })),
+        dirty: true,
+      })
+    await sleep(900)
+    cluster()
+    await sleep(50)
+    const fit = document.querySelector('.react-flow__controls-fitview')
+    fit.click()
+    await sleep(100)
+    await arrange()
+    await sleep(1000)
+    const canvas = document.querySelector('.react-flow').getBoundingClientRect()
+    for (const n of document.querySelectorAll('.react-flow__node')) {
+      const r = n.getBoundingClientRect()
+      assert(
+        r.left >= canvas.left - 1 &&
+          r.right <= canvas.right + 1 &&
+          r.top >= canvas.top - 1 &&
+          r.bottom <= canvas.bottom + 1,
+        `arranged component is off-screen: ${n.dataset.id}`,
+      )
+    }
+
+    // Grab a node while it is still tweening; it must follow the pointer immediately and stay
+    // there when the rest of the animation ends, including after releasing it mid-tween.
+    cluster()
+    await sleep(50)
+    s().setMessage('')
+    await arrange()
+    const node = document.querySelector(`.react-flow__node[data-id="${api}"]`)
+    const initial = node.getBoundingClientRect()
+    const x = initial.left + initial.width / 2
+    const y = initial.top + 15
+    const mouse = (target, type, clientX, clientY) =>
+      target.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          view: window,
+          button: 0,
+          buttons: type === 'mouseup' ? 0 : 1,
+          clientX,
+          clientY,
+        }),
+      )
+    mouse(node, 'mousedown', x, y)
+    // React Flow starts the drag after crossing its movement threshold.
+    mouse(window, 'mousemove', x + 2, y + 2)
+    mouse(window, 'mousemove', x + 27, y + 22)
+    await sleep(30)
+    const dragged = node.getBoundingClientRect()
+    assert(
+      Math.abs(dragged.left - initial.left - 25) < 3,
+      `dragged node lagged behind the pointer: ${dragged.left - initial.left}`,
+    )
+    assert(Math.abs(dragged.top - initial.top - 20) < 3, 'dragged node jumped vertically')
+    mouse(window, 'mouseup', x + 27, y + 22)
+    assert(!s().nodes.some((n) => n.dragging), 'dropping left the map in a dragging state')
+    const dropped = { ...s().nodes.find((n) => n.id === api).position }
+    await sleep(500)
+    const settled = node.getBoundingClientRect()
+    assert(Math.abs(settled.left - dragged.left) < 3, 'node resumed tweening after release')
+    assert(Math.abs(settled.top - dragged.top) < 3, 'node moved after release')
+    undoButton().click()
+    assert(JSON.stringify(positions()[api]) === JSON.stringify(dropped), 'Undo lost the later drag')
+
+    // Project actions disappear in another tab and even a retained callback cannot edit it.
+    await sleep(900)
+    await arrange()
+    // Releasing immediately after crossing the threshold must also finish the drag, even if
+    // React Flow has not emitted a position change of its own yet.
+    const grabbed = node.getBoundingClientRect()
+    const grabX = grabbed.left + grabbed.width / 2
+    const grabY = grabbed.top + 15
+    mouse(node, 'mousedown', grabX, grabY)
+    mouse(window, 'mousemove', grabX + 2, grabY + 2)
+    mouse(window, 'mouseup', grabX + 2, grabY + 2)
+    assert(!s().nodes.some((n) => n.dragging), 'a threshold-only drag left autosave waiting')
+    // D3 suppresses clicks through the next tick after a drag.
+    await sleep(50)
+    const projectUndo = s().messageAction
+    const firstPositions = JSON.stringify(positions())
+
     const two = await smoke.openSecondProject()
     smoke.acceptOpened(two)
+    await until('project action hidden', () => !undoButton())
+    projectUndo.run()
+    const backgroundPositions = Object.fromEntries(
+      s()
+        .captureProjects()
+        [one.id].state.nodes.map((n) => [n.id, n.position]),
+    )
+    assert(JSON.stringify(backgroundPositions) === firstPositions, 'Undo edited another project')
     await create()
     await until('offer after an empty scan', () =>
       dialog()?.textContent.includes('name no dependencies'),
@@ -161,8 +272,21 @@
       .projects.find((p) => p.root === two.project.root)?.layout
     assert(layout?.dependencyPromptDismissed === true, 'the decline must be in the layout')
     assert(!(await smoke.openSecondProject()).project.dependencyPromptDismissed, 'not in the map')
+    const allNodes = s().nodes
+    for (const count of [0, 1]) {
+      smoke.store.setState({ nodes: allNodes.slice(0, count) })
+      s().setPaletteOpen(true)
+      await until('palette open', () => document.querySelector('.command-palette'))
+      assert(
+        !document.querySelector('[data-command-id="arrange-map"]'),
+        'Arrange offered for a small map',
+      )
+      s().setPaletteOpen(false)
+      await sleep(50)
+    }
+    smoke.store.setState({ nodes: allNodes })
     await smoke.report('PASS dependency detection')
   } catch (e) {
-    await smoke.report(`FAIL ${e?.stack ?? e}`)
+    await smoke.report(`FAIL ${String(e)}\n${e?.stack ?? ''}`)
   }
 })()
