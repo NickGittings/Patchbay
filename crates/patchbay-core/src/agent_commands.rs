@@ -397,6 +397,14 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             let readable = scoped.access.restrict(scoped.project()?, &[])?;
             let pending =
                 crate::link_proposals::submit(&readable, &launch.agent_session, &proposal)?;
+            if pending.links.is_empty() {
+                return Ok(json!({
+                    "submitted":0,
+                    "alreadyOnMap":pending.skipped.len(),
+                    "applied":false,
+                    "note":"Every proposed link is already on the map, so there is nothing to review",
+                }));
+            }
             app.links_proposed(launch);
             Ok(
                 json!({"submitted":pending.links.len(),"alreadyOnMap":pending.skipped.len(),"applied":false}),

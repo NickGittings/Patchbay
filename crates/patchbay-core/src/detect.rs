@@ -1078,7 +1078,16 @@ fn build_project(
         .iter()
         .map(|c| resolve_dir(&root.join(&c.rel)))
         .collect();
-    let origins: Vec<_> = dirs.iter().map(|dir| owner_of(dir, scan_roots)).collect();
+    // Scan roots in one repo share a namespace: Rescan scans an external repo's
+    // component folders as separate roots where Add repo scanned the repo once.
+    let namespaces: Vec<PathBuf> = scan_roots
+        .iter()
+        .map(|r| crate::git::nearest_repo(r).unwrap_or_else(|| r.clone()))
+        .collect();
+    let origins: Vec<_> = dirs
+        .iter()
+        .map(|dir| owner_of(dir, scan_roots).map(|i| &namespaces[i]))
+        .collect();
     let by_name: HashMap<_, _> = found
         .iter()
         .zip(&ids)
@@ -1090,8 +1099,8 @@ fn build_project(
         let mut targets: Vec<&str> = c
             .deps
             .iter()
-            // Names identify local packages only inside the same scan root.
-            // Relationships across roots require an explicit folder reference.
+            // Names identify local packages only inside the same repo (or scan
+            // root outside any repo). Other relationships need a folder reference.
             .filter_map(|d| by_name.get(&(&origins[i], d.as_str())).copied())
             .filter(|t| t != id)
             .collect();
@@ -1935,6 +1944,46 @@ mod tests {
         let found = detect_folder(&project, &base.join("infra")).unwrap();
         assert_eq!(found.links.len(), 1);
         assert_eq!(found.links[0].target, "infra-config");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn rescan_keeps_name_links_between_folders_of_one_external_repo() {
+        let base = env::temp_dir().join(format!("patchbay-repo-names-{}", process::id()));
+        let _ = fs::remove_dir_all(&base);
+        write(&base, "shop/package.json", r#"{"name":"shop"}"#);
+        fs::create_dir_all(base.join("api/.git")).unwrap();
+        write(
+            &base,
+            "api/server/package.json",
+            r#"{"name":"server","dependencies":{"client":"*"}}"#,
+        );
+        write(&base, "api/client/package.json", r#"{"name":"client"}"#);
+        let mut project = detect(&base.join("shop")).unwrap();
+        let found = detect_folder(&project, &base.join("api")).unwrap();
+        merge_new(&mut project, found);
+        // Compare by folder: Rescan's own scan names components afresh.
+        let pairs = |p: &Project| {
+            let path = |id: &str| {
+                p.components
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.path.clone())
+                    .unwrap()
+            };
+            p.links
+                .iter()
+                .map(|l| (path(&l.source), path(&l.target)))
+                .collect::<HashSet<_>>()
+        };
+        let added = pairs(&project);
+        assert_eq!(
+            added,
+            HashSet::from([("../api/server".into(), "../api/client".into())])
+        );
+        // Rescan scans each external component folder as its own root.
+        let again = detect_roots_with(&project, &project.external_dirs(), &[]).unwrap();
+        assert_eq!(pairs(&again), added);
         fs::remove_dir_all(base).unwrap();
     }
 

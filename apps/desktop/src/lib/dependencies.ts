@@ -250,7 +250,9 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
     if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
     return
   }
-  // The tab names the preset this launch runs, also when an earlier one ran another.
+  // The tab names the preset this launch runs, also when an earlier one ran another, and goes
+  // back to the earlier one if the launch doesn't start.
+  const previous = s.runtimeTerminals[sid]
   s.addRuntimeTerminal(sid, {
     projectId,
     taskId: null,
@@ -262,7 +264,19 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
       command: preset.command,
     },
   })
-  const started = await startMapAgent(projectId, preset)
+  const ours = useStore.getState().runtimeTerminals[sid]
+  let started = false
+  try {
+    started = await startMapAgent(projectId, preset)
+  } finally {
+    if (!started && useStore.getState().runtimeTerminals[sid] === ours)
+      useStore.setState((st) => {
+        const runtimeTerminals = { ...st.runtimeTerminals }
+        if (previous) runtimeTerminals[sid] = previous
+        else delete runtimeTerminals[sid]
+        return { runtimeTerminals }
+      })
+  }
   if (started && useStore.getState().project?.id === projectId)
     revealTerminal({ sid, componentId: MAP_SCOPE })
 }

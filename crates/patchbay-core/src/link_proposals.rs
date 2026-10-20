@@ -142,6 +142,10 @@ fn submit_in(
         links,
         skipped,
     };
+    // Nothing to review: leave any earlier submission for the user.
+    if pending.links.is_empty() {
+        return Ok(pending);
+    }
     crate::workspace::atomic_write(
         &file(store, &project.root),
         &serde_json::to_vec_pretty(&pending)?,
@@ -169,7 +173,8 @@ fn clear_in(store: &Path, root: &str, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Save an agent's proposal for review, replacing any earlier one.
+/// Save an agent's proposal for review, replacing any earlier one. A proposal
+/// whose links are all on the map already is returned without being saved.
 ///
 /// # Errors
 /// Fails if the proposal is invalid for `project` or can't be saved.
@@ -363,7 +368,7 @@ mod tests {
         assert_eq!(first.skipped[0].source, "jobs");
         assert_eq!(read_in(&store, &p.root).unwrap().as_ref(), Some(&first));
         // The same millisecond: only the id tells them apart.
-        let second = submit_in(&store, &p, "s-1", &proposal(links), 10).unwrap();
+        let second = submit_in(&store, &p, "s-1", &proposal(links.clone()), 10).unwrap();
         assert_ne!(first.id, second.id);
         assert!(
             !clear_in(&store, &p.root, &first.id).unwrap(),
@@ -372,6 +377,12 @@ mod tests {
         assert!(clear_in(&store, &p.root, &second.id).unwrap());
         assert_eq!(read_in(&store, &p.root).unwrap(), None);
         assert!(!clear_in(&store, &p.root, &second.id).unwrap());
+        // Only links already on the map: nothing is saved, an earlier one stays.
+        let third = submit_in(&store, &p, "s-1", &proposal(json!([links[0]])), 11).unwrap();
+        let linked = json!([{"source":"jobs","target":"api","reason":"Jobs/settings.py:1"}]);
+        let empty = submit_in(&store, &p, "s-1", &proposal(linked), 12).unwrap();
+        assert!(empty.links.is_empty());
+        assert_eq!(read_in(&store, &p.root).unwrap(), Some(third));
         let _ = std::fs::remove_dir_all(store);
     }
 

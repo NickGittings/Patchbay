@@ -16,7 +16,10 @@ const store = vi.hoisted(() => ({
   projects: {} as Record<string, import('../store').ProjectEntry>,
   appendToMap: vi.fn(() => null),
   setMessage: vi.fn(),
-  addRuntimeTerminal: vi.fn(),
+  runtimeTerminals: {} as Record<string, unknown>,
+  addRuntimeTerminal: vi.fn((sid: string, t: unknown) => {
+    store.runtimeTerminals = { ...store.runtimeTerminals, [sid]: t }
+  }),
   listener: (_s: unknown, _prev: unknown) => {},
 }))
 vi.mock('../store', () => ({
@@ -28,7 +31,10 @@ vi.mock('../store', () => ({
       setMessage: store.setMessage,
       sessions: {},
       addRuntimeTerminal: store.addRuntimeTerminal,
+      runtimeTerminals: store.runtimeTerminals,
     }),
+    setState: (update: (s: { runtimeTerminals: Record<string, unknown> }) => object) =>
+      Object.assign(store, update({ runtimeTerminals: store.runtimeTerminals })),
     subscribe: (listener: typeof store.listener) => {
       store.listener = listener
       return () => {}
@@ -310,4 +316,20 @@ test('starting a new agent from a manifest review does not open an older waiting
   expect(agents.startMapAgent).toHaveBeenCalledWith('a', expect.objectContaining({ id: 'claude' }))
   expect(useDependencies.getState().dialogs.a).toBeUndefined()
   expect(ipc.mapLinksRead).not.toHaveBeenCalled()
+})
+
+test('a detection launch that does not start gives the tab back to the earlier preset', async () => {
+  const earlier = { terminal: { name: 'Detect dependencies · Claude' } }
+  const { MAP_AGENT_TERMINAL, MAP_SCOPE, sessionId } = await import('../types')
+  const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, 'a')
+  store.runtimeTerminals = { [sid]: earlier }
+  agents.startMapAgent.mockResolvedValueOnce(false)
+  await startDependencyAgent('a', { id: 'codex', name: 'Codex', kind: 'agent', command: 'codex' })
+  expect(store.runtimeTerminals[sid]).toBe(earlier)
+  store.runtimeTerminals = {}
+  agents.startMapAgent.mockRejectedValueOnce(new Error('disconnected'))
+  await expect(
+    startDependencyAgent('a', { id: 'codex', name: 'Codex', kind: 'agent', command: 'codex' }),
+  ).rejects.toThrow('disconnected')
+  expect(store.runtimeTerminals).toEqual({})
 })

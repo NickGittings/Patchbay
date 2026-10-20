@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { roleTerminal } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
@@ -50,6 +50,14 @@ function Shell({
   children: React.ReactNode
 }) {
   const busy = useBusy(projectId)
+  // The dialog opens by itself (after a save, or when an agent submits), so focus is elsewhere.
+  useEffect(() => {
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) close()
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [busy, close])
   return (
     <div className="maintenance-backdrop" onClick={() => !busy && close()}>
       <section
@@ -58,9 +66,6 @@ function Shell({
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !busy) close()
-        }}
       >
         <h2>{title}</h2>
         {children}
