@@ -63,6 +63,12 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
+/** A button on the app message (`setMessage`). */
+export interface MessageAction {
+  label: string
+  run: () => void
+}
+
 export interface ImplementationComponent {
   id: string
   visible: boolean
@@ -342,6 +348,8 @@ interface State {
   messageId: number
   /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
   messageTransient: boolean
+  /** A button the message offers, such as Undo; dropped by the next message. */
+  messageAction: MessageAction | null
 
   loadProject: (p: Project) => void
   syncProject: (p: Project) => void
@@ -363,7 +371,7 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string, transient?: boolean) => void
+  setMessage: (m: string, transient?: boolean, action?: MessageAction) => void
   markSaved: () => void
 }
 
@@ -665,6 +673,7 @@ export const useStore = create<State>((set, get) => ({
   message: '',
   messageId: 0,
   messageTransient: false,
+  messageAction: null,
   view: 'navigation',
   highlighted: [],
   implementationComponents: null,
@@ -954,8 +963,13 @@ export const useStore = create<State>((set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message, transient = false) =>
-    set((s) => ({ message, messageTransient: transient, messageId: s.messageId + 1 })),
+  setMessage: (message, transient = false, action) =>
+    set((s) => ({
+      message,
+      messageTransient: transient,
+      messageAction: action ?? null,
+      messageId: s.messageId + 1,
+    })),
   markSaved: () => set({ dirty: false }),
 }))
 
@@ -992,6 +1006,30 @@ export function appendToMap<T extends { components?: Component[]; links?: Link[]
   })
   s.patchProject(projectId, { dirty: true })
   return added
+}
+
+/**
+ * Move open project `projectId`'s components to `positions` (others stay), as an ordinary edit
+ * that autosaves. Returns the positions the moved ones had, or null when none moved.
+ */
+export function moveComponents(
+  projectId: string,
+  positions: Record<string, Component['position']>,
+): Record<string, Component['position']> | null {
+  const current = projectOf(projectId)
+  if (!current) return null
+  const previous: Record<string, Component['position']> = {}
+  const components = current.components.map((c) => {
+    const to = positions[c.id]
+    if (!to || (to.x === c.position.x && to.y === c.position.y)) return c
+    previous[c.id] = c.position
+    return { ...c, position: to }
+  })
+  if (!Object.keys(previous).length) return null
+  const s = useStore.getState()
+  s.syncProject({ ...current, projectId, components })
+  s.patchProject(projectId, { dirty: true })
+  return previous
 }
 
 /** A project state as a `Project` (the map `patchbay.json` holds). */

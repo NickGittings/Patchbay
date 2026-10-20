@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
 import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
+import { arrangeNow } from '../lib/arrange'
 import { executeExtensionCommand } from '../extensions/host'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
 
@@ -63,6 +64,11 @@ export default function CommandPalette() {
                   id: 'detect-dependencies',
                   title: 'Detect dependencies…',
                   run: () => offerDependencies(project.id),
+                },
+                {
+                  id: 'arrange-map',
+                  title: 'Arrange map',
+                  run: () => arrangeNow(project.id),
                 },
               ]),
           { id: 'add-folder', title: 'Add repo…', run: addFolder },

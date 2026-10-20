@@ -109,10 +109,23 @@
     // Explicit replacement resolves the conflict; the same review can then apply normally.
     assert(await smoke.saveMap(one.id, true), 'conflict replacement failed')
     await until('review enabled after recovery', () => !button('Add selected')?.disabled)
+    const positions = () => Object.fromEntries(s().nodes.map((n) => [n.id, { ...n.position }]))
+    const before = positions()
     await click('Add selected')
     await until('agent link added', () =>
       s().edges.some((e) => e.source === web && e.target === api),
     )
+    // Accepting rearranges the map by dependencies, and the toast can undo that.
+    const after = positions()
+    assert(after[web].x < after[api].x, `web must sit left of api: ${JSON.stringify(after)}`)
+    assert(after[jobs].x < after[api].x, `jobs must sit left of api: ${JSON.stringify(after)}`)
+    const undo = await until('Undo in the toast', () =>
+      Array.from(document.querySelectorAll('.toast button')).find(
+        (b) => b.textContent.trim() === 'Undo',
+      ),
+    )
+    undo.click()
+    await until('layout restored', () => JSON.stringify(positions()) === JSON.stringify(before))
     // The review closes once the proposal is cleared, so no stale read can bring it back.
     await until('the review closes', () => !dialog())
     assert((await smoke.mapLinksRead(one.id)) === null, 'the reviewed proposal must be cleared')

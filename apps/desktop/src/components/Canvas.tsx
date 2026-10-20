@@ -5,10 +5,14 @@ import {
   MiniMap,
   Panel,
   ReactFlow,
+  useReactFlow,
   type Connection,
   type Edge,
 } from '@xyflow/react'
+import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { onArranged } from '../lib/arrange'
+import type { Position } from '../lib/layout'
 import { KIND_COLOR } from '../lib/display'
 import { showsInspector } from '../lib/panels'
 import { useStore, type FlowNode } from '../store'
@@ -17,6 +21,55 @@ import Welcome from './Welcome'
 import { removeComponents } from '../lib/maintenance'
 
 const nodeTypes = { component: ComponentNode }
+
+const ARRANGE_MS = 400
+
+const ease = (t: number) => 1 - (1 - t) ** 3
+
+/**
+ * While an arrangement of this project settles, where its moved nodes are drawn: on their way from
+ * where they were, so edges follow them. Null otherwise. The store already holds the end state.
+ */
+function useArranging(projectId: string | undefined) {
+  const { fitView } = useReactFlow()
+  const [tween, setTween] = useState<{ from: Record<string, Position>; t: number } | null>(null)
+  useEffect(() => {
+    let frame = 0
+    const off = onArranged((id, from) => {
+      if (id !== projectId) return
+      cancelAnimationFrame(frame)
+      const start = performance.now()
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / ARRANGE_MS)
+        setTween(t < 1 ? { from, t: ease(t) } : null)
+        if (t < 1) frame = requestAnimationFrame(step)
+      }
+      setTween({ from, t: 0 })
+      frame = requestAnimationFrame(step)
+      void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
+    })
+    return () => {
+      off()
+      cancelAnimationFrame(frame)
+    }
+  }, [fitView, projectId])
+  return tween
+}
+
+function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>) {
+  if (!tween) return nodes
+  return nodes.map((n) => {
+    const from = tween.from[n.id]
+    if (!from) return n
+    return {
+      ...n,
+      position: {
+        x: from.x + (n.position.x - from.x) * tween.t,
+        y: from.y + (n.position.y - from.y) * tween.t,
+      },
+    }
+  })
+}
 
 /** One link per pair, never to self. */
 function isValidConnection(c: Connection | Edge) {
@@ -59,6 +112,7 @@ export default function Canvas() {
     })),
   )
   const inspectorShown = useStore(showsInspector)
+  const tween = useArranging(project?.id)
 
   if (!project) return <Welcome />
 
@@ -75,7 +129,7 @@ export default function Canvas() {
   return (
     <div className="canvas">
       <ReactFlow
-        nodes={planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes}
+        nodes={tweened(planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes, tween)}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
         onBeforeDelete={async ({ nodes: removedNodes, edges: removedEdges }) => {

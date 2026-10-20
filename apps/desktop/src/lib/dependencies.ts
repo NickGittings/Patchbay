@@ -1,5 +1,12 @@
 import { create } from 'zustand'
-import { appendToMap, projectOf, projectStateOf, useStore, type ProjectEntry } from '../store'
+import {
+  appendToMap,
+  projectOf,
+  projectStateOf,
+  useStore,
+  type MessageAction,
+  type ProjectEntry,
+} from '../store'
 import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
@@ -12,6 +19,7 @@ import {
 import { detectLinks, mapLinksClear, mapLinksRead, onMapLinks } from './ipc'
 import { mapBlocked, onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
+import { arrangeMap, undoArrange } from './arrange'
 import { planTerminals } from './plan'
 import { launching, mapPresetId, startMapAgent } from './sessions'
 
@@ -147,8 +155,18 @@ export function appendLinks(projectId: string, found: FoundLink[]): number {
   return added?.links.length ?? 0
 }
 
-function message(projectId: string, text: string, transient = false) {
-  if (useStore.getState().project?.id === projectId) useStore.getState().setMessage(text, transient)
+/**
+ * `appendLinks`, then lay the map out so the new links read clearly. Returns how many it added
+ * and the positions the layout replaced, for Undo.
+ */
+export function addDependencies(projectId: string, found: FoundLink[]) {
+  const added = appendLinks(projectId, found)
+  return { added, previous: added ? arrangeMap(projectId) : null }
+}
+
+function message(projectId: string, text: string, transient = false, action?: MessageAction) {
+  if (useStore.getState().project?.id === projectId)
+    useStore.getState().setMessage(text, transient, action)
 }
 
 /** Agent submissions the user closed undecided, per project; the menu shows them again. */
@@ -302,11 +320,14 @@ async function reviewPending(projectId: string, explicit = false): Promise<boole
 /** Add the chosen links and forget the submission they came from. */
 export async function acceptDependencies(projectId: string, chosen: FoundLink[]) {
   if (!canDetect(projectId) || dialogOf(projectId)?.mode !== 'review') return
-  const added = appendLinks(projectId, chosen)
+  const { added, previous } = addDependencies(projectId, chosen)
   message(
     projectId,
-    added ? `Added ${added} dependenc${added === 1 ? 'y' : 'ies'}` : 'Nothing new to add',
+    added
+      ? `Added ${added} dependenc${added === 1 ? 'y' : 'ies'}${previous ? ' and rearranged the map' : ''}`
+      : 'Nothing new to add',
     true,
+    previous ? undoArrange(projectId, previous) : undefined,
   )
   await discardDependencies(projectId)
 }

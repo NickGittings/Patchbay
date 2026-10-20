@@ -4,7 +4,7 @@ import { roleTerminal } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
 import {
   acceptDependencies,
-  appendLinks,
+  addDependencies,
   closeDependencies,
   discardDependencies,
   dependencyMapBlocked,
@@ -247,7 +247,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
           <AgentLauncher
             projectId={dialog.projectId}
             label={chosen.length ? 'Add selected and detect with an agent' : 'Detect with an agent'}
-            before={() => appendLinks(dialog.projectId, chosen)}
+            before={() => void addDependencies(dialog.projectId, chosen)}
           />
         </>
       )}
