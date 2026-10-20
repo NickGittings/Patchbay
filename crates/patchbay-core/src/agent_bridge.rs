@@ -45,7 +45,30 @@ pub struct LaunchContext {
     pub project_id: String,
     pub task: Option<String>,
     pub agent_session: String,
-    pub planner: bool,
+    pub role: Role,
+}
+
+/// What kind of session holds a token, which decides the actions it may run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// A component's or task root's agent.
+    Component,
+    /// The project's planner (`PLAN_SCOPE`): it saves plans and proposals, and runs nothing.
+    Planner,
+    /// Dependency detection (`MAP_SCOPE`): it may only read context and propose links.
+    Mapper,
+}
+
+impl Role {
+    /// The role of a session at `component_id`.
+    #[must_use]
+    pub fn of(component_id: &str) -> Self {
+        match component_id {
+            crate::model::PLAN_SCOPE => Self::Planner,
+            crate::model::MAP_SCOPE => Self::Mapper,
+            _ => Self::Component,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +111,10 @@ pub enum Action {
     /// The provider's approval dialog closed without approving the presented plan.
     WithdrawPlan {
         conversation: Option<String>,
+    },
+    /// Dependencies a detection agent proposes for the user to review.
+    ProposeLinks {
+        proposal: crate::link_proposals::LinkProposal,
     },
 }
 
@@ -328,7 +355,7 @@ mod tests {
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),
-                    planner: false,
+                    role: Role::Component,
                 })
             },
             handler,
@@ -354,6 +381,17 @@ mod tests {
     }
 
     #[test]
+    fn link_proposals_have_a_strict_wire_format() {
+        let wire = serde_json::json!({"kind":"proposeLinks","proposal":{"version":1,
+            "links":[{"source":"app","target":"api","label":"REST","reason":"App/API.swift:3"}]}});
+        let action: Action = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&action).unwrap(), wire);
+        let mut extra = wire;
+        extra["proposal"]["links"][0]["confidence"] = 1.into();
+        assert!(serde_json::from_value::<Action>(extra).is_err());
+    }
+
+    #[test]
     fn listener_recovers_after_interrupted_and_resource_errors() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -373,7 +411,7 @@ mod tests {
                         project_id: "p".into(),
                         task: None,
                         agent_session: "one".into(),
-                        planner: false,
+                        role: Role::Component,
                     })
                 }),
                 Arc::new(|_, _| Ok(serde_json::json!({"recovered":true}))),
@@ -440,7 +478,7 @@ mod tests {
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),
-                    planner: false,
+                    role: Role::Component,
                 })
             },
             ok,

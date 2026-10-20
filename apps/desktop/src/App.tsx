@@ -7,6 +7,8 @@ import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
 import CommandPalette from './components/CommandPalette'
 import MapMaintenanceReview from './components/MapMaintenanceReview'
+import DependencyDialog from './components/DependencyDialog'
+import { initializeDependencyDetection } from './lib/dependencies'
 import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
@@ -130,6 +132,7 @@ export default function App() {
     const stopTasks = followActiveTask()
     const stopAuto = followAuto()
     const stopNotifications = followNotifications()
+    const stopDependencies = initializeDependencyDetection()
     return () => {
       stopHost()
       stopMaintenance()
@@ -137,6 +140,7 @@ export default function App() {
       stopTasks()
       stopAuto()
       stopNotifications()
+      stopDependencies()
     }
   }, [])
   useEffect(() => {
@@ -201,6 +205,7 @@ export default function App() {
         <CommandPalette />
         <NavigationDialogs />
         <MapMaintenanceReview />
+        <DependencyDialog />
         <ExtensionsPanel />
         <NewTaskDialog />
         {restoring ? (

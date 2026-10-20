@@ -1,6 +1,8 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
+  MAP_SCOPE,
+  MAP_AGENT_TERMINAL,
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
   sessionId,
@@ -22,6 +24,7 @@ vi.mock('./ipc', () => ({
   releaseMapEdit: vi.fn(async () => {}),
   onTerminalEvent: vi.fn(async () => () => {}),
   planStart: vi.fn(),
+  mapAgentStart: vi.fn(async () => ''),
   taskRootStart: vi.fn(),
   extensionTerminalRun: vi.fn(),
 }))
@@ -46,6 +49,8 @@ const {
   handleTerminalEvent,
   hydrateSession,
   startTerminal,
+  startMapAgent,
+  mapPresetId,
   restartTerminal,
   resetSessions,
   retireOlderService,
@@ -681,4 +686,57 @@ test('Restart resumes Implement without repeating its subagent kickoff', async (
   await restartTerminal(TASK_ROOT_SCOPE, terminalId)
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toBeUndefined()
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[6]).toBe(true)
+})
+
+for (const cached of [false, true]) {
+  test(`a failed detection launch restores the previous preset (cached: ${cached})`, async () => {
+    const claude = { id: 'claude', name: 'Claude', command: 'claude', kind: 'agent' as const }
+    const codex = { id: 'codex', name: 'Codex', command: 'codex', kind: 'agent' as const }
+    const projectId = `preset-rollback-${cached}`
+    useStore.getState().loadProject({ ...project, projectId })
+    useStore.setState({
+      devices: [claude, codex].map((preset) => ({
+        ...preset,
+        category: 'agent',
+        source: 'builtin',
+      })),
+    })
+    const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+    if (cached) {
+      expect(await startMapAgent(projectId, claude)).toBe(true)
+    } else {
+      useStore.setState({ sessionRecords: [{ id: sid, metadata: { lane: 'claude' } }] as never })
+    }
+    const launch = deferred()
+    vi.mocked(ipc.mapAgentStart).mockImplementationOnce(async () => {
+      await launch.promise
+      throw new Error('Codex failed to start')
+    })
+    const starting = startMapAgent(projectId, codex)
+    expect(mapPresetId(sid)).toBe('codex')
+    launch.resolve()
+    expect(await starting).toBe(false)
+    expect(mapPresetId(sid)).toBe('claude')
+    await restartTerminal(MAP_SCOPE, MAP_AGENT_TERMINAL, null)
+    expect(ipc.mapAgentStart).toHaveBeenLastCalledWith(
+      expect.anything(),
+      claude,
+      expect.any(String),
+      true,
+    )
+  })
+}
+
+test('a successful detection launch keeps the new preset for restart', async () => {
+  const codex = { id: 'codex', name: 'Codex', command: 'codex', kind: 'agent' as const }
+  useStore.setState({ devices: [{ ...codex, category: 'agent', source: 'builtin' }] })
+  expect(await startMapAgent('p', codex)).toBe(true)
+  expect(mapPresetId(sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, 'p'))).toBe('codex')
+  await restartTerminal(MAP_SCOPE, MAP_AGENT_TERMINAL, null)
+  expect(ipc.mapAgentStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    codex,
+    expect.any(String),
+    true,
+  )
 })

@@ -2763,6 +2763,7 @@ dependencies = [
  "clap",
  "crossterm",
  "patchbay-core",
+ "serde",
  "serde_json",
 ]
 

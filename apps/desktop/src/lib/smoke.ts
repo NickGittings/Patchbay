@@ -42,6 +42,8 @@ import { syncCurrentRoots } from './access'
 import { runGraphAction, stopGroup } from './actions'
 import { graphActionPlan } from './ipc'
 import { createTask, refreshTasks, removeTask } from './tasks'
+import { useDependencies } from './dependencies'
+import { mapLinksRead } from './ipc'
 
 import { sessionId } from '../types'
 import { acceptOpened, flushWorkspace } from './workspace'
@@ -90,6 +92,8 @@ const hooks = {
   reviewRescan,
   applyMapReview,
   maintenance: useMaintenance,
+  dependencies: useDependencies,
+  mapLinksRead,
   removeComponents,
   repairComponentPath,
   rescanProject,

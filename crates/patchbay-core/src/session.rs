@@ -3124,6 +3124,12 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn dependency_detection_briefings_are_retained_for_recovery_and_removed_when_unclaimed() {
+        owned_job_briefings_are_retained(crate::model::MAP_SCOPE);
+    }
+
+    #[cfg(unix)]
     fn owned_job_briefings_are_retained(scope: &str) {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();

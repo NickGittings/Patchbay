@@ -285,6 +285,7 @@ test('a task lists its own and added terminals, plus sessions running in its wor
       extra: runtime,
       other: { ...runtime, taskId: 'two' },
       foreign: { ...runtime, projectId: 'q' },
+      detect: { ...runtime, componentId: '@map' },
       exited: runtime,
     },
     'p',
@@ -293,10 +294,12 @@ test('a task lists its own and added terminals, plus sessions running in its wor
       extra: { running: true } as never,
       other: { running: true } as never,
       foreign: { running: true } as never,
+      detect: { running: true } as never,
       exited: { running: false } as never,
     },
   )
-  // A session the map no longer names shows only while it runs, or it would never go away.
+  // A session the map no longer names shows only while it runs, or it would never go away; the
+  // dependency agent belongs to the project, never a worktree's tiles.
   expect(entries.map((e) => e.sid)).toEqual([rootSid, sid, 'extra'])
   expect(shownTaskTerminals(entries, rootSid).map((e) => e.sid)).toEqual([rootSid])
   expect(shownTaskTerminals(entries, 'gone')).toEqual(entries)

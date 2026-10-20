@@ -1,6 +1,6 @@
 //! Tauri integration for the core agent-command engine.
 use crate::{AppState, CmdResult, Project, blocking, err, for_task};
-use patchbay_core::agent_bridge::{LaunchContext, Server};
+use patchbay_core::agent_bridge::{LaunchContext, Role, Server};
 pub use patchbay_core::agent_commands::Activity;
 use patchbay_core::agent_commands::{Host, ProjectScope};
 use patchbay_core::session::{AgentSession, Request};
@@ -44,6 +44,12 @@ impl Host for Desktop {
         let _ = self.0.emit(
             "patchbay://proposal",
             serde_json::json!({"projectId":launch.project_id,"task":launch.task}),
+        );
+    }
+    fn links_proposed(&self, launch: &LaunchContext) {
+        let _ = self.0.emit(
+            "patchbay://map-links",
+            serde_json::json!({"projectId":launch.project_id}),
         );
     }
 }
@@ -109,7 +115,7 @@ fn authenticate(app: &AppHandle, token: &str) -> Option<LaunchContext> {
         .ok()?;
     let session = session?;
     Some(LaunchContext {
-        planner: session.metadata.component_id == patchbay_core::model::PLAN_SCOPE,
+        role: Role::of(&session.metadata.component_id),
         project_id: session.metadata.project_id,
         task: session.metadata.task,
         agent_session: session.id,
@@ -157,6 +163,31 @@ pub fn task_activities(project_id: String, state: State<'_, AppState>) -> CmdRes
         .into_iter()
         .filter(|a| a.project_id == project_id)
         .collect())
+}
+
+fn project_root(state: &AppState, project_id: &str) -> CmdResult<String> {
+    Ok(crate::task_repo(state, project_id)?.0.display().to_string())
+}
+
+/// Dependencies a detection agent proposed for the project, awaiting review.
+#[tauri::command]
+pub async fn map_links_read(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<patchbay_core::link_proposals::Pending>> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::link_proposals::read(&root).map_err(err)).await
+}
+
+/// Forget a reviewed proposal; a newer submission stays.
+#[tauri::command]
+pub async fn map_links_clear(
+    project_id: String,
+    id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::link_proposals::clear(&root, &id).map_err(err)).await
 }
 
 #[tauri::command]

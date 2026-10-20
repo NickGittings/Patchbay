@@ -167,6 +167,37 @@ scope. Users can then adjust the scope. Editing the shared Markdown invalidates 
 until a proposal is applied again. Implementation receives saved artifacts, separately from the
 planner session and its conversation.
 
+### Detecting dependencies
+
+Detection links components whose manifests name each other's packages or point into each other's
+folders (`-r ../api/requirements.txt`, `file:../lib`, Cargo/Poetry/uv path dependencies, Go
+`replace`, Gradle `includeBuild`). Runtime dependencies such as an app calling a backend's API
+aren't in any manifest, so after the first **Create map configuration** of a map with an
+unlinked component, Patchbay scans for new links and offers **Detect with an agent** (also under
+Project → **Detect dependencies…**). The agent runs at the project root with a briefing listing
+the components and submits what it finds:
+
+```sh
+"$PATCHBAY_CLI" agent propose-links --file links.json   # or --file - for stdin
+```
+
+```json
+{
+  "version": 1,
+  "links": [
+    {
+      "source": "app",
+      "target": "api",
+      "label": "REST API",
+      "reason": "App/API.swift:12"
+    }
+  ]
+}
+```
+
+`source` depends on `target`. Submitting replaces the earlier proposal; nothing changes until
+the user adds the reviewed links, which then save with the map (`detection.detector: "agent"`).
+
 Agent sessions receive the packaged `patchbay-cli` path and an authenticated local desktop connection:
 
 ```sh

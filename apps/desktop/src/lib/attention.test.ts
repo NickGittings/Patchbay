@@ -7,6 +7,7 @@ const revealState = vi.hoisted(() => ({
   setActiveSession: vi.fn(),
   setView: vi.fn(),
   setActiveTask: vi.fn(),
+  select: vi.fn(),
 }))
 vi.mock('../store', () => ({ useStore: { getState: () => revealState } }))
 const { attentionCounts, attentionItems, componentTerminals, mostUrgent } =
@@ -103,6 +104,15 @@ test('revealing a merge opens Review without switching the source task', async (
   revealTerminal({ componentId: '@merge', sid: 'merge-session' })
   expect(revealState.setView).toHaveBeenCalledWith('review')
   expect(revealState.setActiveSession).toHaveBeenCalledWith('merge-session')
+  expect(revealState.setActiveTask).not.toHaveBeenCalled()
+})
+
+test('revealing the dependency agent opens Navigation without switching task', async () => {
+  const { revealTerminal } = await import('./attention')
+  revealState.setActiveTask.mockClear()
+  revealTerminal({ componentId: '@map', sid: 'map-session' })
+  expect(revealState.setView).toHaveBeenCalledWith('navigation')
+  expect(revealState.setActiveSession).toHaveBeenCalledWith('map-session')
   expect(revealState.setActiveTask).not.toHaveBeenCalled()
 })
 

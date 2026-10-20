@@ -2,6 +2,7 @@ import { configureEditor, showFileSearch } from '../lib/navigation'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
+import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
 import { executeExtensionCommand } from '../extensions/host'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
 
@@ -55,6 +56,15 @@ export default function CommandPalette() {
             run: saveCurrentProject,
           },
           { id: 'rescan', title: 'Rescan project', run: rescan },
+          ...(dependencyMapBlocked(entry)
+            ? []
+            : [
+                {
+                  id: 'detect-dependencies',
+                  title: 'Detect dependencies…',
+                  run: () => offerDependencies(project.id),
+                },
+              ]),
           { id: 'add-folder', title: 'Add repo…', run: addFolder },
           ...(['navigation', 'plan', 'implementation'] as const).map((view) => ({
             id: view,

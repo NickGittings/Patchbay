@@ -1,6 +1,7 @@
 import { autoWorkspace } from './autoState'
 import { useStore } from '../store'
 import {
+  MAP_SCOPE,
   PLAN_SCOPE,
   MERGE_SCOPE,
   REVIEW_SCOPE,
@@ -52,6 +53,7 @@ export function sessionOwner(componentId: string | undefined, nodes: Snapshot['n
   if (componentId === TASK_ROOT_SCOPE) return 'Task root'
   if (componentId === REVIEW_SCOPE) return 'Review agent'
   if (componentId === MERGE_SCOPE) return 'Merge agent'
+  if (componentId === MAP_SCOPE) return 'Dependency agent'
   return nodes.find((n) => n.id === componentId)?.data.name ?? componentId ?? 'Agent'
 }
 
@@ -270,6 +272,13 @@ export function revealTerminal(
   if (isReviewAgentScope(item.componentId)) {
     s.setActiveSession(item.sid)
     s.setView(sessionView(item.componentId)!)
+    return
+  }
+  // Dependency detection shows in Navigation's dock in every worktree, so it switches none.
+  if (item.componentId === MAP_SCOPE) {
+    s.select(null)
+    s.setActiveSession(item.sid)
+    s.setView('navigation')
     return
   }
   const runtime = s.runtimeTerminals[item.sid]

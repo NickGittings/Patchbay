@@ -11,6 +11,7 @@ pub mod events;
 pub mod extensions;
 pub mod files;
 pub mod git;
+pub mod link_proposals;
 pub mod maintenance;
 pub mod merges;
 pub mod model;

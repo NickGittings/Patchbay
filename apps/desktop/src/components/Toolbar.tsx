@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
+import { dependencyMapBlocked, offerDependencies } from '../lib/dependencies'
 import { useStore } from '../store'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import Toast from './Toast'
@@ -93,6 +94,16 @@ export default function Toolbar() {
                   title="Review detected structural changes before applying them"
                 >
                   Rescan
+                </MenuItem>
+                <MenuItem
+                  disabled={dependencyMapBlocked(entry)}
+                  onClick={() => {
+                    const id = useStore.getState().project?.id
+                    if (id) offerDependencies(id)
+                  }}
+                  title="Find how components depend on each other, from manifests or with an agent"
+                >
+                  Detect dependencies…
                 </MenuItem>
                 <MenuItem
                   onClick={() => void addRepo()}

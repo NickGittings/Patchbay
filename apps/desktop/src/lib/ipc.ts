@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   Added,
+  Link,
   MapIssue,
   MapEdit,
   ReconciliationPreview,
@@ -49,6 +50,9 @@ export const openProject = () =>
   )
 export const rescanProject = (project: Project) =>
   invoke<ReconciliationPreview>('rescan_project', { project, projectId: project.projectId })
+/** Detected dependencies between components already on the map that it lacks. */
+export const detectLinks = (project: Project) =>
+  invoke<Link[]>('detect_links', { project, projectId: project.projectId })
 export const mapIssues = (project: Project) =>
   invoke<MapIssue[]>('map_issues', { project, projectId: project.projectId })
 export const applyReconciliation = (project: Project, previewId: string, selected: string[]) =>
@@ -458,6 +462,28 @@ export const onProposal = (
   handler: (event: { projectId: string; task: string | null }) => void,
 ): Promise<UnlistenFn> =>
   listen<{ projectId: string; task: string | null }>(PROPOSAL_EVENT, (e) => handler(e.payload))
+export const MAP_LINKS_EVENT = 'patchbay://map-links'
+export const onMapLinks = (handler: (event: { projectId: string }) => void): Promise<UnlistenFn> =>
+  listen<{ projectId: string }>(MAP_LINKS_EVENT, (e) => handler(e.payload))
+export const mapLinksRead = (projectId: string) =>
+  invoke<import('../types').PendingLinks | null>('map_links_read', { projectId })
+/** Forget submission `id`; a newer one stays. */
+export const mapLinksClear = (projectId: string, id: string) =>
+  invoke<boolean>('map_links_clear', { projectId, id })
+/** Launch the dependency detection agent with agent preset `terminal`. */
+export const mapAgentStart = (
+  project: Project,
+  terminal: TerminalSpec,
+  requestId: string,
+  resume?: boolean,
+) =>
+  invoke<string>('map_agent_start', {
+    projectId: project.projectId,
+    project,
+    terminal,
+    requestId,
+    resume,
+  })
 export const proposalRead = (projectId: string, task?: string) =>
   invoke<import('../types').PlannerProposal | null>('proposal_read', { projectId, task })
 export const proposalApply = (

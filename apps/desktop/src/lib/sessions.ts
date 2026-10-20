@@ -6,6 +6,8 @@ import { extensionTerminalRun } from './ipc'
 import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
 import { showsSession } from './windows'
 import {
+  MAP_AGENT_TERMINAL,
+  MAP_SCOPE,
   PLAN_SCOPE,
   showsInDock,
   isReservedScope,
@@ -20,8 +22,10 @@ import {
   sessionId,
   type TerminalEvent,
   type TerminalSnapshot,
+  type TerminalSpec,
 } from '../types'
 import {
+  mapAgentStart,
   onTerminalEvent,
   taskRootStart,
   planStart,
@@ -31,6 +35,7 @@ import {
   serviceRetire,
 } from './ipc'
 import { peersFor, planTerminals } from './plan'
+import { roleTerminal } from './agentRoles'
 import { savePlanDraft } from './planDrafts'
 import { autoRuns } from './autoState'
 import { unfinished } from './autoSettings'
@@ -165,6 +170,8 @@ interface Launch {
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
   restart?: boolean
+  /** Set once this launch's session is known to have started (also after a lost reply). */
+  started?: boolean
 }
 
 /**
@@ -183,7 +190,8 @@ function captureLaunch(
   if (!id || !project) throw new Error('Open a project first')
   const state = projectStateOf(id, s)
   // The planner belongs to the project, whatever the worktree, and plans what is highlighted now.
-  const planner = componentId === PLAN_SCOPE
+  // Dependency detection belongs to the project too.
+  const planner = componentId === PLAN_SCOPE || componentId === MAP_SCOPE
   const scope = planner ? null : task === undefined ? (state?.activeTask ?? null) : task
   const workspace =
     planner || state?.activeTask === scope
@@ -268,6 +276,57 @@ function autoBriefOf(projectId: string, sid: string) {
   )?.sessionBrief
 }
 
+/** Presets chosen for dependency detection launches the session list doesn't record yet. */
+const mapPresets = new Map<string, string>()
+
+/**
+ * The agent preset a dependency detection session runs: the one just chosen, else the one its
+ * record keeps (`metadata.lane`), else the planner's role. Never the recorded command, which
+ * already carries its briefing.
+ */
+function mapPreset(projectId: string, sid: string): TerminalSpec {
+  const s = useStore.getState()
+  const id = mapPresetId(sid)
+  const preset =
+    planTerminals(s.devices).find((t) => t.id === id) ??
+    roleTerminal(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')
+  if (!preset) throw new Error('Add an agent preset to detect dependencies')
+  return preset
+}
+
+/** The preset id dependency detection session `sid` was last launched with, when known. */
+export function mapPresetId(sid: string): string | undefined {
+  return (
+    mapPresets.get(sid) ??
+    useStore.getState().sessionRecords.find((r) => r.id === sid)?.metadata.lane ??
+    undefined
+  )
+}
+
+/** Whether a launch or restart of `sid` is on its way. */
+export const launching = (sid: string) => starting.has(sid) || restarting.has(sid)
+
+/**
+ * Start `projectId`'s dependency detection agent with agent preset `preset`. Resolves whether it
+ * started; failures are shown as a message. A launch already on its way keeps its own preset, so
+ * this one starts nothing.
+ */
+export async function startMapAgent(projectId: string, preset: TerminalSpec): Promise<boolean> {
+  const launch = captureLaunch(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+  if (launching(launch.sid)) return false
+  const previous = mapPresets.get(launch.sid)
+  mapPresets.set(launch.sid, preset.id)
+  try {
+    await launchTerminal(launch)
+    return !!launch.started
+  } finally {
+    if (!launch.started) {
+      if (previous === undefined) mapPresets.delete(launch.sid)
+      else mapPresets.set(launch.sid, previous)
+    }
+  }
+}
+
 /** A handoff or Auto launch, whose caller reports every failure itself. */
 const reports = (launch: Launch) => !!(launch.kickoff || launch.auto)
 
@@ -320,7 +379,12 @@ function launchTerminal(launch: Launch): Promise<void> {
         ? { kind: 'fixFindings' }
         : (launch.kickoff ?? (componentId === PLAN_SCOPE ? recorded?.kickoff : undefined))
       const fix = kickoff?.kind === 'fixFindings'
-      if (componentId !== PLAN_SCOPE && terminal?.kind === 'agent' && !fix)
+      if (
+        componentId !== PLAN_SCOPE &&
+        componentId !== MAP_SCOPE &&
+        terminal?.kind === 'agent' &&
+        !fix
+      )
         await savePlanDraft(launch.projectId, launch.task)
       if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
@@ -348,6 +412,8 @@ function launchTerminal(launch: Launch): Promise<void> {
           runtime.key,
           task,
         )
+      else if (componentId === MAP_SCOPE)
+        await mapAgentStart(project, mapPreset(launch.projectId, sid), requestId, !!launch.restart)
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
@@ -368,6 +434,7 @@ function launchTerminal(launch: Launch): Promise<void> {
       launchRequests.delete(sid)
       // A reset hung the new session up, so a handoff or Auto must not count it as running.
       if (requestedEpoch !== epoch) return await cancelled(launch)
+      launch.started = true
       if (componentId === PLAN_SCOPE) markPlanStarted(launch.projectId, sid, launch.highlighted)
     } catch (e) {
       // Nothing was requested, so there is nothing to check; the handoff reports it.
@@ -378,7 +445,10 @@ function launchTerminal(launch: Launch): Promise<void> {
       const snapshot = await terminalSnapshot(sid).catch(() => null)
       const fresh = componentId === TASK_ROOT_SCOPE && !!launch.kickoff
       const started = fresh ? !!snapshot : !!snapshot?.running
-      if (started) launchRequests.delete(sid)
+      if (started) {
+        launchRequests.delete(sid)
+        launch.started = true
+      }
       if (!started) {
         // A handoff reports its own failure and removes its fresh tile, so nothing retries it.
         if (reports(launch)) {

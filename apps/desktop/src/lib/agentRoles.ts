@@ -1,5 +1,11 @@
-import { AGENT_ROLES, type AgentRole, type AgentRoles, type DeviceManifest } from '../types'
-import { agentDevices } from './plan'
+import {
+  AGENT_ROLES,
+  type AgentRole,
+  type AgentRoles,
+  type DeviceManifest,
+  type TerminalSpec,
+} from '../types'
+import { agentDevices, planTerminals } from './plan'
 
 export const ROLE_LABELS: Record<AgentRole, string> = {
   plan: 'Plan',
@@ -26,6 +32,16 @@ export function roleDevice(
   fallback?: DeviceManifest,
 ): DeviceManifest {
   return assigned(devices, roles, role)[0] ?? fallback ?? agentDevices(devices)[0]
+}
+
+/** [`roleDevice`]'s preset as an agent terminal, as planners and job agents launch it. */
+export function roleTerminal(
+  devices: DeviceManifest[],
+  roles: AgentRoles,
+  role: AgentRole,
+): TerminalSpec | undefined {
+  const id = roleDevice(devices, roles, role)?.id
+  return planTerminals(devices).find((t) => t.id === id)
 }
 
 /** Every reviewer assigned to `role`, else the single preset [`roleDevice`] picks. */

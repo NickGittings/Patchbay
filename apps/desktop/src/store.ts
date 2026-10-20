@@ -160,6 +160,8 @@ export interface ProjectState {
   implementSubagents: number
   /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
   validatorDeclined: string[]
+  /** "Not now" on the offer to detect dependencies (workspace layout only). */
+  dependencyPromptDismissed: boolean
   planActive: string | null
   dirty: boolean
   gitChanges: Record<string, number>
@@ -299,6 +301,8 @@ interface State {
   validatorDeclined: string[]
   /** Declines suggestions, dropping keys of terminals no longer on the map. */
   declineValidators: (keys: string[]) => void
+  /** "Not now" on the offer to detect dependencies (workspace layout only). */
+  dependencyPromptDismissed: boolean
   /** Offers every declined suggestion again. */
   restoreValidators: () => void
   /** The planner's shown terminal id (UI only). */
@@ -681,6 +685,7 @@ export const useStore = create<State>((set, get) => ({
       validatorDeclined: liveDeclined(s.nodes, [...new Set([...s.validatorDeclined, ...keys])]),
     })),
   restoreValidators: () => set({ validatorDeclined: [] }),
+  dependencyPromptDismissed: false,
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
@@ -965,6 +970,30 @@ export function projectOf(id: string): Project | null {
   return state?.project ? projectFrom(state) : null
 }
 
+/**
+ * Append to open project `projectId`'s map as it is now, as an ordinary edit that autosaves and
+ * keeps live session and git state. `extend` gets the current map and returns what to add, or null
+ * for nothing; that is returned, else null when the project isn't open.
+ */
+export function appendToMap<T extends { components?: Component[]; links?: Link[] }>(
+  projectId: string | null | undefined,
+  extend: (current: Project) => T | null,
+): T | null {
+  const current = projectId ? projectOf(projectId) : null
+  if (!projectId || !current) return null
+  const added = extend(current)
+  if (!added) return null
+  const s = useStore.getState()
+  s.syncProject({
+    ...current,
+    projectId,
+    components: [...current.components, ...(added.components ?? [])],
+    links: [...current.links, ...(added.links ?? [])],
+  })
+  s.patchProject(projectId, { dirty: true })
+  return added
+}
+
 /** A project state as a `Project` (the map `patchbay.json` holds). */
 export function projectFrom({
   project,
@@ -1020,6 +1049,7 @@ function emptyProjectState(): ProjectState {
     agentRoles: {},
     implementSubagents: 0,
     validatorDeclined: [],
+    dependencyPromptDismissed: false,
     planActive: null,
     dirty: false,
     gitChanges: {},
@@ -1053,6 +1083,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    dependencyPromptDismissed,
     planActive,
     dirty,
     gitChanges,
@@ -1089,6 +1120,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    dependencyPromptDismissed,
     planActive,
     dirty,
     gitChanges,

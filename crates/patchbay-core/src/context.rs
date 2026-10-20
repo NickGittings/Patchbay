@@ -210,6 +210,11 @@ impl Shell {
     }
 }
 
+/// An agent command for briefings, in the syntax of this platform's shells.
+pub(crate) fn agent_command(args: &str) -> String {
+    Shell::current().agent_command(args)
+}
+
 /// Enough lexing, in the syntax of the shell that runs the command, to identify
 /// simple invocations without rewriting them. Quoted operators are literal
 /// arguments; compound or dynamic commands fall back.
@@ -998,7 +1003,7 @@ pub fn merge_agent_spec(
     Ok(spec)
 }
 
-/// Build an owned briefing and launch command for a review or merge job.
+/// Build an owned briefing and launch command for a review, merge or dependency detection job.
 ///
 /// # Errors
 /// Fails for an invalid scope or terminal, briefing I/O, or a rejected policy check.
@@ -1016,7 +1021,7 @@ pub fn job_agent_spec(
     anyhow::ensure!(
         matches!(
             scope,
-            crate::model::MERGE_SCOPE | crate::model::REVIEW_SCOPE
+            crate::model::MERGE_SCOPE | crate::model::REVIEW_SCOPE | crate::model::MAP_SCOPE
         ),
         "Invalid job scope"
     );
@@ -1134,6 +1139,7 @@ fn is_owned_briefing_file(file: &Path) -> bool {
             .and_then(|s| {
                 s.strip_prefix("merge-")
                     .or_else(|| s.strip_prefix("review-"))
+                    .or_else(|| s.strip_prefix("map-"))
             })
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
         && file.extension().is_some_and(|s| s == "md")

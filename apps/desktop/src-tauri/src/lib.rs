@@ -452,6 +452,22 @@ impl Added {
     }
 }
 
+/// Detected dependencies between components already on the map that it lacks.
+#[tauri::command]
+async fn detect_links(
+    project_id: String,
+    state: State<'_, AppState>,
+    mut project: Project,
+) -> CmdResult<Vec<model::Link>> {
+    let access = state.project(&project_id)?.access.snapshot();
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        maintenance::new_links(&project, &access, &extensions.get().detectors()).map_err(err)
+    })
+    .await
+}
+
 /// Rescan proposes changes; only Apply selected changes the in-memory draft.
 #[tauri::command]
 async fn rescan_project(
@@ -654,7 +670,14 @@ async fn add_folder(
         let Some(dir) = pick_folder(&window, "Add a repo or folder", root.parent())? else {
             return Ok(None);
         };
-        let found = detect::detect_folder_with(&project, &dir, &detectors).map_err(err)?;
+        let snapshot = access.snapshot();
+        let roots: Vec<_> = project
+            .external_dirs()
+            .into_iter()
+            .filter(|folder| snapshot.is_granted(folder))
+            .collect();
+        let found =
+            detect::detect_folder_in_roots_with(&project, &dir, &roots, &detectors).map_err(err)?;
         let (components, links) = (project.components.len(), project.links.len());
         detect::merge_new(&mut project, found);
         access.grant(&dir).map_err(err)?;
@@ -1415,6 +1438,36 @@ async fn merge_agent_start(
     .await
 }
 
+/// Launch the agent that proposes dependencies between the map's components,
+/// at the project root. `terminal` is the chosen agent preset.
+#[tauri::command]
+async fn map_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    project: Project,
+    terminal: TerminalSpec,
+    request_id: String,
+    resume: Option<bool>,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
+    blocking(move || {
+        let project = access.restrict(project, &[]).map_err(err)?;
+        let (job, mut spec) =
+            patchbay_core::link_proposals::prepare(&project, &terminal, &AllowAll).map_err(err)?;
+        let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
+        // The preset, so a restart launches the same agent.
+        metadata.lane = Some(terminal.id);
+        agent_commands::inject(agent_server, &project_id, None, &mut spec);
+        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
@@ -2147,6 +2200,7 @@ pub fn run() {
                 agent_hooks_configure,
                 open_project,
                 rescan_project,
+                detect_links,
                 map_issues,
                 apply_reconciliation,
                 edit_map_components,
@@ -2174,6 +2228,7 @@ pub fn run() {
                 plan_read,
                 task_root_start,
                 merge_agent_start,
+                map_agent_start,
                 merge_outcome,
                 review_agent_start,
                 review_read,
@@ -2182,6 +2237,8 @@ pub fn run() {
                 agent_commands::task_activities,
                 agent_commands::sync_agent_project,
                 agent_commands::proposal_read,
+                agent_commands::map_links_read,
+                agent_commands::map_links_clear,
                 agent_commands::proposal_apply,
                 plan_start,
                 plan_write,
