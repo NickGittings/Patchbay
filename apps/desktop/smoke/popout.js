@@ -90,7 +90,7 @@
       })
     } else {
       const title = document.querySelector('.changes-panel .empty-state-title')?.textContent
-      if (title !== `No changes in ${node.data.name}`)
+      if (title !== 'No uncommitted changes')
         throw new Error(`incorrect component changes empty state: ${title}`)
     }
     if (!document.querySelector('.component-window .terminal-tile'))

@@ -115,9 +115,7 @@ export default function FindingsPanel({
   if (!branch)
     return (
       <div className="findings-panel">
-        <p className="hint">
-          Findings are recorded per branch, and none is recorded here; see Review.
-        </p>
+        <p className="hint">No branch recorded. Findings are unavailable without a branch name.</p>
       </div>
     )
   if (!loaded)
@@ -136,7 +134,7 @@ export default function FindingsPanel({
     return (
       <div className="findings-panel">
         <div className="review-empty">
-          No review of <code>{branch}</code> yet. Use “Review branch…” to start one.
+          <code>{branch}</code> has not been reviewed yet. Choose Review branch… to get findings.
         </div>
       </div>
     )
@@ -146,15 +144,9 @@ export default function FindingsPanel({
       <header className="findings-header">
         <div className="findings-title-row">
           <VerdictBadge findings={findings} running={running} />
-          <span className="findings-title">
-            {total ? `${total} finding${total === 1 ? '' : 's'}` : 'Findings'}
-          </span>
           <span className="findings-meta">
-            {status === 'stale' ? 'Changed since review · ' : ''}
-            {findings.modifiedMs > 0
-              ? `reviewed ${ago(findings.modifiedMs)}`
-              : 'not written yet'}{' '}
-            against <code>{findings.base}</code>
+            Against {findings.base} · {status === 'stale' ? 'Changed since review · ' : ''}
+            {findings.modifiedMs > 0 ? `reviewed ${ago(findings.modifiedMs)}` : 'not written yet'}
           </span>
           <span className="spacer" />
           {actions}
@@ -211,11 +203,6 @@ export default function FindingsPanel({
         {earlier && (
           <p className="findings-note">
             Showing an earlier attempt’s findings until the current review writes its own.
-          </p>
-        )}
-        {status === 'stale' && !earlier && (
-          <p className="findings-note">
-            The branch changed after this review; some findings may already be addressed.
           </p>
         )}
         {findings.truncated && <p className="findings-note">Findings truncated at 64 KiB.</p>}

@@ -93,8 +93,12 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       )}
       <Handle type="target" position={Position.Left} className="link-handle" />
       <div className="component-header">
-        <span className="kind-badge">{data.kind}</span>
-        <span className="component-name">{data.name}</span>
+        <span
+          className="component-name"
+          title={`${data.kind} · ${data.path === '.' ? 'repo root' : data.path}`}
+        >
+          {data.name}
+        </span>
         {inTask && (
           <span className="task-badge" title="In the active task">
             Task
@@ -120,7 +124,6 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
           ⧉
         </button>
       </div>
-      <div className="component-path">{data.path === '.' ? '(repo root)' : data.path}</div>
       <div className="terminal-chips">
         {data.terminals.map((t, i) => {
           const sid = sessionId(id, t.id, task)

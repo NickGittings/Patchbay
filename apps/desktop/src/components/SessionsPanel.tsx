@@ -29,6 +29,7 @@ import { sessionView, type SessionRecord, type Task } from '../types'
 import { revealTerminal } from '../lib/attention'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
+import TerminalControl from './TerminalControl'
 
 const EMPTY: Record<SessionFilter, string> = {
   all: 'No sessions',
@@ -339,6 +340,10 @@ export default function SessionsPanel() {
       [projectId]: { ...(current[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS), ...patch },
     }))
   const [selected, setSelected] = useState<SessionRecord>()
+  const selectedSession = useStore((s) => (selected ? s.sessions[selected.id] : undefined))
+  const selectedProjectOpen = useStore(
+    (s) => !!selected && projectStateOf(selected.metadata.projectId, s) !== undefined,
+  )
   const [conversation, setConversation] = useState<{ id: string; value: string }>()
   const [historyOutput, setHistoryOutput] = useState('')
   const [history, setHistory] = useState<number | null>(null)
@@ -505,6 +510,19 @@ export default function SessionsPanel() {
                     </option>
                   ))}
                 </select>
+              )}
+              {history === null && (
+                <TerminalControl
+                  componentId={selected.metadata.componentId}
+                  terminalId={selected.metadata.terminalId}
+                  sid={selected.id}
+                  session={selectedSession}
+                  task={selected.metadata.task ?? null}
+                  projectId={selected.metadata.projectId}
+                  disabled={
+                    !connected || busy || (!selectedSession?.running && !selectedProjectOpen)
+                  }
+                />
               )}
               <button onClick={() => setSelected(undefined)}>Hide</button>
             </div>

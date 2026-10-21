@@ -23,9 +23,6 @@
   align-items: center;
   gap: 8px;
 }
-.findings-title {
-  font-weight: 600;
-}
 .findings-meta,
 .findings-note {
   font-size: 12px;

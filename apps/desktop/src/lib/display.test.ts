@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import type { AgentReport, SessionState, SessionStatus } from '../types'
-import { describeTerminal, sessionRun, terminalStatus } from './display'
+import type { AgentReport, SessionState, SessionStatus, TerminalKind } from '../types'
+import { describeTerminal, paneAutoStarts, sessionRun, terminalStatus } from './display'
 
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({
@@ -37,6 +37,15 @@ describe('terminalStatus', () => {
     expect(terminalStatus('task', { running: true, disconnected: true }, NOW)).toMatchObject({
       label: 'Disconnected',
       attention: 0,
+    })
+  })
+
+  test('an interrupted session explains how to recover after a service restart', () => {
+    expect(terminalStatus('agent', { running: false, interrupted: true }, NOW)).toMatchObject({
+      health: 'fail',
+      label: 'Interrupted',
+      detail: 'The session service restarted. Choose Resume in Sessions or Restart to recover.',
+      attention: 1,
     })
   })
 
@@ -135,4 +144,23 @@ test('sessionRun tells apart runs that reuse a generation after a service restar
   expect(sessionRun('sid', { generation: 3, startedMs: 20 })).not.toBe(run)
   expect(sessionRun('sid', { generation: 4, startedMs: 10 })).not.toBe(run)
   expect(sessionRun('other', { generation: 3, startedMs: 10 })).not.toBe(run)
+})
+
+// Review and merge panes must never bypass the launch that records their attempt and findings.
+test.each<[string, TerminalKind, boolean]>([
+  ['component', 'shell', true],
+  ['component', 'task', false],
+  ['component', 'agent', false],
+  ['@task', 'shell', false],
+  ['@task', 'task', false],
+  ['@task', 'agent', false],
+  ['@plan', 'agent', false],
+  ['@review', 'agent', false],
+  ['@merge', 'agent', false],
+  ['@review', 'shell', false],
+  ['@merge', 'shell', false],
+])('pane auto-start for %s %s is %s', (scope, kind, expected) => {
+  expect(paneAutoStarts(scope, { id: 'terminal', name: 'Terminal', kind, command: '' })).toBe(
+    expected,
+  )
 })

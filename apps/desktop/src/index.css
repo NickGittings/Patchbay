@@ -253,12 +253,6 @@ input[type='radio'] {
   border: 1px solid var(--tone);
   border-radius: 999px;
 }
-.health-running.status-label,
-.health-working.status-label,
-.health-waiting.status-label {
-  --tone: var(--running);
-}
-.health-ok.status-label,
 .health-ready.status-label {
   --tone: var(--ok);
 }
@@ -618,9 +612,6 @@ input[type='radio'] {
   font-size: 10px;
   color: var(--muted);
 }
-.count.running {
-  color: var(--running);
-}
 
 /* Inspector */
 .inspector {
@@ -761,7 +752,10 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px 2px;
+  padding: 10px 12px;
+}
+.component-node:not(:hover, :focus-within, .selected) .popout-button {
+  opacity: 0;
 }
 .kind-badge {
   font-size: 9px;
@@ -793,15 +787,6 @@ input[type='radio'] {
   border-radius: 4px;
   padding: 0 5px;
   max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.component-path {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  padding: 0 12px 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -879,12 +864,6 @@ input[type='radio'] {
   gap: 8px;
   padding: 0 4px 4px;
   white-space: nowrap;
-}
-.tab-actions code {
-  color: var(--muted);
-  max-width: 36ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .terminal-area {
   position: relative;
@@ -1068,13 +1047,9 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.terminal-tile-header code {
-  color: var(--muted);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.terminal-tile-header .hint {
+  padding: 0;
+  font-weight: normal;
 }
 .terminal-tile-header button {
   flex: none;
@@ -1374,10 +1349,6 @@ input[type='radio'] {
   gap: 6px;
   padding: 6px 12px;
   flex: none;
-}
-.validation-chips.none {
-  color: var(--muted);
-  font-size: 11px;
 }
 .validation-chip {
   display: inline-flex;
@@ -1695,10 +1666,9 @@ input[type='radio'] {
   align-items: center;
   gap: 8px;
 }
-.review-title {
+.review-totals {
   flex: 1;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 12px;
 }
 .review-worktree {
   max-width: 60%;
@@ -1707,18 +1677,6 @@ input[type='radio'] {
 }
 .review-refresh {
   padding: 2px 8px;
-}
-.review-summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.review-summary > * + *::before {
-  content: '·';
-  margin-right: 10px;
-  color: var(--border-strong);
 }
 .review-filter {
   display: flex;
@@ -1760,6 +1718,7 @@ input[type='radio'] {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+
 .review-empty {
   display: flex;
   flex-direction: column;
@@ -2243,6 +2202,7 @@ button.review-name:hover:not(:disabled) {
   border-radius: 4px;
   padding: 1px 5px;
 }
+
 .attention-task {
   color: var(--muted);
   font-style: normal;
@@ -2538,54 +2498,6 @@ kbd {
   border-radius: 4px;
 }
 
-/* Inspector with nothing selected */
-.inspector-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin: 4px 0 18px;
-}
-.inspector-stat {
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-}
-.inspector-stat strong {
-  display: block;
-  font-size: 18px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.inspector-stat span {
-  color: var(--muted);
-  font-size: 11px;
-}
-.tips {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.tips li {
-  display: grid;
-  grid-template-columns: 18px 1fr;
-  gap: 8px;
-}
-.tips li > span:first-child {
-  color: var(--faint);
-  text-align: center;
-}
-.tips strong {
-  color: var(--text);
-  font-weight: 500;
-}
-
 /* Welcome */
 .welcome {
   background:
@@ -2825,14 +2737,6 @@ kbd {
 }
 .review-merge-terminal select {
   max-width: 50%;
-}
-.review-merge-location {
-  padding: 4px 10px;
-  font-size: 11px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .merge-agent-dialog code {
   overflow-wrap: anywhere;

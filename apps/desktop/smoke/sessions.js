@@ -638,6 +638,30 @@
         state().sessionRecords.find((r) => r.metadata.task === zebra.id)?.snapshot?.running
       )
     })
+    // The preview still belongs to Alpha in the inactive project, even after its row disappears.
+    const alphaSid = smoke.sessionId('@task', 'shell', alpha.id, one.id)
+    const zebraSid = smoke.sessionId('@task', 'shell', zebra.id, one.id)
+    const zebraGeneration = state().sessions[zebraSid].generation
+    assert(state().project.id === two.id, 'preview test needs another active project')
+    await click(() => document.querySelector('.session-preview'), '▶ Restart')
+    await until('preview restarts its recorded project and task', async () => {
+      await smoke.reconcileSessions()
+      return state().sessions[alphaSid]?.running && worktree('Alpha work')
+    })
+    assert(state().project.id === two.id, 'preview restart switched the active project')
+    assert(
+      state().sessionRecords.find((r) => r.id === alphaSid)?.snapshot?.launchDirectory ===
+        alpha.worktree,
+      'preview restarted outside its recorded worktree',
+    )
+    assert(
+      state().sessions[zebraSid].generation === zebraGeneration,
+      'preview restarted the active task instead of its recorded task',
+    )
+    assert(
+      !document.querySelector('.session-preview .terminal-overlay button'),
+      'preview has a second Start action in its terminal pane',
+    )
     await click(panel, 'Stop all work')
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('worktree cleanup completed', () => !globalStop()?.disabled)
