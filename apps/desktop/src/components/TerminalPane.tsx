@@ -36,7 +36,9 @@ export default function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   // Dismissal lasts for one run; a restart shows its own notice again.
-  const [dismissed, setDismissed] = useState<number>()
+  const noticeRun = `${sid}:${session?.generation ?? session?.startedMs ?? 'unknown'}`
+  const [dismissed, setDismissed] = useState<string>()
+  const [truncationDismissed, setTruncationDismissed] = useState<string>()
 
   useEffect(() => {
     const host = hostRef.current
@@ -146,18 +148,23 @@ export default function TerminalPane({
           )}
         </div>
       )}
-      {session?.truncated && (
-        <div className="terminal-notice">Earlier output was truncated (512 KiB history limit).</div>
+      {session?.truncated && truncationDismissed !== noticeRun && (
+        <div className="terminal-notice" role="status">
+          <span>Earlier output was truncated (512 KiB history limit).</span>
+          <button title="Dismiss" onClick={() => setTruncationDismissed(noticeRun)}>
+            ×
+          </button>
+        </div>
       )}
       {session?.interrupted && (
         <div className="terminal-notice">
           Interrupted · the service restarted. Recovery is explicit.
         </div>
       )}
-      {session?.notice && dismissed !== session.startedMs && (
+      {session?.notice && dismissed !== noticeRun && (
         <div className="terminal-notice" role="status">
           <span>{session.notice}</span>
-          <button title="Dismiss" onClick={() => setDismissed(session.startedMs)}>
+          <button title="Dismiss" onClick={() => setDismissed(noticeRun)}>
             ×
           </button>
         </div>

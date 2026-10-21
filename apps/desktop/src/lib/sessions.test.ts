@@ -459,6 +459,33 @@ function snapshot(running: boolean, generation = 3): TerminalSnapshot {
   }
 }
 
+test('a status before hydration supplies a stable run identity for notice dismissal', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  handleTerminalEvent({
+    type: 'status',
+    sessionId: sid,
+    generation: 3,
+    status: snapshot(true).status,
+  })
+  const early = useStore.getState().sessions[sid]
+  expect(early.startedMs).toBeUndefined()
+  expect(early.generation).toBe(3)
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(true))
+  await hydrateSession(sid)
+  const hydrated = useStore.getState().sessions[sid]
+  expect(hydrated.startedMs).toBe(1)
+  expect(hydrated.generation).toBe(early.generation)
+
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 4,
+    startedMs: 2,
+    notice: 'New run',
+  })
+  expect(useStore.getState().sessions[sid].generation).toBe(4)
+})
+
 test('hydrating a finished run resets the modes it left on, a running one keeps them', async () => {
   const ended = sessionId('web', 'dev', null, 'p')
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(false))

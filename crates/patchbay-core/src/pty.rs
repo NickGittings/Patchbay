@@ -615,6 +615,7 @@ impl PtyManager {
             backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
             backlog.exited_ms = Some(exited_ms);
+            backlog.tracker.on_exit(exited_ms);
             // The monitor stopped watching it, so report e.g. a stop it missed.
             // Emitted under the backlog lock, like the monitor's, so no
             // earlier status can follow these.
@@ -706,15 +707,16 @@ impl PtyManager {
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
+            // A tick may have captured this session before the waiter removed it.
+            // Do not apply delayed reports after its final status and exit.
+            if !guard.running {
+                continue;
+            }
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
             }
             for event in hooks {
                 guard.tracker.on_hook(event, now);
-            }
-            // Once exited, the waiter has sent the last status.
-            if !guard.running {
-                continue;
             }
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's

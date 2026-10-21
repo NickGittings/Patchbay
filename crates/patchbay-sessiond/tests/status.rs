@@ -121,7 +121,9 @@ impl EventSink for Sink {
     }
 }
 fn wait_for(manager: &PtyManager, state: AgentState) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Approval detection includes a quiet window and a journal polling interval;
+    // allow scheduling headroom when the suite runs in parallel.
+    let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if manager.snapshot("origin-session").is_some_and(|s| {
             s.status
@@ -154,7 +156,7 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
                 id: "origin-session".into(),
                 cwd: fixture.0.clone(),
                 command: format!(
-                    "printf '%s' \"$PATCHBAY_REPORT_DIR\" > {}; sleep 10",
+                    "printf '%s' \"$PATCHBAY_REPORT_DIR\" > {}; sleep 60",
                     quote(&directory_file)
                 ),
                 env: BTreeMap::from([
@@ -168,7 +170,7 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
                 notice: None,
                 dirs: Vec::new(),
             },
-            sink,
+            sink.clone(),
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -199,7 +201,37 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
         &env,
     ));
     wait_for(&manager, AgentState::Review);
+    // Exit while a second turn's approval is pending, without a progress or
+    // SessionEnd hook. Finalization must not leave a deferred NeedsInput behind.
+    let next = payload.replace("12345678-turn", "12345678-next-turn");
+    assert_silent(&run("codex", &next, &env));
+    wait_for(&manager, AgentState::Working);
+    assert_silent(&run(
+        "codex",
+        &next.replace("UserPromptSubmit", "PermissionRequest"),
+        &env,
+    ));
     manager.stop("origin-session");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while manager.snapshot("origin-session").unwrap().running && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ended = manager.snapshot("origin-session").unwrap();
+    assert!(!ended.running);
+    assert_eq!(ended.status.agent.unwrap().state, AgentState::Ended);
+    if let Some(TerminalEvent::Status { status, .. }) = manager.mark_seen("origin-session") {
+        assert_eq!(status.agent.unwrap().state, AgentState::Ended);
+    }
+    let events = sink.0.lock().unwrap();
+    let exit = events
+        .iter()
+        .position(|e| matches!(e, TerminalEvent::Exited { .. }))
+        .unwrap();
+    assert!(
+        !events[exit..]
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::Status { .. }))
+    );
 }
 
 #[test]

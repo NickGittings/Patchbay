@@ -25,16 +25,27 @@ Supported parent-turn events map to these states:
 | Events | State |
 | --- | --- |
 | UserPromptSubmit, PreToolUse, PostToolUse, Claude PostToolUseFailure | Working |
-| PermissionRequest, Claude permission notification | Needs input |
+| PermissionRequest | Working until 3s without terminal text updates, then Needs input |
+| Claude permission notification | Needs input immediately |
 | Stop | Ready for review |
 | SessionStart, Codex Interrupt, Claude StopFailure | Idle |
 | SessionEnd | Ended |
 
 Compaction SessionStart preserves an active turn. Native Working survives quiet terminal
-output. Answer keystrokes and escape sequences only make the state a guess: an answer turns
-Needs input into unconfirmed Working, and Esc (which interrupts or denies without a provider
-hook) turns Needs input into Idle and Working into unconfirmed Working that goes idle after 15s
-of quiet. An explicit Ctrl+C records interruption, and subsequent provider events resume
+output. Permission requests may be answered by an automatic reviewer, so they retain an
+authoritative Working state, preserving when work began, until the terminal text stays quiet
+for 3s. Text activity keeps the request pending for as long as an automatic review or
+approved command continues updating the terminal. Cursor controls and window-title updates
+do not extend the quiet window; a Claude permission notification confirms the prompt
+immediately. Each new permission request gets its own quiet window, even when the previous
+tool emitted no progress hook. Duplicate journal deliveries are rejected by sequence number.
+Typing during a pending request clears it and preserves authoritative Working and its start
+time. Answering a confirmed Needs input prompt makes Working unconfirmed until the next
+provider hook. Esc turns a pending or confirmed prompt into unconfirmed Idle and other
+Working into unconfirmed Working that goes idle after 15s of quiet. Mouse and focus reports
+do not suppress output as input echo. PTY exit clears pending approvals and ends unresolved
+work before publishing Exited, so later snapshots and seen updates cannot confirm a prompt.
+An explicit Ctrl+C records interruption, and subsequent provider events resume
 authoritative reporting. A `resume` or `clear` SessionStart switches to that conversation, even
 one seen before; a `startup` SessionStart in another conversation comes from a nested run
 (`claude -p`, `codex exec`) inheriting the terminal's environment and is ignored.
@@ -99,6 +110,17 @@ provider payloads. Windows/Linux native tests and packaged reporter execution re
 outstanding. On Windows specifically, validate Claude exec-form hooks and Codex's encoded
 PowerShell launcher with spaces/punctuation in the installation path and existing settings.
 Installed reporter copies should be reinstalled after updates that change the reporter.
+
+## Approval activity capture on October 20, 2026
+
+Codex CLI 0.162.1 was run under `script -q` in a scratch repository with
+`approvals_reviewer=user` and `approvals_reviewer=auto_review`, requesting escalation for
+`sleep 20 && echo done`. The user approval dialog remained open for more than 10s. Its text
+was static, but it continued emitting CSI redraw controls and an OSC window title alternating
+`[ ! ] Action Required` and `[ . ] Action Required`. Raw-byte silence cannot identify this
+prompt. During automatic review and the approved command, the on-screen spinner and elapsed
+seconds continued updating. The tracker therefore measures approval quiet from non-echo text
+bytes outside terminal controls, retaining partial escape sequences across output chunks.
 
 Contracts were checked against the [official OpenAI hooks documentation](https://learn.chatgpt.com/docs/hooks?site_variant=chatgpt&translationFallback=zh-Hans)
 and [Claude hooks reference](https://code.claude.com/docs/en/hooks). Claude user-directory
