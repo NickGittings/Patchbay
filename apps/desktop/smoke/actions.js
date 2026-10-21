@@ -120,11 +120,12 @@
       'environment startup',
       () => !state().graphActionBusy && state().graphActionReport?.results.length === 2,
     )
-    assert(
-      state().sessions[smoke.sessionId('api', 'dev')]?.status?.ready,
-      'API readiness was not observed',
+    // The report is the command's reply; terminal events arrive on their own channel, maybe later.
+    await until(
+      'API readiness',
+      () => state().sessions[smoke.sessionId('api', 'dev')]?.status?.ready,
     )
-    assert(state().sessions[smoke.sessionId('web', 'dev')]?.running, 'web did not start')
+    await until('web start', () => state().sessions[smoke.sessionId('web', 'dev')]?.running)
     assert(
       state().sessions[smoke.sessionId('web', 'dev')].startedMs -
         state().sessions[smoke.sessionId('api', 'dev')].startedMs >=
