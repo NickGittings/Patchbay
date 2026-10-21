@@ -18,11 +18,14 @@ import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings
 import { useClockTick } from '../lib/clock'
 import ReviewAgentPanel from './ReviewAgentPanel'
 import { useStore } from '../store'
-import { PROJECT_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
+import { PROJECT_SCOPE, REVIEW_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
 import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
+import FindingsPanel, { SeverityCounts, VerdictBadge } from './findings/FindingsPanel'
+import FixFindingsButton from './findings/FixFindingsButton'
+import type { FileRef } from '../lib/findings'
 
 /** The watcher covers the open and active task's worktrees; another one is polled while shown. */
 const WORKTREE_POLL_MS = 5000
@@ -66,6 +69,17 @@ export default function ReviewView() {
   useEffect(() => {
     if (reviewFocus) useStore.setState({ reviewFocus: null })
   }, [reviewFocus])
+  // The right pane shows findings in place of a diff; a diff opened from a finding offers a way back.
+  const findingsFocus = useStore((s) => s.reviewFindingsFocus)
+  const [findingsOpen, setFindingsOpen] = useState(findingsFocus)
+  const [fromFindings, setFromFindings] = useState(false)
+  if (findingsFocus && (!findingsOpen || fromFindings)) {
+    setFindingsOpen(true)
+    setFromFindings(false)
+  }
+  useEffect(() => {
+    if (findingsFocus) useStore.setState({ reviewFindingsFocus: false })
+  }, [findingsFocus])
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)
@@ -118,6 +132,14 @@ export default function ReviewView() {
   const review = loaded?.scope === reviewScope ? loaded.review : null
   const findings = useReviewFindings(projectId, source?.branch)
   const status = reviewState(findings?.findings, source)
+  // The newest review session of the source branch, for the fix handoff beside its findings.
+  const reviewRecord = useStore((s) =>
+    source?.branch
+      ? reviewAgentRecords(s.sessionRecords, projectId).find(
+          (r) => r.metadata.componentId === REVIEW_SCOPE && r.metadata.branch === source.branch,
+        )
+      : undefined,
+  )
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
   const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
   // The open worktree's sessions belong to the active task when the project is open in its
@@ -214,6 +236,26 @@ export default function ReviewView() {
   const currentFile = current
     ? (review?.changes[current.componentId]?.find((f) => f.path === current.path) ?? null)
     : null
+
+  // Reviewers name paths relative to their worktree, which is usually the project root too.
+  const changedFile = (path: string) => {
+    for (const g of groups) {
+      const f = g.files.find(
+        (f) => f.path === path || f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`),
+      )
+      if (f) return { componentId: g.id, path: f.path }
+    }
+    return undefined
+  }
+  const openRef = (ref: FileRef) => {
+    const file = changedFile(ref.path)
+    if (!file) return
+    if (active.length && !active.includes(file.componentId)) setFilter([])
+    setCollapsed({ ...collapsed, [file.componentId]: false })
+    setSelected(file)
+    setFindingsOpen(false)
+    setFromFindings(true)
+  }
 
   // Click shows one component; Cmd/Ctrl/Shift-click adds or removes it.
   const toggleFilter = (id: string, e: MouseEvent) => {
@@ -316,7 +358,28 @@ export default function ReviewView() {
                       ↻
                     </button>
                   </div>
-                  <ReviewStatus branch={source?.branch} findings={findings} status={status} />
+                  <div className="review-status-row">
+                    <ReviewStatus branch={source?.branch} findings={findings} status={status} />
+                    {source?.branch && (
+                      <button
+                        className={`review-findings-button ${findingsOpen ? 'on' : ''}`}
+                        aria-pressed={findingsOpen}
+                        title="Show the review agents' findings for this branch"
+                        onClick={() => {
+                          setFindingsOpen(!findingsOpen)
+                          setFromFindings(false)
+                        }}
+                      >
+                        Findings
+                        {findings?.findings && (
+                          <>
+                            <VerdictBadge findings={findings.findings} />
+                            <SeverityCounts findings={findings.findings} />
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                   {review && (
                     <div className="review-summary">
                       <span>{plural(shownFiles.length, 'file')}</span>
@@ -410,8 +473,16 @@ export default function ReviewView() {
                         <ChangeList
                           files={g.files}
                           base={g.base}
-                          selected={current?.componentId === g.id ? current.path : undefined}
-                          onSelect={(path) => setSelected({ componentId: g.id, path })}
+                          selected={
+                            !findingsOpen && current?.componentId === g.id
+                              ? current.path
+                              : undefined
+                          }
+                          onSelect={(path) => {
+                            setSelected({ componentId: g.id, path })
+                            setFindingsOpen(false)
+                            setFromFindings(false)
+                          }}
                           task={null}
                           worktree={target}
                         />
@@ -453,7 +524,42 @@ export default function ReviewView() {
             </Panel>
             <Separator className="separator" />
             <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
-              {current ? (
+              {findingsOpen ? (
+                <FindingsPanel
+                  loaded={findings}
+                  status={status}
+                  branch={source?.branch}
+                  onOpenFile={openRef}
+                  canOpen={(path) => !!changedFile(path)}
+                  actions={
+                    reviewRecord && (
+                      <FixFindingsButton
+                        record={reviewRecord}
+                        hasFindings={!!findings?.findings?.text.trim()}
+                      />
+                    )
+                  }
+                />
+              ) : current && fromFindings ? (
+                <div className="review-diff-pane">
+                  <div className="review-diff-back">
+                    <button
+                      onClick={() => {
+                        setFindingsOpen(true)
+                        setFromFindings(false)
+                      }}
+                    >
+                      ← Findings
+                    </button>
+                  </div>
+                  <DiffView
+                    componentId={current.componentId}
+                    file={currentFile}
+                    revision={review}
+                    worktree={target}
+                  />
+                </div>
+              ) : current ? (
                 <DiffView
                   componentId={current.componentId}
                   file={currentFile}
@@ -475,6 +581,11 @@ export default function ReviewView() {
               hide={hideAgents}
               sourceBranch={source?.branch}
               sourceFindings={findings}
+              sourceStatus={status}
+              openFindings={() => {
+                setFindingsOpen(true)
+                setFromFindings(false)
+              }}
             />
           )}
         </Panel>

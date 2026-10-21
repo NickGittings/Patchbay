@@ -3,12 +3,13 @@ import { useShallow } from 'zustand/react/shallow'
 import { terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
 import { reviewAgentRecords, reviewWorktreeBusy } from '../lib/reviewAgents'
-import { fixReviewFindings } from '../lib/reviewHandoff'
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type SessionRecord, type TerminalSpec } from '../types'
 import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings'
 import TerminalPane from './TerminalPane'
 import StatusLabel from './status/StatusLabel'
+import FindingsPanel, { type FindingsStatus } from './findings/FindingsPanel'
+import FixFindingsButton from './findings/FixFindingsButton'
 
 export default function ReviewAgentPanel({
   selected,
@@ -16,6 +17,8 @@ export default function ReviewAgentPanel({
   hide,
   sourceBranch,
   sourceFindings,
+  sourceStatus,
+  openFindings,
 }: {
   selected: SessionRecord
   select: (sid: string) => void
@@ -23,6 +26,9 @@ export default function ReviewAgentPanel({
   /** Review already polls the source branch's findings; reuse them for that branch. */
   sourceBranch?: string | null
   sourceFindings?: LoadedFindings
+  sourceStatus?: FindingsStatus
+  /** Show the source branch's findings in Review's main pane. */
+  openFindings?: () => void
 }) {
   const records = useStore(
     useShallow((s) => reviewAgentRecords(s.sessionRecords, selected.metadata.projectId)),
@@ -46,7 +52,6 @@ export default function ReviewAgentPanel({
   )
   const loaded = shared ? sourceFindings : own
   const [stopping, setStopping] = useState(false)
-  const [starting, setStarting] = useState(false)
   const terminal: TerminalSpec = {
     id: selected.metadata.terminalId,
     name: selected.metadata.name,
@@ -75,21 +80,11 @@ export default function ReviewAgentPanel({
         <StatusLabel status={terminalStatus('agent', session)} />
         <span className="spacer" />
         {isReview && branch && (
-          <button
-            disabled={starting || reviewing || !loaded?.findings?.text.trim()}
-            title={
-              reviewing
-                ? 'Wait for the review to finish (or exit the reviewer); findings may still be partial'
-                : 'Start a fresh agent in the reviewed worktree to address the findings'
-            }
-            onClick={() => {
-              setStarting(true)
-              void fixReviewFindings(selected)
-                .catch((e) => useStore.getState().setMessage(String(e)))
-                .finally(() => setStarting(false))
-            }}
-          >
-            {starting ? 'Starting…' : 'Fix in Implementation →'}
+          <FixFindingsButton record={selected} hasFindings={!!loaded?.findings?.text.trim()} />
+        )}
+        {isReview && shared && openFindings && (
+          <button onClick={openFindings} title="Show these findings beside the changes">
+            Open in Review
           </button>
         )}
         {isReview && (
@@ -117,41 +112,18 @@ export default function ReviewAgentPanel({
       <div className="review-merge-location" title={selected.spec.cwd}>
         {selected.spec.cwd}
       </div>
-      {isReview && findings ? (
-        <div className="review-findings" aria-label="Review findings">
-          {((loaded?.findings?.reviewers.length ?? 0) > 1 ||
-            loaded?.findings?.reviewers.some((r) => r.error)) && (
-            <p className="hint" role="status">
-              Reviewers:{' '}
-              {loaded!
-                .findings!.reviewers.map(
-                  (r) =>
-                    `${r.lane ?? 'reviewer'} ${r.finished ? '(done)' : r.error ? `(launch unconfirmed: ${r.error})` : '(writing…)'}`,
-                )
-                .join(', ')}
-            </p>
-          )}
-          {loaded?.error ? (
-            <p role="alert">{loaded.error}</p>
-          ) : (
-            <pre>
-              {!selected.metadata.branch
-                ? 'This session predates recorded review branches; findings are shown in Review.'
-                : loaded
-                  ? (loaded.findings?.text ?? 'No findings saved yet.')
-                  : 'Loading…'}
-            </pre>
-          )}
-          {loaded?.findings?.truncated && <p className="hint">Findings truncated at 64 KiB.</p>}
-        </div>
-      ) : (
+      {isReview && findings && (
+        <FindingsPanel loaded={loaded} status={shared ? sourceStatus : undefined} branch={branch} />
+      )}
+      {/* Stays mounted while findings show, so toggling never re-hydrates the terminal. */}
+      <div className="review-agent-terminal" hidden={isReview && findings}>
         <TerminalPane
           componentId={selected.metadata.componentId}
           terminal={terminal}
           existingSessionId={selected.id}
           task={null}
         />
-      )}
+      </div>
     </section>
   )
 }

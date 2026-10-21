@@ -17,6 +17,8 @@ import AutoDialog from './AutoDialog'
 import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
+import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
+import { useReviewFindings } from '../../lib/useReviewFindings'
 import './auto.css'
 
 export default function AutoPanel({ onIntegrations }: { onIntegrations: () => void }) {
@@ -67,11 +69,8 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
           </p>
           {run.reason && <p>{run.reason}</p>}
           {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
-          {run.findingsSummary && ['mergeGate', 'fix'].includes(run.stage) && (
-            <details>
-              <summary>Review summary</summary>
-              <p>{run.findingsSummary}</p>
-            </details>
+          {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
+            <AutoFindings projectId={projectId} branch={run.branch} />
           )}
           {run.validation && (
             <p>
@@ -125,5 +124,27 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
         </div>
       )}
     </Popover>
+  )
+}
+
+/** The run's latest review verdict at a glance, with a way to read it in Review. */
+function AutoFindings({ projectId, branch }: { projectId: string | undefined; branch: string }) {
+  const loaded = useReviewFindings(projectId, branch, false)
+  const findings = loaded?.findings
+  if (!findings) return null
+  return (
+    <div className="auto-findings">
+      <span>Review:</span>
+      <VerdictBadge findings={findings} />
+      <SeverityCounts findings={findings} />
+      <button
+        onClick={() => {
+          useStore.setState({ reviewFindingsFocus: true })
+          useStore.getState().setView('review')
+        }}
+      >
+        View findings
+      </button>
+    </div>
   )
 }
