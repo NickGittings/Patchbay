@@ -13,7 +13,7 @@ import {
 } from '../lib/ipc'
 import { roleDevice } from '../lib/agentRoles'
 import { nearbyIds, planTerminals } from '../lib/plan'
-import { restartTerminal, startTerminal, stopTerminal } from '../lib/sessions'
+import { restartTerminal } from '../lib/sessions'
 import { activeTaskOf, refreshTasks, seedNewTask } from '../lib/tasks'
 import { useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type PlannerProposal } from '../types'
@@ -21,6 +21,7 @@ import Canvas from './Canvas'
 import Menu, { MenuItem } from './Menu'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import TerminalControl from './TerminalControl'
 import WorktreePicker from './tasks/WorktreePicker'
 
 import { planDrafts } from '../lib/planDrafts'
@@ -432,7 +433,7 @@ export default function PlanView() {
                   <button
                     key={t.id}
                     className={`tab health-${status.health} ${t.id === active.id ? 'active' : ''}`}
-                    title={statusTitle(status)}
+                    title={statusTitle(status, describeTerminal(t))}
                     onClick={() => setActiveId(t.id)}
                   >
                     <span className="status-dot" />
@@ -443,24 +444,15 @@ export default function PlanView() {
               <span className="spacer" />
               <span className="tab-actions">
                 <StatusLabel status={terminalStatus(active.kind, session)} />
-                <code>{describeTerminal(active)}</code>
-                {session?.running ? (
-                  <>
-                    <button disabled={restarting} onClick={() => stopTerminal(sid)}>
-                      ■ Stop
-                    </button>
-                    <button disabled={restarting} onClick={() => void restart()}>
-                      ↻ Restart
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    disabled={restarting}
-                    onClick={() => void startTerminal(PLAN_SCOPE, active.id)}
-                  >
-                    ▶ {restarting ? 'Stopping…' : session ? 'Restart' : 'Start'}
-                  </button>
-                )}
+                <TerminalControl
+                  componentId={PLAN_SCOPE}
+                  terminalId={active.id}
+                  sid={sid}
+                  session={session}
+                  task={null}
+                  restarting={restarting}
+                  onRestart={restart}
+                />
               </span>
             </div>
             {stale && (

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { terminalStatus } from '../lib/display'
+import { statusTitle, terminalStatus } from '../lib/display'
 import { terminalStop } from '../lib/ipc'
 import { reviewAgentRecords, reviewWorktreeBusy } from '../lib/reviewAgents'
 import { useStore } from '../store'
@@ -34,6 +34,7 @@ export default function ReviewAgentPanel({
     useShallow((s) => reviewAgentRecords(s.sessionRecords, selected.metadata.projectId)),
   )
   const session = useStore((s) => s.sessions[selected.id])
+  const status = terminalStatus('agent', session)
   const isReview = selected.metadata.componentId === REVIEW_SCOPE
   const [findings, setFindings] = useState(false)
   const branch = selected.metadata.branch ?? undefined
@@ -64,20 +65,22 @@ export default function ReviewAgentPanel({
       aria-label={isReview ? 'Review agent terminal' : 'Merge agent terminal'}
       data-session={selected.id}
     >
-      <header className="terminal-tile-header">
+      <header className={`terminal-tile-header health-${status.health}`}>
+        <span className="status-dot" title={statusTitle(status)} />
         <strong>{isReview ? 'Review agent' : 'Merge agent'}</strong>
         <select
           aria-label="Agent session"
+          title={selected.spec.cwd}
           value={selected.id}
           onChange={(e) => select(e.target.value)}
         >
           {records.map((r) => (
             <option key={r.id} value={r.id}>
-              {r.metadata.name}
+              {r.metadata.name} · {r.spec.cwd}
             </option>
           ))}
         </select>
-        <StatusLabel status={terminalStatus('agent', session)} />
+        <StatusLabel status={status} />
         <span className="spacer" />
         {isReview && branch && (
           <FixFindingsButton record={selected} hasFindings={!!loaded?.findings?.text.trim()} />
@@ -109,9 +112,6 @@ export default function ReviewAgentPanel({
           Hide
         </button>
       </header>
-      <div className="review-merge-location" title={selected.spec.cwd}>
-        {selected.spec.cwd}
-      </div>
       {isReview && findings && (
         <FindingsPanel loaded={loaded} status={shared ? sourceStatus : undefined} branch={branch} />
       )}

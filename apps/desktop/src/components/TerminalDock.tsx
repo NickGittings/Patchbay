@@ -3,10 +3,10 @@ import { useExtensionViews } from '../extensions/useExtensionViews'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { useDockTabs } from '../lib/panels'
-import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import TerminalControl from './TerminalControl'
 
 /** `collapsed`: the dock's panel is dragged shut, so no terminal is fitted to it. */
 export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
@@ -31,7 +31,7 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
             <button
               key={t.sid}
               className={`tab health-${status.health} ${!view && t.sid === active?.sid ? 'active' : ''}`}
-              title={statusTitle(status)}
+              title={statusTitle(status, describeTerminal(t.terminal))}
               onClick={() => {
                 extensionViews.setSelected(null)
                 setActiveSession(t.sid)
@@ -56,18 +56,13 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
         {active && !view && (
           <span className="tab-actions">
             <StatusLabel status={terminalStatus(active.terminal.kind, session)} />
-            <code>{describeTerminal(active.terminal)}</code>
-            {session?.running ? (
-              <button onClick={() => stopTerminal(active.sid)}>■ Stop</button>
-            ) : (
-              <button
-                onClick={() =>
-                  void startTerminal(active.componentId, active.terminal.id, active.task)
-                }
-              >
-                ▶ {session ? 'Restart' : 'Start'}
-              </button>
-            )}
+            <TerminalControl
+              componentId={active.componentId}
+              terminalId={active.terminal.id}
+              sid={active.sid}
+              session={session}
+              task={active.task}
+            />
             {!session?.running && (
               <button
                 className="dock-close"

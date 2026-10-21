@@ -13,7 +13,6 @@ import EmptyState from '../EmptyState'
 
 /** One component's uncommitted changes, its validation status, and the selected file's diff. */
 export default function ChangesPanel({ componentId }: { componentId: string }) {
-  const name = useStore((s) => s.nodes.find((n) => n.id === componentId)?.data.name ?? componentId)
   const [selected, setSelected] = useState<string>()
   const [refresh, setRefresh] = useState(0)
   // `revision` is a new object on every Git refresh (pop-outs get it over `patchbay://git`), so
@@ -29,8 +28,12 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
           Changes{files && files.length > 0 && <span className="git-badge">±{files.length}</span>}
           {files && files.length > 0 && <DiffStat {...lineTotals(files)} />}
         </span>
-        <button title="Refresh changes" onClick={() => setRefresh((n) => n + 1)}>
-          ↻ Refresh
+        <button
+          title="Refresh changes"
+          aria-label="Refresh changes"
+          onClick={() => setRefresh((n) => n + 1)}
+        >
+          ↻
         </button>
       </div>
       <ValidationChips componentId={componentId} changedAt={latestChange(files ?? undefined)} />
@@ -39,9 +42,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       ) : !files ? (
         <div className="hint">Loading…</div>
       ) : !files.length ? (
-        <EmptyState icon="✓" title={`No changes in ${name}`}>
-          No uncommitted changes.
-        </EmptyState>
+        <EmptyState icon="✓" title="No uncommitted changes" />
       ) : (
         <PersistedGroup layoutId="ChangesPanel-1" orientation="vertical" className="changes-split">
           <Panel id="ChangesPanel-pane-1" defaultSize="35" minSize="15">

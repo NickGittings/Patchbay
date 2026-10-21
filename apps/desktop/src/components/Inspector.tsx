@@ -1,4 +1,3 @@
-import { modifierKey, shiftKey } from '../lib/platform'
 import { openInEditor, revealLabel } from '../lib/navigation'
 import { closeInspector } from '../lib/panels'
 import { revealPath } from '../lib/ipc'
@@ -7,7 +6,7 @@ import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
 import { openComponentWindow } from '../lib/windows'
 import { useState } from 'react'
-import { describeTerminal, KIND_COLOR, statusTitle, terminalStatus } from '../lib/display'
+import { describeTerminal, KIND_COLOR, plural, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { peersFor } from '../lib/plan'
 import AddTerminalSelect from './AddTerminalSelect'
@@ -294,9 +293,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
 
       <div className="section-title">Related</div>
       {dependsOn.length + usedBy.length === 0 && (
-        <div className="hint flush">
-          Drag from this node's right edge to another component to say it depends on it.
-        </div>
+        <div className="hint flush">None. Drag from the node's right edge to add one.</div>
       )}
       {dependsOn.map((e) => (
         <div key={e.id} className="relation">
@@ -372,61 +369,17 @@ function LinkInspector({ edgeId }: { edgeId: string }) {
   )
 }
 
-/** Project at a glance, and how to use the canvas, while nothing is selected. */
+/** Project at a glance while nothing is selected. */
 function NothingSelected({ hasProject }: { hasProject: boolean }) {
   const components = useStore((s) => s.nodes.length)
   const links = useStore((s) => s.edges.length)
   const changed = useStore((s) => Object.values(s.gitChanges).reduce((a, b) => a + b, 0))
   if (!hasProject) return <div className="hint flush">Open a project folder to begin.</div>
   return (
-    <>
-      <div className="inspector-summary">
-        <div className="inspector-stat">
-          <strong>{components}</strong>
-          <span>components</span>
-        </div>
-        <div className="inspector-stat">
-          <strong>{links}</strong>
-          <span>links</span>
-        </div>
-        <div className="inspector-stat">
-          <strong>{changed}</strong>
-          <span>changed files</span>
-        </div>
-      </div>
-      <div className="hint flush">Select a component to edit it and manage its terminals.</div>
-      <div className="section-title">Tips</div>
-      <ul className="tips">
-        <li>
-          <span>●</span>
-          <span>
-            <strong>Click a node</strong> to inspect it; click a terminal chip on it to open that
-            terminal.
-          </span>
-        </li>
-        <li>
-          <span>→</span>
-          <span>
-            <strong>Drag from a node's right edge</strong> to another to say it depends on it. Links
-            mean “depends on”.
-          </span>
-        </li>
-        <li>
-          <span>✦</span>
-          <span>
-            <strong>Agent terminals</strong> (like Claude) get the component's notes and its related
-            components as context.
-          </span>
-        </li>
-        <li>
-          <span>{modifierKey}</span>
-          <span>
-            <kbd>{modifierKey}</kbd> <kbd>{shiftKey}</kbd> <kbd>P</kbd> opens the command palette,{' '}
-            <kbd>{modifierKey}</kbd> <kbd>P</kbd> finds a file.
-          </span>
-        </li>
-      </ul>
-    </>
+    <div className="hint flush">
+      {plural(components, 'component')} · {plural(links, 'link')} ·{' '}
+      {plural(changed, 'changed file')}
+    </div>
   )
 }
 

@@ -9,7 +9,6 @@ import { componentAttention } from '../lib/attention'
 import { useClockTick } from '../lib/clock'
 import { KIND_COLOR } from '../lib/display'
 import { useStore } from '../store'
-import { sessionId } from '../types'
 import AttentionPill from './status/AttentionPill'
 import ComponentGroups from './ComponentGroups'
 import { provenanceLabel, useMaintenance } from '../lib/maintenance'
@@ -111,9 +110,6 @@ export default function Hierarchy() {
         </ContextMenu>
       )}
       {filtered.map((n) => {
-        const running = n.data.terminals.filter(
-          (t) => sessions[sessionId(n.id, t.id, task)]?.running,
-        ).length
         const changes = gitChanges[n.id] ?? 0
         const attention = componentAttention(
           n.id,
@@ -151,11 +147,6 @@ export default function Hierarchy() {
                 ))}
               <ExtensionBadges componentId={n.id} />
               <AttentionPill status={attention} />
-              {running > 0 && (
-                <span className="count running" title={`${running} running`}>
-                  {running}
-                </span>
-              )}
             </button>
             {changes > 0 && <ChangesPopover componentId={n.id} />}
           </div>

@@ -225,6 +225,17 @@
         .querySelector('.plan-scope pre')
         ?.textContent.includes('**ALPHA** depends on **BETA** — calls'),
     )
+    const plannerStarts = [...document.querySelectorAll('.planner-terminal button')].filter(
+      (button) => button.textContent.trim().startsWith('▶ Start'),
+    )
+    assert(plannerStarts.length === 1, 'planner must offer exactly one Start action')
+    assert(!document.querySelector('.planner-terminal .terminal-overlay'), 'empty agent overlay')
+    const popout = nodeElement('alpha').querySelector('.popout-button')
+    popout.focus()
+    assert(document.activeElement === popout, 'pop-out cannot receive keyboard focus')
+    // Smoke windows are unfocused, so WebKit does not apply :focus-within here.
+    assert(popout.tabIndex === 0, 'pop-out is missing from keyboard navigation')
+    assert(getComputedStyle(popout).visibility === 'visible', 'pop-out is excluded from tab order')
     const sid = smoke.sessionId('@plan', 'smoke-planner')
     await smoke.startTerminal('@plan', 'smoke-planner')
     await until('planner running', () => state().sessions[sid]?.running)
@@ -240,11 +251,30 @@
     assert(state().planStartedWith[sid] === 'alpha,beta', 'planner launch scope was not recorded')
     state().toggleHighlight('beta')
     await until('stale hint', () => document.querySelector('.planner-stale'))
-    click(
-      Array.from(document.querySelectorAll('.planner-terminal .tab-actions button')).find((b) =>
-        b.textContent.includes('Restart'),
-      ),
-    )
+    const restartFetch = window.fetch
+    const stopUrl = window.__TAURI_INTERNALS__.convertFileSrc('terminal_stop', 'ipc')
+    let releaseStop
+    const stopHeld = new Promise((resolve) => (releaseStop = resolve))
+    window.fetch = async (input, options) => {
+      const response = await restartFetch(input, options)
+      if (String(input) === stopUrl && JSON.parse(options.body).sessionId === sid) await stopHeld
+      return response
+    }
+    try {
+      click(
+        Array.from(document.querySelectorAll('.planner-terminal .tab-actions button')).find((b) =>
+          b.textContent.includes('Restart'),
+        ),
+      )
+      await until('planner exited during restart', () => state().sessions[sid]?.running === false)
+      await until('restart progress label', () => {
+        const button = document.querySelector('.planner-terminal .tab-actions button')
+        return button?.disabled && button.textContent === '▶ Stopping…'
+      })
+    } finally {
+      window.fetch = restartFetch
+      releaseStop()
+    }
     await until(
       'restarted planner',
       () => state().sessions[sid]?.running && state().planStartedWith[sid] === 'alpha',
@@ -305,15 +335,56 @@
       click(document.querySelector('form[aria-label="Add terminal"] button[type=submit]'))
       await until('dialog closed', () => !document.querySelector('form[aria-label="Add terminal"]'))
     }
+    const fetch = window.fetch
+    const snapshotUrl = window.__TAURI_INTERNALS__.convertFileSrc('terminal_snapshot', 'ipc')
+    let failedHydration = false
+    window.fetch = (input, options) => {
+      if (
+        String(input) === snapshotUrl &&
+        JSON.parse(options.body).sessionId === smoke.sessionId('alpha', 'task')
+      ) {
+        failedHydration = true
+        return Promise.resolve(
+          new Response('Smoke: saved output unavailable', {
+            headers: { 'Content-Type': 'text/plain', 'Tauri-Response': 'error' },
+          }),
+        )
+      }
+      return fetch(input, options)
+    }
+    try {
+      await addTerminal('alpha', 'saved\ntask')
+      await until(
+        'saved output load failed',
+        () => failedHydration && state().message.includes('Smoke: saved output unavailable'),
+      )
+      const start = [...tiles('alpha')[0].querySelectorAll('button')].find((button) =>
+        button.textContent.trim().startsWith('▶ Start'),
+      )
+      assert(start && !start.disabled, 'failed output loading made Start unreachable')
+      assert(!tiles('alpha')[0].querySelector('.terminal-overlay button'), 'duplicate pane Start')
+    } finally {
+      window.fetch = fetch
+      if (state().message.includes('Smoke: saved output unavailable')) state().setMessage('')
+    }
+    // Remount only the failed pane to retry hydration without a window-wide reconnect.
+    click(tiles('alpha')[0].querySelector('button[aria-label="Remove Task"]'))
+    await until('failed pane removed', () => !tiles('alpha').length)
     await addTerminal('alpha', 'saved\ntask')
+    await until('saved output retry', () =>
+      tiles('alpha')[0]?.querySelector('.terminal-overlay-command'),
+    )
     await until('alpha terminal added', () => tiles('alpha').length === 1)
     // Anything running in the worktree shows too, so nothing it runs is out of sight.
     await smoke.startTerminal('unrelated', 'task')
     await until('background terminal visible', () => tiles('unrelated').length === 1)
     assertScope(['alpha'])
     assert(state().sessions[unrelatedTask]?.running, 'background terminal was stopped')
-    const startButton = tiles('alpha')[0].querySelector('.terminal-overlay button')
-    assert(startButton?.textContent.trim() === '▶ Start Task', 'incorrect terminal start overlay')
+    const startButtons = [...tiles('alpha')[0].querySelectorAll('button')].filter((button) =>
+      button.textContent.trim().startsWith('▶ Start'),
+    )
+    assert(startButtons.length === 1, 'terminal must offer exactly one Start action')
+    assert(startButtons[0].closest('.terminal-tile-header'), 'Start must remain in the header')
     assert(
       tiles('alpha')[0].querySelector('.terminal-overlay-command')?.textContent === 'cat',
       'terminal command missing from overlay',
@@ -597,7 +668,8 @@
     assert(
       !document.querySelector('.attention-button')?.textContent.includes('failed') &&
         (!serverTile ||
-          serverTile.querySelector('.status-label.health-idle')?.textContent === 'Stopped'),
+          (serverTile.classList.contains('health-idle') &&
+            serverTile.querySelector('.status-dot')?.title.startsWith('Stopped'))),
       'a stopped task counts as failed',
     )
 

@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { describeTerminal, terminalStatus } from '../lib/display'
+import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
-import { startTerminal, stopTerminal } from '../lib/sessions'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import TerminalControl from './TerminalControl'
 import EmptyState from './EmptyState'
 
 /**
@@ -51,17 +51,17 @@ export default function TerminalGrid({
             className={`terminal-tile health-${status.health} ${solo ? 'maximized' : ''}`}
           >
             <div className="terminal-tile-header">
-              <span className="status-dot" />
-              <strong>{terminal.name}</strong>
+              <span className="status-dot" title={statusTitle(status)} />
+              <strong title={describeTerminal(terminal)}>{terminal.name}</strong>
+              <span className="spacer" />
               <StatusLabel status={status} />
-              <code title={describeTerminal(terminal)}>{describeTerminal(terminal)}</code>
-              {session?.running ? (
-                <button onClick={() => stopTerminal(sid)}>■ Stop</button>
-              ) : (
-                <button onClick={() => void startTerminal(componentId, terminal.id, task)}>
-                  ▶ {session ? 'Restart' : 'Start'}
-                </button>
-              )}
+              <TerminalControl
+                componentId={componentId}
+                terminalId={terminal.id}
+                sid={sid}
+                session={session}
+                task={task}
+              />
               <button
                 title={solo ? 'Show all terminals' : 'Maximize this terminal'}
                 aria-label={solo ? `Restore ${terminal.name}` : `Maximize ${terminal.name}`}

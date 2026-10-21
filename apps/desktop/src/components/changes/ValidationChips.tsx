@@ -38,7 +38,7 @@ export default function ValidationChips({
   const sessions = useStore((s) => s.sessions)
   useClockTick()
   const checks = validations(componentId, terminals ?? [], sessions, changedAt, task)
-  if (!checks.length) return <div className="validation-chips none">No task terminals</div>
+  if (!checks.length) return null
   return (
     <div className="validation-chips">
       {checks.map((v) => (

@@ -1,7 +1,7 @@
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
-import { KIND_COLOR } from '../lib/display'
+import { KIND_COLOR, plural } from '../lib/display'
 import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
 import { ago, latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
@@ -39,8 +39,6 @@ interface ChangeGroup {
   files: ChangedFile[]
 }
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
-
 function worktreeLabel(w: Worktree) {
   const name = w.path.split(/[\\/]/).pop() ?? w.path
   const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
@@ -61,7 +59,7 @@ export default function ReviewView() {
   const linksKey = useStore((s) => s.edges.map((e) => `${e.source}>${e.target}`).join('\n'))
   const select = useStore((s) => s.select)
   const [loaded, setLoaded] = useState<{ scope: string; review: Review }>()
-  const [error, setError] = useState('')
+  const [failed, setFailed] = useState<{ scope: string; message: string }>()
   const [selected, setSelected] = useState<{ componentId: string; path: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   // "Open in Review" (outside Review, so this mounts afterwards) asks to start with one component.
@@ -133,6 +131,7 @@ export default function ReviewView() {
   const reviewScope = JSON.stringify([projectId, target])
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
+  const error = failed?.scope === reviewScope ? failed.message : ''
   const findings = useReviewFindings(projectId, source?.branch)
   const reviewLanes = useRunningReviewLanes(source?.branch)
   const status = reviewState(findings?.findings, source)
@@ -145,11 +144,11 @@ export default function ReviewView() {
       : undefined,
   )
   // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
-  const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : undefined
   // The open worktree's sessions belong to the active task when the project is open in its
   // worktree, and to no task otherwise.
-  const openTask = tasks.find((t) => t.id === activeTask && t.current)?.id ?? null
-  const validationTask = other ? (reviewTask?.id ?? undefined) : openTask
+  const openTask = tasks.find((t) => t.id === activeTask && t.current && !t.missing)
+  const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : openTask
+  const validationTask = other ? (reviewTask?.id ?? undefined) : (openTask?.id ?? null)
   const watched = !other || other.path === taskWorktree
 
   // Findings of deleted branches are dropped once per visit, off the polling path.
@@ -192,11 +191,11 @@ export default function ReviewView() {
       .then((r) => {
         if (!disposed) {
           setLoaded({ scope: reviewScope, review: r })
-          setError('')
+          setFailed(undefined)
         }
       })
       .catch((e) => {
-        if (!disposed) setError(String(e))
+        if (!disposed) setFailed({ scope: reviewScope, message: String(e) })
       })
     return () => {
       disposed = true
@@ -224,7 +223,6 @@ export default function ReviewView() {
   const shown = active.length ? groups.filter((g) => active.includes(g.id)) : groups
   const shownFiles = shown.flatMap((g) => g.files)
   const totals = lineTotals(shownFiles)
-  const componentCount = shown.filter((g) => g.id !== PROJECT_SCOPE).length
   const affected = (review?.affected ?? []).filter(
     (a) => !active.length || a.via.some((id) => active.includes(id)),
   )
@@ -303,7 +301,10 @@ export default function ReviewView() {
               <div className="review-list">
                 <div className="review-header">
                   <div className="review-title-row">
-                    <span className="review-title">Review</span>
+                    {!other && reviewTask && <strong>{reviewTask.title}</strong>}
+                    <span className="review-totals">
+                      {review && shownFiles.length > 0 && <DiffStat {...totals} />}
+                    </span>
                     <button
                       className="review-agent-button"
                       disabled={!source?.branch}
@@ -331,7 +332,7 @@ export default function ReviewView() {
                     {worktrees.length > 1 && (
                       <select
                         className="review-worktree"
-                        title="Worktree to review"
+                        title={other ? `Reviewing ${other.path}` : 'Worktree to review'}
                         value={other?.path ?? ''}
                         onChange={(e) => {
                           setPicked({ task: activeTask, path: e.target.value || undefined })
@@ -380,13 +381,6 @@ export default function ReviewView() {
                       </button>
                     )}
                   </div>
-                  {review && (
-                    <div className="review-summary">
-                      <span>{plural(shownFiles.length, 'file')}</span>
-                      {shownFiles.length > 0 && <DiffStat {...totals} />}
-                      {componentCount > 0 && <span>{plural(componentCount, 'component')}</span>}
-                    </div>
-                  )}
                   {groups.length > 1 && (
                     <div className="review-filter" role="toolbar" aria-label="Filter components">
                       <button
@@ -417,11 +411,11 @@ export default function ReviewView() {
                 </div>
                 {other && (
                   <div className="review-banner">
-                    Viewing worktree {reviewTask && <>“{reviewTask.title}” on </>}
-                    <code>{other.branch ?? other.head.slice(0, 7)}</code> at{' '}
-                    <code title={other.path}>{other.path}</code>.
-                    {!reviewTask &&
-                      " Terminal status is hidden; it isn't tracked, so no terminals ran there."}
+                    Viewing {reviewTask ? `“${reviewTask.title}” on ` : ''}
+                    <code>{other.branch ?? `detached ${other.head.slice(0, 7)}`}</code> at{' '}
+                    <code>{other.path}</code>.
+                    {validationTask === undefined &&
+                      ' Validation status is hidden because this worktree has no tracked task sessions.'}
                   </div>
                 )}
                 {error && <div className="hint file-tree-error">{error}</div>}
@@ -559,7 +553,15 @@ export default function ReviewView() {
                   worktree={target}
                 />
               ) : (
-                <div className="diff-view hint">Nothing to review.</div>
+                <div className="diff-view">
+                  <div className="review-empty" role={error ? 'alert' : 'status'}>
+                    {error
+                      ? `Could not load changes: ${error}`
+                      : !review
+                        ? 'Loading changes…'
+                        : 'No uncommitted changes.'}
+                  </div>
+                </div>
               )}
             </Panel>
           </PersistedGroup>

@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { describeTerminal, terminalStatus } from '../lib/display'
+import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
-import { removeTaskTerminal, startTerminal, stopTerminal } from '../lib/sessions'
+import { removeTaskTerminal } from '../lib/sessions'
 import type { TaskTerminal } from '../lib/taskTerminals'
-import { TASK_ROOT_SCOPE } from '../types'
+import { parseSessionId, TASK_ROOT_SCOPE } from '../types'
 import { useStore } from '../store'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
+import TerminalControl from './TerminalControl'
 
 export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) {
   const sessions = useStore((s) => s.sessions)
@@ -15,6 +16,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
   const [editing, setEditing] = useState<string | null>(null)
   const tile = (entry: TaskTerminal) => {
     const { terminal, sid, componentId, label } = entry
+    const { task, projectId } = parseSessionId(sid)
     const session = sessions[sid]
     const status = terminalStatus(terminal.kind, session)
     const s = useStore.getState()
@@ -27,18 +29,19 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
         onFocusCapture={() => useStore.getState().setActiveSession(sid)}
       >
         <div className="terminal-tile-header">
-          <span className="status-dot" />
-          <strong>{terminal.name}</strong>
-          {componentId !== TASK_ROOT_SCOPE && <span className="hint flush">{label}</span>}
+          <span className="status-dot" title={statusTitle(status)} />
+          {componentId !== TASK_ROOT_SCOPE && <span className="hint">{label} ›</span>}
+          <strong title={describeTerminal(terminal)}>{terminal.name}</strong>
+          <span className="spacer" />
           <StatusLabel status={status} />
-          <code title={describeTerminal(terminal)}>{describeTerminal(terminal)}</code>
-          {session?.running ? (
-            <button onClick={() => stopTerminal(sid)}>■ Stop</button>
-          ) : (
-            <button onClick={() => void startTerminal(componentId, terminal.id)}>
-              ▶ {session ? 'Restart' : 'Start'}
-            </button>
-          )}
+          <TerminalControl
+            componentId={componentId}
+            terminalId={terminal.id}
+            sid={sid}
+            session={session}
+            task={task}
+            projectId={projectId}
+          />
           <button
             aria-label={
               maximized === sid ? `Restore ${terminal.name}` : `Maximize ${terminal.name}`
@@ -102,6 +105,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
         <TerminalPane
           componentId={componentId}
           terminal={terminal}
+          task={task}
           focus={focused === sid}
           existingSessionId={entry.retained ? sid : undefined}
         />

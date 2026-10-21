@@ -136,6 +136,10 @@
       document.querySelector('.plan-scope .worktree-picker')?.textContent.includes('Smoke task'),
     )
 
+    await until('highlighted task membership', () =>
+      document.querySelector('.component-node.in-task.highlighted .task-badge'),
+    )
+
     // The same terminal, in both worktrees at once.
     const mainSid = smoke.sessionId('web', 'where', null)
     const taskSid = smoke.sessionId('web', 'where', task.id)
@@ -174,7 +178,9 @@
     // Review follows the active task, with its task terminals' status.
     click(viewButton('Review'))
     await until('task review', () =>
-      document.querySelector('.review-banner')?.textContent.includes('Smoke task'),
+      document
+        .querySelector('.review-worktree')
+        ?.selectedOptions[0]?.textContent.includes('Smoke task'),
     )
     await until('task validation', () =>
       document.querySelector('.review-view .validation-chip.running'),
@@ -259,9 +265,7 @@
     click(button(document.querySelector('.worktree-row.active'), 'Review'))
     await until(
       'Review action',
-      () =>
-        state().view === 'review' &&
-        document.querySelector('.review-banner')?.textContent.includes('Viewing worktree'),
+      () => state().view === 'review' && !!document.querySelector('.review-worktree')?.value,
     )
 
     // A plan saved in Plan belongs to the project and reaches its component agents there;
@@ -328,6 +332,27 @@
         document.querySelectorAll('[role="tablist"][aria-label="Task workspaces"] [role="tab"]')
           .length === 3,
     )
+
+    // A revealed terminal can belong to a different task from the visible workspace.
+    state().setActiveTask(secondTask.id)
+    smoke.store.setState({ revealed: { sid: taskSid, componentId: 'web' } })
+    const revealedTile = () =>
+      document.querySelector(`.task-terminal-grid [data-session="${taskSid}"]`)
+    await until('other task terminal revealed', revealedTile)
+    click(button(revealedTile(), '■ Stop'))
+    await until('revealed terminal stopped', () => !state().sessions[taskSid]?.running)
+    click(await until('revealed terminal restart', () => button(revealedTile(), '▶ Restart')))
+    await until(
+      'revealed terminal restarted in its own task',
+      () => state().sessions[taskSid]?.running,
+    )
+    assert(state().activeTask === secondTask.id, 'tile restart switched tasks')
+    assert(
+      !state().sessions[smoke.sessionId('web', 'where', secondTask.id)]?.running,
+      'tile restart launched in the active task instead of the displayed session',
+    )
+    smoke.store.setState({ revealed: null })
+    state().setActiveTask(task.id)
 
     // Closing tabs keeps task data, terminals and layouts; the task menu reopens them.
     const taskTab = (title) =>

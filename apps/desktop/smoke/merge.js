@@ -67,8 +67,60 @@
     state().setPanelLayout('ReviewView-merge', { 'ReviewView-changes': 100 })
     state().setView('review')
     const picker = await until('worktree picker', () => document.querySelector('.review-worktree'))
-    choose(picker, `${parent}/feature`)
-    await until('clean source review', () => document.querySelector('.review-empty'))
+    assert(!document.querySelector('.review-banner'), 'open worktree has a review banner')
+    // Keep the diff request pending, then fail it, so both states are visible in the main pane.
+    const originalFetch = window.fetch
+    const reviewUrl = window.__TAURI_INTERNALS__.convertFileSrc('git_review', 'ipc')
+    const pendingReviews = []
+    window.fetch = (input, options) => {
+      if (String(input) === reviewUrl && JSON.parse(options.body).worktree === `${parent}/feature`)
+        return new Promise((resolve) => pendingReviews.push(resolve))
+      return originalFetch(input, options)
+    }
+    try {
+      choose(picker, `${parent}/feature`)
+      await until('diff request pending', () => pendingReviews.length)
+      await until('diff loading message', () =>
+        document
+          .querySelector('.diff-view [role="status"]')
+          ?.textContent.includes('Loading changes…'),
+      )
+      for (const resolve of pendingReviews)
+        resolve(
+          new Response('Smoke: review diff unavailable', {
+            headers: { 'Content-Type': 'text/plain', 'Tauri-Response': 'error' },
+          }),
+        )
+      await until('diff error message', () =>
+        document
+          .querySelector('.diff-view [role="alert"]')
+          ?.textContent.includes('Smoke: review diff unavailable'),
+      )
+    } finally {
+      window.fetch = originalFetch
+    }
+    click(document.querySelector('.review-refresh'))
+    await until('clean source review', () =>
+      document
+        .querySelector('.diff-view .review-empty')
+        ?.textContent.includes('No uncommitted changes.'),
+    )
+    click(document.querySelector('.review-findings-button'))
+    const emptyFindings = await until('unreviewed branch named in findings', () => {
+      const empty = document.querySelector('.findings-panel .review-empty')
+      return empty?.querySelector('code')?.textContent === 'feature' && empty
+    })
+    assert(
+      !emptyFindings.textContent.includes('in Review'),
+      'findings tell users already in Review to navigate to Review',
+    )
+    click(document.querySelector('.review-findings-button'))
+    const banner = await until('untracked worktree explanation', () => {
+      const el = document.querySelector('.review-banner')
+      return el?.textContent.includes('Validation status is hidden') && el
+    })
+    assert(banner.textContent.includes(`${parent}/feature`), 'review omitted worktree path')
+    assert(banner.querySelector('code')?.textContent === 'feature', 'review omitted branch')
     const openDialog = async () => {
       click(document.querySelector('.review-merge-button'))
       return until('merge dialog', dialog)
@@ -291,6 +343,12 @@
     await until('merge terminal', () =>
       document.querySelector('[aria-label="Merge agent terminal"]'),
     )
+    assert(
+      document
+        .querySelector('select[aria-label="Agent session"]')
+        .selectedOptions[0].textContent.includes(`${parent}/integration`),
+      'merge session label omitted its destination',
+    )
     let sid = document.querySelector('.review-merge-terminal').dataset.session
     const mergeHeight = () =>
       document.querySelector('.review-merge-terminal')?.getBoundingClientRect().height ?? 0
@@ -422,7 +480,9 @@
     // Review's worktree picker is local to each mount; restore the source after remounting.
     choose(document.querySelector('.review-worktree'), `${parent}/feature`)
     await until('source restored', () =>
-      document.querySelector('.review-banner')?.textContent.includes('feature'),
+      document
+        .querySelector('.review-worktree')
+        ?.selectedOptions[0]?.textContent.includes('feature'),
     )
     await smoke.terminalWrite(
       shell,

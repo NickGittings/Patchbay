@@ -1,5 +1,17 @@
-import type { ComponentKind, SessionState, TerminalKind, TerminalSpec } from '../types'
+import {
+  isReviewAgentScope,
+  TASK_ROOT_SCOPE,
+  type ComponentKind,
+  type SessionState,
+  type TerminalKind,
+  type TerminalSpec,
+} from '../types'
 import { ago } from './review'
+
+export const INTERRUPTED_SESSION_DETAIL =
+  'The session service restarted. Choose Resume in Sessions or Restart to recover.'
+
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 export const KIND_COLOR: Record<ComponentKind, string> = {
   frontend: '#38bdf8',
@@ -61,14 +73,19 @@ export function terminalStatus(
 ): TerminalStatus {
   if (!session) return { health: 'idle', label: 'Not started', attention: 0 }
   if (session.disconnected) return { health: 'idle', label: 'Disconnected', attention: 0 }
-  if (session.interrupted) return { health: 'fail', label: 'Interrupted', attention: 1 }
+  if (session.interrupted)
+    return {
+      health: 'fail',
+      label: 'Interrupted',
+      detail: INTERRUPTED_SESSION_DETAIL,
+      attention: 1,
+    }
   const seenMs = session.status?.seenMs ?? 0
   if (!session.running) {
     const when = session.exitedMs ? ago(session.exitedMs, now) : undefined
-    if (session.exitCode === 0)
-      return { health: 'ok', label: 'Exited', detail: join('Exited 0', when), attention: 0 }
+    if (session.exitCode === 0) return { health: 'ok', label: 'Exited', detail: when, attention: 0 }
     if (session.status?.stopped)
-      return { health: 'idle', label: 'Stopped', detail: join('Stopped', when), attention: 0 }
+      return { health: 'idle', label: 'Stopped', detail: when, attention: 0 }
     const unseen = kind !== 'shell' && seenMs < (session.exitedMs ?? 0)
     return {
       health: 'fail',
@@ -167,6 +184,10 @@ export function terminalStatus(
     attention: 0,
   }
 }
+
+/** Only component/extension shells start on first use; agents require their launch controls. */
+export const paneAutoStarts = (componentId: string, terminal: TerminalSpec) =>
+  terminal.kind === 'shell' && componentId !== TASK_ROOT_SCOPE && !isReviewAgentScope(componentId)
 
 export function describeTerminal(t: TerminalSpec) {
   if (t.kind === 'shell' && !t.command) return 'interactive shell'

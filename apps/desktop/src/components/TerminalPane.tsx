@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { sessionRun, terminalStatus } from '../lib/display'
+import {
+  INTERRUPTED_SESSION_DETAIL,
+  paneAutoStarts,
+  sessionRun,
+  terminalStatus,
+} from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
-import { isReviewAgentScope, TASK_ROOT_SCOPE, sessionId, type TerminalSpec } from '../types'
+import { sessionId, type TerminalSpec } from '../types'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -32,7 +37,10 @@ export default function TerminalPane({
   const connected = useStore((s) => s.serviceConnected)
   const serviceError = useStore((s) => s.serviceError)
   const session = useStore((s) => s.sessions[sid])
-  const unseen = terminalStatus(terminal.kind, session).unseenSince
+  const status = terminalStatus(terminal.kind, session)
+  const unseen = status.unseenSince
+  const autoStarts = paneAutoStarts(componentId, terminal)
+  const overlayCommand = terminal.kind !== 'agent' ? terminal.command : undefined
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   // Dismissal lasts for one run; a restart shows its own notice again.
@@ -71,8 +79,7 @@ export default function TerminalPane({
             !existingSessionId &&
             useStore.getState().serviceConnected &&
             !snapshot &&
-            terminal.kind === 'shell' &&
-            componentId !== TASK_ROOT_SCOPE &&
+            autoStarts &&
             !useStore.getState().sessions[sid]
           ) {
             void startTerminal(componentId, terminal.id, task)
@@ -97,7 +104,7 @@ export default function TerminalPane({
       document.removeEventListener('visibilitychange', refit)
       window.removeEventListener(ACTIVE_CHANGED, refit)
     }
-  }, [sid, componentId, terminal.id, terminal.kind, focus, existingSessionId, task])
+  }, [sid, componentId, terminal.id, autoStarts, focus, existingSessionId, task])
 
   // Showing a session in a focused window acknowledges it in every window. Panes stay mounted in
   // collapsed panels, hidden tabs and scrolled-away tiles, so only one on screen counts. An
@@ -150,15 +157,15 @@ export default function TerminalPane({
       )}
       {session?.truncated && truncationDismissed !== noticeRun && (
         <div className="terminal-notice" role="status">
-          <span>Earlier output was truncated (512 KiB history limit).</span>
+          <span>Earlier output truncated</span>
           <button title="Dismiss" onClick={() => setTruncationDismissed(noticeRun)}>
             ×
           </button>
         </div>
       )}
       {session?.interrupted && (
-        <div className="terminal-notice">
-          Interrupted · the service restarted. Recovery is explicit.
+        <div className="terminal-notice" role="status">
+          {INTERRUPTED_SESSION_DETAIL}
         </div>
       )}
       {session?.notice && dismissed !== noticeRun && (
@@ -170,25 +177,13 @@ export default function TerminalPane({
         </div>
       )}
       <div className="terminal-host" ref={hostRef} />
-      {connected &&
-        ready &&
-        !session &&
-        !isReviewAgentScope(componentId) &&
-        (terminal.kind !== 'shell' || componentId === TASK_ROOT_SCOPE) && (
-          <div className="terminal-overlay">
-            <button
-              className="primary"
-              onClick={() => void startTerminal(componentId, terminal.id, task)}
-            >
-              ▶ Start {terminal.name}
-            </button>
-            {terminal.kind !== 'agent' && terminal.command && (
-              <code className="terminal-overlay-command" title={terminal.command}>
-                {terminal.command}
-              </code>
-            )}
-          </div>
-        )}
+      {connected && ready && !session && !autoStarts && overlayCommand && (
+        <div className="terminal-overlay">
+          <code className="terminal-overlay-command" title={overlayCommand}>
+            {overlayCommand}
+          </code>
+        </div>
+      )}
     </div>
   )
 }

@@ -256,9 +256,11 @@ export default function Canvas() {
           <Panel position="top-right">
             <button
               className="inspector-toggle"
+              title="Show Inspector"
+              aria-label="Show Inspector"
               onClick={() => useStore.setState({ inspector: true })}
             >
-              Inspector
+              ◧
             </button>
           </Panel>
         )}
