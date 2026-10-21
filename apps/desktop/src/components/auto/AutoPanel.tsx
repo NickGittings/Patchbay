@@ -18,6 +18,7 @@ import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
 import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
+import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
@@ -146,12 +147,13 @@ function AutoFindings({
   const loaded = useReviewFindings(projectId, branch, false, refresh)
   // Review shows the worktree's checked-out branch, which may no longer be the run's.
   const checkedOut = useStore((s) => activeTaskOf(s)?.branch)
+  const running = useRunningReviewLanes(branch)
   const findings = loaded?.findings
   if (!findings) return null
   return (
     <div className="auto-findings">
       <span>Review:</span>
-      <VerdictBadge findings={findings} />
+      <VerdictBadge findings={findings} running={running} />
       <SeverityCounts findings={findings} />
       {(!checkedOut || checkedOut === branch) && (
         <button

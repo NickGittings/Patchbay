@@ -58,4 +58,7 @@ describe('parseInline', () => {
       { kind: 'text', text: ' in snake_case' },
     ])
   })
+  test('leaves dunder names alone', () => {
+    expect(parseInline('see __init__.py:3')).toEqual([{ kind: 'text', text: 'see __init__.py:3' }])
+  })
 })

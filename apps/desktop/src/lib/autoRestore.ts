@@ -1,6 +1,7 @@
 import type { AutoRun } from '../types'
 import { restoredAgents, restoredPresetIds } from './agentRoles'
-import { EFFORT, finished as ended, SEVERITIES, STAGES, validOverrides } from './autoSettings'
+import { SEVERITIES } from '../types'
+import { EFFORT, finished as ended, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
 
@@ -108,7 +109,6 @@ export function restoredAuto(value: unknown): AutoRun | null {
             Array.isArray(report.results),
         )
       : undefined,
-    findingsSummary: typeof r.findingsSummary === 'string' ? r.findingsSummary : undefined,
     validationFindings: typeof r.validationFindings === 'string' ? r.validationFindings : undefined,
     log: r.log
       .filter((l) => l && Number.isFinite(l.atMs) && typeof l.text === 'string')

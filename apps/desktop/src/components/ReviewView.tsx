@@ -24,6 +24,7 @@ import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
 import FindingsPanel, { SeverityCounts, VerdictBadge } from './findings/FindingsPanel'
+import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
 import type { FileRef } from '../lib/findings'
 
@@ -71,8 +72,9 @@ export default function ReviewView() {
   }, [reviewFocus])
   // The right pane shows findings in place of a diff; a diff opened from a finding offers a way back.
   const findingsFocus = useStore((s) => s.reviewFindingsFocus)
-  const [findingsOpen, setFindingsOpen] = useState(findingsFocus)
-  const [fromFindings, setFromFindings] = useState(false)
+  const [pane, setPane] = useState<'diff' | 'findings' | 'fromFindings'>(
+    findingsFocus ? 'findings' : 'diff',
+  )
   useEffect(() => {
     if (findingsFocus) useStore.setState({ reviewFindingsFocus: false })
   }, [findingsFocus])
@@ -83,9 +85,8 @@ export default function ReviewView() {
   // The worktree picked here; until then (and after switching tasks) the active task's.
   const [picked, setPicked] = useState<{ task: string | null; path: string | undefined }>()
   // Auto's findings are the active task's, so its request also drops a worktree picked here.
-  if (findingsFocus && (!findingsOpen || fromFindings || picked)) {
-    setFindingsOpen(true)
-    setFromFindings(false)
+  if (findingsFocus && (pane !== 'findings' || picked)) {
+    setPane('findings')
     setPicked(undefined)
   }
   const worktree = picked?.task === activeTask ? picked.path : taskWorktree
@@ -133,6 +134,7 @@ export default function ReviewView() {
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
   const findings = useReviewFindings(projectId, source?.branch)
+  const reviewLanes = useRunningReviewLanes(source?.branch)
   const status = reviewState(findings?.findings, source)
   // The newest review session of the source branch, for the fix handoff beside its findings.
   const reviewRecord = useStore((s) =>
@@ -240,14 +242,14 @@ export default function ReviewView() {
     : null
 
   // Reviewers name paths relative to their worktree, which is usually the project root too.
+  // An exact path wins; otherwise the ref must match one changed file by suffix, so a bare
+  // `index.ts:12` among several changed index.ts files opens none rather than a guess.
   const changedFile = (path: string) => {
-    for (const g of groups) {
-      const f = g.files.find(
-        (f) => f.path === path || f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`),
-      )
-      if (f) return { componentId: g.id, path: f.path }
-    }
-    return undefined
+    const files = groups.flatMap((g) => g.files.map((f) => ({ componentId: g.id, path: f.path })))
+    const exact = files.find((f) => f.path === path)
+    if (exact) return exact
+    const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
+    return new Set(suffix.map((f) => f.path)).size === 1 ? suffix[0] : undefined
   }
   const openRef = (ref: FileRef) => {
     const file = changedFile(ref.path)
@@ -255,8 +257,7 @@ export default function ReviewView() {
     if (active.length && !active.includes(file.componentId)) setFilter([])
     setCollapsed({ ...collapsed, [file.componentId]: false })
     setSelected(file)
-    setFindingsOpen(false)
-    setFromFindings(true)
+    setPane('fromFindings')
   }
 
   // Click shows one component; Cmd/Ctrl/Shift-click adds or removes it.
@@ -364,18 +365,15 @@ export default function ReviewView() {
                     <ReviewStatus branch={source?.branch} findings={findings} status={status} />
                     {source?.branch && (
                       <button
-                        className={`review-findings-button ${findingsOpen ? 'on' : ''}`}
-                        aria-pressed={findingsOpen}
+                        className={`review-findings-button ${pane === 'findings' ? 'on' : ''}`}
+                        aria-pressed={pane === 'findings'}
                         title="Show the review agents' findings for this branch"
-                        onClick={() => {
-                          setFindingsOpen(!findingsOpen)
-                          setFromFindings(false)
-                        }}
+                        onClick={() => setPane(pane === 'findings' ? 'diff' : 'findings')}
                       >
                         Findings
                         {findings?.findings && (
                           <>
-                            <VerdictBadge findings={findings.findings} />
+                            <VerdictBadge findings={findings.findings} running={reviewLanes} />
                             <SeverityCounts findings={findings.findings} />
                           </>
                         )}
@@ -476,14 +474,13 @@ export default function ReviewView() {
                           files={g.files}
                           base={g.base}
                           selected={
-                            !findingsOpen && current?.componentId === g.id
+                            pane !== 'findings' && current?.componentId === g.id
                               ? current.path
                               : undefined
                           }
                           onSelect={(path) => {
                             setSelected({ componentId: g.id, path })
-                            setFindingsOpen(false)
-                            setFromFindings(false)
+                            setPane('diff')
                           }}
                           task={null}
                           worktree={target}
@@ -526,7 +523,7 @@ export default function ReviewView() {
             </Panel>
             <Separator className="separator" />
             <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
-              {findingsOpen ? (
+              {pane === 'findings' ? (
                 <FindingsPanel
                   loaded={findings}
                   status={status}
@@ -542,17 +539,10 @@ export default function ReviewView() {
                     )
                   }
                 />
-              ) : current && fromFindings ? (
+              ) : current && pane === 'fromFindings' ? (
                 <div className="review-diff-pane">
                   <div className="review-diff-back">
-                    <button
-                      onClick={() => {
-                        setFindingsOpen(true)
-                        setFromFindings(false)
-                      }}
-                    >
-                      ← Findings
-                    </button>
+                    <button onClick={() => setPane('findings')}>← Findings</button>
                   </div>
                   <DiffView
                     componentId={current.componentId}
@@ -584,10 +574,7 @@ export default function ReviewView() {
               sourceBranch={source?.branch}
               sourceFindings={findings}
               sourceStatus={status}
-              openFindings={() => {
-                setFindingsOpen(true)
-                setFromFindings(false)
-              }}
+              openFindings={() => setPane('findings')}
             />
           )}
         </Panel>

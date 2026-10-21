@@ -87,19 +87,18 @@ export function parseBlocks(text: string): Block[] {
   return blocks
 }
 
-/** Split a line into code spans, strong and emphasis (`*` only, so snake_case stays intact). */
+/** Split a line into code spans, strong and emphasis (`*` only, so `snake_case` and `__init__` stay intact). */
 export function parseInline(text: string): Inline[] {
   const out: Inline[] = []
-  const pattern = /(`+)(.+?)\1|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s][^*]*?)\*|\[([^\]]+)\]\(([^)]+)\)/g
+  const pattern = /(`+)(.+?)\1|\*\*(.+?)\*\*|\*([^*\s][^*]*?)\*|\[([^\]]+)\]\(([^)]+)\)/g
   let last = 0
   for (const m of text.matchAll(pattern)) {
     if (m.index > last) out.push({ kind: 'text', text: text.slice(last, m.index) })
     if (m[2] !== undefined) out.push({ kind: 'code', text: m[2].trim() })
-    else if (m[3] !== undefined || m[4] !== undefined)
-      out.push({ kind: 'strong', text: m[3] ?? m[4] })
-    else if (m[5] !== undefined) out.push({ kind: 'em', text: m[5] })
+    else if (m[3] !== undefined) out.push({ kind: 'strong', text: m[3] })
+    else if (m[4] !== undefined) out.push({ kind: 'em', text: m[4] })
     // Links show their text; the webview never navigates away.
-    else out.push({ kind: 'text', text: m[6] })
+    else out.push({ kind: 'text', text: m[5] })
     last = m.index + m[0].length
   }
   if (last < text.length) out.push({ kind: 'text', text: text.slice(last) })

@@ -103,6 +103,30 @@ describe('parseFindings', () => {
     parseFindings(['#', '_', '*', '`'].map((c) => c.repeat(5000)).join('\n'))
     expect(performance.now() - start).toBeLessThan(500)
   })
+  test('splits combined reviewers even after an unclosed fence', () => {
+    const sections = parseFindings(
+      [
+        '## Reviewer: claude',
+        '',
+        '[high] One',
+        '```ts',
+        'never closed',
+        '',
+        '## Reviewer: codex',
+        '',
+        '[low] Two',
+      ].join('\n'),
+    )
+    expect(sections.map((s) => [s.reviewer, s.items.map((f) => f.title)])).toEqual([
+      ['claude', ['One']],
+      ['codex', ['Two']],
+    ])
+  })
+
+  test('a fence closes only on its own marker', () => {
+    const [section] = parseFindings(['~~~', '```', '[high] quoted', '~~~', '[low] Real'].join('\n'))
+    expect(section.items.map((f) => f.title)).toEqual(['Real'])
+  })
 })
 
 describe('fileRefs', () => {

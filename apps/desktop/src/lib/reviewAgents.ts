@@ -79,6 +79,39 @@ export const reviewWorktreeBusy = (
   })
 
 /** Recover review and merge terminals from the session service, even after Review unmounts. */
+/**
+ * The lanes of `branch`'s review sessions whose process still runs, as a stable key (each lane
+ * `+`-prefixed and `\n`-joined; empty when none runs), so a store selector can return it.
+ */
+export const runningReviewLanes = (
+  records: SessionRecord[],
+  sessions: Record<string, SessionState>,
+  projectId: string | undefined,
+  branch: string | null | undefined,
+) =>
+  records
+    .filter(
+      (r) =>
+        r.metadata.projectId === projectId &&
+        r.metadata.componentId === REVIEW_SCOPE &&
+        !!branch &&
+        r.metadata.branch === branch &&
+        (sessions[r.id]?.running ?? sessionLive(r)),
+    )
+    .map((r) => `+${r.metadata.lane ?? ''}`)
+    .join('\n')
+
+/** Whether a reviewer of `lane` (any, for a single reviewer's `null`) runs, from that key. */
+export function laneRunning(key: string, lane: string | null) {
+  if (!key) return false
+  return lane === null || key.split('\n').includes(`+${lane}`)
+}
+
+/** `branch`'s running review lanes (`runningReviewLanes`), re-rendering only when they change. */
+export function useRunningReviewLanes(branch: string | null | undefined) {
+  return useStore((s) => runningReviewLanes(s.sessionRecords, s.sessions, s.project?.id, branch))
+}
+
 export function reviewAgentRecords(records: SessionRecord[], projectId: string | undefined) {
   return records
     .filter((r) => r.metadata.projectId === projectId && isReviewAgentScope(r.metadata.componentId))

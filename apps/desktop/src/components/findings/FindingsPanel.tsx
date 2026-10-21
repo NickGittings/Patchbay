@@ -1,9 +1,10 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useClockTick } from '../../lib/clock'
-import { parseFindings, SEVERITIES, severityCounts, type FileRef } from '../../lib/findings'
+import { parseFindings, severityCounts, type FileRef } from '../../lib/findings'
 import { ago } from '../../lib/review'
+import { laneRunning, useRunningReviewLanes } from '../../lib/reviewAgents'
 import type { LoadedFindings } from '../../lib/useReviewFindings'
-import type { ReviewFindings, Severity } from '../../types'
+import { SEVERITIES, type ReviewFindings, type Severity } from '../../types'
 import Markdown from './Markdown'
 import './findings.css'
 
@@ -23,10 +24,22 @@ function refLabel(ref: FileRef) {
     : `${name}:${ref.line}${ref.endLine ? `–${ref.endLine}` : ''}`
 }
 
-/** The verdict pill: clean, issues, or still pending when no reviewer's verdict reads yet. */
-export function VerdictBadge({ findings }: { findings: ReviewFindings | null | undefined }) {
+/**
+ * The verdict pill: clean, issues, or still pending when no reviewer's verdict reads yet. A
+ * reviewer counts as writing only while its session runs (`running`, from
+ * `useRunningReviewLanes`), so one that exited without findings reads as no verdict.
+ */
+export function VerdictBadge({
+  findings,
+  running,
+}: {
+  findings: ReviewFindings | null | undefined
+  running: string
+}) {
   const verdict = findings?.verdict
-  const writing = !!findings?.reviewers.some((r) => !r.finished && !r.error)
+  const writing = !!findings?.reviewers.some(
+    (r) => !r.finished && !r.error && laneRunning(running, r.lane),
+  )
   const kind = !verdict ? (writing ? 'writing' : 'unknown') : verdict.clean ? 'clean' : 'issues'
   const label = {
     writing: 'Reviewing…',
@@ -77,9 +90,20 @@ export default function FindingsPanel({
   const findings = loaded?.findings
   const sections = useMemo(() => parseFindings(findings?.text ?? ''), [findings?.text])
   const parsed = useMemo(() => severityCounts(sections), [sections])
-  const [filter, setFilter] = useState<Severity[]>([])
-  const [closed, setClosed] = useState<Record<string, boolean>>({})
-  const counts = findings?.verdict?.counts ?? parsed
+  const running = useRunningReviewLanes(branch)
+  // Collapsed cards are positional, so they reset with the text; the filter resets per branch.
+  const [filterState, setFilterState] = useState<{ branch?: string | null; filter: Severity[] }>({
+    filter: [],
+  })
+  const filter = filterState.branch === branch ? filterState.filter : []
+  const setFilter = (next: Severity[]) => setFilterState({ branch, filter: next })
+  const [closedState, setClosedState] = useState<{
+    text?: string
+    closed: Record<string, boolean>
+  }>({ closed: {} })
+  const closed = closedState.text === findings?.text ? closedState.closed : {}
+  const setClosed = (next: Record<string, boolean>) =>
+    setClosedState({ text: findings?.text, closed: next })
   const total = sections.reduce((n, s) => n + s.items.length, 0)
   const keys = sections.flatMap((s, i) => s.items.map((_, j) => `${i}:${j}`))
   const allClosed = keys.length > 0 && keys.every((k) => closed[k])
@@ -121,12 +145,15 @@ export default function FindingsPanel({
     <div className="findings-panel" aria-label="Review findings">
       <header className="findings-header">
         <div className="findings-title-row">
-          <VerdictBadge findings={findings} />
+          <VerdictBadge findings={findings} running={running} />
           <span className="findings-title">
             {total ? `${total} finding${total === 1 ? '' : 's'}` : 'Findings'}
           </span>
           <span className="findings-meta">
-            {status === 'stale' ? 'Changed since review · ' : ''}reviewed {ago(findings.modifiedMs)}{' '}
+            {status === 'stale' ? 'Changed since review · ' : ''}
+            {findings.modifiedMs > 0
+              ? `reviewed ${ago(findings.modifiedMs)}`
+              : 'not written yet'}{' '}
             against <code>{findings.base}</code>
           </span>
           <span className="spacer" />
@@ -146,14 +173,14 @@ export default function FindingsPanel({
                 key={s}
                 className={`filter-chip ${filter.includes(s) ? 'on' : ''}`}
                 aria-pressed={filter.includes(s)}
-                disabled={!counts[s] && !parsed[s]}
+                disabled={!parsed[s]}
                 onClick={() =>
                   setFilter(filter.includes(s) ? filter.filter((f) => f !== s) : [...filter, s])
                 }
               >
                 <span className={`severity-dot severity-${s}`} />
                 {SEVERITY_LABEL[s]}
-                <span className="filter-count">{counts[s]}</span>
+                <span className="filter-count">{parsed[s]}</span>
               </button>
             ))}
             <span className="spacer" />
@@ -171,7 +198,10 @@ export default function FindingsPanel({
           <div className="findings-reviewers" role="status">
             {findings.reviewers.map((r, i) => (
               <span key={`${r.lane}-${i}`} className="findings-reviewer">
-                <VerdictBadge findings={{ ...findings, verdict: r.verdict, reviewers: [r] }} />
+                <VerdictBadge
+                  findings={{ ...findings, verdict: r.verdict, reviewers: [r] }}
+                  running={running}
+                />
                 {r.lane ?? 'reviewer'}
                 {r.error && <span className="hint"> launch unconfirmed: {r.error}</span>}
               </span>
@@ -192,6 +222,9 @@ export default function FindingsPanel({
       </header>
       <div className="findings-body">
         {!findings.text.trim() && <p className="hint">No findings saved yet.</p>}
+        {filter.length > 0 && !filter.some((s) => parsed[s]) && (
+          <p className="hint">No findings of the selected severities.</p>
+        )}
         {sections.map((section, i) => {
           const items = section.items
             .map((f, j) => ({ f, key: `${i}:${j}` }))
@@ -240,7 +273,7 @@ export default function FindingsPanel({
                                 openable
                                   ? `Show ${ref.path} in Review`
                                   : onOpenFile
-                                    ? `${ref.path} has no uncommitted changes to show`
+                                    ? `${ref.path} isn't exactly one changed file to show`
                                     : ref.path
                               }
                               onClick={() => onOpenFile?.(ref)}

@@ -21,6 +21,7 @@ import {
   type Worktree,
   type SessionRecord,
   type SessionState,
+  SEVERITIES,
 } from '../types'
 import {
   agentHooksCheck,
@@ -51,14 +52,7 @@ import {
 } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
-import {
-  EFFORT,
-  integrated,
-  SEVERITIES,
-  taskPassed,
-  unfinished,
-  validOverrides,
-} from './autoSettings'
+import { EFFORT, integrated, taskPassed, unfinished, validOverrides } from './autoSettings'
 import { fnv1a } from './hash'
 import { autoRuns, autoWorkspace } from './autoState'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
@@ -616,8 +610,6 @@ export async function startAuto(projectId: string, task: string | null, settings
         branch: snapshot.source.branch,
         sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
         reviewedHead,
-        findingsSummary:
-          snapshot.freshness === 'current' ? snapshot.findings?.text.slice(0, 2000) : undefined,
         // An adopted planner must still save a plan other than the one it started with.
         planMark: decision.stage === 'plan' ? snapshot.planMark : undefined,
         ...(stage ? { stage, status: 'running' as const } : {}),
@@ -695,10 +687,6 @@ export async function resumeAuto(projectId: string, task: string | null) {
       // A run restored from before branches were recorded adopts its worktree's.
       branch: run.branch ?? snapshot.source.branch,
       reviewedHead: mergeableHead(snapshot, run),
-      findingsSummary:
-        snapshot.freshness === 'current'
-          ? snapshot.findings?.text.slice(0, 2000)
-          : run.findingsSummary,
       runId: crypto.randomUUID(),
       launchAtMs: kept.length || decision.sessionId === run.sessionId ? run.launchAtMs : undefined,
       turnSince: decision.turnSince,
@@ -1323,8 +1311,6 @@ async function drive(projectId: string, task: string | null) {
                 : decision.turnSince,
             observedWorking: decision.observedWorking ?? false,
             reviewedHead: run.stage === 'review' ? mergeableHead(snapshot, run) : run.reviewedHead,
-            findingsSummary:
-              run.stage === 'review' ? snapshot.findings?.text.slice(0, 2000) : run.findingsSummary,
           },
           `${decision.reason}${low ? `; ${low} finding(s) below the severity floor remain` : ''}`,
         )

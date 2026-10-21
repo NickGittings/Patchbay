@@ -1,7 +1,5 @@
 import type { Severity } from '../types'
 
-export const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low']
-
 /** A `path:line` a finding points at, as the reviewer wrote it (relative to its worktree). */
 export interface FileRef {
   path: string
@@ -32,7 +30,20 @@ const TAGGED =
   /^\s*(?:#+(?!#)\s*|[-+*]\s+|\d+[.)]\s*|\[[ xX]\]\s*|[*_`]+(?![*_`]))*\[(critical|high|medium|low)\][*_`]*\s*(?:[:—–-]\s*)?(.*)$/i
 const LEGEND =
   /^#+\s*[*_`]*(?:.*\blegend|severities|severity levels|severity definitions)[*_`:]*\s*$/i
-const FENCE = /^\s*(```|~~~)/
+const FENCE = /^\s*(`{3,}|~{3,})/
+
+/**
+ * The open fence after `line`, given the one open before it (null outside code). A fence closes
+ * only on a run of its own character at least as long, so a ``` inside a ~~~ block stays code.
+ */
+function fenceAfter(line: string, open: string | null): string | null {
+  const m = FENCE.exec(line)
+  if (!m) return open
+  if (!open) return m[1]
+  return m[1][0] === open[0] && m[1].length >= open.length && !line.trim().slice(m[1].length).trim()
+    ? null
+    : open
+}
 // `src/a.ts:12`, `crates/x/y.rs:3-9`, `Foo.tsx:7:3`; the path needs an extension or a slash.
 const REF =
   /(?:^|[\s(`'"[])((?:[\w.@-]+\/)*[\w@-][\w.@-]*\.[A-Za-z][\w]*|(?:[\w.@-]+\/)+[\w.@-]+):(\d+)(?:[-–](\d+))?/g
@@ -83,12 +94,13 @@ function trimBlank(lines: string[]) {
 function parseSection(reviewer: string | null, lines: string[]): FindingsSection {
   const intro: string[] = []
   const items: { severity: Severity; title: string; body: string[] }[] = []
-  let code = false
+  let fence: string | null = null
   let legend = false
   for (const line of lines) {
-    if (FENCE.test(line)) code = !code
+    const before = fence
+    fence = fenceAfter(line, fence)
     const current = items.at(-1)
-    if (!code && !FENCE.test(line)) {
+    if (!before && !fence) {
       if (/^\s*#/.test(line)) legend = LEGEND.test(line.trim()) && !/\[\w+\]/.test(line)
       const tagged = legend ? null : TAGGED.exec(line)
       if (tagged && !bareTags(tagged[2]) && tagged[2].trim()) {
@@ -125,10 +137,15 @@ export function parseFindings(text: string): FindingsSection[] {
   const sections: FindingsSection[] = []
   let reviewer: string | null = null
   let lines: string[] = []
-  let code = false
-  for (const line of text.replace(/^﻿/, '').split(/\r?\n/)) {
-    if (FENCE.test(line)) code = !code
-    const heading = code ? null : REVIEWER.exec(line)
+  let fence: string | null = null
+  const all = text.replace(/^﻿/, '').split(/\r?\n/)
+  // The backend combines reviewers by starting each with this heading after a blank line, so in
+  // combined text those headings split even where a reviewer left a code fence open.
+  const combined = REVIEWER.test(all[0] ?? '')
+  for (const [i, line] of all.entries()) {
+    const separator = combined && (i === 0 || !all[i - 1].trim()) && REVIEWER.test(line)
+    const heading: RegExpExecArray | null = separator || !fence ? REVIEWER.exec(line) : null
+    fence = heading ? null : fenceAfter(line, fence)
     if (heading) {
       if (reviewer !== null || lines.some((l) => l.trim()))
         sections.push(parseSection(reviewer, lines))
