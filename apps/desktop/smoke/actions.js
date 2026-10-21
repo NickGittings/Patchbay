@@ -125,7 +125,10 @@
       'API readiness',
       () => state().sessions[smoke.sessionId('api', 'dev')]?.status?.ready,
     )
-    await until('web start', () => state().sessions[smoke.sessionId('web', 'dev')]?.running)
+    await until(
+      'web start',
+      () => state().sessions[smoke.sessionId('web', 'dev')]?.startedMs !== undefined,
+    )
     assert(
       state().sessions[smoke.sessionId('web', 'dev')].startedMs -
         state().sessions[smoke.sessionId('api', 'dev')].startedMs >=

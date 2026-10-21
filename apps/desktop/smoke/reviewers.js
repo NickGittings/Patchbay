@@ -39,6 +39,7 @@
       )
       await smoke.refreshTasks(projectId)
       state().setActiveTask(task.id)
+      assert(state().activeTask === task.id, `project did not switch to ${task.branch}`)
     }
     await onBranch(two.id)
     state().setAgentRoles({ plan: ['a'], review: ['a', 'removed'] })
