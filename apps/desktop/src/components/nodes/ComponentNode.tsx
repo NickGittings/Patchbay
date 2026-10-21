@@ -1,3 +1,4 @@
+import { useSimpleMap } from '../../lib/simpleUi'
 import ExtensionBadges from '../../extensions/Badges'
 import { ComponentMenuItems, ContextMenu } from '../ComponentActions'
 import ChangesPopover from '../changes/ChangesPopover'
@@ -15,9 +16,13 @@ import AttentionPill from '../status/AttentionPill'
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const planning = useStore((s) => s.view === 'plan')
+  const simple = useStore((s) => s.simpleMode)
+  const pulsing = useSimpleMap((s) => s.active.includes(id))
+  const planning = useStore((s) => s.simpleMode || s.view === 'plan')
   const highlighted = useStore((s) => s.highlighted.includes(id))
-  const nearby = useStore((s) => s.view === 'plan' && nearbyIds(s.highlighted, s.edges).has(id))
+  const nearby = useStore(
+    (s) => (s.simpleMode || s.view === 'plan') && nearbyIds(s.highlighted, s.edges).has(id),
+  )
   const hasHighlights = useStore((s) => s.highlighted.length > 0)
   const proposed = useStore((s) => s.view === 'plan' && s.proposedScope.includes(id))
   const planClass = !planning
@@ -69,7 +74,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div
-      className={`component-node ${!planning && selected ? 'selected' : ''} ${planClass} ${
+      className={`component-node ${simple && changes > 0 ? 'simple-changed' : ''} ${simple && pulsing ? 'simple-pulse' : ''} ${!planning && selected ? 'selected' : ''} ${planClass} ${
         inTask ? 'in-task' : ''
       }`}
       onContextMenu={(e) => {

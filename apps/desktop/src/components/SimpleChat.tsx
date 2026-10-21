@@ -1,3 +1,4 @@
+import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
@@ -16,7 +17,7 @@ import { reviewState, reviewWorktreeBusy, useRunningReviewLanes } from '../lib/r
 import { graphActionIn } from '../lib/actions'
 import FindingsPanel, { VerdictBadge, SeverityCounts } from './findings/FindingsPanel'
 import ValidationChips from './changes/ValidationChips'
-import { latestChangeOf } from '../lib/review'
+import { latestChange, latestChangeOf } from '../lib/review'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
@@ -30,6 +31,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const key = simpleKey(s.project?.id, s.activeTask)
   const [pending, setPending] = useState(''),
     [failure, setFailure] = useState<{ action: string; text: string }>()
+  const [integrationsOpen, setIntegrationsOpen] = useState(false)
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const runningReview = useRunningReviewLanes(source?.branch)
   useEffect(() => {
@@ -113,6 +115,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
       </header>
+      {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
+      {!model.records.some((r) => s.sessions[r.id]?.status?.agent?.authoritative) && (
+        <p className="simple-hook-notice">
+          Live tool activity needs hooks.{' '}
+          <button onClick={() => setIntegrationsOpen(true)}>Install Agent Integrations</button>
+        </p>
+      )}
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
         <ReviewAgentDialog
@@ -194,6 +203,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     groups.map((g) => (
                       <div key={g.id}>
                         <strong>{g.name}</strong>
+                        {g.id !== '@project' && (
+                          <ValidationChips
+                            componentId={g.id}
+                            changedAt={latestChange(g.files)}
+                            task={task}
+                          />
+                        )}
                         {g.files.map((f) => (
                           <button
                             className="simple-file"
@@ -215,7 +231,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     Review…
                   </button>
                 </article>
-                {!!data?.review.affected.length && (
+                {!!data && (groups.length > 0 || data.review.affected.length > 0) && (
                   <article>
                     <h3>May affect</h3>
                     {data.review.affected.map((a) => (

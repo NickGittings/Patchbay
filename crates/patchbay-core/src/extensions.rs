@@ -1008,6 +1008,7 @@ mod tests {
                 started_ms: 1,
                 exited_ms: None,
                 status: Default::default(),
+                activity: Vec::new(),
                 notice: None,
             }),
             history: vec![],

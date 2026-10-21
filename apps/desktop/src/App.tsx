@@ -1,3 +1,4 @@
+import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
@@ -93,6 +94,7 @@ function NavigationView() {
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
   const reader = useSimpleData(simple)
+  useSimpleMapFeedback(simple)
   useEffect(
     () => () => {
       useSimpleUi.getState().patch(scopeKey, { diff: null })

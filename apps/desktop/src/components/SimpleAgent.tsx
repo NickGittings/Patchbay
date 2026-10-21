@@ -1,3 +1,4 @@
+import { activityFile } from '../lib/activity'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { PLAN_SCOPE, type SessionRecord } from '../types'
@@ -16,6 +17,10 @@ export default function SimpleAgent({
   scopeKey: string
   openTerminal: (r: SessionRecord) => void
 }) {
+  const project = useStore((s) => s.project)
+  const tasks = useStore((s) => s.tasks)
+  const task = useStore((s) => s.activeTask)
+  const nodes = useStore((s) => s.nodes)
   const session = useStore((s) => s.sessions[record.id])
   const expanded = useSimpleUi((s) =>
     (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).expanded.includes(record.id),
@@ -58,6 +63,32 @@ export default function SimpleAgent({
         <StatusLabel status={terminalStatus('agent', session)} />
         <button onClick={() => openTerminal(record)}>Open terminal</button>
       </header>
+      {!!session?.activity?.length && (
+        <ol className="simple-activity">
+          {session.activity.slice(-6).map((activity) => {
+            const worktree =
+              tasks.find((t) => t.id === task)?.worktree ?? project?.root ?? record.spec.cwd
+            const file = activityFile(
+              activity,
+              record,
+              nodes.map((n) => ({ id: n.id, path: n.data.path })),
+              worktree,
+            )
+            return (
+              <li key={activity.sequence}>
+                <span>{activity.tool}</span>
+                {file ? (
+                  <button onClick={() => useSimpleUi.getState().patch(scopeKey, { diff: file })}>
+                    {activity.target}
+                  </button>
+                ) : (
+                  <span>{activity.target}</span>
+                )}
+              </li>
+            )
+          })}
+        </ol>
+      )}
       {expanded && visible && (
         <div className="simple-terminal">
           <TerminalPane

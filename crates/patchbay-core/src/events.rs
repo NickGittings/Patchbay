@@ -30,6 +30,11 @@ pub enum TerminalEvent {
         /// Unix milliseconds.
         exited_ms: u64,
     },
+    Activity {
+        session_id: String,
+        generation: u64,
+        activity: crate::status::Activity,
+    },
     /// What a running session is doing changed (see [`SessionStatus`]).
     Status {
         session_id: String,
@@ -45,7 +50,8 @@ impl TerminalEvent {
             Self::Started { session_id, .. }
             | Self::Output { session_id, .. }
             | Self::Exited { session_id, .. }
-            | Self::Status { session_id, .. } => session_id,
+            | Self::Status { session_id, .. }
+            | Self::Activity { session_id, .. } => session_id,
         }
     }
 }

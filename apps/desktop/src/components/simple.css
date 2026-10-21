@@ -154,3 +154,42 @@
   min-height: 120px;
   max-height: 600px;
 }
+.simple-activity {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.simple-activity li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+.simple-hook-notice {
+  padding: 8px 12px;
+  color: var(--muted);
+}
+.component-node.simple-changed {
+  box-shadow:
+    0 0 0 2px var(--running),
+    0 0 16px color-mix(in srgb, var(--running) 20%, transparent);
+}
+.component-node.simple-pulse {
+  animation: simple-activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes simple-activity-pulse {
+  50% {
+    outline: 3px solid var(--running);
+    outline-offset: 5px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .component-node.simple-pulse {
+    animation: none;
+    outline: 2px solid var(--running);
+    outline-offset: 4px;
+  }
+}

@@ -99,11 +99,16 @@ export function relatedSession(record: SessionRecord, worktree: SimpleWorktree) 
   return (record.metadata.task ?? null) === worktree.task
 }
 
+const stageSessionTime = (record: SessionRecord) =>
+  record.snapshot?.startedMs ?? record.history.at(-1)?.startedMs ?? sessionTimeMs(record)
+
 /** Pure projection: stable sections and cards, never terminal-text interpretation or IPC. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
     .filter((r) => relatedSession(r, worktree))
-    .sort((a, b) => (sessionTimeMs(a) ?? 0) - (sessionTimeMs(b) ?? 0) || a.id.localeCompare(b.id))
+    .sort(
+      (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
+    )
   const log = [...(snapshot.simple?.log ?? [])].sort((a, b) => a.atMs - b.atMs)
   let stage: SimpleStage = recordStageOrPlan(records.at(-1))
   const action = log
@@ -114,7 +119,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const latestRecord = records.at(-1)
   if (
     action?.kind === 'action' &&
-    action.atMs >= (latestRecord ? (sessionTimeMs(latestRecord) ?? 0) : 0)
+    action.atMs >= (latestRecord ? (stageSessionTime(latestRecord) ?? 0) : 0)
   )
     stage = action.action === 'review' ? 'review' : action.action === 'merge' ? 'merge' : 'build'
   if (snapshot.auto && !['stopped', 'failed', 'done'].includes(snapshot.auto.status)) {

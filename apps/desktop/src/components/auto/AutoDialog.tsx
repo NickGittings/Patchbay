@@ -231,7 +231,7 @@ export default function AutoDialog({
       cancelled = true
     }
   }, [distinct, devices])
-  const settings = { ...EFFORT[effort], ...overrides }
+  const settings = simple ? EFFORT.light : { ...EFFORT[effort], ...overrides }
   const decision =
     snapshot &&
     inferStage(
@@ -303,7 +303,8 @@ export default function AutoDialog({
       <label>
         Fix effort
         <select
-          value={effort}
+          disabled={simple}
+          value={simple ? 'light' : effort}
           onChange={(e) => edit({ effort: e.target.value as AutoRun['effort'], overrides: {} })}
         >
           <option value="light">Light (1 fix round)</option>
@@ -311,7 +312,7 @@ export default function AutoDialog({
           <option value="thorough">Thorough (5 fix rounds)</option>
         </select>
       </label>
-      <details>
+      <details hidden={simple}>
         <summary>Advanced</summary>
         <label>
           Maximum fix rounds
@@ -359,7 +360,11 @@ export default function AutoDialog({
       </details>
       <label>
         Merge
-        <select value={mode} onChange={(e) => edit({ mode: e.target.value as 'ask' | 'auto' })}>
+        <select
+          disabled={simple}
+          value={simple ? 'ask' : mode}
+          onChange={(e) => edit({ mode: e.target.value as 'ask' | 'auto' })}
+        >
           <option value="ask">Ask before merging</option>
           <option value="auto">Merge automatically</option>
         </select>

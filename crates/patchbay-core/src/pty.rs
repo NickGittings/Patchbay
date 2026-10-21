@@ -210,6 +210,8 @@ pub struct Snapshot {
     /// When it exited, in Unix milliseconds.
     pub exited_ms: Option<u64>,
     pub status: SessionStatus,
+    #[serde(default)]
+    pub activity: Vec<crate::status::Activity>,
     /// The spec's notice. Full-screen programs hide the dim backlog line, so
     /// windows show this outside the terminal as well.
     pub notice: Option<String>,
@@ -608,6 +610,13 @@ impl PtyManager {
             if let Some(dir) = manager.report_dir(generation) {
                 for event in crate::agent_hooks::drain(&dir) {
                     backlog.tracker.on_hook(event, exited_ms);
+                    for activity in backlog.tracker.drain_activity() {
+                        sink.emit(TerminalEvent::Activity {
+                            session_id: spec.id.clone(),
+                            generation,
+                            activity,
+                        });
+                    }
                 }
                 let _ = std::fs::remove_dir_all(dir);
             }
@@ -717,6 +726,13 @@ impl PtyManager {
                 }
                 for event in hooks {
                     guard.tracker.on_hook(event, exited_ms);
+                    for activity in guard.tracker.drain_activity() {
+                        sink.emit(TerminalEvent::Activity {
+                            session_id: id.clone(),
+                            generation,
+                            activity,
+                        });
+                    }
                 }
                 guard.tracker.on_exit(exited_ms);
                 // Exited runs still take status (stopped, seen); it never revives one.
@@ -734,6 +750,13 @@ impl PtyManager {
             }
             for event in hooks {
                 guard.tracker.on_hook(event, now);
+                for activity in guard.tracker.drain_activity() {
+                    sink.emit(TerminalEvent::Activity {
+                        session_id: id.clone(),
+                        generation,
+                        activity,
+                    });
+                }
             }
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's
@@ -875,6 +898,7 @@ impl PtyManager {
             started_ms: backlog.started_ms,
             exited_ms: backlog.exited_ms,
             status,
+            activity: backlog.tracker.activity(),
             notice: backlog.notice.clone(),
         })
     }
@@ -912,16 +936,39 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<()> {
+        self.write_checked(id, None, data)
+    }
+
+    /// Write a chat message only to the captured process incarnation.
+    ///
+    /// # Errors
+    /// Fails when that process ended, restarted or could not accept the write.
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn write_generation(&self, id: &str, generation: u64, data: &[u8]) -> Result<()> {
+        self.write_checked(id, Some(generation), data)
+    }
+
+    fn write_checked(&self, id: &str, generation: Option<u64>, data: &[u8]) -> Result<()> {
         // Before writing, so the echo isn't taken for activity; never while
         // holding `sessions`, which every terminal's input waits on.
         let backlog = self.backlogs.lock().unwrap().get(id).cloned();
         if let Some(backlog) = backlog {
-            backlog.lock().unwrap().tracker.on_input(data, now_ms());
+            let mut backlog = backlog.lock().unwrap();
+            anyhow::ensure!(
+                generation.is_none_or(|g| g == backlog.generation),
+                "The session generation changed"
+            );
+            backlog.tracker.on_input(data, now_ms());
         }
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions
             .get_mut(id)
             .ok_or_else(|| anyhow!("{id} is not running"))?;
+        anyhow::ensure!(
+            generation.is_none_or(|g| g == s.generation),
+            "The session generation changed"
+        );
         s.writer.write_all(data)?;
         s.writer.flush()?;
         Ok(())
@@ -1644,6 +1691,55 @@ mod tests {
         pty.write("concurrent", b"done\n").unwrap();
         assert_eq!(sink.wait_for_exit(), 0);
         assert!(!pty.snapshot("concurrent").unwrap().running);
+    }
+    #[test]
+    fn final_journal_drain_emits_activity_and_serializes_it_in_the_snapshot() {
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        let command = r#"printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":1,"atMs":1,"event":"UserPromptSubmit","conversation":"conversation","turn":"turn","prompt":null,"message":null}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000001.json"
+printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":2,"atMs":2,"event":"PreToolUse","conversation":"conversation","turn":"turn","prompt":null,"message":null,"tool":"Read","target":"src/lib.rs","fileTarget":true}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000002.json"
+"#;
+        pty.spawn(
+            SessionSpec {
+                id: "activity-final".into(),
+                command: command.into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::from([(crate::agent_hooks::PROVIDER_ENV.into(), "codex".into())]),
+                resume_command: None,
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
+                notice: None,
+                dirs: Vec::new(),
+                ready_when: String::new(),
+                service: false,
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        let snapshot = pty.snapshot("activity-final").unwrap();
+        assert_eq!(snapshot.activity.len(), 1);
+        let serialized = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(serialized["activity"][0]["sequence"], 2);
+        let restored: Snapshot = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.activity, snapshot.activity);
+        let events = sink.0.lock().unwrap();
+        let activity = events
+            .iter()
+            .position(
+                |e| matches!(e, TerminalEvent::Activity { activity, .. } if activity.sequence == 2),
+            )
+            .unwrap();
+        let exit = events
+            .iter()
+            .position(|e| matches!(e, TerminalEvent::Exited { .. }))
+            .unwrap();
+        assert!(activity < exit);
+        assert!(
+            pty.write_generation("activity-final", snapshot.generation, b"no")
+                .is_err()
+        );
     }
 }
 

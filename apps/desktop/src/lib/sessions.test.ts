@@ -767,3 +767,45 @@ test('a successful detection launch keeps the new preset for restart', async () 
     true,
   )
 })
+
+test('snapshot/live activity races deduplicate by sequence and new generations discard old activity', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  const event = (sequence: number, generation = 3) => ({
+    type: 'activity' as const,
+    sessionId: sid,
+    generation,
+    activity: {
+      sequence,
+      atMs: sequence,
+      tool: 'Read',
+      target: 'src/a',
+      turn: 'turn',
+      fileTarget: true,
+    },
+  })
+  let resolve!: (value: TerminalSnapshot) => void
+  vi.mocked(ipc.terminalSnapshot).mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done
+      }),
+  )
+  const loading = hydrateSession(sid)
+  await vi.waitFor(() => expect(resolve).toBeDefined())
+  handleTerminalEvent(event(2))
+  handleTerminalEvent(event(3))
+  handleTerminalEvent(event(2))
+  resolve({ ...snapshot(true), activity: [event(1).activity, event(2).activity] })
+  await loading
+  expect(useStore.getState().sessions[sid].activity?.map((a) => a.sequence)).toEqual([1, 2, 3])
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 4,
+    startedMs: 4,
+    notice: null,
+  })
+  handleTerminalEvent(event(100, 3))
+  handleTerminalEvent(event(1, 4))
+  expect(useStore.getState().sessions[sid].activity?.map((a) => a.sequence)).toEqual([1])
+})

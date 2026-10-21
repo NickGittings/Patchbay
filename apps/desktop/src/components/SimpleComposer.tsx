@@ -7,7 +7,7 @@ import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { deliverPrompt, editedMentions, promptReady, transmittedText } from '../lib/simpleComposer'
 import { logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
-import { sessionResume, terminalAttach, terminalDetach, terminalWrite } from '../lib/ipc'
+import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
 import { hasVisibleTerminal } from '../lib/terminals'
 
@@ -152,7 +152,7 @@ export default function SimpleComposer({
           current: stillCurrent,
           session: () => useStore.getState().sessions[sid],
           claim: () => terminalAttach(sid, true),
-          write: (bytes) => terminalWrite(sid, bytes),
+          write: (bytes) => terminalPrompt(sid, generation, bytes),
           release: async () => {
             if (!hasVisibleTerminal(sid)) await terminalDetach(sid)
           },

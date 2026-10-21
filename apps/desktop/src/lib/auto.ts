@@ -1500,7 +1500,12 @@ async function drive(projectId: string, task: string | null) {
         break
       case 'implement':
         // The planner whose plan is accepted is the plan stage's; the implement agent may differ.
-        sid = await implementPlannerPlan(agentFor(run, 'plan'), brief, deviceId)
+        sid = await implementPlannerPlan(
+          agentFor(run, 'plan'),
+          brief,
+          deviceId,
+          projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow',
+        )
         break
       case 'review': {
         const started = await startReviewAgents(
@@ -1518,7 +1523,12 @@ async function drive(projectId: string, task: string | null) {
       case 'fix':
         if (!snapshot.reviewRecord)
           throw new Error('Open findings and start a review before fixing')
-        sid = await fixReviewFindings(snapshot.reviewRecord, brief, deviceId)
+        sid = await fixReviewFindings(
+          snapshot.reviewRecord,
+          brief,
+          deviceId,
+          projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow',
+        )
         // A refused launch rejects; one that returned may be running even if confirming it fails,
         // so it uses up its round now.
         if (sid && autoRun(projectId, task)?.runId === runId)

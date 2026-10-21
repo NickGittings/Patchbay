@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-// Metadata records a review's lane, which an older service would drop.
-pub const PROTOCOL: u32 = 8;
+// Snapshots and live events retain tool activity; Prompt writes acknowledge one generation.
+pub const PROTOCOL: u32 = 9;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -272,6 +272,13 @@ pub enum Request {
     Write {
         id: String,
         viewer: String,
+        data: String,
+    },
+    /// A single, acknowledged chat write. Never retried after an uncertain reply.
+    Prompt {
+        id: String,
+        viewer: String,
+        generation: u64,
         data: String,
     },
     Resize {
@@ -867,6 +874,7 @@ impl Service {
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
+            activity: s.activity.clone(),
             ..*s
         };
         let records = self.records.lock().unwrap();
@@ -1479,6 +1487,51 @@ impl Service {
                     "Viewer does not have terminal authority"
                 );
                 self.pty.write(&id, data.as_bytes())?;
+                serde_json::Value::Null
+            }
+            Request::Prompt {
+                id,
+                viewer,
+                generation,
+                data,
+            } => {
+                anyhow::ensure!(
+                    self.owns(client, &id, &viewer),
+                    "Viewer does not have terminal authority"
+                );
+                let snapshot = self
+                    .pty
+                    .snapshot_with(&id, 0)
+                    .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+                anyhow::ensure!(
+                    snapshot.running && snapshot.generation == generation,
+                    "The session generation changed"
+                );
+                let ready = match &snapshot.status.agent {
+                    Some(agent) if agent.authoritative => matches!(
+                        agent.state,
+                        crate::status::AgentState::Idle | crate::status::AgentState::Review
+                    ),
+                    Some(agent)
+                        if matches!(
+                            agent.state,
+                            crate::status::AgentState::Working
+                                | crate::status::AgentState::NeedsInput
+                        ) =>
+                    {
+                        false
+                    }
+                    _ => {
+                        !snapshot.status.active
+                            && snapshot
+                                .status
+                                .last_output_ms
+                                .is_some_and(|at| crate::pty::now_ms().saturating_sub(at) >= 1000)
+                    }
+                };
+                anyhow::ensure!(ready, "The agent is not at a ready prompt");
+                self.pty
+                    .write_generation(&id, generation, data.as_bytes())?;
                 serde_json::Value::Null
             }
             Request::Resize {
@@ -4364,6 +4417,7 @@ mod tests {
             started_ms: 0,
             exited_ms: Some(1),
             status: crate::status::SessionStatus::default(),
+            activity: Vec::new(),
             notice: None,
         };
         assert_eq!(restart_conversation(Adapter::Claude, &snapshot), None);
@@ -4402,6 +4456,7 @@ mod tests {
             started_ms: 0,
             exited_ms: None,
             status: crate::status::SessionStatus::default(),
+            activity: Vec::new(),
             notice: None,
         };
         let mut history: Vec<_> = (0..10).map(snapshot).collect();

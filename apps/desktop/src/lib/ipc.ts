@@ -550,3 +550,7 @@ export const mergeOutcome = (project: Project, request: import('../types').Merge
     project,
     request,
   })
+
+/** Acknowledged, generation-bound write for a chat prompt. Never automatically retried. */
+export const terminalPrompt = (sessionId: string, generation: number, data: string) =>
+  invoke<void>('terminal_prompt', { sessionId, generation, data })

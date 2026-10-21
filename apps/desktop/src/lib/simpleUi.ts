@@ -31,3 +31,6 @@ export const useSimpleUi = create<{
     })),
 }))
 export const EMPTY_SIMPLE_UI = emptySimpleUi()
+
+/** Transient activity pulses for the currently visible Simple map. */
+export const useSimpleMap = create<{ active: string[] }>(() => ({ active: [] }))
