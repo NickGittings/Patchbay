@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { terminalStatus } from '../lib/display'
+import { sessionRun, terminalStatus } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit } from '../lib/terminals'
@@ -36,7 +36,7 @@ export default function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   // Dismissal lasts for one run; a restart shows its own notice again.
-  const noticeRun = `${sid}:${session?.generation ?? session?.startedMs ?? 'unknown'}`
+  const noticeRun = sessionRun(sid, session)
   const [dismissed, setDismissed] = useState<string>()
   const [truncationDismissed, setTruncationDismissed] = useState<string>()
 

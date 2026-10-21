@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { AgentReport, SessionState, SessionStatus } from '../types'
-import { describeTerminal, terminalStatus } from './display'
+import { describeTerminal, sessionRun, terminalStatus } from './display'
 
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({
@@ -127,4 +127,12 @@ test('describeTerminal names interactive shells', () => {
   expect(describeTerminal({ id: 't', name: 'Test', command: 'npm test', kind: 'task' })).toBe(
     'npm test',
   )
+})
+
+test('sessionRun tells apart runs that reuse a generation after a service restart', () => {
+  const run = sessionRun('sid', { generation: 3, startedMs: 10 })
+  expect(sessionRun('sid', { generation: 3, startedMs: 10 })).toBe(run)
+  expect(sessionRun('sid', { generation: 3, startedMs: 20 })).not.toBe(run)
+  expect(sessionRun('sid', { generation: 4, startedMs: 10 })).not.toBe(run)
+  expect(sessionRun('other', { generation: 3, startedMs: 10 })).not.toBe(run)
 })

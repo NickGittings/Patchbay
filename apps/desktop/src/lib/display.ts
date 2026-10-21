@@ -172,3 +172,10 @@ export function describeTerminal(t: TerminalSpec) {
   if (t.kind === 'shell' && !t.command) return 'interactive shell'
   return t.command
 }
+
+/**
+ * Identifies one run of a session, for dismissals that last a run. A restarted service seeds its
+ * generations from the records it kept, so one can repeat; the run's start time tells them apart.
+ */
+export const sessionRun = (sid: string, session?: Pick<SessionState, 'generation' | 'startedMs'>) =>
+  `${sid}:${session?.generation ?? 'unknown'}:${session?.startedMs ?? 'unknown'}`
