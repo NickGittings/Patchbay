@@ -337,8 +337,14 @@ pub type Stamp = (SystemTime, u64);
 #[derive(Debug, PartialEq, Eq)]
 struct PendingApproval {
     requested_ms: u64,
-    since_ms: u64,
     message: Option<String>,
+}
+
+/// Mouse and focus reports the terminal sends on its own. They are never echoed.
+fn is_terminal_report(data: &[u8]) -> bool {
+    [b"\x1b[<".as_slice(), b"\x1b[M", b"\x1b[I", b"\x1b[O"]
+        .iter()
+        .any(|prefix| data.starts_with(prefix))
 }
 
 /// Moves a state on after input that resolves it: answering a prompt resumes
@@ -524,12 +530,16 @@ impl Tracker {
         let same_turn = previous.as_ref().filter(|r| {
             r.conversation_id.as_ref() == Some(&event.conversation) && r.turn_id == turn
         });
-        let state = if event.event == "PermissionRequest" && state == AgentState::NeedsInput {
+        // Codex may hand a request to its automatic reviewer; Claude sends the hook
+        // only for a dialog it shows.
+        let state = if event.event == "PermissionRequest"
+            && state == AgentState::NeedsInput
+            && event.provider == crate::adapters::Adapter::Codex
+        {
             // Every accepted request is a new approval, even without a progress
             // hook between tools. Sequence checks above reject duplicate delivery.
             self.approval_pending = Some(PendingApproval {
                 requested_ms: event.at_ms,
-                since_ms: now,
                 message: event.message.clone(),
             });
             AgentState::Working
@@ -561,12 +571,13 @@ impl Tracker {
     /// only once the approved step finishes); Esc or Ctrl+C stops it, which it
     /// never reports.
     pub fn on_input(&mut self, data: &[u8], now: u64) {
+        // Mouse and focus reports must not hide spinner output arriving right after them.
+        if !is_terminal_report(data) {
+            self.last_input_ms = Some(now);
+        }
         let Some(effect) = input_effect(data) else {
             return;
         };
-        // Mouse, focus and other terminal reports are not echoed. They must not
-        // hide real spinner output arriving immediately afterwards.
-        self.last_input_ms = Some(now);
         let pending = self.approval_pending.take();
         if let Some(report) = self.report.as_mut().filter(|r| r.authoritative) {
             if !data.contains(&0x03) {
@@ -577,6 +588,13 @@ impl Tracker {
                     && resolve(&mut report.state, &mut report.message, effect)
                 {
                     report.since_ms = now;
+                    report.authoritative = false;
+                    self.heard_ms = now;
+                    self.resolved = Some((now, effect));
+                }
+                // Typing during a pending request may answer its dialog, follow up, or
+                // deny it without a hook, so the work it keeps is a guess that decays.
+                if effect == AgentState::Working && pending.is_some() {
                     report.authoritative = false;
                     self.heard_ms = now;
                     self.resolved = Some((now, effect));
@@ -617,7 +635,7 @@ impl Tracker {
     /// and seen updates must not promote a pending approval to NeedsInput.
     pub fn on_exit(&mut self, now: u64) {
         self.approval_pending = None;
-        if let Some(report) = &mut self.report
+        if let Some(report) = self.report.as_mut().filter(|r| r.authoritative)
             && matches!(report.state, AgentState::Working | AgentState::NeedsInput)
         {
             report.state = AgentState::Ended;
@@ -635,8 +653,8 @@ impl Tracker {
         let mut lines = Vec::new();
         // Ordinary terminals need no parsing. Agent activity and service lines
         // share one parser, consuming whole chunks to retain split escapes.
-        // All PTYs have identities; only reporting agents need text activity.
-        let agent = self.report.is_some() || self.hook_conversation.is_some();
+        // All PTYs have identities; only hook-reporting agents need text activity.
+        let agent = self.hook_conversation.is_some();
         let text = (agent || self.service)
             && self
                 .lines
@@ -776,7 +794,8 @@ impl Tracker {
             let pending = self.approval_pending.take().unwrap();
             if let Some(report) = &mut self.report {
                 report.state = AgentState::NeedsInput;
-                report.since_ms = pending.since_ms;
+                // Asked from now: a window may have been seen during the grace.
+                report.since_ms = now;
                 report.message = pending.message;
             }
         }
@@ -1214,11 +1233,11 @@ mod tests {
             AgentState::Working
         );
         assert_eq!(tracker.approval_pending.as_ref().unwrap().requested_ms, 300);
-        // Typing during pending approval preserves the authoritative working turn.
+        // Typing during pending approval keeps the turn's work, but only as a guess.
         tracker.on_input(b"y", 350);
         let answered = tracker.status(350).agent.unwrap();
         assert_eq!(answered.state, AgentState::Working);
-        assert!(answered.authoritative);
+        assert!(!answered.authoritative);
         assert_eq!(answered.since_ms, 200);
         assert_eq!(tracker.approval_pending, None);
         let mut duplicate = hook("UserPromptSubmit", Some("turn-one"), 4);
@@ -1475,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_approval_keeps_request_time_and_message_when_confirmed() {
+    fn quiet_approval_keeps_its_message_and_asks_from_confirmation() {
         let mut tracker = Tracker::new("", false).with_identity("session", 42);
         tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
         tracker.on_hook(hook("PermissionRequest", Some("turn"), 2), 200);
@@ -1489,7 +1508,11 @@ mod tests {
             AgentState::Working
         );
         let agent = tracker.status(500 + APPROVAL_QUIET_MS).agent.unwrap();
-        assert_eq!((agent.state, agent.since_ms), (AgentState::NeedsInput, 200));
+        // A window seen during the grace never saw the prompt, so it asks from now.
+        assert_eq!(
+            (agent.state, agent.since_ms),
+            (AgentState::NeedsInput, 500 + APPROVAL_QUIET_MS)
+        );
         assert_eq!(agent.message.as_deref(), Some("Allow Bash?"));
         assert!(agent.authoritative);
         assert_eq!(tracker.approval_pending, None);
@@ -1515,7 +1538,10 @@ mod tests {
             AgentState::Working
         );
         let agent = tracker.status(200 + APPROVAL_QUIET_MS).agent.unwrap();
-        assert_eq!((agent.state, agent.since_ms), (AgentState::NeedsInput, 250));
+        assert_eq!(
+            (agent.state, agent.since_ms),
+            (AgentState::NeedsInput, 200 + APPROVAL_QUIET_MS)
+        );
     }
 
     #[test]
@@ -1594,7 +1620,7 @@ mod tests {
             let waiting = tracker.status(7_000).agent.unwrap();
             assert_eq!(
                 (waiting.state, waiting.since_ms),
-                (AgentState::NeedsInput, 4_000)
+                (AgentState::NeedsInput, 7_000)
             );
             assert_eq!(waiting.message.as_deref(), Some("Allow the next tool?"));
         }
@@ -1631,6 +1657,47 @@ mod tests {
     }
 
     #[test]
+    fn claude_permission_requests_need_input_at_once() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        let mut prompt = hook("UserPromptSubmit", Some("turn"), 1);
+        prompt.provider = crate::adapters::Adapter::Claude;
+        tracker.on_hook(prompt, 100);
+        let mut request = hook("PermissionRequest", Some("turn"), 2);
+        request.provider = crate::adapters::Adapter::Claude;
+        tracker.on_hook(request, 200);
+        assert_eq!(tracker.approval_pending, None);
+        let agent = tracker.status(200).agent.unwrap();
+        assert_eq!((agent.state, agent.since_ms), (AgentState::NeedsInput, 200));
+    }
+
+    #[test]
+    fn echoed_navigation_keys_do_not_extend_the_approval_grace() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
+        tracker.on_hook(hook("PermissionRequest", Some("turn"), 2), 200);
+        // Arrow keys redraw the highlighted option; that echo isn't activity.
+        for now in (1_000..3_000).step_by(500) {
+            tracker.on_input(b"\x1b[B", now);
+            tracker.on_output(b"> Yes", now + 50);
+        }
+        assert_eq!(
+            tracker.status(200 + APPROVAL_QUIET_MS).agent.unwrap().state,
+            AgentState::NeedsInput
+        );
+    }
+
+    #[test]
+    fn exiting_leaves_self_reported_states_alone() {
+        let mut tracker = Tracker::new("", false);
+        tracker.on_report("working", (SystemTime::UNIX_EPOCH, 7), 100);
+        tracker.on_exit(200);
+        assert_eq!(
+            tracker.status(200).agent.unwrap().state,
+            AgentState::Working
+        );
+    }
+
+    #[test]
     fn answering_or_interrupting_pending_approval_clears_it() {
         for (input, expected) in [
             (b"y".as_slice(), AgentState::Working),
@@ -1648,11 +1715,12 @@ mod tests {
             assert_eq!(agent.state, expected);
             assert_eq!(agent.message, None);
             if expected == AgentState::Working {
-                assert!(agent.authoritative);
+                // A denial sends no hook, so the kept work decays once quiet.
+                assert!(!agent.authoritative);
                 assert_eq!(agent.since_ms, 100);
                 assert_eq!(
                     tracker.status(100_000).agent.unwrap().state,
-                    AgentState::Working
+                    AgentState::Idle
                 );
             } else if input == b"\x1b" {
                 assert!(!agent.authoritative);

@@ -707,9 +707,26 @@ impl PtyManager {
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
-            // A tick may have captured this session before the waiter removed it.
-            // Do not apply delayed reports after its final status and exit.
+            // A tick may have captured this session, and drained its journal, before the
+            // waiter removed it. Apply what it drained as of the exit, then finalize again,
+            // so a last Stop isn't lost and a pending approval can't come back.
             if !guard.running {
+                let exited_ms = guard.exited_ms.unwrap_or(now);
+                if let Some((stamp, text)) = report {
+                    guard.tracker.on_report(&text, stamp, exited_ms);
+                }
+                for event in hooks {
+                    guard.tracker.on_hook(event, exited_ms);
+                }
+                guard.tracker.on_exit(exited_ms);
+                // Exited runs still take status (stopped, seen); it never revives one.
+                if let Some(status) = guard.tracker.changed(exited_ms) {
+                    sink.emit(TerminalEvent::Status {
+                        session_id: id,
+                        generation,
+                        status,
+                    });
+                }
                 continue;
             }
             if let Some((stamp, text)) = report {

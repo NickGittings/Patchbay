@@ -25,26 +25,27 @@ Supported parent-turn events map to these states:
 | Events | State |
 | --- | --- |
 | UserPromptSubmit, PreToolUse, PostToolUse, Claude PostToolUseFailure | Working |
-| PermissionRequest | Working until 3s without terminal text updates, then Needs input |
-| Claude permission notification | Needs input immediately |
+| Codex PermissionRequest | Working until 3s without terminal text updates, then Needs input |
+| Claude PermissionRequest, Claude permission notification | Needs input immediately |
 | Stop | Ready for review |
 | SessionStart, Codex Interrupt, Claude StopFailure | Idle |
 | SessionEnd | Ended |
 
 Compaction SessionStart preserves an active turn. Native Working survives quiet terminal
-output. Permission requests may be answered by an automatic reviewer, so they retain an
+output. Codex permission requests may be answered by an automatic reviewer, so they retain an
 authoritative Working state, preserving when work began, until the terminal text stays quiet
-for 3s. Text activity keeps the request pending for as long as an automatic review or
+for 3s; the confirmed prompt asks from that moment, so a window seen during the grace doesn't
+acknowledge it. Claude sends PermissionRequest only for a dialog it shows. Text activity keeps the request pending for as long as an automatic review or
 approved command continues updating the terminal. Cursor controls and window-title updates
-do not extend the quiet window; a Claude permission notification confirms the prompt
-immediately. Each new permission request gets its own quiet window, even when the previous
+do not extend the quiet window, nor does the echo of keys typed into the dialog. Each new permission request gets its own quiet window, even when the previous
 tool emitted no progress hook. Duplicate journal deliveries are rejected by sequence number.
-Typing during a pending request clears it and preserves authoritative Working and its start
-time. Answering a confirmed Needs input prompt makes Working unconfirmed until the next
+Typing during a pending request clears it and keeps Working and its start time, but
+unconfirmed, since it may deny the request without a hook. Answering a confirmed Needs input prompt makes Working unconfirmed until the next
 provider hook. Esc turns a pending or confirmed prompt into unconfirmed Idle and other
 Working into unconfirmed Working that goes idle after 15s of quiet. Mouse and focus reports
 do not suppress output as input echo. PTY exit clears pending approvals and ends unresolved
-work before publishing Exited, so later snapshots and seen updates cannot confirm a prompt.
+native work before publishing Exited, so later snapshots and seen updates cannot confirm a
+prompt; hook events drained just before the exit still apply (a final Stop reads as review).
 An explicit Ctrl+C records interruption, and subsequent provider events resume
 authoritative reporting. A `resume` or `clear` SessionStart switches to that conversation, even
 one seen before; a `startup` SessionStart in another conversation comes from a nested run
