@@ -26,9 +26,10 @@ export interface FindingsSection {
 }
 
 const REVIEWER = /^##\s+Reviewer:\s*(.+?)\s*$/
-// List markers, numbers, checkboxes, heading marks and emphasis before a `[severity]` tag.
+// List markers, numbers, checkboxes, heading marks and emphasis before a `[severity]` tag. Runs
+// of `#` or emphasis each match whole (the lookaheads), so a long rule line can't backtrack.
 const TAGGED =
-  /^\s*(?:#+\s*|[-+*]\s+|\d+[.)]\s*|\[[ xX]\]\s*|[*_`]+)*\[(critical|high|medium|low)\][*_`]*\s*(?:[:—–-]\s*)?(.*)$/i
+  /^\s*(?:#+(?!#)\s*|[-+*]\s+|\d+[.)]\s*|\[[ xX]\]\s*|[*_`]+(?![*_`]))*\[(critical|high|medium|low)\][*_`]*\s*(?:[:—–-]\s*)?(.*)$/i
 const LEGEND =
   /^#+\s*[*_`]*(?:.*\blegend|severities|severity levels|severity definitions)[*_`:]*\s*$/i
 const FENCE = /^\s*(```|~~~)/

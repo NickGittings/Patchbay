@@ -98,6 +98,11 @@ describe('parseFindings', () => {
     expect(section.items).toEqual([])
     expect(section.intro).toBe('No findings; looks good.')
   })
+  test('stays fast on long rule lines without a tag', () => {
+    const start = performance.now()
+    parseFindings(['#', '_', '*', '`'].map((c) => c.repeat(5000)).join('\n'))
+    expect(performance.now() - start).toBeLessThan(500)
+  })
 })
 
 describe('fileRefs', () => {

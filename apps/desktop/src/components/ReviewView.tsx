@@ -73,10 +73,6 @@ export default function ReviewView() {
   const findingsFocus = useStore((s) => s.reviewFindingsFocus)
   const [findingsOpen, setFindingsOpen] = useState(findingsFocus)
   const [fromFindings, setFromFindings] = useState(false)
-  if (findingsFocus && (!findingsOpen || fromFindings)) {
-    setFindingsOpen(true)
-    setFromFindings(false)
-  }
   useEffect(() => {
     if (findingsFocus) useStore.setState({ reviewFindingsFocus: false })
   }, [findingsFocus])
@@ -86,6 +82,12 @@ export default function ReviewView() {
   const taskWorktree = useStore(activeWorktree)
   // The worktree picked here; until then (and after switching tasks) the active task's.
   const [picked, setPicked] = useState<{ task: string | null; path: string | undefined }>()
+  // Auto's findings are the active task's, so its request also drops a worktree picked here.
+  if (findingsFocus && (!findingsOpen || fromFindings || picked)) {
+    setFindingsOpen(true)
+    setFromFindings(false)
+    setPicked(undefined)
+  }
   const worktree = picked?.task === activeTask ? picked.path : taskWorktree
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)

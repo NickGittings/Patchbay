@@ -19,6 +19,7 @@ import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
 import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
 import { useReviewFindings } from '../../lib/useReviewFindings'
+import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
 
 export default function AutoPanel({ onIntegrations }: { onIntegrations: () => void }) {
@@ -70,7 +71,11 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
           {run.reason && <p>{run.reason}</p>}
           {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
           {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
-            <AutoFindings projectId={projectId} branch={run.branch} />
+            <AutoFindings
+              projectId={projectId}
+              branch={run.branch}
+              refresh={`${run.stage}:${run.status}:${run.log.length}`}
+            />
           )}
           {run.validation && (
             <p>
@@ -128,8 +133,19 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
 }
 
 /** The run's latest review verdict at a glance, with a way to read it in Review. */
-function AutoFindings({ projectId, branch }: { projectId: string | undefined; branch: string }) {
-  const loaded = useReviewFindings(projectId, branch, false)
+function AutoFindings({
+  projectId,
+  branch,
+  refresh,
+}: {
+  projectId: string | undefined
+  branch: string
+  /** Changes as the run moves on, so the verdict follows the findings Auto just judged. */
+  refresh: string
+}) {
+  const loaded = useReviewFindings(projectId, branch, false, refresh)
+  // Review shows the worktree's checked-out branch, which may no longer be the run's.
+  const checkedOut = useStore((s) => activeTaskOf(s)?.branch)
   const findings = loaded?.findings
   if (!findings) return null
   return (
@@ -137,14 +153,16 @@ function AutoFindings({ projectId, branch }: { projectId: string | undefined; br
       <span>Review:</span>
       <VerdictBadge findings={findings} />
       <SeverityCounts findings={findings} />
-      <button
-        onClick={() => {
-          useStore.setState({ reviewFindingsFocus: true })
-          useStore.getState().setView('review')
-        }}
-      >
-        View findings
-      </button>
+      {(!checkedOut || checkedOut === branch) && (
+        <button
+          onClick={() => {
+            useStore.setState({ reviewFindingsFocus: true })
+            useStore.getState().setView('review')
+          }}
+        >
+          View findings
+        </button>
+      )}
     </div>
   )
 }
