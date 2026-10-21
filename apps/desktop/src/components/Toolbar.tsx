@@ -187,7 +187,7 @@ export default function Toolbar() {
               {(simpleMode || view === 'navigation' || view === 'review') && (
                 <WorktreePicker align="right" caret={false} />
               )}
-              <AutoPanel onIntegrations={() => setIntegrationsOpen(true)} />
+              <AutoPanel simple={simpleMode} onIntegrations={() => setIntegrationsOpen(true)} />
               <AttentionMenu />
               <MapSaveStatus />
             </>

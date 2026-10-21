@@ -331,7 +331,7 @@ export function focusTerminal(sessionId: string) {
 /** Fit locally; the service accepts PTY sizes only from its authoritative viewer. */
 export function fit(sessionId: string) {
   const e = registry.get(sessionId)
-  if (!e?.opened) return
+  if (!e?.opened || !e.hosts.some(hostVisible)) return
   try {
     e.fit.fit()
     void terminalResize(sessionId, e.term.cols, e.term.rows).catch(() => {})

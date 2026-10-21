@@ -23,7 +23,13 @@ import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
 
-export default function AutoPanel({ onIntegrations }: { onIntegrations: () => void }) {
+export default function AutoPanel({
+  onIntegrations,
+  simple = false,
+}: {
+  onIntegrations: () => void
+  simple?: boolean
+}) {
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
@@ -53,7 +59,11 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
       openRequest={openRequest}
     >
       {!run || newRun ? (
-        <AutoDialog key={autoDraftKey(projectId, task)} onIntegrations={onIntegrations} />
+        <AutoDialog
+          key={autoDraftKey(projectId, task)}
+          onIntegrations={onIntegrations}
+          simple={simple}
+        />
       ) : (
         <div className="auto-content">
           <strong>Auto mode: {run.status}</strong>

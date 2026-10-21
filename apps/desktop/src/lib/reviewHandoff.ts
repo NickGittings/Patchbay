@@ -16,6 +16,7 @@ export async function fixReviewFindings(
   record: SessionRecord,
   auto?: AutoBrief,
   deviceId?: string,
+  presentation: 'stay' | 'follow' = 'follow',
 ) {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
@@ -60,6 +61,7 @@ export async function fixReviewFindings(
   }
   // The agent runs either way; follow it only if the user stayed in its worktree.
   const after = useStore.getState()
-  if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
+  if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
+    after.setView('implementation')
   return sessionId(TASK_ROOT_SCOPE, id, task, projectId)
 }

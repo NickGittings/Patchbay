@@ -1,3 +1,4 @@
+import { logSimple } from '../../lib/simpleActions'
 import { useContext, useEffect, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
 import { useStore } from '../../store'
@@ -50,7 +51,13 @@ function changeDraft(
   if (kept) autoDrafts.set(key, savedAutoDraft(change(kept)))
 }
 
-export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
+export default function AutoDialog({
+  onIntegrations,
+  simple = false,
+}: {
+  onIntegrations: () => void
+  simple?: boolean
+}) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const closeMenu = useContext(CloseMenu)
@@ -59,7 +66,10 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const agents = useMemo(() => agentDevices(devices), [devices])
   // Closing the popover unmounts the dialog; what the user gave it waits for it to reopen.
   const draftKey = autoDraftKey(projectId, task)
-  const [draft, setDraft] = useState(() => autoDrafts.get(draftKey) ?? emptyAutoDraft())
+  const [draft, setDraft] = useState<AutoDraft>(
+    () =>
+      autoDrafts.get(draftKey) ?? { ...emptyAutoDraft(), effort: simple ? 'light' : 'standard' },
+  )
   // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
   const edit = (patch: Partial<AutoDraft>) =>
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
@@ -414,15 +424,19 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           setStarting(true)
           void startAuto(projectId, task, {
             goal,
-            effort,
-            overrides,
-            merge: { mode, destinationBranch: destination },
+            effort: simple ? 'light' : effort,
+            overrides: simple ? {} : overrides,
+            merge: { mode: simple ? 'ask' : mode, destinationBranch: destination },
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,
             stage: stage || undefined,
           })
-            .then(() => autoDrafts.delete(draftKey))
+            .then(() => {
+              autoDrafts.delete(draftKey)
+              if (simple)
+                logSimple(projectId, task, { kind: 'action', action: 'autopilot', stage: 'plan' })
+            })
             .catch((e) => setError(String(e)))
             .finally(() => setStarting(false))
         }}

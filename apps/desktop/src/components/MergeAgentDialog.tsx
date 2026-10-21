@@ -17,7 +17,9 @@ export default function MergeAgentDialog({
   close,
   launched,
   findings: loaded,
+  onRequest,
 }: {
+  onRequest?: (request: import('../types').MergeRequest, sid: string) => void
   source: Worktree
   worktrees: Worktree[]
   close: () => void
@@ -54,7 +56,18 @@ export default function MergeAgentDialog({
           },
           device,
           crypto.randomUUID(),
-        )
+        ).then((sid) => {
+          onRequest?.(
+            {
+              source: source.path,
+              sourceBranch: source.branch!,
+              destination: target!.path,
+              destinationBranch: target!.branch!,
+            },
+            sid,
+          )
+          return sid
+        })
       }
       close={close}
       launched={launched}

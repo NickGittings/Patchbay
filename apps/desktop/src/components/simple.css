@@ -65,3 +65,92 @@
   color: var(--muted);
   margin-right: 8px;
 }
+.simple-agent > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.simple-terminal {
+  height: 270px;
+  margin-top: 10px;
+}
+.simple-composer {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+.simple-composer label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.simple-composer select {
+  min-width: 0;
+  max-width: 100%;
+}
+.simple-composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 90px;
+  margin-top: 8px;
+  resize: vertical;
+}
+.simple-composer-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.simple-composer-controls > span {
+  flex: 1;
+  color: var(--muted);
+}
+.simple-mentions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.simple-file {
+  display: block;
+  text-align: left;
+  width: 100%;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+.simple-diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.simple-diff > header {
+  display: flex;
+  padding: 8px;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.simple-diff-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.simple-diff-body aside {
+  width: 30%;
+  min-width: 160px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+.simple-diff-body > .diff-view {
+  flex: 1;
+  min-width: 0;
+}
+.simple-scope-chip {
+  border-radius: 10px;
+  padding: 2px 6px;
+  background: var(--hover);
+  margin-right: 4px;
+}
+.simple-stage .findings-panel {
+  min-height: 120px;
+  max-height: 600px;
+}

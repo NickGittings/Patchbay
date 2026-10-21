@@ -54,7 +54,14 @@ export default function TerminalPane({
           .catch(() => {})
       else if (!hostVisible(host)) detachHost(sid, host)
     }
-    const observer = new ResizeObserver(refit)
+    let wasVisible = hostVisible(host)
+    const observer = new ResizeObserver(() => {
+      const visible = hostVisible(host)
+      if (visible !== wasVisible) {
+        wasVisible = visible
+        refit()
+      } else attach(sid, host, { focus: false })
+    })
     const intersection = new IntersectionObserver(refit)
     intersection.observe(host)
     observer.observe(host)

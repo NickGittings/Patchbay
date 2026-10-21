@@ -1,3 +1,6 @@
+import SimpleDiff from './components/SimpleDiff'
+import { useSimpleData } from './lib/useSimpleData'
+import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
@@ -87,6 +90,15 @@ function useRootSync() {
  */
 function NavigationView() {
   const simple = useStore((s) => s.simpleMode)
+  const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
+  const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
+  const reader = useSimpleData(simple)
+  useEffect(
+    () => () => {
+      useSimpleUi.getState().patch(scopeKey, { diff: null })
+    },
+    [scopeKey],
+  )
   const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
@@ -111,6 +123,9 @@ function NavigationView() {
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
             <div className="simple-canvas">
               <Canvas />
+              {simple && diff && (
+                <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
+              )}
             </div>
           </Panel>
           <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
@@ -121,7 +136,7 @@ function NavigationView() {
       </Panel>
       <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
       <Panel id="App-simple-chat" defaultSize="35" minSize="20" {...chatPanel.props}>
-        {simple && !chatPanel.collapsed && <SimpleChat />}
+        {simple && !chatPanel.collapsed && <SimpleChat key={scopeKey} reader={reader} />}
       </Panel>
       <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
       <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>

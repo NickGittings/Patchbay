@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
-import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead } from './ipc'
+import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
 import { activeWorktree } from './tasks'
 import { useReviewFindings } from './useReviewFindings'
 import type {
@@ -92,12 +92,16 @@ export function useSimpleData(visible: boolean) {
       }
     }
     void read()
+    const unlisten = onProposal((event) => {
+      if (event.projectId === projectId) void read()
+    })
     const timer = window.setInterval(() => void read(), 5000)
     const focus = () => void read()
     window.addEventListener('focus', focus)
     document.addEventListener('visibilitychange', focus)
     return () => {
       disposed = true
+      void unlisten.then((stop) => stop()).catch(() => {})
       clearInterval(timer)
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
