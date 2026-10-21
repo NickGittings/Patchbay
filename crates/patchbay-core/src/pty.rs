@@ -1741,6 +1741,39 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 .is_err()
         );
     }
+    #[test]
+    fn acknowledged_prompt_writes_refuse_replacement_generations() {
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(
+            SessionSpec {
+                id: "prompt-generation".into(),
+                command: "IFS= read -r line; printf 'received:%s' \"$line\"".into(),
+                cwd: std::env::temp_dir(),
+                env: BTreeMap::new(),
+                resume_command: None,
+                owns_briefing: false,
+                exclusive_cwd: false,
+                merge_source: None,
+                notice: None,
+                dirs: Vec::new(),
+                ready_when: String::new(),
+                service: false,
+            },
+            sink.clone(),
+        )
+        .unwrap();
+        let generation = pty.snapshot("prompt-generation").unwrap().generation;
+        assert!(
+            pty.write_generation("prompt-generation", generation + 1, b"wrong\n")
+                .is_err()
+        );
+        pty.write_generation("prompt-generation", generation, b"correct\n")
+            .unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        assert!(sink.output().contains("received:correct"));
+        assert!(!sink.output().contains("wrong"));
+    }
 }
 
 #[cfg(test)]

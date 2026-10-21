@@ -16,7 +16,21 @@ export type SimpleEntry = EntryBase &
     | { kind: 'prompt'; text: string; mentions: string[] }
     | {
         kind: 'action'
-        action: 'implement' | 'review' | 'fix' | 'merge' | 'validate' | 'autopilot' | 'resume'
+        action:
+          | 'implement'
+          | 'review'
+          | 'fix'
+          | 'merge'
+          | 'validate'
+          | 'autopilot'
+          | 'resume'
+          | 'scope'
+          | 'pauseAuto'
+          | 'resumeAuto'
+          | 'stopAuto'
+          | 'mergeApproval'
+          | 'skipStage'
+        mentions?: string[]
         request?: import('../types').MergeRequest
       }
   )
@@ -48,9 +62,21 @@ export function restoredSimple(value: unknown): SimpleState | null {
             Array.isArray(entry.mentions) &&
             entry.mentions.every((id) => typeof id === 'string')
           : entry.kind === 'action' &&
-            ['implement', 'review', 'fix', 'merge', 'validate', 'autopilot', 'resume'].includes(
-              entry.action,
-            )
+            [
+              'implement',
+              'review',
+              'fix',
+              'merge',
+              'validate',
+              'autopilot',
+              'resume',
+              'scope',
+              'pauseAuto',
+              'resumeAuto',
+              'stopAuto',
+              'mergeApproval',
+              'skipStage',
+            ].includes(entry.action)
       if (valid) seen.add(entry.id)
       return valid
     }),
@@ -110,13 +136,14 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
     )
   const log = [...(snapshot.simple?.log ?? [])].sort((a, b) => a.atMs - b.atMs)
-  let stage: SimpleStage = recordStageOrPlan(records.at(-1))
+  const scoped = records.filter((r) => r.metadata.componentId !== PLAN_SCOPE)
+  const latestRecord = scoped.at(-1) ?? records.at(-1)
+  let stage: SimpleStage = recordStageOrPlan(latestRecord)
   const action = log
     .filter(
       (e) => e.kind === 'action' && ['implement', 'review', 'fix', 'merge'].includes(e.action),
     )
     .at(-1)
-  const latestRecord = records.at(-1)
   if (
     action?.kind === 'action' &&
     action.atMs >= (latestRecord ? (stageSessionTime(latestRecord) ?? 0) : 0)
@@ -162,4 +189,11 @@ export function selectRecipient(
     [...stageRecords].reverse().find((r) => sessions[r.id]?.running ?? r.snapshot?.running) ??
     stageRecords.at(-1)
   )
+}
+
+/** Add the collapsed chat slot to pre-Simple Navigation layouts without changing their sizes. */
+export function simplePanelLayout(layout: Record<string, number> | undefined) {
+  return layout && !Object.hasOwn(layout, 'App-simple-chat')
+    ? { ...layout, 'App-simple-chat': 0 }
+    : layout
 }

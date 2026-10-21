@@ -90,3 +90,21 @@ test('pulses belong to this project/worktree and expire after ten seconds', () =
     ...activeComponents([record()], sessions, 'p', 'other', '/other', components, 1000),
   ]).toEqual([])
 })
+
+test('shared planner and review activity resolve in their own worktree before opening the selected diff', async () => {
+  const { activityRoot } = await import('./activity')
+  const planner = {
+    ...record('/project'),
+    metadata: { ...record().metadata, componentId: '@plan', projectRoot: '/project', task: null },
+  }
+  const root = activityRoot(planner, [], '/selected')
+  expect(activityFile(activity(1, '/project/src/app.ts'), planner, components, root)).toEqual({
+    componentId: 'src',
+    path: 'src/app.ts',
+  })
+  const reviewer = {
+    ...record('/task'),
+    metadata: { ...record().metadata, componentId: '@review', projectRoot: '/project', task: null },
+  }
+  expect(activityRoot(reviewer, [], '/selected')).toBe('/task')
+})

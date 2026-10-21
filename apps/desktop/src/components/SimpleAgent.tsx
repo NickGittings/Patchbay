@@ -1,4 +1,4 @@
-import { activityFile } from '../lib/activity'
+import { activityFile, activityRoot } from '../lib/activity'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { PLAN_SCOPE, type SessionRecord } from '../types'
@@ -19,21 +19,21 @@ export default function SimpleAgent({
 }) {
   const project = useStore((s) => s.project)
   const tasks = useStore((s) => s.tasks)
-  const task = useStore((s) => s.activeTask)
   const nodes = useStore((s) => s.nodes)
   const session = useStore((s) => s.sessions[record.id])
   const expanded = useSimpleUi((s) =>
     (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).expanded.includes(record.id),
   )
   const host = useRef<HTMLElement>(null)
+  const terminalHost = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
   useEffect(() => {
-    const el = host.current
-    if (!el) return
+    const el = terminalHost.current
+    if (!el || !expanded) return
     const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting))
     observer.observe(el)
     return () => observer.disconnect()
-  }, [])
+  }, [expanded])
   useEffect(() => {
     const agent = session?.status?.agent
     if (agent?.state !== 'needsInput') return
@@ -66,8 +66,7 @@ export default function SimpleAgent({
       {!!session?.activity?.length && (
         <ol className="simple-activity">
           {session.activity.slice(-6).map((activity) => {
-            const worktree =
-              tasks.find((t) => t.id === task)?.worktree ?? project?.root ?? record.spec.cwd
+            const worktree = activityRoot(record, tasks, project?.root ?? record.spec.cwd)
             const file = activityFile(
               activity,
               record,
@@ -89,20 +88,22 @@ export default function SimpleAgent({
           })}
         </ol>
       )}
-      {expanded && visible && (
-        <div className="simple-terminal">
-          <TerminalPane
-            componentId={record.metadata.componentId}
-            terminal={{
-              id: record.metadata.terminalId,
-              name: record.metadata.name,
-              kind: 'agent',
-              command: record.spec.command,
-            }}
-            task={record.metadata.task ?? null}
-            existingSessionId={record.id}
-            focus={false}
-          />
+      {expanded && (
+        <div className="simple-terminal" ref={terminalHost}>
+          {visible && (
+            <TerminalPane
+              componentId={record.metadata.componentId}
+              terminal={{
+                id: record.metadata.terminalId,
+                name: record.metadata.name,
+                kind: 'agent',
+                command: record.spec.command,
+              }}
+              task={record.metadata.task ?? null}
+              existingSessionId={record.id}
+              focus={false}
+            />
+          )}
         </div>
       )}
     </article>

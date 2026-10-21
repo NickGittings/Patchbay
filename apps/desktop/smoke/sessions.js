@@ -398,7 +398,12 @@
     const globalStop = () =>
       [...panel().querySelectorAll('button')].find((b) => b.textContent.trim() === 'Stop all work')
     smoke.store.setState({ serviceConnected: false })
-    await until('global Stop disabled while disconnected', () => globalStop()?.disabled)
+    // Keep the simulated disconnect in place while the independent two-second reconciler runs.
+    await until('global Stop disabled while disconnected', () => {
+      const disabled = globalStop()?.disabled
+      if (!disabled) smoke.store.setState({ serviceConnected: false })
+      return disabled
+    })
     smoke.store.setState({ serviceConnected: true })
     await click(panel, 'Stop all work')
     await until('global Stop confirmation', () => panel().querySelector('[role="alertdialog"]'))

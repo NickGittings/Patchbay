@@ -4,7 +4,13 @@ import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
 import { selectRecipient, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
-import { deliverPrompt, editedMentions, promptReady, transmittedText } from '../lib/simpleComposer'
+import {
+  deliverPrompt,
+  editedMentions,
+  promptReady,
+  transmittedText,
+  waitForPrompt,
+} from '../lib/simpleComposer'
 import { logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
 import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
@@ -33,6 +39,13 @@ export default function SimpleComposer({
     [now, setNow] = useState(() => Date.now())
   const [caret, setCaret] = useState(0)
   const input = useRef<HTMLTextAreaElement>(null)
+  const lifecycle = useRef(0)
+  useEffect(
+    () => () => {
+      lifecycle.current++
+    },
+    [],
+  )
   const recipientRef = useRef(recipient?.id)
   useEffect(() => {
     recipientRef.current = recipient?.id
@@ -58,22 +71,36 @@ export default function SimpleComposer({
       task = s.activeTask,
       draft = ui.draft,
       mentions = [...ui.mentions]
+    const mountedEpoch = lifecycle.current
     const requestedOverride = ui.recipient
     const initialGeneration = state?.generation
     const text = transmittedText(draft, mentions)
     if (!text.trim()) {
-      if (mentions.length) patch({ draft: '', mentions: [] })
+      if (mentions.length) {
+        logSimple(projectId, task, {
+          kind: 'action',
+          action: 'scope',
+          stage,
+          mentions: mentions.map((m) => m.id),
+        })
+        patch({ draft: '', mentions: [] })
+      }
       return
     }
     setPending(true)
     setError('')
     let cancelled = false
     const unsubscribe = useStore.subscribe((next, prev) => {
-      if (next.project?.id !== prev.project?.id || next.activeTask !== prev.activeTask)
+      if (
+        next.project?.id !== prev.project?.id ||
+        next.activeTask !== prev.activeTask ||
+        next.simpleMode !== prev.simpleMode
+      )
         cancelled = true
     })
     const check = () => {
       if (
+        lifecycle.current !== mountedEpoch ||
         cancelled ||
         useStore.getState().project?.id !== projectId ||
         useStore.getState().activeTask !== task
@@ -127,22 +154,12 @@ export default function SimpleComposer({
         const current = useStore.getState().sessions[sid]
         return { ...captured, generation: current?.generation ?? -1 }
       }
-      const began = Date.now()
       // Only a new/resumed process waits for startup; busy running recipients are never queued.
-      if (!running) {
-        while (!promptReady(useStore.getState().sessions[sid], Date.now())) {
-          if (
-            stillCurrent()?.generation !== generation ||
-            !useStore.getState().sessions[sid]?.running
-          )
-            throw new Error('The session changed. Your draft was kept.')
-          if (useStore.getState().sessions[sid]?.status?.agent?.state === 'needsInput')
-            throw new Error('The agent needs input in its terminal.')
-          if (Date.now() - began >= 30000)
-            throw new Error('No ready prompt after 30 seconds. Open the terminal to continue.')
-          await new Promise((resolve) => setTimeout(resolve, 100))
-        }
-      }
+      if (!running)
+        await waitForPrompt(captured, {
+          current: stillCurrent,
+          session: () => useStore.getState().sessions[sid],
+        })
       const stamp = submitted.get(sid)
       const previous = stamp?.generation === generation ? stamp.atMs : undefined
       await deliverPrompt(
@@ -169,7 +186,8 @@ export default function SimpleComposer({
         mentions: mentions.map((m) => m.id),
       })
       const latest = useSimpleUi.getState().worktrees[scopeKey]
-      if (latest?.draft === draft) patch({ draft: '', mentions: [] })
+      if (latest?.draft === draft && JSON.stringify(latest.mentions) === JSON.stringify(mentions))
+        patch({ draft: '', mentions: [] })
     } catch (e) {
       setError(String(e))
     } finally {
@@ -275,7 +293,7 @@ export default function SimpleComposer({
         {recipient && <button onClick={() => openTerminal(recipient)}>Open terminal</button>}
         <button
           className="primary"
-          disabled={pending || !ui.draft.trim() || (running && !ready)}
+          disabled={!s.serviceConnected || pending || !ui.draft.trim() || (running && !ready)}
           onClick={() => void send()}
         >
           Send

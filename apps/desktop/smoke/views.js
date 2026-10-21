@@ -18,7 +18,12 @@
     if (!el) throw new Error('missing click target')
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
-  const nodeElement = (id) => document.querySelector(`.react-flow__node[data-id="${id}"]`)
+  // Navigation remains mounted beneath Full views. Queries here describe the active view.
+  const query = (selector) =>
+    [...document.querySelectorAll(selector)].find(
+      (el) => !el.closest('.navigation-shell[hidden]'),
+    ) ?? null
+  const nodeElement = (id) => query(`.react-flow__node[data-id="${id}"]`)
   const viewButton = (name) =>
     Array.from(document.querySelectorAll('.view-switcher button')).find(
       (b) => b.textContent === name,
@@ -39,7 +44,7 @@
   }
   // A changes list (or its empty state) has loaded under `selector`; errors fail the run.
   const changesSettled = (selector) => {
-    const el = document.querySelector(selector)
+    const el = query(selector)
     if (!el) return false
     const error = el.querySelector('.file-tree-error, .diff-error')
     if (error) throw new Error(`${selector}: ${error.textContent}`)
@@ -82,19 +87,14 @@
           '"${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude; fi; done',
       },
     ])
-    await until(
-      'navigation layout',
-      () => document.querySelector('.hierarchy') && nodeElement('alpha'),
-    )
+    await until('navigation layout', () => query('.hierarchy') && nodeElement('alpha'))
     click([...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Tools')))
     click(
       await until('Agent roles menu', () =>
         [...document.querySelectorAll('button')].find((b) => b.textContent === 'Agent roles'),
       ),
     )
-    const rolesPanel = await until('Agent roles panel', () =>
-      document.querySelector('[aria-label="Agent roles"]'),
-    )
+    const rolesPanel = await until('Agent roles panel', () => query('[aria-label="Agent roles"]'))
     // Check label association rather than focus: WebKit on macOS doesn't focus a select
     // through its label, and smoke windows never have focus anyway.
     for (const role of ['Plan', 'Implement', 'Fix', 'Merge']) {
@@ -124,7 +124,7 @@
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
     const visible = (selector) => {
-      const rect = document.querySelector(selector)?.parentElement?.getBoundingClientRect()
+      const rect = query(selector)?.parentElement?.getBoundingClientRect()
       return !!rect && rect.width > 0 && rect.height > 0
     }
     assert(
@@ -136,64 +136,50 @@
     assert(!visible('.terminal-dock'), 'dock shown with nothing running')
     const unrelatedTask = smoke.sessionId('unrelated', 'task')
     await smoke.startTerminal('unrelated', 'task')
-    await until('dock for a running terminal', () =>
-      document.querySelector('.terminal-dock .tabs .tab.active'),
-    )
+    await until('dock for a running terminal', () => query('.terminal-dock .tabs .tab.active'))
     // Revealed, as a result or attention item does, so it stays listed once it exits.
     state().setActiveSession(unrelatedTask)
     smoke.stopTerminal(unrelatedTask)
     await until('stopped', () => state().sessions[unrelatedTask]?.running === false)
     assert(
-      visible('.terminal-dock') && document.querySelector('.terminal-dock .tabs .tab.active'),
+      visible('.terminal-dock') && query('.terminal-dock .tabs .tab.active'),
       'dock dropped the exited terminal it showed',
     )
-    click(document.querySelector('.inspector-close'))
-    await until(
-      'inspector closed',
-      () => !visible('.inspector') && document.querySelector('.inspector-toggle'),
-    )
+    click(query('.inspector-close'))
+    await until('inspector closed', () => !visible('.inspector') && query('.inspector-toggle'))
     assert(state().selectedId === 'unrelated', 'closing the inspector cleared the selection')
     click(nodeElement('unrelated'))
     assert(state().inspector === false, 'reselecting the same component reopened the inspector')
-    click(document.querySelector('.terminal-dock .dock-close'))
+    click(query('.terminal-dock .dock-close'))
     await until('dock hidden once nothing runs', () => !visible('.terminal-dock'))
-    click(document.querySelector('.inspector-toggle'))
+    click(query('.inspector-toggle'))
     await until('inspector toggled open', () => visible('.inspector'))
     state().select(null)
     state().setActiveSession(null)
     smoke.store.setState({ inspector: null })
-    const viewport = () => document.querySelector('.react-flow__viewport')?.style.transform
-    await until(
-      'canvas dimensions',
-      () => document.querySelector('.canvas').getBoundingClientRect().height > 100,
-    )
+    const viewport = () => query('.react-flow__viewport')?.style.transform
+    await until('canvas dimensions', () => query('.canvas').getBoundingClientRect().height > 100)
     await sleep(200)
     const initialViewport = viewport()
-    click(document.querySelector('.react-flow__controls-zoomin'))
+    click(query('.react-flow__controls-zoomin'))
     await until('zoomed viewport', () => viewport() !== initialViewport)
     await sleep(100)
     const savedViewport = viewport()
     const baseline = JSON.stringify(state().toProject())
     click(viewButton('Plan'))
-    await until('plan layout', () => document.querySelector('.plan-dock') && nodeElement('alpha'))
+    await until('plan layout', () => query('.plan-dock') && nodeElement('alpha'))
     await until(
       `plan viewport restored (${savedViewport})`,
       () => viewport() === savedViewport,
     ).catch((e) => {
       throw new Error(`${e.message}; got ${viewport()}`)
     })
+    assert(query('.canvas').getBoundingClientRect().height > 100, 'plan canvas has no height')
     assert(
-      document.querySelector('.canvas').getBoundingClientRect().height > 100,
-      'plan canvas has no height',
-    )
-    assert(
-      document.querySelector('.planner-terminal').getBoundingClientRect().height > 100,
+      query('.planner-terminal').getBoundingClientRect().height > 100,
       'planner dock has no height',
     )
-    assert(
-      !document.querySelector('.react-flow__controls-interactive'),
-      'plan can enable canvas editing',
-    )
+    assert(!query('.react-flow__controls-interactive'), 'plan can enable canvas editing')
     click(nodeElement('alpha'))
     click(nodeElement('beta'))
     await until('highlighted set', () => state().highlighted.length === 2)
@@ -203,12 +189,12 @@
         nodeElement('alpha').querySelector('.highlighted') &&
         nodeElement('nearby').querySelector('.nearby') &&
         nodeElement('unrelated').querySelector('.dimmed') &&
-        document.querySelector('.plan-active-edge'),
+        query('.plan-active-edge'),
     )
-    document.querySelector('.react-flow').focus()
+    query('.react-flow').focus()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }))
-    click(document.querySelector('.react-flow__pane'))
+    click(query('.react-flow__pane'))
     await sleep(150)
     assert(
       state().nodes.length === 4 && state().edges.length === 2,
@@ -219,7 +205,7 @@
     click(nodeElement('alpha').querySelector('.terminal-chips .chip'))
     assert(state().activeSession === null, 'planner chip changes navigation session')
     assert(state().highlighted.length === 2, 'planner chip changes highlights')
-    click(document.querySelector('.plan-scope summary'))
+    click(query('.plan-scope summary'))
     await until('context preview', () =>
       document
         .querySelector('.plan-scope pre')
@@ -239,7 +225,7 @@
     assert(!textOf(sid).includes('unrelated notes'), 'planner includes unrelated components')
     assert(state().planStartedWith[sid] === 'alpha,beta', 'planner launch scope was not recorded')
     state().toggleHighlight('beta')
-    await until('stale hint', () => document.querySelector('.planner-stale'))
+    await until('stale hint', () => query('.planner-stale'))
     click(
       Array.from(document.querySelectorAll('.planner-terminal .tab-actions button')).find((b) =>
         b.textContent.includes('Restart'),
@@ -249,7 +235,7 @@
       'restarted planner',
       () => state().sessions[sid]?.running && state().planStartedWith[sid] === 'alpha',
     )
-    await until('stale hint cleared', () => !document.querySelector('.planner-stale'))
+    await until('stale hint cleared', () => !query('.planner-stale'))
     await smoke.terminalWrite(sid, 'scrollback-$((6*7))\r')
     await until('scrollback marker', () => textOf(sid).includes('scrollback-'))
     // Exercise Claude's native hook payload before approval, without user settings or a real CLI.
@@ -270,15 +256,12 @@
         ),
       ),
     )
-    await until('implementation grid', () =>
-      document.querySelector('.implementation-view .terminal-tile'),
-    )
+    await until('implementation grid', () => query('.implementation-view .terminal-tile'))
     assert(
-      document.querySelector('.implementation-view .terminal-area').getBoundingClientRect().height >
-        100,
+      query('.implementation-view .terminal-area').getBoundingClientRect().height > 100,
       'implementation terminal has no height',
     )
-    assert(!document.querySelector('.file-tree'), 'implementation has a file tree')
+    assert(!query('.file-tree'), 'implementation has a file tree')
     await until('implementation agent', () => tiles('@task').length === 2)
     const agent = state().rootTerminals.find((t) => t.kind === 'agent')
     const agentSid = smoke.sessionId('@task', agent.id)
@@ -288,10 +271,8 @@
     assertScope(['alpha'])
     // A component's saved terminal joins the task through the Add terminal dialog, stopped.
     const openAddTerminal = async () => {
-      click(document.querySelector('button.add-task-terminal-button'))
-      return until('add terminal dialog', () =>
-        document.querySelector('form[aria-label="Add terminal"]'),
-      )
+      click(query('button.add-task-terminal-button'))
+      return until('add terminal dialog', () => query('form[aria-label="Add terminal"]'))
     }
     const addTerminal = async (target, key) => {
       const dialog = await openAddTerminal()
@@ -302,8 +283,8 @@
       )
       choose(terminal, key)
       await until('choice picked', () => terminal.value === key)
-      click(document.querySelector('form[aria-label="Add terminal"] button[type=submit]'))
-      await until('dialog closed', () => !document.querySelector('form[aria-label="Add terminal"]'))
+      click(query('form[aria-label="Add terminal"] button[type=submit]'))
+      await until('dialog closed', () => !query('form[aria-label="Add terminal"]'))
     }
     await addTerminal('alpha', 'saved\ntask')
     await until('alpha terminal added', () => tiles('alpha').length === 1)
@@ -319,8 +300,8 @@
       'terminal command missing from overlay',
     )
     click(tiles('alpha')[0].querySelector('button[aria-label="Maximize Task"]'))
-    await until('focused alpha', () => document.querySelector('.terminal-tile.maximized'))
-    click(document.querySelector('.terminal-tile.maximized button[aria-label="Remove Task"]'))
+    await until('focused alpha', () => query('.terminal-tile.maximized'))
+    click(query('.terminal-tile.maximized button[aria-label="Remove Task"]'))
     await until(
       'removed alpha restores others',
       () => !tiles('alpha').length && tiles('@task').length,
@@ -350,9 +331,9 @@
     state().select('beta')
     click(tiles('beta')[0].querySelector('button[aria-label="Maximize Task"]'))
     await until('component popout while maximized', () =>
-      document.querySelector('.terminal-tile.maximized .group-popout'),
+      query('.terminal-tile.maximized .group-popout'),
     )
-    click(document.querySelector('button[aria-label="Restore Task"]'))
+    click(query('button[aria-label="Restore Task"]'))
     await smoke.startTerminal('beta', 'task')
     await until(
       'beta task running',
@@ -362,22 +343,22 @@
     smoke.stopTerminal(unrelatedTask)
     await until('background task stopped', () => !state().sessions[unrelatedTask]?.running)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '4', metaKey: true, bubbles: true }))
-    await until('review shortcut', () => document.querySelector('.review-view'))
+    await until('review shortcut', () => query('.review-view'))
     await until('review list', () => changesSettled('.review-view'))
-    if (document.querySelector('.review-view .change-list')) {
+    if (query('.review-view .change-list')) {
       await until('review diff', () => {
-        const error = document.querySelector('.review-view .diff-error')
+        const error = query('.review-view .diff-error')
         if (error) throw new Error(error.textContent)
-        const view = document.querySelector('.review-view .diff-view')
+        const view = query('.review-view .diff-view')
         return view && !view.classList.contains('diff-loading')
       })
     }
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', metaKey: true, bubbles: true }))
-    await until('navigation shortcut', () => document.querySelector('.hierarchy'))
+    await until('navigation shortcut', () => query('.hierarchy'))
     await until('navigation viewport restored', () => viewport() === savedViewport)
     assert(state().selectedId === 'beta', 'selection is not shared with navigation')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true, bubbles: true }))
-    await until('plan shortcut', () => document.querySelector('.plan-dock'))
+    await until('plan shortcut', () => query('.plan-dock'))
     assert(textOf(sid).includes('scrollback-'), 'planner scrollback disappeared')
     assert(
       JSON.stringify(state().toProject()) === baseline && !state().dirty,
@@ -458,14 +439,8 @@
       'Add terminal does not offer agents first',
     )
     click(dialog.querySelector('.row button[type=button]'))
-    await until(
-      'dialog cancelled',
-      () => !document.querySelector('form[aria-label="Add terminal"]'),
-    )
-    assert(
-      !document.querySelector('select[aria-label="Start agent"]'),
-      'Start agent select is still shown',
-    )
+    await until('dialog cancelled', () => !query('form[aria-label="Add terminal"]'))
+    assert(!query('select[aria-label="Start agent"]'), 'Start agent select is still shown')
     const rootsBefore = state().rootTerminals.length
     await addTerminal('@task', 'custom')
     await until('root terminal added', () => state().rootTerminals.length === rootsBefore + 1)
@@ -561,31 +536,26 @@
     )
     state().toggleHighlight('beta')
     await until('beta scope before attention reveal', () => tiles('beta').length)
-    click(document.querySelector('.implementation-view button[aria-label^="Maximize"]'))
-    await until('maximized before attention reveal', () =>
-      document.querySelector('.terminal-tile.maximized'),
-    )
+    click(query('.implementation-view button[aria-label^="Maximize"]'))
+    await until('maximized before attention reveal', () => query('.terminal-tile.maximized'))
     const attention = await until('attention menu', () =>
       Array.from(document.querySelectorAll('.attention-button')).find((b) =>
         b.textContent.includes('1 need input'),
       ),
     )
     click(attention)
-    click(await until('attention item', () => document.querySelector('.attention-item')))
+    click(await until('attention item', () => query('.attention-item')))
     await until(
       'attention item reveals the agent',
       () =>
         state().view === 'implementation' &&
         state().selectedId === 'unrelated' &&
         state().activeSession === smoke.sessionId('unrelated', 'agent') &&
-        document.querySelector('.implementation-view .status-label.health-input'),
+        query('.implementation-view .status-label.health-input'),
     )
     assertScope(['beta'])
     assert(state().highlighted.join() === 'beta', 'attention reveal changed shared scope')
-    assert(
-      !document.querySelector('.terminal-tile.maximized'),
-      'attention reveal left another tile maximized',
-    )
+    assert(!query('.terminal-tile.maximized'), 'attention reveal left another tile maximized')
     await until('running agent and server visible', () => tiles('unrelated').length === 2)
     smoke.stopTerminal(smoke.sessionId('unrelated', 'server'))
     await until('stopped server', () => {
@@ -595,7 +565,7 @@
     // Background sessions are tiled only while they run; one still shown must read Stopped.
     const serverTile = tiles('unrelated').find((tile) => tile.textContent.includes('Server'))
     assert(
-      !document.querySelector('.attention-button')?.textContent.includes('failed') &&
+      !query('.attention-button')?.textContent.includes('failed') &&
         (!serverTile ||
           serverTile.querySelector('.status-label.health-idle')?.textContent === 'Stopped'),
       'a stopped task counts as failed',
@@ -623,7 +593,7 @@
       exitCode: 1,
       exitedMs: Date.now(),
     })
-    click(await until('planner attention menu', () => document.querySelector('.attention-button')))
+    click(await until('planner attention menu', () => query('.attention-button')))
     click(
       await until('second planner attention item', () =>
         [...document.querySelectorAll('.attention-item')].find((b) =>
@@ -667,7 +637,7 @@
       return names.includes('index.ts') && names.includes('package.json')
     })
     const filter = await until('hierarchy filter', () =>
-      document.querySelector('input[aria-label="Filter components"]'),
+      query('input[aria-label="Filter components"]'),
     )
     choose(filter, 'filter 3')
     await until('filtered hierarchy', () => {
@@ -675,16 +645,12 @@
       return rows.length === 1 && rows[0].textContent.includes('Filter 3')
     })
     filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
-    await until('highlighted filter row', () =>
-      document.querySelector('.hierarchy-item.highlighted'),
-    )
+    await until('highlighted filter row', () => query('.hierarchy-item.highlighted'))
     filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     await until('keyboard focus from filter', () => state().selectedId === 'filter-3')
     await until('Files tab reset', () => inspectorTab('Component')?.classList.contains('active'))
     choose(filter, 'no such component')
-    await until('no filter matches', () =>
-      document.querySelector('.hierarchy').textContent.includes('No matches'),
-    )
+    await until('no filter matches', () => query('.hierarchy').textContent.includes('No matches'))
     filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await until(
       'filter cleared',
@@ -696,17 +662,15 @@
       el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 120 }))
     const dismissMenu = async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-      await until('context menu dismissed', () => !document.querySelector('.node-menu-overlay'))
+      await until('context menu dismissed', () => !query('.node-menu-overlay'))
     }
     context(nodeElement(fixture.id).querySelector('.component-node'))
-    const menu = await until('node actions menu', () =>
-      document.querySelector('.node-extension-menu'),
-    )
+    const menu = await until('node actions menu', () => query('.node-extension-menu'))
     for (const label of ['Open in editor', 'Copy path', 'Open in window', 'Start Shell'])
       assert(menu.textContent.includes(label), `node menu missing ${label}`)
     await dismissMenu()
     context(document.getElementById(`hierarchy-${fixture.id}`))
-    await until('hierarchy actions menu', () => document.querySelector('.node-extension-menu'))
+    await until('hierarchy actions menu', () => query('.node-extension-menu'))
     assert(state().selectedId === fixture.id, 'context menu did not select the row')
     // Edit the runner's disposable fixture. A root change gives Review a second filter chip.
     const shell = fixture.terminals.find((t) => t.kind === 'shell')
@@ -736,14 +700,14 @@
     })
     state().select('filter-3')
     await until('selection before badge', () =>
-      document.querySelector('.hierarchy-item.active')?.textContent.includes('Filter 3'),
+      query('.hierarchy-item.active')?.textContent.includes('Filter 3'),
     )
     click(nodeElement(fixture.id).querySelector('.changes-badge .git-badge'))
     await until('changed fixture in popover', () =>
-      document.querySelector('.changes-popover .change-row[title$="app/index.ts"]'),
+      query('.changes-popover .change-row[title$="app/index.ts"]'),
     )
     assert(state().selectedId === 'filter-3', 'changes badge changed selection')
-    click(document.querySelector('.changes-popover-footer'))
+    click(query('.changes-popover-footer'))
     await until(
       'Review component filter active',
       () =>

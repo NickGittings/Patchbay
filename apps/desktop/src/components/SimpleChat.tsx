@@ -284,18 +284,20 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                   onOpenFile={(ref) => openFile(ref.path, ref.line)}
                   canOpen={() => true}
                 />
-                {!!findings?.findings?.text.trim() && reviewer && (
-                  <button
-                    disabled={busy || !!pending}
-                    onClick={() =>
-                      void run('fix', 'build', () =>
-                        fixReviewFindings(reviewer, undefined, undefined, 'stay'),
-                      )
-                    }
-                  >
-                    Fix findings
-                  </button>
-                )}
+                {!!findings?.findings?.text.trim() &&
+                  !findings.findings.verdict?.clean &&
+                  reviewer && (
+                    <button
+                      disabled={busy || !!pending}
+                      onClick={() =>
+                        void run('fix', 'build', () =>
+                          fixReviewFindings(reviewer, undefined, undefined, 'stay'),
+                        )
+                      }
+                    >
+                      Fix findings
+                    </button>
+                  )}
                 {errorFor('fix')}
                 <button
                   disabled={

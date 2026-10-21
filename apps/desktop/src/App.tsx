@@ -93,7 +93,6 @@ function NavigationView() {
   const simple = useStore((s) => s.simpleMode)
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
-  const reader = useSimpleData(simple)
   useSimpleMapFeedback(simple)
   useEffect(
     () => () => {
@@ -102,6 +101,7 @@ function NavigationView() {
     [scopeKey],
   )
   const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
+  const reader = useSimpleData(simple && !chatPanel.collapsed)
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
@@ -125,6 +125,14 @@ function NavigationView() {
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
             <div className="simple-canvas">
               <Canvas />
+              {simple && chatPanel.collapsed && (
+                <button
+                  className="simple-show-chat"
+                  onClick={() => chatPanel.props.panelRef.current?.expand()}
+                >
+                  Show chat
+                </button>
+              )}
               {simple && diff && (
                 <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
               )}
@@ -247,7 +255,9 @@ export default function App() {
         {restoring ? (
           <div className="hint">Restoring workspace…</div>
         ) : !simple && view === 'plan' ? (
-          <PlanView key={projectId} />
+          <ReactFlowProvider>
+            <PlanView key={projectId} />
+          </ReactFlowProvider>
         ) : !simple && view === 'implementation' ? (
           <ImplementationView key={projectId} />
         ) : !simple && view === 'review' ? (

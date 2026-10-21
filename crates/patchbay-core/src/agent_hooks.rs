@@ -185,8 +185,9 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         }),
         file_target: input.get("tool_input").is_some_and(|tool| {
             tool.get("file_path")
-                .or_else(|| tool.get("path"))
-                .is_some_and(Value::is_string)
+                .and_then(Value::as_str)
+                .or_else(|| tool.get("path").and_then(Value::as_str))
+                .is_some()
         }),
         target: input.get("tool_input").and_then(|tool| {
             tool.get("file_path")

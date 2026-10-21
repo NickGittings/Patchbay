@@ -42,7 +42,7 @@ test('exact bracketed paste preserves literal emails, unknown mentions, whitespa
 test('only intact selected tokens are stripped; edits relocate or invalidate structured tokens', () => {
   const tokens = [{ id: 'a', token: '@app', start: 2, end: 6 }]
   expect(editedMentions('x @app', 'xx @app', tokens)).toEqual([{ ...tokens[0], start: 3, end: 7 }])
-  expect(editedMentions('x @app', 'x @apple', tokens)).toEqual(tokens)
+  expect(editedMentions('x @app', 'x @apple', tokens)).toEqual([])
   expect(editedMentions('x @app', 'x @axp', tokens)).toEqual([])
   expect(transmittedText('x @other', tokens)).toBe('x @other')
 })
@@ -117,4 +117,36 @@ test('an uncertain failed write is attempted once and preserves the originating 
   expect(draft).toBe('  draft\n')
   expect(p.write).toHaveBeenCalledOnce()
   expect(p.release).toHaveBeenCalledOnce()
+})
+
+test('startup waits for observed output and quiet, times out at 30 seconds, and cancels generations', async () => {
+  const { waitForPrompt } = await import('./simpleComposer')
+  let now = 0
+  let session = { generation: 1, running: true } as SessionState
+  const waiting = {
+    current: () => context,
+    session: () => session,
+    now: () => now,
+    wait: async (ms: number) => {
+      now += ms
+    },
+  }
+  await expect(waitForPrompt(context, waiting)).rejects.toThrow('30 seconds')
+  expect(now).toBe(30000)
+  now = 0
+  waiting.wait = async (ms) => {
+    now += ms
+    if (now === 100)
+      session = {
+        ...session,
+        status: { ...ready().status!, agent: null, lastOutputMs: 100, active: false },
+      }
+  }
+  await waitForPrompt(context, waiting)
+  expect(now).toBe(1100)
+  now = 0
+  session = { generation: 1, running: true }
+  waiting.current = () => ({ ...context, generation: now >= 100 ? 2 : 1 })
+  await expect(waitForPrompt(context, waiting)).rejects.toThrow('changed')
+  expect(now).toBe(100)
 })

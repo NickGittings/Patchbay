@@ -24,11 +24,13 @@ export function editedMentions(
   }
   const delta = after.length - before.length
   return mentions.flatMap((m) =>
-    m.end <= start
-      ? [m]
-      : m.start >= end
-        ? [{ ...m, start: m.start + delta, end: m.end + delta }]
-        : [],
+    m.end === start && delta > 0 && /\S/.test(after[start] ?? '')
+      ? []
+      : m.end <= start
+        ? [m]
+        : m.start >= end
+          ? [{ ...m, start: m.start + delta, end: m.end + delta }]
+          : [],
   )
 }
 export const pastePrompt = (text: string) => `\x1b[200~${text}\x1b[201~\r`
@@ -103,5 +105,35 @@ export async function deliverPrompt(
   } finally {
     sending.delete(context.recipient)
     if (claimed) await port.release().catch(() => {})
+  }
+}
+
+/** Startup is a bounded wait, cancelled immediately when its captured scope or process changes. */
+export async function waitForPrompt(
+  context: SendContext,
+  port: Pick<SendPort, 'current' | 'session' | 'now'> & { wait?: (ms: number) => Promise<void> },
+) {
+  const now = port.now ?? Date.now
+  const began = now()
+  for (;;) {
+    const current = port.current()
+    const session = port.session()
+    if (
+      !current ||
+      current.projectId !== context.projectId ||
+      current.task !== context.task ||
+      current.recipient !== context.recipient ||
+      current.generation !== context.generation ||
+      !session?.running
+    )
+      throw new Error('The worktree or session changed. Your draft was kept.')
+    if (session.status?.agent?.state === 'needsInput')
+      throw new Error('The agent needs input in its terminal.')
+    if (promptReady(session, now())) return
+    if (now() - began >= 30000)
+      throw new Error('No ready prompt after 30 seconds. Open the terminal to continue.')
+    await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
+      100,
+    )
   }
 }

@@ -537,6 +537,6 @@
       'PASS merge: review findings/read-only fixture/staleness/recovery and Fix in Implementation handoff, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
     )
   } catch (e) {
-    await smoke.report(`FAIL merge: ${e?.message ?? e}`)
+    await smoke.report(`FAIL merge: ${e?.message ?? e} ${e?.stack ?? ''}`)
   }
 })()

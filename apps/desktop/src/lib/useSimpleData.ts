@@ -43,7 +43,7 @@ export function useSimpleData(visible: boolean) {
       pending = false
     const project = useStore.getState().toProject()
     const read = async () => {
-      if (pending || document.visibilityState === 'hidden') return
+      if (pending) return
       pending = true
       try {
         const [plan, acceptedPlan, proposal, review, worktrees] = await Promise.all([

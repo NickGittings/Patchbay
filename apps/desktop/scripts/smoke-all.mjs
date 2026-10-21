@@ -29,6 +29,11 @@ const SCRIPTS = {
     ),
     run: ['scripts/auto.mjs'],
   },
+  simple: smoke(
+    'simple.js',
+    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
+    'simple-fixture.sh',
+  ),
   popout: smoke('popout.js'),
   bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
   autosave: smoke(

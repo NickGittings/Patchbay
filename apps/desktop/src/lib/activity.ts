@@ -1,4 +1,4 @@
-import type { Activity, Component, SessionRecord, SessionState } from '../types'
+import type { Activity, Component, SessionRecord, SessionState, Task } from '../types'
 /** Merge snapshots and live events by journal identity, independent of response order. */
 export function hydrateActivity(
   previous: SessionState | undefined,
@@ -91,4 +91,14 @@ export function activeComponents(
     }
   }
   return ids
+}
+
+/** Review/merge/planner scopes run at a worktree root; component sessions also retain that root. */
+export function activityRoot(record: SessionRecord, tasks: readonly Task[], fallback: string) {
+  if (['@plan', '@review', '@merge'].includes(record.metadata.componentId)) return record.spec.cwd
+  return (
+    tasks.find((task) => task.id === record.metadata.task)?.worktree ??
+    record.metadata.projectRoot ??
+    fallback
+  )
 }

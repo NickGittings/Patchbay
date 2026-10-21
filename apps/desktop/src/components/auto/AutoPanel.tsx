@@ -1,3 +1,4 @@
+import { logSimple } from '../../lib/simpleActions'
 import { useState } from 'react'
 import { useStore } from '../../store'
 import { parseSessionId } from '../../types'
@@ -45,7 +46,31 @@ export default function AutoPanel({
       ? `Auto: ${STAGE_LABELS[run.stage]} (${run.round}/${effortSettings(run).maxRounds})`
       : `Auto: ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
   const act = (fn: (id: string, task: string | null) => void | Promise<void>) => {
-    if (projectId) void Promise.resolve(fn(projectId, task)).catch((e) => setError(String(e)))
+    if (projectId)
+      void Promise.resolve(fn(projectId, task))
+        .then(() => {
+          if (!simple) return
+          const action =
+            fn === pauseAuto
+              ? 'pauseAuto'
+              : fn === resumeAuto
+                ? 'resumeAuto'
+                : fn === stopAuto
+                  ? 'stopAuto'
+                  : fn === mergeNow
+                    ? 'mergeApproval'
+                    : 'skipStage'
+          const stage =
+            run?.stage === 'plan'
+              ? 'plan'
+              : run?.stage === 'review'
+                ? 'review'
+                : ['merge', 'mergeGate', 'done'].includes(run?.stage ?? '')
+                  ? 'merge'
+                  : 'build'
+          logSimple(projectId, task, { kind: 'action', action, stage, sessionId: run?.sessionId })
+        })
+        .catch((e) => setError(String(e)))
   }
   return (
     <Popover

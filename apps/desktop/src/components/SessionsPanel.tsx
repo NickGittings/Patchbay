@@ -342,6 +342,10 @@ export default function SessionsPanel() {
   const [conversation, setConversation] = useState<{ id: string; value: string }>()
   const [historyOutput, setHistoryOutput] = useState('')
   const [history, setHistory] = useState<number | null>(null)
+  const preview = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (open && selected) preview.current?.scrollIntoView({ block: 'nearest' })
+  }, [open, selected, history])
   // The run chosen in the select, ahead of its output loading; `history` follows once it has.
   const [requested, setRequested] = useState<number | null>(null)
   // Bumped per choice, so a slower earlier fetch can't replace a later choice's output.
@@ -460,7 +464,7 @@ export default function SessionsPanel() {
           </form>
         )}
         {selected && (
-          <section className="session-preview">
+          <section className="session-preview" ref={preview}>
             <div className="row">
               <SessionTitle metadata={selected.metadata} />
               {!!selected.history.length && (

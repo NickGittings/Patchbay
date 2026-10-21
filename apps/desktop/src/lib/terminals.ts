@@ -262,7 +262,7 @@ export function writeNote(sessionId: string, text: string) {
 
 /** Geometry, including clipping, keeps hidden/collapsed hosts from claiming a shared terminal. */
 export function hostVisible(host: HTMLElement): boolean {
-  if (!host.isConnected || document.visibilityState === 'hidden') return false
+  if (!host.isConnected) return false
   if (!host.getBoundingClientRect) return true
   const rect = host.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return false
@@ -286,7 +286,7 @@ export function hostVisible(host: HTMLElement): boolean {
   return true
 }
 export const hasVisibleTerminal = (sid: string) =>
-  registry.get(sid)?.hosts.some(hostVisible) ?? false
+  document.visibilityState === 'visible' && (registry.get(sid)?.hosts.some(hostVisible) ?? false)
 export const ownsTerminalHost = (sid: string, host: HTMLElement) =>
   registry.get(sid)?.el.parentElement === host && hostVisible(host)
 
