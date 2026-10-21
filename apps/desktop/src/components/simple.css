@@ -1,0 +1,67 @@
+.navigation-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+.navigation-shell[hidden] {
+  display: none;
+}
+.simple-canvas {
+  position: relative;
+  height: 100%;
+}
+.simple-canvas > .simple-diff {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--bg);
+}
+.simple-chat {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  font-size: 12px;
+}
+.simple-chat > header {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.simple-thread {
+  overflow: auto;
+  flex: 1;
+  padding: 12px;
+}
+.simple-stage {
+  margin-bottom: 24px;
+}
+.simple-stage h2 {
+  font-size: 14px;
+  text-transform: capitalize;
+}
+.simple-stage[aria-current] > h2 {
+  color: var(--running);
+}
+.simple-stage article {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.simple-stage h3 {
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.simple-stage pre {
+  white-space: pre-wrap;
+  font: inherit;
+}
+.simple-stage time {
+  color: var(--muted);
+  margin-right: 8px;
+}

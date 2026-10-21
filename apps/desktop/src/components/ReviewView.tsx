@@ -1,3 +1,4 @@
+import { changeGroups } from '../lib/changeGroups'
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
@@ -18,7 +19,7 @@ import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings
 import { useClockTick } from '../lib/clock'
 import ReviewAgentPanel from './ReviewAgentPanel'
 import { useStore } from '../store'
-import { PROJECT_SCOPE, REVIEW_SCOPE, type ChangedFile, type Review, type Worktree } from '../types'
+import { PROJECT_SCOPE, REVIEW_SCOPE, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
 import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
@@ -30,14 +31,6 @@ import type { FileRef } from '../lib/findings'
 
 /** The watcher covers the open and active task's worktrees; another one is polled while shown. */
 const WORKTREE_POLL_MS = 5000
-
-interface ChangeGroup {
-  id: string
-  name: string
-  color: string
-  base: string
-  files: ChangedFile[]
-}
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -203,23 +196,7 @@ export default function ReviewView() {
     }
   }, [revision, pathsKey, linksKey, refresh, reviewScope, target])
 
-  const groups: ChangeGroup[] = []
-  if (review) {
-    for (const n of nodes) {
-      const files = review.changes[n.id]
-      if (files?.length)
-        groups.push({
-          id: n.id,
-          name: n.data.name,
-          color: KIND_COLOR[n.data.kind],
-          base: n.data.path,
-          files,
-        })
-    }
-    const loose = review.changes[PROJECT_SCOPE]
-    if (loose?.length)
-      groups.push({ id: PROJECT_SCOPE, name: 'Project files', color: '', base: '.', files: loose })
-  }
+  const groups = changeGroups(nodes, review)
   const active = filter.filter((id) => groups.some((g) => g.id === id))
   const shown = active.length ? groups.filter((g) => active.includes(g.id)) : groups
   const shownFiles = shown.flatMap((g) => g.files)

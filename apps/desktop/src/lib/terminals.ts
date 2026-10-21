@@ -184,7 +184,7 @@ function entry(sessionId: string): Entry {
         !useStore.getState().serviceConnected ||
         created.replaying ||
         document.visibilityState !== 'visible' ||
-        !created.hosts.some((host) => host.isConnected)
+        !created.hosts.some(hostVisible)
       )
         return
       void terminalWrite(sessionId, d).catch(() => {})
@@ -260,11 +260,43 @@ export function writeNote(sessionId: string, text: string) {
   entry(sessionId).term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
 }
 
+/** Geometry, including clipping, keeps hidden/collapsed hosts from claiming a shared terminal. */
+export function hostVisible(host: HTMLElement): boolean {
+  if (!host.isConnected || document.visibilityState === 'hidden') return false
+  if (!host.getBoundingClientRect) return true
+  const rect = host.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return false
+  let parent = host.parentElement
+  while (parent) {
+    if (parent.hidden) return false
+    const style = getComputedStyle(parent)
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+    if (/(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowY + style.overflowX)) {
+      const clip = parent.getBoundingClientRect()
+      if (
+        rect.bottom <= clip.top ||
+        rect.top >= clip.bottom ||
+        rect.right <= clip.left ||
+        rect.left >= clip.right
+      )
+        return false
+    }
+    parent = parent.parentElement
+  }
+  return true
+}
+export const hasVisibleTerminal = (sid: string) =>
+  registry.get(sid)?.hosts.some(hostVisible) ?? false
+export const ownsTerminalHost = (sid: string, host: HTMLElement) =>
+  registry.get(sid)?.el.parentElement === host && hostVisible(host)
+
 /** Move the session's terminal into `container` and size it to fit. */
 export function attach(sessionId: string, container: HTMLElement, options?: { focus?: boolean }) {
+  if (!hostVisible(container)) return
   const e = entry(sessionId)
+  e.hosts = e.hosts.filter((host) => host.isConnected)
   if (!e.hosts.includes(container)) e.hosts.push(container)
-  if (e.hosts.at(-1) !== container) return
+  if (e.hosts.filter(hostVisible).at(-1) !== container) return
   if (e.el.parentElement !== container) container.replaceChildren(e.el)
   refreshTheme()
   if (!e.opened) {
@@ -313,12 +345,12 @@ export function detachHost(sessionId: string, host: HTMLElement): boolean {
   const e = registry.get(sessionId)
   if (!e) return false
   e.hosts = e.hosts.filter((h) => h !== host && h.isConnected)
-  const previous = e.hosts.at(-1)
+  const previous = e.hosts.filter(hostVisible).at(-1)
   if (previous && e.el.parentElement === host) {
     previous.replaceChildren(e.el)
     fit(sessionId)
   }
-  return e.hosts.length > 0
+  return e.hosts.some(hostVisible)
 }
 
 export function disposeAll() {

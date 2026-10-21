@@ -1,3 +1,4 @@
+import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
 import WorkspaceTabs from './components/WorkspaceTabs'
@@ -85,6 +86,8 @@ function useRootSync() {
  * and their tabs keep their state.
  */
 function NavigationView() {
+  const simple = useStore((s) => s.simpleMode)
+  const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
@@ -94,7 +97,11 @@ function NavigationView() {
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
   const dockPanel = useCollapsed('App-pane-4', dock, activeSession)
   return (
-    <PersistedGroup layoutId="App-1" orientation="horizontal" className="workspace">
+    <PersistedGroup
+      layoutId={simple ? 'App-simple' : 'App-1'}
+      orientation="horizontal"
+      className="workspace"
+    >
       <Panel id="App-pane-1" defaultSize="14" minSize="10">
         <Hierarchy />
       </Panel>
@@ -102,13 +109,19 @@ function NavigationView() {
       <Panel id="App-pane-2" defaultSize="62">
         <PersistedGroup layoutId="App-2" orientation="vertical">
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
-            <Canvas />
+            <div className="simple-canvas">
+              <Canvas />
+            </div>
           </Panel>
           <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
           <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
             <TerminalDock collapsed={dockPanel.collapsed} />
           </Panel>
         </PersistedGroup>
+      </Panel>
+      <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
+      <Panel id="App-simple-chat" defaultSize="35" minSize="20" {...chatPanel.props}>
+        {simple && !chatPanel.collapsed && <SimpleChat />}
       </Panel>
       <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
       <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>
@@ -120,6 +133,7 @@ function NavigationView() {
 
 export default function App() {
   const view = useStore((s) => s.view)
+  const simple = useStore((s) => s.simpleMode)
   const projectId = useStore((s) => s.project?.id)
   const restoring = useStore((s) => s.restoring)
   useEffect(() => {
@@ -208,17 +222,20 @@ export default function App() {
         <DependencyDialog />
         <ExtensionsPanel />
         <NewTaskDialog />
+        {!restoring && (
+          <div className="navigation-shell" hidden={!simple && view !== 'navigation'}>
+            <NavigationView key={projectId} />
+          </div>
+        )}
         {restoring ? (
           <div className="hint">Restoring workspace…</div>
-        ) : view === 'plan' ? (
+        ) : !simple && view === 'plan' ? (
           <PlanView key={projectId} />
-        ) : view === 'implementation' ? (
+        ) : !simple && view === 'implementation' ? (
           <ImplementationView key={projectId} />
-        ) : view === 'review' ? (
+        ) : !simple && view === 'review' ? (
           <ReviewView key={projectId} />
-        ) : (
-          <NavigationView key={projectId} />
-        )}
+        ) : null}
       </div>
     </ReactFlowProvider>
   )

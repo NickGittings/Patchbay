@@ -31,6 +31,7 @@ export default function Toolbar() {
   const [rolesOpen, setRolesOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const project = useStore((s) => s.project)
+  const simpleMode = useStore((s) => s.simpleMode)
   const view = useStore((s) => s.view)
   const setView = useStore((s) => s.setView)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
@@ -151,18 +152,24 @@ export default function Toolbar() {
           </Menu>
         </div>
         {project ? (
-          <div className="view-switcher" role="group" aria-label="Workspace view">
-            {views.map((v, i) => (
-              <button
-                key={v.id}
-                aria-pressed={view === v.id}
-                className={view === v.id ? 'active' : ''}
-                title={`${v.label} (${mod}${i + 1})`}
-                onClick={() => setView(v.id)}
-              >
-                {v.label}
-              </button>
-            ))}
+          <div
+            hidden={simpleMode}
+            className="view-switcher"
+            role="group"
+            aria-label="Workspace view"
+          >
+            {!simpleMode &&
+              views.map((v, i) => (
+                <button
+                  key={v.id}
+                  aria-pressed={view === v.id}
+                  className={view === v.id ? 'active' : ''}
+                  title={`${v.label} (${mod}${i + 1})`}
+                  onClick={() => setView(v.id)}
+                >
+                  {v.label}
+                </button>
+              ))}
           </div>
         ) : (
           <span />
@@ -170,8 +177,14 @@ export default function Toolbar() {
         <div className="toolbar-group end">
           {project && (
             <>
+              <button
+                aria-pressed={simpleMode}
+                onClick={() => useStore.getState().setSimpleMode(!simpleMode)}
+              >
+                Simple
+              </button>
               {/* Plan and Implementation carry the picker in their own headers. */}
-              {(view === 'navigation' || view === 'review') && (
+              {(simpleMode || view === 'navigation' || view === 'review') && (
                 <WorktreePicker align="right" caret={false} />
               )}
               <AutoPanel onIntegrations={() => setIntegrationsOpen(true)} />

@@ -4,6 +4,7 @@ import {
   sameNotifications,
 } from './notificationSettings'
 import { restoredAgentRoles } from './agentRoles'
+import { restoredSimple } from './simple'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -58,6 +59,8 @@ export function workspaceDocument(): WorkspaceDocument {
               selectedEdgeId: state.selectedEdgeId,
               activeSession: state.activeSession,
               view: state.view,
+              simpleMode: state.simpleMode,
+              simple: state.simple,
               highlighted: state.highlighted,
               implementationComponents: state.implementationComponents,
               planActive: state.planActive,
@@ -98,6 +101,8 @@ export function restoredLayout(
 ): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
   out.auto = restoredAuto(layout.auto)
+  out.simple = restoredSimple(layout.simple)
+  if (!nested) out.simpleMode = layout.simpleMode === true
   if (!nested)
     out.closedTaskIds = Array.isArray(layout.closedTaskIds)
       ? [...new Set(layout.closedTaskIds.filter((id): id is string => typeof id === 'string'))]
@@ -198,6 +203,7 @@ export function restoredLayout(
               ![
                 'taskWorkspaces',
                 'view',
+                'simpleMode',
                 'activeTask',
                 'closedTaskIds',
                 'selectedId',
@@ -327,6 +333,8 @@ export function initializeWorkspace() {
           s.selectedEdgeId === prev.selectedEdgeId &&
           s.activeSession === prev.activeSession &&
           s.view === prev.view &&
+          s.simpleMode === prev.simpleMode &&
+          s.simple === prev.simple &&
           s.highlighted === prev.highlighted &&
           s.implementationComponents === prev.implementationComponents &&
           s.planActive === prev.planActive &&

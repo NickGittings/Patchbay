@@ -239,3 +239,33 @@ test('declining dependency detection persists per project without dirtying the m
   })
   expect(restored.taskWorkspaces?.other).not.toHaveProperty('dependencyPromptDismissed')
 })
+
+test('Simple defaults off, preserves the Full view and restores the complete worktree log', () => {
+  expect(restoredLayout({}).simpleMode).toBe(false)
+  expect(restoredLayout({}).simple).toBeNull()
+  const s = useStore.getState()
+  s.setView('review')
+  s.setSimpleMode(true)
+  expect(useStore.getState().view).toBe('review')
+  const simple = {
+    startedMs: 1,
+    log: [
+      {
+        id: 'one',
+        atMs: 2,
+        stage: 'plan' as const,
+        kind: 'prompt' as const,
+        text: ' exact\n ',
+        mentions: ['a'],
+      },
+    ],
+  }
+  useStore.setState({ simple, dirty: false })
+  const restored = restoredLayout(workspaceDocument().projects[0].layout)
+  expect(restored.simpleMode).toBe(true)
+  expect(restored.simple).toEqual(simple)
+  expect(restored.taskWorkspaces?.[''].simple).toEqual(simple)
+  s.setView('implementation')
+  expect(useStore.getState().simpleMode).toBe(false)
+  expect(useStore.getState().dirty).toBe(false)
+})
