@@ -17,6 +17,10 @@ import AutoDialog from './AutoDialog'
 import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended } from '../../lib/autoSettings'
 import Popover from '../Popover'
+import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
+import { useRunningReviewLanes } from '../../lib/reviewAgents'
+import { useReviewFindings } from '../../lib/useReviewFindings'
+import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
 
 export default function AutoPanel({ onIntegrations }: { onIntegrations: () => void }) {
@@ -67,11 +71,12 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
           </p>
           {run.reason && <p>{run.reason}</p>}
           {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
-          {run.findingsSummary && ['mergeGate', 'fix'].includes(run.stage) && (
-            <details>
-              <summary>Review summary</summary>
-              <p>{run.findingsSummary}</p>
-            </details>
+          {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
+            <AutoFindings
+              projectId={projectId}
+              branch={run.branch}
+              refresh={`${run.stage}:${run.status}:${run.log.length}`}
+            />
           )}
           {run.validation && (
             <p>
@@ -125,5 +130,41 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
         </div>
       )}
     </Popover>
+  )
+}
+
+/** The run's latest review verdict at a glance, with a way to read it in Review. */
+function AutoFindings({
+  projectId,
+  branch,
+  refresh,
+}: {
+  projectId: string | undefined
+  branch: string
+  /** Changes as the run moves on, so the verdict follows the findings Auto just judged. */
+  refresh: string
+}) {
+  const loaded = useReviewFindings(projectId, branch, false, refresh)
+  // Review shows the worktree's checked-out branch, which may no longer be the run's.
+  const checkedOut = useStore((s) => activeTaskOf(s)?.branch)
+  const running = useRunningReviewLanes(branch)
+  const findings = loaded?.findings
+  if (!findings) return null
+  return (
+    <div className="auto-findings">
+      <span>Review:</span>
+      <VerdictBadge findings={findings} running={running} />
+      <SeverityCounts findings={findings} />
+      {(!checkedOut || checkedOut === branch) && (
+        <button
+          onClick={() => {
+            useStore.setState({ reviewFindingsFocus: true })
+            useStore.getState().setView('review')
+          }}
+        >
+          View findings
+        </button>
+      )}
+    </div>
   )
 }

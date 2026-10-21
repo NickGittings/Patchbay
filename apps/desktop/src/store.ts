@@ -245,6 +245,8 @@ interface State {
   reviewAgents: Record<string, { sid: string; hidden: boolean }>
   /** One-shot component filter for Review (UI only, never saved). */
   reviewFocus: string | null
+  /** One-shot request for Review to open on the findings pane (UI only, never saved). */
+  reviewFindingsFocus: boolean
   hideReviewAgent: (sid: string) => void
   keepInDock: (id: string) => void
   dropFromDock: (id: string) => void
@@ -528,6 +530,7 @@ export const useStore = create<State>((set, get) => ({
   dockKept: [],
   reviewAgents: {},
   reviewFocus: null,
+  reviewFindingsFocus: false,
   hideReviewAgent: (sid) =>
     set((s) =>
       s.project

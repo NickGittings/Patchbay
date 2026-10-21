@@ -125,7 +125,9 @@
       ),
     )
     await until('saved Findings shown', () =>
-      document.querySelector('.review-findings pre')?.textContent.includes('Smoke review finding'),
+      document
+        .querySelector('.review-merge-terminal .findings-panel')
+        ?.textContent.includes('Smoke review finding'),
     )
     const fixButton = () =>
       [...document.querySelectorAll('.review-merge-terminal button')].find(
@@ -134,6 +136,20 @@
     assert(fixButton()?.disabled, 'partial findings enabled the fix handoff during review')
     await until('Reviewed status', () =>
       document.querySelector('.review-status')?.textContent.startsWith('Reviewed'),
+    )
+    click(document.querySelector('.review-findings-button'))
+    await until('Review shows findings in place of the diff', () =>
+      [...document.querySelectorAll('.review-view .findings-panel')]
+        .find((el) => !el.closest('.review-merge-terminal'))
+        ?.textContent.includes('Smoke review finding'),
+    )
+    click(document.querySelector('.review-findings-button'))
+    await until(
+      'Review findings pane closes',
+      () =>
+        ![...document.querySelectorAll('.review-view .findings-panel')].some(
+          (el) => !el.closest('.review-merge-terminal'),
+        ),
     )
     click(document.querySelector('.review-agent-button'))
     reviewForm = await until('running review guard', () =>
@@ -169,7 +185,7 @@
     )
     await until(
       'fix enabled without showing Findings',
-      () => !document.querySelector('.review-findings'),
+      () => !document.querySelector('.review-merge-terminal .findings-panel'),
     )
     click(
       await until('fix handoff enabled', () => fixButton() && !fixButton().disabled && fixButton()),

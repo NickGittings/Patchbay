@@ -1,11 +1,5 @@
-import type {
-  ActionReport,
-  AutoRun,
-  AutoStage,
-  EffortSettings,
-  MergeOutcome,
-  Severity,
-} from '../types'
+import type { ActionReport, AutoRun, AutoStage, EffortSettings, MergeOutcome } from '../types'
+import { SEVERITIES } from '../types'
 
 /** A run that still tracks its work: it can be resumed, and it briefs its agent. */
 export const unfinished = (status: AutoRun['status'] | undefined) =>
@@ -57,7 +51,6 @@ export const STAGES: AutoStage[] = [
   'merge',
   'done',
 ]
-export const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low']
 /** The most fix rounds Advanced allows. */
 export const MAX_ROUNDS = 100
 

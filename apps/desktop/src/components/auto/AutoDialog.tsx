@@ -23,7 +23,8 @@ import {
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
-import { integrated, MAX_ROUNDS, SEVERITIES } from '../../lib/autoSettings'
+import { integrated, MAX_ROUNDS } from '../../lib/autoSettings'
+import { SEVERITIES } from '../../types'
 import {
   type AutoDraft,
   autoDraftKey,

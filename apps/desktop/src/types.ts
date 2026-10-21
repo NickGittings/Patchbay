@@ -62,6 +62,8 @@ export interface ReviewRequest {
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
+/** Most severe first. */
+export const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low']
 export interface Verdict {
   clean: boolean
   counts: Record<Severity, number>
@@ -148,7 +150,6 @@ export interface AutoRun {
   waitingFor?: 'agentInput' | 'fixBudget'
   validation?: ActionReport[]
   reviewedHead?: string
-  findingsSummary?: string
   validationFindings?: string
 }
 
