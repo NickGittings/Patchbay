@@ -31,8 +31,19 @@
     smoke.acceptOpened(one)
     const two = await smoke.openSecondProject()
     smoke.acceptOpened(two)
+    // Auto offers its settings only on a branch other than the default one.
+    const onBranch = async (projectId) => {
+      const task = await smoke.taskCreate(
+        { title: 'Reviewers', branch: 'reviewers', components: [] },
+        projectId,
+      )
+      await smoke.refreshTasks(projectId)
+      state().setActiveTask(task.id)
+    }
+    await onBranch(two.id)
     state().setAgentRoles({ plan: ['a'], review: ['a', 'removed'] })
     state().activateProject(one.id)
+    await onBranch(one.id)
     state().setAgentRoles({ plan: ['a'], review: ['a'] })
     smoke.store.setState({
       devices: ['a', 'b'].map((id) => ({
