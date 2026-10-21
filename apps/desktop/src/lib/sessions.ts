@@ -648,6 +648,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
     case 'started':
       if (!newGeneration) break // Snapshot already includes this start.
       s.setSession(e.sessionId, {
+        generation: e.generation,
         running: true,
         startedMs: e.startedMs,
         notice: e.notice ?? undefined,
@@ -668,6 +669,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
       void requestGitRefresh(sessionMetadata.get(e.sessionId)?.projectId)
       s.setSession(e.sessionId, {
         ...s.sessions[e.sessionId],
+        generation: e.generation,
         running: false,
         exitCode: e.exitCode,
         exitedMs: e.exitedMs,
@@ -686,6 +688,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
       // Exited runs still get status (stopped, seen); it never revives one.
       s.setSession(e.sessionId, {
         ...prev,
+        generation: e.generation,
         running: newGeneration || (prev?.running ?? true),
         status: e.status,
       })
@@ -710,6 +713,7 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
         // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
         if (!snapshot.running) restoreModes(sid)
         useStore.getState().setSession(sid, {
+          generation: snapshot.generation,
           running: snapshot.running,
           exitCode: snapshot.exitCode ?? undefined,
           startedMs: snapshot.startedMs,
@@ -778,6 +782,7 @@ function behind(sid: string, snapshot: TerminalSnapshot | null) {
 function sameSession(a: SessionState | undefined, b: SessionState) {
   return (
     !!a &&
+    a.generation === b.generation &&
     a.running === b.running &&
     a.exitCode === b.exitCode &&
     a.startedMs === b.startedMs &&
@@ -853,6 +858,7 @@ export function reconcileSessions(force = true): Promise<void> {
         const snapshot = r.snapshot
         if (snapshot) {
           const next: SessionState = {
+            generation: snapshot.generation,
             running: snapshot.running,
             exitCode: snapshot.exitCode ?? undefined,
             startedMs: snapshot.startedMs,

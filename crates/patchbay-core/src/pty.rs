@@ -615,6 +615,7 @@ impl PtyManager {
             backlog.cleanup_error = cleanup_error;
             backlog.exit_code = Some(exit_code);
             backlog.exited_ms = Some(exited_ms);
+            backlog.tracker.on_exit(exited_ms);
             // The monitor stopped watching it, so report e.g. a stop it missed.
             // Emitted under the backlog lock, like the monitor's, so no
             // earlier status can follow these.
@@ -706,15 +707,33 @@ impl PtyManager {
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
             let mut guard = backlog.lock().unwrap();
+            // A tick may have captured this session, and drained its journal, before the
+            // waiter removed it. Apply what it drained as of the exit, then finalize again,
+            // so a last Stop isn't lost and a pending approval can't come back.
+            if !guard.running {
+                let exited_ms = guard.exited_ms.unwrap_or(now);
+                if let Some((stamp, text)) = report {
+                    guard.tracker.on_report(&text, stamp, exited_ms);
+                }
+                for event in hooks {
+                    guard.tracker.on_hook(event, exited_ms);
+                }
+                guard.tracker.on_exit(exited_ms);
+                // Exited runs still take status (stopped, seen); it never revives one.
+                if let Some(status) = guard.tracker.changed(exited_ms) {
+                    sink.emit(TerminalEvent::Status {
+                        session_id: id,
+                        generation,
+                        status,
+                    });
+                }
+                continue;
+            }
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
             }
             for event in hooks {
                 guard.tracker.on_hook(event, now);
-            }
-            // Once exited, the waiter has sent the last status.
-            if !guard.running {
-                continue;
             }
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's

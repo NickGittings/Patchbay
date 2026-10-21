@@ -476,6 +476,8 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  /** Process incarnation, available even before the start timestamp is hydrated. */
+  generation?: number
   disconnected?: boolean
   interrupted?: boolean
   truncated?: boolean
