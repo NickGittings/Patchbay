@@ -73,8 +73,6 @@ export function blockingCount(findings: ReviewFindings | null, floor: Severity) 
     0,
   )
 }
-/** A validation report with a task that didn't pass; components without a check are skipped. */
-export const validationFailed = (report: ActionReport) => report.results.some((r) => !taskPassed(r))
 /** One finding per failed validation terminal, for the fix agent's briefing. */
 export function validationFailures(reports: ActionReport[], name: (sessionId: string) => string) {
   return reports

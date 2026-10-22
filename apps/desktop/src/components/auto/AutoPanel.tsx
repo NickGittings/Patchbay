@@ -145,7 +145,7 @@ export default function AutoPanel({
             {run.reason && run.status === 'running' && <p>{run.reason}</p>}
             <ol className="auto-log">
               {[...run.log].reverse().map((l, i) => (
-                <li key={`${l.atMs}-${i}`}>
+                <li key={run.log.length - 1 - i}>
                   <time>{new Date(l.atMs).toLocaleTimeString()}</time> {l.text}
                 </li>
               ))}
@@ -173,7 +173,6 @@ function AutoFindings({
   const checkedOut = useStore((s) => activeTaskOf(s)?.branch)
   const running = useRunningReviewLanes(branch)
   const findings = loaded?.findings
-  if (!findings?.verdict) return null
   return (
     <div className="auto-findings">
       <span>Review:</span>

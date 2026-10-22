@@ -34,7 +34,8 @@ test('a later batch replaces only entries from the same session', () => {
 test('native failure hints show beside unread links and explicit dismissal clears all', () => {
   const hinted = mergeNotificationToast(batch, { message: 'Native unavailable', sessions: [] })!
   expect(hinted.sessions).toBe(batch.sessions)
-  expect(hinted.message.split('\n')[0]).toBe('Native unavailable')
+  expect(hinted.notice).toBe('Native unavailable')
+  expect(hinted.message).toBe(batch.sessions.map((s) => s.message).join('\n'))
   expect(hinted.message).toContain('one needs input')
   expect(removeNotificationSession(hinted, 'two')!.message).toBe(
     'one needs input\nthree needs input',

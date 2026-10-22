@@ -21,15 +21,7 @@ export default function Toast() {
   const notificationId = useStore((s) => s.notificationToastId)
   const notificationElement = useRef<HTMLDivElement>(null)
   const activeProjectId = useStore((s) => s.project?.id ?? null)
-  const linkedMessages = notification?.sessions
-    .map((link) => link.message ?? notification.message)
-    .join('\n')
-  // Permission hints precede the joined messages retained by the toast store.
-  const notice = notification?.sessions.length
-    ? linkedMessages && notification.message.endsWith(linkedMessages)
-      ? notification.message.slice(0, -linkedMessages.length).trimEnd()
-      : ''
-    : notification?.message
+  const notice = notification?.sessions.length ? notification.notice : notification?.message
 
   // An alert with links hides once followNotifications has dropped its last link (each one goes
   // when its session is seen or leaves that state); a notice without links hides on its own.

@@ -3,7 +3,7 @@ import { acceptOpened, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
 import { reloadSavedMap } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
-import { forgetMainWorktree } from '../lib/mainWorktree'
+import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
 
 /** Recovery banners for the active project: a missing folder or a changed saved map. */
 export default function RecoveryBanners() {
@@ -23,6 +23,7 @@ export default function RecoveryBanners() {
                     useStore.getState().closeProject(active.id)
                     forgetMainWorktree(active.id)
                     acceptOpened(opened)
+                    refreshMainWorktree(opened.id)
                     useStore.setState(restoredLayout(active.unavailableLayout ?? {}))
                     if (active.conflict) {
                       const fingerprint = active.draftFingerprint ?? active.fingerprint

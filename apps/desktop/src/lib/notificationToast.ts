@@ -11,7 +11,11 @@ export function mergeNotificationToast(
     const links = current.sessions.every((entry) => entry.message !== undefined)
       ? current.sessions.map((entry) => entry.message).join('\n')
       : current.message
-    return { message: `${incoming.message}\n${links}`, sessions: current.sessions }
+    return {
+      notice: incoming.notice ?? incoming.message,
+      message: links,
+      sessions: current.sessions,
+    }
   }
   const sessions = new Map(
     current.sessions.map((entry) => [

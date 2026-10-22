@@ -16,11 +16,12 @@ export const useMainWorktree = create<Record<string, MainWorktree>>(() => ({}))
 
 /** Each project's newest request, and whether it is still waiting for its answer. */
 const latest = new Map<string, { request: number; pending: boolean }>()
+let nextRequest = 0
 
 /** Re-read `projectId`'s worktrees; only the newest request's answer is kept. */
 export function refreshMainWorktree(projectId: string | undefined) {
   if (!projectId) return
-  const request = (latest.get(projectId)?.request ?? 0) + 1
+  const request = ++nextRequest
   latest.set(projectId, { request, pending: true })
   const apply = (info: MainWorktree) => {
     if (latest.get(projectId)?.request !== request) return

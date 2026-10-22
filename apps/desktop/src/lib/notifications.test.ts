@@ -818,7 +818,7 @@ test('test notifications report denial apart from failures and still show their 
     },
   })
   expect(await sendTestNotification()).toEqual({ status: 'denied' })
-  expect(mock.state.notificationToast?.message).toContain('unavailable')
+  expect(mock.state.notificationToast?.notice).toContain('unavailable')
   expect(mock.state.notificationToast?.sessions).toHaveLength(1)
   mock.granted.mockRejectedValueOnce(new Error('no plugin'))
   expect(await sendTestNotification()).toEqual({
@@ -914,6 +914,43 @@ for (const status of ['paused', 'waitingOnYou'] as const)
     expect(mock.send).not.toHaveBeenCalled()
   })
 
+test('manual turns during an Auto pause alert, while its original turn stays silent', async () => {
+  setAuto(autoRun({ status: 'paused' }))
+  stop = followNotifications()
+  transition('one', report('review'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  transition('one', report('working', 2100))
+  transition('one', report('review', 2200))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one'])
+  // Another lane still belongs to Auto, and resuming reclaims the manually driven session.
+  transition('three', report('review', 2300))
+  setAuto(autoRun())
+  transition('one', report('working', 2400))
+  transition('one', report('review', 2500))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('a manual turn already working when the follower starts alerts during a pause', async () => {
+  setAuto(autoRun({ status: 'paused' }))
+  mock.state.sessions.one = report('working', 2100)
+  stop = followNotifications()
+  transition('one', report('review', 2200))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('a manual turn during a pause can alert when its working report was missed', async () => {
+  setAuto(autoRun({ status: 'paused' }))
+  mock.state.sessions.one = report('review', 900)
+  stop = followNotifications()
+  transition('one', report('review', 2200))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
 for (const status of ['done', 'stopped', 'failed'] as const)
   test(`a ${status} Auto run releases its sessions' turn ends`, async () => {
     setAuto(autoRun({ status }))
@@ -989,26 +1026,31 @@ test('a focused worktree in another project still alerts', async () => {
   expect(mock.toast).toHaveBeenCalledOnce()
 })
 
-test('watched Auto agents suppress input without recording delivery; failures still alert', async () => {
+test('Auto input requests alert in Review even while their worktree is active', async () => {
   setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
-  mock.state = { ...mock.state, ...mock.state.projects.other!.state! } as Snapshot
+  mock.state = { ...mock.state, ...mock.state.projects.other!.state!, view: 'review' } as Snapshot
   mock.focused.mockReturnValue(true)
   stop = followNotifications()
   transition('one', report('needsInput'))
   transition('three', report('needsInput'))
   await vi.advanceTimersByTimeAsync(750)
-  expect(mock.toast).not.toHaveBeenCalled()
-  // Dropped input wasn't delivered, so the same timestamp can alert if it recurs offscreen.
-  mock.focused.mockReturnValue(false)
-  transition('one', working)
-  transition('one', report('needsInput'))
-  await vi.advanceTimersByTimeAsync(750)
-  expect(mock.toast).toHaveBeenCalledOnce()
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'three'])
+  expect(mock.send).not.toHaveBeenCalled()
+  // Leaving the worktree keeps the unread request available without needing another agent event.
+  update({ activeTask: 'another' })
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'three'])
+})
+
+test('an Auto input request seen in its terminal before delivery stays silent', async () => {
+  setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
+  mock.state = { ...mock.state, ...mock.state.projects.other!.state! } as Snapshot
   mock.focused.mockReturnValue(true)
-  transition('three', { running: false, exitCode: 1, exitedMs: 2500 })
+  stop = followNotifications()
+  transition('one', report('needsInput'))
+  const session = report('needsInput')
+  transition('one', { ...session, status: { ...session.status!, seenMs: 1100 } })
   await vi.advanceTimersByTimeAsync(750)
-  expect(mock.toast).toHaveBeenCalledTimes(2)
-  expect(mock.state.notificationToast?.sessions.at(-1)?.kind).toBe('failed')
+  expect(mock.toast).not.toHaveBeenCalled()
 })
 
 test('a focused worktree still alerts for another Auto worktree and untracked input', async () => {
@@ -1023,7 +1065,11 @@ test('a focused worktree still alerts for another Auto worktree and untracked in
   transition('two', report('needsInput'))
   transition('untracked', report('needsInput'))
   await vi.advanceTimersByTimeAsync(750)
-  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['two', 'untracked'])
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual([
+    'one',
+    'two',
+    'untracked',
+  ])
 })
 
 test('an Auto run alerts once per pause, links to its panel and drops out when resumed', async () => {

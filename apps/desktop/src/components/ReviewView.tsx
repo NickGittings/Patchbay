@@ -132,9 +132,11 @@ export default function ReviewView() {
         )
       : undefined,
   )
-  // Review shows the active task's worktree, so its terminals are keyed by that task (none for
-  // the project folder).
-  const reviewTask = tasks.find((t) => t.id === activeTask && !t.missing)
+  // Match validators to the worktree actually being reviewed. Until another worktree resolves,
+  // the diff falls back to the project folder; only its current task can supply validators.
+  const reviewTask = tasks.find(
+    (t) => !t.missing && (other ? t.worktree === other.path : t.current),
+  )
   const validationTask = reviewTask?.id ?? null
 
   // Findings of deleted branches are dropped once per visit, off the polling path.

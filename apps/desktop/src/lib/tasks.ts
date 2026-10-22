@@ -342,13 +342,19 @@ export function titleFor(goal: string, max = 72) {
  */
 export function shortTitle(title: string) {
   const [line, ...lines] = title.trim().split('\n')
-  const end = /[.!?]+\s+(?=\p{Lu})/u.exec(line)
+  // Initialisms such as U.S. remain whole even before a capitalized word. Leading
+  // punctuation isn't a sentence on its own.
+  const end = [...line.matchAll(/[.!?]+\s+(?=\p{Lu})/gu)].find((match) => {
+    const prefix = line.slice(0, match.index)
+    return /[\p{L}\p{N}]/u.test(prefix) && !/(?:\b\p{L}\.)+\p{L}$/u.test(prefix)
+  })
   const sentence = (end ? line.slice(0, end.index) : line.replace(/[.!?]+\s*$/, ''))
     .trim()
     .split(/\s+/)
     .join(' ')
+  const first = sentence || line.trim()
   // Collapsed whitespace and closing punctuation leave nothing out; more sentences or lines do.
-  return end || lines.some((l) => l.trim()) ? `${sentence}…` : sentence
+  return end || lines.some((l) => l.trim()) ? `${first}…` : first
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */

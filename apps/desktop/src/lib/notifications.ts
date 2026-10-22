@@ -119,20 +119,15 @@ function openProjects(s: Snapshot) {
 
 /** Runs keep their agents while paused or waiting, until they finish, stop or fail. */
 function trackingRuns(s: Snapshot, sid: string) {
-  return openProjects(s).flatMap(({ id, state }) =>
+  return openProjects(s).flatMap(({ state }) =>
     autoRuns(state)
+      .map(({ run }) => run)
       .filter(
-        ({ run }) =>
+        (run) =>
           !finished(run.status) &&
           (run.sessionId === sid || !!run.laneSessions?.some((l) => l.sessionId === sid)),
-      )
-      .map(({ task }) => ({ projectId: id, task })),
+      ),
   )
-}
-
-/** Auto owns its sessions' turn ends; input requests and failures can still alert. */
-export function autoTracked(s: Snapshot, sid: string) {
-  return trackingRuns(s, sid).length > 0
 }
 
 const autoSignature = (run: AutoRun) =>
@@ -337,6 +332,39 @@ export function followNotifications() {
   // Events of sessions not yet identified or whose project isn't open, rechecked as that changes.
   const deferred = new Map<string, AgentEvent>()
   const pending = new Map<string, NotificationEvent>()
+  // A new turn started during a pause belongs to the user, even though the run retains its sid.
+  const manualTurns = new Map<string, string>()
+  const autoTracked = (s: Snapshot, sid: string) =>
+    trackingRuns(s, sid).some(
+      (run) => run.status !== 'paused' || manualTurns.get(sid) !== run.runId,
+    )
+  const rememberManualTurns = (s: Snapshot, prev?: Snapshot) => {
+    for (const [sid, session] of Object.entries(s.sessions)) {
+      const tracked = trackingRuns(s, sid)
+      if (!tracked.some((run) => run.status === 'paused' && run.runId === manualTurns.get(sid)))
+        manualTurns.delete(sid)
+      const agent = session.status?.agent
+      if (!agent || !['working', 'review'].includes(agent.state)) continue
+      const before = prev?.sessions[sid]?.status?.agent
+      for (const run of tracked) {
+        if (run.status !== 'paused') continue
+        // On startup, a working report newer than the pause also proves manual activity.
+        const afterPause = agent.sinceMs > (run.log.at(-1)?.atMs ?? Infinity)
+        const wasPaused =
+          prev &&
+          trackingRuns(prev, sid).some((p) => p.runId === run.runId && p.status === 'paused')
+        const newTurn =
+          wasPaused &&
+          afterPause &&
+          agent.sinceMs > (before?.sinceMs ?? 0) &&
+          (agent.state === 'working' ||
+            before?.state === 'review' ||
+            before?.state === 'needsInput')
+        if ((agent.state === 'working' && afterPause) || newTurn) manualTurns.set(sid, run.runId)
+      }
+    }
+  }
+  rememberManualTurns(useStore.getState())
   // The last observed state of each Auto run, so each pause alerts once.
   const autoStates = new Map<string, string>()
   const autoProjects = new Set<string>()
@@ -352,13 +380,10 @@ export function followNotifications() {
         autoPauseCurrent(s, e.auto) &&
         (e.kind === 'failed' || !watching(s, e.auto.projectId, e.auto.task))
       )
-    const tracked = trackingRuns(s, e.sid)
     return (
       e.atMs > (delivered.get(e.sid)?.[e.kind] ?? 0) &&
       isCurrent(s, e.sid, e) &&
-      !(e.kind === 'finished' && tracked.length) &&
-      (e.kind === 'failed' ||
-        !tracked.some(({ projectId, task }) => watching(s, projectId, task))) &&
+      !(e.kind === 'finished' && autoTracked(s, e.sid)) &&
       revealable(sessionIdentity(s, e.sid), s)
     )
   }
@@ -427,6 +452,8 @@ export function followNotifications() {
       return
     }
     if (event.kind === 'finished' && autoTracked(s, sid)) return
+    // Actual terminal visibility is acknowledged through seenMs. An active worktree alone
+    // does not mean its terminal is on screen (Review, hidden tabs and collapsed panes).
     const description = describe(s, sid, identity)
     const entry: NotificationEvent = {
       ...event,
@@ -503,11 +530,19 @@ export function followNotifications() {
   }
 
   const unsubscribe = useStore.subscribe((s, prev) => {
+    if (
+      s.sessions !== prev.sessions ||
+      s.auto !== prev.auto ||
+      s.projects !== prev.projects ||
+      s.taskWorkspaces !== prev.taskWorkspaces
+    )
+      rememberManualTurns(s, prev)
     const handled = new Set<string>()
     if (s.sessions !== prev.sessions) {
       for (const sid of new Set([...delivered.keys(), ...deferred.keys()])) {
         if (!s.sessions[sid]) {
           delivered.delete(sid)
+          manualTurns.delete(sid)
           deferred.delete(sid)
           pending.delete(sid)
         }
