@@ -933,10 +933,41 @@ test('manual turns during an Auto pause alert, while its original turn stays sil
   expect(mock.toast).toHaveBeenCalledOnce()
 })
 
-test('a manual turn already working when the follower starts alerts during a pause', async () => {
+test('a working report at follower startup does not prove a manual turn during a pause', async () => {
   setAuto(autoRun({ status: 'paused' }))
   mock.state.sessions.one = report('working', 2100)
   stop = followNotifications()
+  transition('one', report('review', 2200))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+})
+
+test.each(['one', 'three'])(
+  'a delayed Auto working report for %s stays owned after pausing',
+  async (sid) => {
+    setAuto(autoRun())
+    stop = followNotifications()
+    setAuto(autoRun({ status: 'paused', log: [{ atMs: 1500, text: 'Paused by you' }] }))
+    transition(sid, report('working', 2100))
+    transition(sid, report('review', 2200))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).not.toHaveBeenCalled()
+    expect(mock.send).not.toHaveBeenCalled()
+  },
+)
+
+test('a changed turn identity during a pause alerts even between working reports', async () => {
+  const turn = (id: string, sinceMs: number) => {
+    const session = report('working', sinceMs)
+    return {
+      ...session,
+      status: { ...session.status!, agent: { ...session.status!.agent!, turnId: id } },
+    }
+  }
+  setAuto(autoRun({ status: 'paused' }))
+  mock.state.sessions.one = turn('original', 1400)
+  stop = followNotifications()
+  transition('one', turn('manual', 2100))
   transition('one', report('review', 2200))
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).toHaveBeenCalledOnce()

@@ -348,7 +348,9 @@ export function followNotifications() {
       const before = prev?.sessions[sid]?.status?.agent
       for (const run of tracked) {
         if (run.status !== 'paused') continue
-        // On startup, a working report newer than the pause also proves manual activity.
+        // A first working report can arrive after Pause while Auto's agent starts up.
+        // Require a changed turn identity, or a transition from a reported turn end/input wait
+        // for agents without turn ids; a newer timestamp alone does not prove manual activity.
         const afterPause = agent.sinceMs > (run.log.at(-1)?.atMs ?? Infinity)
         const wasPaused =
           prev &&
@@ -357,10 +359,10 @@ export function followNotifications() {
           wasPaused &&
           afterPause &&
           agent.sinceMs > (before?.sinceMs ?? 0) &&
-          (agent.state === 'working' ||
-            before?.state === 'review' ||
-            before?.state === 'needsInput')
-        if ((agent.state === 'working' && afterPause) || newTurn) manualTurns.set(sid, run.runId)
+          (before?.turnId && agent.turnId
+            ? before.turnId !== agent.turnId || before.conversationId !== agent.conversationId
+            : before?.state === 'review' || before?.state === 'needsInput')
+        if (newTurn) manualTurns.set(sid, run.runId)
       }
     }
   }
