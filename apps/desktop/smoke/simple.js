@@ -54,6 +54,35 @@
     await smoke.refreshTasks()
     state().setActiveTask(task.id, true)
     assert(!state().simpleMode, 'Simple must default off')
+    for (const previous of ['plan', 'navigation', 'implementation', 'review']) {
+      state().setView(previous)
+      await until(`Full ${previous}`, () => !document.querySelector('.simple-chat'))
+      state().setSimpleMode(true)
+      await until(`Simple from ${previous}`, () => document.querySelector('.simple-chat'))
+      assert(
+        !document.querySelector('.react-flow__node.draggable'),
+        `Simple from ${previous} allows dragging`,
+      )
+      assert(
+        !document.querySelector('.react-flow__controls-interactive'),
+        `Simple from ${previous} allows editing`,
+      )
+      state().clearHighlights()
+      const id = state().nodes[0].id
+      click(
+        await until('Simple component', () =>
+          document.querySelector(`.react-flow__node[data-id="${id}"]`),
+        ),
+      )
+      await until(`highlight from ${previous}`, () => state().highlighted.includes(id))
+      state().setSimpleMode(false)
+      await until(`leave Simple for ${previous}`, () => !document.querySelector('.simple-chat'))
+      if (previous !== 'navigation')
+        assert(
+          !document.querySelector('.navigation-shell'),
+          `Navigation mounted behind ${previous}`,
+        )
+    }
     state().setView('review')
     click(button('Simple'))
     await until('chat', () => document.querySelector('.simple-chat'))

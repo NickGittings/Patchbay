@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
 import { activeWorktree } from './tasks'
+import { relatedSession } from './simple'
 import { useReviewFindings } from './useReviewFindings'
 import type {
   MergeOutcome,
@@ -20,6 +21,8 @@ interface Artifacts {
   review: Review
   worktrees: Worktree[]
   outcome?: MergeOutcome
+  /** Why the merge status couldn't be read; the other artifacts still show. */
+  outcomeError?: string
 }
 /** Disk-backed reader. Late replies never cross project/worktree boundaries. */
 export function useSimpleData(visible: boolean) {
@@ -27,38 +30,40 @@ export function useSimpleData(visible: boolean) {
   const task = useStore((s) => s.activeTask)
   const worktree = useStore(activeWorktree)
   const revision = useStore((s) => s.gitChanges)
-  const log = useStore((s) => s.simple?.log)
-  const stages = useStore((s) =>
-    s.sessionRecords
-      .filter((r) => r.metadata.projectId === projectId)
-      .map((r) => `${r.id}:${s.sessions[r.id]?.running}:${s.sessions[r.id]?.status?.agent?.state}`)
-      .join('|'),
-  )
   const key = JSON.stringify([projectId, task, worktree])
   const [data, setData] = useState<Artifacts>()
   const [error, setError] = useState<{ key: string; text: string }>()
   useEffect(() => {
     if (!visible || !projectId) return
     let disposed = false,
-      pending = false
-    const project = useStore.getState().toProject()
+      pending = false,
+      queued = false
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined
+    const schedule = () => {
+      if (disposed) return
+      if (pending) {
+        queued = true
+        return
+      }
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(() => void read(), 100)
+    }
     const read = async () => {
-      if (pending) return
+      if (disposed || pending) return
       pending = true
+      const state = useStore.getState()
+      const project = state.toProject()
       try {
         const [plan, acceptedPlan, proposal, review, worktrees] = await Promise.all([
           planRead(projectId),
-          planRead(projectId, task ?? undefined),
+          // The project folder's accepted plan is the project plan itself.
+          task ? planRead(projectId, task) : undefined,
           proposalRead(projectId),
           gitReview(project, worktree),
           gitWorktrees(projectId),
         ])
-        const state = useStore.getState()
-        const latestMerge = [...(log ?? [])]
-          .reverse()
-          .find((e) => e.kind === 'action' && e.action === 'merge' && e.request)
-        let request: MergeRequest | undefined =
-          latestMerge?.kind === 'action' ? latestMerge.request : undefined
+        const merge = latestMerge(state)
+        let request: MergeRequest | undefined = merge?.kind === 'action' ? merge.request : undefined
         // Recovered merge records explicitly retain source and destination paths.
         if (!request) {
           const source = worktree ?? project.root
@@ -80,33 +85,89 @@ export function useSimpleData(visible: boolean) {
               destinationBranch: to.branch,
             }
         }
-        const outcome = request ? await mergeOutcome(project, request) : undefined
+        // Recovered requests need the worktree list, so this read follows the others.
+        let outcome: MergeOutcome | undefined, outcomeError: string | undefined
+        if (request)
+          await mergeOutcome(project, request).then(
+            (o) => (outcome = o),
+            (e) => (outcomeError = String(e)),
+          )
         if (!disposed) {
-          setData({ key, plan, acceptedPlan, proposal, review, worktrees, outcome })
+          setData({
+            key,
+            plan,
+            acceptedPlan: acceptedPlan ?? plan,
+            proposal,
+            review,
+            worktrees,
+            outcome,
+            outcomeError,
+          })
           setError(undefined)
         }
       } catch (e) {
         if (!disposed) setError({ key, text: String(e) })
       } finally {
         pending = false
+        if (queued) {
+          queued = false
+          schedule()
+        }
       }
     }
+    const scope = { projectId, task, path: worktree ?? useStore.getState().project!.root }
+    const latestMerge = (state: ReturnType<typeof useStore.getState>) =>
+      [...(state.simple?.log ?? [])]
+        .reverse()
+        .find((e) => e.kind === 'action' && e.action === 'merge' && e.request)
+    // Keep one reader for this scope. Change signals share its in-flight guard;
+    // an invalidation during a read schedules one follow-up instead of losing the update.
+    // Only starts, exits and turn ends can change the artifacts; a turn starting can't.
+    const settled = new Set(['idle', 'review', 'ended'])
+    const turnEnds = new Map<string, number>()
+    const stages = (state: ReturnType<typeof useStore.getState>) =>
+      state.sessionRecords
+        .filter((r) => relatedSession(r, scope))
+        .map((r) => {
+          const session = state.sessions[r.id],
+            agent = session?.status?.agent
+          if (agent && settled.has(agent.state)) turnEnds.set(r.id, agent.sinceMs)
+          return `${r.id}:${session?.generation}:${session?.running}:${turnEnds.get(r.id) ?? ''}`
+        })
+        .join('|')
+    let previousStages = stages(useStore.getState())
+    const unsubscribe = useStore.subscribe((state, previous) => {
+      let changed = state.gitChanges !== previous.gitChanges
+      if (state.simple?.log !== previous.simple?.log)
+        changed ||= latestMerge(state) !== latestMerge(previous)
+      if (
+        state.sessions !== previous.sessions ||
+        state.sessionRecords !== previous.sessionRecords
+      ) {
+        const nextStages = stages(state)
+        changed ||= previousStages !== nextStages
+        previousStages = nextStages
+      }
+      if (changed) schedule()
+    })
     void read()
     const unlisten = onProposal((event) => {
-      if (event.projectId === projectId) void read()
+      if (event.projectId === projectId) schedule()
     })
-    const timer = window.setInterval(() => void read(), 5000)
-    const focus = () => void read()
+    const focus = () => {
+      if (document.visibilityState === 'visible') schedule()
+    }
     window.addEventListener('focus', focus)
     document.addEventListener('visibilitychange', focus)
     return () => {
       disposed = true
+      unsubscribe()
+      clearTimeout(refreshTimer)
       void unlisten.then((stop) => stop()).catch(() => {})
-      clearInterval(timer)
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
     }
-  }, [visible, projectId, task, worktree, revision, key, stages, log])
+  }, [visible, projectId, task, worktree, key])
   const current = data?.key === key ? data : undefined
   const source = current?.worktrees.find(
     (w) => w.path === (worktree ?? useStore.getState().project?.root),

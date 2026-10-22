@@ -687,10 +687,13 @@ export function handleTerminalEvent(e: TerminalEvent) {
       break
     case 'activity': {
       const prev = s.sessions[e.sessionId]
+      // Live activity can be the first event this window sees of a run: nothing of the
+      // previous run (exit, times, status) carries over. Preserve a known exit of this one.
+      const fresh = prev?.generation !== e.generation
       s.setSession(e.sessionId, {
-        ...prev,
+        ...(fresh ? {} : prev),
         generation: e.generation,
-        running: newGeneration || (prev?.running ?? true),
+        running: fresh || prev.running,
         activity: hydrateActivity(prev, e.generation, [e.activity]),
       })
       break
@@ -896,8 +899,12 @@ export function reconcileSessions(force = true): Promise<void> {
           // An exit already seen for this run is newer than a list saying it runs.
           const staleRun =
             prev && !prev.running && next.running && prev.startedMs === next.startedMs
-          if ((prev?.generation ?? 0) > snapshot.generation) continue
-          if (!staleRun && !sameSession(prev, next)) current.setSession(r.id, next)
+          if (
+            (prev?.generation ?? 0) <= snapshot.generation &&
+            !staleRun &&
+            !sameSession(prev, next)
+          )
+            current.setSession(r.id, next)
         }
         const state = projects[r.metadata.projectId]?.state
         const root =

@@ -551,6 +551,6 @@ export const mergeOutcome = (project: Project, request: import('../types').Merge
     request,
   })
 
-/** Acknowledged, generation-bound write for a chat prompt. Never automatically retried. */
-export const terminalPrompt = (sessionId: string, generation: number, data: string) =>
-  invoke<void>('terminal_prompt', { sessionId, generation, data })
+/** Pastes and submits a chat message for one generation, acknowledged. Never automatically retried. */
+export const terminalPrompt = (sessionId: string, generation: number, text: string) =>
+  invoke<void>('terminal_prompt', { sessionId, generation, text })

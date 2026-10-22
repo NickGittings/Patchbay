@@ -1,6 +1,7 @@
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
+import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
 import { thread, type SimpleStage } from '../lib/simple'
 import { logSimple } from '../lib/simpleActions'
@@ -26,7 +27,24 @@ import './simple.css'
 
 const pendingActions = new Set<string>()
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
-  const s = useStore()
+  const s = useStore(
+    useShallow((s) => ({
+      project: s.project,
+      activeTask: s.activeTask,
+      tasks: s.tasks,
+      nodes: s.nodes,
+      sessionRecords: s.sessionRecords,
+      sessions: s.sessions,
+      simple: s.simple,
+      auto: s.auto,
+      devices: s.devices,
+      agentRoles: s.agentRoles,
+      graphActionBusy: s.graphActionBusy,
+      setActiveSession: s.setActiveSession,
+      select: s.select,
+      toProject: s.toProject,
+    })),
+  )
   const { data, source, error, findings } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
   const [pending, setPending] = useState(''),
@@ -314,7 +332,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               </article>
             )}
             {section.id === 'merge' && (
-              <article>{data?.outcome ?? 'Choose a merge destination after review.'}</article>
+              <article>
+                {data?.outcome ??
+                  (data?.outcomeError
+                    ? `Merge status unavailable: ${data.outcomeError}`
+                    : 'Choose a merge destination after review.')}
+              </article>
             )}
             {section.entries.map((entry) => (
               <article className="simple-entry" key={entry.id}>

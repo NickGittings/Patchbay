@@ -1,4 +1,5 @@
 import { logSimple } from '../../lib/simpleActions'
+import { simpleStageOf, type SimpleAction } from '../../lib/simple'
 import { useState } from 'react'
 import { useStore } from '../../store'
 import { parseSessionId } from '../../types'
@@ -45,30 +46,20 @@ export default function AutoPanel({
     : run.status === 'running'
       ? `Auto: ${STAGE_LABELS[run.stage]} (${run.round}/${effortSettings(run).maxRounds})`
       : `Auto: ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
-  const act = (fn: (id: string, task: string | null) => void | Promise<void>) => {
+  const act = (
+    action: SimpleAction,
+    fn: (id: string, task: string | null) => void | Promise<void>,
+  ) => {
     if (projectId)
       void Promise.resolve(fn(projectId, task))
         .then(() => {
-          if (!simple) return
-          const action =
-            fn === pauseAuto
-              ? 'pauseAuto'
-              : fn === resumeAuto
-                ? 'resumeAuto'
-                : fn === stopAuto
-                  ? 'stopAuto'
-                  : fn === mergeNow
-                    ? 'mergeApproval'
-                    : 'skipStage'
-          const stage =
-            run?.stage === 'plan'
-              ? 'plan'
-              : run?.stage === 'review'
-                ? 'review'
-                : ['merge', 'mergeGate', 'done'].includes(run?.stage ?? '')
-                  ? 'merge'
-                  : 'build'
-          logSimple(projectId, task, { kind: 'action', action, stage, sessionId: run?.sessionId })
+          if (simple)
+            logSimple(projectId, task, {
+              kind: 'action',
+              action,
+              stage: simpleStageOf(run?.stage),
+              sessionId: run?.sessionId,
+            })
         })
         .catch((e) => setError(String(e)))
   }
@@ -133,20 +124,20 @@ export default function AutoPanel({
           )}
           <div className="auto-controls">
             {run.status === 'running' ? (
-              <button onClick={() => act(pauseAuto)}>Pause</button>
+              <button onClick={() => act('pauseAuto', pauseAuto)}>Pause</button>
             ) : (
               !['done', 'stopped'].includes(run.status) && (
-                <button onClick={() => act(resumeAuto)}>Resume</button>
+                <button onClick={() => act('resumeAuto', resumeAuto)}>Resume</button>
               )
             )}
             {!['done', 'stopped'].includes(run.status) && (
-              <button onClick={() => act(stopAuto)}>Stop</button>
+              <button onClick={() => act('stopAuto', stopAuto)}>Stop</button>
             )}
             {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-              <button onClick={() => act(skipStage)}>Skip stage</button>
+              <button onClick={() => act('skipStage', skipStage)}>Skip stage</button>
             )}
             {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
-              <button onClick={() => act(mergeNow)}>Merge now</button>
+              <button onClick={() => act('mergeApproval', mergeNow)}>Merge now</button>
             )}
             {finished && (
               <button onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}>

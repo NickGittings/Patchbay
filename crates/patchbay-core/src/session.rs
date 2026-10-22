@@ -38,6 +38,24 @@ pub const TERMINAL_RUNNING: &str = "Terminal is already running; reconnect inste
 const TIMEOUT: Duration = Duration::from_secs(10);
 const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
 const SHUTDOWN_REFUSED: &str = "Work is running; shutdown requires --stop-running";
+/// Between a chat paste and its Enter.
+const PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(50);
+
+/// Chat sends only at a hook-confirmed end of turn.
+fn prompt_ready(status: &crate::status::SessionStatus) -> bool {
+    status.agent.as_ref().is_some_and(|agent| {
+        agent.authoritative
+            && matches!(
+                agent.state,
+                crate::status::AgentState::Idle | crate::status::AgentState::Review
+            )
+    })
+}
+
+/// A bracketed paste. ESC is dropped from the text, so it can't end the paste early.
+fn paste(text: &str) -> String {
+    format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', ""))
+}
 
 /// A confirmed refusal, distinct from a lost reply or another service error.
 #[derive(Debug, Clone)]
@@ -274,12 +292,13 @@ pub enum Request {
         viewer: String,
         data: String,
     },
-    /// A single, acknowledged chat write. Never retried after an uncertain reply.
+    /// A chat message, pasted and submitted as one acknowledged request. Never retried after
+    /// an uncertain reply.
     Prompt {
         id: String,
         viewer: String,
         generation: u64,
-        data: String,
+        text: String,
     },
     Resize {
         id: String,
@@ -869,12 +888,16 @@ impl Service {
     /// Never copies a backlog. Request ids are listed once their launch has spawned,
     /// so clients can recover a launch whose reply they lost.
     fn summaries(&self) -> Vec<Record> {
-        let bare = |s: &Snapshot| Snapshot {
+        let bare = |s: &Snapshot, include_activity: bool| Snapshot {
             launch_directory: s.launch_directory.clone(),
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
-            activity: s.activity.clone(),
+            activity: if include_activity {
+                s.activity.clone()
+            } else {
+                Vec::new()
+            },
             ..*s
         };
         let records = self.records.lock().unwrap();
@@ -900,8 +923,8 @@ impl Service {
                     snapshot: self
                         .pty
                         .snapshot_with(&r.id, 0)
-                        .or_else(|| r.snapshot.as_ref().map(bare)),
-                    history: r.history.iter().map(bare).collect(),
+                        .or_else(|| r.snapshot.as_ref().map(|s| bare(s, true))),
+                    history: r.history.iter().map(|s| bare(s, false)).collect(),
                     launch_command: String::new(),
                     restart_context: None,
                     interrupted: r.interrupted,
@@ -1493,45 +1516,37 @@ impl Service {
                 id,
                 viewer,
                 generation,
-                data,
+                text,
             } => {
-                anyhow::ensure!(
-                    self.owns(client, &id, &viewer),
-                    "Viewer does not have terminal authority"
-                );
-                let snapshot = self
-                    .pty
-                    .snapshot_with(&id, 0)
-                    .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-                anyhow::ensure!(
-                    snapshot.running && snapshot.generation == generation,
-                    "The session generation changed"
-                );
-                let ready = match &snapshot.status.agent {
-                    Some(agent) if agent.authoritative => matches!(
-                        agent.state,
-                        crate::status::AgentState::Idle | crate::status::AgentState::Review
-                    ),
-                    Some(agent)
-                        if matches!(
-                            agent.state,
-                            crate::status::AgentState::Working
-                                | crate::status::AgentState::NeedsInput
-                        ) =>
-                    {
-                        false
-                    }
-                    _ => {
-                        !snapshot.status.active
-                            && snapshot
-                                .status
-                                .last_output_ms
-                                .is_some_and(|at| crate::pty::now_ms().saturating_sub(at) >= 1000)
-                    }
+                // Paste and submit in one request, each gated on hook-confirmed readiness, so no
+                // write can answer a permission dialog. Quiet output alone can't tell a ready
+                // prompt from a dialog, so sessions without status hooks are refused.
+                let check = || -> Result<()> {
+                    anyhow::ensure!(
+                        self.owns(client, &id, &viewer),
+                        "Viewer does not have terminal authority"
+                    );
+                    let snapshot = self
+                        .pty
+                        .snapshot_with(&id, 0)
+                        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+                    anyhow::ensure!(
+                        snapshot.running && snapshot.generation == generation,
+                        "The session generation changed"
+                    );
+                    anyhow::ensure!(
+                        prompt_ready(&snapshot.status),
+                        "The agent is not at a ready prompt"
+                    );
+                    Ok(())
                 };
-                anyhow::ensure!(ready, "The agent is not at a ready prompt");
+                check()?;
                 self.pty
-                    .write_generation(&id, generation, data.as_bytes())?;
+                    .write_generation(&id, generation, paste(&text).as_bytes())?;
+                // Ink needs a separate input event after it has processed the bracketed paste.
+                std::thread::sleep(PROMPT_SUBMIT_DELAY);
+                check().map_err(|e| e.context("The message was pasted but not submitted"))?;
+                self.pty.write_generation(&id, generation, b"\r")?;
                 serde_json::Value::Null
             }
             Request::Resize {
@@ -4441,6 +4456,115 @@ mod tests {
             restart_conversation(Adapter::Claude, &snapshot).as_deref(),
             Some("12345678-aaaa-1234-bbbb-123456789abc")
         );
+    }
+
+    #[test]
+    fn prompts_need_a_hook_confirmed_end_of_turn() {
+        use crate::status::{AgentReport, AgentState, SessionStatus};
+        let status = |state, authoritative| SessionStatus {
+            agent: Some(AgentReport {
+                state,
+                since_ms: 1,
+                message: None,
+                prompt: None,
+                provider: None,
+                conversation_id: None,
+                turn_id: None,
+                authoritative,
+            }),
+            ..SessionStatus::default()
+        };
+        assert!(prompt_ready(&status(AgentState::Idle, true)));
+        assert!(prompt_ready(&status(AgentState::Review, true)));
+        assert!(!prompt_ready(&status(AgentState::NeedsInput, true)));
+        assert!(!prompt_ready(&status(AgentState::Working, true)));
+        // A quiet permission dialog looks like a ready prompt without hooks.
+        assert!(!prompt_ready(&status(AgentState::Idle, false)));
+        assert!(!prompt_ready(&SessionStatus {
+            last_output_ms: Some(1),
+            ..SessionStatus::default()
+        }));
+    }
+
+    #[test]
+    fn pasted_text_cannot_end_the_paste() {
+        assert_eq!(paste("a\nb"), "\x1b[200~a\nb\x1b[201~");
+        assert_eq!(
+            paste("x\x1b[20\x1b[201~1~y"),
+            "\x1b[200~x[20[201~1~y\x1b[201~"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompts_check_process_authority_and_readiness() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "web", "terminalId": "shell", "name": "Shell", "kind": "shell"
+        }))
+        .unwrap();
+        let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+            "id": "ignored", "command": "printf ready; cat", "cwd": dir,
+            "env": {}, "ready_when": "", "service": false, "notice": null, "dirs": []
+        }))
+        .unwrap();
+        let id = service.start("start".into(), metadata, spec).unwrap();
+        let generation = service.snapshot(&id).unwrap().generation;
+        service.claim("client", id.clone(), "main".into(), true);
+        let prompt = |generation, viewer: &str| {
+            service
+                .handle(
+                    "client",
+                    Request::Prompt {
+                        id: id.clone(),
+                        viewer: viewer.into(),
+                        generation,
+                        text: "hello".into(),
+                    },
+                )
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(prompt(generation, "other").contains("authority"));
+        assert!(prompt(generation + 1, "main").contains("generation"));
+        // Without status hooks, quiet output never counts as ready.
+        assert!(prompt(generation, "main").contains("ready prompt"));
+        assert!(!String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello"));
+        service.pty.stop_generation(&id, generation).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn summaries_keep_current_activity_without_copying_history_logs() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let snapshot = serde_json::json!({
+            "data": "", "end": 0, "generation": 1, "running": false,
+            "exitCode": 0, "startedMs": 1, "exitedMs": 2, "truncated": false,
+            "status": crate::status::SessionStatus::default(), "notice": null,
+            "activity": [{"sequence": 1, "atMs": 1, "tool": "Read",
+                "target": "src/main.rs", "fileTarget": true, "turn": null}]
+        });
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "id": "s", "metadata": {"projectId": "p", "projectName": "P",
+                "projectRoot": dir, "componentId": "web", "terminalId": "shell",
+                "name": "Shell", "kind": "shell"},
+            "spec": {"id": "s", "command": "cat", "cwd": dir, "env": {},
+                "ready_when": "", "service": false, "notice": null, "dirs": []},
+            "snapshot": snapshot, "history": [snapshot], "launchCommand": "cat",
+            "interrupted": false, "requestIds": []
+        }))
+        .unwrap();
+        service.records.lock().unwrap().insert("s".into(), record);
+        let summary = service.summaries().pop().unwrap();
+        assert_eq!(summary.snapshot.unwrap().activity.len(), 1);
+        assert!(summary.history[0].activity.is_empty());
+        assert_eq!(service.list()[0].history[0].activity.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

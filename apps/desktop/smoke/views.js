@@ -18,11 +18,7 @@
     if (!el) throw new Error('missing click target')
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
-  // Navigation remains mounted beneath Full views. Queries here describe the active view.
-  const query = (selector) =>
-    [...document.querySelectorAll(selector)].find(
-      (el) => !el.closest('.navigation-shell[hidden]'),
-    ) ?? null
+  const query = (selector) => document.querySelector(selector)
   const nodeElement = (id) => query(`.react-flow__node[data-id="${id}"]`)
   const viewButton = (name) =>
     Array.from(document.querySelectorAll('.view-switcher button')).find(
@@ -166,6 +162,40 @@
     await sleep(100)
     const savedViewport = viewport()
     const baseline = JSON.stringify(state().toProject())
+    // Review and Implementation must not leave an editable canvas listening to document keys.
+    for (const full of ['review', 'implementation']) {
+      state().selectEdge('ab')
+      state().setView(full)
+      await until(`${full} without Navigation`, () => !query('.navigation-shell'))
+      const confirm = window.confirm
+      let prompts = 0
+      window.confirm = () => {
+        prompts++
+        return false
+      }
+      try {
+        for (const selection of ['edge', 'component']) {
+          if (selection === 'component') state().select('alpha')
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }),
+          )
+          document.body.dispatchEvent(
+            new KeyboardEvent('keyup', { key: 'Backspace', bubbles: true }),
+          )
+          await sleep(150)
+          assert(prompts === 0, `${full} prompted to remove a hidden component`)
+          assert(
+            state().nodes.length === 4 && state().edges.length === 2,
+            `${full} deleted hidden map elements`,
+          )
+        }
+      } finally {
+        window.confirm = confirm
+      }
+    }
+    state().select(null)
+    state().selectEdge(null)
+    state().setActiveSession(null)
     click(viewButton('Plan'))
     await until('plan layout', () => query('.plan-dock') && nodeElement('alpha'))
     await until(

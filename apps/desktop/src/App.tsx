@@ -101,7 +101,8 @@ function NavigationView() {
     [scopeKey],
   )
   const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
-  const reader = useSimpleData(simple && !chatPanel.collapsed)
+  // An open diff reads the same data, so it keeps refreshing while the chat is collapsed.
+  const reader = useSimpleData(simple && (!chatPanel.collapsed || !!diff))
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
@@ -247,17 +248,15 @@ export default function App() {
         <DependencyDialog />
         <ExtensionsPanel />
         <NewTaskDialog />
-        {!restoring && (
-          <div className="navigation-shell" hidden={!simple && view !== 'navigation'}>
+        {!restoring && (simple || view === 'navigation') && (
+          <div className="navigation-shell">
             <NavigationView key={projectId} />
           </div>
         )}
         {restoring ? (
           <div className="hint">Restoring workspace…</div>
         ) : !simple && view === 'plan' ? (
-          <ReactFlowProvider>
-            <PlanView key={projectId} />
-          </ReactFlowProvider>
+          <PlanView key={projectId} />
         ) : !simple && view === 'implementation' ? (
           <ImplementationView key={projectId} />
         ) : !simple && view === 'review' ? (

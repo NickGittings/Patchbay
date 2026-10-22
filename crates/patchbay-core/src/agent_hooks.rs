@@ -165,6 +165,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
     if !matches!(event, "SessionStart" | "SessionEnd" | "UserPromptSubmit") && turn.is_none() {
         return None;
     }
+    let file_path = input.get("tool_input").and_then(|tool| {
+        tool.get("file_path")
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("path").and_then(Value::as_str))
+    });
     Some(HookEvent {
         session: String::new(),
         generation: 0,
@@ -183,23 +188,16 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             "write_file" => "Write".into(),
             _ => name,
         }),
-        file_target: input.get("tool_input").is_some_and(|tool| {
-            tool.get("file_path")
-                .and_then(Value::as_str)
-                .or_else(|| tool.get("path").and_then(Value::as_str))
-                .is_some()
-        }),
-        target: input.get("tool_input").and_then(|tool| {
-            tool.get("file_path")
-                .and_then(Value::as_str)
-                .or_else(|| tool.get("path").and_then(Value::as_str))
-                .map(|s| s.chars().take(4096).collect())
-                .or_else(|| {
-                    tool.get("command")
-                        .and_then(Value::as_str)
-                        .map(|s| s.chars().take(120).collect())
-                })
-        }),
+        file_target: file_path.is_some(),
+        target: file_path
+            .map(|s| s.chars().take(4096).collect())
+            .or_else(|| {
+                input
+                    .get("tool_input")?
+                    .get("command")?
+                    .as_str()
+                    .map(|s| s.chars().take(120).collect())
+            }),
         message: field("message").or_else(|| {
             input
                 .get("tool_input")

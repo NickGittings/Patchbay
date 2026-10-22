@@ -121,7 +121,7 @@ function isValidConnection(c: Connection | Edge) {
 export default function Canvas() {
   const {
     project,
-    view,
+    planning,
     highlighted,
     toggleHighlight,
     nodes,
@@ -134,7 +134,7 @@ export default function Canvas() {
   } = useStore(
     useShallow((s) => ({
       project: s.project,
-      view: s.view,
+      planning: s.simpleMode || s.view === 'plan',
       highlighted: s.highlighted,
       toggleHighlight: s.toggleHighlight,
       nodes: s.nodes,
@@ -162,7 +162,6 @@ export default function Canvas() {
     )
   }
 
-  const planning = view === 'plan'
   // Stable between tween frames, so React Flow only re-adopts the nodes that move.
   const shownNodes = useMemo(
     () => (planning ? nodes.map((n) => ({ ...n, selected: false })) : nodes),

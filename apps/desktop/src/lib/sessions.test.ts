@@ -7,6 +7,7 @@ import {
   TASK_ROOT_SCOPE,
   sessionId,
   type Project,
+  type SessionState,
   type TerminalSnapshot,
 } from '../types'
 vi.mock('@tauri-apps/api/core', () => ({
@@ -809,3 +810,86 @@ test('snapshot/live activity races deduplicate by sequence and new generations d
   handleTerminalEvent(event(1, 4))
   expect(useStore.getState().sessions[sid].activity?.map((a) => a.sequence)).toEqual([1])
 })
+
+test.each([false, true])(
+  'first activity starts an unknown run and preserves a known exit (known: %s)',
+  (known) => {
+    const sid = sessionId('web', 'dev', null, 'p')
+    if (known) useStore.getState().setSession(sid, { generation: 3, running: false, exitCode: 0 })
+    handleTerminalEvent({
+      type: 'activity',
+      sessionId: sid,
+      generation: 3,
+      activity: {
+        sequence: 1,
+        atMs: 1,
+        tool: 'Read',
+        fileTarget: true,
+        target: 'src/a',
+        turn: null,
+      },
+    })
+    expect(useStore.getState().sessions[sid].running).toBe(!known)
+    expect(useStore.getState().sessions[sid].activity?.[0].tool).toBe('Read')
+  },
+)
+
+test("first activity of a newer run drops the previous run's exit and status", () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  useStore.getState().setSession(sid, {
+    generation: 3,
+    running: false,
+    exitCode: 1,
+    exitedMs: 5,
+    startedMs: 1,
+    status: { active: false, agent: { state: 'idle', authoritative: true, sinceMs: 4 } },
+  } as SessionState)
+  handleTerminalEvent({
+    type: 'activity',
+    sessionId: sid,
+    generation: 4,
+    activity: { sequence: 1, atMs: 6, tool: 'Read', fileTarget: true, target: 'src/a', turn: null },
+  })
+  const session = useStore.getState().sessions[sid]
+  expect(session).toMatchObject({ generation: 4, running: true })
+  expect(session.exitCode).toBeUndefined()
+  expect(session.exitedMs).toBeUndefined()
+  expect(session.status).toBeUndefined()
+})
+
+test.each(['ad-hoc', 'mapped', 'review'])(
+  'stale snapshots still reconcile %s dock tabs',
+  async (scope) => {
+    const { reconcileSessions } = await import('./sessions')
+    useStore.setState({ serviceInstance: 'test' })
+    const sid = 'restarted'
+    const metadata = {
+      projectId: 'p',
+      componentId: scope === 'review' ? '@review' : 'web',
+      terminalId: scope === 'mapped' ? 'dev' : 'extension',
+      name: 'Extension terminal',
+      kind: 'task' as const,
+    }
+    const record = {
+      id: sid,
+      metadata,
+      spec: { cwd: '/p', command: 'cat' },
+      snapshot: snapshot(false),
+      history: [],
+    } as unknown as import('../types').SessionRecord
+    const live = { generation: 4, running: true, startedMs: 4 }
+    useStore.getState().setSession(sid, live)
+    if (scope !== 'ad-hoc')
+      useStore.getState().addRuntimeTerminal(sid, {
+        projectId: 'p',
+        componentId: metadata.componentId,
+        terminal: { id: metadata.terminalId, name: metadata.name, kind: 'task', command: 'cat' },
+      })
+    vi.mocked(ipc.sessionsList).mockResolvedValue([record])
+    await reconcileSessions(false)
+    expect(useStore.getState().sessions[sid]).toEqual(live)
+    if (scope === 'ad-hoc')
+      expect(useStore.getState().runtimeTerminals[sid]?.terminal.id).toBe('extension')
+    else expect(useStore.getState().runtimeTerminals[sid]).toBeUndefined()
+  },
+)

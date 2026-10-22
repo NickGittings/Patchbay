@@ -33,28 +33,17 @@ export function editedMentions(
           : [],
   )
 }
-export const pastePrompt = (text: string) => `\x1b[200~${text}\x1b[201~\r`
-export function promptReady(
-  session: SessionState | undefined,
-  now = Date.now(),
-  submittedMs?: number,
-) {
+/**
+ * Mirrors the service's `prompt_ready`: only a hook-confirmed end of turn. Quiet output can't
+ * tell a ready prompt from a permission dialog, so sessions without status hooks never qualify.
+ */
+export function promptReady(session: SessionState | undefined, submittedMs?: number) {
   if (!session?.running || session.disconnected || session.interrupted) return false
-  const status = session.status,
-    agent = status?.agent
-  if (agent?.state === 'needsInput') return false
-  if (agent?.authoritative)
-    return (
-      ['idle', 'review'].includes(agent.state) &&
-      (submittedMs === undefined || agent.sinceMs > submittedMs)
-    )
-  const output = status?.lastOutputMs
+  const agent = session.status?.agent
   return (
-    output != null &&
-    (submittedMs === undefined || output > submittedMs) &&
-    now - output >= 1000 &&
-    !status?.active &&
-    agent?.state !== 'working'
+    !!agent?.authoritative &&
+    ['idle', 'review'].includes(agent.state) &&
+    (submittedMs === undefined || agent.sinceMs > submittedMs)
   )
 }
 export interface SendContext {
@@ -67,12 +56,15 @@ export interface SendPort {
   current: () => SendContext | undefined
   session: () => SessionState | undefined
   claim: () => Promise<void>
-  write: (bytes: string) => Promise<void>
+  /** Pastes and submits `text` in one acknowledged service request. */
+  write: (text: string) => Promise<void>
   release: () => Promise<void>
   now?: () => number
+  /** The submit time while a send is in flight or delivered; undefined once it certainly failed. */
+  onSubmit?: (atMs: number | undefined) => void
 }
 const sending = new Set<string>()
-/** One write attempt per session, with scope and readiness checks on both sides of the claim. */
+/** One send per session, with scope and readiness checked around the claim. */
 export async function deliverPrompt(
   context: SendContext,
   text: string,
@@ -91,7 +83,7 @@ export async function deliverPrompt(
       c.generation !== context.generation
     )
       throw new Error('The worktree or recipient changed. Your draft was kept.')
-    if (!promptReady(port.session(), port.now?.() ?? Date.now(), submittedMs))
+    if (!promptReady(port.session(), submittedMs))
       throw new Error('The agent is not at a ready prompt. Your draft was kept.')
   }
   sending.add(context.recipient)
@@ -101,7 +93,14 @@ export async function deliverPrompt(
     await port.claim()
     claimed = true
     current()
-    await port.write(pastePrompt(text))
+    port.onSubmit?.(port.now?.() ?? Date.now())
+    try {
+      await port.write(text)
+    } catch (e) {
+      // A refused send leaves no stamp that would keep Send disabled for this generation.
+      port.onSubmit?.(undefined)
+      throw e
+    }
   } finally {
     sending.delete(context.recipient)
     if (claimed) await port.release().catch(() => {})
@@ -129,9 +128,13 @@ export async function waitForPrompt(
       throw new Error('The worktree or session changed. Your draft was kept.')
     if (session.status?.agent?.state === 'needsInput')
       throw new Error('The agent needs input in its terminal.')
-    if (promptReady(session, now())) return
+    if (promptReady(session)) return
     if (now() - began >= 30000)
-      throw new Error('No ready prompt after 30 seconds. Open the terminal to continue.')
+      throw new Error(
+        session.status?.agent?.authoritative
+          ? 'No ready prompt after 30 seconds. Open the terminal to continue.'
+          : 'No ready prompt after 30 seconds. Chat needs Tools → Agent status integration, or open the terminal to continue.',
+      )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,
     )

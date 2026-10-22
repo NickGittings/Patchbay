@@ -1708,14 +1708,14 @@ fn terminal_write(
         data,
     })
 }
-/// Chat writes wait for the PTY write acknowledgment and bind it to one generation.
+/// A chat message: the service pastes and submits it for one generation and acknowledges both.
 #[tauri::command]
 async fn terminal_prompt(
     window: WebviewWindow,
     state: State<'_, AppState>,
     session_id: String,
     generation: u64,
-    data: String,
+    text: String,
 ) -> CmdResult<()> {
     service(
         &state,
@@ -1723,7 +1723,7 @@ async fn terminal_prompt(
             id: session_id,
             viewer: window.label().into(),
             generation,
-            data,
+            text,
         },
     )
     .await

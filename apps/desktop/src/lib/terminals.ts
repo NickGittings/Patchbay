@@ -260,30 +260,13 @@ export function writeNote(sessionId: string, text: string) {
   entry(sessionId).term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
 }
 
-/** Geometry, including clipping, keeps hidden/collapsed hosts from claiming a shared terminal. */
+/** Views unmount their hosts; CSS visibility and size cover collapsed panes and hidden tabs. */
 export function hostVisible(host: HTMLElement): boolean {
   if (!host.isConnected) return false
+  if (host.checkVisibility && !host.checkVisibility({ checkVisibilityCSS: true })) return false
   if (!host.getBoundingClientRect) return true
-  const rect = host.getBoundingClientRect()
-  if (rect.width <= 0 || rect.height <= 0) return false
-  let parent = host.parentElement
-  while (parent) {
-    if (parent.hidden) return false
-    const style = getComputedStyle(parent)
-    if (style.display === 'none' || style.visibility === 'hidden') return false
-    if (/(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowY + style.overflowX)) {
-      const clip = parent.getBoundingClientRect()
-      if (
-        rect.bottom <= clip.top ||
-        rect.top >= clip.bottom ||
-        rect.right <= clip.left ||
-        rect.left >= clip.right
-      )
-        return false
-    }
-    parent = parent.parentElement
-  }
-  return true
+  const { width, height } = host.getBoundingClientRect()
+  return width > 0 && height > 0
 }
 export const hasVisibleTerminal = (sid: string) =>
   document.visibilityState === 'visible' && (registry.get(sid)?.hosts.some(hostVisible) ?? false)

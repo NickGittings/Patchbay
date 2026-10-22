@@ -2,7 +2,6 @@ import { expect, test, vi } from 'vitest'
 import {
   deliverPrompt,
   editedMentions,
-  pastePrompt,
   promptReady,
   transmittedText,
   type SendContext,
@@ -27,16 +26,13 @@ const port = (): SendPort => ({
   release: vi.fn(async () => {}),
   now: () => 2000,
 })
-test('exact bracketed paste preserves literal emails, unknown mentions, whitespace, and multiline text', async () => {
+test('the exact text goes to the service in one write, preserving literal emails, unknown mentions, whitespace, and multiline text', async () => {
   const draft = '  @app mail@site.test @unknown\n  second line  '
   const text = transmittedText(draft, [{ id: 'app', token: '@app', start: 2, end: 6 }])
   expect(text).toBe('   mail@site.test @unknown\n  second line  ')
   const p = port()
   await deliverPrompt(context, text, p)
-  expect(p.write).toHaveBeenCalledExactlyOnceWith(
-    '\x1b[200~   mail@site.test @unknown\n  second line  \x1b[201~\r',
-  )
-  expect(pastePrompt('\n')).toBe('\x1b[200~\n\x1b[201~\r')
+  expect(p.write).toHaveBeenCalledExactlyOnceWith('   mail@site.test @unknown\n  second line  ')
   expect(transmittedText('@app', [{ id: 'app', token: '@app', start: 0, end: 4 }])).toBe('')
 })
 test('only intact selected tokens are stripped; edits relocate or invalidate structured tokens', () => {
@@ -46,34 +42,20 @@ test('only intact selected tokens are stripped; edits relocate or invalidate str
   expect(editedMentions('x @app', 'x @axp', tokens)).toEqual([])
   expect(transmittedText('x @other', tokens)).toBe('x @other')
 })
-test('readiness needs running prompt, authoritative hooks take precedence over quiet output', () => {
-  expect(promptReady(ready(), 2000)).toBe(true)
-  expect(promptReady({ ...ready(), running: false }, 2000)).toBe(false)
-  expect(
-    promptReady(
-      {
-        ...ready(),
-        status: { ...ready().status!, agent: { ...ready().status!.agent!, state: 'needsInput' } },
-      },
-      2000,
-    ),
-  ).toBe(false)
-  expect(
-    promptReady(
-      {
-        ...ready(),
-        status: { ...ready().status!, agent: { ...ready().status!.agent!, state: 'working' } },
-      },
-      2000,
-    ),
-  ).toBe(false)
-  const fallback = { ...ready(), status: { ...ready().status!, agent: null } }
-  expect(promptReady(fallback, 1008)).toBe(false)
-  expect(promptReady(fallback, 1009)).toBe(true)
-  expect(
-    promptReady({ ...fallback, status: { ...fallback.status, lastOutputMs: null } }, 5000),
-  ).toBe(false)
-  expect(promptReady(ready(), 2000, 11)).toBe(false)
+test('readiness needs a running prompt with a hook-confirmed end of turn', () => {
+  expect(promptReady(ready())).toBe(true)
+  expect(promptReady({ ...ready(), running: false })).toBe(false)
+  const state = (agent: Partial<NonNullable<NonNullable<SessionState['status']>['agent']>>) => ({
+    ...ready(),
+    status: { ...ready().status!, agent: { ...ready().status!.agent!, ...agent } },
+  })
+  expect(promptReady(state({ state: 'review' }))).toBe(true)
+  expect(promptReady(state({ state: 'needsInput' }))).toBe(false)
+  expect(promptReady(state({ state: 'working' }))).toBe(false)
+  // Quiet output can't tell a prompt from a permission dialog.
+  expect(promptReady(state({ authoritative: false }))).toBe(false)
+  expect(promptReady({ ...ready(), status: { ...ready().status!, agent: null } })).toBe(false)
+  expect(promptReady(ready(), 11)).toBe(false)
 })
 test.each(['projectId', 'task', 'recipient', 'generation'] as const)(
   'a changed %s after authority claim cancels before writing',
@@ -103,8 +85,10 @@ test('process exit during claim cancels and concurrent session writes are serial
   await expect(first).rejects.toThrow('ready prompt')
   expect(p.write).not.toHaveBeenCalled()
 })
-test('an uncertain failed write is attempted once and preserves the originating draft', async () => {
+test('an uncertain failed write is attempted once, preserves the draft and clears its stamp', async () => {
   const p = port()
+  const stamps: (number | undefined)[] = []
+  p.onSubmit = (atMs) => stamps.push(atMs)
   let draft = '  draft\n'
   p.write = vi.fn(async () => {
     throw new Error('uncertain')
@@ -117,9 +101,10 @@ test('an uncertain failed write is attempted once and preserves the originating 
   expect(draft).toBe('  draft\n')
   expect(p.write).toHaveBeenCalledOnce()
   expect(p.release).toHaveBeenCalledOnce()
+  expect(stamps).toEqual([2000, undefined])
 })
 
-test('startup waits for observed output and quiet, times out at 30 seconds, and cancels generations', async () => {
+test('startup waits for a hook-confirmed prompt, times out at 30 seconds, and cancels generations', async () => {
   const { waitForPrompt } = await import('./simpleComposer')
   let now = 0
   let session = { generation: 1, running: true } as SessionState
@@ -131,22 +116,37 @@ test('startup waits for observed output and quiet, times out at 30 seconds, and 
       now += ms
     },
   }
-  await expect(waitForPrompt(context, waiting)).rejects.toThrow('30 seconds')
+  await expect(waitForPrompt(context, waiting)).rejects.toThrow('Agent status integration')
   expect(now).toBe(30000)
   now = 0
   waiting.wait = async (ms) => {
     now += ms
-    if (now === 100)
-      session = {
-        ...session,
-        status: { ...ready().status!, agent: null, lastOutputMs: 100, active: false },
-      }
+    if (now === 100) session = { ...session, status: ready().status }
   }
   await waitForPrompt(context, waiting)
-  expect(now).toBe(1100)
+  expect(now).toBe(100)
   now = 0
   session = { generation: 1, running: true }
   waiting.current = () => ({ ...context, generation: now >= 100 ? 2 : 1 })
   await expect(waitForPrompt(context, waiting)).rejects.toThrow('changed')
   expect(now).toBe(100)
+})
+
+test('a fast reply before write confirmation counts as a completed turn', async () => {
+  const p = port()
+  let session = ready()
+  let submittedMs: number | undefined
+  p.session = () => session
+  p.onSubmit = (atMs) => {
+    submittedMs = atMs
+  }
+  p.write = vi.fn(async () => {
+    expect(submittedMs).toBe(2000)
+    session = {
+      ...session,
+      status: { ...session.status!, agent: { ...session.status!.agent!, sinceMs: 2001 } },
+    }
+  })
+  await deliverPrompt(context, 'quick question', p)
+  expect(promptReady(session, submittedMs)).toBe(true)
 })

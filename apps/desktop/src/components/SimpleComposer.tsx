@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
 import { selectRecipient, type SimpleStage } from '../lib/simple'
@@ -29,14 +30,23 @@ export default function SimpleComposer({
   records: SessionRecord[]
   openTerminal: (r: SessionRecord) => void
 }) {
-  const s = useStore()
+  const s = useStore(
+    useShallow((s) => ({
+      project: s.project,
+      activeTask: s.activeTask,
+      nodes: s.nodes,
+      devices: s.devices,
+      agentRoles: s.agentRoles,
+      serviceConnected: s.serviceConnected,
+    })),
+  )
   const ui = useSimpleUi((s) => s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI)
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
-  const recipient = selectRecipient(records, s.sessions, stage, ui.recipient)
+  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, ui.recipient))
+  const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   const [pending, setPending] = useState(false),
-    [error, setError] = useState(''),
-    [now, setNow] = useState(() => Date.now())
+    [error, setError] = useState('')
   const [caret, setCaret] = useState(0)
   const input = useRef<HTMLTextAreaElement>(null)
   const lifecycle = useRef(0)
@@ -50,14 +60,11 @@ export default function SimpleComposer({
   useEffect(() => {
     recipientRef.current = recipient?.id
   }, [recipient?.id])
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 250)
-    return () => clearInterval(timer)
-  }, [])
-  const state = recipient ? s.sessions[recipient.id] : undefined
   const last = recipient ? submitted.get(recipient.id) : undefined
   const lastSubmit = last?.generation === state?.generation ? last?.atMs : undefined
-  const ready = promptReady(state, now, lastSubmit)
+  // Readiness changes only through status events, so no clock subscription is needed.
+  const ready = promptReady(state, lastSubmit)
+  const hooked = !!state?.status?.agent?.authoritative
   const running = !!state?.running
   const query = ui.draft.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/)
   const candidates = query
@@ -169,14 +176,17 @@ export default function SimpleComposer({
           current: stillCurrent,
           session: () => useStore.getState().sessions[sid],
           claim: () => terminalAttach(sid, true),
-          write: (bytes) => terminalPrompt(sid, generation, bytes),
+          write: (message) => terminalPrompt(sid, generation, message),
+          onSubmit: (atMs) => {
+            if (atMs === undefined) submitted.delete(sid)
+            else submitted.set(sid, { generation, atMs })
+          },
           release: async () => {
             if (!hasVisibleTerminal(sid)) await terminalDetach(sid)
           },
         },
         previous,
       )
-      submitted.set(sid, { generation, atMs: Date.now() })
       logSimple(projectId, task, {
         kind: 'prompt',
         stage,
@@ -287,7 +297,9 @@ export default function SimpleComposer({
                 ? 'Ready'
                 : state?.status?.agent?.state === 'needsInput'
                   ? 'Answer in terminal'
-                  : 'Agent is working'
+                  : hooked
+                    ? 'Agent is working'
+                    : 'Chat needs agent status integration'
               : 'Send to start or resume'}
         </span>
         {recipient && <button onClick={() => openTerminal(recipient)}>Open terminal</button>}

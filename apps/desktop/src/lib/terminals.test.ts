@@ -98,7 +98,11 @@ test('terminal hosts require visible geometry and cannot reclaim through hidden 
   const { hostVisible } = await import('./terminals')
   const rect = { width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 }
   const parent = { hidden: false, parentElement: null, getBoundingClientRect: () => rect }
-  const host = { isConnected: true, parentElement: parent, getBoundingClientRect: () => rect }
+  const host = {
+    isConnected: true,
+    checkVisibility: () => !parent.hidden,
+    getBoundingClientRect: () => rect,
+  }
   expect(hostVisible(host as unknown as HTMLElement)).toBe(true)
   parent.hidden = true
   expect(hostVisible(host as unknown as HTMLElement)).toBe(false)

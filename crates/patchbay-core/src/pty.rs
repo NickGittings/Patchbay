@@ -54,7 +54,7 @@ pub struct SessionSpec {
 struct Session {
     generation: u64,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     process: Process,
 }
 
@@ -175,6 +175,29 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 impl Backlog {
+    /// Apply drained hooks under the backlog lock. A monitor may finish draining after
+    /// the waiter emitted Exited: retain that history, but never emit live activity then.
+    fn apply_hooks(
+        &mut self,
+        hooks: Vec<crate::agent_hooks::HookEvent>,
+        now: u64,
+        id: &str,
+        sink: &dyn EventSink,
+    ) {
+        for event in hooks {
+            self.tracker.on_hook(event, now);
+            for activity in self.tracker.drain_activity() {
+                if self.running {
+                    sink.emit(TerminalEvent::Activity {
+                        session_id: id.to_owned(),
+                        generation: self.generation,
+                        activity,
+                    });
+                }
+            }
+        }
+    }
+
     fn append(&mut self, data: &[u8]) -> u64 {
         let seq = self.end;
         self.end += data.len() as u64;
@@ -502,7 +525,7 @@ impl PtyManager {
                 Session {
                     generation,
                     master,
-                    writer,
+                    writer: Arc::new(Mutex::new(writer)),
                     process,
                 },
             );
@@ -608,16 +631,12 @@ impl PtyManager {
                 backlog.tracker.on_report(&text, stamp, exited_ms);
             }
             if let Some(dir) = manager.report_dir(generation) {
-                for event in crate::agent_hooks::drain(&dir) {
-                    backlog.tracker.on_hook(event, exited_ms);
-                    for activity in backlog.tracker.drain_activity() {
-                        sink.emit(TerminalEvent::Activity {
-                            session_id: spec.id.clone(),
-                            generation,
-                            activity,
-                        });
-                    }
-                }
+                backlog.apply_hooks(
+                    crate::agent_hooks::drain(&dir),
+                    exited_ms,
+                    &spec.id,
+                    sink.as_ref(),
+                );
                 let _ = std::fs::remove_dir_all(dir);
             }
             backlog.running = false;
@@ -724,16 +743,7 @@ impl PtyManager {
                 if let Some((stamp, text)) = report {
                     guard.tracker.on_report(&text, stamp, exited_ms);
                 }
-                for event in hooks {
-                    guard.tracker.on_hook(event, exited_ms);
-                    for activity in guard.tracker.drain_activity() {
-                        sink.emit(TerminalEvent::Activity {
-                            session_id: id.clone(),
-                            generation,
-                            activity,
-                        });
-                    }
-                }
+                guard.apply_hooks(hooks, exited_ms, &id, sink.as_ref());
                 guard.tracker.on_exit(exited_ms);
                 // Exited runs still take status (stopped, seen); it never revives one.
                 if let Some(status) = guard.tracker.changed(exited_ms) {
@@ -748,16 +758,7 @@ impl PtyManager {
             if let Some((stamp, text)) = report {
                 guard.tracker.on_report(&text, stamp, now);
             }
-            for event in hooks {
-                guard.tracker.on_hook(event, now);
-                for activity in guard.tracker.drain_activity() {
-                    sink.emit(TerminalEvent::Activity {
-                        session_id: id.clone(),
-                        generation,
-                        activity,
-                    });
-                }
-            }
+            guard.apply_hooks(hooks, now, &id, sink.as_ref());
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's
             // final status and exit.
@@ -950,27 +951,36 @@ impl PtyManager {
     }
 
     fn write_checked(&self, id: &str, generation: Option<u64>, data: &[u8]) -> Result<()> {
-        // Before writing, so the echo isn't taken for activity; never while
-        // holding `sessions`, which every terminal's input waits on.
+        let (run, writer) = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(id)
+                .ok_or_else(|| anyhow!("{id} is not running"))?;
+            anyhow::ensure!(
+                generation.is_none_or(|g| g == session.generation),
+                "The session generation changed"
+            );
+            (session.generation, Arc::clone(&session.writer))
+        };
+        // Serialize this terminal's writes without blocking typing or lifecycle work in others.
+        let mut writer = writer.lock().unwrap();
+        anyhow::ensure!(
+            self.sessions
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|s| s.generation == run),
+            "The session generation changed"
+        );
+        // Before writing, so the echo isn't taken for activity.
         let backlog = self.backlogs.lock().unwrap().get(id).cloned();
         if let Some(backlog) = backlog {
             let mut backlog = backlog.lock().unwrap();
-            anyhow::ensure!(
-                generation.is_none_or(|g| g == backlog.generation),
-                "The session generation changed"
-            );
+            anyhow::ensure!(backlog.generation == run, "The session generation changed");
             backlog.tracker.on_input(data, now_ms());
         }
-        let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions
-            .get_mut(id)
-            .ok_or_else(|| anyhow!("{id} is not running"))?;
-        anyhow::ensure!(
-            generation.is_none_or(|g| g == s.generation),
-            "The session generation changed"
-        );
-        s.writer.write_all(data)?;
-        s.writer.flush()?;
+        writer.write_all(data)?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -1315,6 +1325,65 @@ mod tests {
                 .collect();
             String::from_utf8_lossy(&bytes).into_owned()
         }
+    }
+
+    #[test]
+    fn blocked_write_does_not_block_other_terminals() {
+        struct BlockedWriter {
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+        impl Write for BlockedWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let pty = Arc::new(PtyManager::new());
+        for id in ["slow", "fast"] {
+            let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+                "id": id, "command": "cat", "cwd": std::env::temp_dir(),
+                "env": {}, "ready_when": "", "service": false, "notice": null, "dirs": []
+            }))
+            .unwrap();
+            pty.spawn(spec, Arc::new(Collect::default())).unwrap();
+        }
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let original = {
+            let mut sessions = pty.sessions.lock().unwrap();
+            std::mem::replace(
+                &mut sessions.get_mut("slow").unwrap().writer,
+                Arc::new(Mutex::new(Box::new(BlockedWriter {
+                    entered: entered_tx,
+                    release: release_rx,
+                }))),
+            )
+        };
+        let slow = {
+            let pty = pty.clone();
+            std::thread::spawn(move || pty.write("slow", b"long paste"))
+        };
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let fast = {
+            let pty = pty.clone();
+            std::thread::spawn(move || done_tx.send(pty.write("fast", b"typing\n")).unwrap())
+        };
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        slow.join().unwrap().unwrap();
+        fast.join().unwrap();
+        pty.kill("slow");
+        pty.kill("fast");
+        drop(original);
+        result
+            .expect("another terminal's input waited for the blocked paste")
+            .unwrap();
     }
 
     #[test]
@@ -1741,6 +1810,51 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 .is_err()
         );
     }
+    #[test]
+    fn hooks_drained_before_exit_but_applied_after_it_only_update_retained_history() {
+        let mut backlog = Backlog {
+            generation: 42,
+            tracker: Tracker::new("", false).with_identity("session", 42),
+            ..Backlog::default()
+        };
+        let hooks = ["UserPromptSubmit", "PreToolUse"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| crate::agent_hooks::HookEvent {
+                session: "session".into(),
+                generation: 42,
+                provider: crate::adapters::Adapter::Codex,
+                sequence: index as u64 + 1,
+                at_ms: index as u64 + 1,
+                event: event.into(),
+                conversation: "conversation".into(),
+                turn: Some("turn".into()),
+                tool: (event == "PreToolUse").then(|| "Read".into()),
+                file_target: true,
+                target: Some("src/lib.rs".into()),
+                prompt: None,
+                message: None,
+                source: None,
+            })
+            .collect();
+        let sink = Collect::default();
+        backlog.tracker.on_exit(10);
+        sink.emit(TerminalEvent::Exited {
+            session_id: "session".into(),
+            generation: 42,
+            exit_code: 0,
+            exited_ms: 10,
+        });
+        backlog.apply_hooks(hooks, 10, "session", &sink);
+        backlog.tracker.on_exit(10);
+        assert_eq!(backlog.tracker.activity().len(), 1);
+        assert!(!backlog.running);
+        assert!(matches!(
+            sink.0.lock().unwrap().as_slice(),
+            [TerminalEvent::Exited { .. }]
+        ));
+    }
+
     #[test]
     fn acknowledged_prompt_writes_refuse_replacement_generations() {
         let pty = Arc::new(PtyManager::new());

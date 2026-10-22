@@ -1,9 +1,25 @@
-import type { AutoRun, PlanText, Review, SessionRecord, SessionState } from '../types'
+import type { AutoRun, AutoStage, PlanText, Review, SessionRecord, SessionState } from '../types'
 import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
 import { sessionTimeMs } from './sessionList'
 
 export const SIMPLE_STAGES = ['plan', 'build', 'review', 'merge'] as const
 export type SimpleStage = (typeof SIMPLE_STAGES)[number]
+export const SIMPLE_ACTIONS = [
+  'implement',
+  'review',
+  'fix',
+  'merge',
+  'validate',
+  'autopilot',
+  'resume',
+  'scope',
+  'pauseAuto',
+  'resumeAuto',
+  'stopAuto',
+  'mergeApproval',
+  'skipStage',
+] as const
+export type SimpleAction = (typeof SIMPLE_ACTIONS)[number]
 interface EntryBase {
   id: string
   atMs: number
@@ -16,20 +32,7 @@ export type SimpleEntry = EntryBase &
     | { kind: 'prompt'; text: string; mentions: string[] }
     | {
         kind: 'action'
-        action:
-          | 'implement'
-          | 'review'
-          | 'fix'
-          | 'merge'
-          | 'validate'
-          | 'autopilot'
-          | 'resume'
-          | 'scope'
-          | 'pauseAuto'
-          | 'resumeAuto'
-          | 'stopAuto'
-          | 'mergeApproval'
-          | 'skipStage'
+        action: SimpleAction
         mentions?: string[]
         request?: import('../types').MergeRequest
       }
@@ -61,22 +64,7 @@ export function restoredSimple(value: unknown): SimpleState | null {
           ? typeof entry.text === 'string' &&
             Array.isArray(entry.mentions) &&
             entry.mentions.every((id) => typeof id === 'string')
-          : entry.kind === 'action' &&
-            [
-              'implement',
-              'review',
-              'fix',
-              'merge',
-              'validate',
-              'autopilot',
-              'resume',
-              'scope',
-              'pauseAuto',
-              'resumeAuto',
-              'stopAuto',
-              'mergeApproval',
-              'skipStage',
-            ].includes(entry.action)
+          : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
       if (valid) seen.add(entry.id)
       return valid
     }),
@@ -129,6 +117,15 @@ const stageSessionTime = (record: SessionRecord) =>
   record.snapshot?.startedMs ?? record.history.at(-1)?.startedMs ?? sessionTimeMs(record)
 
 /** Pure projection: stable sections and cards, never terminal-text interpretation or IPC. */
+/** The Simple section an Auto stage belongs to. */
+export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
+  stage === 'plan'
+    ? 'plan'
+    : stage === 'merge' || stage === 'mergeGate' || stage === 'done'
+      ? 'merge'
+      : stage === 'review'
+        ? 'review'
+        : 'build'
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
     .filter((r) => relatedSession(r, worktree))
@@ -150,15 +147,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   )
     stage = action.action === 'review' ? 'review' : action.action === 'merge' ? 'merge' : 'build'
   if (snapshot.auto && !['stopped', 'failed', 'done'].includes(snapshot.auto.status)) {
-    const autoStage = snapshot.auto.stage
-    stage =
-      autoStage === 'plan'
-        ? 'plan'
-        : ['merge', 'mergeGate', 'done'].includes(autoStage)
-          ? 'merge'
-          : autoStage === 'review'
-            ? 'review'
-            : 'build'
+    stage = simpleStageOf(snapshot.auto.stage)
   }
   return {
     stage,

@@ -52,6 +52,7 @@ export default function TerminalPane({
         void terminalAttach(sid, document.hasFocus())
           .then(() => fit(sid))
           .catch(() => {})
+      else if (document.visibilityState !== 'visible') void terminalDetach(sid).catch(() => {})
       else if (!hostVisible(host)) detachHost(sid, host)
     }
     let wasVisible = hostVisible(host)
