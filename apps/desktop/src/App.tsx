@@ -1,3 +1,5 @@
+import WorkspaceRail from './components/WorkspaceRail'
+import RecoveryBanners from './components/RecoveryBanners'
 import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
@@ -5,12 +7,8 @@ import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
-import RecoveryBanners from './components/RecoveryBanners'
-import SessionsPanel from './components/SessionsPanel'
-import TaskActivityPanel from './components/tasks/TaskActivityPanel'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
-import CommandPalette from './components/CommandPalette'
 import MapMaintenanceReview from './components/MapMaintenanceReview'
 import DependencyDialog from './components/DependencyDialog'
 import { initializeDependencyDetection } from './lib/dependencies'
@@ -33,6 +31,8 @@ import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
+import { useWorkspaceActions } from './lib/workspaceActions'
+import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
@@ -157,7 +157,7 @@ function NavigationView() {
   )
 }
 
-export default function App() {
+function AppWorkspace() {
   const view = useStore((s) => s.view)
   const simple = useStore((s) => s.simpleMode)
   const projectId = useStore((s) => s.project?.id)
@@ -234,35 +234,46 @@ export default function App() {
   }, [projectId])
   useGitRefresh()
   useRootSync()
+  // One set of actions serves the search, the rail and the native menus.
+  const actions = useWorkspaceActions()
+  useNativeMenus(actions)
 
   return (
-    <ReactFlowProvider>
-      <div className="app">
-        <Toolbar />
-        <RecoveryBanners />
-        <SessionsPanel />
-        <TaskActivityPanel />
-        <CommandPalette />
-        <NavigationDialogs />
-        <MapMaintenanceReview />
-        <DependencyDialog />
-        <ExtensionsPanel />
-        <NewTaskDialog />
-        {!restoring && (simple || view === 'navigation') && (
-          <div className="navigation-shell">
-            <NavigationView key={projectId} />
-          </div>
-        )}
-        {restoring ? (
-          <div className="hint">Restoring workspace…</div>
-        ) : !simple && view === 'plan' ? (
-          <PlanView key={projectId} />
-        ) : !simple && view === 'implementation' ? (
-          <ImplementationView key={projectId} />
-        ) : !simple && view === 'review' ? (
-          <ReviewView key={projectId} />
-        ) : null}
+    <div className="app">
+      <Toolbar actions={actions} />
+      <NavigationDialogs settingsOnly />
+      <MapMaintenanceReview />
+      <DependencyDialog />
+      <ExtensionsPanel />
+      <NewTaskDialog />
+      <div className="workspace-body">
+        <WorkspaceRail actions={actions} />
+        <main className="workspace-main">
+          <RecoveryBanners />
+          {!restoring && (simple || view === 'navigation') && (
+            <div className="navigation-shell">
+              <NavigationView key={projectId} />
+            </div>
+          )}
+          {restoring ? (
+            <div className="hint">Restoring workspace…</div>
+          ) : !simple && view === 'plan' ? (
+            <PlanView key={projectId} />
+          ) : !simple && view === 'implementation' ? (
+            <ImplementationView key={projectId} />
+          ) : !simple && view === 'review' ? (
+            <ReviewView key={projectId} />
+          ) : null}
+        </main>
       </div>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ReactFlowProvider>
+      <AppWorkspace />
     </ReactFlowProvider>
   )
 }

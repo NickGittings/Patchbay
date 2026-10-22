@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
-import { taskActivities } from '../../lib/ipc'
-import { applyTaskActivity } from '../../lib/tasks'
 import {
   hasValidator,
   hasValidatorSuggestions,
@@ -12,6 +10,7 @@ import {
   type ValidatorSuggestion,
 } from '../../lib/validators'
 import { useStore } from '../../store'
+import { closePanel, selectPanel } from '../../lib/rail'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
 /** Start or stop an environment group, or validate what a component change may affect. */
@@ -30,7 +29,7 @@ export function RunSelect() {
       aria-label="Run"
       onChange={(e) => {
         const [kind, id] = e.target.value.split(':')
-        if (kind === 'setup') useStore.setState({ activityPanelOpen: true })
+        if (kind === 'setup') selectPanel('activity')
         else if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
         else if (kind === 'stop') void stopGroup(id)
         else void runGraphAction({ kind: 'validateAffected', componentId: id })
@@ -68,30 +67,6 @@ export function RunSelect() {
       )}
       {setup && <option value="setup">Set up validation</option>}
     </select>
-  )
-}
-
-/** Loads the project's activity log and opens it from the toolbar. */
-export function ActivityButton() {
-  const projectId = useStore((s) => s.project?.id)
-  const task = useStore((s) => s.activeTask)
-  const activities = useStore((s) => s.taskActivities)
-  useEffect(() => {
-    if (!projectId) return
-    void taskActivities(projectId)
-      .then((list) => {
-        for (const activity of list) applyTaskActivity(activity)
-      })
-      .catch((e) => useStore.getState().setMessage(String(e)))
-  }, [projectId])
-  if (!projectId) return null
-  const running = Object.values(activities).some(
-    (a) => a.projectId === projectId && a.task === task && a.state === 'running',
-  )
-  return (
-    <button onClick={() => useStore.setState({ activityPanelOpen: true })}>
-      Activity{running ? ' (running)' : ''}
-    </button>
   )
 }
 
@@ -184,8 +159,8 @@ function ValidatorSetup() {
         <p className="hint" role="status">
           Marked {marked === 1 ? 'a terminal' : `${marked} terminals`} as Validation.{' '}
           {absent
-            ? 'The map isn’t saved yet: choose Create map configuration in the map status menu to keep them.'
-            : 'The change saves to patchbay.json with the map (see the map status).'}
+            ? 'The map isn’t saved yet: choose Create map configuration in the Project panel to keep them.'
+            : 'The change saves to patchbay.json with the map (see the Project panel).'}
         </p>
       )}
       <div className="row">
@@ -212,7 +187,7 @@ function ValidatorSetup() {
 }
 
 export default function TaskActivityPanel() {
-  const open = useStore((s) => s.activityPanelOpen)
+  const open = useStore((s) => s.utilityPanel === 'activity')
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const tasks = useStore((s) => s.tasks)
@@ -221,7 +196,7 @@ export default function TaskActivityPanel() {
   const activities = useStore((s) => s.taskActivities)
   const records = useStore((s) => s.sessionRecords)
   if (!open || !projectId) return null
-  const close = () => useStore.setState({ activityPanelOpen: false })
+  const close = () => closePanel('activity')
   const own = Object.values(activities).filter((a) => a.projectId === projectId && a.task === task)
   const initiatorLabel = (id: string) => {
     if (id === 'User') return id
@@ -237,11 +212,10 @@ export default function TaskActivityPanel() {
   }
   const worktree = tasks.find((t) => t.id === task)?.title ?? 'Main worktree'
   return (
-    <div className="extension-overlay" onClick={close}>
+    <div className="utility-content">
       <div
         className="sessions-panel task-activity-panel panel"
-        role="dialog"
-        aria-modal="true"
+        role="region"
         aria-label="Worktree activity"
         onClick={(e) => e.stopPropagation()}
       >

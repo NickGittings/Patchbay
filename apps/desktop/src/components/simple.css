@@ -30,18 +30,26 @@
   padding: 12px;
   border-bottom: 1px solid var(--border);
 }
-.simple-chat > .simple-stage-tabs {
-  align-self: flex-start;
-  margin: 8px 12px 0;
-}
-.simple-stage-tabs button {
-  height: 24px;
-  padding: 0 10px;
-}
 .simple-thread {
   overflow: auto;
   flex: 1;
   padding: 12px;
+}
+.simple-stage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.simple-stage-tabs button[aria-pressed='true'] {
+  color: var(--accent-text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.current-stage-dot {
+  margin-left: 6px;
+  color: var(--running);
 }
 .simple-stage {
   margin-bottom: 24px;

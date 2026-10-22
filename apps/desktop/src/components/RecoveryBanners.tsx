@@ -1,15 +1,21 @@
 import { useStore } from '../store'
 import { acceptOpened, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
-import { reloadSavedMap } from '../lib/mapSave'
+import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
 import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
 
-/** Recovery banners for the active project: a missing folder or a changed saved map. */
+/** Recovery and map-save failures stay visible even with utility panels closed. */
 export default function RecoveryBanners() {
   const active = useStore((s) => s.projects[s.activeProjectId ?? ''])
   return (
     <>
+      {active?.mapSave?.status === 'error' && (
+        <div className="recovery-banner" role="alert">
+          <span>Map save failed{active.mapSave.error ? `: ${active.mapSave.error}` : '.'}</span>
+          <button onClick={() => void saveMapNow(active.id)}>Retry</button>
+        </div>
+      )}
       {active?.unavailable && (
         <div className="recovery-banner" role="status">
           <span>
@@ -82,6 +88,15 @@ export default function RecoveryBanners() {
             Recover draft
           </button>
           <button onClick={() => void reloadSavedMap(active.id)}>Use saved map</button>
+        </div>
+      )}
+      {!active?.conflict && !active?.unavailable && active?.mapSave?.status === 'conflict' && (
+        <div className="recovery-banner" role="alert">
+          <span>
+            The saved map changed outside Patchbay. Choose which map to keep to resume editing.
+          </span>
+          <button onClick={() => void reloadSavedMap(active.id)}>Reload saved map</button>
+          <button onClick={() => void saveMapNow(active.id, true)}>Replace with my map</button>
         </div>
       )}
     </>

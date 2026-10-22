@@ -1,0 +1,122 @@
+//! Native commands share frontend actions; standard application/Edit/Window behavior stays native.
+use serde::Deserialize;
+use tauri::{AppHandle, WebviewWindow};
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Deserialize)]
+pub(crate) struct Entry {
+    id: String,
+    title: String,
+    group: String,
+    enabled: bool,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, Submenu};
+    let menu = Menu::default(app)?;
+    // Replace the default File menu, preserving the application, Edit, View and Window menus.
+    menu.remove_at(1)?;
+    menu.insert(&Submenu::with_id(app, "project", "Project", true)?, 1)?;
+    menu.insert(&Submenu::with_id(app, "settings", "Settings", true)?, 2)?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn update_native_menu(
+    window: WebviewWindow,
+    app: AppHandle,
+    entries: Vec<Entry>,
+) -> Result<(), String> {
+    super::main_only(&window)?;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::menu::MenuItem;
+        let menu = app.menu().ok_or("Native menu is unavailable")?;
+        for group in ["project", "settings"] {
+            let item = menu.get(group).ok_or("Native submenu is unavailable")?;
+            let submenu = item.as_submenu().ok_or("Expected native submenu")?;
+            // An id placed twice (an extension command, say) would never match `current`.
+            let mut seen = std::collections::HashSet::new();
+            let desired: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.group == group && seen.insert(entry.id.as_str()))
+                .collect();
+            let current = submenu.items().map_err(super::err)?;
+            // Titles and enabled flags change during autosave. Keep those native items alive;
+            // only rebuild a submenu when commands are added, removed or reordered.
+            let same_commands = current.len() == desired.len()
+                && current
+                    .iter()
+                    .zip(&desired)
+                    .all(|(item, entry)| item.id().as_ref() == format!("patchbay:{}", entry.id));
+            if !same_commands {
+                while submenu.remove_at(0).map_err(super::err)?.is_some() {}
+            }
+            for entry in desired {
+                let id = format!("patchbay:{}", entry.id);
+                if let Some(existing) = submenu.get(&id) {
+                    let item = existing.as_menuitem().ok_or("Expected native menu item")?;
+                    if item.text().map_err(super::err)? != entry.title {
+                        item.set_text(&entry.title).map_err(super::err)?;
+                    }
+                    if item.is_enabled().map_err(super::err)? != entry.enabled {
+                        item.set_enabled(entry.enabled).map_err(super::err)?;
+                    }
+                    continue;
+                }
+                // Cmd+S is owned here only; JS handles search and view shortcuts in each window.
+                let accelerator = (entry.id == "action:save").then_some("CmdOrCtrl+S");
+                let item = MenuItem::with_id(&app, id, &entry.title, entry.enabled, accelerator)
+                    .map_err(super::err)?;
+                submenu.append(&item).map_err(super::err)?;
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        let _ = entries;
+    }
+    Ok(())
+}
+
+/// Read the actual native items for desktop smoke checks; unavailable in release builds.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub(crate) fn inspect_native_menu(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Vec<(String, String, bool)>, String> {
+    super::main_only(&window)?;
+    #[cfg(target_os = "macos")]
+    {
+        let menu = app.menu().ok_or("Native menu is unavailable")?;
+        let mut entries = Vec::new();
+        for item in menu.items().map_err(super::err)? {
+            if let Some(submenu) = item.as_submenu() {
+                entries.push((
+                    submenu.id().0.clone(),
+                    submenu.text().map_err(super::err)?,
+                    true,
+                ));
+                for child in submenu.items().map_err(super::err)? {
+                    if let Some(command) = child.as_menuitem() {
+                        entries.push((
+                            command.id().0.clone(),
+                            command.text().map_err(super::err)?,
+                            command.is_enabled().map_err(super::err)?,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("Native menu inspection requires a macOS debug build".into())
+    }
+}

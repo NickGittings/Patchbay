@@ -32,7 +32,7 @@ export default function Welcome() {
           </li>
         </ul>
         <div className="welcome-keys">
-          <kbd>{modifierKey}</kbd> <kbd>{shiftKey}</kbd> <kbd>P</kbd> command palette
+          <kbd>{modifierKey}</kbd> <kbd>{shiftKey}</kbd> <kbd>P</kbd> search commands
         </div>
       </div>
     </div>

@@ -27,12 +27,9 @@
     b.click()
   }
   const create = async () => {
-    const trigger = Array.from(document.querySelectorAll('.toolbar .menu-trigger')).find((b) =>
-      b.textContent.trim().startsWith('Project'),
-    )
-    trigger.click()
+    smoke.selectPanel('project')
     const item = await until('Create map configuration', () =>
-      Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
+      Array.from(document.querySelectorAll('.utility-panel button')).find((b) =>
         b.textContent.trim().startsWith('Create map configuration'),
       ),
     )
@@ -384,7 +381,7 @@
     for (const count of [0, 1]) {
       smoke.store.setState({ nodes: allNodes.slice(0, count) })
       s().setPaletteOpen(true)
-      await until('palette open', () => document.querySelector('.command-palette'))
+      await until('palette open', () => document.querySelector('.search-results'))
       assert(
         !document.querySelector('[data-command-id="arrange-map"]'),
         'Arrange offered for a small map',

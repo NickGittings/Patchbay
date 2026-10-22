@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { createElement, type ReactNode } from 'react'
+import { createElement } from 'react'
 import type { ReviewFindings } from '../../types'
 import AutoPanel from './AutoPanel'
 
@@ -24,7 +24,6 @@ vi.mock('../../lib/reviewAgents', () => ({
   laneRunning: (running: string, lane: string) => running === lane,
 }))
 vi.mock('./AutoDialog', () => ({ default: () => null }))
-vi.mock('../Popover', () => ({ default: ({ children }: { children: ReactNode }) => children }))
 
 beforeEach(() => {
   mock.state = {

@@ -65,6 +65,9 @@
       smoke.store.getState().nodes.find((n) => n.id === popout),
     )
     const sid = smoke.sessionId(popout, shellOf(node).id)
+    const search = document.querySelector('.top-bar input[aria-label="Search files"]')
+    if (!search || search.placeholder.includes('commands') || search.placeholder.includes('⇧'))
+      throw new Error('Pop-out search lacks styling or promises unavailable commands')
     await until('replayed backlog', () => textOf(sid).includes('backlog-42'))
     await smoke.terminalWrite(sid, 'echo live-$((1+1))\r')
     await until('live output', () => textOf(sid).includes('live-2'))

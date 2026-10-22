@@ -65,7 +65,7 @@
     await until('session service', () => state().serviceConnected)
     // Existing layouts from before the terminal was added have only the changes panel.
     state().setPanelLayout('ReviewView-merge', { 'ReviewView-changes': 100 })
-    // Review follows the toolbar's worktree picker, so the feature worktree is a task.
+    // Review follows the Worktree panel, so the feature worktree is a task.
     const task = await smoke.taskAttach(`${parent}/feature`, 'Feature fixes', [])
     await smoke.refreshTasks()
     await until('feature task registered', () => state().tasks.some((t) => t.id === task.id))
@@ -132,10 +132,13 @@
         ...(dialog()?.querySelectorAll('select[aria-label="Destination worktree"] option') ?? []),
       ].map((o) => o.textContent)
     }
-    const openDialog = async () => {
-      click(document.querySelector('.review-merge-button'))
-      return until('merge dialog', dialog)
-    }
+    const openDialog = () =>
+      until('merge dialog', () => {
+        if (dialog()) return dialog()
+        // A worktree switch can still be committing its new dialog scope on the first click.
+        click(document.querySelector('.review-merge-button'))
+        return null
+      })
     let form = await openDialog()
     state().setDevices(devices)
     await until(
@@ -183,8 +186,10 @@
       .split('review-file:')[1]
       .split(/[\r\n]/)[0]
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Findings',
+      await until('review panel Findings button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Findings',
+        ),
       ),
     )
     await until('saved Findings shown', () =>
@@ -239,8 +244,10 @@
     )
     const beforeFix = state().rootTerminals.length
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Findings',
+      await until('review panel Findings button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Findings',
+        ),
       ),
     )
     await until(
@@ -277,8 +284,10 @@
     state().setView('review')
     await until('Review returns after fix launch', () => document.querySelector('.review-refresh'))
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Hide',
+      await until('review panel Hide button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Hide',
+        ),
       ),
     )
     await until('review panel hidden', () => !document.querySelector('.review-merge-terminal'))
@@ -367,8 +376,10 @@
       'merge pane offered generic Start',
     )
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Hide',
+      await until('review panel Hide button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Hide',
+        ),
       ),
     )
     await until('merge panel collapsed', () => !document.querySelector('.review-merge-terminal'))
@@ -392,8 +403,10 @@
       () => Math.abs(mergeHeight() - openHeight) < 3,
     )
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Hide',
+      await until('review panel Hide button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Hide',
+        ),
       ),
     )
     await until('merge hidden again', () => !document.querySelector('.review-merge-terminal'))
@@ -426,8 +439,7 @@
           b.textContent.includes('Merge agent'),
         )
         if (entry) return entry
-        const trigger = document.querySelector('.attention-button')
-        if (trigger && trigger.getAttribute('aria-expanded') !== 'true') click(trigger)
+        smoke.selectPanel('activity')
         return null
       }),
     )
@@ -438,7 +450,10 @@
     await until('clean merge verified', () =>
       text(sid).includes(`merge-verified:${parent}/integration`),
     )
-    assert(text(sid).includes(findingsFile), 'merge briefing did not name the findings file')
+    assert(
+      text(sid).replace(/\s+/g, '').includes(findingsFile.replace(/\s+/g, '')),
+      'merge briefing did not name the findings file',
+    )
     assert(text(sid).includes('merge-result:clean'), 'clean destination did not merge cleanly')
     assert(
       state().sessionRecords.filter((r) => r.metadata.componentId === '@merge').length === 1,
@@ -449,7 +464,7 @@
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
     await until(
       'running destination blocked',
-      () => dialog().querySelector('button[type="submit"]').disabled,
+      () => dialog()?.querySelector('button[type="submit"]').disabled,
     )
     click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     state().setView('navigation')
@@ -502,16 +517,25 @@
     click([...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     form = await openDialog()
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
-    await until(
-      'stopped destination available again',
-      () => !dialog().querySelector('button[type="submit"]').disabled,
-    )
+    await until('stopped destination available again', () => {
+      // A branch refresh may close the old source scope while this dialog is opening.
+      if (!dialog()) {
+        click(document.querySelector('.review-merge-button'))
+        return false
+      }
+      form = dialog()
+      const select = form.querySelector('select[aria-label="Destination worktree"]')
+      if (select.value !== `${parent}/integration`) choose(select, `${parent}/integration`)
+      return !form.querySelector('button[type="submit"]').disabled
+    })
     // A clean but still-running terminal must not share the merge destination.
     await smoke.terminalStop(shell)
     await until('destination shell stopped', () => state().sessions[shell]?.running === false)
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Hide',
+      await until('review panel Hide button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Hide',
+        ),
       ),
     )
     // Forgetting the hidden merge must not collapse the next merge, even before selection.
@@ -543,8 +567,10 @@
     )
     await until('second merge stopped', () => state().sessions[sid]?.running === false)
     click(
-      [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Hide',
+      await until('review panel Hide button', () =>
+        [...document.querySelectorAll('.review-merge-terminal button')].find(
+          (b) => b.textContent === 'Hide',
+        ),
       ),
     )
     await until('finished merge hidden', () => !document.querySelector('.review-merge-terminal'))
@@ -556,7 +582,7 @@
       !document.querySelector('.review-merge-terminal'),
       'finished hidden merge reopened on remount',
     )
-    smoke.store.setState({ sessionsPanelOpen: true })
+    smoke.selectPanel('sessions')
     // Only once it has ended: a running row has neither Show in Review nor (without an
     // adapter) a menu.
     const mergeRow = await until('finished destination session row', () =>

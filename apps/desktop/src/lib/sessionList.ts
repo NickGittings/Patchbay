@@ -147,6 +147,22 @@ export function sessionLive(record: SessionRecord): boolean {
   return record.snapshot ? record.snapshot.running : !record.interrupted
 }
 
+/**
+ * How many of a project's recorded sessions are running: this window's live state first, else
+ * the record's own liveness. Close's confirmation and the Project panel's count agree on it.
+ */
+export function runningInProject(
+  records: readonly SessionRecord[],
+  sessions: Readonly<Record<string, { running: boolean } | undefined>>,
+  projectId: string,
+): number {
+  return records.filter(
+    (record) =>
+      record.metadata.projectId === projectId &&
+      (sessions[record.id]?.running ?? sessionLive(record)),
+  ).length
+}
+
 /** Records grouped by project, groups ordered by project name so they never swap on their own. */
 export function groupByProject(records: readonly SessionRecord[]): SessionGroup[] {
   const groups = new Map<string, SessionGroup>()

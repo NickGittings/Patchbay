@@ -13,16 +13,29 @@
   const smoke = await until('hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const s = () => smoke.store.getState()
-  const switcher = () => document.querySelector('.project-switcher > .menu-trigger')
-  // Opens the project menu (if closed) and returns its list.
-  const projectMenu = () =>
-    until('project menu', () => {
-      const trigger = switcher()
-      if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click()
-      return document.querySelector('.project-switcher [role="menu"]:not([hidden])')
-    })
+  const switcher = () =>
+    document.querySelector('.project-list .row button[aria-pressed="true"]') ??
+    document.querySelector('.project-list .row button')
+  const projectMenu = async () => {
+    smoke.selectPanel('project')
+    return until('project panel list', () => document.querySelector('.project-list'))
+  }
   try {
     await until('restore', () => !s().restoring && s().serviceConnected)
+    await projectMenu()
+    if (/mac/i.test(navigator.userAgent)) {
+      const menu = await until('native menu without a project', async () => {
+        const items = await smoke.inspectNativeMenu()
+        return items.some(([id]) => id === 'patchbay:action:open') && items
+      })
+      for (const title of ['Project', 'Settings', 'Edit', 'Window'])
+        if (!menu.some(([, text]) => text === title))
+          throw new Error(`Missing native ${title} menu`)
+      if (menu.find(([id]) => id === 'patchbay:action:save')?.[2])
+        throw new Error('Native Save enabled without a project')
+      if (!menu.find(([id]) => id === 'patchbay:action:notifications')?.[2])
+        throw new Error('Native Notifications disabled without a project')
+    }
     // An unavailable sole project can be restored without an active project identity.
     const missing = {
       id: 'missing-project',
@@ -35,16 +48,37 @@
     const missingTab = await until('sole unavailable project', () => switcher())
     if (!missingTab.textContent.includes('Missing project (unavailable)'))
       throw new Error('Sole unavailable project lost its name or status')
-    ;[...(await projectMenu()).querySelectorAll('.project-switcher-item')]
+    ;[...(await projectMenu()).querySelectorAll('button[aria-pressed]')]
       .find((item) => item.textContent.includes('Missing project'))
       .click()
     await until('missing project recovery', () =>
       document.querySelector('.recovery-banner')?.textContent.includes(missing.root),
     )
+    smoke.selectPanel(null)
+    await until(
+      'recovery visible with panel closed',
+      () =>
+        !document.querySelector('.utility-panel') &&
+        document
+          .querySelector('.workspace-main .recovery-banner')
+          ?.textContent.includes(missing.root),
+    )
     ;(await projectMenu()).querySelector('[aria-label="Close Missing project"]').click()
     await until('missing project closed', () => !s().projects[missing.id])
     const one = await smoke.openProject()
     smoke.acceptOpened(one)
+    if (/mac/i.test(navigator.userAgent)) {
+      await until(
+        'native Save enabled with project',
+        async () =>
+          (await smoke.inspectNativeMenu()).find(([id]) => id === 'patchbay:action:save')?.[2],
+      )
+      await smoke.nativeMenuAction('action:notifications')
+      const settings = await until('native action opens settings', () =>
+        document.querySelector('[aria-label="Notifications"][role="dialog"]'),
+      )
+      ;[...settings.querySelectorAll('button')].find((b) => b.textContent === 'Close').click()
+    }
     const first = s().nodes[0]
     s().updateComponent(first.id, {
       terminals: [
@@ -66,160 +100,168 @@
       const tab = switcher()
       return tab?.textContent.includes(one.project.name) && tab.textContent.includes('(1 running)')
     })
-    // Resize the native window so viewport media queries participate in the check.
-    const toolbar = document.querySelector('.toolbar')
-    const originalSize = { width: window.innerWidth, height: window.innerHeight }
+    // Both Project close entry points must confirm while work is running.
+    const originalConfirm = window.confirm
+    const confirmations = []
+    try {
+      window.confirm = (message) => {
+        confirmations.push(message)
+        return false
+      }
+      ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
+      await until('rail close confirmation', () => confirmations.length === 1)
+      ;[...document.querySelectorAll('.project-actions button')]
+        .find((button) => button.textContent === 'Close project')
+        .click()
+      await until('Project action close confirmation', () => confirmations.length === 2)
+      if (!s().projects[one.id] || !s().sessions[sidOne]?.running)
+        throw new Error('Canceling project close changed running work')
+    } finally {
+      window.confirm = originalConfirm
+    }
+    // Rail and dock remain usable down to the native minimum window size.
+    const originalSize = { width: innerWidth, height: innerHeight }
+    const originalPanelWidth = localStorage.getItem('patchbay.utilityPanelWidth')
     const originalProjects = s().projects
     const originalOrder = s().projectOrder
-    const extraProjects = Array.from({ length: 4 }, (_, i) => ({
-      ...missing,
-      id: `overflow-project-${i}`,
-      name: `Project with a deliberately long readable name ${i}`,
-      root: `/missing-project-${i}`,
-    }))
-    const assertVisible = (element, container, label) => {
-      const box = element.getBoundingClientRect()
-      const bounds = container.getBoundingClientRect()
-      if (
-        box.width < 1 ||
-        box.height < 1 ||
-        box.left < bounds.left - 1 ||
-        box.right > bounds.right + 1 ||
-        box.top < bounds.top - 1 ||
-        box.bottom > bounds.bottom + 1 ||
-        box.bottom > window.innerHeight
-      )
-        throw new Error(`Toolbar clips ${label} at ${window.innerWidth}px`)
-      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
-      if (!(element.contains(hit) || element.closest('button')?.contains(hit)))
-        throw new Error(`Toolbar blocks ${label} at ${window.innerWidth}px`)
-    }
-    const checkLayout = () => {
-      // Budget independently of the toolbar's own bounds: wrapping forever must fail.
-      if (toolbar.getBoundingClientRect().height > 122)
-        throw new Error(`Toolbar consumes too much height at ${window.innerWidth}px`)
-      const switcher = toolbar.querySelector('.view-switcher').getBoundingClientRect()
-      if (Math.abs(switcher.x + switcher.width / 2 - window.innerWidth / 2) > 1)
-        throw new Error(`View switcher is not centered at ${window.innerWidth}px`)
-      for (const button of toolbar.querySelectorAll(
-        '.toolbar-group:first-child > .menu > .menu-trigger, .toolbar-search, ' +
-          '.view-switcher button, .toolbar-group.end > button, ' +
-          '.toolbar-group.end > .menu > .menu-trigger',
-      ))
-        assertVisible(button, toolbar, button.textContent)
-      // The active project's name truncates; its status never does.
-      const project = switcher()
-      assertVisible(project, toolbar, 'project switcher')
-      for (const status of project.querySelectorAll('.project-status'))
-        if (status.scrollWidth > status.clientWidth)
-          throw new Error('Project status text is truncated')
-    }
     try {
-      s().setView('navigation')
-      await until('navigation toolbar', () => document.querySelector('.worktree-picker'))
-      for (const count of [3, 5]) {
-        smoke.store.setState({
-          projects: {
-            ...originalProjects,
-            [one.id]: { ...originalProjects[one.id], name: 'Active project with a very long name' },
-            ...Object.fromEntries(extraProjects.slice(0, count - 1).map((p) => [p.id, p])),
+      smoke.store.setState({
+        projects: {
+          ...originalProjects,
+          [one.id]: {
+            ...originalProjects[one.id],
+            name: 'A deliberately long project name '.repeat(5),
           },
-          projectOrder: [one.id, ...extraProjects.slice(0, count - 1).map((p) => p.id)],
-        })
-        const menu = await projectMenu()
-        await until(
-          `${count} projects listed`,
-          () => menu.querySelectorAll('.menu-row').length === count,
-        )
-        for (const close of menu.querySelectorAll('.project-switcher-close'))
-          assertVisible(close, menu, close.getAttribute('aria-label'))
-        switcher().click()
-        await until(
-          'project menu closed',
-          () => switcher().getAttribute('aria-expanded') !== 'true',
-        )
-        for (const width of [1440, 1200, 1100, 900]) {
-          await smoke.resizeWindow(width, originalSize.height)
-          await until(`viewport ${width}`, () => Math.abs(window.innerWidth - width) <= 1)
-          if (matchMedia('(max-width: 1100px)').matches !== width <= 1100)
-            throw new Error('Viewport media query did not follow the native window size')
-          await sleep(100)
-          checkLayout()
-          // Labels truncate rather than wrap: one row, or two once the view switcher moves down.
-          const budget = width <= 1300 ? 90 : 48
-          if (toolbar.getBoundingClientRect().height > budget)
-            throw new Error(`Toolbar wraps beyond its rows at ${width}px`)
-          // Vary every changing right-hand label, including when Attention appears.
-          const activity = [...toolbar.querySelectorAll('.toolbar-group.end > button')].find(
-            (button) => button.textContent.startsWith('Activity'),
-          )
-          // Lengthen labels with probe elements, leaving React's own text nodes in place.
-          const probes = [
-            [activity, ' (running)'],
-            [
-              toolbar.querySelector('.worktree-picker-label'),
-              ' A long worktree title (feature/settings-toolbar)',
-            ],
-            [toolbar.querySelector('.map-save-status [role="status"]'), ' changed externally'],
-          ].map(([element, text]) => {
-            const probe = document.createElement('span')
-            probe.className = 'smoke-label-probe'
-            probe.textContent = text
-            return [element, probe]
-          })
-          const before = toolbar.getBoundingClientRect()
-          const attention = document.createElement('div')
-          attention.className = 'menu attention'
-          const attentionButton = document.createElement('button')
-          attentionButton.className = 'menu-trigger attention-button'
-          const summary = document.createElement('span')
-          summary.className = 'attention-summary'
-          summary.textContent = '2 need input'
-          attentionButton.append(summary)
-          attention.append(attentionButton)
-          try {
-            for (const [element, probe] of probes) element.append(probe)
-            activity.before(attention)
-            checkLayout()
-            if (Math.abs(toolbar.getBoundingClientRect().height - before.height) > 1)
-              throw new Error(`Status changes shifted the workspace at ${width}px`)
-          } finally {
-            attention.remove()
-            for (const [, probe] of probes) probe.remove()
-          }
-        }
-      }
-      toolbar.querySelector('.toolbar-search').click()
-      const search = await until('toolbar file search', () =>
-        document.querySelector('[aria-label="Quick file search"]'),
+        },
+      })
+      const rail = document.querySelector('.workspace-rail')
+      const labels = [...rail.querySelectorAll(':scope > button')].map((b) =>
+        b.getAttribute('aria-label'),
       )
-      if (s().paletteOpen) throw new Error('Search button opened Commands')
-      search.closest('.extension-overlay').click()
-      await until(
-        'file search closed',
-        () => !document.querySelector('[aria-label="Quick file search"]'),
-      )
-      const projectMenu = toolbar.querySelector(
-        '.toolbar-group:first-child > .menu > .menu-trigger',
-      )
-      projectMenu.click()
-      const menu = toolbar.querySelector('.toolbar-group:first-child > .menu [role="menu"]')
-      const commands = [...menu.querySelectorAll('[role="menuitem"]')].find((item) =>
-        item.textContent.startsWith('Commands'),
-      )
-      if (!commands?.querySelector('kbd')) throw new Error('Commands shortcut is not visible')
-      const menuItems = [...menu.querySelectorAll('[role="menuitem"]')]
-      const close = menuItems.at(-1)
       if (
-        close.textContent !== 'Close project' ||
-        close.previousElementSibling?.role !== 'separator'
+        labels.join(',') !==
+        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Sessions'
       )
-        throw new Error('Close project is not isolated at the end of the Project menu')
-      commands.click()
-      await until('commands palette', () => s().paletteOpen)
-      smoke.store.setState({ paletteOpen: false })
+        throw new Error('Rail order changed')
+      for (const width of [1440, 1200, 900]) {
+        await smoke.resizeWindow(width, width === 900 ? 600 : originalSize.height)
+        await until(`viewport ${width}`, () => Math.abs(innerWidth - width) <= 1)
+        await sleep(100)
+        for (const button of rail.querySelectorAll(':scope > button')) {
+          const box = button.getBoundingClientRect()
+          if (box.width < 30 || box.height < 30 || box.bottom > innerHeight || !button.title)
+            throw new Error('Rail clips a hit target or lacks a tooltip')
+        }
+        smoke.selectPanel('project')
+        const panel = await until('docked project panel', () =>
+          document.querySelector('.utility-panel'),
+        )
+        const workspace = document.querySelector('.workspace-main')
+        if (panel.getBoundingClientRect().right > workspace.getBoundingClientRect().left + 1)
+          throw new Error('Panel overlaps workspace')
+        if (workspace.clientWidth < 400) throw new Error('Panel leaves no usable workspace')
+        const resize = document.querySelector('[aria-label="Resize utility panel"]')
+        resize.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        await sleep(50)
+        if (!localStorage.getItem('patchbay.utilityPanelWidth'))
+          throw new Error('Panel width not persisted')
+      }
+      document.querySelector('.workspace-rail [aria-label="Plan"]').click()
+      await until(
+        'Plan with dock still open',
+        () => s().view === 'plan' && document.querySelector('[aria-label="Project panel"]'),
+      )
+      document.querySelector('.workspace-rail [aria-label="Sessions"]').click()
+      await until(
+        'exclusive Sessions panel',
+        () =>
+          document.querySelector('[aria-label="Sessions panel"]') &&
+          !document.querySelector('[aria-label="Project panel"]'),
+      )
+      const sessions = await until('portalled Sessions content', () =>
+        document.querySelector('[aria-label="Workspace sessions"]'),
+      )
+      const filter = sessions.querySelector('select')
+      filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      if (s().utilityPanel !== 'sessions') throw new Error('Escape in a select closed Sessions')
+      sessions.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await until(
+        'Escape closes portalled Sessions',
+        () => !document.querySelector('.utility-panel'),
+      )
+      // A failed map save must remain visible with the Project panel closed.
+      const savedEntry = s().projects[one.id]
+      smoke.store.setState({
+        projects: {
+          ...s().projects,
+          [one.id]: { ...savedEntry, mapSave: { status: 'error', error: 'Smoke save failure' } },
+        },
+      })
+      await until('visible save failure', () =>
+        document
+          .querySelector('.workspace-main [role="alert"]')
+          ?.textContent.includes('Map save failed'),
+      )
+      const projectButton = document.querySelector('.workspace-rail [aria-label="Project"]')
+      if (!projectButton.title.includes('Map save failed'))
+        throw new Error('Project rail lost the save failure indicator')
+      smoke.store.setState({ projects: { ...s().projects, [one.id]: savedEntry } })
+      const search = document.querySelector('.top-bar input')
+      if (
+        search.getBoundingClientRect().height !== 28 ||
+        search.getBoundingClientRect().width > 520
+      )
+        throw new Error('Search is no longer compact')
+      if (/mac/i.test(navigator.userAgent) && search.getBoundingClientRect().left < 88)
+        throw new Error('Search overlaps native window controls')
+      search.focus()
+      await until('combined search', () => document.querySelector('.search-results'))
+      if (
+        !document.querySelector('[role="group"][aria-label="Files"]') ||
+        !document.querySelector('[role="group"][aria-label="Commands"]')
+      )
+        throw new Error('Search groups missing')
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await until('search dismissed', () => !document.querySelector('.search-results'))
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'p', metaKey: true, shiftKey: true, bubbles: true }),
+      )
+      await until(
+        'commands prioritized and focused',
+        () =>
+          document.activeElement === search &&
+          document.querySelector('.search-results h3')?.textContent === 'Commands',
+      )
+      // Closing results by an outside click can leave focus on the search input.
+      const type = (value) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(search, value)
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      type('Notifications')
+      await until('notification command selected', () =>
+        document.querySelector('[data-command-id="notifications"][aria-selected="true"]'),
+      )
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      await until('outside click closes search', () => !document.querySelector('.search-results'))
+      if (document.activeElement !== search)
+        throw new Error('Outside click unexpectedly moved focus')
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await sleep(100)
+      if (document.querySelector('[aria-label="Notifications"][role="dialog"]'))
+        throw new Error('Enter executed a hidden search result')
+      let storeWrites = 0
+      const unsubscribe = smoke.store.subscribe(() => storeWrites++)
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      unsubscribe()
+      if (storeWrites) throw new Error('A closed search wrote to the store on an outside click')
+      type('Notification')
+      await until('typing reopens results', () => document.querySelector('.search-results'))
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     } finally {
       smoke.store.setState({ projects: originalProjects, projectOrder: originalOrder })
+      smoke.selectPanel(null)
+      if (originalPanelWidth === null) localStorage.removeItem('patchbay.utilityPanelWidth')
+      else localStorage.setItem('patchbay.utilityPanelWidth', originalPanelWidth)
       await smoke.resizeWindow(originalSize.width, originalSize.height)
       s().setView('plan')
     }
@@ -266,7 +308,7 @@
     if (!s().sessionRecords.some((r) => r.id === sidOne && r.snapshot.running))
       throw new Error('Detached work is absent from Sessions')
     await smoke.report(
-      'PASS workspace: sole project recovery/name/running count, native viewport reflow, centered views, scrolling readable tabs/statuses, all toolbar hit targets, search/commands/menu separation, two project identities, live pop-out, tab switches, independent planner/layout, detached session discovery',
+      'PASS workspace: project recovery/name/running count, rail order and hit targets, dock resizing/persistence, minimum viewport, grouped search and shortcuts, two project identities, live pop-out, tab switches, independent planner/layout, detached session discovery',
     )
   } catch (e) {
     await smoke.report(`FAIL workspace: ${e.message ?? e}`)

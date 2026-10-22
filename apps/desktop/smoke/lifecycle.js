@@ -29,6 +29,7 @@
       const entry = state().projects[state().activeProjectId]
       if (!entry.conflict || state().dirty || state().nodes[0].data.notes !== 'external edit')
         throw new Error('Changed saved map did not preserve a separate conflicting draft')
+      smoke.selectPanel('project')
       await until('recovery controls', () => document.querySelector('.recovery-banner'))
       if (window.__patchbayRecoveryPhase === 4) {
         const button = [...document.querySelectorAll('.recovery-banner button')].find(
@@ -155,7 +156,7 @@
       await smoke.reconcileSessions()
       if (state().runtimeTerminals[sid])
         throw new Error('Mapped terminal remained in runtime registry')
-      smoke.store.setState({ sessionsPanelOpen: true })
+      smoke.selectPanel('sessions')
       const reconnect = await until('counter reconnect button', () =>
         [...document.querySelectorAll('.session-row')]
           .find((row) => row.textContent.includes(state().project.root))
@@ -163,7 +164,7 @@
       )
       reconnect.click()
       await until('session preview', () => document.querySelector('.session-preview .xterm-host'))
-      smoke.store.setState({ sessionsPanelOpen: false })
+      smoke.selectPanel(null)
       await until('terminal returned to dock', () =>
         document.querySelector('.terminal-dock .terminal-host .xterm-host'),
       )

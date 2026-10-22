@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
-import { thread, type SimpleStage } from '../lib/simple'
+import { SIMPLE_STAGES, thread, type SimpleStage } from '../lib/simple'
 import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
@@ -23,7 +23,6 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
-import SimpleStageTabs from './SimpleStageTabs'
 import './simple.css'
 
 const pendingActions = new Set<string>()
@@ -155,7 +154,22 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
       </header>
-      <SimpleStageTabs scopeKey={key} current={model.stage} />
+      <nav className="simple-stage-tabs" aria-label="Chat stages">
+        {(['all', ...SIMPLE_STAGES] as const).map((stage) => (
+          <button
+            key={stage}
+            aria-pressed={filter === stage}
+            onClick={() => useSimpleUi.getState().patch(key, { stageFilter: stage })}
+          >
+            {stage[0].toUpperCase() + stage.slice(1)}
+            {model.stage === stage && (
+              <span className="current-stage-dot" aria-label="Current stage">
+                ●
+              </span>
+            )}
+          </button>
+        ))}
+      </nav>
       {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
       {!model.records.some((r) => s.sessions[r.id]?.status?.agent?.authoritative) && (
         <p className="simple-hook-notice">

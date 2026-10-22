@@ -1,7 +1,6 @@
 import { useStore } from '../store'
-import { mapBlocked, mapEditsBlocked, reloadSavedMap, saveMapNow } from '../lib/mapSave'
-import { offerDependencies } from '../lib/dependencies'
-import Menu, { MenuItem, MenuSeparator } from './Menu'
+import { mapBlocked, reloadSavedMap, saveMapNow } from '../lib/mapSave'
+import PanelContent from './PanelContent'
 
 export default function MapSaveStatus() {
   const id = useStore((s) => s.activeProjectId)
@@ -25,49 +24,38 @@ export default function MapSaveStatus() {
               ? 'Map changes pending'
               : 'Map saved'
   return (
-    <Menu
-      label={
-        <span role="status" aria-live="polite">
-          {label}
-        </span>
-      }
-      title="Map configuration saving"
-      align="right"
-      caret={false}
-      className="map-save-status"
-      triggerClassName={status === 'error' || status === 'conflict' ? 'map-save-error' : ''}
-    >
-      <p className="map-save-description">
-        {absent
-          ? 'Create patchbay.json to save the component map and terminal presets. Later map edits save automatically.'
-          : 'The component map and terminal presets are saved automatically to patchbay.json.'}
-      </p>
-      {entry.mapSave?.error && (
-        <p className="map-save-description" role="alert">
-          {entry.mapSave.error}
+    <section className="map-save-status">
+      <PanelContent>
+        <strong role="status">{label}</strong>
+        <p className="map-save-description">
+          {absent
+            ? 'Create patchbay.json to save the component map and terminal presets. Later map edits save automatically.'
+            : 'The component map and terminal presets are saved automatically to patchbay.json.'}
         </p>
-      )}
-      {blocked && (
-        <p className="map-save-description">Resolve project recovery before saving the map.</p>
-      )}
-      <MenuSeparator />
-      {status === 'conflict' ? (
-        <>
-          <MenuItem onClick={() => void reloadSavedMap(id)}>Reload saved map</MenuItem>
-          <MenuItem onClick={() => void saveMapNow(id, true)}>Replace with my map</MenuItem>
-        </>
-      ) : (
-        <MenuItem disabled={blocked || status === 'saving'} onClick={() => void saveMapNow(id)}>
-          {status === 'error'
-            ? 'Retry'
-            : absent
-              ? 'Create map configuration'
-              : 'Save map configuration now'}
-        </MenuItem>
-      )}
-      <MenuItem disabled={mapEditsBlocked(entry)} onClick={() => offerDependencies(id)}>
-        Detect dependencies…
-      </MenuItem>
-    </Menu>
+        {entry.mapSave?.error && (
+          <p className="map-save-description" role="alert">
+            {entry.mapSave.error}
+          </p>
+        )}
+        {blocked && (
+          <p className="map-save-description">Resolve project recovery before saving the map.</p>
+        )}
+        <hr />
+        {status === 'conflict' ? (
+          <>
+            <button onClick={() => void reloadSavedMap(id)}>Reload saved map</button>
+            <button onClick={() => void saveMapNow(id, true)}>Replace with my map</button>
+          </>
+        ) : (
+          <button disabled={blocked || status === 'saving'} onClick={() => void saveMapNow(id)}>
+            {status === 'error'
+              ? 'Retry'
+              : absent
+                ? 'Create map configuration'
+                : 'Save map configuration now'}
+          </button>
+        )}
+      </PanelContent>
+    </section>
   )
 }

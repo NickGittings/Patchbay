@@ -17,12 +17,9 @@
   const state = () => smoke.store.getState()
   try {
     await until('restore', () => !state().restoring && state().serviceConnected)
-    const settings = await until('Settings menu', () =>
-      [...document.querySelectorAll('.menu-trigger')].find((b) => b.textContent === 'Settings'),
-    )
-    settings.click()
-    const notifications = await until('Notifications menu without a project', () =>
-      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Notifications'),
+    state().setPaletteOpen(true)
+    const notifications = await until('Notifications command without a project', () =>
+      document.querySelector('[data-command-id="notifications"]'),
     )
     assert(!notifications.disabled, 'Notifications requires a project')
     notifications.click()
@@ -168,7 +165,7 @@
     const fixtureDir = state().project.root.replace(/\/project$/, '')
     smoke.store.setState({ devices: [] })
     const autoButton = await until('Auto button', () =>
-      document.querySelector('button[title="Auto mode"]'),
+      document.querySelector('.workspace-rail [aria-label="Auto mode"]'),
     )
     autoButton.click()
     await until('Auto dialog before presets load', () =>
@@ -210,6 +207,17 @@
       device: 'auto-fixture',
       merge: { mode: 'ask', destinationBranch: 'main' },
     })
+    await until(
+      'Auto progress with panel closed',
+      () =>
+        !document.querySelector('.auto-content') &&
+        !document.querySelector('.workspace-status') &&
+        document.querySelector('.workspace-rail [aria-label="Auto mode"] .rail-status') &&
+        document
+          .querySelector('.workspace-rail [aria-label="Auto mode"]')
+          ?.getAttribute('aria-description')
+          ?.includes('Running'),
+    )
     await until('merge approval', () => {
       if (['failed', 'paused'].includes(state().auto?.status)) throw new Error(state().auto.reason)
       return state().auto?.stage === 'mergeGate' && state().auto.status === 'waitingOnYou'
@@ -220,10 +228,7 @@
       smoke.attentionItems(state()).some((item) => item.auto),
       'Auto merge approval missing from attention',
     )
-    const button = [...document.querySelectorAll('button')].find((b) =>
-      b.textContent.startsWith('Auto:'),
-    )
-    button.click()
+    smoke.selectPanel('auto')
     const merge = await until('Merge now button', () =>
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Merge now'),
     )

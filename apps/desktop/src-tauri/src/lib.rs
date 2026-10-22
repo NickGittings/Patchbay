@@ -19,6 +19,7 @@ use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 mod agent_commands;
 mod layout;
+mod native_menu;
 mod service;
 #[cfg(target_os = "macos")]
 mod writing_tools;
@@ -2175,6 +2176,18 @@ pub fn run() {
                 _ => {}
             }
         })
+        .on_menu_event(|app, event| {
+            if let Some(action) = event.id().as_ref().strip_prefix("patchbay:") {
+                // Project and Settings always operate on the main workspace, even from a pop-out.
+                // Saving needs none of main's UI, so Cmd+S in a pop-out keeps its focus.
+                if let Some(main) = app.get_webview_window("main") {
+                    if action != "action:save" {
+                        let _ = main.set_focus();
+                    }
+                    let _ = main.emit("patchbay://menu-action", action);
+                }
+            }
+        })
         .manage(AppState::default())
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -2190,6 +2203,8 @@ pub fn run() {
             let _main = main.build()?;
             #[cfg(target_os = "macos")]
             writing_tools::hide_affordance(&_main);
+            #[cfg(target_os = "macos")]
+            native_menu::install(app.handle())?;
             app.state::<AppState>().service.run(app.handle().clone());
             *app.state::<AppState>().agent_commands.lock().unwrap() =
                 agent_commands::start(app.handle().clone())
@@ -2214,7 +2229,14 @@ pub fn run() {
                 invoke.resolver.reject("opaque origins cannot invoke Tauri");
                 return true;
             }
+            #[cfg(debug_assertions)]
+            if invoke.message.command() == "inspect_native_menu" {
+                let inspect: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+                    tauri::generate_handler![native_menu::inspect_native_menu];
+                return inspect(invoke);
+            }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                native_menu::update_native_menu,
                 agent_provider,
                 agent_hooks_check,
                 agent_hooks_configure,
@@ -2888,7 +2910,10 @@ async fn window_open(
                 .position(x, y)
                 .maximized(maximized);
         #[cfg(target_os = "macos")]
-        let builder = writing_tools::disable(builder);
+        let builder = writing_tools::disable(builder)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(12.0, 22.0));
         #[cfg(debug_assertions)]
         let builder = smoke::window(builder);
         let _popout = builder.build().map_err(err)?;

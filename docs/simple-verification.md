@@ -32,6 +32,6 @@ The following checks require an interactive desktop session. They have not been 
 - With Agent status integration not installed, open a Claude or Codex recipient. Verify Send stays disabled with “Chat needs agent status integration”, also while a permission dialog sits quietly.
 - Switch worktrees or recipients during slow startup, restart/exit the recipient during a claim and toggle Simple off during a pending send. Verify cancellation preserves the draft and sends no prompt to a replacement generation.
 - Resize and collapse the chat, Inspector and dock, restore Show chat, and toggle Full/Simple. Verify independent saved widths, map viewport continuity and sensible minimum sizes.
-- Use Cmd/Ctrl+2–4 from the composer and terminals. Verify Simple closes, the requested Full view opens, and toggling Simple off ordinarily restores the last Full view.
+- Use Cmd/Ctrl+1–4 from the composer and terminals. Verify Chat stays enabled and the rail selects All, Plan, Build or Review plus Merge. Switch worktrees and toggle Chat off/on to verify each filter and the last full workspace view restore independently.
 - Open findings/activity file references with and without diffs, including nested and external components. Verify the exact worktree/file and line are retained; missing files never redirect to another diff.
 - Run Simple Auto with several role-selected agents. Verify unsupported integrations offer installation, Light/ask-to-merge settings, pause/resume/stop ownership and the existing merge approval behavior.

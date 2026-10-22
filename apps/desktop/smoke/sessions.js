@@ -46,7 +46,7 @@
   }
   const menuItem = (label) =>
     [...(sessionMenu()?.querySelectorAll('[role="menuitem"]') ?? [])].find(
-      (element) => element.textContent.trim() === label,
+      (element) => (element.getAttribute('aria-label') ?? element.textContent.trim()) === label,
     )
   const closeMenu = async (scope) => {
     scope().querySelector('.session-menu .menu-trigger').click()
@@ -56,7 +56,7 @@
     let opened
     const button = await until(`${label} button`, () => {
       const element = [...(scope()?.querySelectorAll('button') ?? [])].find(
-        (element) => element.textContent.trim() === label,
+        (element) => (element.getAttribute('aria-label') ?? element.textContent.trim()) === label,
       )
       if (element) {
         // The label turned up inline after all: close the menu this helper opened.
@@ -65,7 +65,7 @@
         return !element.disabled && element
       }
       // Only a row's own menu: opening one elsewhere would leave it grabbing focus and presses.
-      if (!scope()?.classList.contains('session-row')) return undefined
+      if (!scope()?.classList?.contains('session-row')) return undefined
       const trigger = scope().querySelector('.session-menu .menu-trigger')
       if (!trigger) return undefined
       if (trigger.getAttribute('aria-expanded') !== 'true') {
@@ -405,6 +405,24 @@
       return disabled
     })
     smoke.store.setState({ serviceConnected: true })
+    for (const closePanel of [
+      () => document.querySelector('.workspace-rail [aria-label="Sessions"]').click(),
+      () =>
+        document
+          .querySelector('[aria-label="Sessions panel"] header button')
+          .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+      () => smoke.selectPanel('project'),
+    ]) {
+      await click(panel, 'Stop all work')
+      await until('stop confirmation before close', () =>
+        panel().querySelector('[role="alertdialog"]'),
+      )
+      closePanel()
+      await until('sessions closed', () => !panel())
+      smoke.selectPanel('sessions')
+      await until('sessions reopened', () => panel())
+      assert(!panel().querySelector('[role="alertdialog"]'), 'stop confirmation stayed armed')
+    }
     await click(panel, 'Stop all work')
     await until('global Stop confirmation', () => panel().querySelector('[role="alertdialog"]'))
     assert(

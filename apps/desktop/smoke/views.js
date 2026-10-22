@@ -21,8 +21,8 @@
   const query = (selector) => document.querySelector(selector)
   const nodeElement = (id) => query(`.react-flow__node[data-id="${id}"]`)
   const viewButton = (name) =>
-    Array.from(document.querySelectorAll('.view-switcher button')).find(
-      (b) => b.textContent === name,
+    Array.from(document.querySelectorAll('.workspace-rail > button')).find(
+      (b) => b.getAttribute('aria-label') === name,
     )
   const textOf = (sid) => smoke.terminalText(sid).text
   const tiles = (id) => [...document.querySelectorAll(`.terminal-tile[data-component="${id}"]`)]
@@ -84,14 +84,8 @@
       },
     ])
     await until('navigation layout', () => query('.hierarchy') && nodeElement('alpha'))
-    click(
-      [...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Settings')),
-    )
-    click(
-      await until('Agent roles menu', () =>
-        [...document.querySelectorAll('button')].find((b) => b.textContent === 'Agent roles'),
-      ),
-    )
+    state().setPaletteOpen(true)
+    click(await until('Agent roles command', () => query('[data-command-id="roles"]')))
     const rolesPanel = await until('Agent roles panel', () => query('[aria-label="Agent roles"]'))
     // Check label association rather than focus: WebKit on macOS doesn't focus a select
     // through its label, and smoke windows never have focus anyway.
@@ -641,12 +635,7 @@
     await until('beta scope before attention reveal', () => tiles('beta').length)
     click(query('.implementation-view button[aria-label^="Maximize"]'))
     await until('maximized before attention reveal', () => query('.terminal-tile.maximized'))
-    const attention = await until('attention menu', () =>
-      Array.from(document.querySelectorAll('.attention-button')).find((b) =>
-        b.textContent.includes('1 need input'),
-      ),
-    )
-    click(attention)
+    smoke.selectPanel('activity')
     click(await until('attention item', () => query('.attention-item')))
     await until(
       'attention item reveals the agent',
@@ -668,7 +657,7 @@
     // Background sessions are tiled only while they run; one still shown must read Stopped.
     const serverTile = tiles('unrelated').find((tile) => tile.textContent.includes('Server'))
     assert(
-      !query('.attention-button')?.textContent.includes('failed') &&
+      !document.querySelector('.utility-panel .health-fail') &&
         (!serverTile ||
           (serverTile.classList.contains('health-idle') &&
             serverTile.querySelector('.status-dot')?.title.startsWith('Stopped'))),
@@ -697,7 +686,7 @@
       exitCode: 1,
       exitedMs: Date.now(),
     })
-    click(await until('planner attention menu', () => query('.attention-button')))
+    smoke.selectPanel('activity')
     click(
       await until('second planner attention item', () =>
         [...document.querySelectorAll('.attention-item')].find((b) =>
@@ -839,6 +828,6 @@
       'PASS views: navigation actions, inspector files, hierarchy filter, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
-    await smoke.report(`FAIL views: ${e?.message ?? e}`)
+    await smoke.report(`FAIL views: ${e?.message ?? e} ${e?.stack ?? ''}`)
   }
 })()
