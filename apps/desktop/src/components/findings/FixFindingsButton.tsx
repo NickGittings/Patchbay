@@ -4,7 +4,7 @@ import { fixReviewFindings } from '../../lib/reviewHandoff'
 import { useStore } from '../../store'
 import type { SessionRecord } from '../../types'
 
-/** "Fix in Implementation →" for a review session's findings, once no reviewer still writes. */
+/** "Fix in Build →" for a review session's findings, once no reviewer still writes. */
 export default function FixFindingsButton({
   record,
   hasFindings,
@@ -32,7 +32,7 @@ export default function FixFindingsButton({
           .finally(() => setStarting(false))
       }}
     >
-      {starting ? 'Starting…' : 'Fix in Implementation →'}
+      {starting ? 'Starting…' : 'Fix in Build →'}
     </button>
   )
 }

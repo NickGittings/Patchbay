@@ -23,6 +23,20 @@
     assert(el, 'missing click target')
     el.click()
   }
+  // Chat mode is a checkable item in the toolbar's Settings menu.
+  const toggleSimple = async () => {
+    const settings = [...document.querySelectorAll('.toolbar .menu')].find(
+      (m) => m.querySelector('.menu-trigger')?.textContent.trim() === 'Settings',
+    )
+    click(settings?.querySelector('.menu-trigger'))
+    click(
+      await until('Chat mode menu item', () =>
+        [...settings.querySelectorAll('[role="menuitemcheckbox"]')].find((b) =>
+          b.textContent.startsWith('Chat mode'),
+        ),
+      ),
+    )
+  }
   const input = (el, value) => {
     assert(el, 'missing input')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -84,10 +98,26 @@
         )
     }
     state().setView('review')
-    click(button('Simple'))
+    await toggleSimple()
     await until('chat', () => document.querySelector('.simple-chat'))
     assert(state().view === 'review', 'Simple lost the last Full view')
     assert(!document.querySelector('.view-switcher button'), 'Full switcher visible in Simple')
+    assert(
+      document.querySelector('.toolbar .toolbar-mode')?.textContent === 'Chat mode',
+      'toolbar lacks the Chat mode label',
+    )
+    assert(!document.querySelector('.toolbar .simple-stage-tabs'), 'stage tabs in the toolbar')
+    const stageTab = (name) =>
+      [...document.querySelectorAll('.simple-chat .simple-stage-tabs button')].find((b) =>
+        b.textContent.startsWith(name),
+      )
+    click(stageTab('Review'))
+    await until('Review stage filter', () => {
+      const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
+      return shown.length === 1 && shown[0] === 'Review'
+    })
+    click(stageTab('All'))
+    await until('every stage shown', () => document.querySelectorAll('.simple-stage').length === 4)
     const canvas = document.querySelector('.navigation-shell .react-flow')
     assert(canvas, 'map missing')
     await send('  hello mail@example.test\nsecond line  ')
@@ -144,7 +174,7 @@
       state().simple.log.some((e) => e.sessionId === implementation),
       'history lost on worktree switch',
     )
-    click(button('Simple'))
+    await toggleSimple()
     await until('Full review restored', () => document.querySelector('.review-view'))
     assert(state().view === 'review', 'last Full view was not restored')
     state().setSimpleMode(true)

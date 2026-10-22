@@ -30,6 +30,14 @@
   padding: 12px;
   border-bottom: 1px solid var(--border);
 }
+.simple-chat > .simple-stage-tabs {
+  align-self: flex-start;
+  margin: 8px 12px 0;
+}
+.simple-stage-tabs button {
+  height: 24px;
+  padding: 0 10px;
+}
 .simple-thread {
   overflow: auto;
   flex: 1;

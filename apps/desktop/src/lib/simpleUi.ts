@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { SimpleStage } from './simple'
 export interface Mention {
   id: string
   token: string
@@ -16,8 +17,16 @@ export interface SimpleUi {
   recipient?: string
   expanded: string[]
   diff: SimpleDiff | null
+  /** The chat's stage tab: which sections the thread shows. */
+  stageFilter: SimpleStage | 'all'
 }
-export const emptySimpleUi = (): SimpleUi => ({ draft: '', mentions: [], expanded: [], diff: null })
+export const emptySimpleUi = (): SimpleUi => ({
+  draft: '',
+  mentions: [],
+  expanded: [],
+  diff: null,
+  stageFilter: 'all',
+})
 export const simpleKey = (projectId: string | undefined, task: string | null) =>
   JSON.stringify([projectId ?? '', task])
 export const useSimpleUi = create<{

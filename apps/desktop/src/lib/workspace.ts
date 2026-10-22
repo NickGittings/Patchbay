@@ -72,7 +72,6 @@ export function workspaceDocument(): WorkspaceDocument {
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
-              closedTaskIds: state.closedTaskIds,
               taskWorkspaces: state.taskWorkspaces,
               rootTerminals: state.rootTerminals,
               componentTerminals: state.componentTerminals,
@@ -103,10 +102,6 @@ export function restoredLayout(
   out.auto = restoredAuto(layout.auto)
   out.simple = restoredSimple(layout.simple)
   if (!nested) out.simpleMode = layout.simpleMode === true
-  if (!nested)
-    out.closedTaskIds = Array.isArray(layout.closedTaskIds)
-      ? [...new Set(layout.closedTaskIds.filter((id): id is string => typeof id === 'string'))]
-      : []
   if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
   // The active session belongs to the active task's scope, so both are restored together;
@@ -205,7 +200,6 @@ export function restoredLayout(
                 'view',
                 'simpleMode',
                 'activeTask',
-                'closedTaskIds',
                 'selectedId',
                 'selectedEdgeId',
                 'viewport',
@@ -349,7 +343,6 @@ export function initializeWorkspace() {
           s.panels === prev.panels &&
           s.groups === prev.groups &&
           s.activeTask === prev.activeTask &&
-          s.closedTaskIds === prev.closedTaskIds &&
           s.auto === prev.auto &&
           s.taskWorkspaces === prev.taskWorkspaces &&
           s.rootTerminals === prev.rootTerminals &&

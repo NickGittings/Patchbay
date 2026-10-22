@@ -13,6 +13,14 @@
   const smoke = await until('hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const s = () => smoke.store.getState()
+  const switcher = () => document.querySelector('.project-switcher > .menu-trigger')
+  // Opens the project menu (if closed) and returns its list.
+  const projectMenu = () =>
+    until('project menu', () => {
+      const trigger = switcher()
+      if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click()
+      return document.querySelector('.project-switcher [role="menu"]:not([hidden])')
+    })
   try {
     await until('restore', () => !s().restoring && s().serviceConnected)
     // An unavailable sole project can be restored without an active project identity.
@@ -24,16 +32,16 @@
       unavailable: 'Folder is unavailable',
     }
     smoke.store.setState({ projects: { [missing.id]: missing }, projectOrder: [missing.id] })
-    const missingTab = await until('sole unavailable tab', () =>
-      document.querySelector('.project-tab [role="tab"]'),
-    )
+    const missingTab = await until('sole unavailable project', () => switcher())
     if (!missingTab.textContent.includes('Missing project (unavailable)'))
       throw new Error('Sole unavailable project lost its name or status')
-    missingTab.click()
+    ;[...(await projectMenu()).querySelectorAll('.project-switcher-item')]
+      .find((item) => item.textContent.includes('Missing project'))
+      .click()
     await until('missing project recovery', () =>
       document.querySelector('.recovery-banner')?.textContent.includes(missing.root),
     )
-    document.querySelector('[aria-label="Close Missing project"]').click()
+    ;(await projectMenu()).querySelector('[aria-label="Close Missing project"]').click()
     await until('missing project closed', () => !s().projects[missing.id])
     const one = await smoke.openProject()
     smoke.acceptOpened(one)
@@ -55,7 +63,7 @@
     const sidOne = smoke.sessionId(first.id, 'counter')
     await until('first counter', () => s().sessions[sidOne]?.running)
     await until('sole project name and running count', () => {
-      const tab = document.querySelector('.project-tab [role="tab"]')
+      const tab = switcher()
       return tab?.textContent.includes(one.project.name) && tab.textContent.includes('(1 running)')
     })
     // Resize the native window so viewport media queries participate in the check.
@@ -99,27 +107,12 @@
           '.toolbar-group.end > .menu > .menu-trigger',
       ))
         assertVisible(button, toolbar, button.textContent)
-      const tabs = toolbar.querySelector('.project-tabs')
-      assertVisible(tabs, toolbar, 'project tab strip')
-      if (tabs.scrollWidth <= tabs.clientWidth)
-        throw new Error('Multiple long project tabs should scroll')
-      for (const tab of tabs.querySelectorAll('.project-tab')) {
-        const name = tab.querySelector('.project-tab-name')
-        if (name.getBoundingClientRect().width < 190)
-          throw new Error('Project name shrank instead of scrolling')
-        for (const part of tab.querySelectorAll(
-          '.project-tab-name, .project-tab-status, button:not([role="tab"])',
-        )) {
-          // Every name, status and close target must be reachable by scrolling.
-          const box = part.getBoundingClientRect()
-          const bounds = tabs.getBoundingClientRect()
-          tabs.scrollLeft += box.left - bounds.left - (bounds.width - box.width) / 2
-          assertVisible(part, tabs, part.textContent)
-          if (part.classList.contains('project-tab-status') && part.scrollWidth > part.clientWidth)
-            throw new Error('Project status text is truncated')
-        }
-      }
-      tabs.scrollLeft = 0
+      // The active project's name truncates; its status never does.
+      const project = switcher()
+      assertVisible(project, toolbar, 'project switcher')
+      for (const status of project.querySelectorAll('.project-status'))
+        if (status.scrollWidth > status.clientWidth)
+          throw new Error('Project status text is truncated')
     }
     try {
       s().setView('navigation')
@@ -133,9 +126,17 @@
           },
           projectOrder: [one.id, ...extraProjects.slice(0, count - 1).map((p) => p.id)],
         })
+        const menu = await projectMenu()
         await until(
-          `${count} project tabs`,
-          () => document.querySelectorAll('.project-tab').length === count,
+          `${count} projects listed`,
+          () => menu.querySelectorAll('.project-switcher-row').length === count,
+        )
+        for (const close of menu.querySelectorAll('.project-switcher-close'))
+          assertVisible(close, menu, close.getAttribute('aria-label'))
+        switcher().click()
+        await until(
+          'project menu closed',
+          () => switcher().getAttribute('aria-expanded') !== 'true',
         )
         for (const width of [1440, 1200, 1100, 900]) {
           await smoke.resizeWindow(width, originalSize.height)

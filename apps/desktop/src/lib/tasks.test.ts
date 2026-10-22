@@ -27,6 +27,7 @@ const {
   seedNewTask,
   refreshTasks,
   removeTask,
+  shortTitle,
   titleFor,
 } = await import('./tasks')
 const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')
@@ -193,6 +194,21 @@ test("removing a worktree drops its Auto draft, not the project folder's", async
 test('a goal seeds a short, single-line worktree title', () => {
   expect(titleFor('\n## Optimize tokens\n\nCut the briefing in half.')).toBe('Optimize tokens')
   expect(titleFor('   ')).toBe('')
+  expect(shortTitle('Fix trends nutrition graphs. When navigating between timeframes it is')).toBe(
+    'Fix trends nutrition graphs…',
+  )
+  expect(shortTitle('Fix login')).toBe('Fix login')
+  expect(shortTitle('Fix login.')).toBe('Fix login')
+  expect(shortTitle('Add a settings page for every user role')).toBe('Add a settings page…')
+  expect(shortTitle('v1.2 release: notes')).toBe('v1.2 release: notes')
+  expect(shortTitle('WIP: login flow')).toBe('WIP: login flow')
+  expect(shortTitle('Fix login; then deploy it today')).toBe('Fix login; then deploy…')
+  expect(shortTitle('Fix  login')).toBe('Fix login')
+  expect(shortTitle('Ship it?!')).toBe('Ship it')
+  expect(shortTitle('Ship it?! Then rest')).toBe('Ship it…')
+  expect(shortTitle('Fix login\n\n')).toBe('Fix login')
+  expect(shortTitle('Fix login\nwith details')).toBe('Fix login…')
+  expect(shortTitle('Add a settings  page.')).toBe('Add a settings page')
   const long = titleFor('word '.repeat(40))
   expect(long.length).toBeLessThanOrEqual(72)
   expect(long).not.toMatch(/\s$/)

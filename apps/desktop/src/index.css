@@ -436,14 +436,29 @@ input[type='radio'] {
   grid-column: 3;
   justify-content: flex-end;
 }
-/* Status labels truncate instead of wrapping, so the toolbar's height never follows them. */
+/*
+ * The left group's short controls and the project name (capped below) keep their size; the
+ * worktree label and the end group's status buttons and labels (Auto, attention, activity, map
+ * save status) give way and truncate, so the toolbar's height never follows them.
+ */
+.toolbar .toolbar-group > * {
+  flex: none;
+}
+.toolbar .toolbar-group > .worktree-picker,
 .toolbar .toolbar-group.end > *,
 .toolbar .toolbar-group.end > .menu > .menu-trigger {
   flex: 0 1 auto;
   min-width: 0;
+}
+.toolbar .toolbar-group.end > * {
   max-width: 100%;
 }
-.toolbar .toolbar-group.end > .worktree-picker > .menu-trigger {
+.toolbar .toolbar-group > .worktree-picker > .menu-trigger {
+  min-width: 0;
+  max-width: min(240px, 100%);
+}
+.toolbar .attention .attention-button {
+  min-width: 0;
   max-width: min(240px, 100%);
 }
 .toolbar .toolbar-group.end > button,
@@ -452,20 +467,11 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.toolbar .attention {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.toolbar .attention .attention-button {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-}
 .attention-summary {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.view-switcher {
+.view-tabs {
   flex: none;
   display: flex;
   gap: 2px;
@@ -474,30 +480,36 @@ input[type='radio'] {
   border: 1px solid var(--border);
   border-radius: 9px;
 }
-.view-switcher button {
+.view-tabs button {
   color: var(--muted);
   background: none;
   border: none;
 }
-.view-switcher button:hover:not(.active) {
+.view-tabs button:hover:not(.active) {
   color: var(--text);
   background: transparent;
 }
-.view-switcher button.active,
-.view-switcher button.active:hover:not(:disabled) {
+.view-tabs button.active,
+.view-tabs button.active:hover:not(:disabled) {
   color: #fff;
   background: var(--accent);
   box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 35%, transparent);
 }
-.toolbar .view-switcher button {
+.toolbar .view-tabs button {
   min-width: 96px;
   height: 26px;
+}
+.toolbar-mode {
+  justify-self: center;
+  color: var(--muted);
+  font-weight: 600;
 }
 @media (max-width: 1300px) {
   .toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .toolbar > .view-switcher {
+  .toolbar > .view-tabs,
+  .toolbar > .toolbar-mode {
     grid-column: 1 / -1;
     grid-row: 2;
     justify-self: center;
@@ -508,9 +520,18 @@ input[type='radio'] {
   }
 }
 @media (max-width: 1100px) {
-  .toolbar .view-switcher button {
+  .toolbar .view-tabs button {
     min-width: 0;
   }
+}
+.simple-stage-tabs .simple-stage-current {
+  margin-left: 6px;
+  font-size: 8px;
+  color: var(--running);
+  vertical-align: middle;
+}
+.simple-stage-tabs button.active .simple-stage-current {
+  color: inherit;
 }
 .toolbar select {
   height: 28px;
@@ -1162,17 +1183,6 @@ input[type='radio'] {
   flex-direction: column;
   min-width: 0;
 }
-.implementation-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-.implementation-header > button {
-  flex: none;
-}
 .component-switcher {
   display: flex;
   gap: 6px;
@@ -1261,7 +1271,7 @@ input[type='radio'] {
   margin: 2px 4px;
   background: var(--border-strong);
 }
-.implementation-header .header-action {
+.implementation-view .header-action {
   flex: none;
   height: 28px;
   padding: 0 10px;
@@ -1271,26 +1281,22 @@ input[type='radio'] {
   border-color: var(--border);
   border-radius: var(--radius-sm);
 }
-.implementation-header .header-action:hover:not(:disabled) {
+.implementation-view .header-action:hover:not(:disabled) {
   background: var(--hover);
   border-color: var(--border-hover);
 }
-.implementation-header .add-component {
-  width: auto;
-  max-width: 180px;
-}
-.implementation-header .header-action.active,
-.implementation-header .header-action.active:hover:not(:disabled) {
+.implementation-view .header-action.active,
+.implementation-view .header-action.active:hover:not(:disabled) {
   color: var(--accent-text);
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
-.implementation-header .header-action.start-all:not(:disabled) {
+.implementation-view .header-action.start-all:not(:disabled) {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
 }
-.implementation-header .header-action.start-all:hover:not(:disabled) {
+.implementation-view .header-action.start-all:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 85%, #fff);
   border-color: color-mix(in srgb, var(--accent) 85%, #fff);
 }
@@ -1702,11 +1708,6 @@ input[type='radio'] {
   flex: 1;
   font-size: 12px;
 }
-.review-worktree {
-  max-width: 60%;
-  font-size: 12px;
-  padding: 3px 6px;
-}
 .review-refresh {
   padding: 2px 8px;
 }
@@ -1952,51 +1953,50 @@ button.review-name:hover:not(:disabled) {
   border-top: 1px solid var(--border);
 }
 
-.project-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
+.project-switcher {
   margin-left: 6px;
-  overflow-x: auto;
 }
-.project-tab {
-  display: flex;
-  flex: none;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+.toolbar .project-switcher > .menu-trigger {
+  max-width: 220px;
 }
-.project-tab:hover {
-  background: var(--panel-2);
-}
-.project-tab.active {
-  color: var(--text);
-  background: var(--panel-2);
-  border-color: var(--border-strong);
-}
-.project-tab button,
-.project-tab button:hover:not(:disabled) {
-  color: inherit;
-  border: 0;
-  background: transparent;
-}
-.toolbar .project-tab button[role='tab'] {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.project-tab-name {
-  max-width: 200px;
+.project-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.project-tab-status {
+.project-status {
   flex: none;
+  color: var(--muted);
 }
-.toolbar .project-tab button:not([role='tab']) {
-  padding: 0 8px 0 2px;
+.project-switcher-row {
+  display: flex;
+  align-items: center;
+}
+.menu-list .project-switcher-item {
+  flex: 1;
+  min-width: 0;
+  max-width: 360px;
+}
+.project-switcher-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+.project-check {
+  width: 12px;
+  flex: none;
+  color: var(--accent);
+}
+.menu-list .project-switcher-close {
+  width: auto;
+  flex: none;
+  padding: 0 8px;
+  color: var(--muted);
+}
+.menu-check {
+  color: var(--accent);
 }
 .toolbar button.toolbar-search {
   padding: 0 8px;
@@ -2236,13 +2236,6 @@ button.review-name:hover:not(:disabled) {
 .plan-scope-header {
   flex-wrap: wrap;
   gap: 6px;
-}
-.plan-scope-header .worktree-picker {
-  flex-basis: 100%;
-}
-.plan-scope-header .worktree-picker .menu-trigger {
-  max-width: 100%;
-  width: 100%;
 }
 .component-node.in-task:not(.selected):not(.highlighted) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
@@ -2649,56 +2642,12 @@ kbd {
   color: var(--bad);
 }
 
-.task-tabs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.task-tab-list {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow-x: auto;
-  flex: 1;
-  min-width: 0;
-}
 .task-tab-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   flex: none;
 }
-.task-tab {
-  display: flex;
-  align-items: center;
-  flex: none;
-  height: 28px;
-  box-shadow: inset 0 -2px 0 transparent;
-}
-.task-tab.active {
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-.task-tabs .tab {
-  height: 100%;
-  padding: 0 10px;
-  font-size: 12px;
-  white-space: nowrap;
-  box-shadow: none;
-}
-.task-tab-close {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  margin-right: 2px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 16px;
-}
-.task-tabs .task-menu .menu-trigger,
 .session-row .session-menu .menu-trigger {
   width: 28px;
   height: 28px;

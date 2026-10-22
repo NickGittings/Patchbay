@@ -428,7 +428,7 @@
     click(viewButton('Plan'))
     await until('shared Plan scope', () => nodeElement('beta')?.querySelector('.highlighted'))
     assert(!nodeElement('alpha').querySelector('.highlighted'), 'filters lost shared Plan scope')
-    click(viewButton('Implementation'))
+    click(viewButton('Build'))
     await until('returned task workspace', () => tiles('beta').length)
     assertScope(['beta'])
     state().select('beta')

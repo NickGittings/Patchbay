@@ -29,20 +29,14 @@ import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
 import type { FileRef } from '../lib/findings'
 
-/** The watcher covers the open and active task's worktrees; another one is polled while shown. */
+/** Worktree branches and HEADs are polled while shown; the watcher covers their diffs. */
 const WORKTREE_POLL_MS = 5000
-
-function worktreeLabel(w: Worktree) {
-  const name = w.path.split(/[\\/]/).pop() ?? w.path
-  const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
-  return `${branch} · ${name}${w.current ? ' (main worktree)' : ''}`
-}
 
 /**
  * Every uncommitted change on the map, grouped by component (plus project files no component
  * contains), with the components that depend on changed ones and whether each one's task
- * terminals ran since the change. Chips filter the components; another worktree of the repo can
- * be reviewed in place of the open one.
+ * terminals ran since the change. Chips filter the components; the toolbar's worktree picker
+ * chooses which worktree of the repo is reviewed.
  */
 export default function ReviewView() {
   const revision = useStore((s) => s.gitChanges)
@@ -73,14 +67,17 @@ export default function ReviewView() {
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)
   const taskWorktree = useStore(activeWorktree)
-  // The worktree picked here; until then (and after switching tasks) the active task's.
-  const [picked, setPicked] = useState<{ task: string | null; path: string | undefined }>()
-  // Auto's findings are the active task's, so its request also drops a worktree picked here.
-  if (findingsFocus && (pane !== 'findings' || picked)) {
-    setPane('findings')
-    setPicked(undefined)
+  if (findingsFocus && pane !== 'findings') setPane('findings')
+  // Review follows the toolbar's worktree picker; switching worktree drops the previous one's
+  // selection, loaded review and a diff opened from its findings.
+  const worktree = taskWorktree
+  const [shownWorktree, setShownWorktree] = useState(worktree)
+  if (shownWorktree !== worktree) {
+    setShownWorktree(worktree)
+    setSelected(null)
+    setLoaded(undefined)
+    if (pane === 'fromFindings') setPane('diff')
   }
-  const worktree = picked?.task === activeTask ? picked.path : taskWorktree
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [reviewDialogScope, setReviewDialogScope] = useState<string | null>(null)
@@ -136,13 +133,13 @@ export default function ReviewView() {
         )
       : undefined,
   )
-  // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
-  // The open worktree's sessions belong to the active task when the project is open in its
-  // worktree, and to no task otherwise.
-  const openTask = tasks.find((t) => t.id === activeTask && t.current && !t.missing)
-  const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : openTask
-  const validationTask = other ? (reviewTask?.id ?? undefined) : (openTask?.id ?? null)
-  const watched = !other || other.path === taskWorktree
+  // Review shows the active task's worktree, which the watcher keeps current. Terminals are keyed
+  // by task: the open worktree's sessions belong to the active task when the project is open in
+  // its worktree, and to no task otherwise.
+  const reviewTask = tasks.find(
+    (t) => t.id === activeTask && !t.missing && (other ? t.worktree === other.path : t.current),
+  )
+  const validationTask = reviewTask?.id ?? null
 
   // Findings of deleted branches are dropped once per visit, off the polling path.
   useEffect(() => {
@@ -164,19 +161,16 @@ export default function ReviewView() {
     }
   }, [projectId, worktreesKey, activeTask, worktreeRefresh])
 
-  // Poll branch metadata independently; also refresh diffs for an unwatched worktree.
+  // Poll branch metadata independently of the diff watcher.
   useEffect(() => {
-    const bump = () => {
-      setWorktreeRefresh((n) => n + 1)
-      if (target && !watched) setRefresh((n) => n + 1)
-    }
+    const bump = () => setWorktreeRefresh((n) => n + 1)
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('focus', bump)
     }
-  }, [target, watched])
+  }, [])
 
   useEffect(() => {
     let disposed = false
@@ -303,28 +297,6 @@ export default function ReviewView() {
                         Show agents
                       </button>
                     )}
-                    {worktrees.length > 1 && (
-                      <select
-                        className="review-worktree"
-                        title={other ? `Reviewing ${other.path}` : 'Worktree to review'}
-                        value={other?.path ?? ''}
-                        onChange={(e) => {
-                          setPicked({ task: activeTask, path: e.target.value || undefined })
-                          setSelected(null)
-                          setLoaded(undefined)
-                        }}
-                      >
-                        {worktrees.map((w) => {
-                          const task = tasks.find((t) => t.worktree === w.path)
-                          return (
-                            <option key={w.path} value={w.current ? '' : w.path}>
-                              {task ? `${task.title} — ` : ''}
-                              {worktreeLabel(w)}
-                            </option>
-                          )
-                        })}
-                      </select>
-                    )}
                     <button
                       className="review-refresh"
                       title="Refresh review"
@@ -388,8 +360,6 @@ export default function ReviewView() {
                     Viewing {reviewTask ? `“${reviewTask.title}” on ` : ''}
                     <code>{other.branch ?? `detached ${other.head.slice(0, 7)}`}</code> at{' '}
                     <code>{other.path}</code>.
-                    {validationTask === undefined &&
-                      ' Validation status is hidden because this worktree has no tracked task sessions.'}
                   </div>
                 )}
                 {error && <div className="hint file-tree-error">{error}</div>}
@@ -430,7 +400,7 @@ export default function ReviewView() {
                         <span className="review-count">{plural(g.files.length, 'file')}</span>
                         <DiffStat {...lineTotals(g.files)} />
                       </header>
-                      {!project && validationTask !== undefined && (
+                      {!project && (
                         <ValidationChips
                           componentId={g.id}
                           changedAt={latestChange(g.files)}
@@ -475,13 +445,11 @@ export default function ReviewView() {
                             </button>
                             <span className="review-via">via {a.via.map(nameOf).join(', ')}</span>
                           </header>
-                          {validationTask !== undefined && (
-                            <ValidationChips
-                              componentId={a.id}
-                              changedAt={latestChangeOf(review.changes, a.via)}
-                              task={validationTask}
-                            />
-                          )}
+                          <ValidationChips
+                            componentId={a.id}
+                            changedAt={latestChangeOf(review.changes, a.via)}
+                            task={validationTask}
+                          />
                         </section>
                       )
                     })}

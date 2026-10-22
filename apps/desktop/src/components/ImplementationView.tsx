@@ -4,7 +4,7 @@ import { parseSessionId } from '../types'
 import EmptyState from './EmptyState'
 import TaskTerminals from './TaskTerminals'
 import { ActivityStatus, RunSelect } from './tasks/TaskActivityPanel'
-import TaskTabs from './tasks/TaskTabs'
+import TaskActions from './tasks/TaskActions'
 
 export default function ImplementationView() {
   const sessions = useStore((s) => s.sessions)
@@ -37,11 +37,10 @@ export default function ImplementationView() {
   const shown = shownTaskTerminals(entries, maximized)
   return (
     <div className="workspace implementation-view">
-      <header className="implementation-header">
-        <TaskTabs />
-      </header>
       <div className="task-controls row">
         <RunSelect />
+        <span className="spacer" />
+        <TaskActions />
       </div>
       <ActivityStatus />
       <div className="implementation-terminals">

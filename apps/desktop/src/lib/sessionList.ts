@@ -30,7 +30,7 @@ export function sessionRole(metadata: SessionMetadata): SessionRole {
     default:
       // Root terminals and component terminals alike: agents implement, the rest run tasks.
       return metadata.kind === 'agent'
-        ? { role: 'Implementation', tone: 'implement' }
+        ? { role: 'Build', tone: 'implement' }
         : { role: 'Task', tone: 'task' }
   }
 }

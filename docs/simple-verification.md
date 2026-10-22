@@ -1,4 +1,4 @@
-# Simple mode verification
+# Chat mode verification
 
 The initial implementation budget was three to four weeks. Terminal ownership and session recovery were inspected in the first increment; the code is delivered in four reviewable commits on `simple-mode`.
 

@@ -205,12 +205,43 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
  * selector only re-renders when a count changes.
  */
 export function attentionCounts(s: Snapshot): string {
+  return JSON.stringify(countAttention(s))
+}
+
+function countAttention(s: Snapshot): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const item of attentionItems(s)) {
     const key = item.task ?? ''
     counts[key] = (counts[key] ?? 0) + 1
   }
-  return JSON.stringify(counts)
+  return counts
+}
+
+/**
+ * `attentionCounts` plus each other worktree's finished graph actions (validation, environments)
+ * the user hasn't seen there, for the worktree picker. The worktree on screen counts none: its
+ * actions are marked seen when it is left (`followActiveTask`). Returns a fresh object of numbers,
+ * for `useShallow`.
+ */
+export function worktreeAttention(
+  s: Snapshot &
+    Pick<ReturnType<typeof useStore.getState>, 'project' | 'taskActivities' | 'seenActivities'>,
+): Record<string, number> {
+  const counts = countAttention(s)
+  const activities = Object.values(s.taskActivities)
+  if (!activities.length) return counts
+  const seen = new Set(s.seenActivities)
+  for (const activity of activities) {
+    const task = activity.task ?? null
+    if (
+      activity.projectId === s.project?.id &&
+      task !== (s.activeTask ?? null) &&
+      activity.state !== 'running' &&
+      !seen.has(activity.id)
+    )
+      counts[task ?? ''] = (counts[task ?? ''] ?? 0) + 1
+  }
+  return counts
 }
 
 /**

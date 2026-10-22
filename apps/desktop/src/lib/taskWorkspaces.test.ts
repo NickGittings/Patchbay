@@ -97,98 +97,9 @@ test('assigned project checkout has one workspace and unavailable tasks cannot a
   expect(useStore.getState().activeTask).toBe('current')
 })
 
-test('closing the active tab preserves its task, processes, focus and layout for reopening', () => {
+test('a background project follows task refreshes and switches without activating', () => {
   const s = useStore.getState()
   s.setActiveTask('one')
-  const rootId = s.addRootTerminal(null)
-  s.addTaskComponentTerminal('web', 'dev')
-  const sid = sessionId(TASK_ROOT_SCOPE, rootId, 'one', 'p')
-  s.setActiveSession(sid)
-  s.setMaximizedTerminal(sid)
-  s.setPanelLayout('split', { a: 70, b: 30 })
-  s.setSession(sid, { running: true })
-  const before = useStore.getState()
-  s.closeTaskTab('one')
-  expect(useStore.getState().activeTask).toBe('two')
-  expect(useStore.getState().closedTaskIds).toEqual(['one'])
-  expect(useStore.getState().tasks).toBe(before.tasks)
-  expect(useStore.getState().sessions).toBe(before.sessions)
-  expect(useStore.getState().dirty).toBe(false)
-  s.setActiveTask('one')
-  const reopened = useStore.getState()
-  expect(reopened.closedTaskIds).toEqual([])
-  expect(reopened.rootTerminals).toEqual(before.rootTerminals)
-  expect(reopened.componentTerminals).toEqual(before.componentTerminals)
-  expect(reopened.highlighted).toEqual(before.highlighted)
-  expect(reopened.activeSession).toBe(sid)
-  expect(reopened.maximizedTerminal).toBe(sid)
-  expect(reopened.panels.split).toEqual({ a: 70, b: 30 })
-})
-
-test('closing an inactive or unavailable tab keeps the active workspace selected', () => {
-  const s = useStore.getState()
-  s.setTasks([task('one'), { ...task('two'), missing: true }])
-  s.setActiveTask('one')
-  const before = useStore.getState()
-  s.closeTaskTab('two')
-  s.closeTaskTab('two')
-  s.closeTaskTab('unknown')
-  expect(useStore.getState().activeTask).toBe('one')
-  expect(useStore.getState().closedTaskIds).toEqual(['two'])
-  expect(useStore.getState().rootTerminals).toBe(before.rootTerminals)
-  expect(useStore.getState().taskWorkspaces).toBe(before.taskWorkspaces)
-  s.setActiveTask('two')
-  expect(useStore.getState().closedTaskIds).toEqual(['two'])
-})
-
-test('closing chooses the next visible available tab, then previous, then main', () => {
-  const s = useStore.getState()
-  s.setTasks([task('one'), { ...task('missing'), missing: true }, task('two'), task('three')])
-  s.closeTaskTab('three')
-  s.setActiveTask('one')
-  s.closeTaskTab('one')
-  expect(useStore.getState().activeTask).toBe('two')
-  s.closeTaskTab('two')
-  expect(useStore.getState().activeTask).toBeNull()
-  s.setActiveTask('one')
-  s.setActiveTask('two')
-  s.closeTaskTab('two')
-  expect(useStore.getState().activeTask).toBe('one')
-})
-
-test('the named current checkout stays pinned and is selected after the last task closes', () => {
-  const s = useStore.getState()
-  s.setTasks([{ ...task('current'), current: true }, task('one')])
-  s.closeTaskTab('current')
-  expect(useStore.getState().closedTaskIds).toEqual([])
-  s.setActiveTask('one')
-  s.closeTaskTab('one')
-  expect(useStore.getState().activeTask).toBe('current')
-})
-
-test('task refresh retains closed tabs, prunes removed ids and reveals the current checkout', () => {
-  const s = useStore.getState()
-  s.closeTaskTab('one')
-  s.closeTaskTab('two')
-  s.setTasks([task('one'), task('two'), task('new')])
-  expect(useStore.getState().closedTaskIds).toEqual(['one', 'two'])
-  s.setTasks([task('two'), task('new')])
-  expect(useStore.getState().closedTaskIds).toEqual(['two'])
-  s.setTasks([{ ...task('two'), current: true }, task('new')])
-  expect(useStore.getState().closedTaskIds).toEqual([])
-  expect(useStore.getState().activeTask).toBe('two')
-})
-
-test('closed tabs persist per project across workspace restoration and background updates', () => {
-  const s = useStore.getState()
-  s.setActiveTask('one')
-  s.closeTaskTab('one')
-  s.setActiveTask('two')
-  const layout = workspaceDocument().projects[0].layout
-  useStore.setState(restoredLayout(layout))
-  s.setTasks([task('one'), task('two')])
-  expect(useStore.getState().closedTaskIds).toEqual(['one'])
-  expect(useStore.getState().taskWorkspaces.one).not.toHaveProperty('closedTaskIds')
   s.loadProject({
     projectId: 'q',
     root: '/q',
@@ -197,30 +108,16 @@ test('closed tabs persist per project across workspace restoration and backgroun
     links: [],
     components: [],
   })
-  s.setTasks([task('one'), task('two')])
-  s.closeTaskTab('two')
-  expect(useStore.getState().closedTaskIds).toEqual(['two'])
-  const background = s.captureProjects().p.state!
-  s.patchProject('p', reconcileTaskList(background, [task('one'), task('two')]))
-  expect(s.captureProjects().p.state!.closedTaskIds).toEqual(['one'])
-  s.patchProject('p', switchTaskWorkspace(s.captureProjects().p.state!, 'one'))
-  expect(useStore.getState().closedTaskIds).toEqual(['two'])
-  s.activateProject('p')
-  expect(useStore.getState().closedTaskIds).toEqual([])
-  expect(useStore.getState().activeTask).toBe('one')
-  s.closeTaskTab('two')
-  s.loadProject({
-    projectId: 'r',
-    root: '/r',
-    name: 'R',
-    schemaVersion: 4,
-    links: [],
-    components: [],
-  })
+  s.patchProject('p', switchTaskWorkspace(s.captureProjects().p.state!, 'two'))
+  expect(s.captureProjects().p.state!.activeTask).toBe('two')
   s.patchProject('p', reconcileTaskList(s.captureProjects().p.state!, [task('one')]))
+  expect(s.captureProjects().p.state!.activeTask).toBeNull()
+  expect(useStore.getState().activeTask).toBeNull()
   s.activateProject('p')
-  expect(useStore.getState().closedTaskIds).toEqual([])
+  expect(useStore.getState().activeTask).toBeNull()
+  expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['one'])
 })
+
 test('late results update the initiating task in a background project', () => {
   const s = useStore.getState()
   s.setActiveTask('one')

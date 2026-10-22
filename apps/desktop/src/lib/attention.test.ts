@@ -10,7 +10,7 @@ const revealState = vi.hoisted(() => ({
   select: vi.fn(),
 }))
 vi.mock('../store', () => ({ useStore: { getState: () => revealState } }))
-const { attentionCounts, attentionItems, componentTerminals, mostUrgent } =
+const { attentionCounts, attentionItems, componentTerminals, mostUrgent, worktreeAttention } =
   await import('./attention')
 
 setProjectIdentity('p-1')
@@ -74,6 +74,31 @@ test('counts are grouped by task', () => {
     [sessionId('web', 'lint', 'abc')]: failed(1),
   })
   expect(JSON.parse(attentionCounts(s))).toEqual({ '': 1, abc: 2 })
+})
+
+test("worktree attention adds the open project's finished actions not yet seen", () => {
+  const activity = (id: string, task: string | null, state: string, projectId = 'p-1') => ({
+    id,
+    projectId,
+    task,
+    state,
+  })
+  const s = {
+    ...snapshot({ [sessionId('web', 'agent', 'abc')]: needsInput(1) }),
+    project: { id: 'p-1' },
+    taskActivities: {
+      a: activity('a', 'abc', 'finished'),
+      b: activity('b', null, 'failed'),
+      c: activity('c', null, 'running'),
+      d: activity('d', null, 'finished'),
+      e: activity('e', 'abc', 'failed', 'p-2'),
+    },
+    seenActivities: ['d'],
+    activeTask: 'other',
+  } as unknown as Parameters<typeof worktreeAttention>[0]
+  expect(worktreeAttention(s)).toEqual({ abc: 2, '': 1 })
+  // The worktree on screen counts its terminals but none of its actions.
+  expect(worktreeAttention({ ...s, activeTask: 'abc' })).toEqual({ abc: 1, '': 1 })
 })
 
 test("extension-started terminals count, but only the open project's", () => {

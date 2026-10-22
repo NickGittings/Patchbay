@@ -5,7 +5,11 @@ import Popover, { type PopoverProps } from './Popover'
 
 /** Enabled items only: focus can't land on a disabled one, so arrows would stop there. */
 const items = (list: HTMLElement | null) =>
-  Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])
+  Array.from(
+    list?.querySelectorAll<HTMLButtonElement>(
+      ':is([role="menuitem"], [role="menuitemcheckbox"]):not(:disabled)',
+    ) ?? [],
+  )
 
 /** Focus the next item in `step`'s direction, wrapping; from outside, down starts first, up last. */
 const move = (all: HTMLButtonElement[], step: 1 | -1) => {
@@ -46,23 +50,29 @@ export default function Menu(props: PopoverProps) {
   )
 }
 
-/** A menu entry; `className` replaces the default `menu-item` look for custom rows. */
+/**
+ * A menu entry; `className` replaces the default `menu-item` look for custom rows. With `checked`
+ * it is a checkbox item that shows a check mark while on.
+ */
 export function MenuItem({
   onClick,
   shortcut,
+  checked,
   className = 'menu-item',
   children,
   ...rest
-}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'role'> & {
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'role' | 'aria-checked'> & {
   onClick: () => void
   shortcut?: string
+  checked?: boolean
   children: ReactNode
 }) {
   const close = useContext(CloseMenu)
   return (
     <button
       {...rest}
-      role="menuitem"
+      role={checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+      aria-checked={checked}
       // Arrow keys move between items; Tab leaves the menu.
       tabIndex={-1}
       className={className}
@@ -73,8 +83,33 @@ export function MenuItem({
       }}
     >
       {children}
+      {checked !== undefined && <span className="menu-check">{checked ? '✓' : ''}</span>}
       {shortcut && <kbd className="menu-shortcut">{shortcut}</kbd>}
     </button>
+  )
+}
+
+/**
+ * A secondary button beside a `MenuItem` (a row's close ×): clickable, closes the menu like an
+ * item, but left out of the arrow-key ring so moving through items never lands on it.
+ */
+export function MenuSideButton({
+  onClick,
+  ...rest
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'role' | 'tabIndex'> & {
+  onClick: () => void
+}) {
+  const close = useContext(CloseMenu)
+  return (
+    <button
+      {...rest}
+      type="button"
+      tabIndex={-1}
+      onClick={() => {
+        close()
+        onClick()
+      }}
+    />
   )
 }
 
