@@ -411,8 +411,8 @@ input[type='radio'] {
 
 .toolbar {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
   min-height: 46px;
@@ -432,13 +432,25 @@ input[type='radio'] {
   gap: 6px;
   min-width: 0;
 }
-.toolbar-group:first-child {
-  flex: 1 1 260px;
-}
 .toolbar-group.end {
-  flex: 1 1 max-content;
-  flex-wrap: wrap;
+  grid-column: 3;
   justify-content: flex-end;
+}
+/* Status labels truncate instead of wrapping, so the toolbar's height never follows them. */
+.toolbar .toolbar-group.end > *,
+.toolbar .toolbar-group.end > .menu > .menu-trigger {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.toolbar .toolbar-group.end > .worktree-picker > .menu-trigger {
+  max-width: min(240px, 100%);
+}
+.toolbar .toolbar-group.end > button,
+.map-save-status [role='status'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toolbar .attention {
   flex: 0 1 auto;
@@ -480,6 +492,20 @@ input[type='radio'] {
 .toolbar .view-switcher button {
   min-width: 96px;
   height: 26px;
+}
+@media (max-width: 1300px) {
+  .toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .toolbar > .view-switcher {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+  }
+  .toolbar-group.end {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 @media (max-width: 1100px) {
   .toolbar .view-switcher button {
@@ -1937,8 +1963,7 @@ button.review-name:hover:not(:disabled) {
 }
 .project-tab {
   display: flex;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: none;
   color: var(--muted);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -1958,10 +1983,17 @@ button.review-name:hover:not(:disabled) {
   background: transparent;
 }
 .toolbar .project-tab button[role='tab'] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.project-tab-name {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 0 1 auto;
+}
+.project-tab-status {
+  flex: none;
 }
 .toolbar .project-tab button:not([role='tab']) {
   padding: 0 8px 0 2px;

@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 use tauri::webview::PageLoadEvent;
-use tauri::{Builder, Listener, Wry};
+use tauri::{Builder, Listener, Manager, Wry};
 
 const REPORT_EVENT: &str = "patchbay://smoke-report";
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -57,10 +57,20 @@ pub fn window<'a>(
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
 }
 
+/// Prepares the app for a smoke run; does nothing outside one.
+///
+/// # Panics
+///
+/// Panics if the smoke-only window resize capability can't be added.
 pub fn setup(app: &mut tauri::App) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return;
     }
+    // Only smoke runs may resize the main window through the dev-only frontend hook.
+    app.add_capability(
+        r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size"]}"#,
+    )
+    .expect("smoke resize capability");
     // Run in the background: wry activates the app for every new top-level webview, which
     // would take focus from whatever the user is doing, but a prohibited app can't activate.
     #[cfg(target_os = "macos")]

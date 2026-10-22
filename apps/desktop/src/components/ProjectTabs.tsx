@@ -13,6 +13,7 @@ export default function ProjectTabs() {
     <nav className="project-tabs" aria-label="Projects">
       {order.map((id) => {
         const entry = projects[id]
+        if (!entry) return null
         const count = records.filter(
           (r) => r.metadata.projectId === id && r.snapshot?.running,
         ).length
@@ -24,9 +25,9 @@ export default function ProjectTabs() {
               onClick={() => activate(id)}
               title={entry.root}
             >
-              {entry.name}
-              {entry.unavailable ? ' (unavailable)' : ''}
-              {count ? ` (${count} running)` : ''}
+              <span className="project-tab-name">{entry.name}</span>
+              {entry.unavailable && <span className="project-tab-status"> (unavailable)</span>}
+              {!!count && <span className="project-tab-status"> ({count} running)</span>}
             </button>
             <button aria-label={`Close ${entry.name}`} onClick={() => void closeProjectTab(id)}>
               ×

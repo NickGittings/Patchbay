@@ -112,6 +112,10 @@ const hooks = {
   sessionGeneration,
   terminalNavigationState,
   flushWorkspace,
+  resizeWindow: async (width: number, height: number) => {
+    const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window')
+    await getCurrentWindow().setSize(new LogicalSize(width, height))
+  },
   windowLabels: () =>
     import('@tauri-apps/api/webviewWindow').then(async ({ getAllWebviewWindows }) =>
       (await getAllWebviewWindows()).map((w) => w.label),

@@ -136,13 +136,19 @@ export default function Toolbar() {
               </>
             )}
             <MenuSeparator />
-            <MenuItem onClick={showFileSearch} shortcut={`${mod}P`}>
-              Search files
+            <MenuItem
+              onClick={() => useStore.getState().setPaletteOpen(true)}
+              shortcut={`${shiftMod}P`}
+            >
+              Commands
             </MenuItem>
-            {project && (
-              <MenuItem onClick={() => void closeProjectTab(project.id)}>Close project</MenuItem>
-            )}
             <ExtensionMenu slot="toolbar" asMenuItems />
+            {project && (
+              <>
+                <MenuSeparator />
+                <MenuItem onClick={() => void closeProjectTab(project.id)}>Close project</MenuItem>
+              </>
+            )}
           </Menu>
           <Menu label="Settings" caret={false}>
             <MenuItem onClick={() => configureEditor()}>Preferred editor</MenuItem>
@@ -157,9 +163,9 @@ export default function Toolbar() {
           </Menu>
           <button
             className="toolbar-search"
-            aria-label="Commands"
-            title={`Commands (${shiftMod}P)`}
-            onClick={() => useStore.getState().setPaletteOpen(true)}
+            aria-label="Search files"
+            title={`Search files (${mod}P)`}
+            onClick={showFileSearch}
           >
             ⌕
           </button>
@@ -179,9 +185,7 @@ export default function Toolbar() {
               </button>
             ))}
           </div>
-        ) : (
-          <span />
-        )}
+        ) : null}
         <div className="toolbar-group end">
           {project && (
             <>

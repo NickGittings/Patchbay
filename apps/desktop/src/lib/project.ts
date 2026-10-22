@@ -1,9 +1,8 @@
-import { invoke } from '@tauri-apps/api/core'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { appendToMap, useStore } from '../store'
 import type { Added } from '../types'
-import { addFolder, openProject } from './ipc'
+import { addFolder, openProject, projectClose } from './ipc'
 import { acceptOpened, flushWorkspace } from './workspace'
 import { syncCurrentRoots } from './access'
 import { reviewRescan } from './maintenance'
@@ -103,17 +102,27 @@ export function useAddFolder() {
 
 /** Saves the project's map, closes its windows and drops it from the open projects. */
 export async function closeProjectTab(id: string) {
-  if (!(await flushMapSaves(id))) {
-    await flushWorkspace()
-    useStore
-      .getState()
-      .setMessage(
-        'Map could not be saved. Retry or resolve the map conflict before closing this project.',
-      )
-    return
+  try {
+    if (!(await flushMapSaves(id))) {
+      useStore
+        .getState()
+        .setMessage(
+          'Map could not be saved. Retry or resolve the map conflict before closing this project.',
+        )
+      return
+    }
+    // Keep the tab available for retry if any pop-out or the backend's access and watcher
+    // cannot close, so nothing is left running without a tab to close it from.
+    await closeComponentWindows(id)
+    await projectClose(id)
+    useStore.getState().closeProject(id)
+  } catch (e) {
+    useStore.getState().setMessage(`Project close failed: ${e}`)
+  } finally {
+    try {
+      await flushWorkspace()
+    } catch (e) {
+      useStore.getState().setMessage(`Workspace could not be saved: ${e}`)
+    }
   }
-  await closeComponentWindows(id)
-  useStore.getState().closeProject(id)
-  await invoke('project_close', { projectId: id })
-  await flushWorkspace()
 }

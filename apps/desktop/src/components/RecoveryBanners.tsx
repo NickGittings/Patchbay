@@ -62,12 +62,17 @@ export default function RecoveryBanners() {
               useStore
                 .getState()
                 .syncProject({ ...active.conflict!, root: active.root, projectId: active.id })
-              useStore.setState({
-                dirty: true,
-                projects: {
-                  ...useStore.getState().projects,
-                  [active.id]: { ...active, conflict: undefined, draftFingerprint: undefined },
-                },
+              // Read the entry now: syncing and other updates since render must not be undone.
+              useStore.setState((state) => {
+                const current = state.projects[active.id]
+                if (!current) return { dirty: true }
+                return {
+                  dirty: true,
+                  projects: {
+                    ...state.projects,
+                    [active.id]: { ...current, conflict: undefined, draftFingerprint: undefined },
+                  },
+                }
               })
             }}
           >
