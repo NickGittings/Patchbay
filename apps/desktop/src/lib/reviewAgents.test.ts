@@ -227,6 +227,7 @@ test('findings become stale for new HEADs, newer edits and unfinished review att
     round: 'r',
     startedMs: 40,
     editedSinceStart: false,
+    uncovered: false,
     truncated: false,
     reviewers: [],
   }

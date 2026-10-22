@@ -220,8 +220,8 @@ pub(crate) fn agent_command(args: &str) -> String {
 /// arguments; compound or dynamic commands fall back.
 fn command_tokens(command: &str, shell: Shell) -> Option<Vec<String>> {
     let tokens = match shell {
-        Shell::Unix => sh_tokens(command)?,
-        Shell::Windows => cmd_tokens(command)?,
+        Shell::Unix => sh_tokens(command, false)?,
+        Shell::Windows => cmd_tokens(command, false)?,
     };
     // Appended flags after an option terminator would become prompt text.
     if tokens.iter().any(|t| t == "--") {
@@ -230,19 +230,23 @@ fn command_tokens(command: &str, shell: Shell) -> Option<Vec<String>> {
     Some(tokens)
 }
 
-fn sh_tokens(command: &str) -> Option<Vec<String>> {
+fn sh_tokens(command: &str, raw: bool) -> Option<Vec<String>> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quote = None;
     let mut started = false;
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut start = 0;
+    let mut chars = command.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        if !started && !c.is_whitespace() {
+            start = index;
+        }
         if c == '\\' && quote != Some('\'') {
-            if let Some(&next) = chars.peek()
+            if let Some(&(_, next)) = chars.peek()
                 && (next == '"'
                     || (quote.is_none() && (next.is_whitespace() || "'&|;<>`$\\".contains(next))))
             {
-                token.push(chars.next()?);
+                token.push(chars.next()?.1);
             } else {
                 token.push(c);
             }
@@ -252,7 +256,9 @@ fn sh_tokens(command: &str) -> Option<Vec<String>> {
         } else if quote.is_none() && (c == '\'' || c == '"') {
             quote = Some(c);
             started = true;
-        } else if quote != Some('\'') && (c == '`' || (c == '$' && chars.peek() == Some(&'('))) {
+        } else if quote != Some('\'')
+            && (c == '`' || (c == '$' && chars.peek().is_some_and(|(_, next)| *next == '(')))
+        {
             return None;
         } else if quote.is_none() {
             if "&|;<>\n\r()".contains(c) || (c == '#' && !started) {
@@ -260,7 +266,12 @@ fn sh_tokens(command: &str) -> Option<Vec<String>> {
             }
             if c.is_whitespace() {
                 if started {
-                    tokens.push(std::mem::take(&mut token));
+                    tokens.push(if raw {
+                        command[start..index].to_owned()
+                    } else {
+                        std::mem::take(&mut token)
+                    });
+                    token.clear();
                     started = false;
                 }
             } else {
@@ -275,7 +286,11 @@ fn sh_tokens(command: &str) -> Option<Vec<String>> {
         return None;
     }
     if started {
-        tokens.push(token);
+        tokens.push(if raw {
+            command[start..].to_owned()
+        } else {
+            token
+        });
     }
     Some(tokens)
 }
@@ -283,12 +298,16 @@ fn sh_tokens(command: &str) -> Option<Vec<String>> {
 /// cmd.exe knows only double quotes, which a backslash never escapes, and
 /// escapes operators with `^`. Single quotes are literal, so `'a & b'` is
 /// compound. `%VAR%` arguments are kept, like `$VAR` on Unix.
-fn cmd_tokens(command: &str) -> Option<Vec<String>> {
+fn cmd_tokens(command: &str, raw: bool) -> Option<Vec<String>> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quoted = false;
     let mut started = false;
-    for c in command.chars() {
+    let mut start = 0;
+    for (index, c) in command.char_indices() {
+        if !started && !c.is_whitespace() {
+            start = index;
+        }
         if c == '\n' || c == '\r' {
             return None;
         } else if c == '"' {
@@ -300,7 +319,12 @@ fn cmd_tokens(command: &str) -> Option<Vec<String>> {
             return None;
         } else if c.is_whitespace() {
             if started {
-                tokens.push(std::mem::take(&mut token));
+                tokens.push(if raw {
+                    command[start..index].to_owned()
+                } else {
+                    std::mem::take(&mut token)
+                });
+                token.clear();
                 started = false;
             }
         } else {
@@ -312,7 +336,11 @@ fn cmd_tokens(command: &str) -> Option<Vec<String>> {
         return None;
     }
     if started {
-        tokens.push(token);
+        tokens.push(if raw {
+            command[start..].to_owned()
+        } else {
+            token
+        });
     }
     Some(tokens)
 }
@@ -345,6 +373,73 @@ fn agent_named(program: &str) -> Option<Agent> {
     }
 }
 
+/// The review flow supported by a plain provider invocation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ReviewStyle {
+    Claude,
+    Codex,
+    #[default]
+    Patchbay,
+}
+
+pub(crate) fn review_style(command: &str) -> ReviewStyle {
+    review_style_in(command, Shell::current())
+}
+
+fn review_style_in(command: &str, shell: Shell) -> ReviewStyle {
+    let Some(tokens) = command_tokens(command, shell) else {
+        return ReviewStyle::Patchbay;
+    };
+    let Some(i) = program_index(&tokens) else {
+        return ReviewStyle::Patchbay;
+    };
+    match agent_named(&tokens[i]) {
+        Some(Agent::Claude) => ReviewStyle::Claude,
+        Some(Agent::Codex) if codex_global_options(&tokens[i + 1..]) => ReviewStyle::Codex,
+        _ => ReviewStyle::Patchbay,
+    }
+}
+
+// Native exec review can only follow global options, never a prompt or another subcommand.
+fn codex_global_options(args: &[String]) -> bool {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if !arg.starts_with('-') {
+            return false;
+        }
+        if codex_option_takes_value(arg) && args.next().is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+fn codex_option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-c" | "--config"
+            | "--enable"
+            | "--disable"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "-i"
+            | "--image"
+            | "-m"
+            | "--model"
+            | "--local-provider"
+            | "-p"
+            | "--profile"
+            | "-s"
+            | "--sandbox"
+            | "-a"
+            | "--ask-for-approval"
+            | "-C"
+            | "--cd"
+            | "--add-dir"
+    )
+}
+
 /// Resolve status integration using the same command parser as agent briefings.
 #[must_use]
 pub fn agent_provider(terminal: &TerminalSpec) -> Option<crate::adapters::Adapter> {
@@ -362,30 +457,7 @@ fn unsupported_codex_subcommand(args: &[String]) -> bool {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg.starts_with('-') {
-            if !arg.contains('=')
-                && matches!(
-                    arg.as_str(),
-                    "-c" | "--config"
-                        | "--enable"
-                        | "--disable"
-                        | "--remote"
-                        | "--remote-auth-token-env"
-                        | "-i"
-                        | "--image"
-                        | "-m"
-                        | "--model"
-                        | "--local-provider"
-                        | "-p"
-                        | "--profile"
-                        | "-s"
-                        | "--sandbox"
-                        | "-a"
-                        | "--ask-for-approval"
-                        | "-C"
-                        | "--cd"
-                        | "--add-dir"
-                )
-            {
+            if codex_option_takes_value(arg) {
                 args.next();
             }
             continue;
@@ -916,7 +988,7 @@ fn decorate_agent(
     // The prompt goes last, but counts against the budget alongside the instructions.
     let prompt = briefing
         .prompt
-        .map(|prompt| format!(" {}", shell.quote(prompt)))
+        .map(|prompt| format!(" {}", quote_path(shell, Path::new(prompt), env)))
         .unwrap_or_default();
     let inlined = match agent {
         Agent::Claude => {
@@ -973,9 +1045,23 @@ const MERGE_PROMPT: &str = "Complete the local merge described in your Patchbay 
 pub(crate) const REVIEW_PROMPT: &str = "Review the whole branch described in your Patchbay briefing. Report findings to PATCHBAY_REVIEW_FILE and do not modify the worktree.";
 
 /// Drop only the exact trailing kickoff Patchbay appended, preserving all provider options.
-fn job_resume_command(command: &str, prompt: &str) -> String {
+fn job_resume_command(command: &str, prompt: &str, env: &BTreeMap<String, String>) -> String {
     let suffix = format!(" {}", Shell::current().quote(prompt));
-    command.strip_suffix(&suffix).unwrap_or(command).to_owned()
+    if let Some(command) = command.strip_suffix(&suffix) {
+        return command.to_owned();
+    }
+    // A Windows prompt containing '%' is passed through a private environment
+    // variable, just like generated paths. Drop that one-time argument too.
+    let quoted = cmd_quote(prompt);
+    for (key, value) in env {
+        if key.starts_with("PATCHBAY_ARGUMENT_") && value == &quoted[1..quoted.len() - 1] {
+            let suffix = format!(" {}", cmd_quote(&format!("%{key}%")));
+            if let Some(command) = command.strip_suffix(&suffix) {
+                return command.to_owned();
+            }
+        }
+    }
+    command.to_owned()
 }
 
 /// Build a dedicated agent job without planner or implementation instructions.
@@ -1018,6 +1104,197 @@ pub fn job_agent_spec(
     extra_env: BTreeMap<String, String>,
     policy: &dyn Policy,
 ) -> Result<SessionSpec> {
+    build_job_agent_spec(
+        project,
+        terminal,
+        text,
+        dirs,
+        scope,
+        extra_env,
+        policy,
+        |command, file, dirs, env| {
+            let notice = brief_agent(
+                command,
+                &Briefing {
+                    file,
+                    text,
+                    dirs,
+                    prompt: Some(prompt),
+                    reserve: 0,
+                },
+                Shell::current(),
+                env,
+            );
+            (notice, job_resume_command(command, prompt, env))
+        },
+    )
+}
+
+fn claude_review_prompt(base: &str) -> String {
+    // A normal prompt invokes the skill with just its target and effort arguments.
+    // Starting the prompt with /code-review would send all following prose as arguments.
+    format!(
+        "Invoke the code-review skill with exactly these arguments: high {base}...HEAD. \
+         Use this explicit range even if the branch has an upstream. After the skill reports, \
+         also review git diff HEAD including staged changes and every untracked file. \
+         Combine all findings and write PATCHBAY_REVIEW_FILE using the Verdict/Counts/tag \
+         format in the Patchbay briefing before ending your turn."
+    )
+}
+
+const CODEX_REVIEW_INSTRUCTIONS: &str = "Report findings only. Do not edit source files, stage, commit, stash, reset, check out or change Git state. Do not run checks that modify the tree. Return your complete final review in Markdown, beginning with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}, with nonnegative integer totals for all findings. Tag findings [P0], [P1], [P2] or [P3], corresponding to critical, high, medium and low. Use clean only after completing the review with no findings. If unable to complete the review, explain why and omit Verdict and Counts. Do not write a findings file yourself; the CLI saves the final message.";
+
+fn codex_review_command(
+    command: &str,
+    base: &str,
+    findings: &Path,
+    briefing: &Briefing<'_>,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> String {
+    let tokens = command_tokens(command, shell).expect("native Codex invocation");
+    let raw = match shell {
+        Shell::Unix => sh_tokens(command, true),
+        Shell::Windows => cmd_tokens(command, true),
+    }
+    .unwrap();
+    let program = program_index(&tokens).unwrap();
+    let existing = codex_instructions(&tokens[program + 1..], codex_config().as_ref());
+    let instructions = match existing {
+        Some(existing) => format!("{existing}\n\n{CODEX_REVIEW_INSTRUCTIONS}"),
+        None => CODEX_REVIEW_INSTRUCTIONS.into(),
+    };
+    let mut kept = raw[..=program].to_vec();
+    let mut i = program + 1;
+    while i < tokens.len() {
+        let arg = &tokens[i];
+        let flag = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
+        let takes_value = codex_option_takes_value(flag) && !arg.contains('=');
+        // Native review owns its working directory and sandbox. Preserve the raw
+        // spelling of other preset arguments, including shell variable expansion.
+        let remove = matches!(
+            flag,
+            "-s" | "--sandbox"
+                | "-a"
+                | "--ask-for-approval"
+                | "--full-auto"
+                | "--approve-for-me"
+                | "--dangerously-bypass-approvals-and-sandbox"
+                | "--yolo"
+                | "-C"
+                | "--cd"
+                | "--add-dir"
+                | "--worktree"
+        ) || !arg.starts_with("--")
+            && ["-s", "-a", "-C"]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix));
+        if !remove {
+            kept.push(raw[i].clone());
+            if takes_value {
+                kept.push(raw[i + 1].clone());
+            }
+        }
+        i += 1 + usize::from(takes_value);
+    }
+    // Exec's sandbox flag must follow exec: a root flag/config override can
+    // otherwise lose to the selected profile. Exec itself disables approvals.
+    let mut command = format!(
+        "{} -c {} exec --sandbox read-only review --base {} -o {}",
+        kept.join(" "),
+        shell.quote("approval_policy=\"never\""),
+        quote_path(shell, Path::new(base), env),
+        quote_path(shell, findings, env),
+    );
+    decorate_agent(
+        &mut command,
+        Agent::Codex,
+        briefing,
+        Some(&instructions),
+        shell,
+        env,
+    );
+    command
+}
+
+/// Native review commands share the ordinary job's briefing ownership, environment and policy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn native_review_spec(
+    project: &Project,
+    terminal: &TerminalSpec,
+    text: &str,
+    dirs: Vec<PathBuf>,
+    style: ReviewStyle,
+    base: &str,
+    findings: &Path,
+    policy: &dyn Policy,
+) -> Result<SessionSpec> {
+    let env = BTreeMap::from([(
+        crate::reviews::REVIEW_FILE_ENV.into(),
+        findings.display().to_string(),
+    )]);
+    if style != ReviewStyle::Codex {
+        let prompt = match style {
+            ReviewStyle::Claude => claude_review_prompt(base),
+            _ => REVIEW_PROMPT.into(),
+        };
+        return job_agent_spec(
+            project,
+            terminal,
+            text,
+            dirs,
+            crate::model::REVIEW_SCOPE,
+            &prompt,
+            env,
+            policy,
+        );
+    }
+    let mut spec = build_job_agent_spec(
+        project,
+        terminal,
+        text,
+        dirs,
+        crate::model::REVIEW_SCOPE,
+        env,
+        policy,
+        |command, file, _, env| {
+            *command = codex_review_command(
+                command,
+                base,
+                findings,
+                &Briefing {
+                    file,
+                    text,
+                    dirs: &[],
+                    prompt: None,
+                    reserve: 0,
+                },
+                Shell::current(),
+                env,
+            );
+            (Some("Codex review runs non-interactively. Resume reruns the review. Native review excludes untracked files; they are omitted and prevent automatic merge until reviewed by another flow.".into()), command.clone())
+        },
+    )?;
+    spec.rerun_on_resume = true;
+    Ok(spec)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_job_agent_spec(
+    project: &Project,
+    terminal: &TerminalSpec,
+    text: &str,
+    dirs: Vec<PathBuf>,
+    scope: &str,
+    extra_env: BTreeMap<String, String>,
+    policy: &dyn Policy,
+    decorate: impl FnOnce(
+        &mut String,
+        &Path,
+        &[PathBuf],
+        &mut BTreeMap<String, String>,
+    ) -> (Option<String>, String),
+) -> Result<SessionSpec> {
     anyhow::ensure!(
         matches!(
             scope,
@@ -1045,19 +1322,7 @@ pub fn job_agent_spec(
     ]);
     env.extend(extra_env);
     let mut command = terminal.command.trim().to_string();
-    let notice = brief_agent(
-        &mut command,
-        &Briefing {
-            file: &file,
-            text,
-            dirs: &dirs,
-            prompt: Some(prompt),
-            reserve: 0,
-        },
-        Shell::current(),
-        &mut env,
-    );
-    let resume_command = job_resume_command(&command, prompt);
+    let (notice, resume_command) = decorate(&mut command, &file, &dirs, &mut env);
     let components = project.components.iter().collect::<Vec<_>>();
     if let Err(reason) = policy.check(Scope::Plan(&components), &command) {
         remove_owned_briefing_file(&file);
@@ -1065,6 +1330,7 @@ pub fn job_agent_spec(
     }
     Ok(SessionSpec {
         resume_command: Some(resume_command),
+        rerun_on_resume: false,
         owns_briefing: true,
         exclusive_cwd: false,
         merge_source: None,
@@ -1444,7 +1710,7 @@ fn root_session_spec(
         // their kickoff again on Restart, and an implement restart passes none, so every
         // root start resumes with the same command and Restart's fingerprint matches.
         if let Some(prompt) = &prompt {
-            resume_command = Some(job_resume_command(&command, prompt));
+            resume_command = Some(job_resume_command(&command, prompt, &env));
         } else if !planning {
             resume_command = Some(command.clone());
         }
@@ -1454,6 +1720,7 @@ fn root_session_spec(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
         resume_command,
+        rerun_on_resume: false,
         owns_briefing: false,
         exclusive_cwd: false,
         merge_source: None,
@@ -1569,6 +1836,7 @@ pub fn session_spec_with(
 
     Ok(SessionSpec {
         resume_command: None,
+        rerun_on_resume: false,
         owns_briefing: false,
         exclusive_cwd: false,
         merge_source: None,
@@ -1615,6 +1883,251 @@ pub(crate) fn quote_argument(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_review_style_requires_a_plain_supported_invocation() {
+        for (command, style) in [
+            ("claude --model opus", ReviewStyle::Claude),
+            ("'/opt/my tools/claude'", ReviewStyle::Claude),
+            ("env A='one two' claude", ReviewStyle::Claude),
+            (
+                "A=1 codex --model review -c 'model_reasoning_effort=high'",
+                ReviewStyle::Codex,
+            ),
+            (
+                "env A=1 codex -p fast --sandbox read-only",
+                ReviewStyle::Codex,
+            ),
+            ("codex --model=review", ReviewStyle::Codex),
+            ("\"/opt/my tools/codex\"", ReviewStyle::Codex),
+            ("codex exec", ReviewStyle::Patchbay),
+            ("codex review --uncommitted", ReviewStyle::Patchbay),
+            ("codex resume --last", ReviewStyle::Patchbay),
+            ("codex 'review this'", ReviewStyle::Patchbay),
+            ("codex --model", ReviewStyle::Patchbay),
+            ("claude && echo done", ReviewStyle::Patchbay),
+            ("aider", ReviewStyle::Patchbay),
+            ("claude -- prompt", ReviewStyle::Patchbay),
+        ] {
+            assert_eq!(review_style_in(command, Shell::Unix), style, "{command}");
+        }
+        for (command, style) in [
+            (r#""C:\Program Files\claude.exe""#, ReviewStyle::Claude),
+            ("codex.cmd --model review", ReviewStyle::Codex),
+            ("codex.bat exec", ReviewStyle::Patchbay),
+            ("codex & echo done", ReviewStyle::Patchbay),
+        ] {
+            assert_eq!(review_style_in(command, Shell::Windows), style, "{command}");
+        }
+    }
+
+    fn review_briefing() -> Briefing<'static> {
+        Briefing {
+            file: Path::new("review-brief.md"),
+            text: "Review scope and Auto goal",
+            dirs: &[],
+            prompt: None,
+            reserve: 0,
+        }
+    }
+
+    #[test]
+    fn native_commands_quote_arguments_and_claude_resume_drops_only_the_skill_prompt() {
+        for shell in [Shell::Unix, Shell::Windows] {
+            let file = Path::new("reviews with spaces/lane.md");
+            let mut env = BTreeMap::new();
+            let command = codex_review_command(
+                "codex -m review",
+                "feature/base",
+                file,
+                &review_briefing(),
+                shell,
+                &mut env,
+            );
+            let tokens = command_tokens(&command, shell).unwrap();
+            assert_eq!(
+                &tokens[tokens.iter().position(|t| t == "exec").unwrap()..][..8],
+                &[
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "review",
+                    "--base",
+                    "feature/base",
+                    "-o",
+                    "reviews with spaces/lane.md"
+                ]
+            );
+            assert!(tokens.windows(2).any(|w| w == ["--sandbox", "read-only"]));
+            assert!(
+                tokens
+                    .windows(4)
+                    .any(|w| w == ["exec", "--sandbox", "read-only", "review"])
+            );
+            let prompt = claude_review_prompt("release");
+            assert!(!prompt.starts_with('/'));
+            assert!(prompt.contains("high release...HEAD."));
+            assert!(prompt.contains("every untracked file"));
+            let mut claude = "claude --model opus".to_owned();
+            brief_agent(
+                &mut claude,
+                &Briefing {
+                    file,
+                    text: "Review scope",
+                    dirs: &[],
+                    prompt: Some(&prompt),
+                    reserve: 0,
+                },
+                shell,
+                &mut env,
+            );
+            assert_eq!(
+                command_tokens(&claude, shell).unwrap().last().unwrap(),
+                &prompt
+            );
+            if shell == Shell::current() {
+                let resumed = job_resume_command(&claude, &prompt, &env);
+                assert!(!resumed.contains("code-review"));
+                assert!(resumed.contains("--append-system-prompt-file"));
+            }
+        }
+    }
+
+    #[test]
+    fn native_codex_overrides_preset_permissions_and_preserves_other_raw_options() {
+        for shell in [Shell::Unix, Shell::Windows] {
+            for unsafe_options in [
+                "-s workspace-write --full-auto",
+                "--sandbox=danger-full-access --dangerously-bypass-approvals-and-sandbox",
+                "-sworkspace-write -aon-request -Celsewhere --yolo --approve-for-me",
+                "--ask-for-approval on-request --add-dir other --cd elsewhere --worktree",
+            ] {
+                let preset = format!(
+                    "codex --model {} {unsafe_options} -c {}",
+                    shell.quote("review model"),
+                    shell.quote("sandbox_mode=\"workspace-write\"")
+                );
+                let command = codex_review_command(
+                    &preset,
+                    "main",
+                    Path::new("review.md"),
+                    &review_briefing(),
+                    shell,
+                    &mut BTreeMap::new(),
+                );
+                let tokens = command_tokens(&command, shell).unwrap();
+                assert_eq!(
+                    tokens.iter().filter(|t| *t == "--sandbox").count(),
+                    1,
+                    "{command}"
+                );
+                for flag in [
+                    "--full-auto",
+                    "--yolo",
+                    "--approve-for-me",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                    "--worktree",
+                    "--cd",
+                    "--add-dir",
+                ] {
+                    assert!(!tokens.iter().any(|t| t == flag), "{command}");
+                }
+                assert!(tokens.windows(2).any(|w| w == ["--model", "review model"]));
+                assert!(
+                    tokens
+                        .windows(4)
+                        .any(|w| w == ["exec", "--sandbox", "read-only", "review"])
+                );
+                assert!(command.contains(&shell.quote("approval_policy=\"never\"")));
+                if shell == Shell::Unix {
+                    let config = tokens.windows(2).rfind(|w| w[0] == "-c").unwrap();
+                    let instructions = decode_instructions(&config[1]);
+                    assert!(instructions.contains("Do not edit source files"));
+                    assert!(instructions.contains("Verdict: clean"));
+                }
+            }
+        }
+        let preset = r#"env A='one two' codex --model "$MODEL" -c 'developer_instructions="Keep this"' -s workspace-write"#;
+        let command = codex_review_command(
+            preset,
+            "main",
+            Path::new("report.md"),
+            &review_briefing(),
+            Shell::Unix,
+            &mut BTreeMap::new(),
+        );
+        assert!(command.starts_with("env A='one two' codex --model \"$MODEL\""));
+        let tokens = command_tokens(&command, Shell::Unix).unwrap();
+        let config = tokens.windows(2).rfind(|w| w[0] == "-c").unwrap();
+        assert!(decode_instructions(&config[1]).starts_with("Keep this\n\n"));
+    }
+
+    #[test]
+    fn native_codex_large_briefings_use_an_inert_file_pointer() {
+        for shell in [Shell::Unix, Shell::Windows] {
+            let mut env = BTreeMap::new();
+            let text = "Long review instructions ".repeat(SHELL_ARG_BUDGET);
+            let briefing = Briefing {
+                text: &text,
+                ..review_briefing()
+            };
+            let command = codex_review_command(
+                "codex -p yolo",
+                "abc123",
+                Path::new("report.md"),
+                &briefing,
+                shell,
+                &mut env,
+            );
+            assert!(!command.contains("Long review instructions"));
+            assert!(command.contains("review-brief.md"));
+            assert!(command.contains("read it before starting"));
+            assert!(command.contains("Do not edit source files"));
+            assert!(command_len(shell, &command, &env) < CMD_BUDGET);
+        }
+    }
+
+    #[test]
+    fn claude_review_preserves_percent_bases_and_resume_drops_the_indirect_prompt() {
+        let prompt = claude_review_prompt("release%USERNAME%");
+        let mut command = "claude".to_owned();
+        let mut env = BTreeMap::new();
+        brief_agent(
+            &mut command,
+            &Briefing {
+                file: Path::new("brief.md"),
+                text: "Review",
+                dirs: &[],
+                prompt: Some(&prompt),
+                reserve: 0,
+            },
+            Shell::Windows,
+            &mut env,
+        );
+        assert!(!command.contains("release%USERNAME%"));
+        assert_eq!(env["PATCHBAY_ARGUMENT_0"], prompt);
+        let resumed = job_resume_command(&command, &prompt, &env);
+        assert_eq!(resumed, r#"claude --append-system-prompt-file "brief.md""#);
+    }
+
+    #[test]
+    fn native_codex_quotes_percent_signs_in_base_and_findings_on_windows() {
+        let mut env = BTreeMap::new();
+        let command = codex_review_command(
+            "codex.cmd",
+            "base%USERNAME%",
+            Path::new(r"C:\reviews\%USERPROFILE%\report.md"),
+            &review_briefing(),
+            Shell::Windows,
+            &mut env,
+        );
+        assert!(command.contains(r#"--base "%PATCHBAY_ARGUMENT_0%" -o "%PATCHBAY_ARGUMENT_1%""#));
+        assert_eq!(env["PATCHBAY_ARGUMENT_0"], "base%USERNAME%");
+        assert_eq!(
+            env["PATCHBAY_ARGUMENT_1"],
+            r"C:\reviews\%USERPROFILE%\report.md"
+        );
+    }
+
     #[test]
     fn auto_brief_contains_goal_scope_effort_and_optional_commit() {
         let auto = super::AutoBrief {
@@ -3170,6 +3683,7 @@ mod tests {
             ));
             let output = launch(SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,

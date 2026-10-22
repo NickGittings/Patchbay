@@ -21,6 +21,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 import uuid
 
@@ -55,8 +56,22 @@ elif 'Stage: implement' in body:
 elif 'Stage: review' in body:
     path = pathlib.Path(os.environ['PATCHBAY_REVIEW_FILE'])
     fixed = pathlib.Path('shared.txt').read_text() == 'feature fixed\n'
-    path.write_text('Verdict: clean\nCounts: {"critical":0,"high":0,"medium":0,"low":0}\nNo findings.\n' if fixed else 'Verdict: issues\nCounts: {"critical":0,"high":1,"medium":0,"low":0}\n[high] shared.txt:1: Fix the fixture text.\n')
+    args = sys.argv[1:]
+    assert args[args.index('exec'):args.index('exec') + 4] == ['exec', '--sandbox', 'read-only', 'review'], args
+    assert args[args.index('--base') + 1] == git('rev-parse', 'main'), args
+    assert args[args.index('-o') + 1] == str(path), args
+    assert args[args.index('--sandbox') + 1] == 'read-only', args
+    assert 'approval_policy="never"' in args, args
+    instructions = next(arg for arg in args if arg.startswith('developer_instructions='))
+    assert 'Do not edit source files' in instructions, args
+    assert 'Goal: Finish the fixture task' in instructions, args
+    assert 'excludes untracked files' in instructions, args
+    path.write_text('I did not find any actionable correctness regressions in the diff.\n' if fixed else f'The patch has a correctness issue.\n\n- [P1] Fix the fixture text — {pathlib.Path.cwd() / "shared.txt"}:1-1\n  Replace the incorrect fixture text.\n')
+    print('native-codex-review-finished', flush=True)
+    sys.exit(0)  # exec review exits without a Stop hook; Auto must accept its findings
 elif 'Stage: fix' in body:
+    assert '[high] Fix the fixture text' in body
+    assert '[P1]' not in body
     assert '≥ high' in body
     assert 'Commit your work' in body
     pathlib.Path('shared.txt').write_text('feature fixed\n')
@@ -71,3 +86,8 @@ report('Stop')
 print('auto-turn-finished', flush=True)
 input()  # controller must stop this session before handing off
 PYTHON
+cat > "$dir/codex" <<SH
+#!/bin/sh
+exec python3 '$dir/agent.py' "\$@"
+SH
+chmod +x "$dir/codex"

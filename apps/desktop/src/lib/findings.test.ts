@@ -144,3 +144,17 @@ describe('fileRefs', () => {
     expect(fileRefs('http://localhost:1420 and note:3')).toEqual([])
   })
 })
+
+test('native Codex findings retain absolute file links after priority conversion', () => {
+  const [section] = parseFindings(
+    'Verdict: issues\nCounts: {"critical":0,"high":1,"medium":0,"low":0}\n\n' +
+      'The change breaks division.\n\nReview comment:\n\n' +
+      '- [high] Restore division — /private/tmp/review/math.py:2-2\n  Restore the operator.',
+  )
+  expect(section.items[0].refs).toEqual([
+    { path: '/private/tmp/review/math.py', line: 2, endLine: 2 },
+  ])
+  expect(fileRefs(String.raw`- [high] Restore division — C:\work\review\math.py:2-3`)).toEqual([
+    { path: 'C:/work/review/math.py', line: 2, endLine: 3 },
+  ])
+})

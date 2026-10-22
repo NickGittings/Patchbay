@@ -163,7 +163,7 @@
         {
           id: 'auto-fixture',
           name: 'Auto fixture',
-          command: `python3 '${fixtureDir}/agent.py'`,
+          command: `'${fixtureDir}/codex'`,
           kind: 'agent',
           adapter: 'codex',
           category: 'agent',
@@ -269,7 +269,7 @@
       'Affected validation did not run and pass',
     )
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, description planning/implementation/affected validation and automatic merge',
+      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, description planning/implementation/affected validation and automatic merge',
     )
   } catch (e) {
     await smoke.report(

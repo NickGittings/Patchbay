@@ -169,6 +169,11 @@ export interface ReviewFindings {
   startedMs: number
   /** Files in the branch's worktree changed after the attempt started, or couldn't be checked. */
   editedSinceStart: boolean
+  /**
+   * A native Codex reviewer left out untracked files present at launch or now. The findings stay
+   * current, but Auto won't merge them without asking.
+   */
+  uncovered: boolean
   truncated: boolean
   /** Each reviewer of the round; one entry for a single reviewer. */
   reviewers: ReviewerStatus[]

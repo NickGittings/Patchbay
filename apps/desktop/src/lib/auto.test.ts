@@ -122,6 +122,7 @@ const findings = (
   base: 'main',
   round: 'round',
   editedSinceStart: false,
+  uncovered: false,
   truncated: false,
   reviewers: [],
 })
@@ -3618,4 +3619,18 @@ test('the needs-worktree view reloads only once the base it was judged from may 
     ])
   expect(await reviewBaseMoved('p', judged!)).toBe(true)
   expect(ipc.planRead).not.toHaveBeenCalled()
+})
+
+test('findings that left out untracked files stay current but never merge automatically', () => {
+  const clean = findings()
+  const current = run({ stage: 'review' })
+  expect(mergeableHead(snapshot({ freshness: 'current', findings: clean }), current)).toBe(
+    tree.head,
+  )
+  const uncovered = { ...clean, uncovered: true }
+  // Still current, so the run moves on to the merge gate rather than reviewing again.
+  expect(reviewDecision(current, uncovered).stage).toBe('mergeGate')
+  expect(
+    mergeableHead(snapshot({ freshness: 'current', findings: uncovered }), current),
+  ).toBeUndefined()
 })

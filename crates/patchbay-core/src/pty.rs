@@ -28,6 +28,9 @@ pub struct SessionSpec {
     /// Launch options without a one-time kickoff prompt, used for conversation recovery.
     #[serde(default)]
     pub resume_command: Option<String>,
+    /// Resume reruns the recorded command without conversation history or a briefing.
+    #[serde(default)]
+    pub rerun_on_resume: bool,
     /// The session service owns the temporary context file's lifetime.
     #[serde(default)]
     pub owns_briefing: bool,
@@ -1309,6 +1312,7 @@ mod tests {
         pty.spawn(
             SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
@@ -1359,6 +1363,7 @@ mod tests {
         pty.spawn(
             SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
@@ -1404,6 +1409,7 @@ mod tests {
         pty.spawn(
             SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
@@ -1460,6 +1466,7 @@ mod tests {
         pty.spawn(
             SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
@@ -1503,6 +1510,7 @@ mod tests {
         let pty = Arc::new(PtyManager::new());
         let spec = |command: &str| SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -1538,6 +1546,7 @@ mod tests {
         pty.spawn(
             SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
@@ -1575,6 +1584,7 @@ mod tests {
             pty.spawn(
                 SessionSpec {
                     resume_command: None,
+                    rerun_on_resume: false,
                     owns_briefing: false,
                     exclusive_cwd: false,
                     merge_source: None,
@@ -1617,6 +1627,7 @@ mod tests {
                     pty.spawn(
                         SessionSpec {
                             resume_command: None,
+                            rerun_on_resume: false,
                             owns_briefing: false,
                             exclusive_cwd: false,
                             merge_source: None,

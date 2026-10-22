@@ -117,3 +117,18 @@ export const KIND_LABEL: Record<ChangeKind, string> = {
   conflicted: 'Conflicted',
   untracked: 'New file',
 }
+
+/** Match findings against changed paths after resolving absolute refs inside the worktree. */
+export function changedFileRef<T extends { path: string }>(
+  files: T[],
+  path: string,
+  worktreeRoot?: string,
+): T | undefined {
+  path = path.replaceAll('\\', '/')
+  const root = worktreeRoot?.replaceAll('\\', '/').replace(/\/+$/, '')
+  if (root && path.startsWith(`${root}/`)) path = path.slice(root.length + 1)
+  const exact = files.find((f) => f.path === path)
+  if (exact) return exact
+  const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
+  return new Set(suffix.map((f) => f.path)).size === 1 ? suffix[0] : undefined
+}

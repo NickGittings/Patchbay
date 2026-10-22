@@ -985,6 +985,7 @@ mod tests {
             },
             spec: SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,

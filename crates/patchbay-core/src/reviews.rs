@@ -212,6 +212,199 @@ fn counts_value(line: &str) -> Option<String> {
     Some(rest.trim().to_owned())
 }
 
+/// Adapt Codex's final Markdown report and parse its verdict once.
+/// Native reviews may end with an explicit no-findings conclusion instead of Patchbay headers.
+#[must_use]
+pub fn from_codex(text: &str) -> (String, Option<Verdict>) {
+    codex_report(text, false)
+}
+
+fn codex_report(text: &str, truncated: bool) -> (String, Option<Verdict>) {
+    let text = codex_tags(text);
+    // Counts in the prefix still cover findings beyond the display limit.
+    let incomplete = codex_incomplete(&text);
+    if let Some(parsed) = verdict(&text) {
+        let parsed = (!parsed.clean || !incomplete).then_some(parsed);
+        return (text, parsed);
+    }
+    let parsed = verdict(&format!("Verdict: issues\n\n# Codex review\n{text}"))
+        .filter(|v| v.counts != Severities::default())
+        .or_else(|| {
+            // Never infer clean from a cut conclusion, arbitrary prose or a
+            // malformed explicit contract. Native final messages commonly omit
+            // the headers even when requested in developer instructions.
+            (!truncated && !incomplete && codex_clean(&text)).then(|| Verdict {
+                clean: true,
+                counts: Severities::default(),
+            })
+        });
+    let Some(parsed) = parsed else {
+        return (text, None);
+    };
+    let label = if parsed.clean { "clean" } else { "issues" };
+    let text = format!(
+        "Verdict: {label}\nCounts: {}\n\n{text}",
+        serde_json::to_string(&parsed.counts).unwrap()
+    );
+    (text, Some(parsed))
+}
+
+/// Codex's `[P0]`–`[P3]` tags as Patchbay's severities, leaving code blocks and
+/// inline code (`weights[P1]`) as written.
+fn codex_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fenced = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        fenced ^= fence;
+        if fence || fenced {
+            out.push_str(line);
+            continue;
+        }
+        for (i, part) in line.split('`').enumerate() {
+            if i > 0 {
+                out.push('`');
+            }
+            if i % 2 == 1 {
+                out.push_str(part);
+            } else {
+                out.push_str(
+                    &part
+                        .replace("[P0]", "[critical]")
+                        .replace("[P1]", "[high]")
+                        .replace("[P2]", "[medium]")
+                        .replace("[P3]", "[low]"),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// A report's prose, lowercased line by line: code blocks and inline code are left
+/// out, so quoted code such as `error:` never reads as the reviewer's own words.
+fn prose_lines(text: &str) -> Vec<String> {
+    let mut fenced = false;
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fenced = !fenced;
+                return None;
+            }
+            (!fenced).then(|| {
+                line.split('`')
+                    .step_by(2)
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+            })
+        })
+        .collect()
+}
+
+/// A prose line without its list, quote, heading or emphasis marks.
+fn bare(line: &str) -> &str {
+    line.trim()
+        .trim_start_matches(['#', '*', '-', '+', '>', '_'])
+        .trim()
+}
+
+fn codex_incomplete(text: &str) -> bool {
+    prose_lines(text).iter().any(|line| {
+        [
+            "unable to complete",
+            "unable to review",
+            "could not complete",
+            "could not review",
+            "could not access",
+            "couldn't complete",
+            "couldn't review",
+            "review incomplete",
+            "review interrupted",
+            "review failed",
+            "review did not complete",
+            "didn't complete the review",
+        ]
+        .iter()
+        .any(|phrase| line.contains(phrase))
+            // Status words only count where a line starts with them.
+            || ["error:", "no findings yet"]
+                .iter()
+                .any(|phrase| bare(line).starts_with(phrase))
+    })
+}
+
+/// An explicit, unqualified no-findings conclusion. Any hedge anywhere in the prose
+/// ("…, but the retry loop never ends") leaves the report without a verdict, which
+/// Auto treats as unreadable rather than clean.
+fn codex_clean(text: &str) -> bool {
+    let lines = prose_lines(text);
+    if lines
+        .iter()
+        .any(|line| line.contains("verdict:") || counts_value(line).is_some())
+    {
+        return false;
+    }
+    let hedged = lines.iter().any(|line| {
+        let words: Vec<&str> = line
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .collect();
+        words.iter().any(|w| {
+            matches!(
+                *w,
+                "but" | "however" | "except" | "although" | "though" | "unless" | "yet"
+            )
+        }) || ["apart from", "aside from", "other than", "that said"]
+            .iter()
+            .any(|phrase| line.contains(phrase))
+    });
+    if hedged {
+        return false;
+    }
+    lines.iter().any(|line| {
+        let line = bare(line);
+        // "The patch is correct" must end its sentence: "… in most respects" qualifies it.
+        line.strip_prefix("the patch is correct")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '!']))
+            || [
+                "no findings",
+                "no actionable findings",
+                "no actionable issues",
+                "no issues found",
+                "no bugs found",
+            ]
+            .iter()
+            .any(|phrase| {
+                line.strip_prefix(phrase).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with(['.', ',', ':', ';', '!', ' '])
+                })
+            })
+            || [
+                "i did not find any ",
+                "i didn't find any ",
+                "i found no ",
+                "i did not identify any ",
+                "i didn't identify any ",
+            ]
+            .iter()
+            .any(|prefix| {
+                line.strip_prefix(prefix).is_some_and(|rest| {
+                    rest.split('.').next().is_some_and(|sentence| {
+                        ["findings", "issues", "bugs", "regressions"]
+                            .iter()
+                            .any(|noun| {
+                                sentence
+                                    .split_whitespace()
+                                    .any(|word| word.trim_matches([',', ';', ':']) == *noun)
+                            })
+                    })
+                })
+            })
+    })
+}
+
 pub const REVIEW_FILE_ENV: &str = "PATCHBAY_REVIEW_FILE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +444,14 @@ impl FindingsStamp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Started {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native: Option<context::ReviewStyle>,
+    /// Native Codex base review omits files that were untracked at launch.
+    #[serde(default)]
+    excluded_untracked: bool,
+    /// The base commit a native Codex command names; its resume reruns against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_commit: Option<String>,
     branch: String,
     head: String,
     base: String,
@@ -279,6 +480,8 @@ struct Started {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Previous {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native: Option<context::ReviewStyle>,
     round: String,
     base: String,
 }
@@ -310,9 +513,11 @@ pub struct Findings {
     pub round: String,
     /// When the review attempt started; later changes weren't reviewed.
     pub started_ms: u64,
-    /// Uncommitted or untracked files in the branch's worktree changed after the
-    /// attempt started, or couldn't be checked.
+    /// Worktree edits are newer than the review, or coverage could not be checked.
     pub edited_since_start: bool,
+    /// A native Codex reviewer left out untracked files that were present at launch
+    /// or are present now. The findings stay current, but can't merge automatically.
+    pub uncovered: bool,
     pub truncated: bool,
     /// Each reviewer of the round, by lane; one entry for a single reviewer.
     pub reviewers: Vec<Reviewer>,
@@ -375,9 +580,18 @@ impl Attempt {
         started.previous = previous
             .as_deref()
             .and_then(|bytes| serde_json::from_slice::<Started>(bytes).ok())
-            .map(|old| Previous {
-                round: round_key(&old),
-                base: old.base,
+            .and_then(|old| {
+                if started.previous_findings == old.previous_findings {
+                    // This attempt never replaced the file. Keep the provenance
+                    // of the report it inherited, including legacy Patchbay output.
+                    old.previous
+                } else {
+                    Some(Previous {
+                        native: old.native,
+                        round: round_key(&old),
+                        base: old.base,
+                    })
+                }
             });
         let written = serde_json::to_vec(&started)?;
         // Atomic replacement keeps readers from pairing new findings with a partial sidecar.
@@ -559,7 +773,7 @@ fn of_branch(path: &Path, prefix: &str) -> bool {
 }
 
 /// Prepare a review without modifying repository files or Git state.
-/// Read-only behavior is requested in the briefing; the user's command is preserved.
+/// Native Codex uses a read-only sandbox; other agents receive read-only instructions.
 /// Launch it with `Prepared::launch`, which rolls back a refused launch.
 ///
 /// # Errors
@@ -593,13 +807,16 @@ pub fn prepare(
         "Choose a base other than the reviewed branch"
     );
     crate::tasks::check_branch(cwd, &request.base)?;
-    ensure!(
-        crate::tasks::verifies(cwd, &format!("{}^{{commit}}", request.base)),
-        "Unknown review base: {}",
-        request.base
-    );
+    // Native commands use a verified object id, never a branch name in a bare
+    // kickoff argument (npm's Windows shims expand these inside cmd blocks).
+    let base_commit = git::run(git::git(cwd).args([
+        "rev-parse",
+        "--verify",
+        &format!("{}^{{commit}}", request.base),
+    ]))
+    .with_context(|| format!("Unknown review base: {}", request.base))?;
     let head = git::run(git::git(cwd).args(["rev-parse", "HEAD"]))?;
-    let merge_base = git::run(git::git(cwd).args(["merge-base", &request.base, "HEAD"]))?;
+    let merge_base = git::run(git::git(cwd).args(["merge-base", &base_commit, "HEAD"]))?;
     let folder = dir(root)?;
     let lane = request.lane.as_deref().filter(|l| !l.is_empty());
     let findings = in_lane(&folder, &request.branch, lane);
@@ -611,16 +828,51 @@ pub fn prepare(
         Some(_) => format!("Review · {} · {}", request.branch, terminal.name),
         None => format!("Review · {}", request.branch),
     };
+    let style = context::review_style(&terminal.command);
+    let scope = if style == context::ReviewStyle::Claude {
+        format!(
+            "Whole-branch scope: git diff {merge_base}..HEAD, uncommitted changes with git diff HEAD including staged changes, and untracked files. Component filters do not limit this job."
+        )
+    } else if style == context::ReviewStyle::Codex {
+        format!(
+            "Review the entire branch against base commit {base_commit}, including tracked uncommitted changes. Native base-branch review excludes untracked files; they are outside this review's coverage. Component filters do not limit this job. Read the repository's contribution instructions."
+        )
+    } else {
+        format!(
+            "Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions."
+        )
+    };
+    let read_only = if style == context::ReviewStyle::Claude {
+        "Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree."
+    } else if style == context::ReviewStyle::Codex {
+        "Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Patchbay enforces a read-only sandbox without approval escalation; the CLI saves the final findings. Native base-branch review excludes untracked files, so they are not covered by this review."
+    } else {
+        "Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Fixes belong in Implementation. Read-only behavior relies on these instructions; Patchbay does not rewrite the user's agent command to enforce it."
+    };
+    let report = if style == context::ReviewStyle::Claude {
+        format!(
+            "After /code-review reports, write its findings with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings, in this format.",
+            findings.display()
+        )
+    } else if style == context::ReviewStyle::Codex {
+        "Return findings ranked by severity with file:line references in your final message. The CLI saves it to PATCHBAY_REVIEW_FILE; do not write the file yourself. Explain the impact and evidence for each finding.".into()
+    } else {
+        format!(
+            "Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding.",
+            findings.display()
+        )
+    };
+    let file_rule = if style == context::ReviewStyle::Codex {
+        "Do not write any files; the CLI saves your final report."
+    } else {
+        "This findings file is the only file you may write."
+    };
     let mut text = format!(
         "# Patchbay branch review\n\nProject: {}\nWorktree: {}\nBranch: {}\nHEAD: {head}\nBase branch: {}\nMerge base: {merge_base}\n\n\
-         Review the entire branch's committed work with git diff {merge_base}..HEAD, its uncommitted changes with git diff HEAD (including staged changes), and untracked files. Review's component filters do not limit this job. Read the repository's contribution instructions.\n\n\
-         Report findings only. Do not edit source files, stage, commit, stash, reset or check out anything. Do not change Git state or run checks that modify the tree. Fixes belong in Implementation. Read-only behavior relies on these instructions; Patchbay does not rewrite the user's agent command to enforce it.\n\n\
-         Write findings ranked by severity with file:line references to $PATCHBAY_REVIEW_FILE ({}), replacing previous findings. Explain the impact and evidence for each finding. Start the file with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}, with nonnegative integer totals for ALL open findings at each severity. Include all four keys exactly once, no other keys, and no Markdown around these two lines. Use clean only when all counts are zero; use issues otherwise. These counts control automatic merging, so verify them against every finding before saving. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. This findings file is the only file you may write.\n",
-        project.name,
-        request.worktree,
-        request.branch,
-        request.base,
-        findings.display(),
+         {scope}\n\n\
+         {read_only}\n\n\
+         {report} Start the report with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}, with nonnegative integer totals for ALL open findings at each severity. Include all four keys exactly once, no other keys, and no Markdown around these two lines. Use clean only when all counts are zero; use issues otherwise. These counts control automatic merging, so verify them against every finding before finishing. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. {file_rule}\n",
+        project.name, request.worktree, request.branch, request.base,
     );
     if let Some(auto) = auto {
         text.push_str(&auto.markdown("review"));
@@ -630,17 +882,25 @@ pub fn prepare(
     scoped.components.clear();
     scoped.links.clear();
     scoped.groups.clear();
-    let spec = context::job_agent_spec(
+    let spec = context::native_review_spec(
         &scoped,
         &terminal,
         &text,
         vec![folder],
-        REVIEW_SCOPE,
-        context::REVIEW_PROMPT,
-        BTreeMap::from([(REVIEW_FILE_ENV.into(), findings.display().to_string())]),
+        style,
+        &base_commit,
+        &findings,
         policy,
     )?;
     let started = Started {
+        native: match style {
+            context::ReviewStyle::Claude => Some(context::ReviewStyle::Claude),
+            context::ReviewStyle::Codex => Some(context::ReviewStyle::Codex),
+            context::ReviewStyle::Patchbay => None,
+        },
+        excluded_untracked: style == context::ReviewStyle::Codex
+            && git::has_untracked(cwd).unwrap_or(true),
+        base_commit: (style == context::ReviewStyle::Codex).then(|| base_commit.clone()),
         branch: request.branch.clone(),
         head,
         base: request.base.clone(),
@@ -709,9 +969,14 @@ pub fn resume_attempt(
     if head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true) {
         return Ok(None);
     }
-    let merge_base = git::run(git::git(cwd).args(["merge-base", &old.base, "HEAD"]))
+    // A Codex resume reruns its recorded command, which names the launch's base commit,
+    // so its range is measured from that commit rather than the base branch's tip.
+    let base = old.base_commit.as_deref().unwrap_or(&old.base);
+    let merge_base = git::run(git::git(cwd).args(["merge-base", base, "HEAD"]))
         .with_context(|| format!("The review base {} is gone; start a new review", old.base))?;
     let started = Started {
+        excluded_untracked: old.native == Some(context::ReviewStyle::Codex)
+            && git::has_untracked(cwd).unwrap_or(true),
         head,
         merge_base,
         started_ms: crate::status::unix_ms(SystemTime::now()),
@@ -741,6 +1006,7 @@ struct Saved {
     modified_ms: u64,
     started: Started,
     stamp: Option<FindingsStamp>,
+    verdict: Option<Verdict>,
     /// An earlier round's findings, shown while the latest round has none of its own.
     superseded: bool,
 }
@@ -756,6 +1022,7 @@ impl Saved {
                 .map_or(0, |s| crate::status::unix_ms(s.modified)),
             file,
             text: String::new(),
+            verdict: None,
             truncated: false,
             started,
             stamp,
@@ -769,19 +1036,59 @@ impl Saved {
         let found = (|| {
             let handle = std::fs::File::open(&self.file).ok()?;
             let stamp = FindingsStamp::of(&handle.metadata().ok()?)?;
-            let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
-            Some((text, truncated, stamp))
+            let native = if Some(&stamp) == self.started.previous_findings.as_ref() {
+                // No previous sidecar means legacy Patchbay findings, not output
+                // from the current (possibly Codex) attempt.
+                self.started.previous.as_ref().and_then(|p| p.native)
+            } else {
+                self.started.native
+            };
+            let cached = REPORTS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(&self.file)
+                .filter(|c| c.stamp == stamp && c.native == native && c.limit == limit)
+                .map(|c| {
+                    c.used = Instant::now();
+                    c.report.clone()
+                });
+            let report = match cached {
+                Some(report) => report,
+                None => {
+                    let (text, truncated) = crate::plans::read_limited(handle, limit).ok()?;
+                    let (text, verdict) = if native == Some(context::ReviewStyle::Codex) {
+                        codex_report(&text, truncated)
+                    } else {
+                        let parsed = verdict(&text);
+                        (text, parsed)
+                    };
+                    let report = Report {
+                        text,
+                        truncated,
+                        verdict,
+                    };
+                    cache_report(
+                        self.file.clone(),
+                        stamp.clone(),
+                        native,
+                        limit,
+                        report.clone(),
+                    );
+                    report
+                }
+            };
+            Some((report, stamp))
         })();
-        let (text, truncated, stamp) = match found {
-            Some((text, truncated, stamp)) => (text, truncated, Some(stamp)),
-            None => (String::new(), false, None),
-        };
-        self.modified_ms = stamp
-            .as_ref()
-            .map_or(0, |s| crate::status::unix_ms(s.modified));
-        self.text = text;
-        self.truncated = truncated;
-        self.stamp = stamp;
+        if let Some((report, stamp)) = found {
+            self.modified_ms = crate::status::unix_ms(stamp.modified);
+            self.text = report.text;
+            self.verdict = report.verdict;
+            self.truncated = report.truncated;
+            self.stamp = Some(stamp);
+        } else {
+            self.modified_ms = 0;
+            self.stamp = None;
+        }
         self
     }
 
@@ -796,6 +1103,53 @@ impl Saved {
     fn lane(&self) -> &str {
         self.started.lane.as_deref().unwrap_or("reviewer")
     }
+}
+
+#[derive(Clone)]
+struct Report {
+    text: String,
+    truncated: bool,
+    verdict: Option<Verdict>,
+}
+
+struct CachedReport {
+    stamp: FindingsStamp,
+    native: Option<context::ReviewStyle>,
+    limit: usize,
+    report: Report,
+    used: Instant,
+}
+
+// Poll unchanged reports without rereading, converting and reparsing their Markdown.
+static REPORTS: Mutex<BTreeMap<PathBuf, CachedReport>> = Mutex::new(BTreeMap::new());
+
+fn cache_report(
+    file: PathBuf,
+    stamp: FindingsStamp,
+    native: Option<context::ReviewStyle>,
+    limit: usize,
+    report: Report,
+) {
+    let mut cache = REPORTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if cache.len() >= ROUND_CACHE_LIMIT
+        && !cache.contains_key(&file)
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, c)| c.used)
+            .map(|(p, _)| p.clone())
+    {
+        cache.remove(&oldest);
+    }
+    cache.insert(
+        file,
+        CachedReport {
+            stamp,
+            native,
+            limit,
+            report,
+            used: Instant::now(),
+        },
+    );
 }
 
 /// A branch's reviewers: the latest round, and the findings shown for it.
@@ -857,6 +1211,9 @@ fn saved(root: &Path, branch: &str, limit: usize) -> Lanes {
             Some(previous) => {
                 let mut started = lane.started.clone();
                 started.base.clone_from(&previous.base);
+                started.native = previous.native;
+                started.previous = None;
+                started.previous_findings = None;
                 let held = Saved::stamped(lane.file.clone(), started, true);
                 earlier
                     .entry(previous.round.clone())
@@ -908,17 +1265,30 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
         .all(|s| s.fresh() && s.started.head == first.started.head)
         .then(|| first.started.head.clone());
     // Findings without a reviewed HEAD are stale anyway; skip the worktree scan.
-    let edited_since_start = reviewed_head.is_some()
-        && git::worktrees(root)
-            .iter()
-            .find(|w| w.branch.as_deref() == Some(branch))
-            .is_some_and(|w| git::changed_since(Path::new(&w.path), started_ms).unwrap_or(true));
+    let codex = round
+        .iter()
+        .any(|s| s.started.native == Some(context::ReviewStyle::Codex));
+    let coverage = reviewed_head
+        .is_some()
+        .then(|| {
+            git::worktrees(root)
+                .into_iter()
+                .find(|w| w.branch.as_deref() == Some(branch))
+        })
+        .flatten()
+        .map(|w| git::review_coverage(Path::new(&w.path), started_ms).ok());
+    // An unreadable worktree counts as both edited and uncovered.
+    let edited_since_start = coverage.is_some_and(|c| c.is_none_or(|c| c.edited));
+    let uncovered = reviewed_head.is_some()
+        && codex
+        && (round.iter().any(|s| s.started.excluded_untracked)
+            || coverage.is_some_and(|c| c.is_none_or(|c| c.untracked)));
     let reviewers: Vec<Reviewer> = round
         .iter()
         .map(|s| Reviewer {
             lane: s.started.lane.clone(),
             finished: s.fresh(),
-            verdict: s.fresh().then(|| verdict(&s.text)).flatten(),
+            verdict: s.fresh().then(|| s.verdict.clone()).flatten(),
             error: (!s.fresh())
                 .then(|| s.started.launch_error.clone())
                 .flatten(),
@@ -946,6 +1316,7 @@ fn load(root: &Path, branch: &str, limit: usize) -> Option<Findings> {
         round: first.started.round.clone(),
         started_ms,
         edited_since_start,
+        uncovered,
         truncated: shown.iter().any(|s| s.truncated),
         reviewers,
     })
@@ -1311,6 +1682,409 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_reports_convert_to_the_findings_contract() {
+        assert!(
+            from_codex("No findings. The patch is correct.")
+                .1
+                .unwrap()
+                .clean
+        );
+        let raw = "The patch is incorrect.\n\nReview comments:\n\n- [P0] Critical failure — src/a.rs:1-2\n  Evidence.\n- [P1] High impact — src/b.rs:3-4\n- [P2] Medium impact — src/c.rs:5-6\n- [P3] Low impact — src/d.rs:7-8\n- [P2] Another issue — src/e.rs:9-9";
+        let (converted, parsed) = from_codex(raw);
+        assert!(converted.starts_with(
+            "Verdict: issues\nCounts: {\"critical\":1,\"high\":1,\"medium\":2,\"low\":1}\n\n"
+        ));
+        assert!(converted.contains("- [high] High impact — src/b.rs:3-4"));
+        assert!(!converted.contains("[P"));
+        assert_eq!(
+            parsed.unwrap().counts,
+            Severities {
+                critical: 1,
+                high: 1,
+                medium: 2,
+                low: 1
+            }
+        );
+        assert_eq!(from_codex(""), (String::new(), None));
+        assert!(from_codex(" \n").1.is_none());
+    }
+
+    #[test]
+    fn codex_unknown_failed_or_incomplete_reports_never_read_as_clean() {
+        for report in [
+            "",
+            "Review interrupted",
+            "Error: authentication failed",
+            "- Fix the race in src/main.rs:12",
+            "No findings yet; review interrupted.",
+            "Review failed\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nVerdict: clean",
+            "No findings because I could not access the repository.",
+            "Verdict: clean\nCounts: broken\nNo findings.",
+        ] {
+            assert!(from_codex(report).1.is_none(), "{report}");
+        }
+        let report = "Verdict: clean\nCounts: {\"critical\":0,\"high\":1,\"medium\":0,\"low\":0}\nUntagged finding";
+        let (text, parsed) = from_codex(report);
+        assert_eq!(text, report);
+        let parsed = parsed.unwrap();
+        assert!(!parsed.clean);
+        assert_eq!(parsed.counts.high, 1);
+        let clean = "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nNo findings.";
+        assert!(from_codex(clean).1.unwrap().clean);
+    }
+
+    #[test]
+    fn native_codex_clean_conclusions_are_explicit_and_complete() {
+        for report in [
+            "No findings.",
+            "The patch is correct.",
+            "I did not find any actionable correctness regressions in the diff. The changes preserve behavior.",
+            "I didn't find any concrete, actionable bugs introduced by these changes.",
+            "I found no issues in the reviewed changes.",
+            "I did not identify any actionable issues introduced by this patch.",
+            "No actionable issues were found in the diff.",
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nThe retry handles the failed request correctly.",
+            "## Verdict: clean\n\n**Counts:** {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}",
+        ] {
+            assert!(from_codex(report).1.unwrap().clean, "{report}");
+        }
+        assert!(codex_report("No findings.", true).1.is_none());
+        let report = "No findings.\n- [P1] Lost writes — file.txt:1";
+        assert_eq!(from_codex(report).1.unwrap().counts.high, 1);
+        // Qualified conclusions describe a problem in prose: no verdict, never clean.
+        for report in [
+            "The patch is correct in most respects, but the retry loop never terminates when the server returns 503 (src/net.rs:40).",
+            "The patch is correct in most respects.",
+            "No findings. However, the retry loop never terminates (src/net.rs:40).",
+            "I did not find any issues, except that the cache is never invalidated.",
+        ] {
+            assert!(from_codex(report).1.is_none(), "{report}");
+        }
+        // Quoted code isn't the reviewer reporting an error.
+        for report in [
+            "No findings. The new handler correctly strips the `error:` prefix from log lines.",
+            "No findings.\n\n```\nerror: could not access config\n```",
+        ] {
+            assert!(from_codex(report).1.unwrap().clean, "{report}");
+        }
+        assert!(from_codex("error: could not reach the model").1.is_none());
+    }
+
+    #[test]
+    fn codex_tags_leave_code_alone() {
+        let report = "- [P2] Off by one — src/a.rs:3\n  `let x = weights[P1];`\n```\nfoo[P0]\n```";
+        let (text, verdict) = from_codex(report);
+        assert!(text.contains("- [medium] Off by one"));
+        assert!(text.contains("`let x = weights[P1];`"));
+        assert!(text.contains("foo[P0]"));
+        let verdict = verdict.unwrap();
+        assert_eq!(
+            (
+                verdict.counts.medium,
+                verdict.counts.high,
+                verdict.counts.critical
+            ),
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn truncated_multi_reviewer_reports_keep_totals_and_codex_severities() {
+        let f = Fixture::new();
+        for (lane, command) in [("codex", "codex"), ("claude", "claude"), ("other", "aider")] {
+            let terminal = serde_json::from_value(serde_json::json!({
+                "id": lane, "name": lane, "kind": "agent", "command": command,
+            }))
+            .unwrap();
+            let request = ReviewRequest {
+                lane: Some(lane.into()),
+                round: Some("large".into()),
+                ..f.request.clone()
+            };
+            let prepared = prepare(&f.project, &request, &terminal, &AllowAll, None).unwrap();
+            let path = lane_file(&f.dir, &f.request.branch, Some(lane)).unwrap();
+            let tag = if command == "codex" { "P1" } else { "high" };
+            fs::write(&path, format!("Verdict: issues\nCounts: {{\"critical\":0,\"high\":3,\"medium\":0,\"low\":0}}\n- [{tag}] Lost writes — file.txt:1\n{}", "Evidence.\n".repeat(crate::plans::PLAN_LIMIT))).unwrap();
+            let started: Started =
+                serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+            fs::File::open(&path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_millis(started.started_ms + 10))
+                .unwrap();
+            context::remove_owned_briefing_file(
+                &context::owned_briefing(&prepared.job.spec).unwrap(),
+            );
+        }
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert!(findings.truncated);
+        assert_eq!(findings.verdict.unwrap().counts.high, 3);
+        assert!(
+            findings
+                .reviewers
+                .iter()
+                .all(|r| r.finished && r.verdict.is_some())
+        );
+        assert!(findings.text.contains("[high] Lost writes"));
+        assert!(!findings.text.contains("[P1]"));
+    }
+
+    #[test]
+    fn unwritten_attempts_preserve_the_reports_actual_style_and_round() {
+        for original in ["codex", "aider"] {
+            let f = Fixture::new();
+            f.prepare(original).unwrap();
+            f.save(if original == "codex" { "- [P1] Original finding — file.txt:1" } else { "Verdict: issues\nCounts: {\"critical\":0,\"high\":2,\"medium\":0,\"low\":0}\nOriginal finding" }, true);
+            let before = read(&f.dir, &f.request.branch).unwrap();
+            for command in ["claude", "codex", "aider", "claude"] {
+                f.prepare(command).unwrap();
+                let findings = read(&f.dir, &f.request.branch).unwrap();
+                assert_eq!(findings.text, before.text);
+                assert!(findings.verdict.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn branches_without_a_checked_out_worktree_keep_review_coverage() {
+        for command in ["claude", "codex", "aider"] {
+            let f = Fixture::new();
+            f.prepare(command).unwrap();
+            f.save(
+                "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}",
+                true,
+            );
+            git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+            let findings = read(&f.dir, &f.request.branch).unwrap();
+            assert!(findings.reviewed_head.is_some());
+            assert!(!findings.edited_since_start, "{command}");
+            assert!(!findings.uncovered, "{command}");
+        }
+    }
+
+    #[test]
+    fn native_targets_use_commit_ids_and_codex_receives_auto_briefing() {
+        let mut f = Fixture::new();
+        f.request.base = "fix(ui)%USERNAME%".into();
+        git::run(git::git(&f.dir).args(["branch", &f.request.base, "main"])).unwrap();
+        let base = git::run(git::git(&f.dir).args(["rev-parse", "main"])).unwrap();
+        let auto = context::AutoBrief {
+            goal: "Fix lost writes".into(),
+            fix_floor: Some(Severity::High),
+            effort_note: "Targeted".into(),
+            commit: false,
+        };
+        for command in ["claude", "codex -p yolo"] {
+            let terminal = serde_json::from_value(serde_json::json!({"id":"reviewer", "name":"Review", "kind":"agent", "command":command})).unwrap();
+            let prepared =
+                prepare(&f.project, &f.request, &terminal, &AllowAll, Some(&auto)).unwrap();
+            let spec = &prepared.job.spec;
+            if command.starts_with("codex") {
+                assert!(
+                    spec.command
+                        .contains(&format!("--base {}", context::quote_argument(&base)))
+                );
+                assert!(spec.command.contains("Fix lost writes"));
+                assert!(spec.command.contains("leave lower ones listed"));
+                assert!(spec.command.contains("Do not edit source files"));
+                assert!(spec.command.contains("exec --sandbox read-only review"));
+            } else {
+                assert!(spec.command.contains(&format!("high {base}...HEAD")));
+                assert!(!spec.command.contains("fix(ui)"));
+            }
+            prepared.rollback();
+        }
+    }
+
+    #[test]
+    fn codex_does_not_claim_untracked_files_even_when_they_predate_review() {
+        for command in ["codex", "claude"] {
+            let f = Fixture::new();
+            let untracked = f.dir.join("untracked.txt");
+            fs::write(&untracked, "not in the branch diff").unwrap();
+            fs::File::open(&untracked)
+                .unwrap()
+                .set_modified(UNIX_EPOCH)
+                .unwrap();
+            f.prepare(command).unwrap();
+            f.save(
+                "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}",
+                true,
+            );
+            let findings = read(&f.dir, &f.request.branch).unwrap();
+            assert!(findings.reviewed_head.is_some());
+            // Uncovered files block automatic merging but don't make the findings stale.
+            assert!(!findings.edited_since_start, "{command}");
+            assert_eq!(findings.uncovered, command == "codex");
+            if command == "codex" {
+                // The attempt still left out what was untracked at its launch.
+                fs::remove_file(&untracked).unwrap();
+                assert!(read(&f.dir, &f.request.branch).unwrap().uncovered);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_detects_backdated_untracked_files_added_after_launch() {
+        let f = Fixture::new();
+        f.prepare("codex").unwrap();
+        f.save(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}",
+            true,
+        );
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert!(!findings.edited_since_start && !findings.uncovered);
+        let path = f.dir.join("backdated.txt");
+        fs::write(&path, "omitted").unwrap();
+        fs::File::open(path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH)
+            .unwrap();
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert!(!findings.edited_since_start);
+        assert!(findings.uncovered);
+    }
+
+    #[test]
+    fn legacy_patchbay_findings_keep_their_counts_when_first_codex_attempt_starts() {
+        let f = Fixture::new();
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        dir(&f.dir).unwrap();
+        let legacy = "Verdict: issues\nCounts: {\"critical\":0,\"high\":2,\"medium\":0,\"low\":0}\nTwo untagged findings from an older version.";
+        fs::write(&path, legacy).unwrap();
+        f.prepare("codex").unwrap();
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.text, legacy);
+        assert!(findings.verdict.is_none());
+        assert!(findings.reviewed_head.is_none());
+        assert_eq!(verdict(&findings.text).unwrap().counts.high, 2);
+        assert!(fix_body(&f).contains(legacy));
+    }
+
+    #[test]
+    fn prepare_records_native_styles_and_older_sidecars_default_to_patchbay() {
+        let f = Fixture::new();
+        for (command, native) in [
+            ("claude", Some(context::ReviewStyle::Claude)),
+            ("codex --model review", Some(context::ReviewStyle::Codex)),
+            ("aider", None),
+            ("codex exec", None),
+            ("claude && echo done", None),
+        ] {
+            let prepared = f.prepared(command).unwrap();
+            let path = file(&f.dir, &f.request.branch)
+                .unwrap()
+                .with_extension("json");
+            let bytes = fs::read(path).unwrap();
+            let started: Started = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(started.native, native);
+            let mut old = serde_json::to_value(&started).unwrap();
+            old.as_object_mut().unwrap().remove("native");
+            assert_eq!(serde_json::from_value::<Started>(old).unwrap().native, None);
+            prepared.rollback();
+        }
+    }
+
+    #[test]
+    fn mixed_native_and_patchbay_lanes_combine_and_hand_off_normalized_findings() {
+        let f = Fixture::new();
+        for (lane, command, text) in [
+            (
+                "claude",
+                "claude",
+                "Verdict: issues\n[high] Claude finding — file.txt:1",
+            ),
+            (
+                "codex",
+                "codex",
+                "The patch is incorrect.\n\n- [P2] Codex finding — file.txt:1-1",
+            ),
+            ("other", "aider", "Verdict: clean\nNo findings."),
+        ] {
+            let terminal = serde_json::from_value(serde_json::json!({
+                "id": lane, "name": lane, "kind": "agent", "command": command,
+            }))
+            .unwrap();
+            let request = ReviewRequest {
+                lane: Some(lane.into()),
+                round: Some("mixed".into()),
+                ..f.request.clone()
+            };
+            let prepared = prepare(&f.project, &request, &terminal, &AllowAll, None).unwrap();
+            let path = lane_file(&f.dir, &f.request.branch, Some(lane)).unwrap();
+            fs::write(&path, text).unwrap();
+            let started: Started =
+                serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+            fs::File::open(&path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_millis(started.started_ms + 10))
+                .unwrap();
+            context::remove_owned_briefing_file(
+                &context::owned_briefing(&prepared.job.spec).unwrap(),
+            );
+        }
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.round, "mixed");
+        assert_eq!(findings.reviewers.len(), 3);
+        assert!(findings.reviewers.iter().all(|r| r.finished));
+        let verdict = findings.verdict.unwrap();
+        assert!(!verdict.clean);
+        assert_eq!(
+            verdict.counts,
+            Severities {
+                high: 1,
+                medium: 1,
+                ..Severities::default()
+            }
+        );
+        assert!(findings.reviewed_head.is_some());
+        let handoff = fix_body(&f);
+        assert!(handoff.contains("[high] Claude finding"));
+        assert!(handoff.contains("[medium] Codex finding"));
+        assert!(!handoff.contains("[P2]"));
+    }
+
+    #[test]
+    fn codex_saved_findings_feed_verdict_and_fix_and_preserve_earlier_style() {
+        let f = Fixture::new();
+        f.prepare("codex").unwrap();
+        assert!(read(&f.dir, &f.request.branch).is_none());
+        f.save("", true);
+        assert!(read(&f.dir, &f.request.branch).unwrap().verdict.is_none());
+        f.save(
+            "The patch is incorrect.\n\n- [P1] Fix this — file.txt:1-1\n  Evidence.",
+            true,
+        );
+        let findings = read(&f.dir, &f.request.branch).unwrap();
+        assert_eq!(findings.verdict.unwrap().counts.high, 1);
+        assert!(fix_body(&f).contains("[high] Fix this"));
+        assert!(!fix_body(&f).contains("[P1]"));
+        let capped = load(&f.dir, &f.request.branch, 5).unwrap();
+        assert!(capped.truncated);
+        assert!(capped.verdict.is_none());
+        // Reusing a lane with another provider still shows its earlier native findings.
+        f.prepare("claude").unwrap();
+        let previous = read(&f.dir, &f.request.branch).unwrap();
+        assert!(previous.verdict.is_none());
+        assert!(previous.text.contains("[high] Fix this"));
+        f.save("Verdict: issues\n[medium] Claude finding", true);
+        f.prepare("codex").unwrap();
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .text
+                .contains("[medium] Claude finding")
+        );
+        f.save("Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}\nNo findings.", true);
+        assert!(
+            read(&f.dir, &f.request.branch)
+                .unwrap()
+                .verdict
+                .unwrap()
+                .clean
+        );
+    }
+
     #[test]
     fn reported_counts_and_tagged_findings_both_block() {
         let findings = "- [low] Minor issue\n- **[high]** src/db.rs:42 Data loss";
@@ -1888,9 +2662,15 @@ mod tests {
             let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
             let merge_base =
                 git::run(git::git(&f.dir).args(["merge-base", "main", "HEAD"])).unwrap();
-            assert!(body.contains(&format!("git diff {merge_base}..HEAD")));
+            if command == "codex" {
+                assert!(body.contains(&format!("against base commit {merge_base}")));
+                assert!(!body.contains("and untracked files"));
+                assert!(!body.contains("This findings file is the only file you may write"));
+            } else {
+                assert!(body.contains(&format!("git diff {merge_base}..HEAD")));
+                assert!(body.contains("git diff HEAD"));
+            }
             for rule in [
-                "git diff HEAD",
                 "untracked files",
                 "Do not edit",
                 "stage, commit, stash, reset or check out",
@@ -1898,7 +2678,7 @@ mod tests {
                 "Verdict: clean or Verdict: issues",
                 "[critical], [high], [medium] or [low]",
                 "say so explicitly",
-                "$PATCHBAY_REVIEW_FILE",
+                "PATCHBAY_REVIEW_FILE",
             ] {
                 assert!(body.contains(rule), "{rule}");
             }
@@ -1916,16 +2696,43 @@ mod tests {
                 job.terminal.id,
                 crate::workspace::session_id(&f.request.worktree, REVIEW_SCOPE, "review")
             );
-            if command != "printf review" {
-                assert!(job.spec.command.contains(" --add-dir "));
-                assert!(job.spec.command.contains("Review the whole branch"));
-                assert!(
-                    !job.spec
-                        .resume_command
-                        .as_ref()
-                        .unwrap()
-                        .contains("Review the whole branch")
-                );
+            match command {
+                "claude" => {
+                    assert!(job.spec.command.contains(" --add-dir "));
+                    assert!(
+                        job.spec
+                            .command
+                            .contains(&format!("high {merge_base}...HEAD"))
+                    );
+                    assert!(!job.spec.rerun_on_resume);
+                    assert!(
+                        !job.spec
+                            .resume_command
+                            .as_ref()
+                            .unwrap()
+                            .contains("/code-review")
+                    );
+                    assert!(body.contains("After /code-review reports"));
+                }
+                "codex" => {
+                    assert!(
+                        job.spec
+                            .command
+                            .contains(" exec --sandbox read-only review --base ")
+                    );
+                    assert!(job.spec.command.contains(" -o "));
+                    assert!(job.spec.command.contains("developer_instructions"));
+                    assert!(job.spec.rerun_on_resume);
+                    assert_eq!(job.spec.resume_command.as_ref(), Some(&job.spec.command));
+                    assert!(
+                        job.spec
+                            .notice
+                            .as_ref()
+                            .unwrap()
+                            .contains("untracked files")
+                    );
+                }
+                _ => assert_eq!(job.spec.command, command),
             }
             let pending = context::owned_briefing(&job.spec).unwrap();
             let mut retained = job.spec;
@@ -2096,6 +2903,7 @@ mod tests {
         // record of the same size: the metadata then stays identical.
         let mut original: Started = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
         original.previous = Some(Previous {
+            native: original.native,
             round: format!("round:{}", "y".repeat(original.round.len())),
             base: original.base.clone(),
         });
@@ -2246,6 +3054,33 @@ mod tests {
         git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
         assert!(resume_attempt(&f.dir, &job.spec, &f.request.branch, None).is_err());
         context::remove_owned_briefing_file(&briefing);
+    }
+
+    #[test]
+    fn codex_resume_measures_its_range_from_the_launch_base_commit() {
+        let f = Fixture::new();
+        let job = f.prepare("codex").unwrap();
+        let launch_base = git::run(git::git(&f.dir).args(["rev-parse", "main"])).unwrap();
+        // main advances and the branch merges it; the rerun still names the old commit.
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        fs::write(f.dir.join("main.txt"), "main\n").unwrap();
+        git::run(git::git(&f.dir).args(["add", "."])).unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qm", "main"])).unwrap();
+        git::run(git::git(&f.dir).args(["checkout", "-q", "feature/a"])).unwrap();
+        git::run(git::git(&f.dir).args(["merge", "-q", "--no-edit", "main"])).unwrap();
+        drop(
+            resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
+                .unwrap()
+                .unwrap(),
+        );
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        assert_eq!(started.merge_base, launch_base);
+        assert_eq!(started.base_commit.as_deref(), Some(launch_base.as_str()));
+        if let Some(briefing) = context::owned_briefing(&job.spec) {
+            context::remove_owned_briefing_file(&briefing);
+        }
     }
 
     #[test]

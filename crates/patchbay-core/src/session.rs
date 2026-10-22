@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-// Metadata records a review's lane, which an older service would drop.
-pub const PROTOCOL: u32 = 8;
+// Older services would drop SessionSpec.rerun_on_resume.
+pub const PROTOCOL: u32 = 9;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -1810,6 +1810,25 @@ fn prepare_resume(
     spec: &mut SessionSpec,
     launch_command: &str,
 ) -> Result<String> {
+    let original = if launch_command.is_empty() {
+        spec.command.clone()
+    } else {
+        launch_command.to_owned()
+    };
+    // The recorded command may point at its briefing (a rerun's large Codex briefing
+    // too); never resume or rerun without it.
+    if let Some(file) = spec.env.get(crate::context::CONTEXT_ENV) {
+        anyhow::ensure!(
+            Path::new(file).is_file(),
+            "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
+        );
+    }
+    if spec.rerun_on_resume {
+        spec.command.clone_from(&original);
+        crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
+        return Ok(original);
+    }
+    let resume_command = spec.resume_command.as_deref().unwrap_or(&original);
     let adapter = metadata
         .adapter
         .context("Select an adapter to resume this conversation")?;
@@ -1817,19 +1836,6 @@ fn prepare_resume(
         .conversation_id
         .as_ref()
         .context("Set conversation ID before resuming")?;
-    // The recorded command points at its briefing; never resume without it.
-    if let Some(file) = spec.env.get(crate::context::CONTEXT_ENV) {
-        anyhow::ensure!(
-            Path::new(file).is_file(),
-            "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
-        );
-    }
-    let original = if launch_command.is_empty() {
-        spec.command.clone()
-    } else {
-        launch_command.to_owned()
-    };
-    let resume_command = spec.resume_command.as_deref().unwrap_or(&original);
     spec.command = adapter.resume(resume_command, conversation, &spec.cwd)?;
     crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
     Ok(original)
@@ -1856,6 +1862,13 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
         &spec.resume_command,
         &briefing,
     ))?;
+    // Preserve the pre-existing digest byte for byte for ordinary sessions.
+    // Only native jobs that rerun need a distinct restart policy in the hash.
+    let settings = if spec.rerun_on_resume {
+        serde_json::to_string(&(settings, true))?
+    } else {
+        settings
+    };
     Ok(Some(crate::workspace::session_id("restart", &settings, "")))
 }
 
@@ -2389,6 +2402,7 @@ mod tests {
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -2482,6 +2496,7 @@ mod tests {
                     other,
                     SessionSpec {
                         resume_command: None,
+                        rerun_on_resume: false,
                         owns_briefing: false,
                         exclusive_cwd: false,
                         merge_source: None,
@@ -2616,6 +2631,7 @@ mod tests {
                         metadata,
                         SessionSpec {
                             resume_command: None,
+                            rerun_on_resume: false,
                             owns_briefing: false,
                             exclusive_cwd: false,
                             merge_source: None,
@@ -2784,6 +2800,7 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -2879,6 +2896,7 @@ mod tests {
         assert!(metadata.task_title.is_none());
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -2945,6 +2963,7 @@ mod tests {
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -3067,6 +3086,7 @@ mod tests {
         };
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -3391,6 +3411,7 @@ mod tests {
         .unwrap();
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: true,
             merge_source: None,
@@ -3501,6 +3522,7 @@ mod tests {
                 };
                 let spec = SessionSpec {
                     resume_command: None,
+                    rerun_on_resume: false,
                     owns_briefing: false,
                     exclusive_cwd: false,
                     merge_source: None,
@@ -3588,6 +3610,7 @@ mod tests {
         };
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -3755,6 +3778,7 @@ mod tests {
         .unwrap();
         let spec = SessionSpec {
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -3845,6 +3869,7 @@ mod tests {
             id: "s".into(),
             command: "claude --model first".into(),
             resume_command: None,
+            rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
             merge_source: None,
@@ -3859,7 +3884,25 @@ mod tests {
             dirs: vec![],
         };
         let before = restart_context(&metadata, &spec).unwrap();
-        assert!(before.is_some());
+        let legacy = serde_json::to_string(&(
+            &metadata.command,
+            metadata.kind,
+            metadata.adapter,
+            &spec.cwd,
+            &spec.dirs,
+            &spec.ready_when,
+            spec.service,
+            &spec.resume_command,
+            Some("Original highlights, peers, and plan"),
+        ))
+        .unwrap();
+        assert_eq!(
+            before,
+            Some(crate::workspace::session_id("restart", &legacy, ""))
+        );
+        let mut rerun = spec.clone();
+        rerun.rerun_on_resume = true;
+        assert_ne!(before, restart_context(&metadata, &rerun).unwrap());
         let mut changed = metadata.clone();
         changed.command = "claude --model edited".into();
         assert_ne!(before, restart_context(&changed, &spec).unwrap());
@@ -4092,6 +4135,69 @@ mod tests {
             assert!(Instant::now() < deadline, "terminal did not exit");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_codex_review_resume_reruns_without_conversation_history() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let program = dir.join("codex");
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = format!(
+            "{} --sandbox read-only exec review -o 'findings.md' --base 'main'",
+            crate::context::quote_argument(program.to_str().unwrap())
+        );
+        let (mut metadata, mut spec) = restart_fixture(&dir, &command);
+        metadata.component_id = crate::model::REVIEW_SCOPE.into();
+        metadata.adapter = Some(Adapter::Codex);
+        metadata.conversation_id = None;
+        spec.resume_command = Some(command.clone());
+        spec.rerun_on_resume = true;
+        let briefing = dir.join("briefing.md");
+        std::fs::write(&briefing, "# Review").unwrap();
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            briefing.display().to_string(),
+        );
+        let service = Service::load(&dir).unwrap();
+        let id = service
+            .start("first".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let first = wait_for_exit(&service, &id);
+        // A large Codex briefing is only a pointer to this file, so a rerun needs it.
+        std::fs::remove_file(&briefing).unwrap();
+        let gone = service.resume(&id, "gone".into()).unwrap_err().to_string();
+        assert!(gone.contains("briefing is gone"), "{gone}");
+        std::fs::write(&briefing, "# Review").unwrap();
+        assert_eq!(service.resume(&id, "resume".into()).unwrap(), id);
+        let second = wait_for_exit(&service, &id);
+        assert!(second.generation > first.generation);
+        let output = String::from_utf8_lossy(&second.data);
+        assert!(output.contains("exec\r\nreview\r\n-o"), "{output}");
+        assert!(!output.contains("resume"));
+        assert_eq!(service.list()[0].spec.command, command);
+        // Identical Restart settings also rerun instead of entering conversation resume.
+        assert_eq!(
+            service.restart("restart".into(), metadata, spec).unwrap(),
+            id
+        );
+        let third = wait_for_exit(&service, &id);
+        assert!(third.generation > second.generation);
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn older_session_specs_default_to_conversation_resume() {
+        let dir = std::env::temp_dir();
+        let (_, spec) = restart_fixture(&dir, "codex");
+        let mut value = serde_json::to_value(spec).unwrap();
+        value.as_object_mut().unwrap().remove("rerun_on_resume");
+        let spec: SessionSpec = serde_json::from_value(value).unwrap();
+        assert!(!spec.rerun_on_resume);
     }
 
     #[cfg(unix)]
@@ -4459,6 +4565,7 @@ mod tests {
             },
             spec: SessionSpec {
                 resume_command: None,
+                rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
                 merge_source: None,
