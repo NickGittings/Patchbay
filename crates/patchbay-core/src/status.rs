@@ -49,6 +49,19 @@ pub enum AgentState {
     Ended,
 }
 
+/// Accepted tool activity for one process generation. Mirrored in desktop `types.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    pub sequence: u64,
+    pub at_ms: u64,
+    pub tool: String,
+    #[serde(default)]
+    pub file_target: bool,
+    pub target: Option<String>,
+    pub turn: Option<String>,
+}
+
 /// The agent's latest self-reported state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -391,6 +404,8 @@ pub struct Tracker {
     last_text_output_ms: Option<u64>,
     session_identity: Option<(String, u64)>,
     hook_sequence: u64,
+    activity: std::collections::VecDeque<Activity>,
+    pending_activity: Vec<Activity>,
     hook_conversation: Option<String>,
     hook_turn: Option<String>,
     retired_turns: std::collections::HashSet<String>,
@@ -421,6 +436,17 @@ impl Tracker {
     pub fn with_identity(mut self, session: &str, generation: u64) -> Self {
         self.session_identity = Some((session.into(), generation));
         self
+    }
+
+    /// Retained accepted activity, oldest first.
+    #[must_use]
+    pub fn activity(&self) -> Vec<Activity> {
+        self.activity.iter().cloned().collect()
+    }
+
+    /// Activity accepted since the last event delivery.
+    pub fn drain_activity(&mut self) -> Vec<Activity> {
+        std::mem::take(&mut self.pending_activity)
     }
 
     /// Consume a native provider event. Unknown sessions, retired conversations/turns,
@@ -525,6 +551,24 @@ impl Tracker {
         } else {
             state
         };
+        if event.event == "PreToolUse"
+            && state == AgentState::Working
+            && let Some(tool) = &event.tool
+        {
+            let activity = Activity {
+                sequence: event.sequence,
+                at_ms: event.at_ms,
+                tool: tool.clone(),
+                file_target: event.file_target,
+                target: event.target.clone(),
+                turn: event.turn.clone(),
+            };
+            self.activity.push_back(activity.clone());
+            if self.activity.len() > 50 {
+                self.activity.pop_front();
+            }
+            self.pending_activity.push(activity);
+        }
         let previous = self.report.take();
         let turn = event.turn.or_else(|| self.hook_turn.clone());
         let same_turn = previous.as_ref().filter(|r| {
@@ -1208,6 +1252,9 @@ mod tests {
             generation: 42,
             provider: crate::adapters::Adapter::Codex,
             sequence,
+            tool: None,
+            file_target: false,
+            target: None,
             at_ms: sequence * 100,
             event: event.into(),
             conversation: "12345678-conversation".into(),
@@ -1769,5 +1816,50 @@ mod tests {
         tracker.on_output(b"working animation", 210);
         assert!(tracker.status(210).active);
         assert!(!tracker.status(10_000).active);
+    }
+    #[test]
+    fn accepted_activity_uses_journal_identity_rejects_stale_events_and_retains_fifty() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 2), 200);
+        let tool = |sequence| {
+            let mut e = hook("PreToolUse", Some("turn"), sequence);
+            e.tool = Some("Read".into());
+            e.target = Some("src/lib.rs".into());
+            e.file_target = true;
+            e
+        };
+        let mut stale = tool(3);
+        stale.generation = 41;
+        tracker.on_hook(stale, 300);
+        let mut nested = tool(3);
+        nested.conversation = "nested".into();
+        tracker.on_hook(nested, 300);
+        let mut wrong_turn = tool(4);
+        wrong_turn.turn = Some("other".into());
+        tracker.on_hook(wrong_turn, 400);
+        assert!(tracker.activity().is_empty());
+        for seq in 5..=64 {
+            tracker.on_hook(tool(seq), seq * 100);
+        }
+        tracker.on_hook(tool(64), 6500);
+        let activity = tracker.activity();
+        assert_eq!(activity.len(), 50);
+        assert_eq!(activity.first().unwrap().sequence, 15);
+        assert_eq!(activity.last().unwrap().sequence, 64);
+        assert_eq!(tracker.drain_activity().len(), 60);
+        assert!(tracker.drain_activity().is_empty());
+        tracker.on_hook(hook("Stop", Some("turn"), 65), 6500);
+        tracker.on_hook(tool(66), 6600);
+        assert_eq!(tracker.activity(), activity);
+        let restored: Vec<Activity> =
+            serde_json::from_str(&serde_json::to_string(&activity).unwrap()).unwrap();
+        assert_eq!(restored, activity);
+        assert!(
+            Tracker::new("", false)
+                .with_identity("session", 43)
+                .activity()
+                .is_empty()
+        );
     }
 }

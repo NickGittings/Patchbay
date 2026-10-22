@@ -7,7 +7,7 @@ import {
 } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
-import { attach, detachHost, fit } from '../lib/terminals'
+import { attach, detachHost, fit, hostVisible, ownsTerminalHost } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
@@ -56,13 +56,27 @@ export default function TerminalPane({
     // Becoming visible or active (re)claims the PTY; resizing only refits.
     const refit = () => {
       attach(sid, host, { focus: false })
-      if (document.visibilityState === 'visible')
+      if (ownsTerminalHost(sid, host) && document.visibilityState === 'visible')
         void terminalAttach(sid, document.hasFocus())
           .then(() => fit(sid))
           .catch(() => {})
-      else void terminalDetach(sid).catch(() => {})
+      else if (document.visibilityState !== 'visible') void terminalDetach(sid).catch(() => {})
+      else if (!hostVisible(host)) detachHost(sid, host)
     }
-    const observer = new ResizeObserver(() => attach(sid, host, { focus: false }))
+    let wasVisible = hostVisible(host)
+    let resizeFrame = 0
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame)
+      resizeFrame = requestAnimationFrame(() => {
+        const visible = hostVisible(host)
+        if (visible !== wasVisible) {
+          wasVisible = visible
+          refit()
+        } else attach(sid, host, { focus: false })
+      })
+    })
+    const intersection = new IntersectionObserver(refit)
+    intersection.observe(host)
     observer.observe(host)
     // Fires when this or another window gains focus, which can move PTY sizing here.
     window.addEventListener(ACTIVE_CHANGED, refit)
@@ -99,6 +113,8 @@ export default function TerminalPane({
     return () => {
       disposed = true
       observer.disconnect()
+      cancelAnimationFrame(resizeFrame)
+      intersection.disconnect()
       if (!detachHost(sid, host)) void terminalDetach(sid).catch(() => {})
       window.removeEventListener('patchbay:reconnected', reconnected)
       document.removeEventListener('visibilitychange', refit)

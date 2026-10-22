@@ -1708,6 +1708,26 @@ fn terminal_write(
         data,
     })
 }
+/// A chat message: the service pastes and submits it for one generation and acknowledges both.
+#[tauri::command]
+async fn terminal_prompt(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+    text: String,
+) -> CmdResult<()> {
+    service(
+        &state,
+        Request::Prompt {
+            id: session_id,
+            viewer: window.label().into(),
+            generation,
+            text,
+        },
+    )
+    .await
+}
 #[tauri::command]
 fn terminal_resize(
     window: WebviewWindow,
@@ -2269,6 +2289,7 @@ pub fn run() {
                 graph_group_stop,
                 graph_validation_cancel,
                 terminal_write,
+                terminal_prompt,
                 terminal_resize,
                 terminal_stop,
                 sessions_stop_all,

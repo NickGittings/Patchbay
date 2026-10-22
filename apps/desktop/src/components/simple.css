@@ -1,0 +1,200 @@
+.navigation-shell {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.simple-canvas {
+  position: relative;
+  height: 100%;
+}
+.simple-canvas > .simple-diff {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--bg);
+}
+.simple-chat {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  font-size: 12px;
+}
+.simple-chat > header {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.simple-thread {
+  overflow: auto;
+  flex: 1;
+  padding: 12px;
+}
+.simple-stage {
+  margin-bottom: 24px;
+}
+.simple-stage h2 {
+  font-size: 14px;
+  text-transform: capitalize;
+}
+.simple-stage[aria-current] > h2 {
+  color: var(--running);
+}
+.simple-stage article {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.simple-stage h3 {
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.simple-stage pre {
+  white-space: pre-wrap;
+  font: inherit;
+}
+.simple-stage time {
+  color: var(--muted);
+  margin-right: 8px;
+}
+.simple-agent > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.simple-terminal {
+  height: 270px;
+  margin-top: 10px;
+}
+.simple-composer {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+.simple-composer label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.simple-composer select {
+  min-width: 0;
+  max-width: 100%;
+}
+.simple-composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 90px;
+  margin-top: 8px;
+  resize: vertical;
+}
+.simple-composer-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.simple-composer-controls > span {
+  flex: 1;
+  color: var(--muted);
+}
+.simple-mentions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.simple-file {
+  display: block;
+  text-align: left;
+  width: 100%;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+.simple-diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.simple-diff > header {
+  display: flex;
+  padding: 8px;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.simple-diff-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.simple-diff-body aside {
+  width: 30%;
+  min-width: 160px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+.simple-diff-body > .diff-view {
+  flex: 1;
+  min-width: 0;
+}
+.simple-scope-chip {
+  border-radius: 10px;
+  padding: 2px 6px;
+  background: var(--hover);
+  margin-right: 4px;
+}
+.simple-stage .findings-panel {
+  min-height: 120px;
+  max-height: 600px;
+}
+.simple-activity {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.simple-activity li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+.simple-hook-notice {
+  padding: 8px 12px;
+  color: var(--muted);
+}
+.component-node.simple-changed {
+  box-shadow:
+    0 0 0 2px var(--running),
+    0 0 16px color-mix(in srgb, var(--running) 20%, transparent);
+}
+.component-node.simple-pulse {
+  animation: simple-activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes simple-activity-pulse {
+  50% {
+    outline: 3px solid var(--running);
+    outline-offset: 5px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .component-node.simple-pulse {
+    animation: none;
+    outline: 2px solid var(--running);
+    outline-offset: 4px;
+  }
+}
+.simple-show-chat {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+}

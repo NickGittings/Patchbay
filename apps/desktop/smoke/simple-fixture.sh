@@ -1,0 +1,59 @@
+#!/bin/sh
+# Simple uses local stand-in agents and disposable worktrees only.
+set -eu
+dir="${TMPDIR:-/tmp}/patchbay-smoke-simple"
+rm -rf "$dir"
+mkdir -p "$dir/project/src"
+cd "$dir/project"
+git init -q -b main
+git config user.name 'Simple smoke'
+git config user.email simple@patchbay.invalid
+git config commit.gpgsign false
+printf 'base\n' > src/app.txt
+printf '%s\n' '{"schemaVersion":4,"name":"Simple smoke","components":[{"id":"app","name":"App","path":"src","kind":"app","notes":"","position":{"x":0,"y":0},"terminals":[]}],"links":[]}' > patchbay.json
+git add .
+git commit -qm base
+git worktree add -q -b feature "$dir/feature"
+cat > "$dir/agent.py" <<'PYTHON'
+import json
+import os
+import pathlib
+import sys
+import time
+import uuid
+
+journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
+conversation = str(uuid.uuid4())
+turn = str(uuid.uuid4())
+sequence = 0
+
+def report(event, **extra):
+    global sequence
+    sequence += 1
+    data = dict(session=os.environ['PATCHBAY_REPORT_SESSION'], generation=int(os.environ['PATCHBAY_REPORT_GENERATION']), provider='codex', sequence=sequence, atMs=int(time.time()*1000), event=event, conversation=conversation, turn=turn, prompt=None, message=None, source=None, **extra)
+    temp = journal / 'pending'
+    temp.write_text(json.dumps(data))
+    temp.replace(journal / ('%020d.json' % sequence))
+
+def work():
+    report('UserPromptSubmit')
+    report('PreToolUse', tool='Edit', target='src/app.txt', fileTarget=True)
+    if os.environ.get('PATCHBAY_COMPONENT') == 'plan':
+        pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Simple fixture plan\n\nUpdate the app.\n')
+    elif os.environ.get('PATCHBAY_REVIEW_FILE'):
+        pathlib.Path(os.environ['PATCHBAY_REVIEW_FILE']).write_text('Verdict: issues\nCounts: {"critical":0,"high":1,"medium":0,"low":0}\n[high] src/app.txt:1: Fix the fixture.\n')
+    else:
+        pathlib.Path('src/app.txt').write_text('simple changed\n')
+    report('Stop')
+    print('simple-work-finished', flush=True)
+
+report('SessionStart')
+print('simple-ready', flush=True)
+if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
+    work()
+for line in sys.stdin:
+    pathlib.Path(__file__).with_name('received.json').write_text(json.dumps(line))
+    print('simple-received:' + repr(line), flush=True)
+    turn = str(uuid.uuid4())
+    work()
+PYTHON

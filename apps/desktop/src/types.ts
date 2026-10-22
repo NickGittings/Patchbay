@@ -407,7 +407,17 @@ export interface DeviceManifest {
   source: string
 }
 
+/** `status::Activity`; journal sequence is stable across live delivery and hydration. */
+export interface Activity {
+  sequence: number
+  atMs: number
+  tool: string
+  fileTarget?: boolean
+  target: string | null
+  turn: string | null
+}
 export type TerminalEvent = (
+  | { type: 'activity'; sessionId: string; generation: number; activity: Activity }
   | {
       type: 'started'
       sessionId: string
@@ -457,6 +467,7 @@ export interface PlanText {
 }
 
 export interface TerminalSnapshot {
+  activity?: Activity[]
   /** Original launch folder for this incarnation; absent in legacy history. */
   launchDirectory?: string | null
   truncated: boolean
@@ -481,6 +492,7 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  activity?: Activity[]
   /** Process incarnation, available even before the start timestamp is hydrated. */
   generation?: number
   disconnected?: boolean

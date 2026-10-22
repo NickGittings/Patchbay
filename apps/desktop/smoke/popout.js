@@ -5,6 +5,10 @@
 // Pop-out: check the marker was replayed from the backlog, live input works, and the
 // file tree, terminal tiles and Changes tab render.
 ;(async () => {
+  // The runner prohibits activation. Model visible windows so incidental WebKit visibility
+  // changes do not release authority in the middle of input; test hiding explicitly below.
+  let visibility = 'visible'
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const until = async (what, check, timeout = 20000) => {
     const deadline = Date.now() + timeout
@@ -64,6 +68,23 @@
     await until('replayed backlog', () => textOf(sid).includes('backlog-42'))
     await smoke.terminalWrite(sid, 'echo live-$((1+1))\r')
     await until('live output', () => textOf(sid).includes('live-2'))
+    const { terminalPrompt } = await import('/src/lib/ipc.ts')
+    const generation = smoke.store.getState().sessions[sid].generation
+    visibility = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    await until('hidden window releases terminal authority', async () => {
+      try {
+        await terminalPrompt(sid, generation, '\r')
+        return false
+      } catch (e) {
+        if (!String(e).includes('terminal authority')) throw e
+        return true
+      }
+    })
+    visibility = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    await smoke.terminalWrite(sid, 'echo visible-$((2+2))\r')
+    await until('visible window reclaims terminal', () => textOf(sid).includes('visible-4'))
     await until('file tree entries', () => document.querySelector('.file-tree-entry'))
     await until(
       'terminal tiles',
@@ -96,7 +117,7 @@
     if (!document.querySelector('.component-window .terminal-tile'))
       throw new Error('Changes tab hides the terminals')
     await smoke.report(
-      `PASS ${node.data.name}: maximized pop-out, backlog replayed, live input, file tree, tiles, changes`,
+      `PASS ${node.data.name}: maximized pop-out, backlog replayed, live input, hidden authority release, file tree, tiles, changes`,
     )
   } catch (e) {
     await smoke.report(`FAIL ${popout ?? 'main'}: ${e?.message ?? e}`)

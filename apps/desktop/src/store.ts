@@ -88,6 +88,7 @@ export interface TaskComponentTerminal {
 
 /** Saved per task. Processes and output remain service-owned. */
 export interface TaskWorkspace {
+  simple: import('./lib/simple').SimpleState | null
   highlighted: string[]
   implementationComponents: ImplementationComponent[] | null
   activeSession: string | null
@@ -104,6 +105,7 @@ export interface TaskWorkspace {
 }
 export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
   return {
+    simple: null,
     highlighted: components,
     implementationComponents: components.map((id) => ({ id, visible: true })),
     activeSession: null,
@@ -120,6 +122,7 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
 }
 export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
   const {
+    simple,
     highlighted,
     implementationComponents,
     activeSession,
@@ -134,6 +137,7 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     graphActionReport,
   } = s
   return {
+    simple,
     highlighted,
     implementationComponents,
     activeSession,
@@ -163,6 +167,8 @@ export interface ProjectState {
   activeSession: string | null
   /** Navigation's Inspector: `null` follows the selection, else opened or closed (UI only). */
   inspector: boolean | null
+  simpleMode: boolean
+  simple: import('./lib/simple').SimpleState | null
   view: View
   highlighted: string[]
   /** Components kept in Implementation's header, including hidden ones (UI only). */
@@ -301,6 +307,8 @@ interface State {
   selectedEdgeId: string | null
   activeSession: string | null
   inspector: boolean | null
+  simpleMode: boolean
+  simple: import('./lib/simple').SimpleState | null
   view: View
   highlighted: string[]
   implementationComponents: ImplementationComponent[] | null
@@ -329,6 +337,7 @@ interface State {
    */
   revealed: { componentId: string; sid: string } | null
   setRevealed: (revealed: { componentId: string; sid: string } | null) => void
+  setSimpleMode: (enabled: boolean) => void
   setView: (view: View) => void
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
@@ -687,6 +696,8 @@ export const useStore = create<State>((set, get) => ({
   messageId: 0,
   messageTransient: false,
   messageAction: null,
+  simpleMode: false,
+  simple: null,
   view: 'navigation',
   highlighted: [],
   implementationComponents: null,
@@ -927,7 +938,13 @@ export const useStore = create<State>((set, get) => ({
     })),
 
   // Highlights are the active task's saved scope, so switching views never changes them.
-  setView: (view) => set({ view }),
+  setSimpleMode: (simpleMode) =>
+    set((s) => ({
+      simpleMode,
+      simple: simpleMode ? (s.simple ?? { startedMs: Date.now(), log: [] }) : s.simple,
+    })),
+  setView: (view) =>
+    set((s) => ({ view, simpleMode: view === 'navigation' ? s.simpleMode : false })),
   toggleHighlight: (id) =>
     set((s) => {
       if (!s.nodes.some((n) => n.id === id)) return {}
@@ -1137,6 +1154,8 @@ function emptyProjectState(): ProjectState {
     selectedEdgeId: null,
     activeSession: null,
     inspector: null,
+    simpleMode: false,
+    simple: null,
     view: 'navigation',
     highlighted: [],
     implementationComponents: null,
@@ -1171,6 +1190,8 @@ function projectState(s: State): ProjectState {
     selectedEdgeId,
     activeSession,
     inspector,
+    simpleMode,
+    simple,
     view,
     highlighted,
     implementationComponents,
@@ -1208,6 +1229,8 @@ function projectState(s: State): ProjectState {
     selectedEdgeId,
     activeSession,
     inspector,
+    simpleMode,
+    simple,
     view,
     highlighted,
     implementationComponents,

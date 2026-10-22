@@ -16,6 +16,7 @@ async function handoffPlannerPlan(
   plannerId: string,
   auto?: import('../types').AutoBrief,
   deviceId?: string,
+  presentation: 'stay' | 'follow' = 'follow',
 ) {
   const initial = useStore.getState()
   const projectId = initial.project?.id
@@ -73,7 +74,8 @@ async function handoffPlannerPlan(
   // The agent is running now, so a later switch away only skips the view change; its caller
   // still learns the session it has to track.
   const after = useStore.getState()
-  if (after.project?.id === projectId && after.activeTask === task) after.setView('implementation')
+  if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
+    after.setView('implementation')
   return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
 }
 
@@ -83,13 +85,14 @@ export async function implementPlannerPlan(
   plannerId: string,
   auto?: import('../types').AutoBrief,
   deviceId?: string,
+  presentation: 'stay' | 'follow' = 'follow',
 ) {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
   handingOff.add(projectId)
   try {
-    return await handoffPlannerPlan(plannerId, auto, deviceId)
+    return await handoffPlannerPlan(plannerId, auto, deviceId, presentation)
   } finally {
     handingOff.delete(projectId)
   }

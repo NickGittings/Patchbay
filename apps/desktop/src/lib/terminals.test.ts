@@ -93,3 +93,54 @@ test('reset clears TUI modes and cursor shape without suppressing input', async 
   expect(term.modes.bracketedPasteMode).toBe(false)
   expect(term.modes.mouseTrackingMode).toBe('none')
 })
+
+test('terminal hosts require visible geometry and cannot reclaim through hidden ancestors', async () => {
+  const { hostVisible } = await import('./terminals')
+  const rect = { width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 }
+  const parent = { hidden: false, parentElement: null, getBoundingClientRect: () => rect }
+  const host = {
+    isConnected: true,
+    checkVisibility: () => !parent.hidden,
+    getBoundingClientRect: () => rect,
+  }
+  expect(hostVisible(host as unknown as HTMLElement)).toBe(true)
+  parent.hidden = true
+  expect(hostVisible(host as unknown as HTMLElement)).toBe(false)
+  parent.hidden = false
+  host.isConnected = false
+  expect(hostVisible(host as unknown as HTMLElement)).toBe(false)
+  host.isConnected = true
+  host.getBoundingClientRect = () => ({ ...rect, height: 0 })
+  expect(hostVisible(host as unknown as HTMLElement)).toBe(false)
+})
+
+test('hidden inline hosts cannot reclaim the registry and visible hosts retain the same scrollback', async () => {
+  const { ownsTerminalHost } = await import('./terminals')
+  output('retained scrollback\r\n')
+  await drain()
+  const term = observed.terminals[0]
+  vi.spyOn(term, 'open').mockImplementation(() => {})
+  const rect = { width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 }
+  const container = () => {
+    const host = {
+      isConnected: true,
+      parentElement: null,
+      getBoundingClientRect: () => rect,
+      replaceChildren: vi.fn((el: { parentElement: unknown }) => {
+        el.parentElement = host
+      }),
+    }
+    return host
+  }
+  const dock = container(),
+    inline = container()
+  attach('session', dock as unknown as HTMLElement, { focus: false })
+  attach('session', inline as unknown as HTMLElement, { focus: false })
+  expect(ownsTerminalHost('session', inline as unknown as HTMLElement)).toBe(true)
+  inline.getBoundingClientRect = () => ({ ...rect, height: 0 })
+  attach('session', dock as unknown as HTMLElement, { focus: false })
+  attach('session', inline as unknown as HTMLElement, { focus: false })
+  expect(ownsTerminalHost('session', dock as unknown as HTMLElement)).toBe(true)
+  expect(term.open).toHaveBeenCalledOnce()
+  expect(terminalText('session').text).toContain('retained scrollback')
+})

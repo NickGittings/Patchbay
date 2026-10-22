@@ -184,7 +184,7 @@ function entry(sessionId: string): Entry {
         !useStore.getState().serviceConnected ||
         created.replaying ||
         document.visibilityState !== 'visible' ||
-        !created.hosts.some((host) => host.isConnected)
+        !created.hosts.some(hostVisible)
       )
         return
       void terminalWrite(sessionId, d).catch(() => {})
@@ -260,11 +260,26 @@ export function writeNote(sessionId: string, text: string) {
   entry(sessionId).term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
 }
 
+/** Views unmount their hosts; CSS visibility and size cover collapsed panes and hidden tabs. */
+export function hostVisible(host: HTMLElement): boolean {
+  if (!host.isConnected) return false
+  if (host.checkVisibility && !host.checkVisibility({ checkVisibilityCSS: true })) return false
+  if (!host.getBoundingClientRect) return true
+  const { width, height } = host.getBoundingClientRect()
+  return width > 0 && height > 0
+}
+export const hasVisibleTerminal = (sid: string) =>
+  document.visibilityState === 'visible' && (registry.get(sid)?.hosts.some(hostVisible) ?? false)
+export const ownsTerminalHost = (sid: string, host: HTMLElement) =>
+  registry.get(sid)?.el.parentElement === host && hostVisible(host)
+
 /** Move the session's terminal into `container` and size it to fit. */
 export function attach(sessionId: string, container: HTMLElement, options?: { focus?: boolean }) {
+  if (!hostVisible(container)) return
   const e = entry(sessionId)
+  e.hosts = e.hosts.filter((host) => host.isConnected)
   if (!e.hosts.includes(container)) e.hosts.push(container)
-  if (e.hosts.at(-1) !== container) return
+  if (e.hosts.filter(hostVisible).at(-1) !== container) return
   if (e.el.parentElement !== container) container.replaceChildren(e.el)
   refreshTheme()
   if (!e.opened) {
@@ -299,7 +314,7 @@ export function focusTerminal(sessionId: string) {
 /** Fit locally; the service accepts PTY sizes only from its authoritative viewer. */
 export function fit(sessionId: string) {
   const e = registry.get(sessionId)
-  if (!e?.opened) return
+  if (!e?.opened || !e.hosts.some(hostVisible)) return
   try {
     e.fit.fit()
     void terminalResize(sessionId, e.term.cols, e.term.rows).catch(() => {})
@@ -313,12 +328,12 @@ export function detachHost(sessionId: string, host: HTMLElement): boolean {
   const e = registry.get(sessionId)
   if (!e) return false
   e.hosts = e.hosts.filter((h) => h !== host && h.isConnected)
-  const previous = e.hosts.at(-1)
+  const previous = e.hosts.filter(hostVisible).at(-1)
   if (previous && e.el.parentElement === host) {
     previous.replaceChildren(e.el)
     fit(sessionId)
   }
-  return e.hosts.length > 0
+  return e.hosts.some(hostVisible)
 }
 
 export function disposeAll() {

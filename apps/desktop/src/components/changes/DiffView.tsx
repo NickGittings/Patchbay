@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { hunkRange, parsePatch } from '../../lib/diff'
 import { componentPaths } from '../../lib/git'
 import { gitDiff } from '../../lib/ipc'
@@ -41,13 +41,16 @@ export default function DiffView({
   file,
   revision,
   worktree,
+  lineFocus,
 }: {
+  lineFocus?: number
   componentId: string
   file: ChangedFile | null
   revision: unknown
   /** A worktree path from `gitWorktrees`; omitted for the open one. */
   worktree?: string
 }) {
+  const focusHost = useRef<HTMLDivElement>(null)
   const path = file?.path
   const oldPath = file?.oldPath
   const [diff, setDiff] = useState<{ key: string; diff: FileDiff } | null>(null)
@@ -79,6 +82,12 @@ export default function DiffView({
     [loaded],
   )
 
+  useEffect(() => {
+    if (lineFocus !== undefined && loaded)
+      focusHost.current
+        ?.querySelector(`[data-new-line="${lineFocus}"]`)
+        ?.scrollIntoView({ block: 'center' })
+  }, [lineFocus, loaded])
   if (!file) return <div className="diff-view hint">Select a file to see its changes.</div>
   const body = () => {
     if (error) return <div className="hint diff-error">{error}</div>
@@ -107,7 +116,7 @@ export default function DiffView({
                   {h.context && <span className="diff-hunk-context">{h.context}</span>}
                 </div>
                 {lines.map((l, j) => (
-                  <div key={j} className={`diff-row ${l.kind}`} role="row">
+                  <div key={j} className={`diff-row ${l.kind}`} role="row" data-new-line={l.new}>
                     <span className="diff-num old">{l.old ?? ''}</span>
                     <span className="diff-num new">{l.new ?? ''}</span>
                     <span className="diff-sign">
@@ -127,7 +136,7 @@ export default function DiffView({
   // A truncated patch undercounts, so prefer the file list's counts then.
   const counts = parsed && !loaded?.truncated ? parsed : undefined
   return (
-    <div className={`diff-view ${loaded || error ? '' : 'diff-loading'}`}>
+    <div ref={focusHost} className={`diff-view ${loaded || error ? '' : 'diff-loading'}`}>
       <FileHeader file={file} added={counts?.added} removed={counts?.removed} />
       {body()}
     </div>

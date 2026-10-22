@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { simplePanelLayout } from '../lib/simple'
+import { useEffect, useMemo } from 'react'
 import { Group, useGroupRef, type GroupProps } from 'react-resizable-panels'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -14,14 +15,18 @@ const validLayout = (saved: unknown): saved is Layout =>
 
 export default function PersistedGroup({ layoutId, ...props }: GroupProps & { layoutId: string }) {
   const panels = useStore((s) => s.panels)
-  const saved = panels[layoutId]
+  const original = panels[layoutId]
+  const saved = useMemo(
+    () => (layoutId === 'App-1' ? simplePanelLayout(original) : original),
+    [layoutId, original],
+  )
   const valid = validLayout(saved)
   const group = useGroupRef()
   // Another task or project brings its own layout. Apply it in place: remounting the group would
   // remount the canvas and reset the dock and inspector.
   useEffect(() => {
     const handle = group.current
-    if (!handle || !valid) return
+    if (!handle || !valid || !saved) return
     const current = handle.getLayout()
     if (Object.entries(saved).every(([id, size]) => Math.abs((current[id] ?? -1) - size) < 0.01))
       return

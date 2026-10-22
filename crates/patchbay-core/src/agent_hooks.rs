@@ -39,6 +39,12 @@ pub struct HookEvent {
     /// Why a session started (`startup`, `resume`, `clear`, `compact`).
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub file_target: bool,
 }
 
 /// What a planner's hook event says about Claude's native plan dialog.
@@ -159,6 +165,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
     if !matches!(event, "SessionStart" | "SessionEnd" | "UserPromptSubmit") && turn.is_none() {
         return None;
     }
+    let file_path = input.get("tool_input").and_then(|tool| {
+        tool.get("file_path")
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("path").and_then(Value::as_str))
+    });
     Some(HookEvent {
         session: String::new(),
         generation: 0,
@@ -170,6 +181,23 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         turn,
         prompt: field("prompt"),
         source: field("source"),
+        tool: field("tool_name").map(|name: String| match name.as_str() {
+            "exec_command" | "shell_command" | "shell" => "Bash".into(),
+            "apply_patch" => "Edit".into(),
+            "read_file" => "Read".into(),
+            "write_file" => "Write".into(),
+            _ => name,
+        }),
+        file_target: file_path.is_some(),
+        target: file_path
+            .map(|s| s.chars().take(4096).collect())
+            .or_else(|| {
+                input
+                    .get("tool_input")?
+                    .get("command")?
+                    .as_str()
+                    .map(|s| s.chars().take(120).collect())
+            }),
         message: field("message").or_else(|| {
             input
                 .get("tool_input")
@@ -919,5 +947,52 @@ mod tests {
         let hooks = fixture.0.join("hooks.json");
         std::fs::write(&hooks, "{}").unwrap();
         assert!(inspect(Adapter::Codex, Some(&hooks)).unwrap().disabled);
+    }
+    #[test]
+    fn tool_activity_extracts_paths_without_inference_and_caps_unicode_commands() {
+        for provider in [Adapter::Claude, Adapter::Codex] {
+            let mut input = json!({"hook_event_name":"PreToolUse","session_id":"12345678-conversation","turn_id":"12345678-turn","tool_name":"Read","tool_input":{"file_path":"src/a.rs","path":"ignored","command":"ignored"}});
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.tool.as_deref(), Some("Read"));
+            assert_eq!(event.target.as_deref(), Some("src/a.rs"));
+            assert!(event.file_target);
+            input["tool_input"] = json!({"path":"src/b.rs"});
+            assert_eq!(
+                normalize(provider, &input).unwrap().target.as_deref(),
+                Some("src/b.rs")
+            );
+            input["tool_name"] = json!("exec_command");
+            input["tool_input"] = json!({"command":"界🦀".repeat(100)});
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.tool.as_deref(), Some("Bash"));
+            assert_eq!(event.target.unwrap().chars().count(), 120);
+            assert!(!event.file_target);
+            input["tool_name"] = json!("apply_patch");
+            input["tool_input"] = json!({"patch":"*** Add File: src/a.rs"});
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.tool.as_deref(), Some("Edit"));
+            assert_eq!(event.target, None);
+            assert!(!event.file_target);
+            input["tool_name"] = json!("未知".repeat(120));
+            assert_eq!(
+                normalize(provider, &input)
+                    .unwrap()
+                    .tool
+                    .unwrap()
+                    .chars()
+                    .count(),
+                200
+            );
+            input.as_object_mut().unwrap().remove("tool_name");
+            input.as_object_mut().unwrap().remove("tool_input");
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.tool, None);
+            assert_eq!(event.target, None);
+            let mut legacy = serde_json::to_value(event).unwrap();
+            for field in ["tool", "target", "fileTarget"] {
+                legacy.as_object_mut().unwrap().remove(field);
+            }
+            assert!(serde_json::from_value::<HookEvent>(legacy).is_ok());
+        }
     }
 }

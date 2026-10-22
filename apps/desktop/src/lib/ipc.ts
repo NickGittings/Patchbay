@@ -550,3 +550,7 @@ export const mergeOutcome = (project: Project, request: import('../types').Merge
     project,
     request,
   })
+
+/** Pastes and submits a chat message for one generation, acknowledged. Never automatically retried. */
+export const terminalPrompt = (sessionId: string, generation: number, text: string) =>
+  invoke<void>('terminal_prompt', { sessionId, generation, text })

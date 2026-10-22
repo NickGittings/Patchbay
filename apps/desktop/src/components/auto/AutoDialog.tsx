@@ -1,3 +1,4 @@
+import { logSimple } from '../../lib/simpleActions'
 import { useContext, useEffect, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
 import { useStore } from '../../store'
@@ -50,7 +51,13 @@ function changeDraft(
   if (kept) autoDrafts.set(key, savedAutoDraft(change(kept)))
 }
 
-export default function AutoDialog({ onIntegrations }: { onIntegrations: () => void }) {
+export default function AutoDialog({
+  onIntegrations,
+  simple = false,
+}: {
+  onIntegrations: () => void
+  simple?: boolean
+}) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const closeMenu = useContext(CloseMenu)
@@ -59,7 +66,10 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
   const agents = useMemo(() => agentDevices(devices), [devices])
   // Closing the popover unmounts the dialog; what the user gave it waits for it to reopen.
   const draftKey = autoDraftKey(projectId, task)
-  const [draft, setDraft] = useState(() => autoDrafts.get(draftKey) ?? emptyAutoDraft())
+  const [draft, setDraft] = useState<AutoDraft>(
+    () =>
+      autoDrafts.get(draftKey) ?? { ...emptyAutoDraft(), effort: simple ? 'light' : 'standard' },
+  )
   // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
   const edit = (patch: Partial<AutoDraft>) =>
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
@@ -221,7 +231,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       cancelled = true
     }
   }, [distinct, devices])
-  const settings = { ...EFFORT[effort], ...overrides }
+  const settings = simple ? EFFORT.light : { ...EFFORT[effort], ...overrides }
   const decision =
     snapshot &&
     inferStage(
@@ -293,7 +303,8 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       <label>
         Fix effort
         <select
-          value={effort}
+          disabled={simple}
+          value={simple ? 'light' : effort}
           onChange={(e) => edit({ effort: e.target.value as AutoRun['effort'], overrides: {} })}
         >
           <option value="light">Light (1 fix round)</option>
@@ -301,7 +312,7 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           <option value="thorough">Thorough (5 fix rounds)</option>
         </select>
       </label>
-      <details>
+      <details hidden={simple}>
         <summary>Advanced</summary>
         <label>
           Maximum fix rounds
@@ -349,7 +360,11 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
       </details>
       <label>
         Merge
-        <select value={mode} onChange={(e) => edit({ mode: e.target.value as 'ask' | 'auto' })}>
+        <select
+          disabled={simple}
+          value={simple ? 'ask' : mode}
+          onChange={(e) => edit({ mode: e.target.value as 'ask' | 'auto' })}
+        >
           <option value="ask">Ask before merging</option>
           <option value="auto">Merge automatically</option>
         </select>
@@ -414,15 +429,19 @@ export default function AutoDialog({ onIntegrations }: { onIntegrations: () => v
           setStarting(true)
           void startAuto(projectId, task, {
             goal,
-            effort,
-            overrides,
-            merge: { mode, destinationBranch: destination },
+            effort: simple ? 'light' : effort,
+            overrides: simple ? {} : overrides,
+            merge: { mode: simple ? 'ask' : mode, destinationBranch: destination },
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,
             stage: stage || undefined,
           })
-            .then(() => autoDrafts.delete(draftKey))
+            .then(() => {
+              autoDrafts.delete(draftKey)
+              if (simple)
+                logSimple(projectId, task, { kind: 'action', action: 'autopilot', stage: 'plan' })
+            })
             .catch((e) => setError(String(e)))
             .finally(() => setStarting(false))
         }}

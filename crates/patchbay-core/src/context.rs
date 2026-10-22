@@ -3578,7 +3578,9 @@ mod tests {
                         assert_eq!(exit_code, 0);
                         break;
                     }
-                    TerminalEvent::Started { .. } | TerminalEvent::Status { .. } => {}
+                    TerminalEvent::Started { .. }
+                    | TerminalEvent::Status { .. }
+                    | TerminalEvent::Activity { .. } => {}
                 }
             }
             String::from_utf8(output).unwrap()

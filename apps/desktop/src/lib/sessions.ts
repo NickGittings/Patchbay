@@ -1,3 +1,4 @@
+import { hydrateActivity } from './activity'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
@@ -669,6 +670,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
       void requestGitRefresh(sessionMetadata.get(e.sessionId)?.projectId)
       s.setSession(e.sessionId, {
         ...s.sessions[e.sessionId],
+        activity: hydrateActivity(s.sessions[e.sessionId], e.generation),
         generation: e.generation,
         running: false,
         exitCode: e.exitCode,
@@ -683,6 +685,19 @@ export function handleTerminalEvent(e: TerminalEvent) {
       )
         s.keepInDock(e.sessionId)
       break
+    case 'activity': {
+      const prev = s.sessions[e.sessionId]
+      // Live activity can be the first event this window sees of a run: nothing of the
+      // previous run (exit, times, status) carries over. Preserve a known exit of this one.
+      const fresh = prev?.generation !== e.generation
+      s.setSession(e.sessionId, {
+        ...(fresh ? {} : prev),
+        generation: e.generation,
+        running: fresh || prev.running,
+        activity: hydrateActivity(prev, e.generation, [e.activity]),
+      })
+      break
+    }
     case 'status': {
       const prev = s.sessions[e.sessionId]
       // Exited runs still get status (stopped, seen); it never revives one.
@@ -691,6 +706,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         generation: e.generation,
         running: newGeneration || (prev?.running ?? true),
         status: e.status,
+        activity: hydrateActivity(prev, e.generation),
       })
       break
     }
@@ -719,6 +735,11 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           startedMs: snapshot.startedMs,
           exitedMs: snapshot.exitedMs ?? undefined,
           status: snapshot.status,
+          activity: hydrateActivity(
+            useStore.getState().sessions[sid],
+            snapshot.generation,
+            snapshot.activity,
+          ),
           notice: snapshot.notice ?? undefined,
           interrupted: useStore.getState().sessionRecords.find((r) => r.id === sid)?.interrupted,
           truncated: snapshot.truncated,
@@ -791,7 +812,8 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
     a.interrupted === b.interrupted &&
     a.truncated === b.truncated &&
     a.disconnected === undefined &&
-    JSON.stringify(a.status) === JSON.stringify(b.status)
+    JSON.stringify(a.status) === JSON.stringify(b.status) &&
+    JSON.stringify(a.activity) === JSON.stringify(b.activity)
   )
 }
 
@@ -864,6 +886,11 @@ export function reconcileSessions(force = true): Promise<void> {
             startedMs: snapshot.startedMs,
             exitedMs: snapshot.exitedMs ?? undefined,
             status: snapshot.status,
+            activity: hydrateActivity(
+              useStore.getState().sessions[r.id],
+              snapshot.generation,
+              snapshot.activity,
+            ),
             notice: snapshot.notice ?? undefined,
             interrupted: r.interrupted,
             truncated: snapshot.truncated,
@@ -872,7 +899,12 @@ export function reconcileSessions(force = true): Promise<void> {
           // An exit already seen for this run is newer than a list saying it runs.
           const staleRun =
             prev && !prev.running && next.running && prev.startedMs === next.startedMs
-          if (!staleRun && !sameSession(prev, next)) current.setSession(r.id, next)
+          if (
+            (prev?.generation ?? 0) <= snapshot.generation &&
+            !staleRun &&
+            !sameSession(prev, next)
+          )
+            current.setSession(r.id, next)
         }
         const state = projects[r.metadata.projectId]?.state
         const root =

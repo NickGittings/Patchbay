@@ -1,3 +1,5 @@
+import { logSimple } from '../../lib/simpleActions'
+import { simpleStageOf, type SimpleAction } from '../../lib/simple'
 import { useState } from 'react'
 import { useStore } from '../../store'
 import { parseSessionId } from '../../types'
@@ -23,7 +25,13 @@ import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
 
-export default function AutoPanel({ onIntegrations }: { onIntegrations: () => void }) {
+export default function AutoPanel({
+  onIntegrations,
+  simple = false,
+}: {
+  onIntegrations: () => void
+  simple?: boolean
+}) {
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
@@ -38,8 +46,22 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
     : run.status === 'running'
       ? `Auto: ${STAGE_LABELS[run.stage]} (${run.round}/${effortSettings(run).maxRounds})`
       : `Auto: ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
-  const act = (fn: (id: string, task: string | null) => void | Promise<void>) => {
-    if (projectId) void Promise.resolve(fn(projectId, task)).catch((e) => setError(String(e)))
+  const act = (
+    action: SimpleAction,
+    fn: (id: string, task: string | null) => void | Promise<void>,
+  ) => {
+    if (projectId)
+      void Promise.resolve(fn(projectId, task))
+        .then(() => {
+          if (simple)
+            logSimple(projectId, task, {
+              kind: 'action',
+              action,
+              stage: simpleStageOf(run?.stage),
+              sessionId: run?.sessionId,
+            })
+        })
+        .catch((e) => setError(String(e)))
   }
   return (
     <Popover
@@ -53,7 +75,11 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
       openRequest={openRequest}
     >
       {!run || newRun ? (
-        <AutoDialog key={autoDraftKey(projectId, task)} onIntegrations={onIntegrations} />
+        <AutoDialog
+          key={autoDraftKey(projectId, task)}
+          onIntegrations={onIntegrations}
+          simple={simple}
+        />
       ) : (
         <div className="auto-content">
           <strong>Auto mode: {run.status}</strong>
@@ -98,20 +124,20 @@ export default function AutoPanel({ onIntegrations }: { onIntegrations: () => vo
           )}
           <div className="auto-controls">
             {run.status === 'running' ? (
-              <button onClick={() => act(pauseAuto)}>Pause</button>
+              <button onClick={() => act('pauseAuto', pauseAuto)}>Pause</button>
             ) : (
               !['done', 'stopped'].includes(run.status) && (
-                <button onClick={() => act(resumeAuto)}>Resume</button>
+                <button onClick={() => act('resumeAuto', resumeAuto)}>Resume</button>
               )
             )}
             {!['done', 'stopped'].includes(run.status) && (
-              <button onClick={() => act(stopAuto)}>Stop</button>
+              <button onClick={() => act('stopAuto', stopAuto)}>Stop</button>
             )}
             {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-              <button onClick={() => act(skipStage)}>Skip stage</button>
+              <button onClick={() => act('skipStage', skipStage)}>Skip stage</button>
             )}
             {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
-              <button onClick={() => act(mergeNow)}>Merge now</button>
+              <button onClick={() => act('mergeApproval', mergeNow)}>Merge now</button>
             )}
             {finished && (
               <button onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}>

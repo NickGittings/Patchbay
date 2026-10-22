@@ -724,58 +724,63 @@ test('skipping review still requires explicit merge approval', () => {
   expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
 })
 
-test('a task description launches Plan with the goal and then hands off its saved plan', async () => {
-  vi.useFakeTimers()
-  vi.setSystemTime(1000)
-  load()
-  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  const { startTerminal } = await import('./sessions')
-  const { implementPlannerPlan } = await import('./planHandoff')
-  vi.mocked(startTerminal).mockImplementation(async () => {
-    const { plannerSessionId } = await import('../types')
-    const sid = plannerSessionId('codex', 'p')
-    useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
-  })
-  vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
-  const stop = followAuto()
-  try {
-    await startAuto('p', 't', {
-      goal: 'Implement the description',
-      effort: 'standard',
-      device: 'codex',
-      merge: { mode: 'ask', destinationBranch: 'main' },
+test.each([false, true])(
+  'a task description launches Plan and hands off its saved plan (Simple: %s)',
+  async (simpleMode) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    useStore.setState({ simpleMode })
+    vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+    const { startTerminal } = await import('./sessions')
+    const { implementPlannerPlan } = await import('./planHandoff')
+    vi.mocked(startTerminal).mockImplementation(async () => {
+      const { plannerSessionId } = await import('../types')
+      const sid = plannerSessionId('codex', 'p')
+      useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
     })
-    await flush()
-    expect(startTerminal).toHaveBeenCalledWith('@plan', 'codex', 't', 'p', {
-      kickoff: { kind: 'plan' },
-      auto: expect.objectContaining({ goal: 'Implement the description', commit: false }),
-    })
-    const sid = autoRun('p', 't')!.sessionId!
-    vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Saved description plan', cut: false })
-    useStore.setState({
-      sessions: {
-        [sid]: {
-          running: true,
-          startedMs: 1000,
-          status: {
-            stopped: false,
-            agent: { state: 'review', sinceMs: 1200, authoritative: true },
-          },
-        } as SessionState,
-      },
-    })
-    await flush()
-    await vi.advanceTimersByTimeAsync(5000)
-    await flush()
-    expect(implementPlannerPlan).toHaveBeenCalledWith(
-      'codex',
-      expect.objectContaining({ goal: 'Implement the description', commit: true }),
-      'codex',
-    )
-  } finally {
-    stop()
-  }
-})
+    vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
+    const stop = followAuto()
+    try {
+      await startAuto('p', 't', {
+        goal: 'Implement the description',
+        effort: 'standard',
+        device: 'codex',
+        merge: { mode: 'ask', destinationBranch: 'main' },
+      })
+      await flush()
+      expect(startTerminal).toHaveBeenCalledWith('@plan', 'codex', 't', 'p', {
+        kickoff: { kind: 'plan' },
+        auto: expect.objectContaining({ goal: 'Implement the description', commit: false }),
+      })
+      const sid = autoRun('p', 't')!.sessionId!
+      vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Saved description plan', cut: false })
+      useStore.setState({
+        sessions: {
+          [sid]: {
+            running: true,
+            startedMs: 1000,
+            status: {
+              stopped: false,
+              agent: { state: 'review', sinceMs: 1200, authoritative: true },
+            },
+          } as SessionState,
+        },
+      })
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(implementPlannerPlan).toHaveBeenCalledWith(
+        'codex',
+        expect.objectContaining({ goal: 'Implement the description', commit: true }),
+        'codex',
+        simpleMode ? 'stay' : 'follow',
+      )
+    } finally {
+      stop()
+    }
+  },
+)
 
 test('validation uses the pinned worktree and keeps failed results when the user switches tasks', async () => {
   vi.useFakeTimers()
