@@ -26,3 +26,21 @@ export function taskActionState(
             : null,
   }
 }
+
+/**
+ * Whether `activity` is a finished graph action of `projectId`'s `task` worktree that the user
+ * hasn't seen yet.
+ */
+export function unseenFinished(
+  activity: TaskActivity,
+  projectId: string | undefined,
+  task: string | null,
+  seen: ReadonlySet<string>,
+): boolean {
+  return (
+    activity.projectId === projectId &&
+    (activity.task ?? null) === task &&
+    activity.state !== 'running' &&
+    !seen.has(activity.id)
+  )
+}

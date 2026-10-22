@@ -129,7 +129,7 @@
         const menu = await projectMenu()
         await until(
           `${count} projects listed`,
-          () => menu.querySelectorAll('.project-switcher-row').length === count,
+          () => menu.querySelectorAll('.menu-row').length === count,
         )
         for (const close of menu.querySelectorAll('.project-switcher-close'))
           assertVisible(close, menu, close.getAttribute('aria-label'))

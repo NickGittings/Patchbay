@@ -9,10 +9,11 @@ import {
   type Node,
   type NodeChange,
 } from '@xyflow/react'
-import { create } from 'zustand'
+import { create, type StateCreator } from 'zustand'
 import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
 import { liveDeclined } from './lib/validators'
 import { forgetAutoDrafts } from './lib/autoDrafts'
+import { unseenFinished } from './lib/taskActions'
 import type {
   AgentRoles,
   NotificationSettings,
@@ -449,7 +450,45 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
 /** Where each node being dragged was before its drag, to tell whether the drag moved it. */
 const dragOrigins = new Map<string, Component['position']>()
 
-export const useStore = create<State>((set, get) => ({
+/**
+ * `patch` plus, when it takes the worktree on screen off screen (another task or project, or
+ * none), that worktree's finished graph actions marked seen, so the worktree picker counts only
+ * other worktrees' (`worktreeAttention`).
+ */
+function leaveWorktree(s: State, patch: Partial<State>): Partial<State> {
+  const projectId = s.project?.id
+  if (!projectId) return patch
+  const nextProject = 'project' in patch ? patch.project?.id : projectId
+  const nextTask = 'activeTask' in patch ? patch.activeTask : s.activeTask
+  if (nextProject === projectId && nextTask === s.activeTask) return patch
+  const seenList = patch.seenActivities ?? s.seenActivities
+  const seen = new Set(seenList)
+  const fresh = Object.values(patch.taskActivities ?? s.taskActivities)
+    .filter((a) => unseenFinished(a, projectId, s.activeTask, seen))
+    .map((a) => a.id)
+  return fresh.length ? { ...patch, seenActivities: [...seenList, ...fresh] } : patch
+}
+
+/**
+ * Runs every update, from actions and `useStore.setState` alike, through `leaveWorktree`, so
+ * whichever path changes the worktree on screen marks the one left seen in the same update.
+ */
+const markLeftWorktree =
+  (config: StateCreator<State>): StateCreator<State> =>
+  (set, get, api) => {
+    const setState = ((
+      partial: State | Partial<State> | ((s: State) => State | Partial<State>),
+      replace?: boolean,
+    ) =>
+      set(
+        (s) => leaveWorktree(s, typeof partial === 'function' ? partial(s) : partial),
+        replace as false,
+      )) as typeof api.setState
+    api.setState = setState
+    return config(setState, get, api)
+  }
+
+const createState: StateCreator<State> = (set, get) => ({
   taskWorkspaces: {},
   rootTerminals: emptyTaskWorkspace().rootTerminals,
   componentTerminals: [],
@@ -1010,7 +1049,9 @@ export const useStore = create<State>((set, get) => ({
       }
     }),
   markSaved: () => set({ dirty: false }),
-}))
+})
+
+export const useStore = create<State>()(markLeftWorktree(createState))
 
 /** The live state for the active project, or its saved state for an inactive tab. */
 export function projectStateOf(id: string, s = useStore.getState()): ProjectState | undefined {

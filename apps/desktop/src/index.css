@@ -352,6 +352,16 @@ input[type='radio'] {
   font-size: 11px;
   color: var(--muted);
 }
+.menu-row {
+  display: flex;
+  align-items: center;
+}
+.menu-list .menu-side {
+  width: auto;
+  flex: none;
+  padding: 0 8px;
+  color: var(--muted);
+}
 .menu-separator {
   height: 1px;
   margin: 4px 2px;
@@ -420,7 +430,8 @@ input[type='radio'] {
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
-.toolbar button:not([role='menuitem']) {
+/* Toolbar controls, not the items of the toolbar's menus, which keep their menu look. */
+.toolbar button:not([role^='menuitem']) {
   height: 28px;
   padding: 0 10px;
   white-space: nowrap;
@@ -560,12 +571,27 @@ input[type='radio'] {
   box-shadow: var(--shadow);
 }
 .toast-text {
+  min-width: 0;
   overflow-wrap: anywhere;
   max-height: 40vh;
   overflow-y: auto;
+  white-space: normal;
+}
+.notification-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.notification-row + .notification-row {
+  margin-top: 8px;
 }
 .notification-message {
+  flex: 1;
+  min-width: 0;
   white-space: pre-line;
+}
+.notification-row button {
+  flex: none;
 }
 .toolbar .toast .toast-close {
   flex: none;
@@ -1969,10 +1995,6 @@ button.review-name:hover:not(:disabled) {
   flex: none;
   color: var(--muted);
 }
-.project-switcher-row {
-  display: flex;
-  align-items: center;
-}
 .menu-list .project-switcher-item {
   flex: 1;
   min-width: 0;
@@ -1983,17 +2005,6 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   min-width: 0;
   gap: 4px;
-}
-.project-check {
-  width: 12px;
-  flex: none;
-  color: var(--accent);
-}
-.menu-list .project-switcher-close {
-  width: auto;
-  flex: none;
-  padding: 0 8px;
-  color: var(--muted);
 }
 .menu-check {
   color: var(--accent);

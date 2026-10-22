@@ -24,13 +24,7 @@ import { CloseMenu } from '../menuContext'
  * Pick the worktree where planning and implementation terminals run; with `copyPlan` (Plan's
  * Planner scope), a new one starts with a copy of the project plan.
  */
-export default function WorktreePicker({
-  caret = true,
-  copyPlan = false,
-}: {
-  caret?: boolean
-  copyPlan?: boolean
-}) {
+export default function WorktreePicker({ copyPlan = false }: { copyPlan?: boolean }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
   const counts = useStore(useShallow(worktreeAttention))
@@ -71,7 +65,7 @@ export default function WorktreePicker({
       title={`${label}${currentBranch ? ` (${currentBranch})` : ''}: switch worktree`}
       className="worktree-picker"
       listClassName="worktree-popover"
-      caret={caret}
+      caret={false}
       portal
     >
       <WorktreeOverview

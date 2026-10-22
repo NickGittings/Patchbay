@@ -52,7 +52,14 @@ import {
 } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
 
-import { EFFORT, integrated, taskPassed, unfinished, validOverrides } from './autoSettings'
+import {
+  EFFORT,
+  integrated,
+  STAGE_LABELS,
+  taskPassed,
+  unfinished,
+  validOverrides,
+} from './autoSettings'
 import { fnv1a } from './hash'
 import { autoRuns, autoWorkspace } from './autoState'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
@@ -66,8 +73,6 @@ export function blockingCount(findings: ReviewFindings | null, floor: Severity) 
     0,
   )
 }
-/** A validation report with a task that didn't pass; components without a check are skipped. */
-export const validationFailed = (report: ActionReport) => report.results.some((r) => !taskPassed(r))
 /** One finding per failed validation terminal, for the fix agent's briefing. */
 export function validationFailures(reports: ActionReport[], name: (sessionId: string) => string) {
   return reports
@@ -231,7 +236,14 @@ export function nextStep(
         : {
             stage: 'merge',
             status: 'waitingOnYou',
-            reason: `Merge did not complete (${outcome ?? 'unknown'})`,
+            reason:
+              outcome === 'inProgress'
+                ? 'Merge is still in progress'
+                : outcome === 'dirty'
+                  ? 'Merge did not complete: destination has uncommitted changes'
+                  : outcome === 'notMerged'
+                    ? 'Merge did not complete: changes have not been merged'
+                    : 'Merge did not complete: unable to confirm the result',
             waitingFor: 'agentInput',
           }
     case 'done':
@@ -1475,7 +1487,7 @@ async function drive(projectId: string, task: string | null) {
         observedWorking: false,
         planMark: run.stage === 'plan' ? snapshot.planMark : run.planMark,
       },
-      `Starting ${run.stage}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
+      `Starting ${STAGE_LABELS[run.stage]}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
     )
     if (!live() || !active(projectId, task)) return
     controller.phase = 'launching'

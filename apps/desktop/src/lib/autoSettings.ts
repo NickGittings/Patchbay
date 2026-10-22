@@ -11,6 +11,15 @@ export const finished = (status: AutoRun['status'] | undefined) =>
 export const integrated = (outcome: MergeOutcome | undefined) =>
   outcome === 'merged' || outcome === 'alreadyIntegrated'
 
+export const STATUS_LABELS: Record<AutoRun['status'], string> = {
+  running: 'Running',
+  paused: 'Paused',
+  waitingOnYou: 'Waiting on you',
+  stopped: 'Stopped',
+  done: 'Done',
+  failed: 'Failed',
+}
+
 export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }> = {
   light: {
     maxRounds: 1,

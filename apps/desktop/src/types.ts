@@ -659,6 +659,8 @@ export interface WorkspaceProject {
  * no longer current (seen, resolved, stopped, resumed) or its project closed.
  */
 export interface NotificationToast {
+  /** A standalone hint shown above any unread session links. */
+  notice?: string
   message: string
   sessions: NotificationLink[]
 }
@@ -669,7 +671,7 @@ export interface NotificationLink {
   message?: string
   kind?: 'finished' | 'needsInput' | 'failed'
   atMs?: number
-  /** Named on the button only while another project is active. */
+  /** Named in the toast only while another project is active. */
   project?: { id: string; name: string }
   /** An Auto run's pause: the link opens its worktree's Auto panel while the pause lasts. */
   auto?: AutoPauseTarget

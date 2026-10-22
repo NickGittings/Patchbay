@@ -11,7 +11,11 @@ export function mergeNotificationToast(
     const links = current.sessions.every((entry) => entry.message !== undefined)
       ? current.sessions.map((entry) => entry.message).join('\n')
       : current.message
-    return { message: `${incoming.message}\n${links}`, sessions: current.sessions }
+    return {
+      notice: incoming.notice ?? incoming.message,
+      message: links,
+      sessions: current.sessions,
+    }
   }
   const sessions = new Map(
     current.sessions.map((entry) => [
@@ -36,7 +40,7 @@ export function removeNotificationSession(
     : null
 }
 
-/** The button text: the project is named only when it isn't the active one. */
+/** The link's label or message: name the project only when it isn't the active one. */
 export function notificationLinkLabel(link: NotificationLink, activeProjectId: string | null) {
   return link.project && link.project.id !== activeProjectId
     ? `${link.label} · ${link.project.name}`

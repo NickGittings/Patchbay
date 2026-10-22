@@ -342,9 +342,9 @@
     state().setActiveTask(task.id)
 
     // The toolbar picker switches worktrees in Build, keeping terminals and layouts.
-    const overview = await openPicker()
+    const buildOverview = await openPicker()
     const secondRow = await until('second task in picker', () =>
-      Array.from(overview.querySelectorAll('.worktree-row')).find(
+      Array.from(buildOverview.querySelectorAll('.worktree-row')).find(
         (row) => row.querySelector('strong')?.textContent === secondTask.title,
       ),
     )
