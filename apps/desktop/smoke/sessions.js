@@ -405,6 +405,24 @@
       return disabled
     })
     smoke.store.setState({ serviceConnected: true })
+    for (const closePanel of [
+      () => document.querySelector('.workspace-rail [aria-label="Sessions"]').click(),
+      () =>
+        document
+          .querySelector('[aria-label="Sessions panel"] header button')
+          .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+      () => smoke.selectPanel('project'),
+    ]) {
+      await click(panel, 'Stop all work')
+      await until('stop confirmation before close', () =>
+        panel().querySelector('[role="alertdialog"]'),
+      )
+      closePanel()
+      await until('sessions closed', () => !panel())
+      smoke.selectPanel('sessions')
+      await until('sessions reopened', () => panel())
+      assert(!panel().querySelector('[role="alertdialog"]'), 'stop confirmation stayed armed')
+    }
     await click(panel, 'Stop all work')
     await until('global Stop confirmation', () => panel().querySelector('[role="alertdialog"]'))
     assert(

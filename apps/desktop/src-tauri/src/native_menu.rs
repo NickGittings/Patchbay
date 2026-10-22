@@ -63,13 +63,14 @@ pub(crate) fn update_native_menu(
 }
 
 /// Read the actual native items for desktop smoke checks; unavailable in release builds.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub(crate) fn inspect_native_menu(
     window: WebviewWindow,
     app: AppHandle,
 ) -> Result<Vec<(String, String, bool)>, String> {
     super::main_only(&window)?;
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         let menu = app.menu().ok_or("Native menu is unavailable")?;
         let mut entries = Vec::new();
@@ -93,7 +94,7 @@ pub(crate) fn inspect_native_menu(
         }
         Ok(entries)
     }
-    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
         Err("Native menu inspection requires a macOS debug build".into())

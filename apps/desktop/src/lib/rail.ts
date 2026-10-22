@@ -26,6 +26,12 @@ export function togglePanel(panel: UtilityPanel) {
 }
 // Keep existing programmatic requests (including extensions and terminal attention) working.
 useStore.subscribe((s, previous) => {
+  if (
+    previous.project &&
+    previous.project.id !== s.project?.id &&
+    useRail.getState().settings === 'roles'
+  )
+    useRail.setState({ settings: null })
   if (s.sessionsPanelOpen !== previous.sessionsPanelOpen) {
     if (s.sessionsPanelOpen) selectPanel('sessions')
     else if (useRail.getState().panel === 'sessions') selectPanel(null)
@@ -36,6 +42,13 @@ useStore.subscribe((s, previous) => {
   }
   if (s.autoPanelRequest !== previous.autoPanelRequest) selectPanel('auto')
 })
+/** Chat keeps the last Full view; its numbered shortcuts return there. */
+export function selectRailShortcut(view: View) {
+  const s = useStore.getState()
+  if (!s.project) return
+  if (s.simpleMode && view !== 'navigation') s.setSimpleMode(false)
+  else selectRailView(view)
+}
 export function selectRailView(view: View) {
   const s = useStore.getState()
   if (!s.project) return
@@ -45,7 +58,7 @@ export function selectRailView(view: View) {
       stageFilter: view === 'navigation' ? 'all' : view === 'implementation' ? 'build' : view,
     })
 }
-export function selectedRailView(): View {
+export function selectedRailView(): View | null {
   const s = useStore.getState()
   if (!s.simpleMode) return s.view
   const filter =
@@ -55,7 +68,7 @@ export function selectedRailView(): View {
     : filter === 'build'
       ? 'implementation'
       : filter === 'merge'
-        ? 'review'
+        ? null
         : filter
 }
 export function panelWidth(width: number, windowWidth: number) {

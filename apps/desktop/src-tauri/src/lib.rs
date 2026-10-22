@@ -2226,9 +2226,14 @@ pub fn run() {
                 invoke.resolver.reject("opaque origins cannot invoke Tauri");
                 return true;
             }
+            #[cfg(debug_assertions)]
+            if invoke.message.command() == "inspect_native_menu" {
+                let inspect: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+                    tauri::generate_handler![native_menu::inspect_native_menu];
+                return inspect(invoke);
+            }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 native_menu::update_native_menu,
-                native_menu::inspect_native_menu,
                 agent_provider,
                 agent_hooks_check,
                 agent_hooks_configure,
@@ -2902,7 +2907,10 @@ async fn window_open(
                 .position(x, y)
                 .maximized(maximized);
         #[cfg(target_os = "macos")]
-        let builder = writing_tools::disable(builder);
+        let builder = writing_tools::disable(builder)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(12.0, 22.0));
         #[cfg(debug_assertions)]
         let builder = smoke::window(builder);
         let _popout = builder.build().map_err(err)?;

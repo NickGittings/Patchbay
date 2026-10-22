@@ -68,6 +68,16 @@
     await smoke.saveProject(external, null)
     s().updateComponent(component, { notes: 'Local conflict' })
     await until('conflict status', () => status()?.textContent.includes('Map changed externally'))
+    smoke.selectPanel(null)
+    await until(
+      'conflict recovery with Project panel closed',
+      () =>
+        !document.querySelector('.utility-panel') &&
+        document
+          .querySelector('.workspace-main .recovery-banner')
+          ?.textContent.includes('resume editing'),
+    )
+    smoke.selectPanel('project')
     assert(
       (await smoke.openProject()).project.components[0].notes === 'External edit',
       'Autosave overwrote an external edit',

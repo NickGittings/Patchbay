@@ -99,15 +99,20 @@
         .getAttribute('aria-pressed') === 'true',
       'Chat toggle selection missing',
     )
-    assert(!document.querySelector('.simple-stage-tabs'), 'duplicate stage tabs remain')
+    assert(document.querySelector('.current-stage-dot'), 'current stage indicator missing')
     const stageTab = (name) =>
-      document.querySelector(
-        `.workspace-rail [aria-label="${name === 'All' ? 'Navigation' : name}"]`,
+      [...document.querySelectorAll('.simple-stage-tabs button')].find((b) =>
+        b.textContent.startsWith(name),
       )
     click(stageTab('Review'))
     await until('Review stage filter', () => {
       const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
-      return shown.join(',') === 'Review,Merge'
+      return shown.join(',') === 'Review'
+    })
+    click(stageTab('Merge'))
+    await until('Merge stage filter', () => {
+      const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
+      return shown.join(',') === 'Merge'
     })
     click(stageTab('All'))
     await until('every stage shown', () => document.querySelectorAll('.simple-stage').length === 4)
@@ -174,19 +179,10 @@
     await until('chat again', () => document.querySelector('.simple-chat'))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
     await until(
-      'Chat Build shortcut',
-      () =>
-        state().simpleMode &&
-        document
-          .querySelector('.workspace-rail [aria-label="Build"]')
-          .getAttribute('aria-pressed') === 'true',
-    )
-    assert(state().view === 'review', 'Chat shortcut changed the last full workspace view')
-    await toggleSimple()
-    await until(
-      'Full review after Chat shortcut',
+      'Chat shortcut restores last Full view',
       () => !state().simpleMode && state().view === 'review',
     )
+    assert(state().view === 'review', 'Chat shortcut changed the last full workspace view')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
     await until('Full Build shortcut', () => state().view === 'implementation')
     await until('same fix terminal in Full', () =>

@@ -1,4 +1,6 @@
 import WorkspaceRail from './components/WorkspaceRail'
+import RecoveryBanners from './components/RecoveryBanners'
+import { useWorkspaceActions } from './lib/workspaceActions'
 import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
@@ -154,7 +156,8 @@ function NavigationView() {
   )
 }
 
-export default function App() {
+function AppWorkspace() {
+  const actions = useWorkspaceActions()
   const view = useStore((s) => s.view)
   const simple = useStore((s) => s.simpleMode)
   const projectId = useStore((s) => s.project?.id)
@@ -233,34 +236,41 @@ export default function App() {
   useRootSync()
 
   return (
-    <ReactFlowProvider>
-      <div className="app">
-        <Toolbar />
-        <NavigationDialogs settingsOnly />
-        <MapMaintenanceReview />
-        <DependencyDialog />
-        <ExtensionsPanel />
-        <NewTaskDialog />
-        <div className="workspace-body">
-          <WorkspaceRail />
-          <main className="workspace-main">
-            {!restoring && (simple || view === 'navigation') && (
-              <div className="navigation-shell">
-                <NavigationView key={projectId} />
-              </div>
-            )}
-            {restoring ? (
-              <div className="hint">Restoring workspace…</div>
-            ) : !simple && view === 'plan' ? (
-              <PlanView key={projectId} />
-            ) : !simple && view === 'implementation' ? (
-              <ImplementationView key={projectId} />
-            ) : !simple && view === 'review' ? (
-              <ReviewView key={projectId} />
-            ) : null}
-          </main>
-        </div>
+    <div className="app">
+      <Toolbar actions={actions} />
+      <NavigationDialogs settingsOnly />
+      <MapMaintenanceReview />
+      <DependencyDialog />
+      <ExtensionsPanel />
+      <NewTaskDialog />
+      <div className="workspace-body">
+        <WorkspaceRail actions={actions} />
+        <main className="workspace-main">
+          <RecoveryBanners />
+          {!restoring && (simple || view === 'navigation') && (
+            <div className="navigation-shell">
+              <NavigationView key={projectId} />
+            </div>
+          )}
+          {restoring ? (
+            <div className="hint">Restoring workspace…</div>
+          ) : !simple && view === 'plan' ? (
+            <PlanView key={projectId} />
+          ) : !simple && view === 'implementation' ? (
+            <ImplementationView key={projectId} />
+          ) : !simple && view === 'review' ? (
+            <ReviewView key={projectId} />
+          ) : null}
+        </main>
       </div>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ReactFlowProvider>
+      <AppWorkspace />
     </ReactFlowProvider>
   )
 }

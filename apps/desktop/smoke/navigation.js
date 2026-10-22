@@ -130,6 +130,19 @@
     const wrapped = `e\u0301${'x'.repeat(150)}.rs:8:9`
     await smoke.terminalWrite(sid, `printf 'prefix 🧭 ${wrapped}\\n'\r`)
     await until('Unicode soft-wrapped location', () => smoke.terminalNavigationState(sid, wrapped))
+    const terminalInput = document.querySelector('.xterm textarea')
+    assert(terminalInput, 'terminal input missing')
+    for (const key of ['s', '1', '2', '3', '4']) {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      terminalInput.dispatchEvent(event)
+      assert(state().view === 'navigation', `Ctrl+${key} switched views from a terminal`)
+    }
+    await smoke.terminalWrite(sid, '\u0011\u0003')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }))
     const input = await until('file search shortcut', () =>
       document.querySelector('input[aria-label="Search files and commands"]'),
@@ -137,6 +150,26 @@
     await until('ranked path list', () =>
       document.querySelector('[aria-label="Files"] [role="option"]'),
     )
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'close')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await until('close command matches during file search', () =>
+      document.querySelector('[data-command-id="close"]'),
+    )
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
+    await sleep(50)
+    assert(state().project?.id === projectId, 'fast file-search Enter closed the project')
+    await until('no matching files', () =>
+      document
+        .querySelector('[role="group"][aria-label="Files"]')
+        ?.textContent.includes('No matching files'),
+    )
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
+    await sleep(50)
+    assert(state().project?.id === projectId, 'empty file-search Enter ran a command')
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     const task = await smoke.createTask({
       title: 'Navigation task',

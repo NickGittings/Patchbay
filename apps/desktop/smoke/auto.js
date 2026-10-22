@@ -207,6 +207,17 @@
       device: 'auto-fixture',
       merge: { mode: 'ask', destinationBranch: 'main' },
     })
+    await until(
+      'Auto progress with panel closed',
+      () =>
+        !document.querySelector('.auto-content') &&
+        !document.querySelector('.workspace-status') &&
+        document.querySelector('.workspace-rail [aria-label="Auto mode"] .rail-status') &&
+        document
+          .querySelector('.workspace-rail [aria-label="Auto mode"]')
+          ?.getAttribute('aria-description')
+          ?.includes('Running'),
+    )
     await until('merge approval', () => {
       if (['failed', 'paused'].includes(state().auto?.status)) throw new Error(state().auto.reason)
       return state().auto?.stage === 'mergeGate' && state().auto.status === 'waitingOnYou'

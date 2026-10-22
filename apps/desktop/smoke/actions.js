@@ -116,6 +116,14 @@
       'incorrect startup order',
     )
     button(editor, 'Start').click()
+    smoke.selectPanel(null)
+    await until('running activity outside its panel', () =>
+      document
+        .querySelector('.workspace-rail [aria-label="Activity"]')
+        ?.getAttribute('aria-description')
+        ?.includes('Starting environment'),
+    )
+    smoke.selectPanel('activity')
     await until(
       'environment startup',
       () => !state().graphActionBusy && state().graphActionReport?.results.length === 2,

@@ -1,7 +1,7 @@
 import { useStore } from '../store'
 import { acceptOpened, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
-import { reloadSavedMap } from '../lib/mapSave'
+import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
 import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
 
@@ -82,6 +82,15 @@ export default function RecoveryBanners() {
             Recover draft
           </button>
           <button onClick={() => void reloadSavedMap(active.id)}>Use saved map</button>
+        </div>
+      )}
+      {!active?.conflict && !active?.unavailable && active?.mapSave?.status === 'conflict' && (
+        <div className="recovery-banner" role="alert">
+          <span>
+            The saved map changed outside Patchbay. Choose which map to keep to resume editing.
+          </span>
+          <button onClick={() => void reloadSavedMap(active.id)}>Reload saved map</button>
+          <button onClick={() => void saveMapNow(active.id, true)}>Replace with my map</button>
         </div>
       )}
     </>

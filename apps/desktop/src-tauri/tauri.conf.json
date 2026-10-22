@@ -14,6 +14,9 @@
       {
         "title": "Patchbay",
         "create": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 12, "y": 22 },
         "width": 1440,
         "height": 900,
         "minWidth": 900,

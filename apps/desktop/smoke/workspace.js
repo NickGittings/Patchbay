@@ -54,6 +54,15 @@
     await until('missing project recovery', () =>
       document.querySelector('.recovery-banner')?.textContent.includes(missing.root),
     )
+    smoke.selectPanel(null)
+    await until(
+      'recovery visible with panel closed',
+      () =>
+        !document.querySelector('.utility-panel') &&
+        document
+          .querySelector('.workspace-main .recovery-banner')
+          ?.textContent.includes(missing.root),
+    )
     ;(await projectMenu()).querySelector('[aria-label="Close Missing project"]').click()
     await until('missing project closed', () => !s().projects[missing.id])
     const one = await smoke.openProject()
@@ -153,6 +162,13 @@
       document.querySelector('.workspace-rail [aria-label="Sessions"]').click()
       await until('panel toggles closed', () => !document.querySelector('.utility-panel'))
       const search = document.querySelector('.top-bar input')
+      if (
+        search.getBoundingClientRect().height !== 28 ||
+        search.getBoundingClientRect().width > 520
+      )
+        throw new Error('Search is no longer compact')
+      if (/mac/i.test(navigator.userAgent) && search.getBoundingClientRect().left < 88)
+        throw new Error('Search overlaps native window controls')
       search.focus()
       await until('combined search', () => document.querySelector('.search-results'))
       if (

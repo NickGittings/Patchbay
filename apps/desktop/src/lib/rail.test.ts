@@ -12,12 +12,20 @@ vi.mock('../store', () => ({
     activityPanelOpen: false,
     autoPanelRequest: 0,
     setView: (view: View) => store.setState({ view }),
+    setSimpleMode: (simpleMode: boolean) => store.setState({ simpleMode }),
   })),
 }))
 const { useStore: store } = await import('../store')
-const { selectPanel, togglePanel, selectRailView, selectedRailView, useRail, panelWidth } =
-  await import('./rail')
-const { useSimpleUi } = await import('./simpleUi')
+const {
+  selectPanel,
+  togglePanel,
+  selectRailView,
+  selectRailShortcut,
+  selectedRailView,
+  useRail,
+  panelWidth,
+} = await import('./rail')
+const { useSimpleUi, simpleKey } = await import('./simpleUi')
 beforeEach(() => {
   store.setState({
     project: { id: 'one' } as never,
@@ -28,7 +36,7 @@ beforeEach(() => {
     activityPanelOpen: false,
     autoPanelRequest: 0,
   })
-  useRail.setState({ panel: null })
+  useRail.setState({ panel: null, settings: null })
   useSimpleUi.setState({ worktrees: {} })
 })
 test('utility selection is exclusive, toggles closed, and accepts legacy requests', () => {
@@ -67,4 +75,38 @@ test('panel widths leave room for the workspace at the minimum window width', ()
   expect(panelWidth(1000, 1440)).toBe(640)
   expect(panelWidth(1000, 900)).toBe(440)
   expect(panelWidth(50, 900)).toBe(240)
+})
+test('numbered Chat shortcuts restore the last Full view without changing stage filters', () => {
+  for (const view of ['plan', 'implementation', 'review'] as const) {
+    store.setState({ simpleMode: true, view: 'review' })
+    selectRailView('plan')
+    selectRailShortcut(view)
+    expect(store.getState().simpleMode).toBe(false)
+    expect(store.getState().view).toBe('review')
+    store.setState({ simpleMode: true })
+    expect(selectedRailView()).toBe('plan')
+  }
+  store.setState({ simpleMode: false })
+  selectRailShortcut('implementation')
+  expect(store.getState().view).toBe('implementation')
+})
+test('Merge remains a distinct Chat filter from Review', () => {
+  store.setState({ simpleMode: true })
+  useSimpleUi.getState().patch(simpleKey('one', null), { stageFilter: 'merge' })
+  expect(selectedRailView()).toBeNull()
+  selectRailView('review')
+  expect(useSimpleUi.getState().worktrees[simpleKey('one', null)].stageFilter).toBe('review')
+})
+test('project role settings close when switching or closing projects', () => {
+  useRail.setState({ settings: 'roles' })
+  store.setState({ project: { id: 'two' } as never })
+  expect(useRail.getState().settings).toBeNull()
+  useRail.setState({ settings: 'roles' })
+  store.setState({ project: null })
+  expect(useRail.getState().settings).toBeNull()
+  store.setState({ project: { id: 'one' } as never })
+  expect(useRail.getState().settings).toBeNull()
+  useRail.setState({ settings: 'notifications' })
+  store.setState({ project: null })
+  expect(useRail.getState().settings).toBe('notifications')
 })

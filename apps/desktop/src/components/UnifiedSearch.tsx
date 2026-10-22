@@ -22,13 +22,12 @@ export default function UnifiedSearch({
   const [open, setOpen] = useState(false)
   const [priority, setPriority] = useState<'Files' | 'Commands'>('Files')
   const [query, setQuery] = useState('')
-  const [selection, setSelection] = useState({ scope: '', index: 0 })
+  const [selection, setSelection] = useState({ scope: '', id: '' })
   const input = useRef<HTMLInputElement>(null)
   const root = useRef<HTMLDivElement>(null)
   const previousFocus = useRef<HTMLElement | null>(null)
   const context = useWhenContext(undefined, open)
-  const scope = JSON.stringify([projectId, task, worktree, query])
-  const index = selection.scope === scope ? selection.index : 0
+  const scope = JSON.stringify([projectId, task, worktree, query, priority])
   const [response, setResponse] = useState<{
     scope: string
     items: FileSearchResult[]
@@ -45,7 +44,7 @@ export default function UnifiedSearch({
         previousFocus.current = document.activeElement as HTMLElement
       setPriority(group)
       setQuery('')
-      setSelection({ scope: '', index: 0 })
+      setSelection({ scope: '', id: '' })
       setOpen(true)
       input.current?.focus()
     }
@@ -76,7 +75,7 @@ export default function UnifiedSearch({
       if (useStore.getState().paletteOpen) {
         setPriority('Commands')
         setQuery('')
-        setSelection({ scope: '', index: 0 })
+        setSelection({ scope: '', id: '' })
         setOpen(true)
         if (document.activeElement !== input.current)
           previousFocus.current = document.activeElement as HTMLElement
@@ -134,7 +133,10 @@ export default function UnifiedSearch({
         .map((c) => ({ ...c, detail: c.id, group: 'Commands' }))
   const items =
     priority === 'Files' ? [...fileItems, ...commandItems] : [...commandItems, ...fileItems]
-  const selected = Math.min(index, Math.max(0, items.length - 1))
+  // Files mode never falls back to an implicit command selection, even on an empty/error result.
+  // Remember explicit selections by identity so late file results cannot change the action.
+  const explicit = selection.scope === scope ? items.findIndex((i) => i.id === selection.id) : -1
+  const selected = explicit >= 0 ? explicit : items.findIndex((i) => i.group === priority)
   useEffect(() => {
     if (open)
       document.getElementById(`search-result-${selected}`)?.scrollIntoView({ block: 'nearest' })
@@ -151,12 +153,16 @@ export default function UnifiedSearch({
       <input
         ref={input}
         role="combobox"
-        aria-label="Search files and commands"
+        aria-label={filesOnly ? 'Search files' : 'Search files and commands'}
         aria-expanded={open}
         aria-controls="search-results"
         aria-autocomplete="list"
         aria-activedescendant={open && items[selected] ? `search-result-${selected}` : undefined}
-        placeholder={`Search files and commands…  ${mod}P / ${shiftMod}P`}
+        placeholder={
+          filesOnly
+            ? `Search files…  ${mod}P`
+            : `Search files and commands…  ${mod}P / ${shiftMod}P`
+        }
         value={query}
         onPointerDown={() => {
           if (document.activeElement !== input.current)
@@ -165,7 +171,7 @@ export default function UnifiedSearch({
         onFocus={() => setOpen(true)}
         onChange={(e) => {
           setQuery(e.target.value)
-          setSelection({ scope: '', index: 0 })
+          setSelection({ scope: '', id: '' })
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
@@ -176,17 +182,20 @@ export default function UnifiedSearch({
           }
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault()
-            setSelection({
-              scope,
-              index: Math.max(
-                0,
-                Math.min(items.length - 1, selected + (e.key === 'ArrowDown' ? 1 : -1)),
-              ),
-            })
+            const next =
+              selected < 0
+                ? e.key === 'ArrowDown'
+                  ? 0
+                  : items.length - 1
+                : Math.max(
+                    0,
+                    Math.min(items.length - 1, selected + (e.key === 'ArrowDown' ? 1 : -1)),
+                  )
+            setSelection({ scope, id: items[next]?.id ?? '' })
           }
-          if (e.key === 'Enter' && items[selected]) {
+          if (e.key === 'Enter') {
             e.preventDefault()
-            execute(items[selected])
+            if (items[selected]) execute(items[selected])
           }
           if (e.key === 'Tab') close()
         }}
@@ -196,7 +205,7 @@ export default function UnifiedSearch({
           className="search-results"
           id="search-results"
           role="listbox"
-          aria-label="Files and Commands"
+          aria-label={filesOnly ? 'Files' : 'Files and Commands'}
         >
           {(priority === 'Files' ? ['Files', 'Commands'] : ['Commands', 'Files'])
             .filter((g) => !filesOnly || g === 'Files')

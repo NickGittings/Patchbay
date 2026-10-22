@@ -150,7 +150,14 @@ function PreferredEditorDialog() {
 export default function NavigationDialogs({ settingsOnly = false }: { settingsOnly?: boolean }) {
   return (
     <>
-      {!settingsOnly && <UnifiedSearch filesOnly />}
+      {!settingsOnly && (
+        <div
+          className={`top-bar${/mac/i.test(navigator.userAgent) ? ' mac-titlebar' : ''}`}
+          data-tauri-drag-region
+        >
+          <UnifiedSearch filesOnly />
+        </div>
+      )}
       <PreferredEditorDialog />
     </>
   )

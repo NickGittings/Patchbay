@@ -359,6 +359,13 @@ export default function SessionsPanel({ host }: { host: HTMLElement | null }) {
   const historyRequest = useRef(0)
   const [busy, setBusy] = useState(false)
   const [confirmStopAll, setConfirmStopAll] = useState(false)
+  useEffect(
+    () =>
+      useStore.subscribe((s, previous) => {
+        if (previous.sessionsPanelOpen && !s.sessionsPanelOpen) setConfirmStopAll(false)
+      }),
+    [],
+  )
   const perform = async (action: () => Promise<unknown>) => {
     setBusy(true)
     try {
