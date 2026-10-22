@@ -1,30 +1,28 @@
 import { create } from 'zustand'
-import { useStore } from '../store'
+import { useStore, type UtilityPanel } from '../store'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import type { View } from '../types'
 
-export type UtilityPanel = 'project' | 'worktree' | 'auto' | 'activity' | 'sessions'
+export type { UtilityPanel }
 export const railViews: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
   { id: 'plan', label: 'Plan' },
   { id: 'implementation', label: 'Build' },
   { id: 'review', label: 'Review' },
 ]
-export const useRail = create<{ panel: UtilityPanel | null; settings: string | null }>(() => ({
-  panel: null,
-  settings: null,
-}))
+export const useRail = create<{ settings: string | null }>(() => ({ settings: null }))
+/** The open utility panel lives in the store alone (`utilityPanel`). */
 export function selectPanel(panel: UtilityPanel | null) {
-  useRail.setState({ panel })
-  useStore.setState({
-    sessionsPanelOpen: panel === 'sessions',
-    activityPanelOpen: panel === 'activity',
-  })
+  useStore.setState({ utilityPanel: panel })
 }
 export function togglePanel(panel: UtilityPanel) {
-  selectPanel(useRail.getState().panel === panel ? null : panel)
+  selectPanel(useStore.getState().utilityPanel === panel ? null : panel)
 }
-// Keep existing programmatic requests (including extensions and terminal attention) working.
+/** Closes `panel` if it is the open one, leaving any other open. */
+export function closePanel(panel: UtilityPanel) {
+  if (useStore.getState().utilityPanel === panel) selectPanel(null)
+}
+// Agent roles belong to one project; another store's listener, so nothing re-enters `useStore`.
 useStore.subscribe((s, previous) => {
   if (
     previous.project &&
@@ -32,15 +30,6 @@ useStore.subscribe((s, previous) => {
     useRail.getState().settings === 'roles'
   )
     useRail.setState({ settings: null })
-  if (s.sessionsPanelOpen !== previous.sessionsPanelOpen) {
-    if (s.sessionsPanelOpen) selectPanel('sessions')
-    else if (useRail.getState().panel === 'sessions') selectPanel(null)
-  }
-  if (s.activityPanelOpen !== previous.activityPanelOpen) {
-    if (s.activityPanelOpen) selectPanel('activity')
-    else if (useRail.getState().panel === 'activity') selectPanel(null)
-  }
-  if (s.autoPanelRequest !== previous.autoPanelRequest) selectPanel('auto')
 })
 /** Chat keeps the last Full view; its numbered shortcuts return there. */
 export function selectRailShortcut(view: View) {

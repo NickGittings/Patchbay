@@ -61,6 +61,8 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
   )
 }
 
+/** The rail's utility panels, one open at a time. */
+export type UtilityPanel = 'project' | 'worktree' | 'auto' | 'activity' | 'sessions'
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
@@ -240,8 +242,8 @@ interface State {
   serviceError?: string
   serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
   serviceRetirementError?: string
-  sessionsPanelOpen: boolean
-  activityPanelOpen: boolean
+  /** The rail's open utility panel, Sessions and Activity included (UI only). */
+  utilityPanel: UtilityPanel | null
   /**
    * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
    * failed, or exited while active (UI only).
@@ -351,8 +353,7 @@ interface State {
   /** Components and goal title to seed the new-task dialog with while it is open (UI only). */
   newTask: { components: string[]; title?: string } | null
   setNewTask: (seed: { components: string[]; title?: string } | null) => void
-  /** Bumped to open the docked Auto panel, from the attention list (UI only). */
-  autoPanelRequest: number
+  /** Opens the rail's Auto panel, from the attention list or a new Auto worktree (UI only). */
   showAutoPanel: () => void
   /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */
   proposedScope: string[]
@@ -560,8 +561,7 @@ const createState: StateCreator<State> = (set, get) => ({
   serviceInstance: '',
   serviceConnected: false,
   serviceRetirement: 'idle',
-  sessionsPanelOpen: false,
-  activityPanelOpen: false,
+  utilityPanel: null,
   dockKept: [],
   reviewAgents: {},
   reviewFocus: null,
@@ -755,8 +755,7 @@ const createState: StateCreator<State> = (set, get) => ({
   setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
-  autoPanelRequest: 0,
-  showAutoPanel: () => set((s) => ({ autoPanelRequest: s.autoPanelRequest + 1 })),
+  showAutoPanel: () => set({ utilityPanel: 'auto' }),
   proposedScope: [],
   setProposedScope: (proposedScope) => set({ proposedScope }),
 

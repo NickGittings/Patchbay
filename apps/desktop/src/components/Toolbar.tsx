@@ -1,19 +1,12 @@
 import { isMac } from '../lib/platform'
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import UnifiedSearch from './UnifiedSearch'
 import Toast from './Toast'
-import { runWorkspaceAction, useWorkspaceActions } from '../lib/workspaceActions'
+import type { WorkspaceAction } from '../lib/workspaceActions'
 import { railViews, selectRailShortcut } from '../lib/rail'
-import { useNativeMenus } from '../lib/nativeMenus'
 
 /** The only top-bar control is the combined file and command search. */
-export default function Toolbar() {
-  const actions = useWorkspaceActions()
-  const latestActions = useRef(actions)
-  useEffect(() => {
-    latestActions.current = actions
-  }, [actions])
-  useNativeMenus(actions)
+export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.defaultPrevented || !(e.metaKey || e.ctrlKey)) return
@@ -24,12 +17,6 @@ export default function Toolbar() {
         e.preventDefault()
         e.stopPropagation()
         selectRailShortcut(railViews[Number(e.key) - 1].id)
-      }
-      // macOS owns Cmd+S in its native menu. Other platforms use this handler.
-      if (!isMac && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
-        e.preventDefault()
-        e.stopPropagation()
-        runWorkspaceAction(latestActions.current.find((a) => a.id === 'save'))
       }
     }
     window.addEventListener('keydown', key, true)

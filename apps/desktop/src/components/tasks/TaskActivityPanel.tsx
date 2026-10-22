@@ -10,6 +10,7 @@ import {
   type ValidatorSuggestion,
 } from '../../lib/validators'
 import { useStore } from '../../store'
+import { closePanel, selectPanel } from '../../lib/rail'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
 /** Start or stop an environment group, or validate what a component change may affect. */
@@ -28,7 +29,7 @@ export function RunSelect() {
       aria-label="Run"
       onChange={(e) => {
         const [kind, id] = e.target.value.split(':')
-        if (kind === 'setup') useStore.setState({ activityPanelOpen: true })
+        if (kind === 'setup') selectPanel('activity')
         else if (kind === 'start') void runGraphAction({ kind: 'startGroup', groupId: id })
         else if (kind === 'stop') void stopGroup(id)
         else void runGraphAction({ kind: 'validateAffected', componentId: id })
@@ -186,7 +187,7 @@ function ValidatorSetup() {
 }
 
 export default function TaskActivityPanel() {
-  const open = useStore((s) => s.activityPanelOpen)
+  const open = useStore((s) => s.utilityPanel === 'activity')
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const tasks = useStore((s) => s.tasks)
@@ -195,7 +196,7 @@ export default function TaskActivityPanel() {
   const activities = useStore((s) => s.taskActivities)
   const records = useStore((s) => s.sessionRecords)
   if (!open || !projectId) return null
-  const close = () => useStore.setState({ activityPanelOpen: false })
+  const close = () => closePanel('activity')
   const own = Object.values(activities).filter((a) => a.projectId === projectId && a.task === task)
   const initiatorLabel = (id: string) => {
     if (id === 'User') return id

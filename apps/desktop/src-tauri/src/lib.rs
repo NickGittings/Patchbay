@@ -2179,8 +2179,11 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if let Some(action) = event.id().as_ref().strip_prefix("patchbay:") {
                 // Project and Settings always operate on the main workspace, even from a pop-out.
+                // Saving needs none of main's UI, so Cmd+S in a pop-out keeps its focus.
                 if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_focus();
+                    if action != "action:save" {
+                        let _ = main.set_focus();
+                    }
                     let _ = main.emit("patchbay://menu-action", action);
                 }
             }

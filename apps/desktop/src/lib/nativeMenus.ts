@@ -1,5 +1,4 @@
 import { isMac } from './platform'
-import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useRef } from 'react'
 import { updateNativeMenu } from './ipc'
 import { listen } from '@tauri-apps/api/event'
@@ -7,9 +6,12 @@ import { useStore } from '../store'
 import { useExtensionCommands } from '../extensions/commands'
 import { runWorkspaceAction, type WorkspaceAction } from './workspaceActions'
 
+/** The macOS Project and Settings menus, and Cmd/Ctrl+S on every platform. */
 export function useNativeMenus(actions: WorkspaceAction[]) {
-  const workspace = useStore(useShallow((s) => [s.gitChanges, s.activeTask]))
-  const extensions = useExtensionCommands('toolbar', undefined, workspace)
+  const task = useStore((s) => s.activeTask)
+  // Only macOS shows these, so elsewhere no component means no file reads. Git refreshes don't
+  // re-read the selected component's files for a menu; selection and worktree changes do.
+  const extensions = useExtensionCommands('toolbar', isMac ? undefined : null, task)
   const latest = useRef({ actions, extensions })
   useEffect(() => {
     latest.current = { actions, extensions }
@@ -32,6 +34,22 @@ export function useNativeMenus(actions: WorkspaceAction[]) {
       useStore.getState().setMessage(String(e)),
     )
   }, [entries])
+  useEffect(() => {
+    // macOS owns Cmd+S in its native menu. Other platforms use this handler.
+    if (isMac) return
+    const key = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return
+      if (e.key.toLowerCase() !== 's') return
+      // Ctrl combinations belong to the focused terminal, including flow control and TUIs.
+      if (e.ctrlKey && !e.metaKey && e.target instanceof Element && e.target.closest('.xterm'))
+        return
+      e.preventDefault()
+      e.stopPropagation()
+      runWorkspaceAction(latest.current.actions.find((a) => a.id === 'save'))
+    }
+    window.addEventListener('keydown', key, true)
+    return () => window.removeEventListener('keydown', key, true)
+  }, [])
   useEffect(() => {
     if (!isMac) return
     const unlisten = listen<string>('patchbay://menu-action', ({ payload }) => {

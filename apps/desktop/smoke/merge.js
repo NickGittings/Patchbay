@@ -582,7 +582,7 @@
       !document.querySelector('.review-merge-terminal'),
       'finished hidden merge reopened on remount',
     )
-    smoke.store.setState({ sessionsPanelOpen: true })
+    smoke.selectPanel('sessions')
     // Only once it has ended: a running row has neither Show in Review nor (without an
     // adapter) a menu.
     const mergeRow = await until('finished destination session row', () =>

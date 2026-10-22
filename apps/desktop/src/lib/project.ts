@@ -9,7 +9,7 @@ import { reviewRescan } from './maintenance'
 import { flushMapSaves, saveMapNow } from './mapSave'
 import { closeComponentWindows } from './windows'
 import { forgetMainWorktree } from './mainWorktree'
-import { sessionLive } from './sessionList'
+import { runningInProject } from './sessionList'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -107,10 +107,7 @@ export async function closeProjectTab(id: string) {
   const s = useStore.getState()
   const entry = s.projects[id]
   if (!entry) return
-  const running = s.sessionRecords.filter(
-    (record) =>
-      record.metadata.projectId === id && (s.sessions[record.id]?.running ?? sessionLive(record)),
-  ).length
+  const running = runningInProject(s.sessionRecords, s.sessions, id)
   if (
     running &&
     !window.confirm(

@@ -37,9 +37,11 @@ pub(crate) fn update_native_menu(
         for group in ["project", "settings"] {
             let item = menu.get(group).ok_or("Native submenu is unavailable")?;
             let submenu = item.as_submenu().ok_or("Expected native submenu")?;
+            // An id placed twice (an extension command, say) would never match `current`.
+            let mut seen = std::collections::HashSet::new();
             let desired: Vec<_> = entries
                 .iter()
-                .filter(|entry| entry.group == group)
+                .filter(|entry| entry.group == group && seen.insert(entry.id.as_str()))
                 .collect();
             let current = submenu.items().map_err(super::err)?;
             // Titles and enabled flags change during autosave. Keep those native items alive;

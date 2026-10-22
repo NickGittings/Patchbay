@@ -105,7 +105,7 @@ test("a worktree from Auto's prompt takes a copy of the project plan as its goal
   let goal = ''
   const panel = useStore.subscribe((s, prev) => {
     // The panel's first snapshot already sees the copy.
-    if (s.autoPanelRequest !== prev.autoPanelRequest)
+    if (s.utilityPanel === 'auto' && prev.utilityPanel !== 'auto')
       void autoSnapshot('p', 'n', run, true).then((snapshot) => (goal = snapshot.goal))
   })
   await createTask({ title: 'N', branch: 'n', components: [] })
@@ -113,7 +113,7 @@ test("a worktree from Auto's prompt takes a copy of the project plan as its goal
   expect(useStore.getState().activeTask).toBe('n')
   expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
   expect(autoDrafts.has(target)).toBe(false)
-  expect(useStore.getState().autoPanelRequest).toBe(1)
+  expect(useStore.getState().utilityPanel).toBe('auto')
   await vi.waitFor(() => expect(goal).toBe('Planned goal'))
 })
 
@@ -159,7 +159,7 @@ test('the Auto panel opens only while the new worktree is still the active one',
   seedAutoTask(folder, 'Goal')
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(useStore.getState().project?.id).toBe('q')
-  expect(useStore.getState().autoPanelRequest).toBe(0)
+  expect(useStore.getState().utilityPanel).toBeNull()
   // The worktree still has the plan in its own project.
   expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
 })

@@ -17,7 +17,7 @@ import {
   type UtilityPanel,
 } from '../lib/rail'
 import { isMac, mod } from '../lib/platform'
-import { runWorkspaceAction, useWorkspaceActions } from '../lib/workspaceActions'
+import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
 import ProjectSwitcher from './ProjectSwitcher'
 import WorktreePicker from './tasks/WorktreePicker'
 import SessionsPanel from './SessionsPanel'
@@ -47,11 +47,10 @@ function initialWidth() {
     return 360
   }
 }
-export default function WorkspaceRail() {
-  const actions = useWorkspaceActions()
+export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] }) {
   useClockTick()
   useTaskActivities()
-  const panel = useRail((s) => s.panel)
+  const panel = useStore((s) => s.utilityPanel)
   const settings = useRail((s) => s.settings)
   const project = useStore((s) => s.project)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])

@@ -8,9 +8,7 @@ vi.mock('../store', () => ({
     activeTask: null as string | null,
     simpleMode: false,
     view: 'plan',
-    sessionsPanelOpen: false,
-    activityPanelOpen: false,
-    autoPanelRequest: 0,
+    utilityPanel: null,
     setView: (view: View) => store.setState({ view }),
     setSimpleMode: (simpleMode: boolean) => store.setState({ simpleMode }),
   })),
@@ -19,6 +17,7 @@ const { useStore: store } = await import('../store')
 const {
   selectPanel,
   togglePanel,
+  closePanel,
   selectRailView,
   selectRailShortcut,
   selectedRailView,
@@ -32,26 +31,24 @@ beforeEach(() => {
     activeTask: null,
     simpleMode: false,
     view: 'plan',
-    sessionsPanelOpen: false,
-    activityPanelOpen: false,
-    autoPanelRequest: 0,
+    utilityPanel: null,
   })
-  useRail.setState({ panel: null, settings: null })
+  useRail.setState({ settings: null })
   useSimpleUi.setState({ worktrees: {} })
 })
-test('utility selection is exclusive, toggles closed, and accepts legacy requests', () => {
+test('utility selection is exclusive, toggles closed, and closes only the named panel', () => {
+  const panel = () => store.getState().utilityPanel
   selectPanel('sessions')
-  expect(store.getState().sessionsPanelOpen).toBe(true)
+  expect(panel()).toBe('sessions')
   selectPanel('activity')
-  expect(store.getState().sessionsPanelOpen).toBe(false)
-  expect(store.getState().activityPanelOpen).toBe(true)
+  expect(panel()).toBe('activity')
   togglePanel('activity')
-  expect(useRail.getState().panel).toBeNull()
-  store.setState({ sessionsPanelOpen: true })
-  expect(useRail.getState().panel).toBe('sessions')
-  store.setState({ autoPanelRequest: 1 })
-  expect(useRail.getState().panel).toBe('auto')
-  expect(store.getState().sessionsPanelOpen).toBe(false)
+  expect(panel()).toBeNull()
+  selectPanel('auto')
+  closePanel('sessions')
+  expect(panel()).toBe('auto')
+  closePanel('auto')
+  expect(panel()).toBeNull()
 })
 test('chat filters and full workspace selection restore independently per worktree', () => {
   store.setState({ simpleMode: true })

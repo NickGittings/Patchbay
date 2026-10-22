@@ -15,6 +15,7 @@ import {
   groupByWorktree,
   projectSessions,
   sessionLive,
+  runningInProject,
   sessionRole,
   subject,
   sessionTimeMs,
@@ -180,6 +181,21 @@ describe('projectSessions', () => {
     ).toBe(false)
     expect(sessionLive(record('r', { interrupted: true }))).toBe(true)
     expect(sessionLive(ended)).toBe(false)
+  })
+
+  test("a project's running count prefers live state, then the record's liveness", () => {
+    const records = [
+      record('a'),
+      record('b', { snapshot: null }),
+      record('c', { snapshot: null, interrupted: true }),
+      record('d', { metadata: { ...record('d').metadata, projectId: 'two' } }),
+    ]
+    expect(runningInProject(records, {}, 'one')).toBe(2)
+    expect(runningInProject(records, { a: { running: false }, c: { running: true } }, 'one')).toBe(
+      2,
+    )
+    expect(runningInProject(records, { b: { running: false } }, 'one')).toBe(1)
+    expect(runningInProject(records, {}, 'two')).toBe(1)
   })
 
   test('live output neither reorders rows nor changes their shown time', () => {

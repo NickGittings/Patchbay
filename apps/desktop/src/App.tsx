@@ -31,6 +31,8 @@ import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
+import { useWorkspaceActions } from './lib/workspaceActions'
+import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { syncCurrentRoots } from './lib/access'
@@ -232,17 +234,20 @@ function AppWorkspace() {
   }, [projectId])
   useGitRefresh()
   useRootSync()
+  // One set of actions serves the search, the rail and the native menus.
+  const actions = useWorkspaceActions()
+  useNativeMenus(actions)
 
   return (
     <div className="app">
-      <Toolbar />
+      <Toolbar actions={actions} />
       <NavigationDialogs settingsOnly />
       <MapMaintenanceReview />
       <DependencyDialog />
       <ExtensionsPanel />
       <NewTaskDialog />
       <div className="workspace-body">
-        <WorkspaceRail />
+        <WorkspaceRail actions={actions} />
         <main className="workspace-main">
           <RecoveryBanners />
           {!restoring && (simple || view === 'navigation') && (

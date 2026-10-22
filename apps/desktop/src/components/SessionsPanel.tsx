@@ -28,6 +28,7 @@ import {
 } from '../lib/sessionList'
 import { sessionView, type SessionRecord, type Task } from '../types'
 import { revealTerminal } from '../lib/attention'
+import { closePanel } from '../lib/rail'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
@@ -339,8 +340,8 @@ export default function SessionsPanel({
   host: HTMLElement | null
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>
 }) {
-  const open = useStore((s) => s.sessionsPanelOpen)
-  const connected = useStore((s) => s.sessionsPanelOpen && s.serviceConnected)
+  const open = useStore((s) => s.utilityPanel === 'sessions')
+  const connected = useStore((s) => s.utilityPanel === 'sessions' && s.serviceConnected)
   const [choices, setChoices] = useState<ProjectSessionChoices>({})
   const choose = (projectId: string, patch: Partial<SessionListOptions>) =>
     setChoices((current) => ({
@@ -368,7 +369,8 @@ export default function SessionsPanel({
   useEffect(
     () =>
       useStore.subscribe((s, previous) => {
-        if (previous.sessionsPanelOpen && !s.sessionsPanelOpen) setConfirmStopAll(false)
+        if (previous.utilityPanel === 'sessions' && s.utilityPanel !== 'sessions')
+          setConfirmStopAll(false)
       }),
     [],
   )
@@ -385,7 +387,7 @@ export default function SessionsPanel({
   }
   const close = () => {
     setConfirmStopAll(false)
-    useStore.setState({ sessionsPanelOpen: false })
+    closePanel('sessions')
   }
   if (!open || !host) return null
   return createPortal(

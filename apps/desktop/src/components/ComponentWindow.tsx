@@ -6,6 +6,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
+import { isMac } from '../lib/platform'
 import { invoke } from '@tauri-apps/api/core'
 import { reconcileSessions } from '../lib/sessions'
 import { revealPath } from '../lib/ipc'
@@ -108,10 +109,15 @@ export default function ComponentWindow({ id }: { id: string }) {
   }, [project, name])
 
   if (!project || !component) {
+    // The overlay title bar hides the native one, so this keeps the window movable and the
+    // text clear of the traffic lights.
     return (
-      <div className="component-window hint">
-        {message ||
-          (received ? 'This component is no longer in the project.' : 'Loading component…')}
+      <div className="component-window">
+        <div className={`top-bar${isMac ? ' mac-titlebar' : ''}`} data-tauri-drag-region />
+        <div className="hint">
+          {message ||
+            (received ? 'This component is no longer in the project.' : 'Loading component…')}
+        </div>
       </div>
     )
   }

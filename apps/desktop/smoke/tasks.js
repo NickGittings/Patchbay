@@ -493,11 +493,11 @@
       'tab switch stopped processes',
     )
     state().setActiveTask(task.id)
-    smoke.store.setState({ activityPanelOpen: true })
+    smoke.selectPanel('activity')
     await until('initiating task activity visible', () =>
       document.querySelector('.task-activity')?.textContent.includes('Smoke worker'),
     )
-    smoke.store.setState({ activityPanelOpen: false })
+    smoke.selectPanel(null)
     const activities = Object.values(state().taskActivities).filter(
       (a) => a.task === task.id && a.initiator === rootAgentSid,
     )

@@ -183,7 +183,7 @@
       )
       const filter = sessions.querySelector('select')
       filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-      if (!s().sessionsPanelOpen) throw new Error('Escape in a select closed Sessions')
+      if (s().utilityPanel !== 'sessions') throw new Error('Escape in a select closed Sessions')
       sessions.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       await until(
         'Escape closes portalled Sessions',

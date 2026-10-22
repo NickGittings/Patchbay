@@ -27,7 +27,8 @@ export default function UnifiedSearch({
   const root = useRef<HTMLDivElement>(null)
   const previousFocus = useRef<HTMLElement | null>(null)
   const context = useWhenContext(undefined, open)
-  const scope = JSON.stringify([projectId, task, worktree, query, priority])
+  // Only what `fileSearch` reads, so switching priority keeps its results.
+  const scope = JSON.stringify([projectId, task, query])
   const [response, setResponse] = useState<{
     scope: string
     items: FileSearchResult[]
@@ -51,6 +52,8 @@ export default function UnifiedSearch({
     }
     const files = () => show('Files')
     const key = (e: KeyboardEvent) => {
+      // Pop-outs have no command search, so Shift variants reach the terminal.
+      if (filesOnly && e.shiftKey) return
       const terminal = e.target instanceof Element && !!e.target.closest('.xterm')
       if ((e.metaKey || (e.ctrlKey && (!terminal || e.shiftKey))) && e.key.toLowerCase() === 'p') {
         e.preventDefault()

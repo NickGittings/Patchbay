@@ -46,7 +46,8 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       title:
         entry?.fingerprint === 'absent' ? 'Create map configuration' : 'Save map configuration now',
       group: 'project',
-      enabled: editable && entry?.mapSave?.status !== 'saving',
+      // Saving again mid-write waits for it, then flushes newer edits.
+      enabled: editable,
       run: saveCurrentProject,
     },
     { id: 'rescan', title: 'Rescan project', group: 'project', enabled: available, run: rescan },
