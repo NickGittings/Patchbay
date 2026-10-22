@@ -5,7 +5,7 @@ import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
-import WorkspaceTabs from './components/WorkspaceTabs'
+import RecoveryBanners from './components/RecoveryBanners'
 import SessionsPanel from './components/SessionsPanel'
 import TaskActivityPanel from './components/tasks/TaskActivityPanel'
 import { initializeWorkspace } from './lib/workspace'
@@ -239,7 +239,7 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
-        <WorkspaceTabs />
+        <RecoveryBanners />
         <SessionsPanel />
         <TaskActivityPanel />
         <CommandPalette />

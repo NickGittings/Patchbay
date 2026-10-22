@@ -412,11 +412,11 @@ input[type='radio'] {
 .toolbar {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  height: 46px;
-  padding: 0 12px;
+  gap: 8px 12px;
+  min-height: 46px;
+  padding: 4px 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
@@ -433,7 +433,24 @@ input[type='radio'] {
   min-width: 0;
 }
 .toolbar-group.end {
+  grid-column: 3;
   justify-content: flex-end;
+}
+/* Status labels truncate instead of wrapping, so the toolbar's height never follows them. */
+.toolbar .toolbar-group.end > *,
+.toolbar .toolbar-group.end > .menu > .menu-trigger {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.toolbar .toolbar-group.end > .worktree-picker > .menu-trigger {
+  max-width: min(240px, 100%);
+}
+.toolbar .toolbar-group.end > button,
+.map-save-status [role='status'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toolbar .attention {
   flex: 0 1 auto;
@@ -449,6 +466,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
 }
 .view-switcher {
+  flex: none;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -474,6 +492,20 @@ input[type='radio'] {
 .toolbar .view-switcher button {
   min-width: 96px;
   height: 26px;
+}
+@media (max-width: 1300px) {
+  .toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .toolbar > .view-switcher {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+  }
+  .toolbar-group.end {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 @media (max-width: 1100px) {
   .toolbar .view-switcher button {
@@ -1924,14 +1956,14 @@ button.review-name:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 12px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  flex: 1;
+  min-width: 0;
+  margin-left: 6px;
   overflow-x: auto;
 }
 .project-tab {
   display: flex;
-  flex-shrink: 0;
+  flex: none;
   color: var(--muted);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -1949,6 +1981,26 @@ button.review-name:hover:not(:disabled) {
   color: inherit;
   border: 0;
   background: transparent;
+}
+.toolbar .project-tab button[role='tab'] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.project-tab-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-tab-status {
+  flex: none;
+}
+.toolbar .project-tab button:not([role='tab']) {
+  padding: 0 8px 0 2px;
+}
+.toolbar button.toolbar-search {
+  padding: 0 8px;
+  font-size: 15px;
 }
 .recovery-banner {
   display: flex;

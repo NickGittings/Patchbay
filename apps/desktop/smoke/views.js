@@ -84,7 +84,9 @@
       },
     ])
     await until('navigation layout', () => query('.hierarchy') && nodeElement('alpha'))
-    click([...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Tools')))
+    click(
+      [...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Settings')),
+    )
     click(
       await until('Agent roles menu', () =>
         [...document.querySelectorAll('button')].find((b) => b.textContent === 'Agent roles'),

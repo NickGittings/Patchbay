@@ -48,6 +48,8 @@ export const openProject = () =>
   invoke<OpenedProject | null>('open_project').then(
     (opened) => opened && { ...opened, project: { ...opened.project, projectId: opened.id } },
   )
+/** Release backend access and the watcher after removing a workspace tab. */
+export const projectClose = (projectId: string) => invoke<void>('project_close', { projectId })
 export const rescanProject = (project: Project) =>
   invoke<ReconciliationPreview>('rescan_project', { project, projectId: project.projectId })
 /** Detected dependencies between components already on the map that it lacks. */

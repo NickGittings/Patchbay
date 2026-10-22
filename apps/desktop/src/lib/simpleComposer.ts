@@ -133,7 +133,7 @@ export async function waitForPrompt(
       throw new Error(
         session.status?.agent?.authoritative
           ? 'No ready prompt after 30 seconds. Open the terminal to continue.'
-          : 'No ready prompt after 30 seconds. Chat needs Tools → Agent status integration, or open the terminal to continue.',
+          : 'No ready prompt after 30 seconds. Chat needs Settings → Agent status integration, or open the terminal to continue.',
       )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,

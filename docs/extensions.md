@@ -5,7 +5,7 @@ preview integrations, see [supported local integrations](../extensions/README.md
 
 ## Installation
 
-Extensions are local folders containing a `package.json`. Open **Tools → Extensions…** in the
+Extensions are local folders containing a `package.json`. Open **Settings → Extensions…** in the
 toolbar, choose **Install from folder…**, and select the extension folder. Choose
 **Open extensions folder** in the same panel to find the active installation directory. Enable
 or disable extensions in the panel; those settings live in `~/.patchbay/extensions.json`.
@@ -57,7 +57,7 @@ limited to 32 KiB, and checked against the same allowed roots as the file tree.
 **Cmd/Ctrl+Shift+P** opens the command palette. Commands with a `run` block create a temporary
 terminal at the selected component, using the existing session, policy, and PTY launch path.
 These terminals appear in the dock without changing the saved project. Place commands in
-`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Tools**).
+`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Project**).
 Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
 `component.hasTerminal('id')`, `component.hasFile('file')`, and `view`. Unknown or malformed
 expressions hide the contribution.
