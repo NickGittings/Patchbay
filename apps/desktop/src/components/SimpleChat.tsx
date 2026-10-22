@@ -1,5 +1,5 @@
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
@@ -23,9 +23,11 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
+import SimpleStageTabs from './SimpleStageTabs'
 import './simple.css'
 
 const pendingActions = new Set<string>()
+
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
   const s = useStore(
     useShallow((s) => ({
@@ -52,6 +54,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const [integrationsOpen, setIntegrationsOpen] = useState(false)
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const runningReview = useRunningReviewLanes(source?.branch)
+  const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
+  const threadRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    threadRef.current?.scrollTo({ top: 0 })
+  }, [filter])
   useEffect(() => {
     const current = useStore.getState()
     if (current.project && !current.simple)
@@ -72,6 +79,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
+  const sections = model.sections.filter((section) => filter === 'all' || section.id === filter)
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const busy = reviewWorktreeBusy(model.records, s.sessions, worktree.path)
@@ -133,6 +141,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
       </header>
+      <SimpleStageTabs scopeKey={key} current={model.stage} />
       {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
       {!model.records.some((r) => s.sessions[r.id]?.status?.agent?.authoritative) && (
         <p className="simple-hook-notice">
@@ -177,8 +186,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           launched={() => setDialog(undefined)}
         />
       )}
-      <div className="simple-thread">
-        {model.sections.map((section) => (
+      <div className="simple-thread" ref={threadRef}>
+        {sections.map((section) => (
           <section
             className="simple-stage"
             key={section.id}

@@ -196,7 +196,6 @@ export interface ProjectState {
   graphActionReport: ActionReport | null
   tasks: Task[]
   activeTask: string | null
-  closedTaskIds: string[]
 }
 export interface MapSaveState {
   status: 'pending' | 'saving' | 'error' | 'conflict'
@@ -346,11 +345,8 @@ interface State {
   tasks: Task[]
   /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
   activeTask: string | null
-  /** Task tabs hidden by the user; their workspaces and processes are retained. */
-  closedTaskIds: string[]
   setTasks: (tasks: Task[]) => void
   setActiveTask: (id: string | null, exact?: boolean) => void
-  closeTaskTab: (id: string) => void
   /** Components and goal title to seed the new-task dialog with while it is open (UI only). */
   newTask: { components: string[]; title?: string } | null
   setNewTask: (seed: { components: string[]; title?: string } | null) => void
@@ -415,12 +411,9 @@ const componentToNode = ({ id, position, ...data }: Component): FlowNode => ({
 const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => ComponentData) =>
   nodes.map((n) => (n.id === id ? { ...n, data: f(n.data) } : n))
 
-type TaskState = Pick<
-  State,
-  keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces' | 'closedTaskIds'
->
+type TaskState = Pick<State, keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces'>
 
-/** Restore layout and reopen its tab without stopping or retargeting processes. */
+/** Restore layout without stopping or retargeting processes. */
 export function switchTaskWorkspace(
   s: TaskState,
   requested: string | null,
@@ -431,23 +424,17 @@ export function switchTaskWorkspace(
     : (requested ?? s.tasks.find((t) => t.current && !t.missing)?.id ?? null)
   const task = s.tasks.find((t) => t.id === activeTask)
   if (activeTask && (!task || task.missing)) return {}
-  const reopened =
-    activeTask && s.closedTaskIds.includes(activeTask)
-      ? { closedTaskIds: s.closedTaskIds.filter((id) => id !== activeTask) }
-      : {}
-  if (s.activeTask === activeTask) return reopened
+  if (s.activeTask === activeTask) return {}
   const taskWorkspaces = { ...s.taskWorkspaces, [s.activeTask ?? '']: taskWorkspace(s) }
   const restored = taskWorkspaces[activeTask ?? ''] ?? emptyTaskWorkspace(task?.components)
-  return { activeTask, taskWorkspaces, ...restored, ...reopened, revealed: null }
+  return { activeTask, taskWorkspaces, ...restored, revealed: null }
 }
 
-/** Refresh task metadata while retaining closed tabs and dropping vanished or pinned ids. */
+/** Refresh task metadata, leaving a task that vanished for the open worktree. */
 export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectState> {
-  const closable = new Set(tasks.filter((t) => !t.current).map((t) => t.id))
-  const closedTaskIds = s.closedTaskIds.filter((id) => closable.has(id))
   const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
   const switched = switchTaskWorkspace(
-    { ...s, tasks, closedTaskIds },
+    { ...s, tasks },
     keep ? s.activeTask : null,
     s.activeTask === null && !!s.activeSession && sessionTask(s.activeSession) === null,
   )
@@ -456,7 +443,7 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   const taskWorkspaces = Object.fromEntries(
     Object.entries(switched.taskWorkspaces ?? s.taskWorkspaces).filter(([id]) => known.has(id)),
   )
-  return { tasks, closedTaskIds, ...switched, taskWorkspaces }
+  return { tasks, ...switched, taskWorkspaces }
 }
 
 /** Where each node being dragged was before its drag, to tell whether the drag moved it. */
@@ -725,20 +712,8 @@ export const useStore = create<State>((set, get) => ({
   setRevealed: (revealed) => set({ revealed }),
   tasks: [],
   activeTask: null,
-  closedTaskIds: [],
   setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
   setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
-  closeTaskTab: (id) =>
-    set((s) => {
-      const task = s.tasks.find((t) => t.id === id)
-      if (!task || task.current || s.closedTaskIds.includes(id)) return {}
-      const closedTaskIds = [...s.closedTaskIds, id]
-      if (s.activeTask !== id) return { closedTaskIds }
-      const visible = s.tasks.filter((t) => !t.missing && !s.closedTaskIds.includes(t.id))
-      const index = visible.findIndex((t) => t.id === id)
-      const next = visible[index + 1] ?? visible[index - 1]
-      return { closedTaskIds, ...switchTaskWorkspace(s, next?.id ?? null) }
-    }),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
   autoPanelRequest: 0,
@@ -1178,7 +1153,6 @@ function emptyProjectState(): ProjectState {
     graphActionReport: null,
     tasks: [],
     activeTask: null,
-    closedTaskIds: [],
   }
 }
 function projectState(s: State): ProjectState {
@@ -1215,7 +1189,6 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
-    closedTaskIds,
     taskWorkspaces,
     rootTerminals,
     componentTerminals,
@@ -1254,7 +1227,6 @@ function projectState(s: State): ProjectState {
     graphActionReport,
     tasks,
     activeTask,
-    closedTaskIds,
     taskWorkspaces: { ...taskWorkspaces, [activeTask ?? '']: taskWorkspace(s) },
     rootTerminals,
     componentTerminals,

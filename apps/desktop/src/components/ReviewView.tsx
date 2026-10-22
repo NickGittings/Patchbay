@@ -32,17 +32,11 @@ import type { FileRef } from '../lib/findings'
 /** The watcher covers the open and active task's worktrees; another one is polled while shown. */
 const WORKTREE_POLL_MS = 5000
 
-function worktreeLabel(w: Worktree) {
-  const name = w.path.split(/[\\/]/).pop() ?? w.path
-  const branch = w.branch ?? `detached ${w.head.slice(0, 7)}`
-  return `${branch} · ${name}${w.current ? ' (main worktree)' : ''}`
-}
-
 /**
  * Every uncommitted change on the map, grouped by component (plus project files no component
  * contains), with the components that depend on changed ones and whether each one's task
- * terminals ran since the change. Chips filter the components; another worktree of the repo can
- * be reviewed in place of the open one.
+ * terminals ran since the change. Chips filter the components; the toolbar's worktree picker
+ * chooses which worktree of the repo is reviewed.
  */
 export default function ReviewView() {
   const revision = useStore((s) => s.gitChanges)
@@ -73,14 +67,9 @@ export default function ReviewView() {
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)
   const taskWorktree = useStore(activeWorktree)
-  // The worktree picked here; until then (and after switching tasks) the active task's.
-  const [picked, setPicked] = useState<{ task: string | null; path: string | undefined }>()
-  // Auto's findings are the active task's, so its request also drops a worktree picked here.
-  if (findingsFocus && (pane !== 'findings' || picked)) {
-    setPane('findings')
-    setPicked(undefined)
-  }
-  const worktree = picked?.task === activeTask ? picked.path : taskWorktree
+  if (findingsFocus && pane !== 'findings') setPane('findings')
+  // Review follows the toolbar's worktree picker.
+  const worktree = taskWorktree
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [reviewDialogScope, setReviewDialogScope] = useState<string | null>(null)
@@ -302,28 +291,6 @@ export default function ReviewView() {
                       <button onClick={() => useStore.getState().setActiveSession(currentAgent.id)}>
                         Show agents
                       </button>
-                    )}
-                    {worktrees.length > 1 && (
-                      <select
-                        className="review-worktree"
-                        title={other ? `Reviewing ${other.path}` : 'Worktree to review'}
-                        value={other?.path ?? ''}
-                        onChange={(e) => {
-                          setPicked({ task: activeTask, path: e.target.value || undefined })
-                          setSelected(null)
-                          setLoaded(undefined)
-                        }}
-                      >
-                        {worktrees.map((w) => {
-                          const task = tasks.find((t) => t.worktree === w.path)
-                          return (
-                            <option key={w.path} value={w.current ? '' : w.path}>
-                              {task ? `${task.title} — ` : ''}
-                              {worktreeLabel(w)}
-                            </option>
-                          )
-                        })}
-                      </select>
                     )}
                     <button
                       className="review-refresh"

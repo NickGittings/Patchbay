@@ -24,13 +24,13 @@ import AttentionMenu from './status/AttentionMenu'
 import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
 import { mod, shiftMod } from '../lib/platform'
-import ProjectTabs from './ProjectTabs'
+import ProjectSwitcher from './ProjectSwitcher'
 import { ActivityButton } from './tasks/TaskActivityPanel'
 
 const views: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
   { id: 'plan', label: 'Plan' },
-  { id: 'implementation', label: 'Implementation' },
+  { id: 'implementation', label: 'Build' },
   { id: 'review', label: 'Review' },
 ]
 
@@ -161,6 +161,16 @@ export default function Toolbar() {
               Agent roles
             </MenuItem>
             <MenuItem onClick={() => setNotificationsOpen(true)}>Notifications</MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              disabled={!project}
+              aria-checked={simpleMode}
+              title="A worktree chat beside a read-only map, in place of the views"
+              onClick={() => useStore.getState().setSimpleMode(!simpleMode)}
+            >
+              Chat mode
+              <span className="menu-check">{simpleMode ? '✓' : ''}</span>
+            </MenuItem>
           </Menu>
           <button
             className="toolbar-search"
@@ -170,42 +180,29 @@ export default function Toolbar() {
           >
             ⌕
           </button>
-          <ProjectTabs />
+          <ProjectSwitcher />
+          {project && <WorktreePicker caret={false} copyPlan={view === 'plan'} />}
         </div>
-        {project ? (
-          <div
-            hidden={simpleMode}
-            className="view-switcher"
-            role="group"
-            aria-label="Workspace view"
-          >
-            {!simpleMode &&
-              views.map((v, i) => (
-                <button
-                  key={v.id}
-                  aria-pressed={view === v.id}
-                  className={view === v.id ? 'active' : ''}
-                  title={`${v.label} (${mod}${i + 1})`}
-                  onClick={() => setView(v.id)}
-                >
-                  {v.label}
-                </button>
-              ))}
+        {/* The center slot holds Full's views or Chat mode's label, so the ends never move. */}
+        {project && simpleMode && <span className="toolbar-mode">Chat mode</span>}
+        {project && !simpleMode && (
+          <div className="view-tabs view-switcher" role="group" aria-label="Workspace view">
+            {views.map((v, i) => (
+              <button
+                key={v.id}
+                aria-pressed={view === v.id}
+                className={view === v.id ? 'active' : ''}
+                title={`${v.label} (${mod}${i + 1})`}
+                onClick={() => setView(v.id)}
+              >
+                {v.label}
+              </button>
+            ))}
           </div>
-        ) : null}
+        )}
         <div className="toolbar-group end">
           {project && (
             <>
-              <button
-                aria-pressed={simpleMode}
-                onClick={() => useStore.getState().setSimpleMode(!simpleMode)}
-              >
-                Simple
-              </button>
-              {/* Plan and Implementation carry the picker in their own headers. */}
-              {(simpleMode || view === 'navigation' || view === 'review') && (
-                <WorktreePicker align="right" caret={false} />
-              )}
               <AutoPanel simple={simpleMode} onIntegrations={() => setIntegrationsOpen(true)} />
               <AttentionMenu />
               <ActivityButton />

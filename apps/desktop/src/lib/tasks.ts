@@ -334,6 +334,17 @@ export function titleFor(goal: string, max = 72) {
   return Array.from(words).length >= max / 2 ? words : chars.slice(0, max).join('').trimEnd()
 }
 
+/**
+ * A worktree title short enough for the toolbar: its first sentence, at most `words` words, with
+ * `…` when anything was left out. `Fix trends graphs. When navigating…` → `Fix trends graphs…`.
+ */
+export function shortTitle(title: string, words = 4) {
+  const full = title.trim()
+  const sentence = full.split(/\n|[.!?:;](?=\s|$)/)[0].trim() || full
+  const kept = sentence.split(/\s+/).slice(0, words).join(' ')
+  return kept.length < full.replace(/[.!?:;]$/, '').length ? `${kept}…` : kept
+}
+
 /** Branch names, and the worktree folders named after them, stay this short. */
 const BRANCH_LIMIT = 60
 

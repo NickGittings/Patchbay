@@ -51,7 +51,7 @@ export default function ReviewAgentDialog({
       running={reviewWorktreeRunning(records, sessions, source.path)}
       runningText="A review agent is already running in this worktree."
       offlineText="Reconnect before starting a review agent."
-      hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Implementation. Read-only behavior relies on the briefing, not on rewriting your agent command."
+      hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Build. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
         const { started, errors } = await startReviewAgents(
           project,

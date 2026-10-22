@@ -22,7 +22,6 @@ import Menu, { MenuItem } from './Menu'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
-import WorktreePicker from './tasks/WorktreePicker'
 
 import { planDrafts } from '../lib/planDrafts'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -259,7 +258,7 @@ export default function PlanView() {
       setImplementing(false)
     }
   }
-  const implementLabel = implementing ? 'Starting implementation…' : 'Implement →'
+  const implementLabel = implementing ? 'Starting build…' : 'Implement →'
 
   return (
     <PersistedGroup layoutId="PlanView-1" orientation="vertical" className="workspace">
@@ -276,7 +275,6 @@ export default function PlanView() {
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
               </button>
-              <WorktreePicker copyPlan />
               <button
                 title="Create a branch and worktree for the highlighted components, or the selected one, starting with a copy of the plan. The planner and its plan stay."
                 onClick={() => seedNewTask(undefined, { copyPlan: true })}

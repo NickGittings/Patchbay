@@ -3,7 +3,7 @@ import { attentionCounts, componentTerminals, revealTerminal } from '../../lib/a
 import { KIND_COLOR } from '../../lib/display'
 import { gitReview, gitWorktrees, taskUpdate } from '../../lib/ipc'
 import { planTerminals } from '../../lib/plan'
-import { refreshTasks, removeTask, seedNewTask } from '../../lib/tasks'
+import { refreshTasks, removeTask, seedNewTask, shortTitle } from '../../lib/tasks'
 import { useStore } from '../../store'
 import {
   TASK_ROOT_SCOPE,
@@ -65,10 +65,7 @@ export default function WorktreePicker({
     <Popover
       label={
         <>
-          <span className="worktree-picker-label">
-            {label}
-            {currentBranch ? ` (${currentBranch})` : ''}
-          </span>
+          <span className="worktree-picker-label">{shortTitle(label)}</span>
           {attention > 0 && (
             <span className="worktree-attention-dot" title={`${attention} terminals need you`}>
               ●
@@ -84,7 +81,7 @@ export default function WorktreePicker({
           )}
         </>
       }
-      title="Task menu"
+      title={`${label}${currentBranch ? ` (${currentBranch})` : ''}: switch worktree`}
       className="worktree-picker"
       listClassName="worktree-popover"
       align={align}
@@ -177,7 +174,6 @@ export function WorktreeRow({
   const runtimeTerminals = useStore((s) => s.runtimeTerminals)
   const devices = useStore((s) => s.devices)
   const activeTask = useStore((s) => s.activeTask)
-  const tabClosed = useStore((s) => !!task && s.closedTaskIds.includes(task.id))
   const rootTerminals = useStore((s) => s.rootTerminals)
   const taskWorkspaces = useStore((s) => s.taskWorkspaces)
   const roots = activeTask === id ? rootTerminals : (taskWorkspaces[id ?? '']?.rootTerminals ?? [])
@@ -265,7 +261,7 @@ export function WorktreeRow({
       <button
         key={cid}
         className="chip"
-        title="Show in Implementation"
+        title="Show in Build"
         onClick={() => {
           const s = useStore.getState()
           close()
@@ -298,14 +294,12 @@ export function WorktreeRow({
           className="worktree-row-switch"
           disabled={!!task?.missing}
           aria-pressed={active}
-          title={tabClosed ? `Reopen ${task?.title} tab` : undefined}
           onClick={switchTo}
         >
           <strong>{task ? task.title : 'Main worktree'}</strong>
           {(task?.branch ?? branch) && <code>{task?.branch ?? branch}</code>}
         </button>
         {task?.current && <span className="worktree-tag">main worktree</span>}
-        {tabClosed && <span className="worktree-tag">tab closed</span>}
         {task?.missing && <span className="worktree-tag bad">worktree missing</span>}
         {attention > 0 && (
           <span className="worktree-tag attention" title="Terminals that need you">

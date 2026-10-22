@@ -65,8 +65,12 @@
     await until('session service', () => state().serviceConnected)
     // Existing layouts from before the terminal was added have only the changes panel.
     state().setPanelLayout('ReviewView-merge', { 'ReviewView-changes': 100 })
+    // Review follows the toolbar's worktree picker, so the feature worktree is a task.
+    const task = await smoke.taskAttach(`${parent}/feature`, 'Feature fixes', [])
+    await smoke.refreshTasks()
+    await until('feature task registered', () => state().tasks.some((t) => t.id === task.id))
     state().setView('review')
-    const picker = await until('worktree picker', () => document.querySelector('.review-worktree'))
+    await until('Review mounted', () => document.querySelector('.review-refresh'))
     assert(!document.querySelector('.review-banner'), 'open worktree has a review banner')
     // Keep the diff request pending, then fail it, so both states are visible in the main pane.
     const originalFetch = window.fetch
@@ -78,7 +82,7 @@
       return originalFetch(input, options)
     }
     try {
-      choose(picker, `${parent}/feature`)
+      state().setActiveTask(task.id)
       await until('diff request pending', () => pendingReviews.length)
       await until('diff loading message', () =>
         document
@@ -115,12 +119,19 @@
       'findings tell users already in Review to navigate to Review',
     )
     click(document.querySelector('.review-findings-button'))
-    const banner = await until('untracked worktree explanation', () => {
+    const banner = await until('worktree explanation', () => {
       const el = document.querySelector('.review-banner')
-      return el?.textContent.includes('Validation status is hidden') && el
+      return el?.textContent.includes('Feature fixes') && el
     })
     assert(banner.textContent.includes(`${parent}/feature`), 'review omitted worktree path')
     assert(banner.querySelector('code')?.textContent === 'feature', 'review omitted branch')
+    // The merge dialog lists Review's worktrees as destinations; opens it while closed.
+    const destinations = () => {
+      if (!dialog()) click(document.querySelector('.review-merge-button'))
+      return [
+        ...(dialog()?.querySelectorAll('select[aria-label="Destination worktree"] option') ?? []),
+      ].map((o) => o.textContent)
+    }
     const openDialog = async () => {
       click(document.querySelector('.review-merge-button'))
       return until('merge dialog', dialog)
@@ -183,7 +194,7 @@
     )
     const fixButton = () =>
       [...document.querySelectorAll('.review-merge-terminal button')].find(
-        (b) => b.textContent === 'Fix in Implementation →',
+        (b) => b.textContent === 'Fix in Build →',
       )
     assert(fixButton()?.disabled, 'partial findings enabled the fix handoff during review')
     await until('Reviewed status', () =>
@@ -226,9 +237,6 @@
         state().sessions[reviewSid]?.running === false &&
         state().sessions[reviewSid]?.exitCode === 0,
     )
-    const task = await smoke.taskAttach(`${parent}/feature`, 'Feature fixes', [])
-    await smoke.refreshTasks()
-    await until('reviewed task registered', () => state().tasks.some((t) => t.id === task.id))
     const beforeFix = state().rootTerminals.length
     click(
       [...document.querySelectorAll('.review-merge-terminal button')].find(
@@ -267,7 +275,7 @@
     )
     state().setActiveTask(null)
     state().setView('review')
-    await until('Review returns after fix launch', () => document.querySelector('.review-worktree'))
+    await until('Review returns after fix launch', () => document.querySelector('.review-refresh'))
     click(
       [...document.querySelectorAll('.review-merge-terminal button')].find(
         (b) => b.textContent === 'Hide',
@@ -277,7 +285,7 @@
     state().setView('navigation')
     await until('left hidden review', () => !document.querySelector('.review-view'))
     state().setView('review')
-    await until('Review restored', () => document.querySelector('.review-worktree'))
+    await until('Review restored', () => document.querySelector('.review-refresh'))
     assert(!document.querySelector('.review-merge-terminal'), 'hidden review reopened on remount')
     click(
       [...document.querySelectorAll('.review-view button')].find(
@@ -293,7 +301,7 @@
       state().sessionRecords.filter((r) => r.metadata.componentId === '@review').length === 1,
       'duplicate review launched twice',
     )
-    choose(document.querySelector('.review-worktree'), `${parent}/feature`)
+    state().setActiveTask(task.id)
     form = await openDialog()
     await until('merge dialog shows current review', () =>
       form.querySelector('[aria-label="Source review status"]')?.textContent.includes('current'),
@@ -426,8 +434,7 @@
     await until('attention reveals the already active merge', () => mergeHeight() > 100)
     assert(!state().dockKept.includes(sid), 'merge was retained in the Navigation dock')
     state().setSession(sid, priorSession)
-    // The picker is local to Review; restore it after the remount above.
-    choose(document.querySelector('.review-worktree'), `${parent}/feature`)
+    state().setActiveTask(task.id)
     await until('clean merge verified', () =>
       text(sid).includes(`merge-verified:${parent}/integration`),
     )
@@ -437,10 +444,7 @@
       state().sessionRecords.filter((r) => r.metadata.componentId === '@merge').length === 1,
       'duplicate submit launched twice',
     )
-    assert(
-      document.querySelector('.review-worktree').value === `${parent}/feature`,
-      'launch switched the reviewed source',
-    )
+    assert(state().activeTask === task.id, 'launch switched the reviewed source')
     form = await openDialog()
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
     await until(
@@ -475,14 +479,7 @@
     assert(!state().dockKept.includes(sid), 'stopped merge was retained in the dock')
     state().setView('review')
     await until('Review restored after Navigation', () =>
-      document.querySelector('.review-worktree'),
-    )
-    // Review's worktree picker is local to each mount; restore the source after remounting.
-    choose(document.querySelector('.review-worktree'), `${parent}/feature`)
-    await until('source restored', () =>
-      document
-        .querySelector('.review-worktree')
-        ?.selectedOptions[0]?.textContent.includes('feature'),
+      document.querySelector('.review-banner')?.textContent.includes('Feature fixes'),
     )
     await smoke.terminalWrite(
       shell,
@@ -490,10 +487,9 @@
     )
     await until('terminal branch rename', () => text(shell).includes('\nBRANCH-RENAMED\n'))
     await until('worktree poll updates destination branch', () =>
-      [...document.querySelectorAll('.review-worktree option')].some((o) =>
-        o.textContent.includes('refreshed-integration'),
-      ),
+      destinations().some((o) => o.includes('refreshed-integration')),
     )
+    click([...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     await smoke.terminalWrite(
       shell,
       `git -C '${parent}/integration' branch -m integration; printf "BRANCH-RESTORED\\n"\r`,
@@ -501,10 +497,9 @@
     await until('terminal branch restored', () => text(shell).includes('\nBRANCH-RESTORED\n'))
     window.dispatchEvent(new Event('focus'))
     await until('focus updates destination branch', () =>
-      [...document.querySelectorAll('.review-worktree option')].some((o) =>
-        o.textContent.startsWith('integration ·'),
-      ),
+      destinations().some((o) => o.startsWith('integration ·')),
     )
+    click([...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     form = await openDialog()
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
     await until(
@@ -594,7 +589,7 @@
     assert(!state().dockKept.includes(sid), 'finished merge was retained in the dock')
     await smoke.terminalStop(shell)
     await smoke.report(
-      'PASS merge: review findings/read-only fixture/staleness/recovery and Fix in Implementation handoff, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
+      'PASS merge: review findings/read-only fixture/staleness/recovery and Fix in Build handoff, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
     )
   } catch (e) {
     await smoke.report(`FAIL merge: ${e?.message ?? e} ${e?.stack ?? ''}`)
