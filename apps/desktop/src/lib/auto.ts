@@ -239,11 +239,12 @@ export function nextStep(
   }
 }
 /**
- * The HEAD Auto may merge without asking: only one whose current findings leave nothing to fix at
- * this run's severity floor, with validation passing.
+ * The HEAD Auto may merge without asking: only one whose current findings cover the whole worktree
+ * and leave nothing to fix at this run's severity floor, with validation passing.
  */
 export function mergeableHead(snapshot: AutoSnapshot, run: AutoRun) {
   return snapshot.freshness === 'current' &&
+    !snapshot.findings?.uncovered &&
     reviewDecision(run, snapshot.findings).stage === 'mergeGate'
     ? snapshot.source.head
     : undefined

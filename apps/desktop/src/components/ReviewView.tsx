@@ -3,7 +3,7 @@ import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR, plural } from '../lib/display'
 import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
-import { ago, latestChange, latestChangeOf, lineTotals } from '../lib/review'
+import { ago, changedFileRef, latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
 import {
@@ -244,10 +244,7 @@ export default function ReviewView() {
   // `index.ts:12` among several changed index.ts files opens none rather than a guess.
   const changedFile = (path: string) => {
     const files = groups.flatMap((g) => g.files.map((f) => ({ componentId: g.id, path: f.path })))
-    const exact = files.find((f) => f.path === path)
-    if (exact) return exact
-    const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
-    return new Set(suffix.map((f) => f.path)).size === 1 ? suffix[0] : undefined
+    return changedFileRef(files, path, source?.path)
   }
   const openRef = (ref: FileRef) => {
     const file = changedFile(ref.path)

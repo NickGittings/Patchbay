@@ -1,6 +1,6 @@
 import type { Severity } from '../types'
 
-/** A `path:line` a finding points at, as the reviewer wrote it (relative to its worktree). */
+/** A relative or absolute `path:line` a finding points at, as the reviewer wrote it. */
 export interface FileRef {
   path: string
   line?: number
@@ -44,9 +44,10 @@ function fenceAfter(line: string, open: string | null): string | null {
     ? null
     : open
 }
-// `src/a.ts:12`, `crates/x/y.rs:3-9`, `Foo.tsx:7:3`; the path needs an extension or a slash.
+// Relative or absolute `path:line` references (Codex native review reports absolute paths).
+// The path needs an extension or a slash; Windows separators are normalized for Review.
 const REF =
-  /(?:^|[\s(`'"[])((?:[\w.@-]+\/)*[\w@-][\w.@-]*\.[A-Za-z][\w]*|(?:[\w.@-]+\/)+[\w.@-]+):(\d+)(?:[-–](\d+))?/g
+  /(?:^|[\s(`'"[])((?:[A-Za-z]:)?[/\\]?(?:(?:[\w.@-]+[/\\])*[\w@-][\w.@-]*\.[A-Za-z][\w]*|(?:[\w.@-]+[/\\])+[\w.@-]+)):(\d+)(?:[-–](\d+))?/g
 
 /** Whether a line only lists severity tags, which describes the scheme rather than a finding. */
 function bareTags(rest: string) {
@@ -75,7 +76,7 @@ function metaLine(line: string) {
 export function fileRefs(text: string): FileRef[] {
   const refs: FileRef[] = []
   for (const m of text.matchAll(REF)) {
-    const path = m[1].replace(/^\.\//, '')
+    const path = m[1].replace(/\\/g, '/').replace(/^\.\//, '')
     if (/^https?$/.test(path) || /^\d+(\.\d+)*$/.test(path)) continue
     const ref: FileRef = { path, line: Number(m[2]) }
     if (m[3]) ref.endLine = Number(m[3])

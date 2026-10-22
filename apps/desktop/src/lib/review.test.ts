@@ -3,6 +3,7 @@ import type { ChangedFile, SessionState, TerminalSpec } from '../types'
 import { sessionId, setProjectIdentity } from '../types'
 import {
   ago,
+  changedFileRef,
   latestChange,
   latestChangeOf,
   lineTotals,
@@ -99,5 +100,21 @@ test('lineTotals skips files without counts', () => {
   expect(lineTotals([file('a', 1, 3, 1), file('bin.png', 1), file('b', 1, 2, 5)])).toEqual({
     added: 5,
     removed: 6,
+  })
+})
+
+describe('changedFileRef', () => {
+  const files = [{ path: 'a.ts' }, { path: 'src/a.ts' }, { path: 'other/a.ts' }]
+
+  test('absolute references are relative to the reviewed worktree before matching', () => {
+    expect(changedFileRef(files, '/repo/task/src/a.ts', '/repo/task')).toBe(files[1])
+    expect(changedFileRef(files, 'C:\\repo\\task\\src\\a.ts', 'C:\\repo\\task\\')).toBe(files[1])
+    expect(changedFileRef(files, 'a.ts', '/repo/task')).toBe(files[0])
+  })
+
+  test('ambiguous suffix references stay unresolved', () => {
+    expect(changedFileRef(files, '/another/src/a.ts', '/repo/task')).toBeUndefined()
+    expect(changedFileRef(files.slice(1), 'a.ts', '/repo/task')).toBeUndefined()
+    expect(changedFileRef([files[1]], 'a.ts', '/repo/task')).toBe(files[1])
   })
 })

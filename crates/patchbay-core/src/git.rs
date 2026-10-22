@@ -921,6 +921,16 @@ fn changed_entries(repo: &Path, pathspecs: &[String]) -> Option<Vec<Entry>> {
     ))
 }
 
+/// Whether a worktree contains untracked files, which native Codex base-branch
+/// review omits. Uses the same status scan as [`review_coverage`].
+///
+/// # Errors
+/// Fails when `git status` fails.
+pub(crate) fn has_untracked(repo: &Path) -> Result<bool> {
+    let entries = changed_entries(repo, &[]).context("git status failed")?;
+    Ok(entries.iter().any(|e| e.kind == ChangeKind::Untracked))
+}
+
 /// Whether an uncommitted or untracked file anywhere in the worktree at `repo`
 /// (its top level) changed after `since_ms` (Unix ms). A deleted file counts
 /// its nearest remaining folder's mtime.
@@ -928,8 +938,22 @@ fn changed_entries(repo: &Path, pathspecs: &[String]) -> Option<Vec<Entry>> {
 /// # Errors
 /// Fails when `git status` fails.
 pub fn changed_since(repo: &Path, since_ms: u64) -> Result<bool> {
+    review_coverage(repo, since_ms).map(|c| c.edited)
+}
+
+/// What one status scan says about a review's coverage of a worktree.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Coverage {
+    /// An uncommitted or untracked file changed after the review started.
+    pub edited: bool,
+    /// The worktree holds untracked files.
+    pub untracked: bool,
+}
+
+/// [`changed_since`], also reporting whether any file is untracked.
+pub(crate) fn review_coverage(repo: &Path, since_ms: u64) -> Result<Coverage> {
     let entries = changed_entries(repo, &[]).context("git status failed")?;
-    Ok(entries.iter().any(|entry| {
+    let edited = entries.iter().any(|entry| {
         let mut path = repo.join(&entry.path);
         loop {
             if let Some(ms) = modified_ms(&path) {
@@ -939,7 +963,9 @@ pub fn changed_since(repo: &Path, since_ms: u64) -> Result<bool> {
                 return true;
             }
         }
-    }))
+    });
+    let untracked = entries.iter().any(|e| e.kind == ChangeKind::Untracked);
+    Ok(Coverage { edited, untracked })
 }
 
 /// How a tracked entry's `XY` field compares to `HEAD`.

@@ -205,6 +205,11 @@ export default function FindingsPanel({
             Showing an earlier attempt’s findings until the current review writes its own.
           </p>
         )}
+        {findings.uncovered && (
+          <p className="findings-note">
+            Codex’s branch review left out untracked files, so Auto asks before merging.
+          </p>
+        )}
         {findings.truncated && <p className="findings-note">Findings truncated at 64 KiB.</p>}
       </header>
       <div className="findings-body">
