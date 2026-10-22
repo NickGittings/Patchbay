@@ -1,4 +1,5 @@
 import { autoWorkspace } from './autoState'
+import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
 import {
   MAP_SCOPE,
@@ -92,11 +93,11 @@ export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: Aut
         owner: 'Auto mode',
         task,
         taskTitle,
-        terminal: { id: 'auto', name: run.stage, command: '', kind: 'agent' },
+        terminal: { id: 'auto', name: STAGE_LABELS[run.stage], command: '', kind: 'agent' },
         status: {
           health: run.status === 'failed' ? 'fail' : 'input',
           attention: run.status === 'failed' ? 3 : 4,
-          label: run.status === 'failed' ? 'Failed' : 'Waiting on you',
+          label: STATUS_LABELS[run.status],
           detail: run.reason,
         },
         sinceMs: run.log.at(-1)?.atMs ?? 0,

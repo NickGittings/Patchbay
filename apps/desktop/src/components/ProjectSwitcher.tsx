@@ -29,6 +29,7 @@ export default function ProjectSwitcher() {
   return (
     <Menu
       className="project-switcher"
+      caret={false}
       label={
         <>
           <span className="project-name">{active.name}</span>

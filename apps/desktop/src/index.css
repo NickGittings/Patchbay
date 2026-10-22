@@ -571,12 +571,27 @@ input[type='radio'] {
   box-shadow: var(--shadow);
 }
 .toast-text {
+  min-width: 0;
   overflow-wrap: anywhere;
   max-height: 40vh;
   overflow-y: auto;
+  white-space: normal;
+}
+.notification-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.notification-row + .notification-row {
+  margin-top: 8px;
 }
 .notification-message {
+  flex: 1;
+  min-width: 0;
   white-space: pre-line;
+}
+.notification-row button {
+  flex: none;
 }
 .toolbar .toast .toast-close {
   flex: none;

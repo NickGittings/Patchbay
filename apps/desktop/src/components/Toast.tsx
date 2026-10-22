@@ -21,6 +21,15 @@ export default function Toast() {
   const notificationId = useStore((s) => s.notificationToastId)
   const notificationElement = useRef<HTMLDivElement>(null)
   const activeProjectId = useStore((s) => s.project?.id ?? null)
+  const linkedMessages = notification?.sessions
+    .map((link) => link.message ?? notification.message)
+    .join('\n')
+  // Permission hints precede the joined messages retained by the toast store.
+  const notice = notification?.sessions.length
+    ? linkedMessages && notification.message.endsWith(linkedMessages)
+      ? notification.message.slice(0, -linkedMessages.length).trimEnd()
+      : ''
+    : notification?.message
 
   // An alert with links hides once followNotifications has dropped its last link (each one goes
   // when its session is seen or leaves that state); a notice without links hides on its own.
@@ -62,22 +71,33 @@ export default function Toast() {
       {notification && (
         <div className="toast" ref={notificationElement}>
           <div className="toast-text">
-            <span className="notification-message">{notification.message}</span>
-            {notification.sessions.map((link) => (
-              <button
-                key={link.sid}
-                title={link.message}
-                onClick={() => {
-                  const { sid } = link
-                  if (revealNotification(sid, link.auto)) {
-                    if (!link.auto) focusTerminal(sid)
-                    useStore.getState().dismissNotificationSession(sid)
-                  }
-                }}
-              >
-                View {notificationLinkLabel(link, activeProjectId)}
-              </button>
-            ))}
+            {notice && <span className="notification-message">{notice}</span>}
+            {notification.sessions.map((link) => {
+              const message = notificationLinkLabel(
+                { ...link, label: link.message ?? notification.message },
+                activeProjectId,
+              )
+              return (
+                <div className="notification-row" key={link.sid}>
+                  <span className="notification-message" title={message}>
+                    {message}
+                  </span>
+                  <button
+                    title={message}
+                    aria-label={`View ${notificationLinkLabel(link, activeProjectId)}`}
+                    onClick={() => {
+                      const { sid } = link
+                      if (revealNotification(sid, link.auto)) {
+                        if (!link.auto) focusTerminal(sid)
+                        useStore.getState().dismissNotificationSession(sid)
+                      }
+                    }}
+                  >
+                    View
+                  </button>
+                </div>
+              )
+            })}
           </div>
           <button
             className="toast-close"

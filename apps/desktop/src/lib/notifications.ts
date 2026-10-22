@@ -14,7 +14,9 @@ import {
 import { planTerminals } from './plan'
 import { autoAttentionItems, recordTask, revealTerminal, sessionOwner } from './attention'
 import { autoRuns } from './autoState'
+import { finished } from './autoSettings'
 import { terminalStatus } from './display'
+import { shortTitle } from './tasks'
 
 const KIND_HEALTH = { finished: 'review', needsInput: 'input', failed: 'fail' } as const
 
@@ -26,6 +28,7 @@ export type NotificationEvent = AgentEvent & {
   label: string
   title: string
   body: string
+  toastBody: string
   project?: { id: string; name: string }
   /** Set for an Auto run's pause instead of a session event. */
   auto?: AutoPauseTarget
@@ -114,18 +117,22 @@ function openProjects(s: Snapshot) {
   })
 }
 
-/**
- * Whether an Auto run that is driving itself tracks the session: it moves on from the session's
- * turn ends by itself, so they don't alert (input requests and failures still do).
- */
-export function autoTracked(s: Snapshot, sid: string) {
-  return openProjects(s).some(({ state }) =>
-    autoRuns(state).some(
-      ({ run }) =>
-        run.status === 'running' &&
-        (run.sessionId === sid || !!run.laneSessions?.some((l) => l.sessionId === sid)),
-    ),
+/** Runs keep their agents while paused or waiting, until they finish, stop or fail. */
+function trackingRuns(s: Snapshot, sid: string) {
+  return openProjects(s).flatMap(({ id, state }) =>
+    autoRuns(state)
+      .filter(
+        ({ run }) =>
+          !finished(run.status) &&
+          (run.sessionId === sid || !!run.laneSessions?.some((l) => l.sessionId === sid)),
+      )
+      .map(({ task }) => ({ projectId: id, task })),
   )
+}
+
+/** Auto owns its sessions' turn ends; input requests and failures can still alert. */
+export function autoTracked(s: Snapshot, sid: string) {
+  return trackingRuns(s, sid).length > 0
 }
 
 const autoSignature = (run: AutoRun) =>
@@ -179,7 +186,7 @@ export function isCurrent(s: Snapshot, sid: string, event: AgentEvent) {
 export function describe(s: Snapshot, sid: string, identity = sessionIdentity(s, sid)) {
   const { componentId, state, task, taskTitle, projectName, terminalName, lane } = identity
   const owner = sessionOwner(componentId, state?.nodes ?? [])
-  const worktree = taskTitle || (task ? task : 'Project folder')
+  const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'
   const agent = s.sessions[sid]?.status?.agent
   const detail = [agent?.message, agent?.prompt].filter(Boolean).join(' — ')
   // Several reviewer lanes, merge agents or planner tabs can share an owner within one batch.
@@ -187,6 +194,9 @@ export function describe(s: Snapshot, sid: string, identity = sessionIdentity(s,
   return {
     owner,
     label: [owner, terminal !== owner && terminal, worktree].filter(Boolean).join(' · '),
+    toastBody: [[worktree, terminalName].filter(Boolean).join(' · '), detail && `“${detail}”`]
+      .filter(Boolean)
+      .join(' — '),
     body: [
       [worktree, projectName, terminalName].filter(Boolean).join(' · '),
       detail && `“${detail}”`,
@@ -310,6 +320,10 @@ function mainWindowFocused() {
   }
 }
 
+function watching(s: Snapshot, projectId: string, task: string | null) {
+  return mainWindowFocused() && projectId === s.project?.id && task === s.activeTask
+}
+
 /**
  * Installed only by App (the main window), watching every project's retained sessions and Auto
  * runs. Events of sessions whose project isn't open in a tab wait (their links couldn't be
@@ -331,14 +345,23 @@ export function followNotifications() {
   let metadataVersion = sessionMetadata.version
   const enabled = (s: Snapshot, e: NotificationEvent) =>
     s.notifications.enabled && s.notifications[e.kind]
-  const eligible = (s: Snapshot, e: NotificationEvent) =>
-    enabled(s, e) &&
-    (e.auto
-      ? autoPauseCurrent(s, e.auto)
-      : e.atMs > (delivered.get(e.sid)?.[e.kind] ?? 0) &&
-        isCurrent(s, e.sid, e) &&
-        !(e.kind === 'finished' && autoTracked(s, e.sid)) &&
-        revealable(sessionIdentity(s, e.sid), s))
+  const eligible = (s: Snapshot, e: NotificationEvent) => {
+    if (!enabled(s, e)) return false
+    if (e.auto)
+      return (
+        autoPauseCurrent(s, e.auto) &&
+        (e.kind === 'failed' || !watching(s, e.auto.projectId, e.auto.task))
+      )
+    const tracked = trackingRuns(s, e.sid)
+    return (
+      e.atMs > (delivered.get(e.sid)?.[e.kind] ?? 0) &&
+      isCurrent(s, e.sid, e) &&
+      !(e.kind === 'finished' && tracked.length) &&
+      (e.kind === 'failed' ||
+        !tracked.some(({ projectId, task }) => watching(s, projectId, task))) &&
+      revealable(sessionIdentity(s, e.sid), s)
+    )
+  }
   const flush = async () => {
     timer = undefined
     const batch = [...pending.values()].filter((e) => eligible(useStore.getState(), e))
@@ -361,11 +384,11 @@ export function followNotifications() {
     // Keep an in-app copy even after a successful native send: desktop permission APIs
     // cannot detect OS suppression (for example macOS notification settings or Focus).
     useStore.getState().setNotificationToast({
-      message: `${delivery.title} — ${delivery.body}`,
+      message: events.map((e) => `${e.title} — ${e.toastBody}`).join('\n'),
       sessions: events.map((e): NotificationLink => ({
         sid: e.sid,
         label: e.label,
-        message: `${e.title} — ${e.body}`,
+        message: `${e.title} — ${e.toastBody}`,
         kind: e.kind,
         atMs: e.atMs,
         project: e.project,
@@ -440,8 +463,9 @@ export function followNotifications() {
         // An input wait alerts through the session that asks.
         if (!known || !pause || run.waitingFor === 'agentInput') continue
         const { item, target, projectName } = pause
-        const worktree = item.taskTitle || (task ?? 'Project folder')
-        const reason = item.status.detail
+        const worktree = item.taskTitle ? shortTitle(item.taskTitle) : (task ?? 'Project folder')
+        const reason =
+          run.status !== 'failed' && run.stage === 'mergeGate' ? undefined : item.status.detail
         const entry: NotificationEvent = {
           kind: run.status === 'failed' ? 'failed' : 'needsInput',
           atMs: item.sinceMs,
@@ -457,6 +481,7 @@ export function followNotifications() {
           body: [[worktree, projectName].join(' · '), reason && `“${reason}”`]
             .filter(Boolean)
             .join(' — '),
+          toastBody: [worktree, reason && `“${reason}”`].filter(Boolean).join(' — '),
           project: { id, name: projectName },
           auto: target,
         }

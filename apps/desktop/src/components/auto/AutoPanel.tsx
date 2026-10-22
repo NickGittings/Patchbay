@@ -2,7 +2,7 @@ import { logSimple } from '../../lib/simpleActions'
 import { simpleStageOf, type SimpleAction } from '../../lib/simple'
 import { useState } from 'react'
 import { useStore } from '../../store'
-import { parseSessionId } from '../../types'
+import { parseSessionId, type ActionReport } from '../../types'
 import {
   effortSettings,
   mergeNow,
@@ -10,20 +10,26 @@ import {
   resumeAuto,
   skipStage,
   stopAuto,
-  STAGES,
   STAGE_LABELS,
-  validationFailed,
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
 import { autoDraftKey } from '../../lib/autoDrafts'
-import { finished as ended } from '../../lib/autoSettings'
+import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
 import Popover from '../Popover'
 import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
 import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import './auto.css'
+
+function validationSummary(reports: ActionReport[]) {
+  const checks = reports.flatMap((report) => report.results)
+  if (!checks.length) return 'No checks ran'
+  const failed = checks.filter((check) => !taskPassed(check)).length
+  if (failed) return `${failed} of ${checks.length} checks did not pass`
+  return `${checks.length} ${checks.length === 1 ? 'check' : 'checks'} passed`
+}
 
 export default function AutoPanel({
   onIntegrations,
@@ -44,8 +50,8 @@ export default function AutoPanel({
   const label = !run
     ? 'Auto'
     : run.status === 'running'
-      ? `Auto: ${STAGE_LABELS[run.stage]} (${run.round}/${effortSettings(run).maxRounds})`
-      : `Auto: ${run.status === 'waitingOnYou' ? 'Waiting on you' : run.status}`
+      ? `Auto: ${STAGE_LABELS[run.stage]}`
+      : `Auto: ${STATUS_LABELS[run.status]}`
   const act = (
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
@@ -82,20 +88,10 @@ export default function AutoPanel({
         />
       ) : (
         <div className="auto-content">
-          <strong>Auto mode: {run.status}</strong>
+          <strong>Auto mode: {STATUS_LABELS[run.status]}</strong>
           <p>{run.goal}</p>
-          <ol className="auto-stages">
-            {STAGES.map((stage) => (
-              <li key={stage} aria-current={run.stage === stage ? 'step' : undefined}>
-                {STAGE_LABELS[stage]}
-              </li>
-            ))}
-          </ol>
-          <p>
-            Fix rounds: {run.round}/{effortSettings(run).maxRounds}; merge into{' '}
-            {run.merge.destinationBranch}
-          </p>
-          {run.reason && <p>{run.reason}</p>}
+          <p>Current stage: {STAGE_LABELS[run.stage]}</p>
+          {run.reason && run.status !== 'running' && <p>{run.reason}</p>}
           {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
           {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
             <AutoFindings
@@ -104,12 +100,8 @@ export default function AutoPanel({
               refresh={`${run.stage}:${run.status}:${run.log.length}`}
             />
           )}
-          {run.validation && (
-            <p>
-              Validation: {run.validation.length} report(s),{' '}
-              {run.validation.filter(validationFailed).length} need attention
-            </p>
-          )}
+          {run.round > 0 && <p>Fix rounds: {run.round}</p>}
+          {run.validation && <p>Validation: {validationSummary(run.validation)}</p>}
           {run.sessionId && (
             <button
               onClick={() =>
@@ -146,13 +138,19 @@ export default function AutoPanel({
             )}
           </div>
           {error && <p role="alert">{error}</p>}
-          <ol className="auto-log">
-            {run.log.map((l, i) => (
-              <li key={`${l.atMs}-${i}`}>
-                <time>{new Date(l.atMs).toLocaleTimeString()}</time> {l.text}
-              </li>
-            ))}
-          </ol>
+          <details>
+            <summary>Activity and details</summary>
+            <p>Merge into: {run.merge.destinationBranch}</p>
+            <p>Fix round limit: {effortSettings(run).maxRounds}</p>
+            {run.reason && run.status === 'running' && <p>{run.reason}</p>}
+            <ol className="auto-log">
+              {[...run.log].reverse().map((l, i) => (
+                <li key={`${l.atMs}-${i}`}>
+                  <time>{new Date(l.atMs).toLocaleTimeString()}</time> {l.text}
+                </li>
+              ))}
+            </ol>
+          </details>
         </div>
       )}
     </Popover>
@@ -175,7 +173,7 @@ function AutoFindings({
   const checkedOut = useStore((s) => activeTaskOf(s)?.branch)
   const running = useRunningReviewLanes(branch)
   const findings = loaded?.findings
-  if (!findings) return null
+  if (!findings?.verdict) return null
   return (
     <div className="auto-findings">
       <span>Review:</span>

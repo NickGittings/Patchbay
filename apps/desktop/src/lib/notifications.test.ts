@@ -41,6 +41,9 @@ vi.mock('../store', () => ({
 }))
 vi.stubGlobal('document', { hasFocus: () => mock.focused() })
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.send }))
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ label: 'main' }),
+}))
 vi.mock('@tauri-apps/plugin-notification', () => ({
   isPermissionGranted: mock.granted,
   requestPermission: mock.request,
@@ -262,6 +265,7 @@ test('descriptions label special scopes and project folders without an active pr
       owner,
       label: `${owner} · Claude · Project folder`,
       body: 'Project folder · Patchbay · Claude',
+      toastBody: 'Project folder · Claude',
     })
   }
 })
@@ -899,12 +903,127 @@ test('turn ends of sessions a running Auto run tracks stay silent; input and fai
   expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'three', 'two'])
 })
 
-test('a paused Auto run no longer suppresses its sessions', async () => {
-  setAuto(autoRun({ status: 'paused' }))
+for (const status of ['paused', 'waitingOnYou'] as const)
+  test(`a ${status} Auto run suppresses its sessions' turn ends`, async () => {
+    setAuto(autoRun({ status }))
+    stop = followNotifications()
+    transition('one', report('review'))
+    transition('three', report('review'))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).not.toHaveBeenCalled()
+    expect(mock.send).not.toHaveBeenCalled()
+  })
+
+for (const status of ['done', 'stopped', 'failed'] as const)
+  test(`a ${status} Auto run releases its sessions' turn ends`, async () => {
+    setAuto(autoRun({ status }))
+    stop = followNotifications()
+    transition('one', report('review'))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).toHaveBeenCalledOnce()
+  })
+
+test('a turn end batched with a merge-gate pause sends only the Auto alert', async () => {
   stop = followNotifications()
+  // The turn end queues before Auto publishes its ownership and pause.
   transition('one', report('review'))
+  setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.send).toHaveBeenCalledOnce()
+  expect(mock.send).toHaveBeenCalledWith('plugin:notification|notify', {
+    options: {
+      title: 'Auto mode asks to merge',
+      body: 'Project folder · Patchbay',
+    },
+  })
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['auto:other:'])
+})
+
+test('focused active worktrees silence Auto pauses; other worktrees and failures alert', async () => {
+  setAuto(autoRun())
+  mock.state = { ...mock.state, ...mock.state.projects.other!.state! } as Snapshot
+  stop = followNotifications()
+  update({ auto: autoRun({ status: 'waitingOnYou', stage: 'mergeGate' }) })
+  // Visibility is checked at flush, even if the window was unfocused when queued.
+  mock.focused.mockReturnValue(true)
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  update({
+    activeTask: 't1',
+    auto: null,
+    taskWorkspaces: {
+      '': { auto: autoRun({ status: 'waitingOnYou', stage: 'mergeGate' }) } as TaskWorkspace,
+    },
+  })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  update({
+    activeTask: null,
+    auto: autoRun(),
+    tasks: [{ id: 't1', title: 'Another worktree' }] as Task[],
+    taskWorkspaces: { t1: { auto: autoRun() } as TaskWorkspace },
+  })
+  update({
+    taskWorkspaces: {
+      t1: { auto: autoRun({ status: 'waitingOnYou', stage: 'mergeGate' }) } as TaskWorkspace,
+    },
+  })
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).toHaveBeenCalledOnce()
+  expect(mock.state.notificationToast?.sessions[0].auto?.task).toBe('t1')
+  update({ auto: autoRun({ status: 'failed', reason: 'Merge conflict', stage: 'mergeGate' }) })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledTimes(2)
+  expect(mock.state.notificationToast?.message).toContain('Auto mode failed')
+  expect(mock.state.notificationToast?.message).toContain('Merge conflict')
+})
+
+test('a focused worktree in another project still alerts', async () => {
+  setAuto(autoRun())
+  mock.state.project = { id: 'active', name: 'Active' } as Snapshot['project']
+  mock.state.activeTask = null
+  mock.focused.mockReturnValue(true)
+  stop = followNotifications()
+  setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test('watched Auto agents suppress input without recording delivery; failures still alert', async () => {
+  setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
+  mock.state = { ...mock.state, ...mock.state.projects.other!.state! } as Snapshot
+  mock.focused.mockReturnValue(true)
+  stop = followNotifications()
+  transition('one', report('needsInput'))
+  transition('three', report('needsInput'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).not.toHaveBeenCalled()
+  // Dropped input wasn't delivered, so the same timestamp can alert if it recurs offscreen.
+  mock.focused.mockReturnValue(false)
+  transition('one', working)
+  transition('one', report('needsInput'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+  mock.focused.mockReturnValue(true)
+  transition('three', { running: false, exitCode: 1, exitedMs: 2500 })
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledTimes(2)
+  expect(mock.state.notificationToast?.sessions.at(-1)?.kind).toBe('failed')
+})
+
+test('a focused worktree still alerts for another Auto worktree and untracked input', async () => {
+  setAuto(autoRun({ status: 'paused' }))
+  setTaskAuto(autoRun({ sessionId: 'two', laneSessions: [] }), [{ id: 't1', title: 'Other' }])
+  mock.state = { ...mock.state, ...mock.state.projects.other!.state! } as Snapshot
+  mock.state.sessions.untracked = working
+  mock.state.sessionRecords.push(record('untracked'))
+  mock.focused.mockReturnValue(true)
+  stop = followNotifications()
+  transition('one', report('needsInput'))
+  transition('two', report('needsInput'))
+  transition('untracked', report('needsInput'))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['two', 'untracked'])
 })
 
 test('an Auto run alerts once per pause, links to its panel and drops out when resumed', async () => {
@@ -921,7 +1040,7 @@ test('an Auto run alerts once per pause, links to its panel and drops out when r
     auto: { projectId: 'other', task: null },
   })
   expect(link.message).toContain('Auto mode asks to merge')
-  expect(link.message).toContain('Approve the merge')
+  expect(link.message).not.toContain('Approve the merge')
   // The same pause, republished, doesn't alert again.
   setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate', reason: 'Approve the merge' }))
   await vi.advanceTimersByTimeAsync(750)
@@ -967,6 +1086,46 @@ function setTaskAuto(run: AutoRun, tasks: { id: string; title: string }[] = []) 
     },
   })
 }
+
+test('session and Auto titles are short; merge approval omits its redundant reason', async () => {
+  const title = 'Fix trends nutrition graphs. When navigating between timeframes it is broken.'
+  mock.state.sessionRecords[0] = record('one', { taskTitle: title })
+  expect(describe(mock.state, 'one')).toMatchObject({
+    label: 'billing · Claude · Fix trends nutrition graphs…',
+    body: 'Fix trends nutrition graphs… · Patchbay · Claude',
+    toastBody: 'Fix trends nutrition graphs… · Claude',
+  })
+  setTaskAuto(autoRun(), [{ id: 't1', title }])
+  stop = followNotifications()
+  setTaskAuto(
+    autoRun({
+      status: 'waitingOnYou',
+      stage: 'mergeGate',
+      reason: 'Ready to merge — approval required',
+    }),
+    [{ id: 't1', title }],
+  )
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions[0]).toMatchObject({
+    label: 'Auto mode · Fix trends nutrition graphs…',
+    message: 'Auto mode asks to merge — Fix trends nutrition graphs…',
+    project: { id: 'other', name: 'Patchbay' },
+  })
+  expect(mock.send).toHaveBeenCalledWith('plugin:notification|notify', {
+    options: {
+      title: 'Auto mode asks to merge',
+      body: 'Fix trends nutrition graphs… · Patchbay',
+    },
+  })
+  setTaskAuto(
+    autoRun({ status: 'waitingOnYou', stage: 'fix', reason: 'Fix round limit reached' }),
+    [{ id: 't1', title }],
+  )
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.message).toBe(
+    'Auto mode is waiting on you — Fix trends nutrition graphs… — “Fix round limit reached”',
+  )
+})
 
 test('Auto runs restored after their project appears stay silent', async () => {
   update({ restoring: true })

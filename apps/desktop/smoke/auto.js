@@ -92,9 +92,10 @@
       '@plan',
       state().devices.find((d) => d.kind === 'agent')?.id ?? 'claude',
     )
+    const rootNotificationMessage = `Root needs input — ${'LongUnbrokenDetail'.repeat(12)}`
     state().setNotificationToast({
-      message: 'Root needs input',
-      sessions: [{ sid: notificationSid, label: 'Root', message: 'Root needs input' }],
+      message: rootNotificationMessage,
+      sessions: [{ sid: notificationSid, label: 'Root', message: rootNotificationMessage }],
     })
     // A later batch must retain the first unread link even if native delivery was suppressed.
     state().setNotificationToast({
@@ -105,17 +106,30 @@
       'both unread notification links',
       () => document.querySelectorAll('.toast-text button').length === 2,
     )
-    const notificationMessage = document.querySelector('.notification-message')
+    const notificationRows = [...document.querySelectorAll('.notification-row')]
     assert(
-      notificationMessage.textContent.includes('\n'),
-      'Notification lines lost their separator',
+      notificationRows
+        .map((row) => row.querySelector('.notification-message').textContent)
+        .join('|') === `${rootNotificationMessage}|Planner finished`,
+      'Notification messages lost their separate rows',
     )
     assert(
-      getComputedStyle(notificationMessage).whiteSpace === 'pre-line',
-      'Notification lines collapse when rendered',
+      notificationRows.every((row) => row.querySelector('button').textContent === 'View'),
+      'Notification buttons repeat their labels',
     )
+    assert(
+      notificationRows.every((row) => row.scrollWidth <= row.clientWidth),
+      'Notification rows scroll horizontally',
+    )
+    const rootNotificationText = notificationRows[0].querySelector('.notification-message')
+    assert(
+      rootNotificationText.getBoundingClientRect().height >
+        parseFloat(getComputedStyle(rootNotificationText).lineHeight),
+      'Long notification text does not wrap',
+    )
+    assert(rootNotificationText.title === rootNotificationMessage, 'Full notification title lost')
     const viewNotification = await until('notification session link', () =>
-      [...document.querySelectorAll('.toast button')].find((b) => b.textContent === 'View Root'),
+      document.querySelector('.notification-row button[aria-label="View Root"]'),
     )
     viewNotification.click()
     await until(
@@ -126,9 +140,7 @@
       'viewing one notification retains the other link',
       () =>
         state().notificationToast?.sessions.length === 1 &&
-        [...document.querySelectorAll('.toast button')].some(
-          (b) => b.textContent === 'View Planner',
-        ),
+        document.querySelector('.notification-row button[aria-label="View Planner"]'),
     )
     assert(
       state().notificationToast.sessions[0].sid === plannerNotificationSid,

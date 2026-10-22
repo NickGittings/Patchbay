@@ -36,7 +36,7 @@ export function removeNotificationSession(
     : null
 }
 
-/** The button text: the project is named only when it isn't the active one. */
+/** The link's label or message: name the project only when it isn't the active one. */
 export function notificationLinkLabel(link: NotificationLink, activeProjectId: string | null) {
   return link.project && link.project.id !== activeProjectId
     ? `${link.label} · ${link.project.name}`

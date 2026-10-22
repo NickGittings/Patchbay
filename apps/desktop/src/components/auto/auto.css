@@ -46,20 +46,10 @@
 .auto-content button {
   cursor: pointer;
 }
-.auto-controls,
-.auto-stages {
+.auto-controls {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-}
-.auto-stages {
-  padding-left: 0;
-  font-size: 12px;
-  list-style-position: inside;
-}
-.auto-stages [aria-current='step'] {
-  font-weight: bold;
-  text-decoration: underline;
 }
 .auto-log {
   max-height: 220px;
