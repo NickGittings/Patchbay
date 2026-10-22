@@ -199,10 +199,19 @@ test('a goal seeds a short, single-line worktree title', () => {
   )
   expect(shortTitle('Fix login')).toBe('Fix login')
   expect(shortTitle('Fix login.')).toBe('Fix login')
-  expect(shortTitle('Add a settings page for every user role')).toBe('Add a settings page…')
+  // No word cap: the toolbar truncates, so titles differing late stay distinguishable.
+  expect(shortTitle('Add a settings page for every user role')).toBe(
+    'Add a settings page for every user role',
+  )
+  expect(shortTitle('Fix login bug in auth')).not.toBe(shortTitle('Fix login bug in billing'))
   expect(shortTitle('v1.2 release: notes')).toBe('v1.2 release: notes')
   expect(shortTitle('WIP: login flow')).toBe('WIP: login flow')
-  expect(shortTitle('Fix login; then deploy it today')).toBe('Fix login; then deploy…')
+  expect(shortTitle('Fix login; then deploy it today')).toBe('Fix login; then deploy it today')
+  // Abbreviations don't end a sentence; a capital after the stop does.
+  expect(shortTitle('Fix e.g. caching')).toBe('Fix e.g. caching')
+  expect(shortTitle('Fix i.e. the cache. Then ship')).toBe('Fix i.e. the cache…')
+  expect(shortTitle('U.S. tariffs page')).toBe('U.S. tariffs page')
+  expect(shortTitle('Fix login. then deploy')).toBe('Fix login. then deploy')
   expect(shortTitle('Fix  login')).toBe('Fix login')
   expect(shortTitle('Ship it?!')).toBe('Ship it')
   expect(shortTitle('Ship it?! Then rest')).toBe('Ship it…')
@@ -365,4 +374,26 @@ test("a later request's failure still lets an earlier list land", async () => {
   answer([fresh])
   await Promise.all([earlier, later])
   expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['n'])
+})
+
+test('leaving a worktree marks its finished actions seen in the same update', () => {
+  removalProject(null)
+  const activity = (id: string, task: string | null, state: string) =>
+    ({ id, projectId: 'p', task, state }) as unknown as import('../types').TaskActivity
+  useStore.setState({
+    taskActivities: {
+      a: activity('a', null, 'finished'),
+      b: activity('b', null, 'running'),
+      c: activity('c', 't', 'failed'),
+    },
+  })
+  const seenInListener: string[][] = []
+  const unsubscribe = useStore.subscribe((s) => seenInListener.push(s.seenActivities))
+  useStore.getState().setActiveTask('t')
+  unsubscribe()
+  // One update, already holding the left worktree's finished action; not the others'.
+  expect(seenInListener).toEqual([['a']])
+  // Leaving the task in turn marks its own.
+  useStore.getState().setActiveTask(null)
+  expect(useStore.getState().seenActivities).toEqual(['a', 'c'])
 })

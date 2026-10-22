@@ -19,6 +19,7 @@ import {
 } from '../types'
 import { terminalStatus, type TerminalStatus } from './display'
 import { planTerminals } from './plan'
+import { unseenFinished } from './taskActions'
 
 export interface AttentionItem {
   auto?: boolean
@@ -220,7 +221,7 @@ function countAttention(s: Snapshot): Record<string, number> {
 /**
  * `attentionCounts` plus each other worktree's finished graph actions (validation, environments)
  * the user hasn't seen there, for the worktree picker. The worktree on screen counts none: its
- * actions are marked seen when it is left (`followActiveTask`). Returns a fresh object of numbers,
+ * actions are marked seen when it is left (the store's `leaveWorktree`). Returns a fresh object of numbers,
  * for `useShallow`.
  */
 export function worktreeAttention(
@@ -233,12 +234,7 @@ export function worktreeAttention(
   const seen = new Set(s.seenActivities)
   for (const activity of activities) {
     const task = activity.task ?? null
-    if (
-      activity.projectId === s.project?.id &&
-      task !== (s.activeTask ?? null) &&
-      activity.state !== 'running' &&
-      !seen.has(activity.id)
-    )
+    if (task !== (s.activeTask ?? null) && unseenFinished(activity, s.project?.id, task, seen))
       counts[task ?? ''] = (counts[task ?? ''] ?? 0) + 1
   }
   return counts

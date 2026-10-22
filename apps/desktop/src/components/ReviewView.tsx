@@ -66,11 +66,10 @@ export default function ReviewView() {
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)
-  const taskWorktree = useStore(activeWorktree)
-  if (findingsFocus && pane !== 'findings') setPane('findings')
   // Review follows the toolbar's worktree picker; switching worktree drops the previous one's
   // selection, loaded review and a diff opened from its findings.
-  const worktree = taskWorktree
+  const worktree = useStore(activeWorktree)
+  if (findingsFocus && pane !== 'findings') setPane('findings')
   const [shownWorktree, setShownWorktree] = useState(worktree)
   if (shownWorktree !== worktree) {
     setShownWorktree(worktree)
@@ -133,12 +132,9 @@ export default function ReviewView() {
         )
       : undefined,
   )
-  // Review shows the active task's worktree, which the watcher keeps current. Terminals are keyed
-  // by task: the open worktree's sessions belong to the active task when the project is open in
-  // its worktree, and to no task otherwise.
-  const reviewTask = tasks.find(
-    (t) => t.id === activeTask && !t.missing && (other ? t.worktree === other.path : t.current),
-  )
+  // Review shows the active task's worktree, so its terminals are keyed by that task (none for
+  // the project folder).
+  const reviewTask = tasks.find((t) => t.id === activeTask && !t.missing)
   const validationTask = reviewTask?.id ?? null
 
   // Findings of deleted branches are dropped once per visit, off the polling path.

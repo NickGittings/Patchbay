@@ -8,6 +8,7 @@ import { syncCurrentRoots } from './access'
 import { reviewRescan } from './maintenance'
 import { flushMapSaves, saveMapNow } from './mapSave'
 import { closeComponentWindows } from './windows'
+import { forgetMainWorktree } from './mainWorktree'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -116,6 +117,7 @@ export async function closeProjectTab(id: string) {
     await closeComponentWindows(id)
     await projectClose(id)
     useStore.getState().closeProject(id)
+    forgetMainWorktree(id)
   } catch (e) {
     useStore.getState().setMessage(`Project close failed: ${e}`)
   } finally {

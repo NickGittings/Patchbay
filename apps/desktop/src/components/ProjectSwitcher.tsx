@@ -1,6 +1,6 @@
 import { useStore } from '../store'
 import { closeProjectTab, useOpenProject } from '../lib/project'
-import Menu, { MenuItem, MenuSeparator, MenuSideButton } from './Menu'
+import Menu, { MenuItem, MenuRow, MenuSeparator, MenuSideButton } from './Menu'
 
 /** Which project is open, and a menu to switch, close or open another one. */
 export default function ProjectSwitcher() {
@@ -42,10 +42,11 @@ export default function ProjectSwitcher() {
         const entry = projects[id]
         if (!entry) return null
         return (
-          <div className="project-switcher-row" key={id}>
+          <MenuRow key={id}>
             <MenuItem
               className="menu-item project-switcher-item"
-              aria-current={activeId === id ? 'true' : undefined}
+              checked={activeId === id}
+              radio
               title={`${entry.root}\nDelete closes this project`}
               aria-keyshortcuts="Delete"
               onClick={() => activate(id)}
@@ -68,20 +69,19 @@ export default function ProjectSwitcher() {
               }}
             >
               <span className="project-switcher-name">
-                <span className="project-check">{activeId === id ? '✓' : ''}</span>
                 <span className="project-name">{entry.name}</span>
                 {status(id)}
               </span>
             </MenuItem>
             <MenuSideButton
-              className="menu-item project-switcher-close"
+              className="menu-item menu-side project-switcher-close"
               aria-label={`Close ${entry.name}`}
               title={`Close ${entry.name}`}
               onClick={() => void closeProjectTab(id)}
             >
               ×
             </MenuSideButton>
-          </div>
+          </MenuRow>
         )
       })}
       <MenuSeparator />

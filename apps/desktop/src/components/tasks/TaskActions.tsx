@@ -1,4 +1,5 @@
-import { useMainWorktree } from '../../lib/mainWorktree'
+import { useEffect } from 'react'
+import { ensureMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
 import { seedNewTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import AddTaskTerminal from './AddTaskTerminal'
@@ -6,8 +7,9 @@ import AddTaskTerminal from './AddTaskTerminal'
 /** Build's header actions; the toolbar's worktree picker chooses the worktree. */
 export default function TaskActions() {
   const projectId = useStore((s) => s.project?.id)
-  // Read by the toolbar's worktree picker, which is shown whenever a project is.
   const git = useMainWorktree((m) => !!m[projectId ?? '']?.git)
+  // Usually read already by the toolbar's worktree picker.
+  useEffect(() => ensureMainWorktree(projectId), [projectId])
   return (
     <div className="task-tab-actions">
       <AddTaskTerminal />

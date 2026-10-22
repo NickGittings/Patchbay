@@ -180,7 +180,7 @@ export default function Toolbar() {
             ⌕
           </button>
           <ProjectSwitcher />
-          {project && <WorktreePicker caret={false} copyPlan={!simpleMode && view === 'plan'} />}
+          {project && <WorktreePicker copyPlan={!simpleMode && view === 'plan'} />}
         </div>
         {/* The center slot holds Full's views or Chat mode's label, so the ends never move. */}
         {project && simpleMode && <span className="toolbar-mode">Chat mode</span>}

@@ -8,7 +8,7 @@ import {
   useStore,
 } from '../store'
 import type { Task, TaskDraft } from '../types'
-import { taskActionState } from './taskActions'
+import { taskActionState, unseenFinished } from './taskActions'
 import { forgetAutoDrafts } from './autoDrafts'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions } from './sessions'
@@ -162,11 +162,6 @@ export function followActiveTask() {
     return running
   }
   const unsubscribe = useStore.subscribe((s, prev) => {
-    // However the worktree on screen changes (picker, project switch, a task vanishing), the
-    // finished actions it showed have been seen; the picker counts only other worktrees'.
-    const left = prev.project?.id
-    if (left && (left !== s.project?.id || prev.activeTask !== s.activeTask))
-      markActivitiesSeen(left, prev.activeTask)
     // A closed project's backend state is gone; reopening it starts from scratch.
     if (s.projects !== prev.projects)
       for (const id of sent.keys()) if (!s.projects[id] && s.project?.id !== id) sent.delete(id)
@@ -340,18 +335,20 @@ export function titleFor(goal: string, max = 72) {
 }
 
 /**
- * A worktree title short enough for the toolbar: its first sentence, at most `words` words, with
- * `…` when anything was left out. `Fix trends graphs. When navigating…` → `Fix trends graphs…`.
+ * A worktree title for the toolbar, which truncates it to fit: its first sentence, with `…` when
+ * anything was left out. `Fix trends graphs. When navigating…` → `Fix trends graphs…`. A sentence
+ * ends at `.`, `!` or `?` before whitespace and a capital letter (or the end), so `e.g. caching`
+ * and `U.S. tariffs` stay whole.
  */
-export function shortTitle(title: string, words = 4) {
-  const full = title.trim()
-  const [first, ...rest] = full.split(/\n|[.!?]+(?=\s|$)/)
-  const sentence = first.trim() ? first : full
-  const all = sentence.trim().split(/\s+/)
-  const kept = all.slice(0, words).join(' ')
-  // Collapsed whitespace and closing punctuation leave nothing out; more words or sentences do.
-  const cut = all.length > words || (sentence === first && rest.some((r) => r.trim()))
-  return cut ? `${kept}…` : kept
+export function shortTitle(title: string) {
+  const [line, ...lines] = title.trim().split('\n')
+  const end = /[.!?]+\s+(?=\p{Lu})/u.exec(line)
+  const sentence = (end ? line.slice(0, end.index) : line.replace(/[.!?]+\s*$/, ''))
+    .trim()
+    .split(/\s+/)
+    .join(' ')
+  // Collapsed whitespace and closing punctuation leave nothing out; more sentences or lines do.
+  return end || lines.some((l) => l.trim()) ? `${sentence}…` : sentence
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */
@@ -367,22 +364,6 @@ export function branchFor(title: string) {
     .replace(/^[-./]+|[-./]+$/g, '')
 }
 
-/** Mark `projectId`'s finished graph actions in `task`'s worktree as seen. */
-export function markActivitiesSeen(projectId: string, task: string | null) {
-  const s = useStore.getState()
-  const seen = new Set(s.seenActivities)
-  const fresh = Object.values(s.taskActivities)
-    .filter(
-      (a) =>
-        a.projectId === projectId &&
-        (a.task ?? null) === task &&
-        a.state !== 'running' &&
-        !seen.has(a.id),
-    )
-    .map((a) => a.id)
-  if (fresh.length) useStore.setState({ seenActivities: [...s.seenActivities, ...fresh] })
-}
-
 export function applyTaskActivity(activity: import('../types').TaskActivity) {
   const s = useStore.getState()
   if (
@@ -391,13 +372,11 @@ export function applyTaskActivity(activity: import('../types').TaskActivity) {
     activity.state === 'running'
   )
     return
-  const active = s.project?.id === activity.projectId && s.activeTask === activity.task
+  // Finishing in the worktree on screen, it is seen already.
+  const onScreen = unseenFinished(activity, s.project?.id, s.activeTask, new Set(s.seenActivities))
   useStore.setState({
     taskActivities: { ...s.taskActivities, [activity.id]: activity },
-    seenActivities:
-      active && activity.state !== 'running'
-        ? [...new Set([...s.seenActivities, activity.id])]
-        : s.seenActivities,
+    seenActivities: onScreen ? [...s.seenActivities, activity.id] : s.seenActivities,
   })
   s.patchTask(activity.projectId, activity.task, {
     ...taskActionState(useStore.getState().taskActivities, activity.projectId, activity.task),
