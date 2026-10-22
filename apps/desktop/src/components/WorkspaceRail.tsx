@@ -1,6 +1,6 @@
 import RailIcon from './RailIcon'
 import { useClockTick } from '../lib/clock'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type KeyboardEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
 import { useSimpleUi } from '../lib/simpleUi'
@@ -16,8 +16,8 @@ import {
   useRail,
   type UtilityPanel,
 } from '../lib/rail'
-import { mod } from '../lib/platform'
-import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
+import { isMac, mod } from '../lib/platform'
+import { runWorkspaceAction, useWorkspaceActions } from '../lib/workspaceActions'
 import ProjectSwitcher from './ProjectSwitcher'
 import WorktreePicker from './tasks/WorktreePicker'
 import SessionsPanel from './SessionsPanel'
@@ -47,7 +47,8 @@ function initialWidth() {
     return 360
   }
 }
-export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] }) {
+export default function WorkspaceRail() {
+  const actions = useWorkspaceActions()
   useClockTick()
   useTaskActivities()
   const panel = useRail((s) => s.panel)
@@ -70,6 +71,23 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
   const actualWidth = panelWidth(width, windowWidth)
   const worktreeName = task?.title ?? 'Main worktree'
+  const panelSubtitle = (id: UtilityPanel) =>
+    id === 'project'
+      ? (project?.name ?? entry?.name ?? 'No project')
+      : id === 'sessions'
+        ? 'All projects'
+        : `${project?.name ?? 'No project'} · ${worktreeName}`
+  const subtitle = panel ? panelSubtitle(panel) : ''
+  const closeOnEscape = (e: KeyboardEvent<HTMLElement>) => {
+    if (
+      e.key === 'Escape' &&
+      !e.defaultPrevented &&
+      !(e.target as Element).closest('.xterm, input, textarea, select, [role="menu"]')
+    ) {
+      e.preventDefault()
+      selectPanel(null)
+    }
+  }
   useEffect(() => {
     const resize = () => setWindowWidth(window.innerWidth)
     window.addEventListener('resize', resize)
@@ -87,19 +105,16 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const utility = (id: UtilityPanel) => {
     const { label } = utilities[id]
     const status =
-      id === 'auto' && auto
-        ? `${STAGE_LABELS[auto.stage]} · ${STATUS_LABELS[auto.status]}`
-        : id === 'activity' && busy
-          ? action?.kind === 'startGroup'
-            ? 'Starting environment…'
-            : 'Validating…'
-          : undefined
-    const name =
-      id === 'project'
-        ? (project?.name ?? entry?.name ?? 'No project')
-        : id === 'sessions'
-          ? 'All projects'
-          : `${project?.name ?? 'No project'} · ${worktreeName}`
+      id === 'project' && entry?.mapSave?.status === 'error'
+        ? 'Map save failed'
+        : id === 'auto' && auto
+          ? `${STAGE_LABELS[auto.stage]} · ${STATUS_LABELS[auto.status]}`
+          : id === 'activity' && busy
+            ? action?.kind === 'startGroup'
+              ? 'Starting environment…'
+              : 'Validating…'
+            : undefined
+    const name = panelSubtitle(id)
     const warning =
       id === 'project' &&
       (entry?.fingerprint === 'absent' ||
@@ -118,14 +133,21 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         onClick={() => togglePanel(id)}
       >
         <RailIcon name={id} />
-        {status && (
+        {status && id !== 'project' && (
           <span
             className="rail-status"
             data-status={id === 'auto' ? auto?.status : 'running'}
             aria-hidden="true"
           />
         )}
-        {warning && <sup aria-label="Map needs attention">!</sup>}
+        {warning && (
+          <sup
+            aria-label={status === 'Map save failed' ? status : 'Map needs attention'}
+            data-status={status === 'Map save failed' ? 'error' : undefined}
+          >
+            !
+          </sup>
+        )}
         {id === 'activity' && count > 0 && (
           <sup aria-label={`${count} need attention`}>{count}</sup>
         )}
@@ -167,7 +189,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         {utility('activity')}
         {utility('sessions')}
         <span className="spacer" />
-        {!/mac/i.test(navigator.userAgent) && (
+        {!isMac && (
           <Menu
             label={<RailIcon name="settings" />}
             triggerLabel="Settings"
@@ -191,25 +213,12 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
             className="utility-panel"
             style={{ width: actualWidth }}
             aria-label={`${utilities[panel].label} panel`}
-            onKeyDown={(e) => {
-              if (
-                e.key === 'Escape' &&
-                !e.defaultPrevented &&
-                !(e.target as Element).closest('.xterm, input, textarea, select, [role="menu"]')
-              )
-                selectPanel(null)
-            }}
+            onKeyDown={closeOnEscape}
           >
             <header className="utility-header">
               <div>
                 <h2>{utilities[panel].label}</h2>
-                <small title={`${project?.name ?? entry?.name ?? 'No project'} · ${worktreeName}`}>
-                  {panel === 'sessions'
-                    ? 'All projects'
-                    : panel === 'project'
-                      ? (project?.name ?? entry?.name ?? 'No project')
-                      : `${project?.name ?? 'No project'} · ${worktreeName}`}
-                </small>
+                <small title={subtitle}>{subtitle}</small>
               </div>
               <button
                 aria-label={`Close ${utilities[panel].label} panel`}
@@ -297,7 +306,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
           />
         </>
       )}
-      <SessionsPanel host={sessionsHost} />
+      <SessionsPanel host={sessionsHost} onKeyDown={closeOnEscape} />
       {settings === 'integrations' && (
         <AgentIntegrationsPanel onClose={() => useRail.setState({ settings: null })} />
       )}

@@ -1,6 +1,7 @@
+import { isMac } from './platform'
 import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useRef } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { updateNativeMenu } from './ipc'
 import { listen } from '@tauri-apps/api/event'
 import { useStore } from '../store'
 import { useExtensionCommands } from '../extensions/commands'
@@ -26,13 +27,13 @@ export function useNativeMenus(actions: WorkspaceAction[]) {
     })),
   ])
   useEffect(() => {
-    if (!/mac/i.test(navigator.userAgent)) return
-    void invoke('update_native_menu', { entries: JSON.parse(entries) }).catch((e) =>
+    if (!isMac) return
+    void updateNativeMenu(JSON.parse(entries)).catch((e) =>
       useStore.getState().setMessage(String(e)),
     )
   }, [entries])
   useEffect(() => {
-    if (!/mac/i.test(navigator.userAgent)) return
+    if (!isMac) return
     const unlisten = listen<string>('patchbay://menu-action', ({ payload }) => {
       if (payload === 'commands') useStore.getState().setPaletteOpen(true)
       else if (payload.startsWith('action:'))

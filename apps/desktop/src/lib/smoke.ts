@@ -15,6 +15,7 @@ import {
   syncAgentProject,
   planRead,
   taskAttach,
+  inspectNativeMenu,
 } from './ipc'
 import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
@@ -69,10 +70,7 @@ import { attentionItems } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 const hooks = {
-  inspectNativeMenu: () =>
-    import('@tauri-apps/api/core').then(({ invoke }) =>
-      invoke<[string, string, boolean][]>('inspect_native_menu'),
-    ),
+  inspectNativeMenu,
   nativeMenuAction: (id: string) =>
     import('@tauri-apps/api/event').then(({ emitTo }) =>
       emitTo('main', 'patchbay://menu-action', id),

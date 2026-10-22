@@ -35,7 +35,8 @@ export default function UnifiedSearch({
   }>()
   const close = (restore = false) => {
     setOpen(false)
-    useStore.getState().setPaletteOpen(false)
+    const store = useStore.getState()
+    if (store.paletteOpen) store.setPaletteOpen(false)
     if (restore) previousFocus.current?.focus()
   }
   useEffect(() => {
@@ -57,18 +58,25 @@ export default function UnifiedSearch({
         show(e.shiftKey && !filesOnly ? 'Commands' : 'Files')
       }
     }
-    const outside = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) close()
-    }
     window.addEventListener(FILE_SEARCH_EVENT, files)
     window.addEventListener('keydown', key, true)
-    window.addEventListener('pointerdown', outside)
     return () => {
       window.removeEventListener(FILE_SEARCH_EVENT, files)
       window.removeEventListener('keydown', key, true)
-      window.removeEventListener('pointerdown', outside)
     }
   }, [filesOnly])
+  useEffect(() => {
+    if (!open) return
+    const outside = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) {
+        setOpen(false)
+        const store = useStore.getState()
+        if (store.paletteOpen) store.setPaletteOpen(false)
+      }
+    }
+    window.addEventListener('pointerdown', outside)
+    return () => window.removeEventListener('pointerdown', outside)
+  }, [open])
   useEffect(() => {
     if (filesOnly) return
     const sync = () => {
@@ -170,6 +178,7 @@ export default function UnifiedSearch({
         }}
         onFocus={() => setOpen(true)}
         onChange={(e) => {
+          setOpen(true)
           setQuery(e.target.value)
           setSelection({ scope: '', id: '' })
         }}
@@ -193,7 +202,7 @@ export default function UnifiedSearch({
                   )
             setSelection({ scope, id: items[next]?.id ?? '' })
           }
-          if (e.key === 'Enter') {
+          if (e.key === 'Enter' && open) {
             e.preventDefault()
             if (items[selected]) execute(items[selected])
           }

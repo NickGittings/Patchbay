@@ -1,10 +1,11 @@
+import { isMac } from './platform'
 import { editorOpen, terminalOpenReference } from './ipc'
 import { useStore } from '../store'
 import { sessionMetadata, type EditorTarget } from '../types'
 
 export const EDITOR_SETTINGS_EVENT = 'patchbay:editor-settings'
 export const FILE_SEARCH_EVENT = 'patchbay:file-search'
-export const revealLabel = /mac/i.test(navigator.userAgent)
+export const revealLabel = isMac
   ? 'Reveal in Finder'
   : /win/i.test(navigator.userAgent)
     ? 'Reveal in Explorer'

@@ -2736,6 +2736,9 @@ kbd {
   border-radius: 8px;
   padding: 1px 4px;
 }
+.workspace-rail sup[data-status='error'] {
+  background: var(--bad);
+}
 .rail-status {
   position: absolute;
   bottom: 4px;

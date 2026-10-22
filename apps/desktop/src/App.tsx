@@ -1,6 +1,5 @@
 import WorkspaceRail from './components/WorkspaceRail'
 import RecoveryBanners from './components/RecoveryBanners'
-import { useWorkspaceActions } from './lib/workspaceActions'
 import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
@@ -157,7 +156,6 @@ function NavigationView() {
 }
 
 function AppWorkspace() {
-  const actions = useWorkspaceActions()
   const view = useStore((s) => s.view)
   const simple = useStore((s) => s.simpleMode)
   const projectId = useStore((s) => s.project?.id)
@@ -237,14 +235,14 @@ function AppWorkspace() {
 
   return (
     <div className="app">
-      <Toolbar actions={actions} />
+      <Toolbar />
       <NavigationDialogs settingsOnly />
       <MapMaintenanceReview />
       <DependencyDialog />
       <ExtensionsPanel />
       <NewTaskDialog />
       <div className="workspace-body">
-        <WorkspaceRail actions={actions} />
+        <WorkspaceRail />
         <main className="workspace-main">
           <RecoveryBanners />
           {!restoring && (simple || view === 'navigation') && (

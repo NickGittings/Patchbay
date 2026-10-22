@@ -1,12 +1,14 @@
+import { isMac } from '../lib/platform'
 import { useEffect, useRef } from 'react'
 import UnifiedSearch from './UnifiedSearch'
 import Toast from './Toast'
-import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
+import { runWorkspaceAction, useWorkspaceActions } from '../lib/workspaceActions'
 import { railViews, selectRailShortcut } from '../lib/rail'
 import { useNativeMenus } from '../lib/nativeMenus'
 
 /** The only top-bar control is the combined file and command search. */
-export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
+export default function Toolbar() {
+  const actions = useWorkspaceActions()
   const latestActions = useRef(actions)
   useEffect(() => {
     latestActions.current = actions
@@ -24,12 +26,7 @@ export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
         selectRailShortcut(railViews[Number(e.key) - 1].id)
       }
       // macOS owns Cmd+S in its native menu. Other platforms use this handler.
-      if (
-        !/mac/i.test(navigator.userAgent) &&
-        !e.shiftKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === 's'
-      ) {
+      if (!isMac && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
         e.preventDefault()
         e.stopPropagation()
         runWorkspaceAction(latestActions.current.find((a) => a.id === 'save'))
@@ -39,10 +36,7 @@ export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
     return () => window.removeEventListener('keydown', key, true)
   }, [])
   return (
-    <div
-      className={`top-bar${/mac/i.test(navigator.userAgent) ? ' mac-titlebar' : ''}`}
-      data-tauri-drag-region
-    >
+    <div className={`top-bar${isMac ? ' mac-titlebar' : ''}`} data-tauri-drag-region>
       <UnifiedSearch actions={actions} />
       <Toast />
     </div>

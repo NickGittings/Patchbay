@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEventHandler } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { projectStateOf, useStore } from '../store'
 import {
@@ -332,7 +332,13 @@ function SessionList({
 }
 
 /** Keep choices and preview selection while the dock is closed; mount its content in the dock. */
-export default function SessionsPanel({ host }: { host: HTMLElement | null }) {
+export default function SessionsPanel({
+  host,
+  onKeyDown,
+}: {
+  host: HTMLElement | null
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>
+}) {
   const open = useStore((s) => s.sessionsPanelOpen)
   const connected = useStore((s) => s.sessionsPanelOpen && s.serviceConnected)
   const [choices, setChoices] = useState<ProjectSessionChoices>({})
@@ -383,7 +389,7 @@ export default function SessionsPanel({ host }: { host: HTMLElement | null }) {
   }
   if (!open || !host) return null
   return createPortal(
-    <div className="utility-content">
+    <div className="utility-content" onKeyDown={onKeyDown}>
       <div
         className="sessions-panel panel"
         role="region"

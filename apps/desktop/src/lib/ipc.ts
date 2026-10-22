@@ -556,3 +556,14 @@ export const mergeOutcome = (project: Project, request: import('../types').Merge
 /** Pastes and submits a chat message for one generation, acknowledged. Never automatically retried. */
 export const terminalPrompt = (sessionId: string, generation: number, text: string) =>
   invoke<void>('terminal_prompt', { sessionId, generation, text })
+
+export interface NativeMenuEntry {
+  id: string
+  title: string
+  group: 'project' | 'settings'
+  enabled: boolean
+}
+export const updateNativeMenu = (entries: NativeMenuEntry[]) =>
+  invoke<void>('update_native_menu', { entries })
+/** Only available in desktop debug builds, for smoke checks. */
+export const inspectNativeMenu = () => invoke<[string, string, boolean][]>('inspect_native_menu')

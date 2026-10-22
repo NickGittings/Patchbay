@@ -100,6 +100,25 @@
       const tab = switcher()
       return tab?.textContent.includes(one.project.name) && tab.textContent.includes('(1 running)')
     })
+    // Both Project close entry points must confirm while work is running.
+    const originalConfirm = window.confirm
+    const confirmations = []
+    try {
+      window.confirm = (message) => {
+        confirmations.push(message)
+        return false
+      }
+      ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
+      await until('rail close confirmation', () => confirmations.length === 1)
+      ;[...document.querySelectorAll('.project-actions button')]
+        .find((button) => button.textContent === 'Close project')
+        .click()
+      await until('Project action close confirmation', () => confirmations.length === 2)
+      if (!s().projects[one.id] || !s().sessions[sidOne]?.running)
+        throw new Error('Canceling project close changed running work')
+    } finally {
+      window.confirm = originalConfirm
+    }
     // Rail and dock remain usable down to the native minimum window size.
     const originalSize = { width: innerWidth, height: innerHeight }
     const originalPanelWidth = localStorage.getItem('patchbay.utilityPanelWidth')
@@ -159,8 +178,34 @@
           document.querySelector('[aria-label="Sessions panel"]') &&
           !document.querySelector('[aria-label="Project panel"]'),
       )
-      document.querySelector('.workspace-rail [aria-label="Sessions"]').click()
-      await until('panel toggles closed', () => !document.querySelector('.utility-panel'))
+      const sessions = await until('portalled Sessions content', () =>
+        document.querySelector('[aria-label="Workspace sessions"]'),
+      )
+      const filter = sessions.querySelector('select')
+      filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      if (!s().sessionsPanelOpen) throw new Error('Escape in a select closed Sessions')
+      sessions.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await until(
+        'Escape closes portalled Sessions',
+        () => !document.querySelector('.utility-panel'),
+      )
+      // A failed map save must remain visible with the Project panel closed.
+      const savedEntry = s().projects[one.id]
+      smoke.store.setState({
+        projects: {
+          ...s().projects,
+          [one.id]: { ...savedEntry, mapSave: { status: 'error', error: 'Smoke save failure' } },
+        },
+      })
+      await until('visible save failure', () =>
+        document
+          .querySelector('.workspace-main [role="alert"]')
+          ?.textContent.includes('Map save failed'),
+      )
+      const projectButton = document.querySelector('.workspace-rail [aria-label="Project"]')
+      if (!projectButton.title.includes('Map save failed'))
+        throw new Error('Project rail lost the save failure indicator')
+      smoke.store.setState({ projects: { ...s().projects, [one.id]: savedEntry } })
       const search = document.querySelector('.top-bar input')
       if (
         search.getBoundingClientRect().height !== 28 ||
@@ -187,6 +232,30 @@
           document.activeElement === search &&
           document.querySelector('.search-results h3')?.textContent === 'Commands',
       )
+      // Closing results by an outside click can leave focus on the search input.
+      const type = (value) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(search, value)
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      type('Notifications')
+      await until('notification command selected', () =>
+        document.querySelector('[data-command-id="notifications"][aria-selected="true"]'),
+      )
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      await until('outside click closes search', () => !document.querySelector('.search-results'))
+      if (document.activeElement !== search)
+        throw new Error('Outside click unexpectedly moved focus')
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await sleep(100)
+      if (document.querySelector('[aria-label="Notifications"][role="dialog"]'))
+        throw new Error('Enter executed a hidden search result')
+      let storeWrites = 0
+      const unsubscribe = smoke.store.subscribe(() => storeWrites++)
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      unsubscribe()
+      if (storeWrites) throw new Error('A closed search wrote to the store on an outside click')
+      type('Notification')
+      await until('typing reopens results', () => document.querySelector('.search-results'))
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     } finally {
       smoke.store.setState({ projects: originalProjects, projectOrder: originalOrder })

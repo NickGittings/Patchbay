@@ -5,11 +5,17 @@ import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
 import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
 
-/** Recovery banners for the active project: a missing folder or a changed saved map. */
+/** Recovery and map-save failures stay visible even with utility panels closed. */
 export default function RecoveryBanners() {
   const active = useStore((s) => s.projects[s.activeProjectId ?? ''])
   return (
     <>
+      {active?.mapSave?.status === 'error' && (
+        <div className="recovery-banner" role="alert">
+          <span>Map save failed{active.mapSave.error ? `: ${active.mapSave.error}` : '.'}</span>
+          <button onClick={() => void saveMapNow(active.id)}>Retry</button>
+        </div>
+      )}
       {active?.unavailable && (
         <div className="recovery-banner" role="status">
           <span>

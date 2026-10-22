@@ -9,6 +9,7 @@ import { reviewRescan } from './maintenance'
 import { flushMapSaves, saveMapNow } from './mapSave'
 import { closeComponentWindows } from './windows'
 import { forgetMainWorktree } from './mainWorktree'
+import { sessionLive } from './sessionList'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -101,8 +102,22 @@ export function useAddFolder() {
   }, [fitView])
 }
 
-/** Saves the project's map, closes its windows and drops it from the open projects. */
+/** Confirm running work, save the project's map, close its windows and remove its tab. */
 export async function closeProjectTab(id: string) {
+  const s = useStore.getState()
+  const entry = s.projects[id]
+  if (!entry) return
+  const running = s.sessionRecords.filter(
+    (record) =>
+      record.metadata.projectId === id && (s.sessions[record.id]?.running ?? sessionLive(record)),
+  ).length
+  if (
+    running &&
+    !window.confirm(
+      `Close ${entry.name}? ${running} terminal(s) will keep running and remain available in Sessions.`,
+    )
+  )
+    return
   try {
     if (!(await flushMapSaves(id))) {
       useStore

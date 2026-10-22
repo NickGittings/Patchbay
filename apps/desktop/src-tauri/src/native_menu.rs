@@ -2,7 +2,8 @@
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
-#[derive(Clone, Deserialize)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Deserialize)]
 pub(crate) struct Entry {
     id: String,
     title: String,
@@ -36,18 +37,37 @@ pub(crate) fn update_native_menu(
         for group in ["project", "settings"] {
             let item = menu.get(group).ok_or("Native submenu is unavailable")?;
             let submenu = item.as_submenu().ok_or("Expected native submenu")?;
-            while submenu.remove_at(0).map_err(super::err)?.is_some() {}
-            for entry in entries.iter().filter(|entry| entry.group == group) {
+            let desired: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.group == group)
+                .collect();
+            let current = submenu.items().map_err(super::err)?;
+            // Titles and enabled flags change during autosave. Keep those native items alive;
+            // only rebuild a submenu when commands are added, removed or reordered.
+            let same_commands = current.len() == desired.len()
+                && current
+                    .iter()
+                    .zip(&desired)
+                    .all(|(item, entry)| item.id().as_ref() == format!("patchbay:{}", entry.id));
+            if !same_commands {
+                while submenu.remove_at(0).map_err(super::err)?.is_some() {}
+            }
+            for entry in desired {
+                let id = format!("patchbay:{}", entry.id);
+                if let Some(existing) = submenu.get(&id) {
+                    let item = existing.as_menuitem().ok_or("Expected native menu item")?;
+                    if item.text().map_err(super::err)? != entry.title {
+                        item.set_text(&entry.title).map_err(super::err)?;
+                    }
+                    if item.is_enabled().map_err(super::err)? != entry.enabled {
+                        item.set_enabled(entry.enabled).map_err(super::err)?;
+                    }
+                    continue;
+                }
                 // Cmd+S is owned here only; JS handles search and view shortcuts in each window.
                 let accelerator = (entry.id == "action:save").then_some("CmdOrCtrl+S");
-                let item = MenuItem::with_id(
-                    &app,
-                    format!("patchbay:{}", entry.id),
-                    &entry.title,
-                    entry.enabled,
-                    accelerator,
-                )
-                .map_err(super::err)?;
+                let item = MenuItem::with_id(&app, id, &entry.title, entry.enabled, accelerator)
+                    .map_err(super::err)?;
                 submenu.append(&item).map_err(super::err)?;
             }
         }
@@ -55,9 +75,7 @@ pub(crate) fn update_native_menu(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        for entry in entries {
-            let _ = (entry.id, entry.title, entry.group, entry.enabled);
-        }
+        let _ = entries;
     }
     Ok(())
 }
