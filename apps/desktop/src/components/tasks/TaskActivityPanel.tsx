@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
-import { taskActivities } from '../../lib/ipc'
-import { applyTaskActivity } from '../../lib/tasks'
 import {
   hasValidator,
   hasValidatorSuggestions,
@@ -68,30 +66,6 @@ export function RunSelect() {
       )}
       {setup && <option value="setup">Set up validation</option>}
     </select>
-  )
-}
-
-/** Loads the project's activity log and opens it from the toolbar. */
-export function ActivityButton() {
-  const projectId = useStore((s) => s.project?.id)
-  const task = useStore((s) => s.activeTask)
-  const activities = useStore((s) => s.taskActivities)
-  useEffect(() => {
-    if (!projectId) return
-    void taskActivities(projectId)
-      .then((list) => {
-        for (const activity of list) applyTaskActivity(activity)
-      })
-      .catch((e) => useStore.getState().setMessage(String(e)))
-  }, [projectId])
-  if (!projectId) return null
-  const running = Object.values(activities).some(
-    (a) => a.projectId === projectId && a.task === task && a.state === 'running',
-  )
-  return (
-    <button onClick={() => useStore.setState({ activityPanelOpen: true })}>
-      Activity{running ? ' (running)' : ''}
-    </button>
   )
 }
 
@@ -184,8 +158,8 @@ function ValidatorSetup() {
         <p className="hint" role="status">
           Marked {marked === 1 ? 'a terminal' : `${marked} terminals`} as Validation.{' '}
           {absent
-            ? 'The map isn’t saved yet: choose Create map configuration in the map status menu to keep them.'
-            : 'The change saves to patchbay.json with the map (see the map status).'}
+            ? 'The map isn’t saved yet: choose Create map configuration in the Project panel to keep them.'
+            : 'The change saves to patchbay.json with the map (see the Project panel).'}
         </p>
       )}
       <div className="row">
@@ -237,11 +211,10 @@ export default function TaskActivityPanel() {
   }
   const worktree = tasks.find((t) => t.id === task)?.title ?? 'Main worktree'
   return (
-    <div className="extension-overlay" onClick={close}>
+    <div className="utility-content">
       <div
         className="sessions-panel task-activity-panel panel"
-        role="dialog"
-        aria-modal="true"
+        role="region"
         aria-label="Worktree activity"
         onClick={(e) => e.stopPropagation()}
       >

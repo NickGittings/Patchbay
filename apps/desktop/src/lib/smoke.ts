@@ -1,3 +1,4 @@
+import { selectPanel, selectRailView, useRail } from './rail'
 import {
   agentHooksCheck,
   agentHooksConfigure,
@@ -68,6 +69,17 @@ import { attentionItems } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 const hooks = {
+  inspectNativeMenu: () =>
+    import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke<[string, string, boolean][]>('inspect_native_menu'),
+    ),
+  nativeMenuAction: (id: string) =>
+    import('@tauri-apps/api/event').then(({ emitTo }) =>
+      emitTo('main', 'patchbay://menu-action', id),
+    ),
+  selectPanel,
+  selectRailView,
+  rail: useRail,
   stubNotifications: window.__patchbaySmokeRun === true,
   notificationLog: [] as NotificationDelivery[],
   startAuto,

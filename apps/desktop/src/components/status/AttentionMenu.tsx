@@ -2,14 +2,7 @@ import { attentionItems, revealTerminal } from '../../lib/attention'
 import { useClockTick } from '../../lib/clock'
 import { focusTerminal } from '../../lib/terminals'
 import { useStore } from '../../store'
-import Menu, { MenuItem } from '../Menu'
-
-const SUMMARY: Record<string, string> = {
-  input: 'need input',
-  fail: 'failed',
-  unhealthy: 'not responding',
-  review: 'to review',
-}
+import PanelContent from '../PanelContent'
 
 /** Toolbar summary of the terminals that want the user, most urgent first. */
 export default function AttentionMenu() {
@@ -38,28 +31,11 @@ export default function AttentionMenu() {
   })
 
   if (items.length === 0) return null
-  const counts = new Map<string, number>()
-  for (const item of items)
-    counts.set(item.status.health, (counts.get(item.status.health) ?? 0) + 1)
-  const summary = [...counts].map(([health, n]) => `${n} ${SUMMARY[health] ?? health}`).join(', ')
-
   return (
-    <Menu
-      className="attention"
-      align="right"
-      caret={false}
-      triggerClassName={`attention-button health-${items[0].status.health}`}
-      listClassName="attention-list"
-      title={`Terminals that need you: ${summary}`}
-      label={
-        <>
-          <span className="status-dot" />
-          <span className="attention-summary">{summary}</span>
-        </>
-      }
-    >
+    <PanelContent>
+      <h3>Needs attention ({items.length})</h3>
       {items.map((item) => (
-        <MenuItem
+        <button
           key={item.sid}
           className={`attention-item health-${item.status.health}`}
           onClick={() => {
@@ -77,8 +53,8 @@ export default function AttentionMenu() {
             {item.status.detail && <small>{item.status.detail}</small>}
           </span>
           <span className="attention-label">{item.status.label}</span>
-        </MenuItem>
+        </button>
       ))}
-    </Menu>
+    </PanelContent>
   )
 }

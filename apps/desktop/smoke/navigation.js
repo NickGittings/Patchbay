@@ -132,7 +132,7 @@
     await until('Unicode soft-wrapped location', () => smoke.terminalNavigationState(sid, wrapped))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }))
     const input = await until('file search shortcut', () =>
-      document.querySelector('[aria-label="Quick file search"] input'),
+      document.querySelector('input[aria-label="Search files and commands"]'),
     )
     await until('ranked path list', () =>
       document.querySelector('[aria-label="Files"] [role="option"]'),
@@ -172,18 +172,25 @@
         b.textContent.includes('root-only.txt'),
       ),
     )
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     state().setActiveTask(task.id)
     await until('task search discards stale original files', () => {
-      const dialog = document.querySelector('[aria-label="Quick file search"]')
+      const dialog = document.querySelector('.search-results')
       return (
         dialog &&
         !dialog.textContent.includes('Searching…') &&
         !dialog.textContent.includes('root-only.txt')
       )
     })
+    assert(
+      document
+        .querySelector('input[aria-label="Search files and commands"]')
+        .getAttribute('aria-activedescendant') === 'search-result-0',
+      'Search selection leaked across worktrees',
+    )
     state().setActiveTask(null)
     document
-      .querySelector('[aria-label="Quick file search"] input')
+      .querySelector('input[aria-label="Search files and commands"]')
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await smoke.editorSavePreferences({
       editor: 'custom',

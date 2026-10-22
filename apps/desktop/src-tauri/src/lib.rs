@@ -19,6 +19,7 @@ use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 mod agent_commands;
 mod layout;
+mod native_menu;
 mod service;
 #[cfg(target_os = "macos")]
 mod writing_tools;
@@ -2175,6 +2176,15 @@ pub fn run() {
                 _ => {}
             }
         })
+        .on_menu_event(|app, event| {
+            if let Some(action) = event.id().as_ref().strip_prefix("patchbay:") {
+                // Project and Settings always operate on the main workspace, even from a pop-out.
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.set_focus();
+                    let _ = main.emit("patchbay://menu-action", action);
+                }
+            }
+        })
         .manage(AppState::default())
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -2190,6 +2200,8 @@ pub fn run() {
             let _main = main.build()?;
             #[cfg(target_os = "macos")]
             writing_tools::hide_affordance(&_main);
+            #[cfg(target_os = "macos")]
+            native_menu::install(app.handle())?;
             app.state::<AppState>().service.run(app.handle().clone());
             *app.state::<AppState>().agent_commands.lock().unwrap() =
                 agent_commands::start(app.handle().clone())
@@ -2215,6 +2227,8 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                native_menu::update_native_menu,
+                native_menu::inspect_native_menu,
                 agent_provider,
                 agent_hooks_check,
                 agent_hooks_configure,

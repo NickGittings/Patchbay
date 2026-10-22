@@ -16,7 +16,7 @@ import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
 import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
-import Popover from '../Popover'
+import PanelContent from '../PanelContent'
 import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
 import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
@@ -41,17 +41,11 @@ export default function AutoPanel({
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
-  const openRequest = useStore((s) => s.autoPanelRequest)
   const [error, setError] = useState('')
   // The finished run New run was pressed for; another run or worktree shows its own state.
   const [newRunFor, setNewRunFor] = useState<string | null>(null)
   const finished = !!run && ended(run.status)
   const newRun = finished && newRunFor === JSON.stringify([projectId, task, run.runId])
-  const label = !run
-    ? 'Auto'
-    : run.status === 'running'
-      ? `Auto: ${STAGE_LABELS[run.stage]}`
-      : `Auto: ${STATUS_LABELS[run.status]}`
   const act = (
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
@@ -70,16 +64,7 @@ export default function AutoPanel({
         .catch((e) => setError(String(e)))
   }
   return (
-    <Popover
-      className="auto-menu"
-      label={label}
-      caret={false}
-      align="right"
-      title="Auto mode"
-      portal
-      listClassName="auto-popover"
-      openRequest={openRequest}
-    >
+    <PanelContent>
       {!run || newRun ? (
         <AutoDialog
           key={autoDraftKey(projectId, task)}
@@ -153,7 +138,7 @@ export default function AutoPanel({
           </details>
         </div>
       )}
-    </Popover>
+    </PanelContent>
   )
 }
 

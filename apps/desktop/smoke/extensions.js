@@ -47,6 +47,13 @@
     await until('extension badge', () =>
       document.querySelector(`[data-extension-badge="${component.id}"]`),
     )
+    if (/mac/i.test(navigator.userAgent)) {
+      await until('eligible native extension command', async () =>
+        (await smoke.inspectNativeMenu()).some(
+          ([id, , enabled]) => id === 'patchbay:extension:acme.docker.refresh' && enabled,
+        ),
+      )
+    }
     const briefing = await smoke.componentContext(state().toProject(), component.id)
     assert(
       briefing.includes('## Services') && briefing.includes('services:'),
@@ -55,7 +62,7 @@
     document.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'P', ctrlKey: true, shiftKey: true, bubbles: true }),
     )
-    await until('palette', () => document.querySelector('.command-palette'))
+    await until('palette', () => document.querySelector('.search-results'))
     click(
       await until('palette command', () =>
         document.querySelector('[data-command-id="acme.docker.up"]'),

@@ -351,7 +351,7 @@ interface State {
   /** Components and goal title to seed the new-task dialog with while it is open (UI only). */
   newTask: { components: string[]; title?: string } | null
   setNewTask: (seed: { components: string[]; title?: string } | null) => void
-  /** Bumped to open the toolbar's Auto panel, from the attention list (UI only). */
+  /** Bumped to open the docked Auto panel, from the attention list (UI only). */
   autoPanelRequest: number
   showAutoPanel: () => void
   /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */

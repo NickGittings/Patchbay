@@ -29,6 +29,7 @@
       const entry = state().projects[state().activeProjectId]
       if (!entry.conflict || state().dirty || state().nodes[0].data.notes !== 'external edit')
         throw new Error('Changed saved map did not preserve a separate conflicting draft')
+      smoke.selectPanel('project')
       await until('recovery controls', () => document.querySelector('.recovery-banner'))
       if (window.__patchbayRecoveryPhase === 4) {
         const button = [...document.querySelectorAll('.recovery-banner button')].find(

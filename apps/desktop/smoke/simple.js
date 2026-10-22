@@ -23,20 +23,8 @@
     assert(el, 'missing click target')
     el.click()
   }
-  // Chat mode is a checkable item in the toolbar's Settings menu.
-  const toggleSimple = async () => {
-    const settings = [...document.querySelectorAll('.toolbar .menu')].find(
-      (m) => m.querySelector('.menu-trigger')?.textContent.trim() === 'Settings',
-    )
-    click(settings?.querySelector('.menu-trigger'))
-    click(
-      await until('Chat mode menu item', () =>
-        [...settings.querySelectorAll('[role="menuitemcheckbox"]')].find((b) =>
-          b.textContent.startsWith('Chat mode'),
-        ),
-      ),
-    )
-  }
+  const toggleSimple = async () =>
+    click(document.querySelector('.workspace-rail [aria-label="Chat mode"]'))
   const input = (el, value) => {
     assert(el, 'missing input')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -101,20 +89,25 @@
     await toggleSimple()
     await until('chat', () => document.querySelector('.simple-chat'))
     assert(state().view === 'review', 'Simple lost the last Full view')
-    assert(!document.querySelector('.view-switcher button'), 'Full switcher visible in Simple')
     assert(
-      document.querySelector('.toolbar .toolbar-mode')?.textContent === 'Chat mode',
-      'toolbar lacks the Chat mode label',
+      document.querySelectorAll('.workspace-rail > button').length === 10,
+      'rail controls missing',
     )
-    assert(!document.querySelector('.toolbar .simple-stage-tabs'), 'stage tabs in the toolbar')
+    assert(
+      document
+        .querySelector('.workspace-rail [aria-label="Chat mode"]')
+        .getAttribute('aria-pressed') === 'true',
+      'Chat toggle selection missing',
+    )
+    assert(!document.querySelector('.simple-stage-tabs'), 'duplicate stage tabs remain')
     const stageTab = (name) =>
-      [...document.querySelectorAll('.simple-chat .simple-stage-tabs button')].find((b) =>
-        b.textContent.startsWith(name),
+      document.querySelector(
+        `.workspace-rail [aria-label="${name === 'All' ? 'Navigation' : name}"]`,
       )
     click(stageTab('Review'))
     await until('Review stage filter', () => {
       const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
-      return shown.length === 1 && shown[0] === 'Review'
+      return shown.join(',') === 'Review,Merge'
     })
     click(stageTab('All'))
     await until('every stage shown', () => document.querySelectorAll('.simple-stage').length === 4)
@@ -181,9 +174,21 @@
     await until('chat again', () => document.querySelector('.simple-chat'))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
     await until(
-      'Full Implementation shortcut',
-      () => !state().simpleMode && state().view === 'implementation',
+      'Chat Build shortcut',
+      () =>
+        state().simpleMode &&
+        document
+          .querySelector('.workspace-rail [aria-label="Build"]')
+          .getAttribute('aria-pressed') === 'true',
     )
+    assert(state().view === 'review', 'Chat shortcut changed the last full workspace view')
+    await toggleSimple()
+    await until(
+      'Full review after Chat shortcut',
+      () => !state().simpleMode && state().view === 'review',
+    )
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
+    await until('Full Build shortcut', () => state().view === 'implementation')
     await until('same fix terminal in Full', () =>
       document.querySelector(`.terminal-tile[data-session="${fix}"] .xterm-host`),
     )

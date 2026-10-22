@@ -1,6 +1,6 @@
 # Reviewed map maintenance
 
-Choose **Project → Rescan** or **Rescan project** in the command palette. Patchbay scans the
+Choose **Project → Rescan** or **Rescan project** in the top-bar command search. Patchbay scans the
 project and approved component roots, then shows a review. Opening the review leaves the map
 unchanged.
 

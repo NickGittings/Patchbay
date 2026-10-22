@@ -5,7 +5,7 @@ import { gitReview, taskUpdate } from '../../lib/ipc'
 import { refreshMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
 import { useShallow } from 'zustand/react/shallow'
 import { planTerminals } from '../../lib/plan'
-import { refreshTasks, removeTask, seedNewTask, shortTitle } from '../../lib/tasks'
+import { refreshTasks, removeTask, seedNewTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import {
   TASK_ROOT_SCOPE,
@@ -17,7 +17,6 @@ import {
   type Task,
 } from '../../types'
 
-import Popover from '../Popover'
 import { CloseMenu } from '../menuContext'
 
 /**
@@ -25,57 +24,18 @@ import { CloseMenu } from '../menuContext'
  * Planner scope), a new one starts with a copy of the project plan.
  */
 export default function WorktreePicker({ copyPlan = false }: { copyPlan?: boolean }) {
-  const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
   const counts = useStore(useShallow(worktreeAttention))
-  // The main worktree's branch and whether there is a repo, read when the project opens and
-  // whenever the picker opens (shared with Build's New task).
   const main = useMainWorktree((m) => m[projectId ?? ''])
-  const branch = main?.branch ?? ''
   const refreshBranch = useCallback(() => refreshMainWorktree(projectId), [projectId])
-  useEffect(refreshBranch, [refreshBranch])
-  const label = task?.title ?? 'Main worktree'
-  const currentBranch = task ? task.branch : branch
-  const attention = counts[task?.id ?? ''] ?? 0
-  const elsewhere = Object.values(counts).reduce((sum, n) => sum + n, 0) - attention
-
   return (
-    <Popover
-      label={
-        <>
-          <span className="worktree-picker-label">{shortTitle(label)}</span>
-          {attention > 0 && (
-            <span
-              className="worktree-attention-dot"
-              title={`${attention} terminals or finished actions need you`}
-            >
-              ●
-            </span>
-          )}
-          {elsewhere > 0 && (
-            <span
-              className="worktree-attention-dot elsewhere"
-              title={`${elsewhere} terminals or finished actions in other worktrees need you`}
-            >
-              ○ {elsewhere}
-            </span>
-          )}
-        </>
-      }
-      title={`${label}${currentBranch ? ` (${currentBranch})` : ''}: switch worktree`}
-      className="worktree-picker"
-      listClassName="worktree-popover"
-      caret={false}
-      portal
-    >
-      <WorktreeOverview
-        branch={branch}
-        onOpen={refreshBranch}
-        counts={counts}
-        git={!!main?.git}
-        copyPlan={copyPlan}
-      />
-    </Popover>
+    <WorktreeOverview
+      branch={main?.branch ?? ''}
+      onOpen={refreshBranch}
+      counts={counts}
+      git={!!main?.git}
+      copyPlan={copyPlan}
+    />
   )
 }
 

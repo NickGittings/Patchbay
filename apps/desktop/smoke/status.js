@@ -76,14 +76,9 @@
     await smoke.terminalWrite(sid, 'SessionEnd\n')
     await until('ended', () => agent()?.state === 'ended')
     // Open the actual setup dialog from Settings; native setup should match its visible status.
-    const tools = [...document.querySelectorAll('button')].find((b) =>
-      b.textContent.startsWith('Settings'),
-    )
-    tools.click()
-    await until('integration menu', () =>
-      [...document.querySelectorAll('[role="menuitem"]')].find(
-        (b) => b.textContent === 'Agent status integration',
-      ),
+    state().setPaletteOpen(true)
+    await until('integration command', () =>
+      document.querySelector('[data-command-id="integrations"]'),
     ).then((b) => b.click())
     await until('integration dialog', () =>
       document.querySelector('[aria-label="Agent status integration"]'),

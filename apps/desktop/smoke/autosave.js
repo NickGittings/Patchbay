@@ -1,4 +1,4 @@
-// Map saving through real toolbar/menu controls and fingerprint-checked native writes.
+// Map saving through the Project panel and fingerprint-checked native writes.
 ;(async () => {
   if (new URLSearchParams(location.search).has('component')) return
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -16,16 +16,11 @@
   }
   const smoke = await until('hooks', () => window.__patchbaySmoke)
   const s = () => smoke.store.getState()
-  const status = () => document.querySelector('.map-save-status .menu-trigger')
-  const choose = async (text, inStatus = true) => {
-    const trigger = inStatus
-      ? status()
-      : Array.from(document.querySelectorAll('.toolbar .menu-trigger')).find((b) =>
-          b.textContent.trim().startsWith('Project'),
-        )
-    trigger.click()
+  const status = () => document.querySelector('.map-save-status [role="status"]')
+  const choose = async (text) => {
+    smoke.selectPanel('project')
     const button = await until(text, () =>
-      Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
+      [...document.querySelectorAll('.utility-panel button')].find((b) =>
         b.textContent.trim().startsWith(text),
       ),
     )
@@ -36,7 +31,12 @@
     await until('restoration', () => !s().restoring)
     const one = await smoke.openProject()
     smoke.acceptOpened(one)
+    smoke.selectPanel('project')
     await until('unsaved status', () => status()?.textContent.includes('Map not saved'))
+    assert(
+      document.querySelector('.workspace-rail [aria-label="Project"] sup'),
+      'Unsaved map warning badge missing',
+    )
     const component = s().nodes[0].id
     s().updateComponent(component, { notes: 'Before creation' })
     await sleep(1000)

@@ -54,7 +54,7 @@ limited to 32 KiB, and checked against the same allowed roots as the file tree.
 
 ## Commands and menus
 
-**Cmd/Ctrl+Shift+P** opens the command palette. Commands with a `run` block create a temporary
+**Cmd/Ctrl+Shift+P** focuses the top-bar search with Commands first. Commands with a `run` block create a temporary
 terminal at the selected component, using the existing session, policy, and PTY launch path.
 These terminals appear in the dock without changing the saved project. Place commands in
 `contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Project**).

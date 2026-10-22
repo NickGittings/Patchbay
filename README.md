@@ -112,9 +112,27 @@ cargo test --workspace                 # or: cargo nextest run --workspace
 (cd apps/desktop && npm run smoke:all) # end-to-end smoke scripts (stop `tauri dev` first)
 ```
 
+## Navigation and panels
+
+The top bar searches files and commands. The icon rail switches between Navigation, Plan,
+Build and Review, and opens one resizable utility panel at a time: Project, Worktree, Auto mode,
+Activity or Sessions. Click a selected utility icon again to close its panel. Panel width is
+remembered locally, and panels stay open while switching workspace views.
+
+Use the Chat toggle in the rail to enable Chat mode for the current project. In Chat mode,
+the four workspace buttons filter the thread: Navigation shows every stage, Plan shows planning,
+Build shows building, and Review shows review plus merge. Agents asking for input stay visible.
+Cmd/Ctrl+1–4 follows those buttons in either mode. Each worktree keeps its chat filter, and
+leaving Chat restores the last full workspace view.
+
+On macOS, Project and Settings commands are in the native menu bar. On Windows and Linux,
+Project commands are in its panel and Settings is at the rail's foot. Project contains map-save
+status and recovery actions; Activity contains agents needing attention. Project and Sessions
+remain available without an active project.
+
 ## Concepts
 
-- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then choose **Project → Create map configuration** to write `patchbay.json` (commit it to share the map). Later map edits save automatically after 750 ms of inactivity; the toolbar shows map-saving status. **Save map configuration now** and Cmd/Ctrl+S flush the current map. **Rescan** opens a selectable preview of detected additions, dependencies, stale links, missing folders, and unique package moves. **Apply selected** changes the draft and autosaves it when a map configuration already exists. Existing configuration and manual relationships survive. Inspector and hierarchy show origin and Missing, Locked, or Unreadable folders. Stop live sessions and managed environments before deleting components or repairing paths. See [map maintenance and validation](docs/map-maintenance.md).
+- **Project**: open a repo folder. Patchbay loads `patchbay.json` from the root, or, if there isn't one, detects components from `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, Xcode projects/workspaces, and Android Gradle projects. Native apps use their project folder as the component; Android modules stay on their owning project's node. Review the result, then choose **Project → Create map configuration** to write `patchbay.json` (commit it to share the map). Later map edits save automatically after 750 ms of inactivity; the Project panel shows map-saving status. **Save map configuration now** and Cmd/Ctrl+S flush the current map. **Rescan** opens a selectable preview of detected additions, dependencies, stale links, missing folders, and unique package moves. **Apply selected** changes the draft and autosaves it when a map configuration already exists. Existing configuration and manual relationships survive. Inspector and hierarchy show origin and Missing, Locked, or Unreadable folders. Stop live sessions and managed environments before deleting components or repairing paths. See [map maintenance and validation](docs/map-maintenance.md).
 - **Repos**: a project can span several git repos. Open a parent folder that holds them, or use **Add repo…** to add a repo that lives beside the project; it is stored as a relative path such as `../billing`, so keep the same folder layout on other machines. Any nested repo becomes a component even without a recognised manifest, and git status is tracked per repo.
 - **Component**: a node with a name, kind, folder, notes and terminals. Its health shows which terminals are running, the last exit code (for example tests passing or failing), and uncommitted git changes in its folder.
 - **Component window**: click ⧉ on a node, use **Open in window** in the Inspector, or double-click its hierarchy item. Each native window shows all of the component’s terminals alongside a file tree. Sessions and output are shared with the main dock; opening a window restores up to 512 KB of earlier output. Expand folders and double-click entries to open them in your preferred editor. **Open in editor** is also available in the Inspector, file tree, and review files; **Reveal in Finder/Explorer** remains a separate action. Closing the main window closes component windows while their terminals keep running; the arrangement restores next launch.
@@ -124,8 +142,8 @@ cargo test --workspace                 # or: cargo nextest run --workspace
 
 ## Task workspaces
 
-Implementation uses goal tabs such as **Main worktree**, **Add button** or **Fix login**, and
-each tab owns its terminals. **＋ New task** requires a title and creates a new branch/worktree
+The **Worktree** panel switches between goals such as **Main worktree**, **Add button** or
+**Fix login**, and each worktree owns its terminals. **＋ New task** requires a title and creates a new branch/worktree
 immediately by default; choose **Existing worktree** to attach one instead. A checkout can belong
 to only one task. Non-Git projects keep the Main worktree tab only.
 
@@ -224,7 +242,7 @@ configured actions, worktree isolation and switching while commands finish.
 
 ## Auto mode
 
-Open **Auto** in the toolbar to coordinate a task from planning through implementation,
+Open **Auto mode** in the left rail to coordinate a task from planning through implementation,
 validation, review, fixes, and merge. It detects a starting stage from existing work; you can
 choose another stage before starting. Supply a task goal, an agent preset, and a destination
 branch checked out in another worktree.
@@ -269,7 +287,9 @@ with at most 100 ranked results. Git ignores hide untracked files; tracked files
 Components in separately approved sibling repositories are included. Searches and file-tree/editor
 navigation follow the active task's worktree. Review actions follow the worktree explicitly selected
 for that review, including when another task is active. Changing projects/tasks discards stale
-search responses. **Cmd/Ctrl+Shift+P** continues to open the command palette.
+search responses. The top-bar search groups files and eligible built-in/extension commands.
+**Cmd/Ctrl+P** prioritizes Files; **Cmd/Ctrl+Shift+P** prioritizes Commands. Use arrow keys
+and Enter to choose a result, or Escape to return to the workspace.
 
 Terminal references such as `src/main.rs:12:4` and `src/main.rs(12,4)` open in the editor with
 **Cmd/Ctrl-click**. Ordinary dragging still selects terminal text. Quoted filenames may contain

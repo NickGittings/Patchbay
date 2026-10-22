@@ -23,7 +23,6 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
-import SimpleStageTabs from './SimpleStageTabs'
 import './simple.css'
 
 const pendingActions = new Set<string>()
@@ -92,6 +91,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     (section) =>
       filter === 'all' ||
       section.id === filter ||
+      ((filter === 'review' || filter === 'merge') &&
+        (section.id === 'review' || section.id === 'merge')) ||
       section.sessions.some((r) => s.sessions[r.id]?.status?.agent?.state === 'needsInput'),
   )
   const groups = changeGroups(s.nodes, data?.review)
@@ -155,7 +156,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
       </header>
-      <SimpleStageTabs scopeKey={key} current={model.stage} />
       {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
       {!model.records.some((r) => s.sessions[r.id]?.status?.agent?.authoritative) && (
         <p className="simple-hook-notice">

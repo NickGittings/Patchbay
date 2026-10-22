@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { projectStateOf, useStore } from '../store'
@@ -330,7 +331,8 @@ function SessionList({
   )
 }
 
-export default function SessionsPanel() {
+/** Keep choices and preview selection while the dock is closed; mount its content in the dock. */
+export default function SessionsPanel({ host }: { host: HTMLElement | null }) {
   const open = useStore((s) => s.sessionsPanelOpen)
   const connected = useStore((s) => s.sessionsPanelOpen && s.serviceConnected)
   const [choices, setChoices] = useState<ProjectSessionChoices>({})
@@ -350,7 +352,7 @@ export default function SessionsPanel() {
   const preview = useRef<HTMLElement>(null)
   useEffect(() => {
     if (open && selected) preview.current?.scrollIntoView({ block: 'nearest' })
-  }, [open, selected, history])
+  }, [open, selected, history, host])
   // The run chosen in the select, ahead of its output loading; `history` follows once it has.
   const [requested, setRequested] = useState<number | null>(null)
   // Bumped per choice, so a slower earlier fetch can't replace a later choice's output.
@@ -372,13 +374,12 @@ export default function SessionsPanel() {
     setConfirmStopAll(false)
     useStore.setState({ sessionsPanelOpen: false })
   }
-  if (!open) return null
-  return (
-    <div className="extension-overlay" onClick={close}>
+  if (!open || !host) return null
+  return createPortal(
+    <div className="utility-content">
       <div
         className="sessions-panel panel"
-        role="dialog"
-        aria-modal="true"
+        role="region"
         aria-label="Workspace sessions"
         onClick={(e) => e.stopPropagation()}
       >
@@ -554,6 +555,7 @@ export default function SessionsPanel() {
           </section>
         )}
       </div>
-    </div>
+    </div>,
+    host,
   )
 }

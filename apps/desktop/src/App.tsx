@@ -1,3 +1,4 @@
+import WorkspaceRail from './components/WorkspaceRail'
 import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
@@ -5,12 +6,8 @@ import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
 import PersistedGroup from './components/PersistedGroup'
-import RecoveryBanners from './components/RecoveryBanners'
-import SessionsPanel from './components/SessionsPanel'
-import TaskActivityPanel from './components/tasks/TaskActivityPanel'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
-import CommandPalette from './components/CommandPalette'
 import MapMaintenanceReview from './components/MapMaintenanceReview'
 import DependencyDialog from './components/DependencyDialog'
 import { initializeDependencyDetection } from './lib/dependencies'
@@ -239,29 +236,30 @@ export default function App() {
     <ReactFlowProvider>
       <div className="app">
         <Toolbar />
-        <RecoveryBanners />
-        <SessionsPanel />
-        <TaskActivityPanel />
-        <CommandPalette />
-        <NavigationDialogs />
+        <NavigationDialogs settingsOnly />
         <MapMaintenanceReview />
         <DependencyDialog />
         <ExtensionsPanel />
         <NewTaskDialog />
-        {!restoring && (simple || view === 'navigation') && (
-          <div className="navigation-shell">
-            <NavigationView key={projectId} />
-          </div>
-        )}
-        {restoring ? (
-          <div className="hint">Restoring workspace…</div>
-        ) : !simple && view === 'plan' ? (
-          <PlanView key={projectId} />
-        ) : !simple && view === 'implementation' ? (
-          <ImplementationView key={projectId} />
-        ) : !simple && view === 'review' ? (
-          <ReviewView key={projectId} />
-        ) : null}
+        <div className="workspace-body">
+          <WorkspaceRail />
+          <main className="workspace-main">
+            {!restoring && (simple || view === 'navigation') && (
+              <div className="navigation-shell">
+                <NavigationView key={projectId} />
+              </div>
+            )}
+            {restoring ? (
+              <div className="hint">Restoring workspace…</div>
+            ) : !simple && view === 'plan' ? (
+              <PlanView key={projectId} />
+            ) : !simple && view === 'implementation' ? (
+              <ImplementationView key={projectId} />
+            ) : !simple && view === 'review' ? (
+              <ReviewView key={projectId} />
+            ) : null}
+          </main>
+        </div>
       </div>
     </ReactFlowProvider>
   )

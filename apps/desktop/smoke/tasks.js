@@ -31,19 +31,15 @@
   }
   const button = (root, name) =>
     Array.from(root?.querySelectorAll('button') ?? []).find((b) => b.textContent.trim() === name)
-  const pickerTrigger = () => '.toolbar .worktree-picker'
-  // Retries while closed: a view that just mounted may take focus, which closes the popover.
-  const openPicker = () =>
-    until(`worktree overview in ${state().view}`, () => {
-      const trigger = document.querySelector(`${pickerTrigger()} .menu-trigger`)
-      if (trigger?.getAttribute('aria-expanded') === 'true')
-        return document.querySelector('.worktree-popover')
-      if (trigger) click(trigger)
-      return null
-    })
+  const openPicker = async () => {
+    smoke.selectPanel('worktree')
+    return until(`worktree overview in ${state().view}`, () =>
+      document.querySelector('[aria-label="Worktree panel"] .utility-scroll'),
+    )
+  }
   const viewButton = (name) =>
-    Array.from(document.querySelectorAll('.view-switcher button')).find(
-      (b) => b.textContent === name,
+    Array.from(document.querySelectorAll('.workspace-rail > button')).find(
+      (b) => b.getAttribute('aria-label') === name,
     )
   // Without whitespace, since long paths wrap across terminal rows.
   const textOf = (sid) => smoke.terminalText(sid).text.replace(/\s+/g, '')
@@ -127,7 +123,9 @@
     assert(state().activeTask === task.id, 'a new task is not active')
     click(viewButton('Plan'))
     await until('worktree in the Plan picker', () =>
-      document.querySelector('.toolbar .worktree-picker')?.textContent.includes('Smoke task'),
+      document
+        .querySelector('.workspace-rail [aria-label="Worktree"]')
+        ?.title.includes('Smoke task'),
     )
 
     await until('highlighted task membership', () =>
@@ -178,7 +176,7 @@
       document.querySelector('.review-view .validation-chip.running'),
     )
 
-    // Navigation's toolbar picker returns to the main worktree; switching never stops sessions.
+    // Navigation's Worktree panel returns to the main worktree; switching never stops sessions.
     click(viewButton('Navigation'))
     const navOverview = await openPicker()
     const taskRow = await until('Navigation task row', () =>
@@ -188,14 +186,14 @@
     click(taskRow.querySelector('.worktree-detail'))
     await sleep(100)
     assert(
-      state().activeTask === task.id && document.querySelector('.worktree-popover'),
+      state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
       'clicking the active worktree card switched or closed the picker',
     )
     // Clicking the card outside its controls switches.
     click(navOverview.querySelector('.worktree-row:not(.active) .worktree-detail'))
     await until(
       'main worktree active',
-      () => state().activeTask === null && !document.querySelector('.worktree-popover'),
+      () => state().activeTask === null && document.querySelector('[aria-label="Worktree panel"]'),
     )
     click(viewButton('Plan'))
     const overview = await openPicker()
@@ -210,14 +208,15 @@
       click(otherRow.querySelector(selector))
       await sleep(100)
       assert(
-        state().activeTask === null && document.querySelector('.worktree-popover'),
+        state().activeTask === null && document.querySelector('[aria-label="Worktree panel"]'),
         `clicking ${selector} on another worktree switched or closed the picker`,
       )
     }
     click(otherRow.querySelector('.worktree-row-switch'))
     await until(
       'worktree selected',
-      () => state().activeTask === task.id && !document.querySelector('.worktree-popover'),
+      () =>
+        state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
     )
     assert(
       state().sessions[mainSid]?.running && state().sessions[taskSid]?.running,
@@ -234,17 +233,16 @@
     )
     const activeRow = document.querySelector('.worktree-row.active')
     assert(activeRow.textContent.includes('2 running'), 'worktree running count missing')
-    const bounds = document.querySelector('.worktree-popover').getBoundingClientRect()
+    const bounds = document.querySelector('[aria-label="Worktree panel"]').getBoundingClientRect()
     assert(
       bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight,
       'picker outside viewport',
     )
     const notes = activeRow.querySelector('.worktree-notes-detail')
-    assert(!notes.open, 'notes are not collapsed')
-    click(notes.querySelector('summary'))
+    if (!notes.open) click(notes.querySelector('summary'))
     edit(notes.querySelector('textarea'), 'smoke worktree notes')
     // Closing before the debounce expires must still save the edit.
-    click(document.querySelector('.worktree-picker .menu-trigger'))
+    smoke.selectPanel(null)
     await until(
       'notes saved on close',
       () => state().tasks.find((t) => t.id === task.id)?.notes === 'smoke worktree notes',
@@ -341,7 +339,7 @@
     smoke.store.setState({ revealed: null })
     state().setActiveTask(task.id)
 
-    // The toolbar picker switches worktrees in Build, keeping terminals and layouts.
+    // The Worktree panel switches worktrees in Build, keeping terminals and layouts.
     const buildOverview = await openPicker()
     const secondRow = await until('second task in picker', () =>
       Array.from(buildOverview.querySelectorAll('.worktree-row')).find(

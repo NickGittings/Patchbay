@@ -58,7 +58,7 @@
       })),
     })
     const autoButton = await until('Auto button', () =>
-      document.querySelector('button[title="Auto mode"]'),
+      document.querySelector('.workspace-rail [aria-label="Auto mode"]'),
     )
     autoButton.click()
     await until('first project defaults', () =>
@@ -103,7 +103,7 @@
       'first project overrides',
       () => roleSelect('Plan').value === 'b' && checked() === 'b',
     )
-    const popover = document.querySelector('.auto-popover')
+    const popover = document.querySelector('[aria-label="Auto mode panel"]')
     popover.style.width = '260px'
     await sleep(100)
     assert(
@@ -134,12 +134,9 @@
     autoButton.click()
     // The saved missing reviewer remains removable, even with only one installed agent.
     smoke.store.setState({ devices: state().devices.slice(0, 1) })
-    const toolsMenu = await until('Settings menu', () =>
-      [...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Settings')),
-    )
-    toolsMenu.click()
-    const rolesButton = await until('Agent roles menu', () =>
-      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Agent roles'),
+    state().setPaletteOpen(true)
+    const rolesButton = await until('Agent roles command', () =>
+      document.querySelector('[data-command-id="roles"]'),
     )
     rolesButton.click()
     const panel = await until('Agent roles panel', () =>

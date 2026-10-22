@@ -26,6 +26,7 @@ export function useCollapsed(
   const panelRef = usePanelRef()
   const shownRef = useRef(shown)
   const [collapsed, setCollapsed] = useState(true)
+  const [measured, setMeasured] = useState(false)
   useLayoutEffect(() => {
     shownRef.current = shown
     const p = panelRef.current
@@ -37,8 +38,11 @@ export function useCollapsed(
       if (size > 0) s.setPanelLayout(openSizes, { ...s.panels[openSizes], [id]: size })
       p.collapse()
     }
-  }, [panelRef, id, shown, reveal, openSizes])
+  }, [panelRef, id, shown, reveal, openSizes, measured])
   const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
+    // A restored zero-size panel can report its first size after the mount layout effect.
+    // Retry once then, without reopening panels the user subsequently drags shut.
+    setMeasured(true)
     setCollapsed(size.asPercentage === 0)
     if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current) onDragShut?.()
   }
