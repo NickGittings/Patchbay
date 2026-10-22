@@ -430,21 +430,6 @@ export function switchTaskWorkspace(
   return { activeTask, taskWorkspaces, ...restored, revealed: null }
 }
 
-/** `seenActivities` plus the finished graph actions of the project's `task`, once it is shown. */
-function seenOn(
-  s: Pick<State, 'project' | 'taskActivities' | 'seenActivities'>,
-  task: string | null,
-): string[] {
-  const finished = Object.values(s.taskActivities).filter(
-    (a) =>
-      a.projectId === s.project?.id &&
-      a.task === task &&
-      a.state !== 'running' &&
-      !s.seenActivities.includes(a.id),
-  )
-  return finished.length ? [...s.seenActivities, ...finished.map((a) => a.id)] : s.seenActivities
-}
-
 /** Refresh task metadata, leaving a task that vanished for the open worktree. */
 export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectState> {
   const keep = tasks.some((t) => t.id === s.activeTask && !t.missing)
@@ -728,12 +713,7 @@ export const useStore = create<State>((set, get) => ({
   tasks: [],
   activeTask: null,
   setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
-  setActiveTask: (id, exact) =>
-    set((s) => {
-      const switched = switchTaskWorkspace(s, id, exact)
-      const task = switched.activeTask === undefined ? s.activeTask : switched.activeTask
-      return { ...switched, seenActivities: seenOn(s, task) }
-    }),
+  setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
   newTask: null,
   setNewTask: (newTask) => set({ newTask }),
   autoPanelRequest: 0,

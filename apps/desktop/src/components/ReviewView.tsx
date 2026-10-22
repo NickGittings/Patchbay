@@ -68,8 +68,16 @@ export default function ReviewView() {
   const activeTask = useStore((s) => s.activeTask)
   const taskWorktree = useStore(activeWorktree)
   if (findingsFocus && pane !== 'findings') setPane('findings')
-  // Review follows the toolbar's worktree picker.
+  // Review follows the toolbar's worktree picker; switching worktree drops the previous one's
+  // selection, loaded review and a diff opened from its findings.
   const worktree = taskWorktree
+  const [shownWorktree, setShownWorktree] = useState(worktree)
+  if (shownWorktree !== worktree) {
+    setShownWorktree(worktree)
+    setSelected(null)
+    setLoaded(undefined)
+    if (pane === 'fromFindings') setPane('diff')
+  }
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [reviewDialogScope, setReviewDialogScope] = useState<string | null>(null)

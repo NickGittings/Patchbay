@@ -53,6 +53,15 @@ export default function ProjectSwitcher() {
                 // The close × stays out of the arrow-key ring; Delete reaches it from the keyboard.
                 if (e.key !== 'Delete' && e.key !== 'Backspace') return
                 e.preventDefault()
+                // A key is easy to press by accident; ask first while terminals are running.
+                const count = running(id)
+                if (
+                  count &&
+                  !window.confirm(
+                    `Close ${entry.name}? It has ${count} running terminal${count === 1 ? '' : 's'}.`,
+                  )
+                )
+                  return
                 e.currentTarget.parentElement
                   ?.querySelector<HTMLButtonElement>('.project-switcher-close')
                   ?.click()

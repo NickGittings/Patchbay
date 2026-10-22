@@ -94,8 +94,11 @@ test("worktree attention adds the open project's finished actions not yet seen",
       e: activity('e', 'abc', 'failed', 'p-2'),
     },
     seenActivities: ['d'],
+    activeTask: 'other',
   } as unknown as Parameters<typeof worktreeAttention>[0]
-  expect(JSON.parse(worktreeAttention(s))).toEqual({ abc: 2, '': 1 })
+  expect(worktreeAttention(s)).toEqual({ abc: 2, '': 1 })
+  // The worktree on screen counts its terminals but none of its actions.
+  expect(worktreeAttention({ ...s, activeTask: 'abc' })).toEqual({ abc: 1, '': 1 })
 })
 
 test("extension-started terminals count, but only the open project's", () => {

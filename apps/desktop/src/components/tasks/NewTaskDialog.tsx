@@ -93,7 +93,7 @@ function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
             }}
           />
         </label>
-        <div className="view-switcher" role="group" aria-label="Task checkout">
+        <div className="view-tabs" role="group" aria-label="Task checkout">
           <button
             type="button"
             className={mode === 'new' ? 'active' : ''}

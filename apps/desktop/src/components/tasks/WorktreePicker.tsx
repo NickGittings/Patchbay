@@ -1,7 +1,9 @@
 import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
 import { componentTerminals, revealTerminal, worktreeAttention } from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
-import { gitReview, gitWorktrees, taskUpdate } from '../../lib/ipc'
+import { gitReview, taskUpdate } from '../../lib/ipc'
+import { refreshMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
+import { useShallow } from 'zustand/react/shallow'
 import { planTerminals } from '../../lib/plan'
 import { refreshTasks, removeTask, seedNewTask, shortTitle } from '../../lib/tasks'
 import { useStore } from '../../store'
@@ -31,29 +33,13 @@ export default function WorktreePicker({
 }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
-  const [branch, setBranch] = useState('')
-  const counts = JSON.parse(useStore(worktreeAttention)) as Record<string, number>
-  // The main worktree's branch, read when the project opens and whenever the picker opens
-  // rather than on every Git refresh, since it only changes on a checkout.
-  const latestRequest = useRef(0)
-  const refreshBranch = useCallback(() => {
-    const request = ++latestRequest.current
-    void gitWorktrees()
-      .then((list) => {
-        const current = list.find((w) => w.current)
-        if (request === latestRequest.current)
-          setBranch(current?.branch ?? (current ? `detached ${current.head.slice(0, 7)}` : ''))
-      })
-      .catch(() => {})
-  }, [])
-  useEffect(() => {
-    refreshBranch()
-    // Drops the answer for a project that is no longer open.
-    const requests = latestRequest
-    return () => {
-      requests.current++
-    }
-  }, [projectId, refreshBranch])
+  const counts = useStore(useShallow(worktreeAttention))
+  // The main worktree's branch and whether there is a repo, read when the project opens and
+  // whenever the picker opens (shared with Build's New task).
+  const main = useMainWorktree((m) => m[projectId ?? ''])
+  const branch = main?.branch ?? ''
+  const refreshBranch = useCallback(() => refreshMainWorktree(projectId), [projectId])
+  useEffect(refreshBranch, [refreshBranch])
   const label = task?.title ?? 'Main worktree'
   const currentBranch = task ? task.branch : branch
   const attention = counts[task?.id ?? ''] ?? 0
@@ -92,6 +78,7 @@ export default function WorktreePicker({
         branch={branch}
         onOpen={refreshBranch}
         counts={counts}
+        git={!!main?.git}
         copyPlan={copyPlan}
       />
     </Popover>
@@ -102,11 +89,13 @@ function WorktreeOverview({
   branch,
   onOpen,
   counts,
+  git,
   copyPlan,
 }: {
   branch: string
   onOpen: () => void
   counts: Record<string, number>
+  git: boolean
   copyPlan: boolean
 }) {
   const tasks = useStore((s) => s.tasks)
@@ -127,6 +116,8 @@ function WorktreeOverview({
       </div>
       <button
         className="worktree-new"
+        disabled={!git}
+        title={git ? undefined : 'Named tasks require a Git repository'}
         onClick={() => {
           close()
           seedNewTask(undefined, { copyPlan })

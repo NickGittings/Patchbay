@@ -162,6 +162,11 @@ export function followActiveTask() {
     return running
   }
   const unsubscribe = useStore.subscribe((s, prev) => {
+    // However the worktree on screen changes (picker, project switch, a task vanishing), the
+    // finished actions it showed have been seen; the picker counts only other worktrees'.
+    const left = prev.project?.id
+    if (left && (left !== s.project?.id || prev.activeTask !== s.activeTask))
+      markActivitiesSeen(left, prev.activeTask)
     // A closed project's backend state is gone; reopening it starts from scratch.
     if (s.projects !== prev.projects)
       for (const id of sent.keys()) if (!s.projects[id] && s.project?.id !== id) sent.delete(id)
@@ -340,7 +345,7 @@ export function titleFor(goal: string, max = 72) {
  */
 export function shortTitle(title: string, words = 4) {
   const full = title.trim()
-  const [first, ...rest] = full.split(/\n|[.!?:;]+(?=\s|$)/)
+  const [first, ...rest] = full.split(/\n|[.!?]+(?=\s|$)/)
   const sentence = first.trim() ? first : full
   const all = sentence.trim().split(/\s+/)
   const kept = all.slice(0, words).join(' ')
@@ -360,6 +365,22 @@ export function branchFor(title: string) {
     .replace(/-{2,}/g, '-')
     .slice(0, BRANCH_LIMIT)
     .replace(/^[-./]+|[-./]+$/g, '')
+}
+
+/** Mark `projectId`'s finished graph actions in `task`'s worktree as seen. */
+export function markActivitiesSeen(projectId: string, task: string | null) {
+  const s = useStore.getState()
+  const seen = new Set(s.seenActivities)
+  const fresh = Object.values(s.taskActivities)
+    .filter(
+      (a) =>
+        a.projectId === projectId &&
+        (a.task ?? null) === task &&
+        a.state !== 'running' &&
+        !seen.has(a.id),
+    )
+    .map((a) => a.id)
+  if (fresh.length) useStore.setState({ seenActivities: [...s.seenActivities, ...fresh] })
 }
 
 export function applyTaskActivity(activity: import('../types').TaskActivity) {
