@@ -29,7 +29,7 @@ import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
 import type { FileRef } from '../lib/findings'
 
-/** The watcher covers the open and active task's worktrees; another one is polled while shown. */
+/** Worktree branches and HEADs are polled while shown; the watcher covers their diffs. */
 const WORKTREE_POLL_MS = 5000
 
 /**
@@ -125,13 +125,13 @@ export default function ReviewView() {
         )
       : undefined,
   )
-  // Terminals are keyed by task, so validation status shows for the open worktree and tasks.
-  // The open worktree's sessions belong to the active task when the project is open in its
-  // worktree, and to no task otherwise.
-  const openTask = tasks.find((t) => t.id === activeTask && t.current && !t.missing)
-  const reviewTask = other ? tasks.find((t) => t.worktree === other.path && !t.missing) : openTask
-  const validationTask = other ? (reviewTask?.id ?? undefined) : (openTask?.id ?? null)
-  const watched = !other || other.path === taskWorktree
+  // Review shows the active task's worktree, which the watcher keeps current. Terminals are keyed
+  // by task: the open worktree's sessions belong to the active task when the project is open in
+  // its worktree, and to no task otherwise.
+  const reviewTask = tasks.find(
+    (t) => t.id === activeTask && !t.missing && (other ? t.worktree === other.path : t.current),
+  )
+  const validationTask = reviewTask?.id ?? null
 
   // Findings of deleted branches are dropped once per visit, off the polling path.
   useEffect(() => {
@@ -153,19 +153,16 @@ export default function ReviewView() {
     }
   }, [projectId, worktreesKey, activeTask, worktreeRefresh])
 
-  // Poll branch metadata independently; also refresh diffs for an unwatched worktree.
+  // Poll branch metadata independently of the diff watcher.
   useEffect(() => {
-    const bump = () => {
-      setWorktreeRefresh((n) => n + 1)
-      if (target && !watched) setRefresh((n) => n + 1)
-    }
+    const bump = () => setWorktreeRefresh((n) => n + 1)
     const timer = window.setInterval(bump, WORKTREE_POLL_MS)
     window.addEventListener('focus', bump)
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('focus', bump)
     }
-  }, [target, watched])
+  }, [])
 
   useEffect(() => {
     let disposed = false
@@ -355,8 +352,6 @@ export default function ReviewView() {
                     Viewing {reviewTask ? `“${reviewTask.title}” on ` : ''}
                     <code>{other.branch ?? `detached ${other.head.slice(0, 7)}`}</code> at{' '}
                     <code>{other.path}</code>.
-                    {validationTask === undefined &&
-                      ' Validation status is hidden because this worktree has no tracked task sessions.'}
                   </div>
                 )}
                 {error && <div className="hint file-tree-error">{error}</div>}
@@ -397,7 +392,7 @@ export default function ReviewView() {
                         <span className="review-count">{plural(g.files.length, 'file')}</span>
                         <DiffStat {...lineTotals(g.files)} />
                       </header>
-                      {!project && validationTask !== undefined && (
+                      {!project && (
                         <ValidationChips
                           componentId={g.id}
                           changedAt={latestChange(g.files)}
@@ -442,13 +437,11 @@ export default function ReviewView() {
                             </button>
                             <span className="review-via">via {a.via.map(nameOf).join(', ')}</span>
                           </header>
-                          {validationTask !== undefined && (
-                            <ValidationChips
-                              componentId={a.id}
-                              changedAt={latestChangeOf(review.changes, a.via)}
-                              task={validationTask}
-                            />
-                          )}
+                          <ValidationChips
+                            componentId={a.id}
+                            changedAt={latestChangeOf(review.changes, a.via)}
+                            task={validationTask}
+                          />
                         </section>
                       )
                     })}

@@ -54,7 +54,12 @@ export default function SimpleAgent({
     })
   }
   return (
-    <article className="simple-agent" ref={host} data-session={record.id}>
+    <article
+      className="simple-agent"
+      ref={host}
+      data-session={record.id}
+      data-needs-input={session?.status?.agent?.state === 'needsInput' || undefined}
+    >
       <header>
         <button aria-expanded={expanded} onClick={toggle}>
           {expanded ? '▾' : '▸'} {record.metadata.name}

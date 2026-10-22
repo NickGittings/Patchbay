@@ -340,9 +340,13 @@ export function titleFor(goal: string, max = 72) {
  */
 export function shortTitle(title: string, words = 4) {
   const full = title.trim()
-  const sentence = full.split(/\n|[.!?:;](?=\s|$)/)[0].trim() || full
-  const kept = sentence.split(/\s+/).slice(0, words).join(' ')
-  return kept.length < full.replace(/[.!?:;]$/, '').length ? `${kept}…` : kept
+  const [first, ...rest] = full.split(/\n|[.!?:;]+(?=\s|$)/)
+  const sentence = first.trim() ? first : full
+  const all = sentence.trim().split(/\s+/)
+  const kept = all.slice(0, words).join(' ')
+  // Collapsed whitespace and closing punctuation leave nothing out; more words or sentences do.
+  const cut = all.length > words || (sentence === first && rest.some((r) => r.trim()))
+  return cut ? `${kept}…` : kept
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */

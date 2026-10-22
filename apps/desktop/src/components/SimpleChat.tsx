@@ -56,8 +56,16 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
   const threadRef = useRef<HTMLDivElement>(null)
+  // A new filter starts at the top, unless an agent shown is asking for input: it stays in view.
+  // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
+  const shownFilter = useRef(filter)
   useEffect(() => {
-    threadRef.current?.scrollTo({ top: 0 })
+    if (shownFilter.current === filter) return
+    shownFilter.current = filter
+    const thread = threadRef.current
+    const asking = thread?.querySelector('.simple-agent[data-needs-input]')
+    if (asking) asking.scrollIntoView({ block: 'nearest' })
+    else thread?.scrollTo({ top: 0 })
   }, [filter])
   useEffect(() => {
     const current = useStore.getState()
@@ -79,7 +87,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
-  const sections = model.sections.filter((section) => filter === 'all' || section.id === filter)
+  // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
+  const sections = model.sections.filter(
+    (section) =>
+      filter === 'all' ||
+      section.id === filter ||
+      section.sessions.some((r) => s.sessions[r.id]?.status?.agent?.state === 'needsInput'),
+  )
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const busy = reviewWorktreeBusy(model.records, s.sessions, worktree.path)

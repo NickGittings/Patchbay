@@ -164,12 +164,11 @@ export default function Toolbar() {
             <MenuSeparator />
             <MenuItem
               disabled={!project}
-              aria-checked={simpleMode}
+              checked={simpleMode}
               title="A worktree chat beside a read-only map, in place of the views"
               onClick={() => useStore.getState().setSimpleMode(!simpleMode)}
             >
               Chat mode
-              <span className="menu-check">{simpleMode ? '✓' : ''}</span>
             </MenuItem>
           </Menu>
           <button
@@ -181,7 +180,7 @@ export default function Toolbar() {
             ⌕
           </button>
           <ProjectSwitcher />
-          {project && <WorktreePicker caret={false} copyPlan={view === 'plan'} />}
+          {project && <WorktreePicker caret={false} copyPlan={!simpleMode && view === 'plan'} />}
         </div>
         {/* The center slot holds Full's views or Chat mode's label, so the ends never move. */}
         {project && simpleMode && <span className="toolbar-mode">Chat mode</span>}

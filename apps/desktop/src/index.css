@@ -437,18 +437,21 @@ input[type='radio'] {
   justify-content: flex-end;
 }
 /*
- * Short controls and the project name (capped below) keep their size; only the long labels
- * (worktree, attention summary, map save status) give way and truncate, so the toolbar's height
- * never follows them and buttons stay readable.
+ * The left group's short controls and the project name (capped below) keep their size; the
+ * worktree label and the end group's status buttons and labels (Auto, attention, activity, map
+ * save status) give way and truncate, so the toolbar's height never follows them.
  */
 .toolbar .toolbar-group > * {
   flex: none;
 }
 .toolbar .toolbar-group > .worktree-picker,
-.toolbar .toolbar-group.end > .attention,
-.toolbar .toolbar-group.end > .map-save-status {
+.toolbar .toolbar-group.end > *,
+.toolbar .toolbar-group.end > .menu > .menu-trigger {
   flex: 0 1 auto;
   min-width: 0;
+}
+.toolbar .toolbar-group.end > * {
+  max-width: 100%;
 }
 .toolbar .toolbar-group > .worktree-picker > .menu-trigger {
   min-width: 0;
@@ -458,6 +461,7 @@ input[type='radio'] {
   min-width: 0;
   max-width: min(240px, 100%);
 }
+.toolbar .toolbar-group.end > button,
 .map-save-status [role='status'] {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1281,10 +1285,6 @@ input[type='radio'] {
   background: var(--hover);
   border-color: var(--border-hover);
 }
-.implementation-view .add-component {
-  width: auto;
-  max-width: 180px;
-}
 .implementation-view .header-action.active,
 .implementation-view .header-action.active:hover:not(:disabled) {
   color: var(--accent-text);
@@ -1707,11 +1707,6 @@ input[type='radio'] {
 .review-totals {
   flex: 1;
   font-size: 12px;
-}
-.review-worktree {
-  max-width: 60%;
-  font-size: 12px;
-  padding: 3px 6px;
 }
 .review-refresh {
   padding: 2px 8px;
@@ -2241,13 +2236,6 @@ button.review-name:hover:not(:disabled) {
 .plan-scope-header {
   flex-wrap: wrap;
   gap: 6px;
-}
-.plan-scope-header .worktree-picker {
-  flex-basis: 100%;
-}
-.plan-scope-header .worktree-picker .menu-trigger {
-  max-width: 100%;
-  width: 100%;
 }
 .component-node.in-task:not(.selected):not(.highlighted) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));

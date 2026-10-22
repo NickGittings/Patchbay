@@ -31,7 +31,7 @@
     click(settings?.querySelector('.menu-trigger'))
     click(
       await until('Chat mode menu item', () =>
-        [...settings.querySelectorAll('[role="menuitem"]')].find((b) =>
+        [...settings.querySelectorAll('[role="menuitemcheckbox"]')].find((b) =>
           b.textContent.startsWith('Chat mode'),
         ),
       ),

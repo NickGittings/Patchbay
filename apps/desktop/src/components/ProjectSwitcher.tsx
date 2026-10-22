@@ -1,6 +1,6 @@
 import { useStore } from '../store'
 import { closeProjectTab, useOpenProject } from '../lib/project'
-import Menu, { MenuItem, MenuSeparator } from './Menu'
+import Menu, { MenuItem, MenuSeparator, MenuSideButton } from './Menu'
 
 /** Which project is open, and a menu to switch, close or open another one. */
 export default function ProjectSwitcher() {
@@ -46,8 +46,17 @@ export default function ProjectSwitcher() {
             <MenuItem
               className="menu-item project-switcher-item"
               aria-current={activeId === id ? 'true' : undefined}
-              title={entry.root}
+              title={`${entry.root}\nDelete closes this project`}
+              aria-keyshortcuts="Delete"
               onClick={() => activate(id)}
+              onKeyDown={(e) => {
+                // The close × stays out of the arrow-key ring; Delete reaches it from the keyboard.
+                if (e.key !== 'Delete' && e.key !== 'Backspace') return
+                e.preventDefault()
+                e.currentTarget.parentElement
+                  ?.querySelector<HTMLButtonElement>('.project-switcher-close')
+                  ?.click()
+              }}
             >
               <span className="project-switcher-name">
                 <span className="project-check">{activeId === id ? '✓' : ''}</span>
@@ -55,14 +64,14 @@ export default function ProjectSwitcher() {
                 {status(id)}
               </span>
             </MenuItem>
-            <MenuItem
+            <MenuSideButton
               className="menu-item project-switcher-close"
               aria-label={`Close ${entry.name}`}
               title={`Close ${entry.name}`}
               onClick={() => void closeProjectTab(id)}
             >
               ×
-            </MenuItem>
+            </MenuSideButton>
           </div>
         )
       })}

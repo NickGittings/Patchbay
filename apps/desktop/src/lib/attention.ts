@@ -214,6 +214,26 @@ export function attentionCounts(s: Snapshot): string {
 }
 
 /**
+ * `attentionCounts` plus each worktree's finished graph actions (validation, environments) the
+ * user hasn't seen by switching to that worktree, for the worktree picker.
+ */
+export function worktreeAttention(
+  s: Snapshot &
+    Pick<ReturnType<typeof useStore.getState>, 'project' | 'taskActivities' | 'seenActivities'>,
+): string {
+  const counts = JSON.parse(attentionCounts(s)) as Record<string, number>
+  for (const activity of Object.values(s.taskActivities)) {
+    if (
+      activity.projectId === s.project?.id &&
+      activity.state !== 'running' &&
+      !s.seenActivities.includes(activity.id)
+    )
+      counts[activity.task ?? ''] = (counts[activity.task ?? ''] ?? 0) + 1
+  }
+  return JSON.stringify(counts)
+}
+
+/**
  * A component's terminals by session id: its own (in `task`'s scope), then those its extensions
  * started.
  */

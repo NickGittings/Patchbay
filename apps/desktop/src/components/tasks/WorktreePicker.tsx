@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
-import { attentionCounts, componentTerminals, revealTerminal } from '../../lib/attention'
+import { componentTerminals, revealTerminal, worktreeAttention } from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
 import { gitReview, gitWorktrees, taskUpdate } from '../../lib/ipc'
 import { planTerminals } from '../../lib/plan'
@@ -23,18 +23,16 @@ import { CloseMenu } from '../menuContext'
  * Planner scope), a new one starts with a copy of the project plan.
  */
 export default function WorktreePicker({
-  align = 'left',
   caret = true,
   copyPlan = false,
 }: {
-  align?: 'left' | 'right'
   caret?: boolean
   copyPlan?: boolean
 }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const projectId = useStore((s) => s.project?.id)
   const [branch, setBranch] = useState('')
-  const counts = JSON.parse(useStore(attentionCounts)) as Record<string, number>
+  const counts = JSON.parse(useStore(worktreeAttention)) as Record<string, number>
   // The main worktree's branch, read when the project opens and whenever the picker opens
   // rather than on every Git refresh, since it only changes on a checkout.
   const latestRequest = useRef(0)
@@ -67,14 +65,17 @@ export default function WorktreePicker({
         <>
           <span className="worktree-picker-label">{shortTitle(label)}</span>
           {attention > 0 && (
-            <span className="worktree-attention-dot" title={`${attention} terminals need you`}>
+            <span
+              className="worktree-attention-dot"
+              title={`${attention} terminals or finished actions need you`}
+            >
               ●
             </span>
           )}
           {elsewhere > 0 && (
             <span
               className="worktree-attention-dot elsewhere"
-              title={`${elsewhere} terminals in other worktrees need you`}
+              title={`${elsewhere} terminals or finished actions in other worktrees need you`}
             >
               ○ {elsewhere}
             </span>
@@ -84,33 +85,35 @@ export default function WorktreePicker({
       title={`${label}${currentBranch ? ` (${currentBranch})` : ''}: switch worktree`}
       className="worktree-picker"
       listClassName="worktree-popover"
-      align={align}
       caret={caret}
       portal
     >
-      <WorktreeOverview branch={branch} onOpen={refreshBranch} copyPlan={copyPlan} />
+      <WorktreeOverview
+        branch={branch}
+        onOpen={refreshBranch}
+        counts={counts}
+        copyPlan={copyPlan}
+      />
     </Popover>
   )
 }
 
-export function WorktreeOverview({
+function WorktreeOverview({
   branch,
   onOpen,
-  attention,
-  copyPlan = false,
+  counts,
+  copyPlan,
 }: {
-  branch?: string
-  onOpen?: () => void
-  attention?: Record<string, number>
-  copyPlan?: boolean
+  branch: string
+  onOpen: () => void
+  counts: Record<string, number>
+  copyPlan: boolean
 }) {
   const tasks = useStore((s) => s.tasks)
-  const terminalCounts = JSON.parse(useStore(attentionCounts)) as Record<string, number>
-  const counts = attention ?? terminalCounts
   const close = useContext(CloseMenu)
   useEffect(() => {
     void refreshTasks()
-    onOpen?.()
+    onOpen()
   }, [onOpen])
   return (
     <>
@@ -150,7 +153,7 @@ const ROW_CONTROLS =
   '.worktree-path, .worktree-confirm, .file-tree-error'
 
 /** One worktree's summary and its rename, notes and remove controls. */
-export function WorktreeRow({
+function WorktreeRow({
   task,
   attention,
   branch,
@@ -302,7 +305,10 @@ export function WorktreeRow({
         {task?.current && <span className="worktree-tag">main worktree</span>}
         {task?.missing && <span className="worktree-tag bad">worktree missing</span>}
         {attention > 0 && (
-          <span className="worktree-tag attention" title="Terminals that need you">
+          <span
+            className="worktree-tag attention"
+            title="Terminals or finished actions that need you"
+          >
             ● {attention}
           </span>
         )}
