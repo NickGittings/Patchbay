@@ -87,7 +87,7 @@ cargo run -p patchbay-cli -- context patchbay-core          # what an agent on t
    them included in [group startup or affected validation](#graph-actions).
 3. Open **Plan**, highlight the components you want to change, and start a planner terminal.
    Agree on a plan and check **Saved plan**. You can also paste and save a plan there. To capture
-   Claude's native plans, install its hooks through **Tools → Agent status integration…**.
+   Claude's native plans, install its hooks through **Settings → Agent status integration…**.
 4. With **Main worktree** active, open **Implement →** and choose **New worktree…** to name a task
    and create its branch/worktree, or **Implement in project folder** to work in the open folder
    (also available without Git). If a task is already active, choose **Implement in \<task\> →**
@@ -229,7 +229,7 @@ validation, review, fixes, and merge. It detects a starting stage from existing 
 choose another stage before starting. Supply a task goal, an agent preset, and a destination
 branch checked out in another worktree.
 
-Auto requires Claude or Codex status hooks installed through **Tools → Agent status integration…**.
+Auto requires Claude or Codex status hooks installed through **Settings → Agent status integration…**.
 For Codex, review and trust the hook definitions through `/hooks`. Auto uses native agent status
 to advance between stages and waits when an agent needs input. See
 [agent status setup](docs/agent-status-validation.md).
@@ -254,7 +254,7 @@ Unfinished runs restore paused after reopening Patchbay. `npm run smoke:auto` ex
 
 ## Editor navigation
 
-Choose **Tools → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom
+Choose **Settings → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom
 executable. Patchbay checks your login-shell PATH and standard installation locations. If a
 launcher is unavailable, editor actions open settings with setup guidance. Preferences live in
 `~/.patchbay/editor.json` (or `PATCHBAY_STATE_DIR`), outside the saved component map.
@@ -344,7 +344,7 @@ Patchbay context. Unsupported compound/wrapper commands report an error when the
 cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
 and [Codex CLI documentation](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
 
-**Tools → Agent status integration…** provides opt-in Claude/Codex status hooks. Install,
+**Settings → Agent status integration…** provides opt-in Claude/Codex status hooks. Install,
 check, or remove Patchbay-owned entries in the active user hook source while preserving
 existing settings. Codex definitions require review/trust through `/hooks`; Patchbay retains
 output-based Active/Quiet until native reporting is confirmed. Confirmed hooks report Working,

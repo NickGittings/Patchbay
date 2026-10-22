@@ -71,7 +71,7 @@ export function RunSelect() {
   )
 }
 
-/** Loads the project's activity log and opens it from the project bar. */
+/** Loads the project's activity log and opens it from the toolbar. */
 export function ActivityButton() {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)

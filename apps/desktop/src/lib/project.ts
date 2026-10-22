@@ -1,12 +1,14 @@
+import { invoke } from '@tauri-apps/api/core'
 import { useReactFlow } from '@xyflow/react'
 import { useCallback } from 'react'
 import { appendToMap, useStore } from '../store'
 import type { Added } from '../types'
 import { addFolder, openProject } from './ipc'
-import { acceptOpened } from './workspace'
+import { acceptOpened, flushWorkspace } from './workspace'
 import { syncCurrentRoots } from './access'
 import { reviewRescan } from './maintenance'
-import { saveMapNow } from './mapSave'
+import { flushMapSaves, saveMapNow } from './mapSave'
+import { closeComponentWindows } from './windows'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -97,4 +99,21 @@ export function useAddFolder() {
       s.setMessage(String(e))
     }
   }, [fitView])
+}
+
+/** Saves the project's map, closes its windows and drops it from the open projects. */
+export async function closeProjectTab(id: string) {
+  if (!(await flushMapSaves(id))) {
+    await flushWorkspace()
+    useStore
+      .getState()
+      .setMessage(
+        'Map could not be saved. Retry or resolve the map conflict before closing this project.',
+      )
+    return
+  }
+  await closeComponentWindows(id)
+  useStore.getState().closeProject(id)
+  await invoke('project_close', { projectId: id })
+  await flushWorkspace()
 }

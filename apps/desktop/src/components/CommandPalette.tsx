@@ -16,7 +16,7 @@ export default function CommandPalette() {
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
-  // Start clean however it was opened (shortcut, Tools menu).
+  // Start clean however it was opened (shortcut, toolbar search button).
   const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)

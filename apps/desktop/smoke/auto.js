@@ -17,6 +17,10 @@
   const state = () => smoke.store.getState()
   try {
     await until('restore', () => !state().restoring && state().serviceConnected)
+    const settings = await until('Settings menu', () =>
+      [...document.querySelectorAll('.menu-trigger')].find((b) => b.textContent === 'Settings'),
+    )
+    settings.click()
     const notifications = await until('Notifications menu without a project', () =>
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Notifications'),
     )

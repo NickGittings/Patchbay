@@ -75,9 +75,9 @@
     assert(agent()?.state === 'review', 'Late tool progress reopened a completed turn')
     await smoke.terminalWrite(sid, 'SessionEnd\n')
     await until('ended', () => agent()?.state === 'ended')
-    // Open the actual setup dialog from Tools; native setup should match its visible status.
+    // Open the actual setup dialog from Settings; native setup should match its visible status.
     const tools = [...document.querySelectorAll('button')].find((b) =>
-      b.textContent.startsWith('Tools'),
+      b.textContent.startsWith('Settings'),
     )
     tools.click()
     await until('integration menu', () =>

@@ -56,7 +56,7 @@ async function handoffPlannerPlan(
   const plan = await planRead(projectId, task ?? undefined)
   if (!plan.text.trim())
     throw new Error(
-      'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Tools → Agent status integration.',
+      'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Settings → Agent status integration.',
     )
   current()
   // Accepting a plan ends its planner, including one Auto took over manually.

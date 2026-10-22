@@ -1,62 +1,14 @@
-import { invoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
-import { closeComponentWindows } from '../lib/windows'
-import { acceptOpened, flushWorkspace, restoredLayout } from '../lib/workspace'
+import { acceptOpened, restoredLayout } from '../lib/workspace'
 import { projectRelink } from '../lib/ipc'
-import { flushMapSaves, reloadSavedMap } from '../lib/mapSave'
-import { ActivityButton } from './tasks/TaskActivityPanel'
+import { reloadSavedMap } from '../lib/mapSave'
+import { closeProjectTab } from '../lib/project'
 
-export default function WorkspaceTabs() {
-  const s = useStore()
-  const active = s.projects[s.activeProjectId ?? '']
-  const close = async (id: string) => {
-    if (!(await flushMapSaves(id))) {
-      await flushWorkspace()
-      useStore
-        .getState()
-        .setMessage(
-          'Map could not be saved. Retry or resolve the map conflict before closing this project.',
-        )
-      return
-    }
-    await closeComponentWindows(id)
-    s.closeProject(id)
-    await invoke('project_close', { projectId: id })
-    await flushWorkspace()
-  }
+/** Recovery banners for the active project: a missing folder or a changed saved map. */
+export default function RecoveryBanners() {
+  const active = useStore((s) => s.projects[s.activeProjectId ?? ''])
   return (
     <>
-      <nav className="project-tabs" aria-label="Projects">
-        {s.projectOrder.map((id) => {
-          const entry = s.projects[id]
-          const count = s.sessionRecords.filter(
-            (r) => r.metadata.projectId === id && r.snapshot?.running,
-          ).length
-          return (
-            <div
-              className={s.activeProjectId === id ? 'project-tab active' : 'project-tab'}
-              key={id}
-            >
-              <button
-                role="tab"
-                aria-selected={s.activeProjectId === id}
-                onClick={() => s.activateProject(id)}
-                title={entry.root}
-              >
-                {entry.name}
-                {entry.unavailable ? ' (unavailable)' : ''}
-                {count ? ` (${count} running)` : ''}
-              </button>
-              <button aria-label={`Close ${entry.name}`} onClick={() => void close(id)}>
-                ×
-              </button>
-            </div>
-          )
-        })}
-        <span className="spacer" />
-        <ActivityButton />
-        <button onClick={() => useStore.setState({ sessionsPanelOpen: true })}>Sessions</button>
-      </nav>
       {active?.unavailable && (
         <div className="recovery-banner" role="status">
           <span>
@@ -67,7 +19,7 @@ export default function WorkspaceTabs() {
               void projectRelink(active.id)
                 .then((opened) => {
                   if (opened) {
-                    s.closeProject(active.id)
+                    useStore.getState().closeProject(active.id)
                     acceptOpened(opened)
                     useStore.setState(restoredLayout(active.unavailableLayout ?? {}))
                     if (active.conflict) {
@@ -94,12 +46,12 @@ export default function WorkspaceTabs() {
                     }
                   }
                 })
-                .catch((e) => s.setMessage(String(e)))
+                .catch((e) => useStore.getState().setMessage(String(e)))
             }
           >
             Locate folder
           </button>
-          <button onClick={() => void close(active.id)}>Remove</button>
+          <button onClick={() => void closeProjectTab(active.id)}>Remove</button>
         </div>
       )}
       {active?.conflict && !active.unavailable && (
@@ -107,11 +59,13 @@ export default function WorkspaceTabs() {
           <span>The saved map changed while Patchbay was closed. Choose which map to recover.</span>
           <button
             onClick={() => {
-              s.syncProject({ ...active.conflict!, root: active.root, projectId: active.id })
+              useStore
+                .getState()
+                .syncProject({ ...active.conflict!, root: active.root, projectId: active.id })
               useStore.setState({
                 dirty: true,
                 projects: {
-                  ...s.projects,
+                  ...useStore.getState().projects,
                   [active.id]: { ...active, conflict: undefined, draftFingerprint: undefined },
                 },
               })

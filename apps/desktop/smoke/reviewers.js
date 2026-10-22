@@ -134,8 +134,8 @@
     autoButton.click()
     // The saved missing reviewer remains removable, even with only one installed agent.
     smoke.store.setState({ devices: state().devices.slice(0, 1) })
-    const toolsMenu = await until('Tools menu', () =>
-      [...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Tools')),
+    const toolsMenu = await until('Settings menu', () =>
+      [...document.querySelectorAll('button')].find((b) => b.textContent.startsWith('Settings')),
     )
     toolsMenu.click()
     const rolesButton = await until('Agent roles menu', () =>

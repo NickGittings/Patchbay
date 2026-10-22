@@ -411,12 +411,12 @@ input[type='radio'] {
 
 .toolbar {
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  height: 46px;
-  padding: 0 12px;
+  gap: 8px 12px;
+  min-height: 46px;
+  padding: 4px 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
@@ -432,7 +432,12 @@ input[type='radio'] {
   gap: 6px;
   min-width: 0;
 }
+.toolbar-group:first-child {
+  flex: 1 1 260px;
+}
 .toolbar-group.end {
+  flex: 1 1 max-content;
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 .toolbar .attention {
@@ -449,6 +454,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
 }
 .view-switcher {
+  flex: none;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -1924,14 +1930,15 @@ button.review-name:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 12px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  flex: 1;
+  min-width: 0;
+  margin-left: 6px;
   overflow-x: auto;
 }
 .project-tab {
   display: flex;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--muted);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -1949,6 +1956,19 @@ button.review-name:hover:not(:disabled) {
   color: inherit;
   border: 0;
   background: transparent;
+}
+.toolbar .project-tab button[role='tab'] {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+.toolbar .project-tab button:not([role='tab']) {
+  padding: 0 8px 0 2px;
+}
+.toolbar button.toolbar-search {
+  padding: 0 8px;
+  font-size: 15px;
 }
 .recovery-banner {
   display: flex;

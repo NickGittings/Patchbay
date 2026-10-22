@@ -6,7 +6,13 @@ import { useReactFlow } from '@xyflow/react'
 import { useEffect, useState } from 'react'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import AgentRolesPanel from './AgentRolesPanel'
-import { saveCurrentProject, useAddFolder, useOpenProject, useRescanProject } from '../lib/project'
+import {
+  closeProjectTab,
+  saveCurrentProject,
+  useAddFolder,
+  useOpenProject,
+  useRescanProject,
+} from '../lib/project'
 import { offerDependencies } from '../lib/dependencies'
 import { arrangeNow } from '../lib/arrange'
 import { useStore } from '../store'
@@ -18,6 +24,8 @@ import AttentionMenu from './status/AttentionMenu'
 import WorktreePicker from './tasks/WorktreePicker'
 import type { View } from '../types'
 import { mod, shiftMod } from '../lib/platform'
+import ProjectTabs from './ProjectTabs'
+import { ActivityButton } from './tasks/TaskActivityPanel'
 
 const views: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
@@ -71,7 +79,7 @@ export default function Toolbar() {
       {notificationsOpen && <NotificationsPanel onClose={() => setNotificationsOpen(false)} />}
       <div className="toolbar">
         <div className="toolbar-group">
-          <Menu label="Project" caret={false}>
+          <Menu label="Project" caret={false} keepMounted>
             <MenuItem onClick={() => void openFolder()}>Open folder</MenuItem>
             {project && (
               <>
@@ -127,18 +135,17 @@ export default function Toolbar() {
                 {view === 'navigation' && <MenuItem onClick={addComponent}>New component</MenuItem>}
               </>
             )}
-          </Menu>
-          <Menu label="Tools" caret={false} keepMounted>
+            <MenuSeparator />
             <MenuItem onClick={showFileSearch} shortcut={`${mod}P`}>
               Search files
             </MenuItem>
+            {project && (
+              <MenuItem onClick={() => void closeProjectTab(project.id)}>Close project</MenuItem>
+            )}
+            <ExtensionMenu slot="toolbar" asMenuItems />
+          </Menu>
+          <Menu label="Settings" caret={false}>
             <MenuItem onClick={() => configureEditor()}>Preferred editor</MenuItem>
-            <MenuItem
-              onClick={() => useStore.getState().setPaletteOpen(true)}
-              shortcut={`${shiftMod}P`}
-            >
-              Commands
-            </MenuItem>
             <MenuItem onClick={() => useStore.getState().setExtensionsPanelOpen(true)}>
               Extensions
             </MenuItem>
@@ -147,8 +154,16 @@ export default function Toolbar() {
               Agent roles
             </MenuItem>
             <MenuItem onClick={() => setNotificationsOpen(true)}>Notifications</MenuItem>
-            <ExtensionMenu slot="toolbar" asMenuItems />
           </Menu>
+          <button
+            className="toolbar-search"
+            aria-label="Commands"
+            title={`Commands (${shiftMod}P)`}
+            onClick={() => useStore.getState().setPaletteOpen(true)}
+          >
+            ⌕
+          </button>
+          <ProjectTabs />
         </div>
         {project ? (
           <div className="view-switcher" role="group" aria-label="Workspace view">
@@ -176,9 +191,11 @@ export default function Toolbar() {
               )}
               <AutoPanel onIntegrations={() => setIntegrationsOpen(true)} />
               <AttentionMenu />
-              <MapSaveStatus />
+              <ActivityButton />
             </>
           )}
+          <button onClick={() => useStore.setState({ sessionsPanelOpen: true })}>Sessions</button>
+          {project && <MapSaveStatus />}
         </div>
         <Toast />
       </div>

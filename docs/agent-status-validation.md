@@ -1,6 +1,6 @@
 # Agent status integration
 
-Open **Tools → Agent status integration…**, select Claude Code or Codex, and inspect the
+Open **Settings → Agent status integration…**, select Claude Code or Codex, and inspect the
 **User hook source**. **Install status hooks** is opt-in. **Check integration** separates
 configuration installation from reporting confirmed in a running Patchbay session.
 **Remove status hooks** removes only the exact entries this installation owns.
