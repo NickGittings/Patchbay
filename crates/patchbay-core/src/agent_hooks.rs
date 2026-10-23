@@ -356,18 +356,35 @@ pub fn user_source(provider: Adapter) -> Result<PathBuf> {
     let dir = std::env::var_os(variable).map_or_else(|| home.join(default), PathBuf::from);
     anyhow::ensure!(dir.is_absolute(), "{variable} must be absolute");
     if provider == Adapter::Codex {
-        let path = dir.join("config.toml");
-        let text = read_optional(&path)?;
-        if !text.is_empty() {
-            let doc = text
-                .parse::<toml_edit::DocumentMut>()
-                .context("Malformed Codex config.toml; no changes made")?;
-            if doc.contains_key("hooks") {
+        return codex_source(&dir);
+    }
+    Ok(dir.join(file))
+}
+
+// Codex persists trust in config.toml even when definitions live in hooks.json.
+fn codex_hook_metadata(name: &str) -> bool {
+    matches!(name, "state" | "managed_dir" | "windows_managed_dir")
+}
+
+fn codex_source(dir: &Path) -> Result<PathBuf> {
+    let path = dir.join("config.toml");
+    let text = read_optional(&path)?;
+    if !text.is_empty() {
+        let doc = text
+            .parse::<toml_edit::DocumentMut>()
+            .context("Malformed Codex config.toml; no changes made")?;
+        if let Some(hooks) = doc.get("hooks") {
+            // Keep malformed definitions on the validation path, rather than
+            // silently falling back to a different configuration file.
+            if hooks
+                .as_table_like()
+                .is_none_or(|table| table.iter().any(|(name, _)| !codex_hook_metadata(name)))
+            {
                 return Ok(path);
             }
         }
     }
-    Ok(dir.join(file))
+    Ok(dir.join("hooks.json"))
 }
 
 fn stable_reporter() -> Result<PathBuf> {
@@ -411,6 +428,10 @@ fn validate_shape(value: &Value) -> Result<()> {
             .as_object()
             .context("Malformed hooks: expected object")?;
         for (name, groups) in hooks {
+            if name == "state" {
+                anyhow::ensure!(groups.is_object(), "Malformed hook state: expected object");
+                continue;
+            }
             if matches!(name.as_str(), "managed_dir" | "windows_managed_dir") {
                 anyhow::ensure!(groups.is_string(), "Malformed managed hook directory");
                 continue;
@@ -779,6 +800,76 @@ mod tests {
         }
     }
     #[test]
+    fn codex_uses_json_when_toml_contains_only_hook_metadata() {
+        let fixture = Fixture::new();
+        let config = fixture.0.join("config.toml");
+        let hooks = fixture.0.join("hooks.json");
+        assert_eq!(codex_source(&fixture.0).unwrap(), hooks);
+        for text in [
+            "model = 'user-model'\n",
+            "[hooks]\n",
+            "[hooks.state]\n",
+            "[hooks.state.'user/hooks.json:stop:0:0']\ntrusted_hash = 'keep-me'\nenabled = false\n",
+            "[hooks]\nmanaged_dir = '/managed/hooks'\nwindows_managed_dir = 'C:\\managed'\n",
+        ] {
+            std::fs::write(&config, text).unwrap();
+            assert_eq!(codex_source(&fixture.0).unwrap(), hooks, "{text}");
+            // Choosing JSON and updating its definitions leaves TOML trust untouched.
+            let installed = json_update(
+                json!({}),
+                Adapter::Codex,
+                Path::new("/tmp/patchbay-status-v1"),
+                true,
+            )
+            .unwrap();
+            std::fs::write(&hooks, serde_json::to_vec(&installed).unwrap()).unwrap();
+            assert!(inspect(Adapter::Codex, Some(&hooks)).is_ok());
+            assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+        }
+        for text in [
+            "[hooks]\nStop = []\n[hooks.state]\n",
+            "hooks = { Stop = [], state = {} }\n",
+            "[hooks]\nStop = false\n",
+            "hooks = false\n",
+        ] {
+            std::fs::write(&config, text).unwrap();
+            assert_eq!(codex_source(&fixture.0).unwrap(), config, "{text}");
+        }
+    }
+
+    #[test]
+    fn codex_inline_install_and_remove_preserve_hook_trust_state() {
+        let fixture = Fixture::new();
+        let config = fixture.0.join("config.toml");
+        let reporter = stable_reporter().unwrap();
+        let trust = "# keep trust records verbatim\n[hooks.state.'user/hooks.json:stop:0:0']\ntrusted_hash = 'keep-me'\nenabled = false\n";
+        let original = format!(
+            "[hooks]\nStop = [{{ hooks = [{{ type = 'command', command = 'user-validation' }}] }}]\n{trust}"
+        );
+        std::fs::write(&config, &original).unwrap();
+        assert_eq!(codex_source(&fixture.0).unwrap(), config);
+        assert!(!inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+        let installed = toml_update(&original, Adapter::Codex, &reporter, true).unwrap();
+        assert!(installed.contains(trust));
+        assert_eq!(
+            installed,
+            toml_update(&installed, Adapter::Codex, &reporter, true).unwrap()
+        );
+        std::fs::write(&config, &installed).unwrap();
+        assert!(inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+        let removed = toml_update(&installed, Adapter::Codex, &reporter, false).unwrap();
+        assert!(removed.contains(trust));
+        let value: toml::Value = toml::from_str(&removed).unwrap();
+        assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("user-validation")
+        );
+        std::fs::write(&config, &removed).unwrap();
+        assert!(!inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+    }
+
+    #[test]
     fn install_remove_preserve_user_settings_and_hooks_and_are_idempotent() {
         let reporter = Path::new("/some folder/a'punctuation/$literal/patchbay-status-v1");
         let original = json!({
@@ -866,6 +957,8 @@ mod tests {
             "[hooks]\nStop = false",
             "[hooks]\nStop = [{ hooks = 12 }]",
             "[hooks]\nStop = [{ hooks = ['wrong'] }]",
+            "[hooks]\nstate = false",
+            "[hooks]\nstate = []",
             "bad = {",
         ] {
             assert!(

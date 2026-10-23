@@ -276,7 +276,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                     <TaskActivityPanel />
                   </>
                 )}
-                {panel === 'stack' && project && <StackPanel />}
+                {panel === 'stack' && project && <StackPanel key={project.id} />}
                 {!project && !['project', 'sessions'].includes(panel) && (
                   <p>Open a project to use {utilities[panel].label}.</p>
                 )}

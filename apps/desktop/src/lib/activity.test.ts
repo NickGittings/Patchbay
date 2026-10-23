@@ -1,11 +1,11 @@
 import { expect, test } from 'vitest'
 import {
-  activeComponents,
   activityFile,
   agentRole,
   componentActivity,
   fileActivity,
   hydrateActivity,
+  liveComponents,
 } from './activity'
 import type { Activity, SessionRecord } from '../types'
 const activity = (sequence = 1, target = 'src/lib.rs', tool = 'Edit'): Activity => ({
@@ -81,21 +81,15 @@ test('commands, patch bodies, unknown tools, and untyped legacy targets cannot b
 })
 test('pulses belong to this project/worktree and expire after ten seconds', () => {
   const sessions = { s: { generation: 1, running: true, activity: [activity()] } }
-  expect([...activeComponents([record()], sessions, 'p', 't', '/task', components, 11000)]).toEqual(
-    ['src'],
-  )
-  expect([...activeComponents([record()], sessions, 'p', 't', '/task', components, 11001)]).toEqual(
-    [],
-  )
-  expect([
-    ...activeComponents([record()], sessions, 'other', 't', '/task', components, 1000),
-  ]).toEqual([])
-  expect([
-    ...activeComponents([record('/other')], sessions, 'p', 'other', '/other', components, 1000),
-  ]).toEqual(['src'])
-  expect([
-    ...activeComponents([record()], sessions, 'p', 'other', '/other', components, 1000),
-  ]).toEqual([])
+  const live = (...args: Parameters<typeof componentActivity>) =>
+    liveComponents(componentActivity(...args))
+  expect(live([record()], sessions, 'p', 't', '/task', components, 11000)).toEqual(['src'])
+  expect(live([record()], sessions, 'p', 't', '/task', components, 11001)).toEqual([])
+  expect(live([record()], sessions, 'other', 't', '/task', components, 1000)).toEqual([])
+  expect(live([record('/other')], sessions, 'p', 'other', '/other', components, 1000)).toEqual([
+    'src',
+  ])
+  expect(live([record()], sessions, 'p', 'other', '/other', components, 1000)).toEqual([])
 })
 
 test('shared planner and review activity resolve in their own worktree before opening the selected diff', async () => {
@@ -180,7 +174,5 @@ test('component activity groups each session’s files per component and marks i
       paths: ['src/nested/c.ts'],
     },
   ])
-  expect([
-    ...activeComponents([builder, reviewer], sessions, 'p', 't', '/task', components, 12000),
-  ]).toEqual(['nested'])
+  expect(liveComponents(found)).toEqual(['nested'])
 })

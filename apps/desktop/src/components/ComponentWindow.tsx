@@ -179,6 +179,7 @@ export default function ComponentWindow({ id }: { id: string }) {
                   root={project.root}
                   path={data.path}
                   componentId={id}
+                  agentMarks={false}
                 />
               ) : (
                 <ChangesPanel componentId={id} />

@@ -1,4 +1,4 @@
-import type { TerminalSpec } from '../types'
+import type { ProposedStackTerminal, TerminalSpec } from '../types'
 import { program, readCommand, validatorKey } from './validators'
 
 /** The part of a map node these suggestions read. */
@@ -120,4 +120,25 @@ export function stackSetup(components: ComponentLike[], declined: string[] = [])
 export const linkedWithin = (ids: string[], edges: { source: string; target: string }[]) => {
   const members = new Set(ids)
   return edges.some((e) => e.source !== e.target && members.has(e.source) && members.has(e.target))
+}
+
+/**
+ * The edit applying the agent's `proposed` terminal makes to `current` (the existing terminal it
+ * names, `undefined` for a new one), or `null` to leave it out: a Validation terminal stays one,
+ * and an agent that can't tell the ready text leaves the user's own alone.
+ */
+export function proposedPatch(
+  proposed: ProposedStackTerminal,
+  current: TerminalSpec | undefined,
+): Partial<TerminalSpec> | null {
+  if (current?.action === 'validation') return null
+  const readyWhen = proposed.readyWhen.trim()
+  if (current) return { action: 'development', ...(readyWhen ? { readyWhen } : {}) }
+  return {
+    name: proposed.name ?? 'Dev',
+    command: proposed.command ?? '',
+    kind: 'task',
+    action: 'development',
+    readyWhen,
+  }
 }

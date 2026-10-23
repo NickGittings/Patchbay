@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { TerminalSpec } from '../types'
-import { linkedWithin, readyTextFor, stackSetup } from './stack'
+import type { ProposedStackTerminal, TerminalSpec } from '../types'
+import { linkedWithin, proposedPatch, readyTextFor, stackSetup } from './stack'
 import { validatorKey } from './validators'
 
 const terminal = (
@@ -61,4 +61,33 @@ test('ordering matters only when members depend on each other', () => {
   const edges = [{ source: 'web', target: 'api' }]
   expect(linkedWithin(['web', 'api'], edges)).toBe(true)
   expect(linkedWithin(['web', 'docs'], edges)).toBe(false)
+})
+
+test('applying a proposal keeps validators and the user’s ready text when the agent gives none', () => {
+  const proposed = (readyWhen: string, extra: Partial<ProposedStackTerminal> = {}) => ({
+    component: 'api',
+    terminal: 'dev',
+    readyWhen,
+    reason: 'x',
+    ...extra,
+  })
+  const dev = terminal('dev', 'npm run dev', { readyWhen: 'Listening' })
+  expect(proposedPatch(proposed(''), dev)).toEqual({ action: 'development' })
+  expect(proposedPatch(proposed(' ready in '), dev)).toEqual({
+    action: 'development',
+    readyWhen: 'ready in',
+  })
+  expect(proposedPatch(proposed('ready'), { ...dev, action: 'validation' })).toBeNull()
+  expect(
+    proposedPatch(
+      proposed('', { terminal: undefined, name: 'Postgres', command: 'docker compose up db' }),
+      undefined,
+    ),
+  ).toEqual({
+    name: 'Postgres',
+    command: 'docker compose up db',
+    kind: 'task',
+    action: 'development',
+    readyWhen: '',
+  })
 })

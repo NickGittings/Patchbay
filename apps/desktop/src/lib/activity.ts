@@ -127,15 +127,6 @@ function* worktreeActivity(
   }
 }
 
-/** Latest accepted file activity in the selected worktree, for the ten-second map pulse. */
-export function activeComponents(...args: Parameters<typeof worktreeActivity>) {
-  const now = args[6]
-  const ids = new Set<string>()
-  for (const { activity, file } of worktreeActivity(...args))
-    if (now - activity.atMs <= LIVE_MS) ids.add(file.componentId)
-  return ids
-}
-
 /** Role agents' file activity per component, newest session first. */
 export function componentActivity(...args: Parameters<typeof worktreeActivity>) {
   const now = args[6]
@@ -164,6 +155,14 @@ export function componentActivity(...args: Parameters<typeof worktreeActivity>) 
       [...entries.values()].sort((a, b) => b.lastMs - a.lastMs),
     ]),
   )
+}
+
+/** Components of `componentActivity` a role agent touched in the last ten seconds, sorted. */
+export function liveComponents(found: ReadonlyMap<string, readonly RoleActivity[]>) {
+  return [...found]
+    .filter(([, entries]) => entries.some((e) => e.live))
+    .map(([id]) => id)
+    .sort()
 }
 
 /** Review/merge/planner scopes run at a worktree root; component sessions also retain that root. */

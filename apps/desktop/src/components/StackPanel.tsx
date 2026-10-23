@@ -10,7 +10,8 @@ import {
   startStackAgent,
   useStackProposals,
 } from '../lib/stackAgent'
-import type { PendingStack } from '../types'
+import type { PendingStack, ProposedStackTerminal } from '../types'
+import { mapEditsBlocked } from '../lib/mapSave'
 import { useStore, type FlowNode } from '../store'
 import { runGraphAction, stopGroup } from '../lib/actions'
 import { statusTitle, terminalStatus } from '../lib/display'
@@ -166,10 +167,6 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
 }
 
 /**
- * Stacks (`Project.groups`): sets of components whose Development terminals start together,
- * dependencies first when ordered, each waiting until it is ready.
- */
-/**
  * Offers the map's dev servers for a stack: marks the ticked ones Development (with the text
  * they print once ready) and, when there is no stack yet, creates one of them.
  */
@@ -178,6 +175,7 @@ function StackSuggestions() {
   const edges = useStore((s) => s.edges)
   const groups = useStore((s) => s.groups)
   const declined = useStore((s) => s.stackDeclined)
+  const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
   const { updateTerminal, addGroup, declineStack, restoreStack } = useStore.getState()
   // Unticked rows and edited ready texts; dev servers are cheap to undo, so all start ticked.
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
@@ -244,7 +242,8 @@ function StackSuggestions() {
       </div>
       <div className="row">
         <button
-          disabled={!chosen.length}
+          disabled={blocked || !chosen.length}
+          title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
           onClick={() => {
             for (const s of chosen)
               updateTerminal(s.componentId, s.terminalId, {
@@ -271,15 +270,20 @@ function StackSuggestions() {
   )
 }
 
+/** A proposed terminal's identity, unique within a submission (the backend refuses repeats). */
+const proposedKey = (t: ProposedStackTerminal) =>
+  `${t.component}\n${t.terminal ?? `new:${t.name?.trim().toLowerCase()}`}`
+
 /** The agent's proposed stack, every terminal ticked, to apply or discard. */
 function StackReview({ pending, projectId }: { pending: PendingStack; projectId: string }) {
   const nodes = useStore((s) => s.nodes)
   const busy = useStackProposals((s) => !!s.busy[projectId])
-  const [unticked, setUnticked] = useState<ReadonlySet<number>>(() => new Set())
-  const chosen = pending.terminals.filter((_, i) => !unticked.has(i))
+  const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
+  const chosen = pending.terminals.filter((t) => !unticked.has(proposedKey(t)))
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
-  const terminalName = (component: string, id: string) =>
-    nodes.find((n) => n.id === component)?.data.terminals.find((t) => t.id === id)?.name ?? id
+  const terminalOf = (component: string, id: string) =>
+    nodes.find((n) => n.id === component)?.data.terminals.find((t) => t.id === id)
   return (
     <div className="task-action-result stack-suggestions" aria-label="Proposed stack">
       <strong>Proposed stack · {pending.name}</strong>
@@ -290,38 +294,45 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
         Applying marks these terminals Development and adds their components to the stack.
       </p>
       <div className="validator-suggestions">
-        {pending.terminals.map((t, i) => (
-          <label key={i} className="validator-suggestion">
-            <input
-              type="checkbox"
-              checked={!unticked.has(i)}
-              onChange={(e) => {
-                const on = e.target.checked
-                setUnticked((prev) => {
-                  const next = new Set(prev)
-                  if (on) next.delete(i)
-                  else next.add(i)
-                  return next
-                })
-              }}
-            />
-            <span className="validator-suggestion-details">
-              <span>
-                {name(t.component)} ›{' '}
-                {t.terminal ? terminalName(t.component, t.terminal) : `${t.name} (new)`}
+        {pending.terminals.map((t) => {
+          const key = proposedKey(t)
+          const existing = t.terminal ? terminalOf(t.component, t.terminal) : undefined
+          // Applying keeps an existing terminal's ready text when the agent gives none.
+          const ready = t.readyWhen || existing?.readyWhen
+          return (
+            <label key={key} className="validator-suggestion">
+              <input
+                type="checkbox"
+                checked={!unticked.has(key)}
+                onChange={(e) => {
+                  const on = e.target.checked
+                  setUnticked((prev) => {
+                    const next = new Set(prev)
+                    if (on) next.delete(key)
+                    else next.add(key)
+                    return next
+                  })
+                }}
+              />
+              <span className="validator-suggestion-details">
+                <span>
+                  {name(t.component)} ›{' '}
+                  {t.terminal ? (existing?.name ?? t.terminal) : `${t.name} (new)`}
+                </span>
+                {t.command && <code>{t.command}</code>}
+                <span className="hint flush">
+                  {ready ? `Ready when “${ready}”` : 'Starts without waiting'}
+                </span>
+                <span className="hint flush">{t.reason}</span>
               </span>
-              {t.command && <code>{t.command}</code>}
-              <span className="hint flush">
-                {t.readyWhen ? `Ready when “${t.readyWhen}”` : 'Starts without waiting'}
-              </span>
-              <span className="hint flush">{t.reason}</span>
-            </span>
-          </label>
-        ))}
+            </label>
+          )
+        })}
       </div>
       <div className="row">
         <button
-          disabled={busy || !chosen.length}
+          disabled={busy || blocked || !chosen.length}
+          title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
           onClick={() => void applyStackProposal(pending, chosen, projectId)}
         >
           Apply
@@ -344,7 +355,7 @@ function StackAgent({ projectId }: { projectId: string }) {
   const [choice, setChoice] = useState<string>()
   const preset =
     presets.find((t) => t.id === choice) ?? roleTerminal(devices, roles, 'plan') ?? presets[0]
-  if (pending) return <StackReview pending={pending} projectId={projectId} />
+  if (pending) return <StackReview key={pending.id} pending={pending} projectId={projectId} />
   return (
     <div className="row stack-agent">
       {presets.length > 1 && (
@@ -371,6 +382,10 @@ function StackAgent({ projectId }: { projectId: string }) {
   )
 }
 
+/**
+ * Stacks (`Project.groups`): sets of components whose Development terminals start together,
+ * dependencies first when ordered, each waiting until it is ready.
+ */
 export default function StackPanel() {
   const projectId = useStore((s) => s.project?.id)
   const groups = useStore((s) => s.groups)

@@ -359,7 +359,11 @@ test('starting a new agent from a manifest review does not open an older waiting
     command: 'claude',
   })
   await settle()
-  expect(agents.startMapAgent).toHaveBeenCalledWith('a', expect.objectContaining({ id: 'claude' }))
+  expect(agents.startMapAgent).toHaveBeenCalledWith(
+    'a',
+    expect.objectContaining({ id: 'claude' }),
+    'detect',
+  )
   expect(useDependencies.getState().dialogs.a).toBeUndefined()
   expect(ipc.mapLinksRead).not.toHaveBeenCalled()
 })

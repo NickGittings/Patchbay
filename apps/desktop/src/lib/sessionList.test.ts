@@ -4,6 +4,7 @@ import {
   REVIEW_SCOPE,
   MERGE_SCOPE,
   MAP_SCOPE,
+  STACK_AGENT_TERMINAL,
   TASK_ROOT_SCOPE,
   type SessionRecord,
   type Task,
@@ -107,6 +108,17 @@ describe('session labels', () => {
     { componentId: TASK_ROOT_SCOPE, kind: 'task', role: 'Task', tone: 'task' },
   ] as const)('$componentId/$kind leads with $role', ({ componentId, kind, role, tone }) => {
     expect(sessionRole({ ...running.metadata, componentId, kind })).toEqual({ role, tone })
+  })
+
+  test('the stack detection agent is told apart from dependency detection', () => {
+    expect(
+      sessionRole({
+        ...running.metadata,
+        componentId: MAP_SCOPE,
+        terminalId: STACK_AGENT_TERMINAL,
+        kind: 'agent',
+      }),
+    ).toEqual({ role: 'Stack', tone: 'plan' })
   })
 
   test.each(['agent', 'task', 'shell'] as const)('extension takes precedence over %s', (kind) => {

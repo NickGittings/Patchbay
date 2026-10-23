@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useStore } from '../store'
-import { componentActivity, type RoleActivity } from './activity'
+import { componentActivity, liveComponents, type RoleActivity } from './activity'
 
 /**
  * Role agents' file activity on the visible map (Navigation and Chat): `active` pulses for ten
@@ -25,7 +25,8 @@ const sameEntries = (a: RoleActivity[] | undefined, b: RoleActivity[]) =>
       x.sessionId === b[i].sessionId &&
       x.live === b[i].live &&
       x.lastMs === b[i].lastMs &&
-      x.paths.length === b[i].paths.length,
+      x.paths.length === b[i].paths.length &&
+      x.paths.every((path, j) => path === b[i].paths[j]),
   )
 
 export function useMapActivityFeedback() {
@@ -51,10 +52,7 @@ export function useMapActivityFeedback() {
         roles[id] = sameEntries(kept, entries) ? kept : entries
         if (roles[id] !== kept) changed = true
       }
-      const active = [...found]
-        .filter(([, entries]) => entries.some((e) => e.live))
-        .map(([id]) => id)
-        .sort()
+      const active = liveComponents(found)
       if (changed || active.join('\0') !== previous.active.join('\0'))
         useMapActivity.setState({ active, roles: changed ? roles : previous.roles })
     }

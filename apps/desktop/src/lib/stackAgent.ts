@@ -8,11 +8,11 @@ import {
   type ProposedStackTerminal,
   type TerminalSpec,
 } from '../types'
-import { revealTerminal } from './attention'
+import { startDetectionAgent } from './dependencies'
 import { onStackProposals, stackProposalClear, stackProposalRead } from './ipc'
 import { mapEditsBlocked } from './mapSave'
 import { selectPanel } from './rail'
-import { launching, startMapAgent } from './sessions'
+import { proposedPatch } from './stack'
 
 /** The stack each open project's detection agent proposed, awaiting review in the Stack panel. */
 export const useStackProposals = create<{
@@ -52,40 +52,12 @@ export const stackAgentSession = (projectId: string) =>
   sessionId(MAP_SCOPE, STACK_AGENT_TERMINAL, null, projectId)
 
 /** Start the stack detection agent with `preset`; one already running is shown instead. */
-export async function startStackAgent(projectId: string, preset: TerminalSpec) {
-  const sid = stackAgentSession(projectId)
-  const s = useStore.getState()
-  if (s.sessions[sid]?.running || launching(sid)) {
-    revealTerminal({ sid, componentId: MAP_SCOPE })
-    return
-  }
-  const previous = s.runtimeTerminals[sid]
-  s.addRuntimeTerminal(sid, {
-    projectId,
-    taskId: null,
-    componentId: MAP_SCOPE,
-    terminal: {
-      id: STACK_AGENT_TERMINAL,
-      name: `Detect stack · ${preset.name}`,
-      kind: 'agent',
-      command: preset.command,
-    },
+export function startStackAgent(projectId: string, preset: TerminalSpec) {
+  return startDetectionAgent(projectId, preset, {
+    terminalId: STACK_AGENT_TERMINAL,
+    label: 'Stack detection',
+    tab: 'Detect stack',
   })
-  const ours = useStore.getState().runtimeTerminals[sid]
-  let started = false
-  try {
-    started = await startMapAgent(projectId, preset, STACK_AGENT_TERMINAL)
-  } finally {
-    if (!started && useStore.getState().runtimeTerminals[sid] === ours)
-      useStore.setState((st) => {
-        const runtimeTerminals = { ...st.runtimeTerminals }
-        if (previous) runtimeTerminals[sid] = previous
-        else delete runtimeTerminals[sid]
-        return { runtimeTerminals }
-      })
-  }
-  if (started && useStore.getState().project?.id === projectId)
-    revealTerminal({ sid, componentId: MAP_SCOPE })
 }
 
 /** Forget the reviewed submission, unless a newer one replaced it, then show any newer one. */
@@ -104,9 +76,10 @@ export async function discardStackProposal(projectId: string, id: string) {
 }
 
 /**
- * Mark the chosen terminals Development with their ready text (adding the proposed new ones) and
- * put their components in the proposed stack, an ordinary map edit; a stack of the same name
- * gains them. Only for the active project, whose map the store holds.
+ * Mark the chosen terminals Development with their ready text, when the agent gives one (adding
+ * the proposed new ones; Validation terminals are left out, `proposedPatch`), and put their
+ * components in the proposed stack, an ordinary map edit; a stack of the same name gains them.
+ * Only for the active project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -119,14 +92,12 @@ export async function applyStackProposal(
   for (const t of chosen) {
     const node = useStore.getState().nodes.find((n) => n.id === t.component)
     if (!node) continue
-    let id = t.terminal ?? null
-    if (id && !node.data.terminals.some((x) => x.id === id)) continue
-    id ??= s.addTerminal(t.component, null, false)
-    s.updateTerminal(t.component, id, {
-      ...(t.terminal ? {} : { name: t.name ?? 'Dev', command: t.command ?? '', kind: 'task' }),
-      action: 'development',
-      readyWhen: t.readyWhen.trim(),
-    })
+    const current = t.terminal ? node.data.terminals.find((x) => x.id === t.terminal) : undefined
+    if (t.terminal && !current) continue
+    // The backend refuses Validation terminals too, but one may have become so since.
+    const patch = proposedPatch(t, current)
+    if (!patch) continue
+    s.updateTerminal(t.component, current?.id ?? s.addTerminal(t.component, null, false), patch)
     if (!members.includes(t.component)) members.push(t.component)
   }
   const existing = useStore.getState().groups.find((g) => g.name === pending.name)

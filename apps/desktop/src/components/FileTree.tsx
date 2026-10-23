@@ -154,17 +154,20 @@ function TreeEntry({
 const FOCUS_REFRESH_MS = 5000
 
 /**
- * The files under `path`. With `componentId`, changed files and those its agents touched are
- * marked, and a changed file's diff opens below the tree.
+ * The files under `path`. With `componentId`, changed files and, with `agentMarks`, those its
+ * agents touched are marked, and a changed file's diff opens below the tree. Agent marks come from
+ * `useMapActivity`, which only the main window's map fills, so pop-outs leave them out.
  */
 export default function FileTree({
   root,
   path,
   componentId,
+  agentMarks = true,
 }: {
   root: string
   path: string
   componentId?: string
+  agentMarks?: boolean
 }) {
   const [refresh, setRefresh] = useState(0)
   const [diff, setDiff] = useState<string>()
@@ -191,7 +194,13 @@ export default function FileTree({
   return (
     <div className="file-tree">
       {componentId && (
-        <ComponentMarks componentId={componentId} refresh={refresh} diff={diff} setDiff={setDiff}>
+        <ComponentMarks
+          componentId={componentId}
+          agentMarks={agentMarks}
+          refresh={refresh}
+          diff={diff}
+          setDiff={setDiff}
+        >
           <Tree root={root} path={path} refresh={refresh} setRefresh={setRefresh} />
         </ComponentMarks>
       )}
@@ -238,12 +247,14 @@ const NO_PATHS: string[] = []
 
 function ComponentMarks({
   componentId,
+  agentMarks,
   refresh,
   diff,
   setDiff,
   children,
 }: {
   componentId: string
+  agentMarks: boolean
   refresh: number
   diff: string | undefined
   setDiff: (path: string | undefined) => void
@@ -253,8 +264,8 @@ function ComponentMarks({
   const roles = useMapActivity(rolesOf(componentId))
   const worktree = useStore(activeWorktree)
   const touchedPaths = useMemo(
-    () => (roles.length ? roles.flatMap((r) => r.paths) : NO_PATHS),
-    [roles],
+    () => (agentMarks && roles.length ? roles.flatMap((r) => r.paths) : NO_PATHS),
+    [agentMarks, roles],
   )
   const marks = useMemo<Marks>(
     () => ({

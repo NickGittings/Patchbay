@@ -67,7 +67,8 @@ fn one_line(text: &str, limit: usize) -> bool {
 }
 
 impl StackProposal {
-    /// Check against the readable map: known components and task terminals, new
+    /// Check against the readable map: known components and task terminals (never
+    /// Validation ones, which applying would turn into Development), new
     /// terminals with a name and command, no repeats, and bounded single-line text
     /// with a reason. Errors name the entry.
     ///
@@ -98,6 +99,11 @@ impl StackProposal {
                     ensure!(
                         existing.is_some_and(|x| x.kind == TerminalKind::Task),
                         "{at}: only task terminals can join a stack"
+                    );
+                    // Applying makes it Development, which would silently drop its validator role.
+                    ensure!(
+                        existing.is_some_and(|x| x.action != Some(TerminalAction::Validation)),
+                        "{at}: {id} is a Validation terminal; propose a new terminal instead"
                     );
                 }
                 (None, Some(name), Some(command)) => {
@@ -300,8 +306,9 @@ pub fn stack_context(project: &Project) -> String {
          processes that must be up together, such as databases and queues (often in \
          docker-compose files), API servers, workers and web or mobile dev servers. Read \
          README files, package scripts, Makefiles, Procfiles, docker-compose files and \
-         framework configuration. Prefer an existing task terminal; propose a new one (with a \
-         name and a one-line command run from the component's folder) only when none fits. \
+         framework configuration. Prefer an existing task terminal that isn't a Validation \
+         one; propose a new one (with a name and a one-line command run from the component's \
+         folder) only when none fits. \
          Leave out tests, builds, linters and one-off scripts.\n\n\
          For each terminal give `readyWhen`: text the process prints once it accepts \
          connections (matched case-insensitively, such as `ready to accept connections` or \
@@ -358,6 +365,7 @@ mod tests {
             "components": [
                 {"id":"api","name":"API","kind":"backend","path":"api","terminals":[
                     {"id":"dev","name":"Dev","kind":"task","command":"npm run dev"},
+                    {"id":"test","name":"Test","kind":"task","command":"npm test","action":"validation"},
                     {"id":"agent","name":"Claude","kind":"agent","command":"claude"}
                 ]},
                 {"id":"web","name":"Web","kind":"frontend","path":"web","terminals":[]}
@@ -393,6 +401,10 @@ mod tests {
             (
                 json!([{"component":"api","terminal":"agent","reason":"x"}]),
                 "only task terminals",
+            ),
+            (
+                json!([{"component":"api","terminal":"test","reason":"x"}]),
+                "test is a Validation terminal",
             ),
             (
                 json!([{"component":"web","name":"Vite","reason":"x"}]),

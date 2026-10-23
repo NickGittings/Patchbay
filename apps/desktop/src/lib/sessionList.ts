@@ -3,6 +3,7 @@ import {
   PLAN_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  STACK_AGENT_TERMINAL,
   isReservedScope,
   type SessionRecord,
   type Task,
@@ -26,7 +27,10 @@ export function sessionRole(metadata: SessionMetadata): SessionRole {
     case MERGE_SCOPE:
       return { role: 'Merge', tone: 'merge' }
     case MAP_SCOPE:
-      return { role: 'Dependencies', tone: 'plan' }
+      // Both detection agents share the map scope; the terminal tells them apart.
+      return metadata.terminalId === STACK_AGENT_TERMINAL
+        ? { role: 'Stack', tone: 'plan' }
+        : { role: 'Dependencies', tone: 'plan' }
     default:
       // Root terminals and component terminals alike: agents implement, the rest run tasks.
       return metadata.kind === 'agent'

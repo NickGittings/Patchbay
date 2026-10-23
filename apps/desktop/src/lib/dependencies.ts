@@ -240,16 +240,31 @@ export function dismissDependencies(projectId: string) {
   closeDependencies(projectId)
 }
 
-/**
- * Start the detection agent with `preset`. One already running or on its way is shown instead, and
- * the user is told when it runs another preset; an exited one restarts with `preset`. Only a
- * session that started is revealed.
- */
+/** Start the dependency detection agent with `preset` through `startDetectionAgent`. */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
   if (!canDetect(projectId)) return
   // Starting a new detection run must not surface an older waiting submission.
   closeDialog(projectId)
-  const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+  await startDetectionAgent(projectId, preset, {
+    terminalId: MAP_AGENT_TERMINAL,
+    label: 'Dependency detection',
+    tab: 'Detect dependencies',
+  })
+}
+
+/**
+ * Start `projectId`'s map detection agent `terminalId` (dependencies or the stack) with `preset`,
+ * unless map edits wait for recovery. One already running or on its way is shown instead, and the
+ * user is told when it runs another preset; an exited one restarts with `preset`. Only a session
+ * that started is revealed. `label` names the job in messages, `tab` its terminal.
+ */
+export async function startDetectionAgent(
+  projectId: string,
+  preset: TerminalSpec,
+  { terminalId, label, tab }: { terminalId: string; label: string; tab: string },
+) {
+  if (!canDetect(projectId)) return
+  const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
   // A launch on its way keeps the preset and tab it started with.
   if (s.sessions[sid]?.running || launching(sid)) {
@@ -258,7 +273,7 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
       const name = planTerminals(s.devices).find((t) => t.id === running)?.name ?? running
       message(
         projectId,
-        `Dependency detection is already running with ${name}. Stop it to detect with ${preset.name}.`,
+        `${label} is already running with ${name}. Stop it to detect with ${preset.name}.`,
       )
     }
     if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
@@ -272,8 +287,8 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
     taskId: null,
     componentId: MAP_SCOPE,
     terminal: {
-      id: MAP_AGENT_TERMINAL,
-      name: `Detect dependencies · ${preset.name}`,
+      id: terminalId,
+      name: `${tab} · ${preset.name}`,
       kind: 'agent',
       command: preset.command,
     },
@@ -281,7 +296,7 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
   const ours = useStore.getState().runtimeTerminals[sid]
   let started = false
   try {
-    started = await startMapAgent(projectId, preset)
+    started = await startMapAgent(projectId, preset, terminalId)
   } finally {
     if (!started && useStore.getState().runtimeTerminals[sid] === ours)
       useStore.setState((st) => {
