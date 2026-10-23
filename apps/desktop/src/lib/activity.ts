@@ -33,6 +33,13 @@ export const fileActivity = (activity: Activity) =>
     activity.tool,
   ) &&
   !!activity.target
+/**
+ * File activity that changes the file (Codex's `apply_patch` and `write_file` arrive as Edit and
+ * Write), which alone marks the map and file tree: reading a file isn't working on it.
+ */
+export const writeActivity = (activity: Activity) =>
+  fileActivity(activity) &&
+  ['Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file'].includes(activity.tool)
 const absolute = (path: string) => path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
 export function normalizedPath(path: string) {
   const parts: string[] = []
@@ -47,34 +54,59 @@ export function normalizedPath(path: string) {
 }
 const inside = (file: string, dir: string) =>
   file === dir || file.startsWith(`${dir.replace(/\/$/, '')}/`)
+
+/**
+ * `file` relative to `base`, both normalized and absolute, with `../` for files outside it as
+ * project paths name external components (`../billing/…`); another drive stays absolute.
+ */
+function relativeTo(file: string, base: string) {
+  if (inside(file, base)) return file.slice(base.replace(/\/$/, '').length + 1)
+  const from = base.split('/').filter(Boolean)
+  const to = file.split('/').filter(Boolean)
+  let common = 0
+  while (common < from.length && common < to.length && from[common] === to[common]) common++
+  if (!common && !(file.startsWith('/') && base.startsWith('/'))) return file
+  return [...Array<string>(from.length - common).fill('..'), ...to.slice(common)].join('/')
+}
+
+/** Component roots in `worktree`, longest first, normalized once for many activities. */
+export interface ActivityRoots {
+  worktree: string
+  components: { id: string; root: string }[]
+}
+export function activityRoots(
+  components: readonly Pick<Component, 'id' | 'path'>[],
+  worktree: string,
+): ActivityRoots {
+  // Relative component roots follow this session's worktree, not the project's original folder.
+  return {
+    worktree: normalizedPath(worktree),
+    components: components
+      .map((c) => ({
+        id: c.id,
+        root: normalizedPath(absolute(c.path) ? c.path : `${worktree}/${c.path}`),
+      }))
+      .sort((a, b) => b.root.length - a.root.length),
+  }
+}
+
+/** The component and root-relative path of a file activity, as change lists name them. */
 export function activityFile(
   activity: Activity,
   record: SessionRecord,
-  components: readonly Pick<Component, 'id' | 'path'>[],
+  components: readonly Pick<Component, 'id' | 'path'>[] | ActivityRoots,
   worktree: string,
 ) {
   if (!fileActivity(activity) || !activity.target) return undefined
+  const roots = 'worktree' in components ? components : activityRoots(components, worktree)
   const cwd = record.spec.cwd
   const file = normalizedPath(
     absolute(activity.target) ? activity.target : `${cwd}/${activity.target}`,
   )
-  // Relative component roots follow this session's worktree, not the project's original folder.
-  const roots = components
-    .map((c) => ({
-      id: c.id,
-      root: normalizedPath(absolute(c.path) ? c.path : `${worktree}/${c.path}`),
-    }))
-    .filter((c) => inside(file, c.root))
-    .sort((a, b) => b.root.length - a.root.length)
-  if (roots[0])
-    return {
-      componentId: roots[0].id,
-      path: inside(file, normalizedPath(worktree))
-        ? file.slice(normalizedPath(worktree).length + 1)
-        : file,
-    }
-  if (inside(file, normalizedPath(worktree)))
-    return { componentId: '@project', path: file.slice(normalizedPath(worktree).length + 1) }
+  const owner = roots.components.find((c) => inside(file, c.root))
+  if (owner) return { componentId: owner.id, path: relativeTo(file, roots.worktree) }
+  if (inside(file, roots.worktree))
+    return { componentId: '@project', path: relativeTo(file, roots.worktree) }
   return undefined
 }
 /** Which role agent a session is, for the map's chips; `null` for scopes that don't work on files. */
@@ -89,7 +121,7 @@ export function agentRole(record: SessionRecord): AgentRole | null {
   return 'build'
 }
 
-/** Files one session touched in a component: `live` while its newest is under ten seconds old. */
+/** Files one session wrote in a component: `live` while its newest is under ten seconds old. */
 export interface RoleActivity {
   role: AgentRole
   sessionId: string
@@ -102,7 +134,7 @@ export interface RoleActivity {
 
 const LIVE_MS = 10000
 
-/** Accepted file activity in the selected worktree, per component and session. */
+/** Accepted file writes in the selected worktree, per component and session. */
 function* worktreeActivity(
   records: readonly SessionRecord[],
   sessions: Record<string, SessionState>,
@@ -112,6 +144,7 @@ function* worktreeActivity(
   components: readonly Pick<Component, 'id' | 'path'>[],
   now: number,
 ) {
+  const roots = activityRoots(components, worktree)
   for (const record of records) {
     if (
       record.metadata.projectId !== projectId ||
@@ -120,14 +153,14 @@ function* worktreeActivity(
       continue
     if (record.metadata.componentId === PLAN_SCOPE && record.spec.cwd !== worktree) continue
     for (const activity of sessions[record.id]?.activity ?? []) {
-      if (activity.atMs > now) continue
-      const file = activityFile(activity, record, components, worktree)
+      if (activity.atMs > now || !writeActivity(activity)) continue
+      const file = activityFile(activity, record, roots, worktree)
       if (file) yield { record, activity, file }
     }
   }
 }
 
-/** Role agents' file activity per component, newest session first. */
+/** Role agents' file writes per component, newest session first. */
 export function componentActivity(...args: Parameters<typeof worktreeActivity>) {
   const now = args[6]
   const byComponent = new Map<string, Map<string, RoleActivity>>()

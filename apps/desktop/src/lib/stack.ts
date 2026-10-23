@@ -1,11 +1,5 @@
 import type { ProposedStackTerminal, TerminalSpec } from '../types'
-import { program, readCommand, validatorKey } from './validators'
-
-/** The part of a map node these suggestions read. */
-interface ComponentLike {
-  id: string
-  data: { name: string; terminals: TerminalSpec[] }
-}
+import { program, suggester, validatorKey, type ComponentLike } from './validators'
 
 /** A task terminal that looks like a dev server or watcher and could join a stack. */
 export interface DevelopmentSuggestion {
@@ -53,26 +47,15 @@ export function readyTextFor(command: string): string {
   return ''
 }
 
-/** Readings per terminal object: the map replaces a terminal's object when it changes. */
-const readings = new WeakMap<TerminalSpec, boolean>()
-
 /**
  * Whether to suggest a terminal for Development: an unassigned task that serves or watches (a
  * dev/serve/start/watch id, script or subcommand, a dev server, a watch flag), unless it ends in
  * the background or is a check.
  */
-function suggestible(t: TerminalSpec): boolean {
-  const cached = readings.get(t)
-  if (cached !== undefined) return cached
-  let result = false
-  if (t.kind === 'task' && !t.action && t.command.trim()) {
-    const { background, reads } = readCommand(t.command)
-    result =
-      !background && !reads.includes('check') && (reads.includes('serves') || SERVE_IDS.has(t.id))
-  }
-  readings.set(t, result)
-  return result
-}
+const suggestible = suggester(
+  (t, { background, reads }) =>
+    !background && !reads.includes('check') && (reads.includes('serves') || SERVE_IDS.has(t.id)),
+)
 
 /** Whether a component has a terminal marked as Development. */
 export const hasDevelopment = (c: ComponentLike) =>

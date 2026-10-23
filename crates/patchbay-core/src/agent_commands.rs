@@ -1,6 +1,6 @@
 //! Headless orchestration for authenticated agent commands and manual graph actions.
 use crate::actions::{ActionPlan, ActionReport, ActionRequest};
-use crate::agent_bridge::{Action, LaunchContext, Role};
+use crate::agent_bridge::{Action, LaunchContext, Proposes, Role};
 use crate::session::{Record, Request};
 use crate::{Project, access::AccessSnapshot, context, tasks};
 use anyhow::Result;
@@ -299,7 +299,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
     let state = app;
     let scoped = state.project(&launch.project_id)?;
     anyhow::ensure!(
-        launch.role != Role::Mapper
+        !matches!(launch.role, Role::Mapper(_))
             || matches!(
                 action,
                 Action::Context {}
@@ -394,7 +394,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         }
         Action::ProposeLinks { proposal } => {
             anyhow::ensure!(
-                launch.role == Role::Mapper,
+                launch.role == Role::Mapper(Proposes::Links),
                 "Only dependency detection sessions can propose links"
             );
             // Locked components are unknown ids to the agent.
@@ -416,8 +416,8 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         }
         Action::ProposeStack { proposal } => {
             anyhow::ensure!(
-                launch.role == Role::Mapper,
-                "Only map detection sessions can propose a stack"
+                launch.role == Role::Mapper(Proposes::Stack),
+                "Only stack detection sessions can propose a stack"
             );
             // Locked components are unknown ids to the agent.
             let readable = scoped.access.restrict(scoped.project()?, &[])?;
@@ -690,37 +690,71 @@ mod tests {
             .to_string();
         assert!(err.contains("Only dependency detection"), "{err}");
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
-        assert!(err.contains("Only map detection"), "{err}");
-        session.role = Role::Mapper;
+        assert!(err.contains("Only stack detection"), "{err}");
+        // Each detection agent submits only what its own terminal detects.
+        session.role = Role::Mapper(Proposes::Stack);
+        let err = dispatch(&host, &session, propose())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Only dependency detection"), "{err}");
+        session.role = Role::Mapper(Proposes::Nothing);
+        let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
+        assert!(err.contains("Only stack detection"), "{err}");
+        session.role = Role::Mapper(Proposes::Links);
+        let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
+        assert!(err.contains("Only stack detection"), "{err}");
         // Validated before anything is saved.
         let err = dispatch(&host, &session, propose())
             .unwrap_err()
             .to_string();
         assert!(err.contains("needs links"), "{err}");
+        session.role = Role::Mapper(Proposes::Stack);
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
         assert!(err.contains("needs terminals"), "{err}");
-        for action in [
-            Action::Validate {
-                component_id: "web".into(),
-            },
-            Action::Logs {
-                session_id: "other".into(),
-            },
-            Action::EnvironmentStart {
-                group_id: "env".into(),
-            },
-            Action::Propose {
-                proposal: serde_json::from_value(
-                    json!({"version":1,"plan":"p","assignments":[{"componentId":"web","assignment":"a"}]}),
-                )
-                .unwrap(),
-            },
-        ] {
-            let err = dispatch(&host, &session, action).unwrap_err().to_string();
-            assert!(err.contains("only read context and propose links or a stack"), "{err}");
+        for role in [Proposes::Links, Proposes::Stack, Proposes::Nothing] {
+            session.role = Role::Mapper(role);
+            for action in [
+                Action::Validate {
+                    component_id: "web".into(),
+                },
+                Action::Logs {
+                    session_id: "other".into(),
+                },
+                Action::EnvironmentStart {
+                    group_id: "env".into(),
+                },
+                Action::Propose {
+                    proposal: serde_json::from_value(
+                        json!({"version":1,"plan":"p","assignments":[{"componentId":"web","assignment":"a"}]}),
+                    )
+                    .unwrap(),
+                },
+            ] {
+                let err = dispatch(&host, &session, action).unwrap_err().to_string();
+                assert!(err.contains("only read context and propose links or a stack"), "{err}");
+            }
         }
         assert_eq!(*host.saves.lock().unwrap(), 0);
         assert!(host.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn map_roles_follow_the_detection_terminal() {
+        use crate::model::{MAP_SCOPE, PLAN_SCOPE};
+        assert_eq!(
+            Role::of(MAP_SCOPE, crate::link_proposals::MAP_TERMINAL),
+            Role::Mapper(Proposes::Links)
+        );
+        assert_eq!(
+            Role::of(MAP_SCOPE, crate::stack_proposals::STACK_TERMINAL),
+            Role::Mapper(Proposes::Stack)
+        );
+        assert_eq!(
+            Role::of(MAP_SCOPE, "shell"),
+            Role::Mapper(Proposes::Nothing)
+        );
+        assert_eq!(Role::of(PLAN_SCOPE, "claude"), Role::Planner);
+        assert_eq!(Role::of("web", "stack"), Role::Component);
     }
 
     #[test]

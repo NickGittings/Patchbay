@@ -1,7 +1,7 @@
 import type { TerminalSpec } from '../types'
 
-/** The part of a map node these suggestions read. */
-interface ComponentLike {
+/** The part of a map node these suggestions (and the Stack panel's) read. */
+export interface ComponentLike {
   id: string
   data: { name: string; terminals: TerminalSpec[] }
 }
@@ -92,7 +92,8 @@ function readSimple(command: string): 'check' | 'serves' | 'other' {
   const [first = '', sub = '', third = ''] = words
   const name = program(first)
   if (SERVES.has(sub.toLowerCase())) return 'serves'
-  if (DEV_SERVERS.has(name) && (!sub || name === 'nodemon')) return 'serves'
+  // Flags don't change what a dev server does: `vite --port 3000` still serves.
+  if (DEV_SERVERS.has(name) && (!sub || sub.startsWith('-') || name === 'nodemon')) return 'serves'
   if (PACKAGE_MANAGERS.has(name) || name === 'make' || name === 'just') {
     const script = PACKAGE_MANAGERS.has(name) && ['run', 'run-script'].includes(sub) ? third : sub
     const parts = segments(script)
@@ -114,26 +115,34 @@ export function readCommand(command: string) {
   return { background: /(^|[^&>])&(?![&>])/.test(command), reads: parts.map(readSimple) }
 }
 
-/** Readings per terminal object: the map replaces a terminal's object when it changes. */
-const readings = new WeakMap<TerminalSpec, boolean>()
+/**
+ * A suggestion test of unassigned task terminals with a command, given how the command reads,
+ * cached per terminal object: the map replaces a terminal's object when it changes.
+ */
+export function suggester(
+  test: (t: TerminalSpec, read: ReturnType<typeof readCommand>) => boolean,
+): (t: TerminalSpec) => boolean {
+  const readings = new WeakMap<TerminalSpec, boolean>()
+  return (t) => {
+    const cached = readings.get(t)
+    if (cached !== undefined) return cached
+    const result =
+      t.kind === 'task' && !t.action && !!t.command.trim() && test(t, readCommand(t.command))
+    readings.set(t, result)
+    return result
+  }
+}
 
 /**
  * Whether to suggest a terminal as a validator: an unassigned task whose id or command looks
  * like a check, unless it obviously watches or serves (a watch flag, a dev/serve/start/preview
- * script or subcommand, a backgrounded `&`). This is approximate, so nothing is pre-checked.
+ * script or subcommand, a dev server, a backgrounded `&`). This is approximate, so nothing is
+ * pre-checked.
  */
-function suggestible(t: TerminalSpec): boolean {
-  const cached = readings.get(t)
-  if (cached !== undefined) return cached
-  let result = false
-  if (t.kind === 'task' && !t.action && t.command.trim()) {
-    const { background, reads } = readCommand(t.command)
-    if (!background && !reads.includes('serves'))
-      result = CHECK_IDS.has(t.id) || reads.includes('check')
-  }
-  readings.set(t, result)
-  return result
-}
+const suggestible = suggester(
+  (t, { background, reads }) =>
+    !background && !reads.includes('serves') && (CHECK_IDS.has(t.id) || reads.includes('check')),
+)
 
 /** Whether a component has a terminal marked as Validation. */
 export const hasValidator = (c: ComponentLike) =>

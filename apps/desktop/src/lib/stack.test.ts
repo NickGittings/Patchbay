@@ -20,13 +20,22 @@ test('dev servers, watchers and serve scripts are suggested; checks and one-shot
     'npm run dev',
     'pnpm start',
     'vite',
+    'vite --port 3000',
+    'npx next --turbo',
     'next dev',
     'cargo watch -x run',
     'tsc --watch',
     'vitest',
   ])
     expect(suggests(command), command).toBe(true)
-  for (const command of ['npm test', 'cargo build', 'vitest run', 'npm run dev &', 'make'])
+  for (const command of [
+    'npm test',
+    'cargo build',
+    'vitest run',
+    'npm run dev &',
+    'make',
+    'vite build',
+  ])
     expect(suggests(command), command).toBe(false)
   expect(suggests('uvicorn app:main --reload', 'dev')).toBe(true)
   expect(suggests('cargo run', 'build')).toBe(false)

@@ -69,8 +69,9 @@ fn one_line(text: &str, limit: usize) -> bool {
 impl StackProposal {
     /// Check against the readable map: known components and task terminals (never
     /// Validation ones, which applying would turn into Development), new
-    /// terminals with a name and command, no repeats, and bounded single-line text
-    /// with a reason. Errors name the entry.
+    /// terminals with a name and command that no terminal of the component already
+    /// has, no repeats, and bounded single-line text with a reason. Errors name the
+    /// entry.
     ///
     /// # Errors
     /// Fails for another version, no terminals or too many, or an invalid entry.
@@ -85,7 +86,9 @@ impl StackProposal {
             self.terminals.len() <= MAX_TERMINALS,
             "Propose at most {MAX_TERMINALS} terminals"
         );
-        let mut seen = HashSet::new();
+        // Existing terminals by id, new ones by name: an id never stands for a name.
+        let mut existing_seen = HashSet::new();
+        let mut new_seen = HashSet::new();
         for (n, t) in self.terminals.iter().enumerate() {
             let label = t.terminal.as_deref().or(t.name.as_deref()).unwrap_or("?");
             let at = format!("Terminal {} ({} › {label})", n + 1, t.component);
@@ -105,6 +108,10 @@ impl StackProposal {
                         existing.is_some_and(|x| x.action != Some(TerminalAction::Validation)),
                         "{at}: {id} is a Validation terminal; propose a new terminal instead"
                     );
+                    ensure!(
+                        existing_seen.insert((&t.component, id.as_str())),
+                        "{at}: repeated terminal"
+                    );
                 }
                 (None, Some(name), Some(command)) => {
                     ensure!(
@@ -115,15 +122,29 @@ impl StackProposal {
                         !command.trim().is_empty() && one_line(command, COMMAND_LIMIT),
                         "{at}: commands are one line of at most {COMMAND_LIMIT} characters"
                     );
+                    let key = name.trim().to_lowercase();
+                    let slug = crate::detect::slug(name.trim());
+                    if let Some(same) = component
+                        .terminals
+                        .iter()
+                        .find(|x| x.name.trim().to_lowercase() == key || x.id == slug)
+                    {
+                        anyhow::bail!(
+                            "{at}: {} already has terminal {} ({}); propose it by id instead",
+                            t.component,
+                            same.id,
+                            same.name
+                        );
+                    }
+                    ensure!(
+                        new_seen.insert((&t.component, key)),
+                        "{at}: repeated terminal"
+                    );
                 }
                 _ => anyhow::bail!(
                     "{at}: give either an existing terminal id, or a name and command for a new one"
                 ),
             }
-            ensure!(
-                seen.insert((&t.component, label.trim().to_lowercase())),
-                "{at}: repeated terminal"
-            );
             ensure!(
                 one_line(&t.ready_when, READY_LIMIT),
                 "{at}: ready text is one line of at most {READY_LIMIT} characters"
@@ -388,6 +409,9 @@ mod tests {
         let existing = json!({"component":"api","terminal":"dev","readyWhen":"Listening","reason":"api/package.json:3"});
         let new = json!({"component":"web","name":"Vite","command":"npx vite","reason":"web/vite.config.ts:1"});
         assert!(proposal(json!([existing, new])).validate(&p).is_ok());
+        // Names repeat only within a component.
+        let web_dev = json!({"component":"web","name":"Dev","command":"npm run dev","reason":"x"});
+        assert!(proposal(json!([existing, web_dev])).validate(&p).is_ok());
         for (terminals, error) in [
             (json!([]), "needs terminals"),
             (
@@ -421,6 +445,18 @@ mod tests {
             (
                 json!([existing, existing]),
                 "Terminal 2 (api › dev): repeated",
+            ),
+            (
+                json!([new, {"component":"web","name":" vite ","command":"vite","reason":"x"}]),
+                "Terminal 2 (web ›  vite ): repeated",
+            ),
+            (
+                json!([{"component":"api","name":"DEV","command":"npm start","reason":"x"}]),
+                "api already has terminal dev (Dev); propose it by id",
+            ),
+            (
+                json!([{"component":"api","name":"Test","command":"vitest","reason":"x"}]),
+                "api already has terminal test (Test)",
             ),
             (
                 json!([{"component":"api","terminal":"dev","readyWhen":"a\nb","reason":"x"}]),

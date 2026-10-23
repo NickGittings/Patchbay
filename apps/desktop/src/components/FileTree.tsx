@@ -8,14 +8,34 @@ import type { ChangedFile, DirEntry } from '../types'
 import DiffView from './changes/DiffView'
 import { useComponentChanges } from './changes/useComponentChanges'
 
-/** What the tree marks: a component's uncommitted files and those its agents touched. */
+/**
+ * What the tree marks: a component's uncommitted files and those its agents touched, with the
+ * folders holding each, so a row's check doesn't scan every path.
+ */
 interface Marks {
   changed: Map<string, ChangedFile>
   touched: Set<string>
+  changedDirs: Set<string>
+  touchedDirs: Set<string>
   showDiff: (file: ChangedFile) => void
 }
-const NO_MARKS: Marks = { changed: new Map(), touched: new Set(), showDiff: () => {} }
+const NO_MARKS: Marks = {
+  changed: new Map(),
+  touched: new Set(),
+  changedDirs: new Set(),
+  touchedDirs: new Set(),
+  showDiff: () => {},
+}
 const MarksContext = createContext<Marks>(NO_MARKS)
+
+/** Every folder holding one of `paths`. */
+function folders(paths: Iterable<string>) {
+  const out = new Set<string>()
+  for (const path of paths)
+    for (let end = path.lastIndexOf('/'); end > 0; end = path.lastIndexOf('/', end - 1))
+      out.add(path.slice(0, end))
+  return out
+}
 
 /** A file's own marks, or whether a folder holds marked files. */
 function marksFor(marks: Marks, entry: DirEntry) {
@@ -23,11 +43,10 @@ function marksFor(marks: Marks, entry: DirEntry) {
     const file = marks.changed.get(entry.path)
     return { file, changed: !!file, touched: marks.touched.has(entry.path) }
   }
-  const inside = (path: string) => path.startsWith(`${entry.path}/`)
   return {
     file: undefined,
-    changed: [...marks.changed.keys()].some(inside),
-    touched: [...marks.touched].some(inside),
+    changed: marks.changedDirs.has(entry.path),
+    touched: marks.touchedDirs.has(entry.path),
   }
 }
 
@@ -267,14 +286,16 @@ function ComponentMarks({
     () => (agentMarks && roles.length ? roles.flatMap((r) => r.paths) : NO_PATHS),
     [agentMarks, roles],
   )
-  const marks = useMemo<Marks>(
-    () => ({
-      changed: new Map((files ?? []).map((f) => [f.path, f])),
+  const marks = useMemo<Marks>(() => {
+    const changed = new Map((files ?? []).map((f) => [f.path, f]))
+    return {
+      changed,
       touched: new Set(touchedPaths),
+      changedDirs: folders(changed.keys()),
+      touchedDirs: folders(touchedPaths),
       showDiff: (file) => setDiff(file.path),
-    }),
-    [files, touchedPaths, setDiff],
-  )
+    }
+  }, [files, touchedPaths, setDiff])
   const file = diff ? marks.changed.get(diff) : undefined
   return (
     <MarksContext.Provider value={marks}>

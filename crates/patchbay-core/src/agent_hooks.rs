@@ -404,7 +404,7 @@ fn read_optional(path: &Path) -> Result<String> {
         Err(e) => Err(e.into()),
     }
 }
-fn read_json(path: &Path) -> Result<Value> {
+fn read_json(path: &Path, provider: Adapter) -> Result<Value> {
     let text = read_optional(path)?;
     let value = if text.is_empty() {
         anyhow::ensure!(
@@ -415,10 +415,10 @@ fn read_json(path: &Path) -> Result<Value> {
     } else {
         serde_json::from_str(&text).context("Malformed provider configuration; no changes made")?
     };
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     Ok(value)
 }
-fn validate_shape(value: &Value) -> Result<()> {
+fn validate_shape(value: &Value, provider: Adapter) -> Result<()> {
     anyhow::ensure!(
         value.is_object(),
         "Provider configuration must be an object"
@@ -428,12 +428,12 @@ fn validate_shape(value: &Value) -> Result<()> {
             .as_object()
             .context("Malformed hooks: expected object")?;
         for (name, groups) in hooks {
-            if name == "state" {
-                anyhow::ensure!(groups.is_object(), "Malformed hook state: expected object");
-                continue;
-            }
-            if matches!(name.as_str(), "managed_dir" | "windows_managed_dir") {
-                anyhow::ensure!(groups.is_string(), "Malformed managed hook directory");
+            if provider == Adapter::Codex && codex_hook_metadata(name) {
+                if name == "state" {
+                    anyhow::ensure!(groups.is_object(), "Malformed hook state: expected object");
+                } else {
+                    anyhow::ensure!(groups.is_string(), "Malformed managed hook directory");
+                }
                 continue;
             }
             for group in groups
@@ -500,7 +500,7 @@ fn json_update(
     reporter: &Path,
     install: bool,
 ) -> Result<Value> {
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     if value.get("hooks").is_none() && !install {
         return Ok(value);
     }
@@ -543,7 +543,7 @@ fn toml_update(text: &str, provider: Adapter, reporter: &Path, install: bool) ->
         .context("Malformed Codex TOML; no changes made")?;
     let raw: toml::Value = toml::from_str(text)?;
     let value = serde_json::to_value(raw)?;
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     let updated = json_update(value.clone(), provider, reporter, install)?;
     let Some(updated_hooks) = updated.get("hooks").and_then(Value::as_object) else {
         return Ok(doc.to_string());
@@ -579,9 +579,9 @@ pub fn inspect(provider: Adapter, source_override: Option<&Path>) -> Result<Inte
     let value = if path.extension().is_some_and(|e| e == "toml") {
         serde_json::to_value(toml::from_str::<toml::Value>(&read_optional(&path)?)?)?
     } else {
-        read_json(&path)?
+        read_json(&path, provider)?
     };
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     let installed = events(provider).iter().all(|event| {
         value
             .get("hooks")
@@ -659,7 +659,7 @@ pub fn configure(
     let bytes = if source.extension().is_some_and(|s| s == "toml") {
         toml_update(&before, provider, &reporter, install)?.into_bytes()
     } else {
-        let value = read_json(&source)?;
+        let value = read_json(&source, provider)?;
         serde_json::to_vec_pretty(&json_update(value, provider, &reporter, install)?)?
     };
     // Validate configuration before deploying the helper or changing its source.
@@ -949,9 +949,13 @@ mod tests {
             "{\"hooks\":{\"Stop\":[{\"hooks\":null}]}}",
         ] {
             std::fs::write(&path, text).unwrap();
-            assert!(read_json(&path).is_err());
+            assert!(read_json(&path, Adapter::Claude).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         }
+        // Hook metadata is Codex's alone; in Claude settings it is a malformed event.
+        let state = json!({"hooks":{"state":{"x":{}},"managed_dir":"/etc/codex"}});
+        assert!(validate_shape(&state, Adapter::Codex).is_ok());
+        assert!(validate_shape(&state, Adapter::Claude).is_err());
         for text in [
             "hooks = false",
             "[hooks]\nStop = false",

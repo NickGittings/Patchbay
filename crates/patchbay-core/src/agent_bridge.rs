@@ -55,17 +55,33 @@ pub enum Role {
     Component,
     /// The project's planner (`PLAN_SCOPE`): it saves plans and proposals, and runs nothing.
     Planner,
-    /// Map detection (`MAP_SCOPE`): it may only read context and propose links or a stack.
-    Mapper,
+    /// Map detection (`MAP_SCOPE`): it may only read context and submit what its terminal
+    /// detects.
+    Mapper(Proposes),
+}
+
+/// What a map detection session may submit, decided by its terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proposes {
+    /// Dependency detection (`link_proposals::MAP_TERMINAL`).
+    Links,
+    /// Stack detection (`stack_proposals::STACK_TERMINAL`).
+    Stack,
+    /// Any other terminal at `MAP_SCOPE`.
+    Nothing,
 }
 
 impl Role {
-    /// The role of a session at `component_id`.
+    /// The role of a session at `component_id` running `terminal_id`.
     #[must_use]
-    pub fn of(component_id: &str) -> Self {
+    pub fn of(component_id: &str, terminal_id: &str) -> Self {
         match component_id {
             crate::model::PLAN_SCOPE => Self::Planner,
-            crate::model::MAP_SCOPE => Self::Mapper,
+            crate::model::MAP_SCOPE => Self::Mapper(match terminal_id {
+                crate::link_proposals::MAP_TERMINAL => Proposes::Links,
+                crate::stack_proposals::STACK_TERMINAL => Proposes::Stack,
+                _ => Proposes::Nothing,
+            }),
             _ => Self::Component,
         }
     }

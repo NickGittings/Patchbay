@@ -40,9 +40,20 @@ function setBusy(projectId: string, busy: boolean) {
   useStackProposals.setState((s) => ({ busy: { ...s.busy, [projectId]: busy } }))
 }
 
-/** Read `projectId`'s waiting submission; returns whether one is waiting. */
+/** Each project's latest read, and the newest one whose result was applied. */
+const requested = new Map<string, number>()
+const applied = new Map<string, number>()
+
+/**
+ * Read `projectId`'s waiting submission; returns whether one is waiting. A read older than one
+ * already applied may predate a newer submission, so it is ignored.
+ */
 export async function refreshStackProposal(projectId: string): Promise<boolean> {
+  const seq = (requested.get(projectId) ?? 0) + 1
+  requested.set(projectId, seq)
   const pending = await stackProposalRead(projectId).catch(() => null)
+  if (seq <= (applied.get(projectId) ?? 0)) return !!useStackProposals.getState().pending[projectId]
+  applied.set(projectId, seq)
   const shown = !!pending && cleared.get(projectId) !== pending.id
   setPending(projectId, shown ? pending : null)
   return shown
@@ -78,8 +89,9 @@ export async function discardStackProposal(projectId: string, id: string) {
 /**
  * Mark the chosen terminals Development with their ready text, when the agent gives one (adding
  * the proposed new ones; Validation terminals are left out, `proposedPatch`), and put their
- * components in the proposed stack, an ordinary map edit; a stack of the same name gains them.
- * Only for the active project, whose map the store holds.
+ * components in the proposed stack, an ordinary map edit; a stack of the same name gains them,
+ * keeping its own startup order, and isn't edited when no member is added. Only for the active
+ * project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -101,12 +113,10 @@ export async function applyStackProposal(
     if (!members.includes(t.component)) members.push(t.component)
   }
   const existing = useStore.getState().groups.find((g) => g.name === pending.name)
-  if (existing)
-    s.updateGroup(existing.id, {
-      componentIds: [...new Set([...existing.componentIds, ...members])],
-      orderedStartup: pending.orderedStartup,
-    })
-  else if (members.length) s.addGroup(pending.name, members, pending.orderedStartup)
+  const added = members.filter((id) => !existing?.componentIds.includes(id))
+  if (existing && added.length)
+    s.updateGroup(existing.id, { componentIds: [...existing.componentIds, ...added] })
+  else if (!existing && added.length) s.addGroup(pending.name, added, pending.orderedStartup)
   await discardStackProposal(projectId, pending.id)
 }
 

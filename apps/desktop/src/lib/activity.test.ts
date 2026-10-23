@@ -6,6 +6,7 @@ import {
   fileActivity,
   hydrateActivity,
   liveComponents,
+  writeActivity,
 } from './activity'
 import type { Activity, SessionRecord } from '../types'
 const activity = (sequence = 1, target = 'src/lib.rs', tool = 'Edit'): Activity => ({
@@ -53,7 +54,7 @@ test('file ownership uses longest directory boundary including nested and extern
   ).toBe('src')
   expect(
     activityFile(activity(1, '/external/lib/a.rs'), record('/external/lib'), components, '/task'),
-  ).toEqual({ componentId: 'external', path: '/external/lib/a.rs' })
+  ).toEqual({ componentId: 'external', path: '../external/lib/a.rs' })
   expect(
     activityFile(activity(1, 'a.rs'), record('/task/src/nested'), components, '/task')?.componentId,
   ).toBe('nested')
@@ -142,7 +143,10 @@ test('component activity groups each session’s files per component and marks i
     r: {
       generation: 1,
       running: true,
-      activity: [{ ...activity(1, 'src/nested/c.ts', 'Read'), atMs: 5000 }],
+      activity: [
+        { ...activity(1, 'src/nested/c.ts', 'Write'), atMs: 5000 },
+        { ...activity(2, 'src/nested/d.ts', 'Read'), atMs: 5000 },
+      ],
     },
   }
   const found = componentActivity(
@@ -175,4 +179,40 @@ test('component activity groups each session’s files per component and marks i
     },
   ])
   expect(liveComponents(found)).toEqual(['nested'])
+})
+
+test('external component files are named relative to the worktree, as file trees name them', () => {
+  const sibling = [{ id: 'billing', path: '../billing' }]
+  const sessions = {
+    s: { generation: 1, running: true, activity: [activity(1, '/work/billing/src/pay.ts')] },
+  }
+  const found = componentActivity(
+    [record('/work/app')],
+    sessions,
+    'p',
+    't',
+    '/work/app',
+    sibling,
+    1000,
+  )
+  expect(found.get('billing')?.[0].paths).toEqual(['../billing/src/pay.ts'])
+  // No relative path reaches another drive.
+  expect(
+    activityFile(
+      activity(1, 'C:/lib/a.ts'),
+      record('C:/lib'),
+      [{ id: 'o', path: 'C:/lib' }],
+      'D:/x',
+    )?.path,
+  ).toBe('C:/lib/a.ts')
+})
+
+test('only writes mark components: reading a file is not working on it', () => {
+  const sessions = {
+    s: { generation: 1, running: true, activity: [activity(1, 'src/a.ts', 'Read')] },
+  }
+  expect(componentActivity([record()], sessions, 'p', 't', '/task', components, 1000).size).toBe(0)
+  expect(writeActivity(activity(1, 'src/a.ts', 'Read'))).toBe(false)
+  expect(writeActivity(activity(1, 'src/a.ts', 'MultiEdit'))).toBe(true)
+  expect(fileActivity(activity(1, 'src/a.ts', 'Read'))).toBe(true)
 })
