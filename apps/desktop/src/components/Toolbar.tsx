@@ -1,4 +1,4 @@
-import { isMac } from '../lib/platform'
+import { isMac, titleBarMouseDown } from '../lib/platform'
 import { useEffect } from 'react'
 import UnifiedSearch from './UnifiedSearch'
 import Toast from './Toast'
@@ -23,7 +23,11 @@ export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
     return () => window.removeEventListener('keydown', key, true)
   }, [])
   return (
-    <div className={`top-bar${isMac ? ' mac-titlebar' : ''}`} data-tauri-drag-region>
+    <div
+      className={`top-bar${isMac ? ' mac-titlebar' : ''}`}
+      data-tauri-drag-region
+      onMouseDown={titleBarMouseDown}
+    >
       <UnifiedSearch actions={actions} />
       <Toast />
     </div>

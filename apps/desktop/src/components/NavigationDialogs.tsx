@@ -1,4 +1,4 @@
-import { isMac } from '../lib/platform'
+import { isMac, titleBarMouseDown } from '../lib/platform'
 import UnifiedSearch from './UnifiedSearch'
 import { useEffect, useState } from 'react'
 import { editorDiscover, editorPreferences, editorSavePreferences } from '../lib/ipc'
@@ -152,7 +152,11 @@ export default function NavigationDialogs({ settingsOnly = false }: { settingsOn
   return (
     <>
       {!settingsOnly && (
-        <div className={`top-bar${isMac ? ' mac-titlebar' : ''}`} data-tauri-drag-region>
+        <div
+          className={`top-bar${isMac ? ' mac-titlebar' : ''}`}
+          data-tauri-drag-region
+          onMouseDown={titleBarMouseDown}
+        >
           <UnifiedSearch filesOnly />
         </div>
       )}
