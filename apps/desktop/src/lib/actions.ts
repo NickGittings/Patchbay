@@ -46,7 +46,7 @@ export async function runGraphAction(request: ActionRequest) {
     )
       useStore.getState().setMessage(message)
   }
-  say(request.kind === 'startGroup' ? 'Starting environment…' : 'Validating affected components…')
+  say(request.kind === 'startGroup' ? 'Starting stack…' : 'Validating affected components…')
   try {
     const report = await graphActionIn(projectId, task ?? null, project, request)
     const count = (outcome: string) => report.results.filter((r) => r.outcome === outcome).length

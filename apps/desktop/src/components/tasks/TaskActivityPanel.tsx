@@ -13,7 +13,7 @@ import { useStore } from '../../store'
 import { closePanel, selectPanel } from '../../lib/rail'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
-/** Start or stop an environment group, or validate what a component change may affect. */
+/** Start or stop a stack, or validate what a component change may affect. */
 export function RunSelect() {
   const groups = useStore((s) => s.groups)
   const nodes = useStore((s) => s.nodes)
@@ -39,7 +39,7 @@ export function RunSelect() {
         Run
       </option>
       {!!groups.length && (
-        <optgroup label="Start environment">
+        <optgroup label="Start stack">
           {groups.map((g) => (
             <option key={g.id} value={`start:${g.id}`} disabled={busy}>
               {g.name}
@@ -48,7 +48,7 @@ export function RunSelect() {
         </optgroup>
       )}
       {!!groups.length && (
-        <optgroup label="Stop environment">
+        <optgroup label="Stop stack">
           {groups.map((g) => (
             <option key={g.id} value={`stop:${g.id}`}>
               {g.name}
@@ -77,9 +77,7 @@ export function ActivityStatus() {
   if (!busy) return null
   return (
     <div className="row task-actions">
-      <span role="status">
-        {action?.kind === 'startGroup' ? 'Starting environment…' : 'Validating…'}
-      </span>
+      <span role="status">{action?.kind === 'startGroup' ? 'Starting stack…' : 'Validating…'}</span>
       {(action?.kind === 'validateAffected' || action?.kind === 'validateChanged') && (
         <button onClick={() => void stopValidation()}>Stop checks</button>
       )}
@@ -224,7 +222,7 @@ export default function TaskActivityPanel() {
           <span className="spacer" />
           <button onClick={close}>Close</button>
         </div>
-        <p>Environments started or stopped and validations run in this worktree.</p>
+        <p>Stacks started or stopped and validations run in this worktree.</p>
         <ActivityStatus />
         <ValidatorSetup key={projectId} />
         {!own.length && <p>No activity in this worktree.</p>}
@@ -239,8 +237,8 @@ export default function TaskActivityPanel() {
                     {['validate', 'validateChanged'].includes(activity.action.kind)
                       ? 'Validation'
                       : activity.action.kind === 'environmentStop'
-                        ? 'Stop environment'
-                        : 'Start environment'}{' '}
+                        ? 'Stop stack'
+                        : 'Start stack'}{' '}
                     · {activity.state}
                   </strong>
                   <span className="hint flush" title={activity.initiator}>

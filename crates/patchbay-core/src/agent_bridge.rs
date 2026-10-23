@@ -55,7 +55,7 @@ pub enum Role {
     Component,
     /// The project's planner (`PLAN_SCOPE`): it saves plans and proposals, and runs nothing.
     Planner,
-    /// Dependency detection (`MAP_SCOPE`): it may only read context and propose links.
+    /// Map detection (`MAP_SCOPE`): it may only read context and propose links or a stack.
     Mapper,
 }
 
@@ -115,6 +115,10 @@ pub enum Action {
     /// Dependencies a detection agent proposes for the user to review.
     ProposeLinks {
         proposal: crate::link_proposals::LinkProposal,
+    },
+    /// A local stack a detection agent proposes for the user to review.
+    ProposeStack {
+        proposal: crate::stack_proposals::StackProposal,
     },
 }
 

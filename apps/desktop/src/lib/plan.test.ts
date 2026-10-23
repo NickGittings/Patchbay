@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { DeviceManifest } from '../types'
-import { agentDevices, nearbyIds, plannerDevice, planTerminals } from './plan'
+import { affectedIds, agentDevices, nearbyIds, plannerDevice, planTerminals } from './plan'
 
 const device = (id: string, kind: DeviceManifest['kind']): DeviceManifest => ({
   id,
@@ -46,4 +46,17 @@ test('nearbyIds reuses its result for the same inputs', () => {
   const highlighted = ['web']
   const edges = [{ source: 'web', target: 'api' }]
   expect(nearbyIds(highlighted, edges)).toBe(nearbyIds(highlighted, edges))
+})
+
+test('components depending on a changed one, transitively, may be affected', () => {
+  // web → api → lib, docs → lib; cli is unrelated.
+  const edges = [
+    { source: 'web', target: 'api' },
+    { source: 'api', target: 'lib' },
+    { source: 'docs', target: 'lib' },
+    { source: 'lib', target: 'cli' },
+  ]
+  expect([...affectedIds({ lib: 2, web: 0 }, edges)].sort()).toEqual(['api', 'docs', 'web'])
+  expect([...affectedIds({ api: 1, lib: 1 }, edges)].sort()).toEqual(['docs', 'web'])
+  expect([...affectedIds({}, edges)]).toEqual([])
 })

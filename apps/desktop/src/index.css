@@ -524,59 +524,11 @@ input[type='radio'] {
   padding: 4px 0;
 }
 
-/* Hierarchy */
-.hierarchy {
-  padding-bottom: 12px;
-}
-.hierarchy-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% - 12px);
-  margin: 1px 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  text-align: left;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.hierarchy-item.active,
-.hierarchy-item.highlighted,
-.hierarchy-item:hover {
-  background: var(--hover);
-}
-.hierarchy-item.active {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.hierarchy-select {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  gap: 8px;
-  padding: 0;
-  border: 0;
-  text-align: left;
-}
-.hierarchy-select:hover:not(:disabled) {
-  background: transparent;
-}
-.hierarchy-filter {
-  width: calc(100% - 24px);
-  margin: 0 12px 8px;
-}
 .kind-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex: none;
-}
-.hierarchy-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .count {
   font-family: var(--mono);
@@ -784,6 +736,71 @@ input[type='radio'] {
   color: var(--text);
   border-color: var(--border-strong);
 }
+.component-node.activity-pulse {
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes activity-pulse {
+  50% {
+    outline: 3px solid var(--running);
+    outline-offset: 5px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .component-node.activity-pulse {
+    animation: none;
+    outline: 2px solid var(--running);
+    outline-offset: 4px;
+  }
+}
+.component-node.affected {
+  outline: 1px dashed var(--input);
+  outline-offset: 3px;
+}
+.canvas-empty {
+  pointer-events: auto;
+}
+.agent-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 12px 8px;
+}
+.agent-role {
+  --role-color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--role-color);
+  background: color-mix(in srgb, var(--role-color) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--role-color) 20%, transparent);
+  opacity: 0.7;
+}
+.agent-role.live {
+  opacity: 1;
+  background: color-mix(in srgb, var(--role-color) 16%, transparent);
+}
+.agent-role .status-dot {
+  background: var(--role-color);
+}
+.agent-role.plan {
+  --role-color: var(--accent-text);
+}
+.agent-role.build {
+  --role-color: var(--running);
+}
+.agent-role.fix {
+  --role-color: var(--input);
+}
+.agent-role.review {
+  --role-color: var(--review);
+}
+.agent-role.merge {
+  --role-color: var(--ok);
+}
 .react-flow__handle.link-handle {
   width: 10px;
   height: 10px;
@@ -984,6 +1001,36 @@ input[type='radio'] {
 }
 .file-tree-error {
   overflow-wrap: anywhere;
+}
+.file-tree-entry.changed .file-tree-name {
+  color: var(--input);
+}
+.file-tree-entry.changed.added .file-tree-name,
+.file-tree-entry.changed.untracked .file-tree-name {
+  color: var(--ok);
+}
+.file-tree-entry.changed.deleted .file-tree-name {
+  color: var(--bad);
+  text-decoration: line-through;
+}
+.file-tree-touched {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--running);
+}
+.file-tree-diff {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+.file-tree-diff .file-tree-header .panel-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .terminal-grid {
   display: grid;
@@ -1931,6 +1978,14 @@ button.review-name:hover:not(:disabled) {
   min-height: 0;
 }
 /* Saved graph actions */
+.stack-terminal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
 .component-groups {
   padding: 0 12px;
 }
@@ -2223,7 +2278,7 @@ button.review-name:hover:not(:disabled) {
   font-size: 12px;
 }
 .map-issue strong,
-.hierarchy .map-issue {
+.component-node .map-issue {
   text-transform: capitalize;
 }
 .maintenance-origin {
@@ -2474,6 +2529,13 @@ kbd {
 .validator-suggestion-details code {
   color: var(--muted);
   white-space: pre-wrap;
+}
+.stack-suggestions .validator-suggestion {
+  cursor: default;
+}
+.stack-suggestions .validator-suggestion-details input {
+  width: 100%;
+  margin: 0;
 }
 
 /* Job agents stay beside the reviewed source, regardless of the active task. */

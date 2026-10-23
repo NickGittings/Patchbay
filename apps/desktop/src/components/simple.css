@@ -192,22 +192,6 @@
     0 0 0 2px var(--running),
     0 0 16px color-mix(in srgb, var(--running) 20%, transparent);
 }
-.component-node.simple-pulse {
-  animation: simple-activity-pulse 1.4s ease-in-out infinite;
-}
-@keyframes simple-activity-pulse {
-  50% {
-    outline: 3px solid var(--running);
-    outline-offset: 5px;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .component-node.simple-pulse {
-    animation: none;
-    outline: 2px solid var(--running);
-    outline-offset: 4px;
-  }
-}
 .simple-show-chat {
   position: absolute;
   top: 10px;

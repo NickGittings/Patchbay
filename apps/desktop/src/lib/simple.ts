@@ -186,3 +186,10 @@ export function simplePanelLayout(layout: Record<string, number> | undefined) {
     ? { ...layout, 'App-simple-chat': 0 }
     : layout
 }
+
+/** Navigation layouts from before the Hierarchy panel went: the canvas takes its width. */
+export function withoutHierarchy(layout: Record<string, number> | undefined) {
+  if (!layout || !Object.hasOwn(layout, 'App-pane-1')) return layout
+  const { 'App-pane-1': hierarchy, ...rest } = layout
+  return { ...rest, 'App-pane-2': (rest['App-pane-2'] ?? 0) + hierarchy }
+}

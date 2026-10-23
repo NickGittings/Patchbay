@@ -63,7 +63,7 @@ const watches = (word: string) => {
 /** A script or target name's first segment, so `test:unit`, `test_unit` and `Test` match. */
 const segments = (name: string) => name.toLowerCase().split(/[:._-]/)
 
-const program = (word: string) => word.replace(/^.*[\\/]/, '').toLowerCase()
+export const program = (word: string) => word.replace(/^.*[\\/]/, '').toLowerCase()
 
 /**
  * How one simple command reads, approximately: `check`, `serves` (may never exit) or `other`.
@@ -105,6 +105,15 @@ function readSimple(command: string): 'check' | 'serves' | 'other' {
   return subs && (!subs.length || subs.includes(sub)) ? 'check' : 'other'
 }
 
+/**
+ * How each simple command of a command line reads, and whether it ends in the background: a
+ * lone `&` (not `&&`, `&>` or `>&`).
+ */
+export function readCommand(command: string) {
+  const parts = command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
+  return { background: /(^|[^&>])&(?![&>])/.test(command), reads: parts.map(readSimple) }
+}
+
 /** Readings per terminal object: the map replaces a terminal's object when it changes. */
 const readings = new WeakMap<TerminalSpec, boolean>()
 
@@ -118,10 +127,7 @@ function suggestible(t: TerminalSpec): boolean {
   if (cached !== undefined) return cached
   let result = false
   if (t.kind === 'task' && !t.action && t.command.trim()) {
-    // A lone `&` (not `&&`, `&>` or `>&`) runs a job in the background.
-    const background = /(^|[^&>])&(?![&>])/.test(t.command)
-    const parts = t.command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
-    const reads = parts.map(readSimple)
+    const { background, reads } = readCommand(t.command)
     if (!background && !reads.includes('serves'))
       result = CHECK_IDS.has(t.id) || reads.includes('check')
   }

@@ -486,6 +486,31 @@ export const mapAgentStart = (
     requestId,
     resume,
   })
+/** A stack detection agent submitted a stack (`agent_commands.rs` emits it). */
+export const STACK_PROPOSALS_EVENT = 'patchbay://stack-proposals'
+export const onStackProposals = (
+  handler: (event: { projectId: string }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ projectId: string }>(STACK_PROPOSALS_EVENT, (e) => handler(e.payload))
+export const stackProposalRead = (projectId: string) =>
+  invoke<import('../types').PendingStack | null>('stack_proposal_read', { projectId })
+/** Forget submission `id`; a newer one stays. */
+export const stackProposalClear = (projectId: string, id: string) =>
+  invoke<boolean>('stack_proposal_clear', { projectId, id })
+/** Launch the stack detection agent with agent preset `terminal`. */
+export const stackAgentStart = (
+  project: Project,
+  terminal: TerminalSpec,
+  requestId: string,
+  resume?: boolean,
+) =>
+  invoke<string>('stack_agent_start', {
+    projectId: project.projectId,
+    project,
+    terminal,
+    requestId,
+    resume,
+  })
 export const proposalRead = (projectId: string, task?: string) =>
   invoke<import('../types').PlannerProposal | null>('proposal_read', { projectId, task })
 export const proposalApply = (

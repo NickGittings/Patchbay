@@ -1,4 +1,15 @@
-import type { Activity, Component, SessionRecord, SessionState, Task } from '../types'
+import {
+  MAP_SCOPE,
+  MERGE_SCOPE,
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  TASK_ROOT_SCOPE,
+  type Activity,
+  type Component,
+  type SessionRecord,
+  type SessionState,
+  type Task,
+} from '../types'
 /** Merge snapshots and live events by journal identity, independent of response order. */
 export function hydrateActivity(
   previous: SessionState | undefined,
@@ -66,8 +77,33 @@ export function activityFile(
     return { componentId: '@project', path: file.slice(normalizedPath(worktree).length + 1) }
   return undefined
 }
-/** Latest accepted file activity in the selected worktree, for the ten-second map pulse. */
-export function activeComponents(
+/** Which role agent a session is, for the map's chips; `null` for scopes that don't work on files. */
+export type AgentRole = 'plan' | 'build' | 'fix' | 'review' | 'merge'
+export function agentRole(record: SessionRecord): AgentRole | null {
+  const scope = record.metadata.componentId
+  if (scope === PLAN_SCOPE) return 'plan'
+  if (scope === REVIEW_SCOPE) return 'review'
+  if (scope === MERGE_SCOPE) return 'merge'
+  if (scope === TASK_ROOT_SCOPE) return record.metadata.branch ? 'fix' : 'build'
+  if (scope === MAP_SCOPE) return null
+  return 'build'
+}
+
+/** Files one session touched in a component: `live` while its newest is under ten seconds old. */
+export interface RoleActivity {
+  role: AgentRole
+  sessionId: string
+  /** The session's scope, for `revealTerminal`. */
+  scope: string
+  lastMs: number
+  live: boolean
+  paths: string[]
+}
+
+const LIVE_MS = 10000
+
+/** Accepted file activity in the selected worktree, per component and session. */
+function* worktreeActivity(
   records: readonly SessionRecord[],
   sessions: Record<string, SessionState>,
   projectId: string,
@@ -76,26 +112,64 @@ export function activeComponents(
   components: readonly Pick<Component, 'id' | 'path'>[],
   now: number,
 ) {
-  const ids = new Set<string>()
   for (const record of records) {
     if (
       record.metadata.projectId !== projectId ||
       (record.spec.cwd !== worktree && (record.metadata.task ?? null) !== task)
     )
       continue
-    if (record.metadata.componentId === '@plan' && record.spec.cwd !== worktree) continue
+    if (record.metadata.componentId === PLAN_SCOPE && record.spec.cwd !== worktree) continue
     for (const activity of sessions[record.id]?.activity ?? []) {
-      if (activity.atMs > now || now - activity.atMs > 10000) continue
+      if (activity.atMs > now) continue
       const file = activityFile(activity, record, components, worktree)
-      if (file) ids.add(file.componentId)
+      if (file) yield { record, activity, file }
     }
   }
+}
+
+/** Latest accepted file activity in the selected worktree, for the ten-second map pulse. */
+export function activeComponents(...args: Parameters<typeof worktreeActivity>) {
+  const now = args[6]
+  const ids = new Set<string>()
+  for (const { activity, file } of worktreeActivity(...args))
+    if (now - activity.atMs <= LIVE_MS) ids.add(file.componentId)
   return ids
+}
+
+/** Role agents' file activity per component, newest session first. */
+export function componentActivity(...args: Parameters<typeof worktreeActivity>) {
+  const now = args[6]
+  const byComponent = new Map<string, Map<string, RoleActivity>>()
+  for (const { record, activity, file } of worktreeActivity(...args)) {
+    const role = agentRole(record)
+    if (!role) continue
+    const entries = byComponent.get(file.componentId) ?? new Map<string, RoleActivity>()
+    byComponent.set(file.componentId, entries)
+    const entry = entries.get(record.id) ?? {
+      role,
+      sessionId: record.id,
+      scope: record.metadata.componentId,
+      lastMs: 0,
+      live: false,
+      paths: [],
+    }
+    entries.set(record.id, entry)
+    entry.lastMs = Math.max(entry.lastMs, activity.atMs)
+    entry.live = now - entry.lastMs <= LIVE_MS
+    if (!entry.paths.includes(file.path)) entry.paths.push(file.path)
+  }
+  return new Map(
+    [...byComponent].map(([id, entries]) => [
+      id,
+      [...entries.values()].sort((a, b) => b.lastMs - a.lastMs),
+    ]),
+  )
 }
 
 /** Review/merge/planner scopes run at a worktree root; component sessions also retain that root. */
 export function activityRoot(record: SessionRecord, tasks: readonly Task[], fallback: string) {
-  if (['@plan', '@review', '@merge'].includes(record.metadata.componentId)) return record.spec.cwd
+  if ([PLAN_SCOPE, REVIEW_SCOPE, MERGE_SCOPE].includes(record.metadata.componentId))
+    return record.spec.cwd
   return (
     tasks.find((task) => task.id === record.metadata.task)?.worktree ??
     record.metadata.projectRoot ??

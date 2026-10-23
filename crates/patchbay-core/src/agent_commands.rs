@@ -25,6 +25,7 @@ pub trait Host {
     fn emit_activity(&self, activity: &Activity);
     fn proposal_submitted(&self, launch: &LaunchContext);
     fn links_proposed(&self, launch: &LaunchContext);
+    fn stack_proposed(&self, launch: &LaunchContext);
 }
 
 pub struct ProjectScope {
@@ -301,9 +302,12 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         launch.role != Role::Mapper
             || matches!(
                 action,
-                Action::Context {} | Action::Status {} | Action::ProposeLinks { .. }
+                Action::Context {}
+                    | Action::Status {}
+                    | Action::ProposeLinks { .. }
+                    | Action::ProposeStack { .. }
             ),
-        "Dependency detection can only read context and propose links"
+        "Map detection can only read context and propose links or a stack"
     );
     match action {
         Action::Context {} => {
@@ -410,6 +414,18 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 json!({"submitted":pending.links.len(),"alreadyOnMap":pending.skipped.len(),"applied":false}),
             )
         }
+        Action::ProposeStack { proposal } => {
+            anyhow::ensure!(
+                launch.role == Role::Mapper,
+                "Only map detection sessions can propose a stack"
+            );
+            // Locked components are unknown ids to the agent.
+            let readable = scoped.access.restrict(scoped.project()?, &[])?;
+            let pending =
+                crate::stack_proposals::submit(&readable, &launch.agent_session, &proposal)?;
+            app.stack_proposed(launch);
+            Ok(json!({"submitted":pending.terminals.len(),"applied":false}))
+        }
         Action::Propose { proposal } => {
             let project = scoped.project()?;
             let readable = scoped.access.restrict(project, &[])?;
@@ -497,6 +513,7 @@ impl TryFrom<Action> for ActionRequest {
             | Action::EnvironmentStop { .. }
             | Action::Propose { .. }
             | Action::ProposeLinks { .. }
+            | Action::ProposeStack { .. }
             | Action::SavePlan { .. }
             | Action::WithdrawPlan { .. } => anyhow::bail!("Unsupported graph command"),
         }
@@ -584,6 +601,7 @@ mod tests {
         fn proposal_submitted(&self, _: &LaunchContext) {
             *self.saves.lock().unwrap() += 1;
         }
+        fn stack_proposed(&self, _: &LaunchContext) {}
         fn links_proposed(&self, _: &LaunchContext) {
             *self.saves.lock().unwrap() += 1;
         }
@@ -661,18 +679,26 @@ mod tests {
         let propose = || Action::ProposeLinks {
             proposal: serde_json::from_value(json!({"version":1,"links":[]})).unwrap(),
         };
+        let stack = || Action::ProposeStack {
+            proposal: serde_json::from_value(json!({"version":1,"name":"Local","terminals":[]}))
+                .unwrap(),
+        };
         let mut session = launch();
         session.task = None;
         let err = dispatch(&host, &session, propose())
             .unwrap_err()
             .to_string();
         assert!(err.contains("Only dependency detection"), "{err}");
+        let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
+        assert!(err.contains("Only map detection"), "{err}");
         session.role = Role::Mapper;
         // Validated before anything is saved.
         let err = dispatch(&host, &session, propose())
             .unwrap_err()
             .to_string();
         assert!(err.contains("needs links"), "{err}");
+        let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
+        assert!(err.contains("needs terminals"), "{err}");
         for action in [
             Action::Validate {
                 component_id: "web".into(),
@@ -691,7 +717,7 @@ mod tests {
             },
         ] {
             let err = dispatch(&host, &session, action).unwrap_err().to_string();
-            assert!(err.contains("only read context and propose links"), "{err}");
+            assert!(err.contains("only read context and propose links or a stack"), "{err}");
         }
         assert_eq!(*host.saves.lock().unwrap(), 0);
         assert!(host.calls.lock().unwrap().is_empty());

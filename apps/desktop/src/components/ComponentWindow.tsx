@@ -178,6 +178,7 @@ export default function ComponentWindow({ id }: { id: string }) {
                   key={`${project.root}/${data.path}`}
                   root={project.root}
                   path={data.path}
+                  componentId={id}
                 />
               ) : (
                 <ChangesPanel componentId={id} />

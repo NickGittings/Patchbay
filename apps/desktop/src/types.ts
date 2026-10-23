@@ -4,10 +4,12 @@ export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
-/** Mirrors `model::MAP_SCOPE`: the agent that proposes the map's dependencies. */
+/** Mirrors `model::MAP_SCOPE`: the agents that propose the map's dependencies and stack. */
 export const MAP_SCOPE = '@map'
 /** Mirrors `link_proposals::MAP_TERMINAL`, the one detection terminal of a project. */
 export const MAP_AGENT_TERMINAL = 'detect'
+/** Mirrors `stack_proposals::STACK_TERMINAL`: stack detection, beside it at `MAP_SCOPE`. */
+export const STACK_AGENT_TERMINAL = 'stack'
 /** Mirrors context::{MIN_SUBAGENTS, MAX_SUBAGENTS}. */
 export const MIN_SUBAGENTS = 2
 export const MAX_SUBAGENTS = 8
@@ -291,6 +293,29 @@ export interface PendingLinks {
   submittedMs: number
   links: ProposedLink[]
   skipped: ProposedLink[]
+}
+
+/**
+ * Mirrors `stack_proposals::ProposedTerminal`: an existing terminal by `terminal`, or a new one
+ * with `name` and `command`.
+ */
+export interface ProposedStackTerminal {
+  component: string
+  terminal?: string | null
+  name?: string | null
+  command?: string | null
+  readyWhen: string
+  reason: string
+}
+
+/** Mirrors `stack_proposals::Pending`. `id` is unique per submission. */
+export interface PendingStack {
+  id: string
+  sessionId: string
+  submittedMs: number
+  name: string
+  orderedStartup: boolean
+  terminals: ProposedStackTerminal[]
 }
 
 /** What a rescan or Add repo… put on the map: new components and their links, with final ids. */

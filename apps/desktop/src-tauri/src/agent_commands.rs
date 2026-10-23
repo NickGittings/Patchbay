@@ -52,6 +52,12 @@ impl Host for Desktop {
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
+    fn stack_proposed(&self, launch: &LaunchContext) {
+        let _ = self.0.emit(
+            "patchbay://stack-proposals",
+            serde_json::json!({"projectId":launch.project_id}),
+        );
+    }
 }
 
 pub fn run_action(
@@ -188,6 +194,27 @@ pub async fn map_links_clear(
 ) -> CmdResult<bool> {
     let root = project_root(&state, &project_id)?;
     blocking(move || patchbay_core::link_proposals::clear(&root, &id).map_err(err)).await
+}
+
+/// The stack a detection agent proposed for the project, awaiting review.
+#[tauri::command]
+pub async fn stack_proposal_read(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<patchbay_core::stack_proposals::Pending>> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::stack_proposals::read(&root).map_err(err)).await
+}
+
+/// Forget a reviewed stack proposal; a newer submission stays.
+#[tauri::command]
+pub async fn stack_proposal_clear(
+    project_id: String,
+    id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<bool> {
+    let root = project_root(&state, &project_id)?;
+    blocking(move || patchbay_core::stack_proposals::clear(&root, &id).map_err(err)).await
 }
 
 #[tauri::command]

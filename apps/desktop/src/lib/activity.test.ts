@@ -1,5 +1,12 @@
 import { expect, test } from 'vitest'
-import { activeComponents, activityFile, fileActivity, hydrateActivity } from './activity'
+import {
+  activeComponents,
+  activityFile,
+  agentRole,
+  componentActivity,
+  fileActivity,
+  hydrateActivity,
+} from './activity'
 import type { Activity, SessionRecord } from '../types'
 const activity = (sequence = 1, target = 'src/lib.rs', tool = 'Edit'): Activity => ({
   sequence,
@@ -107,4 +114,73 @@ test('shared planner and review activity resolve in their own worktree before op
     metadata: { ...record().metadata, componentId: '@review', projectRoot: '/project', task: null },
   }
   expect(activityRoot(reviewer, [], '/selected')).toBe('/task')
+})
+
+test('sessions map to their role agent, and the dependency mapper to none', () => {
+  const scoped = (componentId: string, branch?: string) =>
+    ({ ...record(), metadata: { ...record().metadata, componentId, branch } }) as SessionRecord
+  expect(agentRole(scoped('@plan'))).toBe('plan')
+  expect(agentRole(scoped('@task'))).toBe('build')
+  expect(agentRole(scoped('@task', 'feature'))).toBe('fix')
+  expect(agentRole(scoped('@review'))).toBe('review')
+  expect(agentRole(scoped('@merge'))).toBe('merge')
+  expect(agentRole(scoped('app'))).toBe('build')
+  expect(agentRole(scoped('@map'))).toBeNull()
+})
+
+test('component activity groups each session’s files per component and marks it live for ten seconds', () => {
+  const builder = {
+    ...record(),
+    id: 'b',
+    metadata: { ...record().metadata, componentId: '@task' },
+  } as SessionRecord
+  const reviewer = {
+    ...record(),
+    id: 'r',
+    metadata: { ...record().metadata, componentId: '@review' },
+  } as SessionRecord
+  const sessions = {
+    b: {
+      generation: 1,
+      running: true,
+      activity: [activity(1, 'src/a.ts'), activity(2, 'src/a.ts'), activity(3, 'src/b.ts')],
+    },
+    r: {
+      generation: 1,
+      running: true,
+      activity: [{ ...activity(1, 'src/nested/c.ts', 'Read'), atMs: 5000 }],
+    },
+  }
+  const found = componentActivity(
+    [builder, reviewer],
+    sessions,
+    'p',
+    't',
+    '/task',
+    components,
+    12000,
+  )
+  expect(found.get('src')).toEqual([
+    {
+      role: 'build',
+      sessionId: 'b',
+      scope: '@task',
+      lastMs: 1000,
+      live: false,
+      paths: ['src/a.ts', 'src/b.ts'],
+    },
+  ])
+  expect(found.get('nested')).toEqual([
+    {
+      role: 'review',
+      sessionId: 'r',
+      scope: '@review',
+      lastMs: 5000,
+      live: true,
+      paths: ['src/nested/c.ts'],
+    },
+  ])
+  expect([
+    ...activeComponents([builder, reviewer], sessions, 'p', 't', '/task', components, 12000),
+  ]).toEqual(['nested'])
 })
