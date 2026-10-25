@@ -24,8 +24,6 @@ test('dev servers, watchers and serve scripts are suggested; checks and one-shot
     'npx next --turbo',
     'next dev',
     'cargo watch -x run',
-    'tsc --watch',
-    'vitest',
   ])
     expect(suggests(command), command).toBe(true)
   for (const command of [
@@ -39,6 +37,19 @@ test('dev servers, watchers and serve scripts are suggested; checks and one-shot
     expect(suggests(command), command).toBe(false)
   expect(suggests('uvicorn app:main --reload', 'dev')).toBe(true)
   expect(suggests('cargo run', 'build')).toBe(false)
+})
+
+test('test and check watchers are not dev servers', () => {
+  for (const command of [
+    'vitest',
+    'npx vitest',
+    'jest --watch',
+    'npm test -- --watch',
+    'npm run test:watch',
+    'tsc --watch',
+  ])
+    expect(suggests(command), command).toBe(false)
+  for (const id of ['test', 'lint', 'check']) expect(suggests('npm run dev', id), id).toBe(false)
 })
 
 test('known servers get the text they print once ready; others start without waiting', () => {

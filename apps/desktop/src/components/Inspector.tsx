@@ -444,12 +444,7 @@ export default function Inspector() {
         </div>
       )}
       {showFiles && node ? (
-        <FileTree
-          key={scope}
-          root={project?.root ?? node.data.path}
-          path={node.data.path}
-          componentId={node.id}
-        />
+        <FileTree key={scope} path={node.data.path} componentId={node.id} />
       ) : extensionViews.selected ? (
         <ExtensionView id={extensionViews.selected} />
       ) : node ? (

@@ -68,14 +68,15 @@ export const program = (word: string) => word.replace(/^.*[\\/]/, '').toLowerCas
 /**
  * How one simple command reads, approximately: `check`, `serves` (may never exit) or `other`.
  * Leading `VAR=value` assignments and common wrappers (`env`, `npx`, `pnpm exec`, `uv run`,
- * `python -m`) are skipped.
+ * `python -m`) are skipped. Without `watch`, watching doesn't count, so a test watcher (`jest
+ * --watch`, `vitest`, `npm run test:watch`) reads as the check it runs.
  */
-function readSimple(command: string): 'check' | 'serves' | 'other' {
+function readSimple(command: string, watch = true): 'check' | 'serves' | 'other' {
   let words = command
     .trim()
     .split(/\s+/)
     .map((w) => w.replace(/^['"]|['"]$/g, ''))
-  if (words.some(watches)) return 'serves'
+  if (watch && words.some(watches)) return 'serves'
   for (;;) {
     while (/^[A-Za-z_]\w*=/.test(words[0] ?? '')) words = words.slice(1)
     const [first = '', sub = ''] = words
@@ -97,23 +98,36 @@ function readSimple(command: string): 'check' | 'serves' | 'other' {
   if (PACKAGE_MANAGERS.has(name) || name === 'make' || name === 'just') {
     const script = PACKAGE_MANAGERS.has(name) && ['run', 'run-script'].includes(sub) ? third : sub
     const parts = segments(script)
+    if (!watch && CHECK_SCRIPTS.has(parts[0])) return 'check'
     if (parts.some((part) => SERVES.has(part))) return 'serves'
     return CHECK_SCRIPTS.has(parts[0]) ? 'check' : 'other'
   }
   // Vitest watches unless told to run once.
-  if (name === 'vitest') return sub === 'run' || words.includes('--run') ? 'check' : 'serves'
+  if (name === 'vitest')
+    return !watch || sub === 'run' || words.includes('--run') ? 'check' : 'serves'
   const subs = CHECK_PROGRAMS.get(name)
   return subs && (!subs.length || subs.includes(sub)) ? 'check' : 'other'
 }
+
+const simpleCommands = (command: string) =>
+  command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
 
 /**
  * How each simple command of a command line reads, and whether it ends in the background: a
  * lone `&` (not `&&`, `&>` or `>&`).
  */
 export function readCommand(command: string) {
-  const parts = command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
-  return { background: /(^|[^&>])&(?![&>])/.test(command), reads: parts.map(readSimple) }
+  const parts = simpleCommands(command)
+  return {
+    background: /(^|[^&>])&(?![&>])/.test(command),
+    reads: parts.map((part) => readSimple(part)),
+  }
 }
+
+/** Whether a terminal runs checks, watching or not: a check id, or a command that reads as one. */
+export const checkLike = (t: TerminalSpec) =>
+  CHECK_IDS.has(t.id) ||
+  simpleCommands(t.command).some((part) => readSimple(part, false) === 'check')
 
 /**
  * A suggestion test of unassigned task terminals with a command, given how the command reads,

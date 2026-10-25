@@ -5,13 +5,15 @@ use crate::context;
 use crate::model::{MAP_SCOPE, Project, TerminalAction, TerminalKind, TerminalSpec};
 use crate::policy::Policy;
 use crate::pty::SessionSpec;
+use crate::submissions::{Store, Submission};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-static SUBMISSIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Submissions awaiting review, one per project root under `~/.patchbay/stack-proposals/`.
+static SUBMISSIONS: Store = Store::new("stack-proposals");
 
 /// The stack detection terminal, beside dependency detection at `MAP_SCOPE`.
 pub const STACK_TERMINAL: &str = "stack";
@@ -60,6 +62,12 @@ pub struct Pending {
     pub name: String,
     pub ordered_startup: bool,
     pub terminals: Vec<ProposedTerminal>,
+}
+
+impl Submission for Pending {
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 fn one_line(text: &str, limit: usize) -> bool {
@@ -159,19 +167,6 @@ impl StackProposal {
     }
 }
 
-fn store() -> Result<PathBuf> {
-    Ok(crate::workspace::home()?.join("stack-proposals"))
-}
-
-/// One file per project root, kept with Patchbay's state so it works outside Git
-/// and is never committed.
-fn file(store: &Path, root: &str) -> PathBuf {
-    store.join(format!(
-        "{}.json",
-        crate::workspace::session_id("stack-proposals", "", root)
-    ))
-}
-
 fn trimmed(text: Option<String>) -> Option<String> {
     text.map(|s| s.trim().to_string())
 }
@@ -183,9 +178,7 @@ fn submit_in(
     proposal: &StackProposal,
     now_ms: u64,
 ) -> Result<Pending> {
-    let _guard = SUBMISSIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = SUBMISSIONS.lock();
     proposal.validate(project)?;
     let pending = Pending {
         id: uuid::Uuid::new_v4().to_string(),
@@ -207,31 +200,16 @@ fn submit_in(
             })
             .collect(),
     };
-    crate::workspace::atomic_write(
-        &file(store, &project.root),
-        &serde_json::to_vec_pretty(&pending)?,
-    )?;
+    SUBMISSIONS.write_in(store, &project.root, &pending)?;
     Ok(pending)
 }
 
 fn read_in(store: &Path, root: &str) -> Result<Option<Pending>> {
-    match std::fs::read(file(store, root)) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    SUBMISSIONS.read_in(store, root)
 }
 
 fn clear_in(store: &Path, root: &str, id: &str) -> Result<bool> {
-    let _guard = SUBMISSIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // A newer submission arrived while the user reviewed this one; keep it.
-    if read_in(store, root)?.is_none_or(|p| p.id != id) {
-        return Ok(false);
-    }
-    std::fs::remove_file(file(store, root))?;
-    Ok(true)
+    SUBMISSIONS.clear_in::<Pending>(store, root, id)
 }
 
 /// Save an agent's proposal for review, replacing any earlier one.
@@ -239,7 +217,13 @@ fn clear_in(store: &Path, root: &str, id: &str) -> Result<bool> {
 /// # Errors
 /// Fails if the proposal is invalid for `project` or can't be saved.
 pub fn submit(project: &Project, session: &str, proposal: &StackProposal) -> Result<Pending> {
-    submit_in(&store()?, project, session, proposal, crate::pty::now_ms())
+    submit_in(
+        &SUBMISSIONS.dir()?,
+        project,
+        session,
+        proposal,
+        crate::pty::now_ms(),
+    )
 }
 
 /// The proposal awaiting review for the project at `root`.
@@ -247,7 +231,7 @@ pub fn submit(project: &Project, session: &str, proposal: &StackProposal) -> Res
 /// # Errors
 /// Fails if the file can't be read or parsed.
 pub fn read(root: &str) -> Result<Option<Pending>> {
-    read_in(&store()?, root)
+    read_in(&SUBMISSIONS.dir()?, root)
 }
 
 /// Forget the reviewed proposal `id`, unless a newer one has replaced it.
@@ -255,7 +239,7 @@ pub fn read(root: &str) -> Result<Option<Pending>> {
 /// # Errors
 /// Fails if the file can't be read or removed.
 pub fn clear(root: &str, id: &str) -> Result<bool> {
-    clear_in(&store()?, root, id)
+    clear_in(&SUBMISSIONS.dir()?, root, id)
 }
 
 fn describe(t: &TerminalSpec) -> String {

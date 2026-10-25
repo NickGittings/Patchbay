@@ -51,7 +51,13 @@ const applied = new Map<string, number>()
 export async function refreshStackProposal(projectId: string): Promise<boolean> {
   const seq = (requested.get(projectId) ?? 0) + 1
   requested.set(projectId, seq)
-  const pending = await stackProposalRead(projectId).catch(() => null)
+  let pending: PendingStack | null
+  try {
+    pending = await stackProposalRead(projectId)
+  } catch {
+    // Unreadable for now: whatever is shown stays, and a later read decides.
+    return !!useStackProposals.getState().pending[projectId]
+  }
   if (seq <= (applied.get(projectId) ?? 0)) return !!useStackProposals.getState().pending[projectId]
   applied.set(projectId, seq)
   const shown = !!pending && cleared.get(projectId) !== pending.id
@@ -71,27 +77,41 @@ export function startStackAgent(projectId: string, preset: TerminalSpec) {
   })
 }
 
-/** Forget the reviewed submission, unless a newer one replaced it, then show any newer one. */
-export async function discardStackProposal(projectId: string, id: string) {
+/**
+ * Forget the reviewed submission, unless a newer one replaced it, then show any newer one. One
+ * already `wasApplied` stays hidden even when it can't be forgotten, so it isn't applied twice.
+ */
+export async function discardStackProposal(projectId: string, id: string, wasApplied = false) {
   cleared.set(projectId, id)
   setBusy(projectId, true)
   try {
     await stackProposalClear(projectId, id)
   } catch (e) {
-    cleared.delete(projectId)
-    useStore.getState().setMessage(String(e))
+    if (wasApplied)
+      useStore.getState().setMessage(`Applied the stack, but couldn’t forget the proposal: ${e}`)
+    else {
+      cleared.delete(projectId)
+      useStore.getState().setMessage(String(e))
+    }
   } finally {
     setBusy(projectId, false)
   }
   await refreshStackProposal(projectId)
 }
 
+/** Names compared ignoring case and spacing, so `Local  stack` is `local stack`. */
+const sameName = (a: string, b: string) => {
+  const key = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+  return key(a) === key(b)
+}
+
 /**
  * Mark the chosen terminals Development with their ready text, when the agent gives one (adding
- * the proposed new ones; Validation terminals are left out, `proposedPatch`), and put their
- * components in the proposed stack, an ordinary map edit; a stack of the same name gains them,
- * keeping its own startup order, and isn't edited when no member is added. Only for the active
- * project, whose map the store holds.
+ * the proposed new ones, unless the component has a terminal of that name already; Validation
+ * terminals are left out, `proposedPatch`), and put their components in the proposed stack, an
+ * ordinary map edit; a stack of the same name gains them, keeping its own startup order, and
+ * isn't edited when no member is added. Names match ignoring case and spacing, so applying a
+ * submission again changes nothing. Only for the active project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -104,7 +124,9 @@ export async function applyStackProposal(
   for (const t of chosen) {
     const node = useStore.getState().nodes.find((n) => n.id === t.component)
     if (!node) continue
-    const current = t.terminal ? node.data.terminals.find((x) => x.id === t.terminal) : undefined
+    const current = t.terminal
+      ? node.data.terminals.find((x) => x.id === t.terminal)
+      : node.data.terminals.find((x) => sameName(x.name, t.name ?? 'Dev'))
     if (t.terminal && !current) continue
     // The backend refuses Validation terminals too, but one may have become so since.
     const patch = proposedPatch(t, current)
@@ -112,12 +134,12 @@ export async function applyStackProposal(
     s.updateTerminal(t.component, current?.id ?? s.addTerminal(t.component, null, false), patch)
     if (!members.includes(t.component)) members.push(t.component)
   }
-  const existing = useStore.getState().groups.find((g) => g.name === pending.name)
+  const existing = useStore.getState().groups.find((g) => sameName(g.name, pending.name))
   const added = members.filter((id) => !existing?.componentIds.includes(id))
   if (existing && added.length)
     s.updateGroup(existing.id, { componentIds: [...existing.componentIds, ...added] })
   else if (!existing && added.length) s.addGroup(pending.name, added, pending.orderedStartup)
-  await discardStackProposal(projectId, pending.id)
+  await discardStackProposal(projectId, pending.id, true)
 }
 
 let stop: (() => void) | undefined

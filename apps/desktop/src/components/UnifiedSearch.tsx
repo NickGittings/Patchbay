@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { fileSearch } from '../lib/ipc'
 import { FILE_SEARCH_EVENT, focusComponent, openInEditor } from '../lib/navigation'
 import { matchesComponent } from '../lib/hierarchy'
+import { defaultSelection } from '../lib/search'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
 import { executeExtensionCommand } from '../extensions/host'
 import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
@@ -166,10 +167,9 @@ export default function UnifiedSearch({
     Commands: commandItems,
   }
   const items = groups.flatMap((g) => byGroup[g])
-  // Files mode never falls back to an implicit command selection, even on an empty/error result.
   // Remember explicit selections by identity so late file results cannot change the action.
   const explicit = selection.scope === scope ? items.findIndex((i) => i.id === selection.id) : -1
-  const selected = explicit >= 0 ? explicit : items.findIndex((i) => i.group === priority)
+  const selected = explicit >= 0 ? explicit : defaultSelection(items, priority, query)
   useEffect(() => {
     if (open)
       document.getElementById(`search-result-${selected}`)?.scrollIntoView({ block: 'nearest' })

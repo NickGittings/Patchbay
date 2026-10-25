@@ -6,6 +6,7 @@ import {
   Panel,
   ReactFlow,
   useReactFlow,
+  useStoreApi,
   type Connection,
   type Edge,
 } from '@xyflow/react'
@@ -97,6 +98,7 @@ function useArranging(projectId: string | undefined) {
 /** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
 function useFocusRequests() {
   const { getNode, setCenter } = useReactFlow()
+  const flow = useStoreApi()
   useEffect(() => {
     let frame = 0
     const take = () => {
@@ -106,6 +108,10 @@ function useFocusRequests() {
         const id = takeFocusRequest()
         const node = id ? getNode(id) : undefined
         if (!node) return
+        // The `fitView` of a map without a saved viewport waits for its nodes' sizes, which may
+        // come after this, so drop it rather than let it move away from the component.
+        const { fitViewQueued, fitViewResolver } = flow.getState()
+        if (fitViewQueued && !fitViewResolver) flow.setState({ fitViewQueued: false })
         const w = node.measured?.width ?? 260
         const h = node.measured?.height ?? 120
         void setCenter(node.position.x + w / 2, node.position.y + h / 2, {
@@ -120,7 +126,7 @@ function useFocusRequests() {
       window.removeEventListener(FOCUS_COMPONENT_EVENT, take)
       cancelAnimationFrame(frame)
     }
-  }, [getNode, setCenter])
+  }, [flow, getNode, setCenter])
 }
 
 function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {

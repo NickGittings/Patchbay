@@ -1,5 +1,5 @@
 import type { ProposedStackTerminal, TerminalSpec } from '../types'
-import { program, suggester, validatorKey, type ComponentLike } from './validators'
+import { checkLike, program, suggester, validatorKey, type ComponentLike } from './validators'
 
 /** A task terminal that looks like a dev server or watcher and could join a stack. */
 export interface DevelopmentSuggestion {
@@ -50,11 +50,11 @@ export function readyTextFor(command: string): string {
 /**
  * Whether to suggest a terminal for Development: an unassigned task that serves or watches (a
  * dev/serve/start/watch id, script or subcommand, a dev server, a watch flag), unless it ends in
- * the background or is a check.
+ * the background or runs checks, a test watcher (`jest --watch`, `vitest`) included.
  */
 const suggestible = suggester(
   (t, { background, reads }) =>
-    !background && !reads.includes('check') && (reads.includes('serves') || SERVE_IDS.has(t.id)),
+    !background && (reads.includes('serves') || SERVE_IDS.has(t.id)) && !checkLike(t),
 )
 
 /** Whether a component has a terminal marked as Development. */

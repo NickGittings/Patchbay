@@ -132,7 +132,7 @@ export interface RoleActivity {
   paths: string[]
 }
 
-const LIVE_MS = 10000
+export const LIVE_MS = 10000
 
 /** Accepted file writes in the selected worktree, per component and session. */
 function* worktreeActivity(
@@ -141,10 +141,10 @@ function* worktreeActivity(
   projectId: string,
   task: string | null,
   worktree: string,
-  components: readonly Pick<Component, 'id' | 'path'>[],
+  components: readonly Pick<Component, 'id' | 'path'>[] | ActivityRoots,
   now: number,
 ) {
-  const roots = activityRoots(components, worktree)
+  const roots = 'worktree' in components ? components : activityRoots(components, worktree)
   for (const record of records) {
     if (
       record.metadata.projectId !== projectId ||

@@ -50,17 +50,7 @@ function marksFor(marks: Marks, entry: DirEntry) {
   }
 }
 
-function Directory({
-  root,
-  path,
-  depth,
-  refresh,
-}: {
-  root: string
-  path: string
-  depth: number
-  refresh: number
-}) {
+function Directory({ path, depth, refresh }: { path: string; depth: number; refresh: number }) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const [entries, setEntries] = useState<DirEntry[] | null>(null)
@@ -90,21 +80,11 @@ function Directory({
       </div>
     )
   return entries.map((entry) => (
-    <TreeEntry key={entry.path} entry={entry} root={root} depth={depth} refresh={refresh} />
+    <TreeEntry key={entry.path} entry={entry} depth={depth} refresh={refresh} />
   ))
 }
 
-function TreeEntry({
-  entry,
-  root,
-  depth,
-  refresh,
-}: {
-  entry: DirEntry
-  root: string
-  depth: number
-  refresh: number
-}) {
+function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; refresh: number }) {
   const [expanded, setExpanded] = useState(false)
   const marks = useContext(MarksContext)
   const { file, changed, touched } = marksFor(marks, entry)
@@ -163,7 +143,7 @@ function TreeEntry({
         </button>
       </div>
       {entry.isDir && expanded && (
-        <Directory root={root} path={entry.path} depth={depth + 1} refresh={refresh} />
+        <Directory path={entry.path} depth={depth + 1} refresh={refresh} />
       )}
     </>
   )
@@ -178,12 +158,10 @@ const FOCUS_REFRESH_MS = 5000
  * `useMapActivity`, which only the main window's map fills, so pop-outs leave them out.
  */
 export default function FileTree({
-  root,
   path,
   componentId,
   agentMarks = true,
 }: {
-  root: string
   path: string
   componentId?: string
   agentMarks?: boolean
@@ -220,21 +198,19 @@ export default function FileTree({
           diff={diff}
           setDiff={setDiff}
         >
-          <Tree root={root} path={path} refresh={refresh} setRefresh={setRefresh} />
+          <Tree path={path} refresh={refresh} setRefresh={setRefresh} />
         </ComponentMarks>
       )}
-      {!componentId && <Tree root={root} path={path} refresh={refresh} setRefresh={setRefresh} />}
+      {!componentId && <Tree path={path} refresh={refresh} setRefresh={setRefresh} />}
     </div>
   )
 }
 
 function Tree({
-  root,
   path,
   refresh,
   setRefresh,
 }: {
-  root: string
   path: string
   refresh: number
   setRefresh: (update: (n: number) => number) => void
@@ -252,7 +228,7 @@ function Tree({
       <div className="file-tree-content">
         <Directory
           key={JSON.stringify([projectId, task, path])}
-          root={root}
+
           path={path}
           depth={0}
           refresh={refresh}
