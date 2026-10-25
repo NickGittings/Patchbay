@@ -132,7 +132,7 @@
     // The notice is about the role presets' provider, so the dialog opens on Codex.
     await until(
       'Codex integration check',
-      () => !provider.disabled && setup.textContent.includes('Status hooks are not installed.'),
+      () => !provider.disabled && setup.textContent.includes('Hooks not installed'),
     )
     assert(provider.value === 'codex', `integrations opened on ${provider.value}, not Codex`)
     click(button('Install status hooks', setup))
@@ -146,9 +146,7 @@
         1,
       'multiple integrations dialogs opened',
     )
-    await until('Codex hooks installed', () =>
-      setup.textContent.includes('Status hooks installed.'),
-    )
+    await until('Codex hooks installed', () => setup.textContent.includes('Hooks installed'))
     click(setup.querySelector('[aria-label="Close Agent status integration"]'))
     await until(
       'activity hooks notice cleared',
@@ -169,6 +167,25 @@
     const stageTab = (name) =>
       [...document.querySelectorAll('.simple-stage-tabs button')].find((b) =>
         b.textContent.startsWith(name),
+      )
+    const stageToggle = (name) =>
+      [...document.querySelectorAll('.simple-stage > h2 > button')].find((b) =>
+        b.textContent.trim().endsWith(name),
+      )
+    const stageContent = (name) =>
+      document.getElementById(stageToggle(name)?.getAttribute('aria-controls'))
+    const expectOpenStages = (names) =>
+      until(`expanded stages: ${names.join(', ')}`, () =>
+        ['Plan', 'Build', 'Review', 'Merge'].every((name) => {
+          const toggle = stageToggle(name)
+          const content = stageContent(name)
+          return (
+            toggle &&
+            content &&
+            (toggle.getAttribute('aria-expanded') === 'true') === names.includes(name) &&
+            content.hidden !== names.includes(name)
+          )
+        }),
       )
     for (const modifier of ['metaKey', 'ctrlKey']) {
       for (const [i, name] of ['All', 'Plan', 'Build', 'Review'].entries()) {
@@ -216,6 +233,28 @@
     })
     click(stageTab('All'))
     await until('every stage shown', () => document.querySelectorAll('.simple-stage').length === 4)
+    await expectOpenStages(['Plan'])
+    const buildContent = stageContent('Build')
+    stageToggle('Build').focus()
+    assert(document.activeElement === stageToggle('Build'), 'stage toggle cannot receive focus')
+    click(stageToggle('Build'))
+    click(stageToggle('Review'))
+    await expectOpenStages(['Plan', 'Build', 'Review'])
+    click(stageToggle('Build'))
+    await expectOpenStages(['Plan', 'Review'])
+    assert(stageContent('Build') === buildContent, 'collapsing a stage remounted its content')
+    click(stageToggle('Plan'))
+    await expectOpenStages(['Review'])
+    click(stageTab('Build'))
+    await until('individual Build expanded', () => {
+      const section = document.querySelector('.simple-stage')
+      return (
+        section?.querySelector('h2')?.textContent === 'Build' &&
+        !section.querySelector(':scope > div').hidden
+      )
+    })
+    click(stageTab('All'))
+    await expectOpenStages(['Plan'])
     const canvas = document.querySelector('.navigation-shell .react-flow')
     assert(canvas, 'map missing')
     await send('  hello mail@example.test\nsecond line  ')
@@ -364,12 +403,48 @@
       input(document.querySelector('[aria-label="Message agent"]'), '')
     }
     await until('saved plan card', () => button('Implement') && !button('Implement').disabled)
+    click(stageToggle('Review'))
+    click(stageToggle('Merge'))
+    await expectOpenStages(['Plan', 'Review', 'Merge'])
     click(button('Implement'))
     await until('Implement completion', () =>
       state().simple?.log.some((e) => e.action === 'implement'),
     )
     assert(state().simpleMode, 'Implement left Simple')
+    await expectOpenStages(['Build'])
     const implementation = state().simple.log.find((e) => e.action === 'implement').sessionId
+    // Implement stops its planner. A new shared planning run must still surface input in Build.
+    const plannerGeneration = state().sessions[planner].generation
+    await smoke.startTerminal('@plan', 'simple-agent', null, projectId)
+    await until(
+      'new shared planner ready',
+      () =>
+        state().sessions[planner]?.generation > plannerGeneration &&
+        state().sessions[planner]?.status?.agent?.authoritative,
+    )
+    await smoke.terminalWrite(planner, 'smoke-input\n')
+    await until(
+      'planner needs input',
+      () => state().sessions[planner]?.status?.agent?.state === 'needsInput',
+    )
+    await expectOpenStages(['Plan', 'Build'])
+    click(stageToggle('Plan'))
+    await expectOpenStages(['Plan', 'Build'])
+    const askingAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
+    assert(askingAgent.getClientRects().length, 'agent awaiting input is hidden')
+    click(stageTab('Merge'))
+    await until('input request survives stage filter', () => {
+      const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
+      return shown.join(',') === 'Plan,Merge' && askingAgent.getClientRects().length
+    })
+    click(stageTab('All'))
+    await expectOpenStages(['Plan', 'Build'])
+    await smoke.terminalWrite(planner, 'smoke-wait\n')
+    await until(
+      'planner input resolved',
+      () => state().sessions[planner]?.status?.agent?.state === 'working',
+    )
+    await expectOpenStages(['Build'])
     await until('activity hydration', () => state().sessions[implementation]?.activity?.length)
     await until('Build agent chip on the map', () =>
       document.querySelector('.navigation-shell .component-node .agent-role.build'),
@@ -389,14 +464,18 @@
     await until('review dispatch logged', () =>
       state().simple?.log.some((e) => e.action === 'review'),
     )
+    await expectOpenStages(['Review'])
     await until(
       'Findings Fix enabled',
       () => button('Fix findings') && !button('Fix findings').disabled,
     )
     click(button('Fix findings'))
     await until('fix dispatch', () => state().simple?.log.some((e) => e.action === 'fix'))
+    await expectOpenStages(['Build'])
     const fix = state().simple.log.find((e) => e.action === 'fix').sessionId
     assert(state().simpleMode, 'Fix left Simple')
+    click(stageToggle('Review'))
+    await expectOpenStages(['Build', 'Review'])
     input(document.querySelector('[aria-label="Message agent"]'), 'worktree draft')
     state().setActiveTask(null, true)
     await until(
@@ -404,11 +483,13 @@
       () => document.querySelector('[aria-label="Message agent"]')?.value === '',
     )
     assert(!state().simple?.log.length, 'worktree history leaked to project chat')
+    await expectOpenStages(['Plan'])
     state().setActiveTask(task.id, true)
     await until(
       'draft restored',
       () => document.querySelector('[aria-label="Message agent"]')?.value === 'worktree draft',
     )
+    await expectOpenStages(['Build'])
     assert(
       state().simple.log.some((e) => e.sessionId === implementation),
       'history lost on worktree switch',
@@ -446,7 +527,7 @@
       'log was not persisted',
     )
     await smoke.report(
-      'PASS simple: toggle, composer, Implement, diff, Review/Fix, activity, role chips, worktree drafts, and Full session recovery',
+      'PASS simple: toggle, stage disclosures and input requests, composer, Implement, diff, Review/Fix, activity, role chips, worktree drafts, and Full session recovery',
     )
   } catch (e) {
     await smoke.report(

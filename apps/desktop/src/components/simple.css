@@ -54,12 +54,26 @@
 .simple-stage {
   margin-bottom: 24px;
 }
+.simple-stage[data-collapsed] {
+  margin-bottom: 8px;
+}
 .simple-stage h2 {
   font-size: 14px;
   text-transform: capitalize;
 }
 .simple-stage[aria-current] > h2 {
   color: var(--running);
+}
+.simple-stage-toggle {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border-color: transparent;
+}
+.simple-stage-toggle:disabled {
+  opacity: 1;
 }
 .simple-stage article {
   border: 1px solid var(--border);

@@ -59,6 +59,11 @@ for line in sys.stdin:
         report('UserPromptSubmit')
         print('simple-waiting', flush=True)
         continue
+    if line.strip() == 'smoke-input':
+        report('UserPromptSubmit')
+        report('PermissionRequest')
+        print('simple-needs-input', flush=True)
+        continue
     work()
 PYTHON
 cat > "$dir/claude" <<'SHELL'

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
@@ -58,6 +58,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const [pending, setPending] = useState(''),
     [failure, setFailure] = useState<{ action: string; text: string }>()
   const [dialog, setDialog] = useState<'review' | 'merge'>()
+  const [stageExpansion, setStageExpansion] = useState({
+    context: '',
+    expanded: [] as SimpleStage[],
+  })
+  const stageContentId = useId()
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
   const threadRef = useRef<HTMLDivElement>(null)
@@ -93,12 +98,17 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
+  // Reset disclosures at navigation/stage boundaries without remounting the agent cards.
+  const expansionContext = JSON.stringify([key, filter, model.stage])
+  const expandedStages =
+    stageExpansion.context === expansionContext ? stageExpansion.expanded : [model.stage]
+  if (stageExpansion.context !== expansionContext)
+    setStageExpansion({ context: expansionContext, expanded: [model.stage] })
+  const needsInput = (section: (typeof model.sections)[number]) =>
+    section.sessions.some((r) => s.sessions[r.id]?.status?.agent?.state === 'needsInput')
   // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
   const sections = model.sections.filter(
-    (section) =>
-      filter === 'all' ||
-      section.id === filter ||
-      section.sessions.some((r) => s.sessions[r.id]?.status?.agent?.state === 'needsInput'),
+    (section) => filter === 'all' || section.id === filter || needsInput(section),
   )
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
@@ -227,190 +237,225 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         />
       )}
       <div className="simple-thread" ref={threadRef}>
-        {sections.map((section) => (
-          <section
-            className="simple-stage"
-            key={section.id}
-            aria-current={model.stage === section.id ? 'step' : undefined}
-          >
-            <h2>{section.id[0].toUpperCase() + section.id.slice(1)}</h2>
-            {section.id === 'plan' && (
-              <article>
-                <h3>Project plan · shared across worktree chats</h3>
-                <Markdown text={data?.plan.text || 'No saved plan yet.'} />
-                {data?.proposal && <Markdown text={data.proposal.plan} />}
-                <button
-                  disabled={!model.planReady || !!pending}
-                  onClick={() =>
-                    void run('implement', 'build', () =>
-                      implementPlannerPlan(planner, undefined, undefined, 'stay'),
-                    )
-                  }
-                >
-                  Implement
-                </button>
-                {errorFor('implement')}
-              </article>
-            )}
-            {section.id === 'build' && (
-              <>
-                <article>
-                  <h3>Accepted worktree plan</h3>
-                  <Markdown
-                    text={
-                      task
-                        ? data?.acceptedPlan.text || 'No accepted plan yet.'
-                        : data?.acceptedPlan.text || 'No saved plan yet.'
-                    }
-                  />
-                </article>
-                <article>
-                  <h3>Changes</h3>
-                  {groups.length ? (
-                    groups.map((g) => (
-                      <div key={g.id}>
-                        <strong>{g.name}</strong>
-                        {g.id !== '@project' && (
-                          <ValidationChips
-                            componentId={g.id}
-                            changedAt={latestChange(g.files)}
-                            task={task}
-                          />
-                        )}
-                        {g.files.map((f) => (
-                          <button
-                            className="simple-file"
-                            key={f.path}
-                            onClick={() => openFile(f.path)}
-                          >
-                            {f.path}
-                          </button>
-                        ))}
-                      </div>
-                    ))
-                  ) : (
-                    <p>No uncommitted changes.</p>
-                  )}
+        {sections.map((section) => {
+          const asking = needsInput(section)
+          const expanded = filter !== 'all' || asking || expandedStages.includes(section.id)
+          const contentId = `${stageContentId}-${section.id}`
+          const label = section.id[0].toUpperCase() + section.id.slice(1)
+          return (
+            <section
+              className="simple-stage"
+              key={section.id}
+              aria-current={model.stage === section.id ? 'step' : undefined}
+              data-collapsed={!expanded || undefined}
+            >
+              <h2>
+                {filter === 'all' ? (
                   <button
-                    disabled={!source?.branch || busy || !!pending}
-                    onClick={() => setDialog('review')}
+                    className="simple-stage-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={contentId}
+                    disabled={asking}
+                    title={asking ? 'An agent is waiting for input' : undefined}
+                    onClick={() =>
+                      setStageExpansion((current) => {
+                        const stages =
+                          current.context === expansionContext ? current.expanded : [model.stage]
+                        return {
+                          context: expansionContext,
+                          expanded: stages.includes(section.id)
+                            ? stages.filter((id) => id !== section.id)
+                            : [...stages, section.id],
+                        }
+                      })
+                    }
                   >
-                    Review…
+                    <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
                   </button>
-                </article>
-                {!!data && (groups.length > 0 || data.review.affected.length > 0) && (
-                  <article>
-                    <h3>May affect</h3>
-                    {data.review.affected.map((a) => (
-                      <div key={a.id}>
-                        <button onClick={() => s.select(a.id)}>
-                          {s.nodes.find((n) => n.id === a.id)?.data.name ?? a.id}
-                        </button>
-                        <ValidationChips
-                          componentId={a.id}
-                          changedAt={latestChangeOf(data.review.changes, a.via)}
-                          task={task}
-                        />
-                      </div>
-                    ))}
-                    <button
-                      disabled={s.graphActionBusy || !!pending}
-                      onClick={() =>
-                        void run('validate', 'build', async () => {
-                          await graphActionIn(projectId, task, s.toProject(), {
-                            kind: 'validateChanged',
-                            componentIds: groups
-                              .filter((g) => g.id !== '@project')
-                              .map((g) => g.id),
-                          })
-                        })
-                      }
-                    >
-                      Run validation
-                    </button>
-                    {errorFor('validate')}
-                  </article>
+                ) : (
+                  label
                 )}
-              </>
-            )}
-            {section.id === 'review' && (
-              <article>
-                <h3>
-                  Findings{' '}
-                  {findings?.findings && (
-                    <>
-                      <VerdictBadge findings={findings.findings} running={runningReview} />
-                      <SeverityCounts findings={findings.findings} />
-                    </>
-                  )}
-                </h3>
-                <FindingsPanel
-                  loaded={findings}
-                  branch={source?.branch}
-                  status={status}
-                  onOpenFile={(ref) => openFile(ref.path, ref.line)}
-                  canOpen={() => true}
-                />
-                {!!findings?.findings?.text.trim() &&
-                  !findings.findings.verdict?.clean &&
-                  reviewer && (
+              </h2>
+              <div id={contentId} hidden={!expanded}>
+                {section.id === 'plan' && (
+                  <article>
+                    <h3>Project plan · shared across worktree chats</h3>
+                    <Markdown text={data?.plan.text || 'No saved plan yet.'} />
+                    {data?.proposal && <Markdown text={data.proposal.plan} />}
                     <button
-                      disabled={busy || !!pending}
+                      disabled={!model.planReady || !!pending}
                       onClick={() =>
-                        void run('fix', 'build', () =>
-                          fixReviewFindings(reviewer, undefined, undefined, 'stay'),
+                        void run('implement', 'build', () =>
+                          implementPlannerPlan(planner, undefined, undefined, 'stay'),
                         )
                       }
                     >
-                      Fix findings
+                      Implement
                     </button>
-                  )}
-                {errorFor('fix')}
-                <button
-                  disabled={
-                    busy ||
-                    !!pending ||
-                    status !== 'current' ||
-                    !findings?.findings?.verdict?.clean ||
-                    !source?.branch
-                  }
-                  onClick={() => setDialog('merge')}
-                >
-                  Merge…
-                </button>
-              </article>
-            )}
-            {section.id === 'merge' && (
-              <article>
-                {data?.outcome ??
-                  (data?.outcomeError
-                    ? `Merge status unavailable: ${data.outcomeError}`
-                    : 'Choose a merge destination after review.')}
-              </article>
-            )}
-            {section.entries.map((entry) => (
-              <article className="simple-entry" key={entry.id}>
-                <time>{new Date(entry.atMs).toLocaleTimeString()}</time>
-                {entry.kind === 'prompt' ? (
-                  <>
-                    <strong>You</strong>
-                    <pre>{entry.text}</pre>
-                    {entry.mentions.map((id) => (
-                      <span className="simple-scope-chip" key={id}>
-                        {s.nodes.find((n) => n.id === id)?.data.name ?? id}
-                      </span>
-                    ))}
-                  </>
-                ) : (
-                  entry.action
+                    {errorFor('implement')}
+                  </article>
                 )}
-              </article>
-            ))}
-            {section.sessions.map((r) => (
-              <SimpleAgent key={r.id} record={r} scopeKey={key} openTerminal={openTerminal} />
-            ))}
-          </section>
-        ))}
+                {section.id === 'build' && (
+                  <>
+                    <article>
+                      <h3>Accepted worktree plan</h3>
+                      <Markdown
+                        text={
+                          task
+                            ? data?.acceptedPlan.text || 'No accepted plan yet.'
+                            : data?.acceptedPlan.text || 'No saved plan yet.'
+                        }
+                      />
+                    </article>
+                    <article>
+                      <h3>Changes</h3>
+                      {groups.length ? (
+                        groups.map((g) => (
+                          <div key={g.id}>
+                            <strong>{g.name}</strong>
+                            {g.id !== '@project' && (
+                              <ValidationChips
+                                componentId={g.id}
+                                changedAt={latestChange(g.files)}
+                                task={task}
+                              />
+                            )}
+                            {g.files.map((f) => (
+                              <button
+                                className="simple-file"
+                                key={f.path}
+                                onClick={() => openFile(f.path)}
+                              >
+                                {f.path}
+                              </button>
+                            ))}
+                          </div>
+                        ))
+                      ) : (
+                        <p>No uncommitted changes.</p>
+                      )}
+                      <button
+                        disabled={!source?.branch || busy || !!pending}
+                        onClick={() => setDialog('review')}
+                      >
+                        Review…
+                      </button>
+                    </article>
+                    {!!data && (groups.length > 0 || data.review.affected.length > 0) && (
+                      <article>
+                        <h3>May affect</h3>
+                        {data.review.affected.map((a) => (
+                          <div key={a.id}>
+                            <button onClick={() => s.select(a.id)}>
+                              {s.nodes.find((n) => n.id === a.id)?.data.name ?? a.id}
+                            </button>
+                            <ValidationChips
+                              componentId={a.id}
+                              changedAt={latestChangeOf(data.review.changes, a.via)}
+                              task={task}
+                            />
+                          </div>
+                        ))}
+                        <button
+                          disabled={s.graphActionBusy || !!pending}
+                          onClick={() =>
+                            void run('validate', 'build', async () => {
+                              await graphActionIn(projectId, task, s.toProject(), {
+                                kind: 'validateChanged',
+                                componentIds: groups
+                                  .filter((g) => g.id !== '@project')
+                                  .map((g) => g.id),
+                              })
+                            })
+                          }
+                        >
+                          Run validation
+                        </button>
+                        {errorFor('validate')}
+                      </article>
+                    )}
+                  </>
+                )}
+                {section.id === 'review' && (
+                  <article>
+                    <h3>
+                      Findings{' '}
+                      {findings?.findings && (
+                        <>
+                          <VerdictBadge findings={findings.findings} running={runningReview} />
+                          <SeverityCounts findings={findings.findings} />
+                        </>
+                      )}
+                    </h3>
+                    <FindingsPanel
+                      loaded={findings}
+                      branch={source?.branch}
+                      status={status}
+                      onOpenFile={(ref) => openFile(ref.path, ref.line)}
+                      canOpen={() => true}
+                    />
+                    {!!findings?.findings?.text.trim() &&
+                      !findings.findings.verdict?.clean &&
+                      reviewer && (
+                        <button
+                          disabled={busy || !!pending}
+                          onClick={() =>
+                            void run('fix', 'build', () =>
+                              fixReviewFindings(reviewer, undefined, undefined, 'stay'),
+                            )
+                          }
+                        >
+                          Fix findings
+                        </button>
+                      )}
+                    {errorFor('fix')}
+                    <button
+                      disabled={
+                        busy ||
+                        !!pending ||
+                        status !== 'current' ||
+                        !findings?.findings?.verdict?.clean ||
+                        !source?.branch
+                      }
+                      onClick={() => setDialog('merge')}
+                    >
+                      Merge…
+                    </button>
+                  </article>
+                )}
+                {section.id === 'merge' && (
+                  <article>
+                    {data?.outcome ??
+                      (data?.outcomeError
+                        ? `Merge status unavailable: ${data.outcomeError}`
+                        : 'Choose a merge destination after review.')}
+                  </article>
+                )}
+                {section.entries.map((entry) => (
+                  <article className="simple-entry" key={entry.id}>
+                    <time>{new Date(entry.atMs).toLocaleTimeString()}</time>
+                    {entry.kind === 'prompt' ? (
+                      <>
+                        <strong>You</strong>
+                        <pre>{entry.text}</pre>
+                        {entry.mentions.map((id) => (
+                          <span className="simple-scope-chip" key={id}>
+                            {s.nodes.find((n) => n.id === id)?.data.name ?? id}
+                          </span>
+                        ))}
+                      </>
+                    ) : (
+                      entry.action
+                    )}
+                  </article>
+                ))}
+                {section.sessions.map((r) => (
+                  <SimpleAgent key={r.id} record={r} scopeKey={key} openTerminal={openTerminal} />
+                ))}
+              </div>
+            </section>
+          )
+        })}
       </div>
       {errorFor('terminal')}
       <SimpleComposer
