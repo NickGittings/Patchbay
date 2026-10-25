@@ -269,7 +269,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
                   }
                 >
                   <option value="">Manual only</option>
-                  <option value="development">Development environment</option>
+                  <option value="development">Development (starts with its stack)</option>
                   <option value="validation">Validation</option>
                 </select>
               </label>
@@ -444,7 +444,7 @@ export default function Inspector() {
         </div>
       )}
       {showFiles && node ? (
-        <FileTree key={scope} root={project?.root ?? node.data.path} path={node.data.path} />
+        <FileTree key={scope} path={node.data.path} componentId={node.id} />
       ) : extensionViews.selected ? (
         <ExtensionView id={extensionViews.selected} />
       ) : node ? (

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import {
   simplePanelLayout,
+  withoutHierarchy,
   relatedSession,
   selectRecipient,
   thread,
@@ -69,6 +70,18 @@ test('legacy Navigation sizing adds only a collapsed chat slot and Simple sizes 
   expect(full).not.toHaveProperty('App-simple-chat')
   const simple = { ...full, 'App-simple-chat': 35 }
   expect(simplePanelLayout(simple)).toBe(simple)
+})
+
+test('layouts from before the Hierarchy panel went give its width to the canvas', () => {
+  const old = { 'App-pane-1': 14, 'App-pane-2': 62, 'App-simple-chat': 0, 'App-pane-5': 24 }
+  expect(withoutHierarchy(old)).toEqual({
+    'App-pane-2': 76,
+    'App-simple-chat': 0,
+    'App-pane-5': 24,
+  })
+  const current = { 'App-pane-2': 76, 'App-pane-5': 24 }
+  expect(withoutHierarchy(current)).toBe(current)
+  expect(withoutHierarchy(undefined)).toBeUndefined()
 })
 
 test('a newly used shared planner cannot reset another worktree stage', () => {

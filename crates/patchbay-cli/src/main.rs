@@ -170,12 +170,14 @@ mod tests {
                 "--file",
                 "links.json",
             ],
+            vec!["patchbay-cli", "agent", "propose-stack", "--file", "-"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["patchbay-cli", "agent", "validate"]).is_err());
         assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose"]).is_err());
         assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose-links"]).is_err());
+        assert!(Cli::try_parse_from(["patchbay-cli", "agent", "propose-stack"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "patchbay-cli",
@@ -476,6 +478,11 @@ enum AgentCmd {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Propose the local stack: its terminals and readiness (`-` reads stdin).
+    ProposeStack {
+        #[arg(long)]
+        file: PathBuf,
+    },
 }
 #[derive(Subcommand)]
 enum EnvironmentCmd {
@@ -513,6 +520,9 @@ fn agent(command: AgentCmd) -> Result<bool> {
                 command: EnvironmentCmd::Stop { group_id },
             } => Action::EnvironmentStop { group_id },
             AgentCmd::ProposeLinks { file } => Action::ProposeLinks {
+                proposal: read_proposal(&file)?,
+            },
+            AgentCmd::ProposeStack { file } => Action::ProposeStack {
                 proposal: read_proposal(&file)?,
             },
             AgentCmd::Propose { file } => Action::Propose {

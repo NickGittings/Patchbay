@@ -68,6 +68,7 @@ export function workspaceDocument(): WorkspaceDocument {
               agentRoles: state.agentRoles,
               implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
+              stackDeclined: state.stackDeclined,
               dependencyPromptDismissed: state.dependencyPromptDismissed,
               viewport: state.viewport,
               panels: state.panels,
@@ -146,6 +147,10 @@ export function restoredLayout(
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
       : []
+  if (!nested)
+    out.stackDeclined = Array.isArray(layout.stackDeclined)
+      ? [...new Set(layout.stackDeclined.filter((k): k is string => typeof k === 'string'))]
+      : []
   if (!nested) out.dependencyPromptDismissed = layout.dependencyPromptDismissed === true
   if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
     const report = layout.graphActionReport as ProjectState['graphActionReport']
@@ -207,6 +212,7 @@ export function restoredLayout(
                 'agentRoles',
                 'implementSubagents',
                 'validatorDeclined',
+                'stackDeclined',
                 'dependencyPromptDismissed',
               ].includes(key),
           ),
@@ -336,6 +342,7 @@ export function initializeWorkspace() {
           s.agentRoles === prev.agentRoles &&
           s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
+          s.stackDeclined === prev.stackDeclined &&
           s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
           s.notifications === prev.notifications &&
           s.workspaceSettings === prev.workspaceSettings &&

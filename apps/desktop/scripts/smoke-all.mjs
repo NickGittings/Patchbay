@@ -58,6 +58,7 @@ const SCRIPTS = {
     { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-actions/project') },
     'actions-fixture.sh',
   ),
+  stack: smoke('stack.js'),
   extensions: smoke('extensions.js', {
     PATCHBAY_EXTENSIONS_DIR: join(root, 'examples/extensions'),
     PATCHBAY_SMOKE_ROOT: dockerFixture,

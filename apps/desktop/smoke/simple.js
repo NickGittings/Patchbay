@@ -90,7 +90,7 @@
     await until('chat', () => document.querySelector('.simple-chat'))
     assert(state().view === 'review', 'Simple lost the last Full view')
     assert(
-      document.querySelectorAll('.workspace-rail > button').length === 10,
+      document.querySelectorAll('.workspace-rail > button').length === 11,
       'rail controls missing',
     )
     assert(
@@ -133,6 +133,9 @@
     assert(state().simpleMode, 'Implement left Simple')
     const implementation = state().simple.log.find((e) => e.action === 'implement').sessionId
     await until('activity hydration', () => state().sessions[implementation]?.activity?.length)
+    await until('Build agent chip on the map', () =>
+      document.querySelector('.navigation-shell .component-node .agent-role.build'),
+    )
     await until('file card', () => document.querySelector('.simple-file'))
     click(document.querySelector('.simple-file'))
     await until('left diff', () => document.querySelector('.simple-diff .diff'))
@@ -207,7 +210,7 @@
       'log was not persisted',
     )
     await smoke.report(
-      'PASS simple: toggle, composer, Implement, diff, Review/Fix, activity, worktree drafts, and Full session recovery',
+      'PASS simple: toggle, composer, Implement, diff, Review/Fix, activity, role chips, worktree drafts, and Full session recovery',
     )
   } catch (e) {
     await smoke.report(

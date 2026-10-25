@@ -140,7 +140,7 @@
       )
       if (
         labels.join(',') !==
-        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Sessions'
+        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Stack,Sessions'
       )
         throw new Error('Rail order changed')
       for (const width of [1440, 1200, 900]) {

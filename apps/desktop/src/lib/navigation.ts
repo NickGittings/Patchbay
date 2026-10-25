@@ -17,6 +17,24 @@ export function configureEditor(explanation = '') {
 export function showFileSearch() {
   window.dispatchEvent(new Event(FILE_SEARCH_EVENT))
 }
+export const FOCUS_COMPONENT_EVENT = 'patchbay:focus-component'
+let pendingFocus: string | null = null
+/** Shows a component on the map, opening Navigation unless Chat's map is already shown. */
+export function focusComponent(id: string) {
+  const s = useStore.getState()
+  if (!s.simpleMode) {
+    if (s.view !== 'navigation') s.setView('navigation')
+    s.select(id)
+  }
+  pendingFocus = id
+  window.dispatchEvent(new Event(FOCUS_COMPONENT_EVENT))
+}
+/** The component waiting to be centered, once: a canvas mounted by the view switch takes it. */
+export function takeFocusRequest() {
+  const id = pendingFocus
+  pendingFocus = null
+  return id
+}
 export function navigationError(error: unknown) {
   const message = String(error)
   if (message.includes('Editor unavailable:')) configureEditor(message)

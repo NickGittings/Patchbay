@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { fileSearch } from '../lib/ipc'
-import { FILE_SEARCH_EVENT, openInEditor } from '../lib/navigation'
+import { FILE_SEARCH_EVENT, focusComponent, openInEditor } from '../lib/navigation'
+import { matchesComponent } from '../lib/hierarchy'
+import { defaultSelection } from '../lib/search'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
 import { executeExtensionCommand } from '../extensions/host'
 import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
@@ -19,6 +21,7 @@ export default function UnifiedSearch({
   const task = useStore((s) => s.activeTask)
   const worktree = useStore((s) => s.tasks.find((t) => t.id === s.activeTask)?.worktree)
   const commands = useStore((s) => s.commands)
+  const nodes = useStore((s) => s.nodes)
   const [open, setOpen] = useState(false)
   const [priority, setPriority] = useState<'Files' | 'Commands'>('Files')
   const [query, setQuery] = useState('')
@@ -142,12 +145,31 @@ export default function UnifiedSearch({
       ]
         .filter((c) => `${c.title} ${c.id}`.toLowerCase().includes(query.toLowerCase()))
         .map((c) => ({ ...c, detail: c.id, group: 'Commands' }))
-  const items =
-    priority === 'Files' ? [...fileItems, ...commandItems] : [...commandItems, ...fileItems]
-  // Files mode never falls back to an implicit command selection, even on an empty/error result.
+  // Typed for, never listed whole, so opening search doesn't push files down.
+  const componentItems =
+    filesOnly || !query.trim()
+      ? []
+      : nodes
+          .filter((n) => matchesComponent(n, query))
+          .sort((a, b) => a.data.name.localeCompare(b.data.name))
+          .map((n) => ({
+            id: `component:${n.id}`,
+            title: n.data.name,
+            detail: n.data.path === '.' ? 'repo root' : n.data.path,
+            group: 'Components',
+            run: () => focusComponent(n.id),
+          }))
+  const groups =
+    priority === 'Files' ? ['Files', 'Components', 'Commands'] : ['Commands', 'Components', 'Files']
+  const byGroup: Record<string, typeof fileItems> = {
+    Files: fileItems,
+    Components: componentItems,
+    Commands: commandItems,
+  }
+  const items = groups.flatMap((g) => byGroup[g])
   // Remember explicit selections by identity so late file results cannot change the action.
   const explicit = selection.scope === scope ? items.findIndex((i) => i.id === selection.id) : -1
-  const selected = explicit >= 0 ? explicit : items.findIndex((i) => i.group === priority)
+  const selected = explicit >= 0 ? explicit : defaultSelection(items, priority, query)
   useEffect(() => {
     if (open)
       document.getElementById(`search-result-${selected}`)?.scrollIntoView({ block: 'nearest' })
@@ -219,8 +241,10 @@ export default function UnifiedSearch({
           role="listbox"
           aria-label={filesOnly ? 'Files' : 'Files and Commands'}
         >
-          {(priority === 'Files' ? ['Files', 'Commands'] : ['Commands', 'Files'])
-            .filter((g) => !filesOnly || g === 'Files')
+          {groups
+            .filter((g) =>
+              filesOnly ? g === 'Files' : g !== 'Components' || componentItems.length,
+            )
             .map((group) => (
               <div role="group" aria-label={group} key={group}>
                 <h3>{group}</h3>

@@ -21,6 +21,7 @@ import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceAction
 import ProjectSwitcher from './ProjectSwitcher'
 import WorktreePicker from './tasks/WorktreePicker'
 import SessionsPanel from './SessionsPanel'
+import StackPanel from './StackPanel'
 import TaskActivityPanel from './tasks/TaskActivityPanel'
 import { useTaskActivities } from '../lib/useTaskActivities'
 import AutoPanel from './auto/AutoPanel'
@@ -38,6 +39,7 @@ const utilities: Record<UtilityPanel, { label: string }> = {
   worktree: { label: 'Worktree' },
   auto: { label: 'Auto mode' },
   activity: { label: 'Activity' },
+  stack: { label: 'Stack' },
   sessions: { label: 'Sessions' },
 }
 function initialWidth() {
@@ -108,9 +110,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         ? 'Map save failed'
         : id === 'auto' && auto
           ? `${STAGE_LABELS[auto.stage]} · ${STATUS_LABELS[auto.status]}`
-          : id === 'activity' && busy
+          : busy && id === (action?.kind === 'startGroup' ? 'stack' : 'activity')
             ? action?.kind === 'startGroup'
-              ? 'Starting environment…'
+              ? 'Starting stack…'
               : 'Validating…'
             : undefined
     const name = panelSubtitle(id)
@@ -186,6 +188,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         <hr />
         {utility('auto')}
         {utility('activity')}
+        {utility('stack')}
         {utility('sessions')}
         <span className="spacer" />
         {!isMac && (
@@ -273,6 +276,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                     <TaskActivityPanel />
                   </>
                 )}
+                {panel === 'stack' && project && <StackPanel key={project.id} />}
                 {!project && !['project', 'sessions'].includes(panel) && (
                   <p>Open a project to use {utilities[panel].label}.</p>
                 )}

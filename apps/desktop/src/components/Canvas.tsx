@@ -6,6 +6,7 @@ import {
   Panel,
   ReactFlow,
   useReactFlow,
+  useStoreApi,
   type Connection,
   type Edge,
 } from '@xyflow/react'
@@ -18,7 +19,10 @@ import { showsInspector } from '../lib/panels'
 import { useStore, type FlowNode } from '../store'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
+import EmptyState from './EmptyState'
+import { useAddFolder, useRescanProject } from '../lib/project'
 import { removeComponents } from '../lib/maintenance'
+import { FOCUS_COMPONENT_EVENT, takeFocusRequest } from '../lib/navigation'
 
 const nodeTypes = { component: ComponentNode }
 
@@ -91,6 +95,40 @@ function useArranging(projectId: string | undefined) {
   return { tween, interrupt, keepViewport }
 }
 
+/** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
+function useFocusRequests() {
+  const { getNode, setCenter } = useReactFlow()
+  const flow = useStoreApi()
+  useEffect(() => {
+    let frame = 0
+    const take = () => {
+      cancelAnimationFrame(frame)
+      // A frame later, so a canvas mounted by the request has measured its nodes.
+      frame = requestAnimationFrame(() => {
+        const id = takeFocusRequest()
+        const node = id ? getNode(id) : undefined
+        if (!node) return
+        // The `fitView` of a map without a saved viewport waits for its nodes' sizes, which may
+        // come after this, so drop it rather than let it move away from the component.
+        const { fitViewQueued, fitViewResolver } = flow.getState()
+        if (fitViewQueued && !fitViewResolver) flow.setState({ fitViewQueued: false })
+        const w = node.measured?.width ?? 260
+        const h = node.measured?.height ?? 120
+        void setCenter(node.position.x + w / 2, node.position.y + h / 2, {
+          zoom: 1,
+          duration: 300,
+        })
+      })
+    }
+    take()
+    window.addEventListener(FOCUS_COMPONENT_EVENT, take)
+    return () => {
+      window.removeEventListener(FOCUS_COMPONENT_EVENT, take)
+      cancelAnimationFrame(frame)
+    }
+  }, [flow, getNode, setCenter])
+}
+
 function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {
   if (!tween || tween.t === 1) return nodes
   return nodes.map((n) => {
@@ -148,6 +186,9 @@ export default function Canvas() {
   )
   const inspectorShown = useStore(showsInspector)
   const { tween, interrupt, keepViewport } = useArranging(project?.id)
+  useFocusRequests()
+  const rescan = useRescanProject()
+  const addRepo = useAddFolder()
   // React Flow's node drag callbacks also cover selection-box drags.
   const updateDrag = (dragged: FlowNode[], dragging: boolean) => {
     if (dragging) interrupt(dragged.map((n) => n.id))
@@ -251,6 +292,24 @@ export default function Canvas() {
           nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]}
           style={{ width: 140, height: 90 }}
         />
+        {nodes.length === 0 && (
+          <Panel position="top-center" className="canvas-empty">
+            <EmptyState
+              icon="◇"
+              title="No components"
+              actions={
+                !planning && (
+                  <>
+                    <button onClick={() => void rescan()}>Rescan</button>
+                    <button onClick={() => void addRepo()}>Add repo…</button>
+                  </>
+                )
+              }
+            >
+              Rescan the project or add a repository to map its parts.
+            </EmptyState>
+          </Panel>
+        )}
         {!planning && !inspectorShown && (
           <Panel position="top-right">
             <button

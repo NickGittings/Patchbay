@@ -1469,6 +1469,36 @@ async fn map_agent_start(
     .await
 }
 
+/// Launch the agent that proposes the project's local stack, at the project root,
+/// beside dependency detection. `terminal` is the chosen agent preset.
+#[tauri::command]
+async fn stack_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    project: Project,
+    terminal: TerminalSpec,
+    request_id: String,
+    resume: Option<bool>,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
+    blocking(move || {
+        let project = access.restrict(project, &[]).map_err(err)?;
+        let (job, mut spec) =
+            patchbay_core::stack_proposals::prepare(&project, &terminal, &AllowAll).map_err(err)?;
+        let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
+        // The preset, so a restart launches the same agent.
+        metadata.lane = Some(terminal.id);
+        agent_commands::inject(agent_server, &project_id, None, &mut spec);
+        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
@@ -2271,6 +2301,7 @@ pub fn run() {
                 task_root_start,
                 merge_agent_start,
                 map_agent_start,
+                stack_agent_start,
                 merge_outcome,
                 review_agent_start,
                 review_read,
@@ -2281,6 +2312,8 @@ pub fn run() {
                 agent_commands::proposal_read,
                 agent_commands::map_links_read,
                 agent_commands::map_links_clear,
+                agent_commands::stack_proposal_read,
+                agent_commands::stack_proposal_clear,
                 agent_commands::proposal_apply,
                 plan_start,
                 plan_write,
