@@ -158,15 +158,6 @@ function ComponentInspector({ node }: { node: FlowNode }) {
           </select>
         </label>
       </div>
-      <div className="maintenance-origin">
-        Origin: {provenanceLabel(data.detection?.detector)}
-        {data.detection?.packageIdentity && <span> · {data.detection.packageIdentity}</span>}
-        {data.detection?.detector !== 'manual' && (
-          <button onClick={() => updateComponent(id, { detection: { detector: 'manual' } })}>
-            Mark manual
-          </button>
-        )}
-      </div>
       {issue && (
         <p className="map-issue">
           <strong>{issue.kind}</strong>: {issue.message}
@@ -189,7 +180,34 @@ function ComponentInspector({ node }: { node: FlowNode }) {
         const session = sessions[sid]
         const status = terminalStatus(t.kind, session)
         return (
-          <div key={t.id} className={`terminal-row health-${status.health}`}>
+          <details key={t.id} className={`terminal-row health-${status.health}`}>
+            <summary>
+              <span className="status-dot" title={statusTitle(status)} /> {t.name}{' '}
+              <span className="worktree-tag">{t.kind}</span>{' '}
+              {t.action && <span className="worktree-tag">{t.action}</span>}
+              {session?.running ? (
+                <button
+                  title="Stop"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    stopTerminal(sid)
+                  }}
+                >
+                  ■
+                </button>
+              ) : (
+                <button
+                  title="Start"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    setActiveSession(sid)
+                    void startTerminal(id, t.id, task)
+                  }}
+                >
+                  ▶
+                </button>
+              )}
+            </summary>
             <div className="row">
               <span className="status-dot" title={statusTitle(status)} />
               <input
@@ -210,21 +228,6 @@ function ComponentInspector({ node }: { node: FlowNode }) {
                   <option key={k}>{k}</option>
                 ))}
               </select>
-              {session?.running ? (
-                <button title="Stop" onClick={() => stopTerminal(sid)}>
-                  ■
-                </button>
-              ) : (
-                <button
-                  title="Start"
-                  onClick={() => {
-                    setActiveSession(sid)
-                    void startTerminal(id, t.id, task)
-                  }}
-                >
-                  ▶
-                </button>
-              )}
               <button
                 title="Remove terminal"
                 disabled={session?.running}
@@ -286,14 +289,18 @@ function ComponentInspector({ node }: { node: FlowNode }) {
                 }
               />
             )}
-          </div>
+          </details>
         )
       })}
       <AddTerminalSelect componentId={id} />
 
-      <div className="section-title">Related</div>
-      {dependsOn.length + usedBy.length === 0 && (
-        <div className="hint flush">None. Drag from the node's right edge to add one.</div>
+      {dependsOn.length + usedBy.length > 0 && (
+        <div
+          className="section-title"
+          title="Drag from the node’s right edge to add a relationship."
+        >
+          Related
+        </div>
       )}
       {dependsOn.map((e) => (
         <div key={e.id} className="relation">
@@ -306,12 +313,24 @@ function ComponentInspector({ node }: { node: FlowNode }) {
         </div>
       ))}
 
-      <details
-        className="context"
-        onToggle={(e) => (e.currentTarget.open ? void loadContext() : undefined)}
-      >
-        <summary>Agent context</summary>
-        <pre>{context ?? 'Loading…'}</pre>
+      <details>
+        <summary>Details</summary>
+        <div className="maintenance-origin">
+          Origin: {provenanceLabel(data.detection?.detector)}
+          {data.detection?.packageIdentity && <span> · {data.detection.packageIdentity}</span>}
+          {data.detection?.detector !== 'manual' && (
+            <button onClick={() => updateComponent(id, { detection: { detector: 'manual' } })}>
+              Mark manual
+            </button>
+          )}
+        </div>
+        <details
+          className="context"
+          onToggle={(e) => (e.currentTarget.open ? void loadContext() : undefined)}
+        >
+          <summary>Agent context</summary>
+          <pre>{context ?? 'Loading…'}</pre>
+        </details>
       </details>
     </>
   )
@@ -337,25 +356,28 @@ function LinkInspector({ edgeId }: { edgeId: string }) {
           onChange={(e) => setEdgeLabel(edge.id, e.target.value)}
         />
       </label>
-      <p className="maintenance-origin">
-        Origin: {provenanceLabel(edge.data?.detection?.detector)}
-      </p>
-      {edge.data?.detection?.detector !== 'manual' && (
-        <button
-          onClick={() =>
-            useStore.setState((s) => ({
-              edges: s.edges.map((e) =>
-                e.id === edge.id
-                  ? { ...e, data: { ...e.data, detection: { detector: 'manual' } } }
-                  : e,
-              ),
-              dirty: true,
-            }))
-          }
-        >
-          Mark manual
-        </button>
-      )}
+      <details>
+        <summary>Details</summary>{' '}
+        <p className="maintenance-origin">
+          Origin: {provenanceLabel(edge.data?.detection?.detector)}
+        </p>
+        {edge.data?.detection?.detector !== 'manual' && (
+          <button
+            onClick={() =>
+              useStore.setState((s) => ({
+                edges: s.edges.map((e) =>
+                  e.id === edge.id
+                    ? { ...e, data: { ...e.data, detection: { detector: 'manual' } } }
+                    : e,
+                ),
+                dirty: true,
+              }))
+            }
+          >
+            Mark manual
+          </button>
+        )}
+      </details>
       <button
         className="danger"
         onClick={() => {
@@ -374,9 +396,9 @@ function NothingSelected({ hasProject }: { hasProject: boolean }) {
   const components = useStore((s) => s.nodes.length)
   const links = useStore((s) => s.edges.length)
   const changed = useStore((s) => Object.values(s.gitChanges).reduce((a, b) => a + b, 0))
-  if (!hasProject) return <div className="hint flush">Open a project folder to begin.</div>
+  if (!hasProject) return <div className="hint">Open a project folder to begin.</div>
   return (
-    <div className="hint flush">
+    <div className="hint">
       {plural(components, 'component')} · {plural(links, 'link')} ·{' '}
       {plural(changed, 'changed file')}
     </div>
@@ -396,7 +418,12 @@ export default function Inspector() {
   return (
     <div className="panel inspector">
       <div className="panel-title inspector-title">
-        {node ? 'Component' : edgeId ? 'Link' : 'Inspector'}
+        {node ? node.data.name : edgeId ? 'Link' : 'Inspector'}
+        {node && (
+          <span className="worktree-tag" style={{ color: KIND_COLOR[node.data.kind] }}>
+            {node.data.kind}
+          </span>
+        )}
         <button
           className="inspector-close"
           title="Close the Inspector"
