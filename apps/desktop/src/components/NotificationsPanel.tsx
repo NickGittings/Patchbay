@@ -26,7 +26,7 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
   return (
     <Dialog title="Notifications" subtitle="Agent alerts across all projects" onClose={onClose}>
       <p>
-        <label>
+        <label className="notifications-toggle">
           <input
             type="checkbox"
             checked={settings.enabled}
@@ -47,7 +47,7 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           ] as const
         ).map(([key, label]) => (
           <p key={key}>
-            <label>
+            <label className="notifications-toggle">
               <input
                 type="checkbox"
                 checked={settings[key]}
@@ -58,34 +58,37 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           </p>
         ))}
       </fieldset>
-      <span className="worktree-tag" role="status" title="Native notification permission">
-        {permission}
-      </span>
-      <button
-        disabled={testing}
-        onClick={async () => {
-          setTesting(true)
-          try {
-            const result = await sendTestNotification()
-            setPermission(
-              result.status === 'granted'
-                ? 'Granted'
-                : result.status === 'denied'
-                  ? 'Not granted'
-                  : result.granted
-                    ? `Granted, but sending failed: ${result.error}`
-                    : `Unavailable: ${result.error}`,
-            )
-          } catch (e) {
-            setPermission('Unavailable')
-            useStore.getState().setMessage(String(e))
-          } finally {
-            setTesting(false)
-          }
-        }}
-      >
-        Send test notification
-      </button>
+      <div className="panel-actions">
+        <span className="worktree-tag" role="status" title="Native notification permission">
+          {permission}
+        </span>
+        <button
+          className="primary"
+          disabled={testing}
+          onClick={async () => {
+            setTesting(true)
+            try {
+              const result = await sendTestNotification()
+              setPermission(
+                result.status === 'granted'
+                  ? 'Granted'
+                  : result.status === 'denied'
+                    ? 'Not granted'
+                    : result.granted
+                      ? `Granted, but sending failed: ${result.error}`
+                      : `Unavailable: ${result.error}`,
+              )
+            } catch (e) {
+              setPermission('Unavailable')
+              useStore.getState().setMessage(String(e))
+            } finally {
+              setTesting(false)
+            }
+          }}
+        >
+          Send test notification
+        </button>
+      </div>
     </Dialog>
   )
 }

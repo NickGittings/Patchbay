@@ -162,6 +162,7 @@ function ValidatorSetup() {
         {!!suggestions.length && (
           <>
             <button
+              className="primary"
               disabled={!chosen.length}
               onClick={() => {
                 for (const s of chosen)

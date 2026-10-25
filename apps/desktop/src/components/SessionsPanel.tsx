@@ -136,7 +136,11 @@ function SessionList({
           Show{' '}
           <select
             aria-label={'Filter sessions'}
-            value={(choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS).filter}
+            value={
+              connected
+                ? (choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS).filter
+                : 'all'
+            }
             disabled={!connected}
             onChange={(e) =>
               groups.forEach((g) =>
@@ -165,7 +169,7 @@ function SessionList({
       </div>
       <div className="session-list">
         {groups.map(({ projectId, projectName, records: group }) => {
-          const chosen = choices[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
+          const chosen = choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
           // Running state is unknown while disconnected, so the filter shows everything.
           const options = connected ? chosen : { ...chosen, filter: 'all' as const }
           const visible = groupByWorktree(group, options, [

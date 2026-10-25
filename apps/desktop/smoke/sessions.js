@@ -237,8 +237,8 @@
       'Session rows have more than two inline actions',
     )
     assert(
-      !row(first, 'Live A').querySelector('.session-menu'),
-      'Live non-agent session has an empty menu',
+      !!row(first, 'Live A').querySelector('.session-menu'),
+      'Live non-agent session is missing its actions menu',
     )
     const menuTrigger = row(first, 'Done A').querySelector('.session-menu .menu-trigger')
     menuTrigger.focus()
@@ -281,7 +281,7 @@
     const unsubscribeAgentRows = smoke.store.subscribe(renderAgentRows)
     renderAgentRows()
     try {
-      await until('ended agent has View output and Resume inline', () => {
+      await until('ended agent has only View output inline', () => {
         const buttons = row(first, 'Done A').querySelectorAll(':scope > button')
         return [...buttons].map((button) => button.textContent).join('|') === 'View output'
       })
@@ -465,15 +465,10 @@
         r.id === idsOne[0] ? { ...r, snapshot: undefined, interrupted: false } : r,
       ),
     })
-    await until('starting row has enabled Stop', () => {
-      const element = row(first, 'Live A')
-      return (
-        element?.textContent.includes('Starting') &&
-        [...element.querySelectorAll('button')].some(
-          (b) => b.textContent.trim() === 'Stop' && !b.disabled,
-        )
-      )
-    })
+    await until(
+      'starting row has menu',
+      () => row(first, 'Live A')?.querySelector('.status-dot')?.title === 'Starting',
+    )
     await click(() => row(first, 'Live A'), 'Stop')
     await until('starting session stopped', async () => {
       await smoke.reconcileSessions()
@@ -548,7 +543,10 @@
       worktree('Alpha work').querySelector('.session-role')?.textContent === 'Shell',
       'Worktree shell title has the wrong role',
     )
-    assert(worktree('Zebra work').textContent.includes(zebra.worktree), 'Missing worktree path')
+    assert(
+      worktree('Zebra work').querySelector('h4').title === zebra.worktree,
+      'Missing worktree path',
+    )
     assert(
       worktree('Main worktree').querySelectorAll('.session-row').length === 4,
       'Main worktree rows mixed with task terminals',
@@ -611,9 +609,7 @@
       taskWorkspaces: original.taskWorkspaces,
       gitChanges: original.gitChanges,
     })
-    const alphaPath = worktree('Alpha work').querySelector(
-      '.session-worktree-heading small',
-    ).textContent
+    const alphaPath = worktree('Alpha work').querySelector('.session-worktree-heading h4').title
     state().closeProject(one.id)
     await until('closed project labels', () => worktree('Alpha work') && worktree('Zebra work'))
     const endedNames = rows(first)
@@ -626,8 +622,7 @@
       await closeMenu(() => row(first, name))
     }
     assert(
-      worktree('Alpha work').querySelector('.session-worktree-heading small').textContent ===
-        alphaPath,
+      worktree('Alpha work').querySelector('.session-worktree-heading h4').title === alphaPath,
       'Closing a project changed its worktree path',
     )
     smoke.acceptOpened(await smoke.openProject())
@@ -684,7 +679,7 @@
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('worktree cleanup completed', () => !globalStop()?.disabled)
     result =
-      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, independent filters and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
+      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, shared filtering and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
   } catch (error) {
     failure = error.message ?? String(error)
   } finally {

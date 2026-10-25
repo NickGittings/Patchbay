@@ -33,7 +33,10 @@ export default function AttentionMenu() {
   if (items.length === 0) return null
   return (
     <PanelContent>
-      <h3>Needs attention ({items.length})</h3>
+      <div className="panel-section-head">
+        <h3 className="section-title">Needs attention</h3>
+        <span className="count">{items.length}</span>
+      </div>
       {items.map((item) => (
         <button
           key={item.sid}

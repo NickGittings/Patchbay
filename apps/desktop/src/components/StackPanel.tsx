@@ -70,10 +70,9 @@ function DevelopmentStatus({ node }: { node: FlowNode }) {
       <span
         key={t.id}
         className={`stack-terminal health-${status.health}`}
-        title={statusTitle(status, t.command || 'interactive shell')}
+        title={`${t.name}: ${statusTitle(status, t.command || 'interactive shell')}`}
       >
         <span className="status-dot" />
-        {t.name}
       </span>
     )
   })
@@ -128,7 +127,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
         onToggle={(e) => setEditing(e.currentTarget.open)}
       >
         <summary>
-          {group.name} <span className="count">{group.componentIds.length}</span>
+          Edit stack <span className="count">{group.componentIds.length}</span>
         </summary>
         <label>
           Name
@@ -353,6 +352,7 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
       </div>
       <div className="row">
         <button
+          className="primary"
           disabled={busy || blocked || !chosen.length}
           title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
           onClick={() => void applyStackProposal(pending, chosen, projectId)}
@@ -380,7 +380,8 @@ function StackAgent({ projectId }: { projectId: string }) {
     presets.find((t) => t.id === choice) ?? roleTerminal(devices, roles, 'plan') ?? presets[0]
   if (pending) return <StackReview key={pending.id} pending={pending} projectId={projectId} />
   return (
-    <div className="row stack-agent">
+    <div className="panel-section-head stack-agent">
+      <span className="section-title">Suggestions</span>
       {presets.length > 1 && (
         <select
           aria-label="Stack detection agent"
@@ -395,6 +396,7 @@ function StackAgent({ projectId }: { projectId: string }) {
         </select>
       )}
       <button
+        className="button-link"
         disabled={!preset || (blocked && !running)}
         title={
           blocked && !running
@@ -451,6 +453,7 @@ export default function StackPanel() {
               selected.map((n) => n.id),
             )
             setName('')
+            setCreating(false)
           }}
         >
           <input

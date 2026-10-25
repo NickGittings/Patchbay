@@ -38,6 +38,7 @@ export default function ExtensionsPanel() {
           Reload
         </button>
         <button
+          className="primary"
           disabled={busy}
           onClick={() =>
             void perform(async () => {

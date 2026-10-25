@@ -146,7 +146,11 @@ export default function AutoPanel({
             ) : (
               !['done', 'stopped'].includes(run.status) && (
                 <button
-                  className={run.stage === 'mergeGate' ? undefined : 'primary'}
+                  className={
+                    run.stage === 'mergeGate' && run.status === 'waitingOnYou'
+                      ? undefined
+                      : 'primary'
+                  }
                   onClick={() => act('resumeAuto', resumeAuto)}
                 >
                   Resume
@@ -166,7 +170,7 @@ export default function AutoPanel({
             )}
             {finished && (
               <button
-                className="primary"
+                className={run.status === 'failed' ? undefined : 'primary'}
                 onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}
               >
                 New run

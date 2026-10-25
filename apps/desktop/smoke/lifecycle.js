@@ -159,7 +159,7 @@
       smoke.selectPanel('sessions')
       const reconnect = await until('counter reconnect button', () =>
         [...document.querySelectorAll('.session-row')]
-          .find((row) => row.textContent.includes(state().project.root))
+          .find((row) => row.title === state().project.root)
           ?.querySelector('button'),
       )
       reconnect.click()

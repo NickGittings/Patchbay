@@ -27,7 +27,9 @@ export default function MapSaveStatus() {
     <section className="map-save-status">
       <PanelContent>
         <div className="row" role="status">
-          <span className={`status-dot health-${status === 'error' || blocked ? 'fail' : 'ok'}`} />
+          <span
+            className={`status-dot health-${status === 'error' || blocked || status === 'conflict' ? 'fail' : absent || dirty ? 'idle' : status === 'saving' ? 'running' : 'ok'}`}
+          />
           {label}
         </div>
         {absent && (

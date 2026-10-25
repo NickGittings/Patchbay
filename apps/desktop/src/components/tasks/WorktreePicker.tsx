@@ -327,22 +327,17 @@ function WorktreeRow({
           <button onClick={() => setConfirming(false)}>Cancel</button>
         </div>
       )}
-      {active && (error || changed.length > 0 || projectFiles > 0) && (
+      {error && (
+        <p className="file-tree-error" role="alert">
+          {error}
+        </p>
+      )}
+      {active && (changed.length > 0 || projectFiles > 0) && (
         <div className="worktree-detail">
           <span className="section-title">Changed</span>
           <div className="scope-chips">
-            {error ? (
-              <span className="hint file-tree-error">{error}</span>
-            ) : !review ? (
-              <span className="hint">{task?.missing ? '—' : 'Loading…'}</span>
-            ) : changed.length || projectFiles ? (
-              <>
-                {changed.map((c) => chip(c.id, `±${c.files}`))}
-                {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
-              </>
-            ) : (
-              <span className="hint">No uncommitted changes</span>
-            )}
+            {changed.map((c) => chip(c.id, `±${c.files}`))}
+            {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
           </div>
         </div>
       )}
@@ -358,22 +353,18 @@ function WorktreeRow({
         <div className="worktree-detail">
           <span className="section-title">Running</span>
           <div className="scope-chips">
-            {running.length ? (
-              running.map(({ componentId, name, t, sid }) => (
-                <button
-                  key={sid}
-                  className="chip"
-                  onClick={() => {
-                    close()
-                    revealTerminal({ sid, componentId })
-                  }}
-                >
-                  {name}: {t.name}
-                </button>
-              ))
-            ) : (
-              <span className="hint">No terminals running</span>
-            )}
+            {running.map(({ componentId, name, t, sid }) => (
+              <button
+                key={sid}
+                className="chip"
+                onClick={() => {
+                  close()
+                  revealTerminal({ sid, componentId })
+                }}
+              >
+                {name}: {t.name}
+              </button>
+            ))}
           </div>
         </div>
       )}

@@ -210,7 +210,8 @@
         state().activeSession === smoke.sessionId('api', 'check') && state().selectedId === 'api',
     )
     editor.closest('.stack-card').querySelector('.menu-trigger').click()
-    button(document.querySelector('[role="menu"]'), 'Use as plan scope').click()
+    const stackMenu = await until('stack menu', () => document.querySelector('[role="menu"]'))
+    button(stackMenu, 'Use as plan scope').click()
     await until(
       'group planner scope',
       () => state().view === 'plan' && state().highlighted.length === 3,
@@ -232,6 +233,6 @@
       'PASS actions: stack suggestions, task roles, saved groups, ordered startup, readiness, stop, affected validation, results, planner scope, removal, reset',
     )
   } catch (e) {
-    await smoke.report(`FAIL actions: ${e?.message ?? e}`)
+    await smoke.report(`FAIL actions: ${e?.message ?? e} ${e?.stack ?? ''}`)
   }
 })()

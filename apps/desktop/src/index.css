@@ -1844,12 +1844,6 @@ button.review-name:hover:not(:disabled) {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.sessions-panel {
-  width: min(1200px, 95vw);
-  max-height: 90vh;
-  padding: 20px;
-  overflow: auto;
-}
 .session-group-heading {
   flex-wrap: wrap;
   margin-top: 16px;
@@ -3086,4 +3080,37 @@ kbd {
   grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
   align-items: center;
   gap: 8px;
+}
+
+.session-row > .session-menu {
+  opacity: 0;
+}
+.session-row:hover > .session-menu,
+.session-row:focus-within > .session-menu {
+  opacity: 1;
+}
+@media (hover: none) {
+  .session-row > .session-menu {
+    opacity: 1;
+  }
+}
+.utility-header .row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notifications-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.notifications-toggle input {
+  order: 1;
+}
+.button-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
 }
