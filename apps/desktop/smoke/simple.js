@@ -77,7 +77,8 @@
     await smoke.refreshTasks()
     state().setActiveTask(task.id, true)
     assert(!state().simpleMode, 'Simple must default off')
-    for (const previous of ['plan', 'navigation', 'implementation', 'review']) {
+    // Navigation first exercises opening Chat before it has a saved layout.
+    for (const previous of ['navigation', 'plan', 'implementation', 'review']) {
       state().setView(previous)
       await until(`Full ${previous}`, () => !document.querySelector('.simple-chat'))
       state().setSimpleMode(true)
@@ -100,6 +101,16 @@
       await until(`highlight from ${previous}`, () => state().highlighted.includes(id))
       state().setSimpleMode(false)
       await until(`leave Simple for ${previous}`, () => !document.querySelector('.simple-chat'))
+      if (previous === 'navigation')
+        await until('canvas reclaims hidden panels', () => {
+          const chat = document.getElementById('App-simple-chat')
+          const inspector = document.getElementById('App-pane-5')
+          return (
+            chat?.getBoundingClientRect().width === 0 &&
+            (!document.querySelector('.inspector-toggle') ||
+              inspector?.getBoundingClientRect().width === 0)
+          )
+        })
       if (previous !== 'navigation')
         assert(
           !document.querySelector('.navigation-shell'),

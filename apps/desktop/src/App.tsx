@@ -22,7 +22,7 @@ import { ReactFlowProvider } from '@xyflow/react'
 import { useEffect } from 'react'
 import { useCollapsed } from './lib/useCollapsed'
 import { listen } from '@tauri-apps/api/event'
-import { Panel, Separator } from 'react-resizable-panels'
+import { Panel, Separator, useGroupRef } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
 import Inspector from './components/Inspector'
 import ImplementationView from './components/ImplementationView'
@@ -92,6 +92,7 @@ function useRootSync() {
  * and their tabs keep their state.
  */
 function NavigationView() {
+  const group = useGroupRef()
   const simple = useStore((s) => s.simpleMode)
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
@@ -102,7 +103,11 @@ function NavigationView() {
     },
     [scopeKey],
   )
-  const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
+  const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open', {
+    group,
+    panel: 'App-pane-2',
+    defaultSize: 35,
+  })
   // An open diff reads the same data, so it keeps refreshing while the chat is collapsed.
   const reader = useSimpleData(simple && (!chatPanel.collapsed || !!diff))
   const storyBoard = useStore((s) => s.storyBoard) && !simple
@@ -111,12 +116,24 @@ function NavigationView() {
   const dock = useStore(hasDockTabs) || dockViews
   const activeSession = useStore((s) => s.activeSession)
   // Dragged shut: close it, so the canvas's Inspector button comes back.
-  const inspectorPanel = useCollapsed('App-pane-5', inspector, undefined, closeInspector)
+  const inspectorPanel = useCollapsed(
+    'App-pane-5',
+    inspector,
+    undefined,
+    closeInspector,
+    undefined,
+    {
+      group,
+      panel: 'App-pane-2',
+      defaultSize: 24,
+    },
+  )
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
   const dockPanel = useCollapsed('App-pane-4', dock, activeSession)
   return (
     <PersistedGroup
       layoutId={simple ? 'App-simple' : 'App-1'}
+      group={group}
       orientation="horizontal"
       className="workspace"
     >
@@ -133,10 +150,7 @@ function NavigationView() {
               </div>
               {storyBoard && <StoryBoard />}
               {simple && chatPanel.collapsed && (
-                <button
-                  className="simple-show-chat"
-                  onClick={() => chatPanel.props.panelRef.current?.expand()}
-                >
+                <button className="simple-show-chat" onClick={chatPanel.expand}>
                   Show chat
                 </button>
               )}
