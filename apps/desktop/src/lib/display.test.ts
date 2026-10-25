@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import type { AgentReport, SessionState, SessionStatus, TerminalKind } from '../types'
-import { describeTerminal, paneAutoStarts, sessionRun, terminalStatus } from './display'
+import {
+  describeTerminal,
+  foldedStatus,
+  paneAutoStarts,
+  sessionRun,
+  terminalStatus,
+} from './display'
 
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({
@@ -163,4 +169,17 @@ test.each<[string, TerminalKind, boolean]>([
   expect(paneAutoStarts(scope, { id: 'terminal', name: 'Terminal', kind, command: '' })).toBe(
     expected,
   )
+})
+
+test('foldedStatus prefers attention, then failures, then work', () => {
+  const quiet = terminalStatus('agent', running({ agent: agent('idle') }), NOW)
+  const working = terminalStatus('agent', running({ agent: agent('working') }), NOW)
+  const failed = terminalStatus('agent', exited(1, { seenMs: NOW }), NOW)
+  const review = terminalStatus('agent', running({ agent: agent('review') }), NOW)
+  expect(failed.health).toBe('fail')
+  expect(failed.attention).toBe(0)
+  expect(foldedStatus([quiet])).toBeUndefined()
+  expect(foldedStatus([quiet, working])).toBe(working)
+  expect(foldedStatus([working, failed])).toBe(failed)
+  expect(foldedStatus([failed, review, working])).toBe(review)
 })

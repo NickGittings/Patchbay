@@ -7,7 +7,8 @@ import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
-import { simpleKey, useSimpleUi } from '../lib/simpleUi'
+import { simpleKey, stageOpen, useSimpleUi, type StageOverrides } from '../lib/simpleUi'
+import { foldedStatus, statusTitle, terminalStatus } from '../lib/display'
 import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -33,6 +34,7 @@ import SimpleAgent from './SimpleAgent'
 import './simple.css'
 
 const pendingActions = new Set<string>()
+const NO_OVERRIDES: StageOverrides = {}
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
   const s = useStore(
@@ -58,13 +60,10 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const [pending, setPending] = useState(''),
     [failure, setFailure] = useState<{ action: string; text: string }>()
   const [dialog, setDialog] = useState<'review' | 'merge'>()
-  const [stageExpansion, setStageExpansion] = useState({
-    context: '',
-    expanded: [] as SimpleStage[],
-  })
   const stageContentId = useId()
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
+  const stageOverrides = useSimpleUi((u) => u.worktrees[key]?.stages ?? NO_OVERRIDES)
   const threadRef = useRef<HTMLDivElement>(null)
   // A new filter starts at the top, unless an agent shown is asking for input: it stays in view.
   // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
@@ -98,14 +97,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
-  // Reset disclosures at navigation/stage boundaries without remounting the agent cards.
-  const expansionContext = JSON.stringify([key, filter, model.stage])
-  const expandedStages =
-    stageExpansion.context === expansionContext ? stageExpansion.expanded : [model.stage]
-  if (stageExpansion.context !== expansionContext)
-    setStageExpansion({ context: expansionContext, expanded: [model.stage] })
+  const statuses = (section: (typeof model.sections)[number]) =>
+    section.sessions.map((r) => terminalStatus('agent', s.sessions[r.id]))
+  // Only a running agent asks: a stopped or disconnected one's last report no longer holds.
   const needsInput = (section: (typeof model.sections)[number]) =>
-    section.sessions.some((r) => s.sessions[r.id]?.status?.agent?.state === 'needsInput')
+    statuses(section).some((status) => status.health === 'input')
   // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
   const sections = model.sections.filter(
     (section) => filter === 'all' || section.id === filter || needsInput(section),
@@ -239,7 +235,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       <div className="simple-thread" ref={threadRef}>
         {sections.map((section) => {
           const asking = needsInput(section)
-          const expanded = filter !== 'all' || asking || expandedStages.includes(section.id)
+          const expanded =
+            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage)
+          const folded = expanded ? undefined : foldedStatus(statuses(section))
           const contentId = `${stageContentId}-${section.id}`
           const label = section.id[0].toUpperCase() + section.id.slice(1)
           return (
@@ -255,25 +253,32 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     className="simple-stage-toggle"
                     aria-expanded={expanded}
                     aria-controls={contentId}
-                    disabled={asking}
+                    aria-disabled={asking || undefined}
+                    aria-describedby={asking ? `${contentId}-asking` : undefined}
                     title={asking ? 'An agent is waiting for input' : undefined}
-                    onClick={() =>
-                      setStageExpansion((current) => {
-                        const stages =
-                          current.context === expansionContext ? current.expanded : [model.stage]
-                        return {
-                          context: expansionContext,
-                          expanded: stages.includes(section.id)
-                            ? stages.filter((id) => id !== section.id)
-                            : [...stages, section.id],
-                        }
-                      })
-                    }
+                    onClick={() => {
+                      if (asking) return
+                      useSimpleUi.getState().toggleStage(key, section.id, model.stage)
+                    }}
                   >
                     <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
                   </button>
                 ) : (
                   label
+                )}
+                {asking && filter === 'all' && (
+                  <span id={`${contentId}-asking`} hidden>
+                    Stays open while an agent is waiting for input
+                  </span>
+                )}
+                {folded && (
+                  <span
+                    className={`status-label health-${folded.health}`}
+                    title={statusTitle(folded)}
+                  >
+                    <span className="status-dot" />
+                    {folded.label}
+                  </span>
                 )}
               </h2>
               <div id={contentId} hidden={!expanded}>

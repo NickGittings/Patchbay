@@ -58,22 +58,30 @@
   margin-bottom: 8px;
 }
 .simple-stage h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 14px;
   text-transform: capitalize;
+}
+.simple-stage h2 .status-label {
+  font-weight: normal;
+  text-transform: none;
 }
 .simple-stage[aria-current] > h2 {
   color: var(--running);
 }
 .simple-stage-toggle {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   font: inherit;
   color: inherit;
   background: transparent;
   border-color: transparent;
 }
-.simple-stage-toggle:disabled {
-  opacity: 1;
+.simple-stage-toggle[aria-disabled] {
+  cursor: default;
 }
 .simple-stage article {
   border: 1px solid var(--border);

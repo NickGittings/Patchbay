@@ -253,7 +253,11 @@
         !section.querySelector(':scope > div').hidden
       )
     })
+    // The user's choices outlast filters; toggling back to the defaults forgets them.
     click(stageTab('All'))
+    await expectOpenStages(['Review'])
+    click(stageToggle('Review'))
+    click(stageToggle('Plan'))
     await expectOpenStages(['Plan'])
     const canvas = document.querySelector('.navigation-shell .react-flow')
     assert(canvas, 'map missing')
@@ -411,39 +415,60 @@
       state().simple?.log.some((e) => e.action === 'implement'),
     )
     assert(state().simpleMode, 'Implement left Simple')
+    // Stages opened by hand stay open as the thread moves on to Build.
+    await expectOpenStages(['Build', 'Review', 'Merge'])
+    click(stageToggle('Review'))
+    click(stageToggle('Merge'))
     await expectOpenStages(['Build'])
     const implementation = state().simple.log.find((e) => e.action === 'implement').sessionId
     // Implement stops its planner. A new shared planning run must still surface input in Build.
     const plannerGeneration = state().sessions[planner].generation
     await smoke.startTerminal('@plan', 'simple-agent', null, projectId)
-    await until(
-      'new shared planner ready',
-      () =>
-        state().sessions[planner]?.generation > plannerGeneration &&
-        state().sessions[planner]?.status?.agent?.authoritative,
-    )
-    await smoke.terminalWrite(planner, 'smoke-input\n')
-    await until(
-      'planner needs input',
-      () => state().sessions[planner]?.status?.agent?.state === 'needsInput',
-    )
-    await expectOpenStages(['Plan', 'Build'])
-    click(stageToggle('Plan'))
-    await expectOpenStages(['Plan', 'Build'])
-    const askingAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
-    assert(askingAgent.getClientRects().length, 'agent awaiting input is hidden')
-    click(stageTab('Merge'))
-    await until('input request survives stage filter', () => {
-      const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
-      return shown.join(',') === 'Plan,Merge' && askingAgent.getClientRects().length
-    })
-    click(stageTab('All'))
-    await expectOpenStages(['Plan', 'Build'])
-    await smoke.terminalWrite(planner, 'smoke-wait\n')
-    await until(
-      'planner input resolved',
-      () => state().sessions[planner]?.status?.agent?.state === 'working',
-    )
+    try {
+      await until(
+        'new shared planner ready',
+        () =>
+          state().sessions[planner]?.generation > plannerGeneration &&
+          state().sessions[planner]?.status?.agent?.authoritative,
+      )
+      await smoke.terminalWrite(planner, 'smoke-input\n')
+      await until(
+        'planner needs input',
+        () => state().sessions[planner]?.status?.agent?.state === 'needsInput',
+      )
+      await expectOpenStages(['Plan', 'Build'])
+      const planToggle = stageToggle('Plan')
+      assert(planToggle.getAttribute('aria-disabled') === 'true', 'asking stage can be collapsed')
+      planToggle.focus()
+      click(planToggle)
+      await expectOpenStages(['Plan', 'Build'])
+      assert(document.activeElement === planToggle, 'asking stage toggle lost focus')
+      const askingAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
+      assert(askingAgent.getClientRects().length, 'agent awaiting input is hidden')
+      click(stageTab('Merge'))
+      await until('input request survives stage filter', () => {
+        const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
+        return shown.join(',') === 'Plan,Merge' && askingAgent.getClientRects().length
+      })
+      click(stageTab('All'))
+      await expectOpenStages(['Plan', 'Build'])
+      await smoke.terminalWrite(planner, 'smoke-wait\n')
+      await until(
+        'planner input resolved',
+        () => state().sessions[planner]?.status?.agent?.state === 'working',
+      )
+      await expectOpenStages(['Build'])
+      // A folded stage still says what its agents are doing.
+      await until('folded Plan shows its working agent', () =>
+        stageToggle('Plan')
+          ?.parentElement.querySelector('.status-label')
+          ?.textContent.includes('Working'),
+      )
+    } finally {
+      await smoke.terminalStop(planner)
+      await until('shared planner stopped', () => !state().sessions[planner]?.running)
+    }
+    // A stopped agent's last needsInput report no longer holds its stage open.
     await expectOpenStages(['Build'])
     await until('activity hydration', () => state().sessions[implementation]?.activity?.length)
     await until('Build agent chip on the map', () =>
@@ -489,7 +514,8 @@
       'draft restored',
       () => document.querySelector('[aria-label="Message agent"]')?.value === 'worktree draft',
     )
-    await expectOpenStages(['Build'])
+    // Stage choices are kept per worktree, like the draft, across the chat's remount.
+    await expectOpenStages(['Build', 'Review'])
     assert(
       state().simple.log.some((e) => e.sessionId === implementation),
       'history lost on worktree switch',

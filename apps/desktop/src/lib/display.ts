@@ -185,6 +185,20 @@ export function terminalStatus(
   }
 }
 
+/**
+ * What a folded group of agents shows in place of their cards: the status that most wants the
+ * user, else a failure, else work in progress; nothing when every agent is quiet.
+ */
+export function foldedStatus(statuses: TerminalStatus[]): TerminalStatus | undefined {
+  let top: TerminalStatus | undefined
+  for (const status of statuses) if (status.attention > (top?.attention ?? 0)) top = status
+  return (
+    top ??
+    statuses.find((status) => status.health === 'fail') ??
+    statuses.find((status) => status.health === 'working')
+  )
+}
+
 /** Only component/extension shells start on first use; agents require their launch controls. */
 export const paneAutoStarts = (componentId: string, terminal: TerminalSpec) =>
   terminal.kind === 'shell' && componentId !== TASK_ROOT_SCOPE && !isReviewAgentScope(componentId)
