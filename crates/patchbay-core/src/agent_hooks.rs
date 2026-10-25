@@ -169,6 +169,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         tool.get("file_path")
             .and_then(Value::as_str)
             .or_else(|| tool.get("path").and_then(Value::as_str))
+            .or_else(|| {
+                (input.get("tool_name").and_then(Value::as_str) == Some("apply_patch"))
+                    .then(|| patched_file(tool))
+                    .flatten()
+            })
     });
     Some(HookEvent {
         session: String::new(),
@@ -206,6 +211,36 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
                 .map(|s| s.chars().take(200).collect())
         }),
     })
+}
+
+/// The one file a Codex `apply_patch` names in its `*** Add/Update/Delete File:` (and `*** Move
+/// to:`) headers, which the patch grammar puts at the start of a line, where hunk lines (` `, `+`,
+/// `-`, `@@`) can't. A patch naming several files, or none, has no single file target; nothing else
+/// in its body is ever read as a path.
+fn patched_file(tool: &Value) -> Option<&str> {
+    let patch = ["patch", "input", "command"]
+        .iter()
+        .find_map(|name| tool.get(name).and_then(Value::as_str))?;
+    let mut file = None;
+    for line in patch.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let Some(path) = [
+            "*** Add File: ",
+            "*** Update File: ",
+            "*** Delete File: ",
+            "*** Move to: ",
+        ]
+        .iter()
+        .find_map(|header| line.strip_prefix(header))
+        .map(str::trim) else {
+            continue;
+        };
+        if path.is_empty() || file.is_some_and(|f| f != path) {
+            return None;
+        }
+        file = Some(path);
+    }
+    file
 }
 
 /// Called by packaged sessiond before daemon initialization. Always silent and fail-open.
@@ -1065,11 +1100,32 @@ mod tests {
             assert_eq!(event.target.unwrap().chars().count(), 120);
             assert!(!event.file_target);
             input["tool_name"] = json!("apply_patch");
-            input["tool_input"] = json!({"patch":"*** Add File: src/a.rs"});
+            // One file named by the patch's headers is its target; hunk lines never are.
+            input["tool_input"] = json!({"patch":"*** Begin Patch\r\n*** Update File: src/a.rs\r\n@@\r\n-*** Add File: b\r\n+*** Delete File: c\r\n *** Move to: d\r\n*** End Patch"});
             let event = normalize(provider, &input).unwrap();
             assert_eq!(event.tool.as_deref(), Some("Edit"));
-            assert_eq!(event.target, None);
-            assert!(!event.file_target);
+            assert_eq!(event.target.as_deref(), Some("src/a.rs"));
+            assert!(event.file_target);
+            input["tool_input"] = json!({"command":"*** Begin Patch\n*** Add File: src/new.rs\n+fn main() {}\n*** End Patch"});
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.target.as_deref(), Some("src/new.rs"));
+            assert!(event.file_target);
+            // Several files (a rename too) or none give no file target.
+            for patch in [
+                "*** Update File: src/a.rs\n*** Delete File: src/b.rs",
+                "*** Update File: src/a.rs\n*** Move to: src/b.rs",
+                "*** Add File: \n+x",
+                "src/a.rs",
+            ] {
+                input["tool_input"] = json!({ "patch": patch });
+                let event = normalize(provider, &input).unwrap();
+                assert_eq!(event.target, None, "{patch}");
+                assert!(!event.file_target, "{patch}");
+            }
+            input["tool_name"] = json!("Edit");
+            input["tool_input"] = json!({"patch":"*** Update File: src/a.rs"});
+            assert!(!normalize(provider, &input).unwrap().file_target);
+            input["tool_name"] = json!("apply_patch");
             input["tool_name"] = json!("未知".repeat(120));
             assert_eq!(
                 normalize(provider, &input)

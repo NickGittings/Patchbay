@@ -26,20 +26,18 @@ export function hydrateActivity(
     .sort((a, b) => a.sequence - b.sequence)
     .slice(-50)
 }
-/** Commands and patch bodies are never file paths. Only known single-file tool targets link. */
+/**
+ * Commands and patch bodies are never file paths. Only known single-file tool targets link (core
+ * names Codex's `read_file`/`write_file` Read/Write, and `apply_patch` Edit with the one file its
+ * headers name, `agent_hooks::patched_file`).
+ */
 export const fileActivity = (activity: Activity) =>
   activity.fileTarget === true &&
-  ['Read', 'Edit', 'Write', 'MultiEdit', 'read_file', 'write_file', 'edit_file'].includes(
-    activity.tool,
-  ) &&
+  ['Read', 'Edit', 'Write', 'MultiEdit'].includes(activity.tool) &&
   !!activity.target
-/**
- * File activity that changes the file (Codex's `apply_patch` and `write_file` arrive as Edit and
- * Write), which alone marks the map and file tree: reading a file isn't working on it.
- */
+/** File activity that changes the file, which alone marks the map and file tree: reading a file isn't working on it. */
 export const writeActivity = (activity: Activity) =>
-  fileActivity(activity) &&
-  ['Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file'].includes(activity.tool)
+  fileActivity(activity) && ['Edit', 'Write', 'MultiEdit'].includes(activity.tool)
 const absolute = (path: string) => path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
 export function normalizedPath(path: string) {
   const parts: string[] = []

@@ -70,6 +70,15 @@ impl Submission for Pending {
     }
 }
 
+/// A terminal name compared ignoring case and spacing, as the frontend's `sameName` does, so
+/// `Dev  Server` is `dev server`.
+fn name_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 fn one_line(text: &str, limit: usize) -> bool {
     !text.contains(['\n', '\r']) && text.trim().chars().count() <= limit
 }
@@ -130,12 +139,12 @@ impl StackProposal {
                         !command.trim().is_empty() && one_line(command, COMMAND_LIMIT),
                         "{at}: commands are one line of at most {COMMAND_LIMIT} characters"
                     );
-                    let key = name.trim().to_lowercase();
+                    let key = name_key(name);
                     let slug = crate::detect::slug(name.trim());
                     if let Some(same) = component
                         .terminals
                         .iter()
-                        .find(|x| x.name.trim().to_lowercase() == key || x.id == slug)
+                        .find(|x| name_key(&x.name) == key || x.id == slug)
                     {
                         anyhow::bail!(
                             "{at}: {} already has terminal {} ({}); propose it by id instead",
@@ -465,6 +474,35 @@ mod tests {
                 json!({"version":1,"name":"x","terminals":[],"extra":1})
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn names_match_ignoring_case_and_spacing() {
+        let mut p = project();
+        p.components[0].terminals.push(
+            serde_json::from_value(
+                json!({"id":"serve","name":"Web  Server","kind":"task","command":"npm start"}),
+            )
+            .unwrap(),
+        );
+        let err = proposal(json!([
+            {"component":"api","name":" web\tserver ","command":"node server.js","reason":"x"}
+        ]))
+        .validate(&p)
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("api already has terminal serve"), "{err}");
+        let err = proposal(json!([
+            {"component":"web","name":"Vite  Dev","command":"vite","reason":"x"},
+            {"component":"web","name":"vite dev","command":"npx vite","reason":"x"}
+        ]))
+        .validate(&p)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("Terminal 2 (web › vite dev): repeated"),
+            "{err}"
         );
     }
 

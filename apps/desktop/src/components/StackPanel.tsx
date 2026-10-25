@@ -351,6 +351,7 @@ function StackAgent({ projectId }: { projectId: string }) {
   const roles = useStore((s) => s.agentRoles)
   const pending = useStackProposals((s) => s.pending[projectId])
   const running = useStore((s) => !!s.sessions[stackAgentSession(projectId)]?.running)
+  const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
   const presets = planTerminals(devices)
   const [choice, setChoice] = useState<string>()
   const preset =
@@ -372,8 +373,12 @@ function StackAgent({ projectId }: { projectId: string }) {
         </select>
       )}
       <button
-        disabled={!preset}
-        title="An agent reads the project (README, scripts, docker-compose…) and proposes a stack for you to review"
+        disabled={!preset || (blocked && !running)}
+        title={
+          blocked && !running
+            ? 'Resolve the map conflict or project recovery first'
+            : 'An agent reads the project (README, scripts, docker-compose…) and proposes a stack for you to review'
+        }
         onClick={() => preset && void startStackAgent(projectId, preset)}
       >
         {running ? 'Show stack detection' : 'Detect stack with an agent…'}

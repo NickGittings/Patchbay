@@ -107,14 +107,15 @@ export const linkedWithin = (ids: string[], edges: { source: string; target: str
 
 /**
  * The edit applying the agent's `proposed` terminal makes to `current` (the existing terminal it
- * names, `undefined` for a new one), or `null` to leave it out: a Validation terminal stays one,
- * and an agent that can't tell the ready text leaves the user's own alone.
+ * names, `undefined` for a new one), or `null` to leave it out: only task terminals join a stack
+ * (as the backend checks), a Validation terminal stays one, and an agent that can't tell the ready
+ * text leaves the user's own alone.
  */
 export function proposedPatch(
   proposed: ProposedStackTerminal,
   current: TerminalSpec | undefined,
 ): Partial<TerminalSpec> | null {
-  if (current?.action === 'validation') return null
+  if (current && (current.kind !== 'task' || current.action === 'validation')) return null
   const readyWhen = proposed.readyWhen.trim()
   if (current) return { action: 'development', ...(readyWhen ? { readyWhen } : {}) }
   return {

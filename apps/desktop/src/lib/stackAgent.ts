@@ -45,24 +45,29 @@ const requested = new Map<string, number>()
 const applied = new Map<string, number>()
 
 /**
- * Read `projectId`'s waiting submission; returns whether one is waiting. A read older than one
- * already applied may predate a newer submission, so it is ignored.
+ * Read `projectId`'s waiting submission; returns whether one is waiting, or `null` when it
+ * couldn't be read, leaving whatever is shown. A read older than one already applied may predate
+ * a newer submission, so it is ignored.
  */
-export async function refreshStackProposal(projectId: string): Promise<boolean> {
+async function readStackProposal(projectId: string): Promise<boolean | null> {
   const seq = (requested.get(projectId) ?? 0) + 1
   requested.set(projectId, seq)
   let pending: PendingStack | null
   try {
     pending = await stackProposalRead(projectId)
   } catch {
-    // Unreadable for now: whatever is shown stays, and a later read decides.
-    return !!useStackProposals.getState().pending[projectId]
+    return null
   }
   if (seq <= (applied.get(projectId) ?? 0)) return !!useStackProposals.getState().pending[projectId]
   applied.set(projectId, seq)
   const shown = !!pending && cleared.get(projectId) !== pending.id
   setPending(projectId, shown ? pending : null)
   return shown
+}
+
+/** Read `projectId`'s waiting submission; returns whether one is waiting (or still shown). */
+export async function refreshStackProposal(projectId: string): Promise<boolean> {
+  return (await readStackProposal(projectId)) ?? !!useStackProposals.getState().pending[projectId]
 }
 
 export const stackAgentSession = (projectId: string) =>
@@ -107,11 +112,12 @@ const sameName = (a: string, b: string) => {
 
 /**
  * Mark the chosen terminals Development with their ready text, when the agent gives one (adding
- * the proposed new ones, unless the component has a terminal of that name already; Validation
- * terminals are left out, `proposedPatch`), and put their components in the proposed stack, an
- * ordinary map edit; a stack of the same name gains them, keeping its own startup order, and
- * isn't edited when no member is added. Names match ignoring case and spacing, so applying a
- * submission again changes nothing. Only for the active project, whose map the store holds.
+ * the proposed new ones, unless the component has a terminal of that name already; shell, agent
+ * and Validation terminals are left out, `proposedPatch`), and put their components in the
+ * proposed stack, an ordinary map edit; a stack of the same name gains them, keeping its own
+ * startup order, and isn't edited when no member is added. Names match ignoring case and spacing,
+ * so applying a submission again changes nothing. When none of the chosen terminals applies, the
+ * proposal stays and the user is told. Only for the active project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -119,18 +125,29 @@ export async function applyStackProposal(
   projectId: string,
 ) {
   const s = useStore.getState()
-  if (s.project?.id !== projectId || !canEdit(projectId)) return
-  const members: string[] = []
-  for (const t of chosen) {
-    const node = useStore.getState().nodes.find((n) => n.id === t.component)
-    if (!node) continue
+  if (s.project?.id !== projectId)
+    return s.setMessage('Switch back to this project to apply its proposed stack.')
+  if (!canEdit(projectId))
+    return s.setMessage('Resolve the map conflict or project recovery before applying the stack.')
+  // Each chosen terminal as it is on the map now, which may have changed since the agent looked.
+  const edits = chosen.flatMap((t) => {
+    const node = s.nodes.find((n) => n.id === t.component)
+    if (!node) return []
     const current = t.terminal
       ? node.data.terminals.find((x) => x.id === t.terminal)
       : node.data.terminals.find((x) => sameName(x.name, t.name ?? 'Dev'))
-    if (t.terminal && !current) continue
-    // The backend refuses Validation terminals too, but one may have become so since.
+    if (t.terminal && !current) return []
+    // The backend refuses these too, but a terminal may have changed since.
     const patch = proposedPatch(t, current)
-    if (!patch) continue
+    return patch ? [{ t, current, patch }] : []
+  })
+  // Nothing to apply: keep the proposal, so it can still be read or discarded.
+  if (!edits.length)
+    return s.setMessage(
+      'None of the chosen terminals can be applied: they were removed, renamed, or are no longer task terminals (or are Validation ones).',
+    )
+  const members: string[] = []
+  for (const { t, current, patch } of edits) {
     s.updateTerminal(t.component, current?.id ?? s.addTerminal(t.component, null, false), patch)
     if (!members.includes(t.component)) members.push(t.component)
   }
@@ -160,17 +177,20 @@ export function initializeStackProposals(): () => void {
   const checked = new Set<string>()
   const opened = useStore.subscribe((s, prev) => {
     if (s.projects === prev.projects && s.restoring === prev.restoring) return
-    for (const id of checked) if (!s.projects[id]) checked.delete(id)
+    for (const id of checked)
+      if (!s.projects[id] || mapEditsBlocked(s.projects[id])) checked.delete(id)
     const { pending } = useStackProposals.getState()
     if (Object.keys(pending).some((id) => !s.projects[id]))
       useStackProposals.setState({
         pending: Object.fromEntries(Object.entries(pending).filter(([id]) => s.projects[id])),
       })
     if (s.restoring) return
-    for (const id of Object.keys(s.projects))
-      if (!checked.has(id)) {
+    // As dependency detection's: once the project's map can be edited, and again after a failed
+    // read, at the next project change.
+    for (const [id, entry] of Object.entries(s.projects))
+      if (!mapEditsBlocked(entry) && !checked.has(id)) {
         checked.add(id)
-        void refreshStackProposal(id)
+        void readStackProposal(id).then((shown) => shown === null && checked.delete(id))
       }
   })
   stop = () => {

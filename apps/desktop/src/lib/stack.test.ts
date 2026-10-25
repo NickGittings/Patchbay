@@ -98,6 +98,8 @@ test('applying a proposal keeps validators and the user’s ready text when the 
     readyWhen: 'ready in',
   })
   expect(proposedPatch(proposed('ready'), { ...dev, action: 'validation' })).toBeNull()
+  for (const kind of ['agent', 'shell'] as const)
+    expect(proposedPatch(proposed('ready'), { ...dev, kind }), kind).toBeNull()
   expect(
     proposedPatch(
       proposed('', { terminal: undefined, name: 'Postgres', command: 'docker compose up db' }),
