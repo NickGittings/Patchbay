@@ -61,8 +61,13 @@
       .join()
     const wasDirty = state().dirty
     const viewport = query('.react-flow__viewport')?.style.transform
+    const mapNode = query(`.react-flow__node[data-id="${component.id}"]`)
+    const mapNodeVisible = () =>
+      mapNode.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+    await until('map component visible', mapNodeVisible)
     click(await until('Stories toggle', () => button('.navigation-map .view-tabs', 'Stories')))
     await until('story board', () => query('[aria-label="Story board"]'))
+    assert(!mapNodeVisible(), 'map component is still visible over Stories')
     assert(
       state().selectedId === null && state().view === 'navigation',
       'board became a fifth view',
@@ -141,6 +146,11 @@
     // Map toggles retain the mounted React Flow instance and viewport.
     click(button('.story-board-header', 'Map'))
     await until('map visible', () => !state().storyBoard)
+    await until('map component visible again', mapNodeVisible)
+    assert(
+      query(`.react-flow__node[data-id="${component.id}"]`) === mapNode,
+      'toggle remounted the map component',
+    )
     assert(
       query('.react-flow__viewport')?.style.transform === viewport,
       'toggle changed the map viewport',
@@ -222,7 +232,7 @@
       () => !state().storyBoard && query('.navigation-map:not(.story-map-hidden) .canvas'),
     )
     await smoke.report(
-      'PASS stories: hierarchy creation, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, Auto goal, map toggle',
+      'PASS stories: hierarchy creation, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, Auto goal, map visibility and toggle',
     )
   } catch (e) {
     await smoke.report(`FAIL stories: ${e?.message ?? e} ${e?.stack ?? ''}`)

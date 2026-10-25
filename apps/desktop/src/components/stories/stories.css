@@ -4,6 +4,8 @@
 }
 .navigation-map.story-map-hidden {
   visibility: hidden;
+  /* React Flow nodes set visibility: visible inline; hide the whole layer as well. */
+  opacity: 0;
   pointer-events: none;
   position: absolute;
   inset: 0;

@@ -4,7 +4,6 @@ import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind, StoryStatus } from '../../types'
 import { derivedStatus, rollup, tree } from '../../lib/stories'
 import { shortTitle } from '../../lib/tasks'
-import EmptyState from '../EmptyState'
 import StoryEditor from './StoryEditor'
 import './stories.css'
 
@@ -156,22 +155,9 @@ export default function StoryBoard() {
     <div className="story-board" aria-label="Story board">
       <header className="story-board-header">
         <StoryViewTabs />
-        <span className="spacer" />
-        <span>Shape the work before you plan it</span>
       </header>
       <div className="story-board-body">
         <div className="story-board-content">
-          {!stories.length && !draft && (
-            <EmptyState
-              icon="▤"
-              title="What do you want to build?"
-              compact
-              actions={<button onClick={() => add('epic')}>+ Add epic</button>}
-            >
-              Group ideas into epics, features, and stories. Add acceptance criteria, then send one
-              to Plan or Auto.
-            </EmptyState>
-          )}
           <div className="story-columns">
             {column(
               'epic',
