@@ -1,3 +1,4 @@
+import Menu, { MenuItem } from '../Menu'
 import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
 import { componentTerminals, revealTerminal, worktreeAttention } from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
@@ -60,16 +61,8 @@ function WorktreeOverview({
   }, [onOpen])
   return (
     <>
-      <div className="worktree-list">
-        {!tasks.some((t) => t.current && !t.missing) && (
-          <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
-        )}
-        {tasks.map((task) => (
-          <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
-        ))}
-      </div>
       <button
-        className="worktree-new"
+        className="worktree-new primary"
         disabled={!git}
         title={git ? undefined : 'Named tasks require a Git repository'}
         onClick={() => {
@@ -79,6 +72,14 @@ function WorktreeOverview({
       >
         ＋ New task
       </button>
+      <div className="worktree-list">
+        {!tasks.some((t) => t.current && !t.missing) && (
+          <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+        )}
+        {tasks.map((task) => (
+          <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
+        ))}
+      </div>
     </>
   )
 }
@@ -242,6 +243,7 @@ function WorktreeRow({
           className="worktree-row-switch"
           disabled={!!task?.missing}
           aria-pressed={active}
+          title={task?.worktree}
           onClick={switchTo}
         >
           <strong>{task ? task.title : 'Main worktree'}</strong>
@@ -257,12 +259,12 @@ function WorktreeRow({
             ● {attention}
           </span>
         )}
-        {review && (
+        {changedCount > 0 && (
           <span className="worktree-tag" title="Uncommitted files">
             ±{changedCount}
           </span>
         )}
-        <span className="worktree-tag">{running.length} running</span>
+        {running.length > 0 && <span className="worktree-tag">{running.length} running</span>}
         <button
           disabled={!!task?.missing}
           onClick={() => {
@@ -274,11 +276,13 @@ function WorktreeRow({
         >
           Review
         </button>
-        {task && <button onClick={() => setRename(!rename)}>Rename</button>}
-        {task && !confirming && (
-          <button className="danger" onClick={() => setConfirming(true)}>
-            Remove
-          </button>
+        {task && (
+          <Menu label="⋯" triggerLabel={`Actions for ${task.title}`} caret={false} portal>
+            <MenuItem onClick={() => setRename(!rename)}>Rename</MenuItem>
+            <MenuItem disabled={confirming} onClick={() => setConfirming(true)}>
+              Remove
+            </MenuItem>
+          </Menu>
         )}
       </header>
       {task && rename && (
@@ -295,11 +299,6 @@ function WorktreeRow({
           <input aria-label="Task title" value={title} onChange={(e) => setTitle(e.target.value)} />
           <button disabled={!title.trim()}>Save name</button>
         </form>
-      )}
-      {task && (
-        <div className="worktree-path mono" title={task.worktree}>
-          {task.worktree}
-        </div>
       )}
       {task && confirming && (
         <div className="worktree-confirm row">
@@ -328,24 +327,26 @@ function WorktreeRow({
           <button onClick={() => setConfirming(false)}>Cancel</button>
         </div>
       )}
-      <div className="worktree-detail">
-        <span className="section-title">Changed</span>
-        <div className="scope-chips">
-          {error ? (
-            <span className="hint flush file-tree-error">{error}</span>
-          ) : !review ? (
-            <span className="hint flush">{task?.missing ? '—' : 'Loading…'}</span>
-          ) : changed.length || projectFiles ? (
-            <>
-              {changed.map((c) => chip(c.id, `±${c.files}`))}
-              {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
-            </>
-          ) : (
-            <span className="hint flush">No uncommitted changes</span>
-          )}
+      {active && (error || changed.length > 0 || projectFiles > 0) && (
+        <div className="worktree-detail">
+          <span className="section-title">Changed</span>
+          <div className="scope-chips">
+            {error ? (
+              <span className="hint file-tree-error">{error}</span>
+            ) : !review ? (
+              <span className="hint">{task?.missing ? '—' : 'Loading…'}</span>
+            ) : changed.length || projectFiles ? (
+              <>
+                {changed.map((c) => chip(c.id, `±${c.files}`))}
+                {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
+              </>
+            ) : (
+              <span className="hint">No uncommitted changes</span>
+            )}
+          </div>
         </div>
-      </div>
-      {review && review.affected.length > 0 && (
+      )}
+      {active && review && review.affected.length > 0 && (
         <div className="worktree-detail">
           <span className="section-title">May affect</span>
           <div className="scope-chips">
@@ -353,28 +354,30 @@ function WorktreeRow({
           </div>
         </div>
       )}
-      <div className="worktree-detail">
-        <span className="section-title">Running</span>
-        <div className="scope-chips">
-          {running.length ? (
-            running.map(({ componentId, name, t, sid }) => (
-              <button
-                key={sid}
-                className="chip"
-                onClick={() => {
-                  close()
-                  revealTerminal({ sid, componentId })
-                }}
-              >
-                {name}: {t.name}
-              </button>
-            ))
-          ) : (
-            <span className="hint flush">No terminals running</span>
-          )}
+      {active && running.length > 0 && (
+        <div className="worktree-detail">
+          <span className="section-title">Running</span>
+          <div className="scope-chips">
+            {running.length ? (
+              running.map(({ componentId, name, t, sid }) => (
+                <button
+                  key={sid}
+                  className="chip"
+                  onClick={() => {
+                    close()
+                    revealTerminal({ sid, componentId })
+                  }}
+                >
+                  {name}: {t.name}
+                </button>
+              ))
+            ) : (
+              <span className="hint">No terminals running</span>
+            )}
+          </div>
         </div>
-      </div>
-      {task && (
+      )}
+      {active && task && (
         <details className="worktree-notes-detail">
           <summary>Notes{notes ? `: ${notes.split('\n')[0]}` : ''}</summary>
           <textarea

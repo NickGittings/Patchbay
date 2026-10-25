@@ -1,3 +1,5 @@
+import { taskPassed } from '../lib/autoSettings'
+import Menu, { MenuItem } from './Menu'
 import { useMemo, useState } from 'react'
 import { linkedWithin, stackSetup, type DevelopmentSuggestion } from '../lib/stack'
 import { validatorKey } from '../lib/validators'
@@ -61,7 +63,7 @@ function DevelopmentStatus({ node }: { node: FlowNode }) {
   const task = useStore((s) => s.activeTask)
   const sessions = useStore((s) => s.sessions)
   const terminals = node.data.terminals.filter((t) => t.action === 'development')
-  if (!terminals.length) return <span className="hint flush">no Development terminal</span>
+  if (!terminals.length) return null
   return terminals.map((t) => {
     const status = terminalStatus(t.kind, sessions[sessionId(node.id, t.id, task)])
     return (
@@ -82,52 +84,95 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
   const busy = useStore((s) => s.graphActionBusy)
   const { updateGroup, removeGroup, toggleHighlight } = useStore.getState()
   const [stopping, setStopping] = useState(false)
+  const [editing, setEditing] = useState(false)
   return (
-    <details className="component-group" open>
-      <summary>
-        {group.name} <span className="count">{group.componentIds.length}</span>
-      </summary>
-      <label>
-        Name
-        <input
-          aria-label="Stack name"
-          value={group.name}
-          onChange={(e) => updateGroup(group.id, { name: e.target.value })}
-        />
-      </label>
-      <div className="group-members">
-        {nodes.map((node) => (
-          // The status chips sit beside the label, so clicking one doesn't toggle membership.
-          <div key={node.id} className="group-member">
-            <label className="group-option">
-              <input
-                type="checkbox"
-                checked={group.componentIds.includes(node.id)}
-                onChange={(e) =>
-                  updateGroup(group.id, {
-                    componentIds: e.target.checked
-                      ? [...group.componentIds, node.id]
-                      : group.componentIds.filter((id) => id !== node.id),
-                  })
-                }
-              />
-              {node.data.name}
-            </label>
-            {group.componentIds.includes(node.id) && <DevelopmentStatus node={node} />}
-          </div>
-        ))}
+    <section className="stack-card">
+      <div className="panel-section-head">
+        <strong>{group.name}</strong>
+        <Menu label="⋯" triggerLabel={`Stack actions for ${group.name}`} caret={false} portal>
+          <MenuItem onClick={() => setEditing(!editing)}>Edit</MenuItem>
+          <MenuItem
+            onClick={() => {
+              useStore.getState().clearHighlights()
+              group.componentIds.forEach(toggleHighlight)
+              useStore.getState().setView('plan')
+            }}
+          >
+            Use as plan scope
+          </MenuItem>
+          <MenuItem
+            disabled={busy || stopping}
+            onClick={() => {
+              void stopGroup(group.id, true).then((stopped) => {
+                if (stopped) removeGroup(group.id)
+              })
+            }}
+          >
+            Delete
+          </MenuItem>
+        </Menu>
       </div>
-      <label className="group-option">
-        <input
-          type="checkbox"
-          checked={group.orderedStartup}
-          onChange={(e) => updateGroup(group.id, { orderedStartup: e.target.checked })}
-        />
-        Start dependencies first
-      </label>
-      <TimeoutField group={group} />
+      <div className="scope-chips">
+        {nodes
+          .filter((n) => group.componentIds.includes(n.id))
+          .map((n) => (
+            <span className="chip" key={n.id}>
+              {n.data.name}
+              <DevelopmentStatus node={n} />
+            </span>
+          ))}
+      </div>
+      <details
+        className="component-group"
+        open={editing}
+        onToggle={(e) => setEditing(e.currentTarget.open)}
+      >
+        <summary>
+          {group.name} <span className="count">{group.componentIds.length}</span>
+        </summary>
+        <label>
+          Name
+          <input
+            aria-label="Stack name"
+            value={group.name}
+            onChange={(e) => updateGroup(group.id, { name: e.target.value })}
+          />
+        </label>
+        <div className="group-members">
+          {nodes.map((node) => (
+            // The status chips sit beside the label, so clicking one doesn't toggle membership.
+            <div key={node.id} className="group-member">
+              <label className="group-option">
+                <input
+                  type="checkbox"
+                  checked={group.componentIds.includes(node.id)}
+                  onChange={(e) =>
+                    updateGroup(group.id, {
+                      componentIds: e.target.checked
+                        ? [...group.componentIds, node.id]
+                        : group.componentIds.filter((id) => id !== node.id),
+                    })
+                  }
+                />
+                {node.data.name}
+              </label>
+              {group.componentIds.includes(node.id) && <DevelopmentStatus node={node} />}
+            </div>
+          ))}
+        </div>
+        <label className="group-option">
+          <input
+            type="checkbox"
+            checked={group.orderedStartup}
+            onChange={(e) => updateGroup(group.id, { orderedStartup: e.target.checked })}
+          />
+          Start dependencies first
+        </label>
+        <TimeoutField group={group} />
+      </details>
       <div className="row">
         <button
+          className="primary"
           disabled={busy || stopping || !group.componentIds.length}
           onClick={() => void runGraphAction({ kind: 'startGroup', groupId: group.id })}
         >
@@ -144,28 +189,8 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
         >
           Stop
         </button>
-        <button
-          title="Use this stack as the planner scope"
-          onClick={() => {
-            useStore.getState().clearHighlights()
-            group.componentIds.forEach(toggleHighlight)
-            useStore.getState().setView('plan')
-          }}
-        >
-          Plan
-        </button>
-        <button
-          disabled={busy || stopping}
-          onClick={async () => {
-            setStopping(true)
-            if (await stopGroup(group.id, true)) removeGroup(group.id)
-            setStopping(false)
-          }}
-        >
-          Delete
-        </button>
       </div>
-    </details>
+    </section>
   )
 }
 
@@ -197,7 +222,7 @@ function StackSuggestions() {
     return done || restore ? (
       <div className="task-action-result">
         {done && (
-          <p className="hint flush" role="status">
+          <p className="hint" role="status">
             {done}
           </p>
         )}
@@ -206,11 +231,9 @@ function StackSuggestions() {
     ) : null
   return (
     <div className="task-action-result stack-suggestions">
-      <strong>{creates ? 'Set up a stack' : 'More dev servers'}</strong>
-      <p className="hint flush">
-        These look like dev servers or watchers. Ready when is text each prints once it is up, so
-        what depends on it starts after; leave it empty to start without waiting.
-      </p>
+      <strong title="Dev servers and watchers. Ready when is the output text that allows dependent services to start.">
+        {creates ? 'Set up a stack' : 'More dev servers'}
+      </strong>
       <div className="validator-suggestions">
         {setup.suggestions.map((s) => (
           <div key={key(s)} className="validator-suggestion">
@@ -289,13 +312,9 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
     nodes.find((n) => n.id === component)?.data.terminals.find((t) => t.id === id)
   return (
     <div className="task-action-result stack-suggestions" aria-label="Proposed stack">
-      <strong>Proposed stack · {pending.name}</strong>
-      <p className="hint flush">
-        {pending.orderedStartup
-          ? 'Dependencies start first, each waiting until it prints its ready text.'
-          : 'Everything starts at once.'}{' '}
-        Applying marks these terminals Development and adds their components to the stack.
-      </p>
+      <strong title="Applying marks terminals Development and adds their components to the stack. Dependencies wait for ready text when ordered startup is enabled.">
+        Proposed stack · {pending.name}
+      </strong>
       <div className="validator-suggestions">
         {pending.terminals.map((t) => {
           const key = proposedKey(t)
@@ -323,10 +342,10 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
                   {t.terminal ? (existing?.name ?? t.terminal) : `${t.name} (new)`}
                 </span>
                 {t.command && <code>{t.command}</code>}
-                <span className="hint flush">
+                <span className="hint">
                   {ready ? `Ready when “${ready}”` : 'Starts without waiting'}
                 </span>
-                <span className="hint flush">{t.reason}</span>
+                <span className="hint">{t.reason}</span>
               </span>
             </label>
           )
@@ -400,75 +419,90 @@ export default function StackPanel() {
   const nodes = useStore((s) => s.nodes)
   const report = useStore((s) => s.graphActionReport)
   const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
   return (
     <section className="component-groups" aria-label="Stacks">
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (!name.trim()) return
-          const selected = nodes.filter(
-            (n) => n.selected || n.id === useStore.getState().selectedId,
-          )
-          useStore.getState().addGroup(
-            name.trim(),
-            selected.map((n) => n.id),
-          )
-          setName('')
-        }}
-      >
-        <input
-          aria-label="New stack name"
-          placeholder="New stack name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <button type="submit" disabled={!name.trim()}>
-          Add
-        </button>
-      </form>
-      <p className="hint flush">
-        A stack starts its components’ Development terminals together, such as a database, an API
-        and a web app. Mark terminals as Development in the component inspector. New stacks start
-        with the selected components.
-      </p>
+      {!groups.length && (
+        <p className="panel-empty">
+          A stack starts its components’ Development terminals together, such as a database, an API
+          and a web app. Mark terminals as Development in the component inspector. New stacks start
+          with the selected components.
+        </p>
+      )}
       <StackSuggestions />
       {projectId && <StackAgent projectId={projectId} />}
       {groups.map((group) => (
         <GroupEditor key={group.id} group={group} />
       ))}
+      <button onClick={() => setCreating(!creating)} aria-expanded={creating}>
+        ＋ New stack
+      </button>
+      {creating && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!name.trim()) return
+            const selected = nodes.filter(
+              (n) => n.selected || n.id === useStore.getState().selectedId,
+            )
+            useStore.getState().addGroup(
+              name.trim(),
+              selected.map((n) => n.id),
+            )
+            setName('')
+          }}
+        >
+          <input
+            aria-label="New stack name"
+            placeholder="New stack name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <button type="submit" disabled={!name.trim()}>
+            Add
+          </button>
+        </form>
+      )}
       {report && (
-        <details className="action-results" open>
-          <summary>Last action · {report.results.length} tasks</summary>
-          {report.results.map((result) => (
-            <button
-              className="action-result"
-              key={result.sessionId}
-              data-session={result.sessionId}
-              onClick={() => {
-                // Navigation, where these results and the dock live.
-                const { componentId, task } = parseSessionId(result.sessionId)
-                const s = useStore.getState()
-                s.setActiveTask(task)
-                s.select(componentId)
-                s.setActiveSession(result.sessionId)
-                s.setView('navigation')
-              }}
-            >
-              <span>{resultLabel(result.sessionId)}</span>
-              <strong
-                className={
-                  result.outcome === 'failed' || result.outcome === 'stopped' ? result.outcome : ''
-                }
-                title={result.message}
+        <details className="action-results">
+          <summary>
+            Last action · {report.results.length} tasks · {report.results.filter(taskPassed).length}{' '}
+            passed
+          </summary>
+          {report.results
+            .filter((result) => !taskPassed(result))
+            .map((result) => (
+              <button
+                className="action-result"
+                key={result.sessionId}
+                data-session={result.sessionId}
+                onClick={() => {
+                  // Navigation, where these results and the dock live.
+                  const { componentId, task } = parseSessionId(result.sessionId)
+                  const s = useStore.getState()
+                  s.setActiveTask(task)
+                  s.select(componentId)
+                  s.setActiveSession(result.sessionId)
+                  s.setView('navigation')
+                }}
               >
-                {result.outcome}
-                {result.exitCode !== null ? ` (${result.exitCode})` : ''}
-              </strong>
-            </button>
-          ))}
+                <span>{resultLabel(result.sessionId)}</span>
+                <strong
+                  className={
+                    result.outcome === 'failed' || result.outcome === 'stopped'
+                      ? result.outcome
+                      : ''
+                  }
+                  title={result.message}
+                >
+                  {result.outcome}
+                  {result.exitCode !== null ? ` (${result.exitCode})` : ''}
+                </strong>
+              </button>
+            ))}
           {report.plan.skipped.map((id) => (
-            <p className="hint flush" key={id}>
+            <p className="hint" key={id}>
               {nodes.find((n) => n.id === id)?.data.name ?? id}: no configured tasks
             </p>
           ))}

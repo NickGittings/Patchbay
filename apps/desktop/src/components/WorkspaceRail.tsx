@@ -68,6 +68,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const counts = useStore(useShallow(worktreeAttention))
   const count = Object.values(counts).reduce((sum, n) => sum + n, 0)
   const selected = selectedRailView()
+  const [sessionsActions, setSessionsActions] = useState<HTMLDivElement | null>(null)
   const [sessionsHost, setSessionsHost] = useState<HTMLDivElement | null>(null)
   const [width, setWidth] = useState(initialWidth)
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -88,6 +89,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
     ) {
       e.preventDefault()
       selectPanel(null)
+      document
+        .querySelector<HTMLButtonElement>(`[aria-label="${panel ? utilities[panel].label : ''}"]`)
+        ?.focus()
     }
   }
   useEffect(() => {
@@ -223,6 +227,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                 <h2>{utilities[panel].label}</h2>
                 <small title={subtitle}>{subtitle}</small>
               </div>
+              {panel === 'sessions' && (
+                <div className="panel-section-head" ref={setSessionsActions} />
+              )}
               <button
                 aria-label={`Close ${utilities[panel].label} panel`}
                 onClick={() => {
@@ -243,9 +250,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                 {panel === 'project' && (
                   <>
                     <ProjectSwitcher />
-                    <hr />
                     <MapSaveStatus />
-                    <div className="project-actions">
+                    <div className="project-actions panel-section">
+                      <div className="section-title">Actions</div>
                       {actions
                         .filter((a) => a.group === 'project' && a.id !== 'save')
                         .map((a) => (
@@ -312,7 +319,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
           />
         </>
       )}
-      <SessionsPanel host={sessionsHost} onKeyDown={closeOnEscape} />
+      <SessionsPanel headerHost={sessionsActions} host={sessionsHost} onKeyDown={closeOnEscape} />
       {integrationsProvider(settings) !== undefined && (
         <AgentIntegrationsPanel
           key={settings}

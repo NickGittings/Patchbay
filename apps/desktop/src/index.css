@@ -1984,7 +1984,7 @@ button.review-name:hover:not(:disabled) {
   color: var(--muted);
 }
 .component-groups {
-  padding: 0 12px;
+  padding: 0;
 }
 .component-groups form input {
   min-width: 0;
@@ -2453,8 +2453,7 @@ kbd {
 }
 
 .map-save-description {
-  max-width: 320px;
-  padding: 4px 12px;
+  padding: 0;
   margin: 4px 0;
   color: var(--muted);
   font-size: 12px;
@@ -2881,44 +2880,30 @@ kbd {
 .utility-resize:focus {
   background: var(--accent);
 }
-.utility-panel .sessions-panel {
-  width: 100%;
-  max-height: none;
-  padding: 0;
-  overflow: visible;
-  border: 0;
-  background: transparent;
+.sessions-content {
+  min-width: 0;
 }
-.utility-panel .row {
-  flex-wrap: wrap;
-}
-.utility-panel .session-row {
+.session-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.utility-panel .session-row > div:first-child {
-  width: 100%;
+.session-row > div:first-child {
+  flex: 1 1 120px;
+  min-width: 0;
 }
-.utility-panel .session-worktree {
+.session-worktree {
   margin-left: 0;
 }
-.utility-panel .worktree-row-header {
+.worktree-row-header {
   flex-wrap: wrap;
 }
-.utility-panel .worktree-row-switch {
+.worktree-row-switch {
   min-width: 0;
 }
-.utility-panel .worktree-detail {
+.worktree-detail {
   display: flex;
   flex-direction: column;
-}
-.utility-panel .auto-content {
-  width: 100%;
-  min-width: 0;
-}
-.utility-panel .menu-item {
-  white-space: normal;
 }
 .project-actions {
   display: flex;
@@ -3020,4 +3005,85 @@ kbd {
   .panel-row-actions {
     opacity: 1;
   }
+}
+
+.auto-stepper {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.auto-stepper [aria-current] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.auto-goal {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.panel-callout {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+.dialog-body .agent-role-field {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.stack-card {
+  margin: 16px 0;
+}
+.auto-values {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+.auto-values dd {
+  margin: 0;
+}
+.auto-session-link {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font-size: 11px;
+}
+.terminal-row > summary {
+  align-items: center;
+  cursor: pointer;
+}
+.terminal-row > summary button {
+  margin-left: 6px;
+}
+.project-actions button {
+  border: 0;
+  background: transparent;
+}
+
+.status-dot.health-ok {
+  background: var(--ok);
+}
+.status-dot.health-fail {
+  background: var(--bad);
+}
+.status-dot.health-running {
+  background: var(--accent);
+}
+
+.status-dot {
+  display: inline-block;
+}
+.settings-field {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 8px;
 }

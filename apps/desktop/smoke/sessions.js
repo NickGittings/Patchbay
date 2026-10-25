@@ -13,7 +13,7 @@
   }
   const smoke = await until('hooks', () => window.__patchbaySmoke)
   const state = () => smoke.store.getState()
-  const panel = () => document.querySelector('.sessions-panel')
+  const panel = () => document.querySelector('[aria-label="Sessions panel"]')
   // Helpers return nothing for missing elements, so `until` keeps polling through re-renders.
   const group = (name) =>
     [...document.querySelectorAll('.session-list > section')].find(
@@ -80,7 +80,7 @@
   // Callers wait for the rows they expect; the select's own value proves nothing rendered.
   const choose = async (name, index, value) => {
     const select = await until(`${name} select ${index}`, () => {
-      const element = group(name)?.querySelectorAll('select')[index]
+      const element = panel()?.querySelectorAll('.panel-section-head select')[index]
       return element && !element.disabled && element
     })
     select.value = value
@@ -210,10 +210,10 @@
       [...document.querySelectorAll('.session-list h3')].map((h) => h.textContent).join('|')
     const initialOrder = headingOrder()
     for (const name of [first, second]) {
-      const selects = group(name).querySelectorAll('select')
+      const selects = panel().querySelectorAll('.panel-section-head select')
       assert(selects[0].value === 'all' && selects[1].value === 'latest', 'Incorrect defaults')
       assert(
-        [...selects].every((select) => select.getAttribute('aria-label').includes(name)),
+        [...selects].every((select) => select.getAttribute('aria-label').includes('sessions')),
         'Controls lack project labels',
       )
       assert(
@@ -283,11 +283,11 @@
     try {
       await until('ended agent has View output and Resume inline', () => {
         const buttons = row(first, 'Done A').querySelectorAll(':scope > button')
-        return [...buttons].map((button) => button.textContent).join('|') === 'View output|Resume'
+        return [...buttons].map((button) => button.textContent).join('|') === 'View output'
       })
       await openMenu(() => row(first, 'Live A'))
       assert(
-        sessionMenu().querySelectorAll('[role="menuitem"]').length === 1 &&
+        sessionMenu().querySelectorAll('[role="menuitem"]').length === 2 &&
           menuItem('Set conversation ID…'),
         'Live agent menu has incorrect actions',
       )
@@ -298,7 +298,7 @@
       assert(
         [...sessionMenu().querySelectorAll('[role="menuitem"]')]
           .map((item) => item.textContent)
-          .join('|') === 'Start new|Set conversation ID…|Forget' &&
+          .join('|') === 'Resume|Start new|Set conversation ID…|Forget' &&
           sessionMenu().querySelector('[role="separator"]'),
         'Ended agent menu has incorrect actions',
       )
@@ -316,11 +316,10 @@
     }
     await choose(first, 0, 'running')
     await choose(first, 1, 'oldest')
-    await choose(second, 0, 'closed')
     await until(
-      'independent filter and sort results',
+      'global filter and sort results',
       () =>
-        names(first).join('|') === 'Live A|Live B' && names(second).join('|') === 'Done B|Done A',
+        names(first).join('|') === 'Live A|Live B' && names(second).join('|') === 'Live A|Live B',
     )
     assert(headingOrder() === initialOrder, 'Filtering reordered project groups')
     await click(() => row(first, 'Live A'), 'Reconnect')
@@ -329,16 +328,14 @@
     await choose(first, 0, 'closed')
     assert(document.querySelector('.session-preview'), 'Filtering hid an open preview')
     await choose(first, 0, 'running')
-    await click(panel, 'Close')
+    document.querySelector('[aria-label="Close Sessions panel"]').click()
     await until('closed panel', () => !panel())
     await click(() => document, 'Sessions')
     await until(
       'reopened choices',
       () =>
-        group(first)?.querySelectorAll('select')[0].value === 'running' &&
-        group(first)?.querySelectorAll('select')[1].value === 'oldest' &&
-        group(second)?.querySelectorAll('select')[0].value === 'closed' &&
-        group(second)?.querySelectorAll('select')[1].value === 'latest',
+        panel()?.querySelectorAll('.panel-section-head select')[0].value === 'running' &&
+        panel()?.querySelectorAll('.panel-section-head select')[1].value === 'oldest',
     )
     await click(() => row(first, 'Live A'), 'Stop')
     await until('first stopped session disappears', () => !names(first).includes('Live A'))
@@ -348,7 +345,7 @@
       () => names(first).length === 0 && group(first).textContent.includes('No running sessions'),
     )
     assert(
-      group(first).querySelectorAll('select').length === 2,
+      panel().querySelectorAll('.panel-section-head select').length === 2,
       'Empty running group lost controls',
     )
     await choose(first, 0, 'closed')
@@ -379,7 +376,7 @@
       () => names(second).length === 0 && group(second).textContent.includes('No closed sessions'),
     )
     assert(
-      group(second).querySelectorAll('select').length === 2,
+      panel().querySelectorAll('.panel-section-head select').length === 2,
       'Empty closed group lost controls',
     )
     // Closing the project's tab does not turn its detached running processes into Closed.
@@ -534,15 +531,13 @@
         worktree('Zebra work').querySelectorAll('.session-row').length === 1
       )
     })
-    assert(worktree('Alpha work').textContent.includes(alpha.worktree), 'Missing worktree path')
     assert(
-      worktree('Alpha work').querySelector('.session-worktree-eyebrow')?.textContent ===
-        'WORKTREE' &&
-        worktree('Main worktree').querySelector('.session-worktree-eyebrow')?.textContent ===
-          'PROJECT FOLDER' &&
-        worktree('Alpha work').querySelector('.session-worktree-count')?.textContent ===
-          '1 session',
-      'Worktree headers lack scope labels or session counts',
+      worktree('Alpha work').querySelector('h4').title === alpha.worktree,
+      'Missing worktree path tooltip',
+    )
+    assert(
+      worktree('Alpha work').querySelector('.session-worktree-count')?.textContent === '1 session',
+      'Missing session count',
     )
     assert(
       worktree('Alpha work').querySelector('.session-worktree-branch')?.textContent ===
@@ -565,7 +560,7 @@
       () => state().project?.id === two.id && worktree('Alpha work') && worktree('Zebra work'),
     )
     // A read-only panel must preserve inactive task layouts and Git badges, even disconnected.
-    await click(panel, 'Close')
+    document.querySelector('[aria-label="Close Sessions panel"]').click()
     await until('panel closed before restart check', () => !panel())
     const original = state().projects[one.id].state
     state().patchProject(one.id, {
@@ -589,7 +584,7 @@
     )
     assert(state().projects[one.id].state === inactive, 'Opening Sessions changed an inactive tab')
     // Remove previous rendered groups before testing the legacy read-only lookup.
-    await click(panel, 'Close')
+    document.querySelector('[aria-label="Close Sessions panel"]').click()
     await until('panel closed before legacy check', () => !panel())
     // Old service records may lack names; their Tauri lookup must not reconcile project state.
     smoke.store.setState({

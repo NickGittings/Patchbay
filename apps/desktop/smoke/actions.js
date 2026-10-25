@@ -82,6 +82,7 @@
       )
       const rows = document.querySelectorAll('.inspector .terminal-row')
       for (const [index, role] of ['development', 'validation'].entries()) {
+        rows[index].open = true
         const select = Array.from(rows[index].querySelectorAll('select')).find((el) =>
           Array.from(el.options).some((option) => option.value === 'development'),
         )
@@ -100,7 +101,11 @@
     state().onNodesChange(
       ['web', 'api', 'lib'].map((id) => ({ type: 'select', id, selected: true })),
     )
-    change(document.querySelector('[aria-label="New stack name"]'), 'Smoke stack')
+    button(document.querySelector('.component-groups'), '＋ New stack').click()
+    change(
+      await until('new stack form', () => document.querySelector('[aria-label="New stack name"]')),
+      'Smoke stack',
+    )
     await until(
       'group form enabled',
       () => !document.querySelector('.component-groups form button').disabled,
@@ -114,6 +119,7 @@
     // Closing the panel unmounts it, so each use looks the open stack up again.
     const stackEditor = () => document.querySelector('.component-group')
     let editor = stackEditor()
+    editor.open = true
     const ordered = Array.from(editor.querySelectorAll('label')).find((l) =>
       l.textContent.includes('Start dependencies first'),
     )
@@ -129,7 +135,7 @@
       plan.stages.map((stage) => stage.join(',')).join(';') === 'lib;api;web',
       'incorrect startup order',
     )
-    button(editor, 'Start').click()
+    button(editor.closest('.stack-card'), 'Start').click()
     smoke.selectPanel(null)
     await until('running stack outside its panel', () =>
       document
@@ -167,7 +173,7 @@
       state().nodes.some((n) => n.id === 'lib'),
       'refused group-member removal changed the map',
     )
-    button(editor, 'Stop').click()
+    button(editor.closest('.stack-card'), 'Stop').click()
     await until(
       'environment stopped',
       () =>
@@ -193,16 +199,18 @@
       'validation scope or outcomes incorrect',
     )
     assert(report.plan.skipped.join(',') === 'lib', 'unconfigured validator was not reported')
+    document.querySelector('.action-results').open = true
     await until('failed result rendered', () => document.querySelector('.action-result .failed'))
     Array.from(document.querySelectorAll('.action-result'))
-      .find((el) => el.dataset.session === smoke.sessionId('web', 'check'))
+      .find((el) => el.dataset.session === smoke.sessionId('api', 'check'))
       .click()
     await until(
       'result terminal selected',
       () =>
-        state().activeSession === smoke.sessionId('web', 'check') && state().selectedId === 'web',
+        state().activeSession === smoke.sessionId('api', 'check') && state().selectedId === 'api',
     )
-    button(editor, 'Plan').click()
+    editor.closest('.stack-card').querySelector('.menu-trigger').click()
+    button(document.querySelector('[role="menu"]'), 'Use as plan scope').click()
     await until(
       'group planner scope',
       () => state().view === 'plan' && state().highlighted.length === 3,

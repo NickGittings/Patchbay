@@ -265,7 +265,6 @@ export default function AutoDialog({
   if (needsWorktree)
     return (
       <div className="auto-content">
-        <strong>Auto mode</strong>
         <p>
           Auto needs a branch other than {needsWorktree.branch}; create a worktree for this task.
         </p>
@@ -289,12 +288,13 @@ export default function AutoDialog({
     )
   return (
     <div className="auto-content">
-      <strong>Auto mode</strong>
       <label>
         Task goal
         <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
       </label>
-      <p>Starting at: {detected}</p>
+      <span className="worktree-tag" title={detected}>
+        Starting at: {decision ? STAGE_LABELS[decision.stage] : 'Detecting…'}
+      </span>
       <label>
         Starting stage
         <select value={stage} onChange={(e) => edit({ stage: e.target.value as AutoStage | '' })}>

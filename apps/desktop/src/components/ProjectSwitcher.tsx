@@ -20,7 +20,7 @@ export default function ProjectSwitcher() {
         const entry = projects[id]
         if (!entry) return null
         return (
-          <div className="row" key={id}>
+          <div className={`panel-list-row ${activeId === id ? 'active' : ''}`} key={id}>
             <button
               className="grow"
               aria-pressed={activeId === id}
@@ -28,10 +28,18 @@ export default function ProjectSwitcher() {
               onClick={() => useStore.getState().activateProject(id)}
             >
               {entry.name}
-              {entry.unavailable ? ' (unavailable)' : ''}
-              {running[i] ? ` (${running[i]} running)` : ''}
+              {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}
+              {running[i] > 0 && (
+                <span className="count" title="Running sessions">
+                  {running[i]}
+                </span>
+              )}
             </button>
-            <button aria-label={`Close ${entry.name}`} onClick={() => void closeProjectTab(id)}>
+            <button
+              className="panel-row-actions"
+              aria-label={`Close ${entry.name}`}
+              onClick={() => void closeProjectTab(id)}
+            >
               ×
             </button>
           </div>
