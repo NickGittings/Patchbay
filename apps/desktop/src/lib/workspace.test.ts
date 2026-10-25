@@ -263,3 +263,39 @@ test('Simple defaults off, preserves the Full view and restores the complete wor
   expect(useStore.getState().simpleMode).toBe(false)
   expect(useStore.getState().dirty).toBe(false)
 })
+
+test('story board and planner story persist per project, outside task layouts and map dirtiness', () => {
+  useStore.getState().select('a')
+  useStore.getState().setStoryBoard(true)
+  useStore.setState({ planStory: 'story1', planStoryTerminal: 'claude' })
+  expect(useStore.getState()).toMatchObject({
+    selectedId: null,
+    selectedEdgeId: null,
+    view: 'navigation',
+    dirty: false,
+  })
+  const layout = restoredLayout(workspaceDocument().projects[0].layout)
+  expect(layout).toMatchObject({
+    storyBoard: true,
+    planStory: 'story1',
+    planStoryTerminal: 'claude',
+  })
+  expect(layout.taskWorkspaces?.['']).not.toHaveProperty('storyBoard')
+  expect(layout.taskWorkspaces?.['']).not.toHaveProperty('planStory')
+  expect(workspaceDocument().projects[0]).not.toHaveProperty('stories')
+  expect(restoredLayout({ storyBoard: 'true', planStory: 3 })).toMatchObject({
+    storyBoard: false,
+    planStory: null,
+  })
+  useStore.getState().loadProject({
+    projectId: 'q',
+    root: '/q',
+    name: 'Q',
+    schemaVersion: 4,
+    components: [],
+    links: [],
+  })
+  expect(useStore.getState().storyBoard).toBe(false)
+  useStore.getState().activateProject('p')
+  expect(useStore.getState().storyBoard).toBe(true)
+})

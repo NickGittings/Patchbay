@@ -33,6 +33,9 @@ import type {
   Task,
   TaskDraft,
   TaskPatch,
+  Story,
+  StoryDraft,
+  StoryPatch,
   TerminalEvent,
   TerminalSnapshot,
   TerminalSpec,
@@ -170,11 +173,12 @@ export const gitWorktrees = (projectId = useStore.getState().project?.id) =>
 export const gitBranches = (projectId = useStore.getState().project?.id) =>
   invoke<string[]>('git_branches', { projectId })
 /** Planners belong to the project, so they never take a task. */
-export const planContext = async (project: Project, componentIds: string[]) =>
+export const planContext = async (project: Project, componentIds: string[], story?: string) =>
   invoke<string>('plan_context', {
     project,
     projectId: project.projectId,
     componentIds,
+    story,
     extraContext: await extraContext(project, componentIds),
   })
 /** The plan the planner saved for the project (or task); empty when there is none. */
@@ -198,6 +202,7 @@ export const planStart = async (
   resume = false,
   kickoff?: Kickoff,
   auto?: AutoBrief,
+  story?: string,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -206,6 +211,7 @@ export const planStart = async (
     terminal,
     requestId,
     auto,
+    story,
     kickoff,
     resume,
     extraContext: await extraContext(project, componentIds),
@@ -567,3 +573,13 @@ export const updateNativeMenu = (entries: NativeMenuEntry[]) =>
   invoke<void>('update_native_menu', { entries })
 /** Only available in desktop debug builds, for smoke checks. */
 export const inspectNativeMenu = () => invoke<[string, string, boolean][]>('inspect_native_menu')
+
+export const storyList = (projectId: string) => invoke<Story[]>('story_list', { projectId })
+export const storyCreate = (projectId: string, draft: StoryDraft) =>
+  invoke<Story>('story_create', { projectId, draft })
+export const storyUpdate = (projectId: string, id: string, patch: StoryPatch) =>
+  invoke<Story>('story_update', { projectId, id, patch })
+export const storyRemove = (projectId: string, id: string, cascade: boolean) =>
+  invoke<void>('story_remove', { projectId, id, cascade })
+export const storyCompleteAuto = (projectId: string, task: string, runId: string) =>
+  invoke<Story[]>('story_complete_auto', { projectId, task, runId })

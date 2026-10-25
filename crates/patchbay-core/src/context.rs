@@ -92,13 +92,14 @@ impl AutoBrief {
 }
 
 /// The first task of a fresh agent: a root agent implements the plan or fixes
-/// review findings; an Auto planner plans.
+/// review findings; a planner plans an Auto goal or a story.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Kickoff {
     ImplementPlan { subagents: Option<u8> },
     FixFindings,
     Plan,
+    PlanStory,
 }
 
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
@@ -1471,7 +1472,7 @@ pub fn plan_session_spec(
     kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     match kickoff {
-        Some(Kickoff::Plan) => {
+        Some(Kickoff::Plan | Kickoff::PlanStory) => {
             anyhow::ensure!(
                 terminal.kind == TerminalKind::Agent,
                 "Choose an agent preset"
@@ -1538,7 +1539,10 @@ pub fn task_root_session_spec(
         kickoff.is_none() || terminal.kind == TerminalKind::Agent,
         "Choose an agent for implementation"
     );
-    anyhow::ensure!(kickoff != Some(Kickoff::Plan), "Start planners in Plan");
+    anyhow::ensure!(
+        !matches!(kickoff, Some(Kickoff::Plan | Kickoff::PlanStory)),
+        "Start planners in Plan"
+    );
     root_session_spec(
         project,
         component_ids,
@@ -1591,6 +1595,9 @@ pub fn root_handoff(
         None => (None, Vec::new()),
     })
 }
+
+/// The first prompt of a story planner.
+const STORY_PROMPT: &str = "Plan the story in the Story section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
 
 /// The first prompt of an Auto planner.
 const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
@@ -1691,6 +1698,7 @@ fn root_session_spec(
             Kickoff::ImplementPlan { subagents } => implement_prompt(subagents),
             Kickoff::FixFindings => Cow::Borrowed(FIX_FINDINGS_PROMPT),
             Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
+            Kickoff::PlanStory => Cow::Borrowed(STORY_PROMPT),
         });
         // Implement's Restart has no kickoff, so a root start budgets for the longest one.
         let reserve = if planning {
@@ -2640,6 +2648,7 @@ mod tests {
             &subagents,
             FIX_FINDINGS_PROMPT,
             PLAN_PROMPT,
+            STORY_PROMPT,
             MERGE_PROMPT,
             REVIEW_PROMPT,
         ] {
@@ -2692,6 +2701,7 @@ mod tests {
                 Kickoff::FixFindings,
             ),
             (serde_json::json!({"kind": "plan"}), Kickoff::Plan),
+            (serde_json::json!({"kind": "planStory"}), Kickoff::PlanStory),
         ] {
             assert_eq!(serde_json::from_value::<Kickoff>(json).unwrap(), kickoff);
         }
@@ -2753,45 +2763,50 @@ mod tests {
 
     #[test]
     fn auto_planner_kickoff_has_its_prompt_and_keeps_the_manual_id() {
-        for command in ["claude", "codex"] {
-            let mut terminal = planner();
-            terminal.command = command.into();
-            let sections = [AutoBrief {
-                goal: "Plan a change".into(),
-                fix_floor: None,
-                effort_note: "Add tests".into(),
-                commit: false,
+        for (kickoff, prompt) in [
+            (Kickoff::Plan, PLAN_PROMPT),
+            (Kickoff::PlanStory, STORY_PROMPT),
+        ] {
+            for command in ["claude", "codex"] {
+                let mut terminal = planner();
+                terminal.command = command.into();
+                let sections = [AutoBrief {
+                    goal: "Plan a change".into(),
+                    fix_floor: None,
+                    effort_note: "Add tests".into(),
+                    commit: false,
+                }
+                .section("plan")];
+                let manual =
+                    plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
+                let auto = plan_session_spec(
+                    &project(),
+                    &[],
+                    &terminal,
+                    &AllowAll,
+                    &sections,
+                    Some(kickoff),
+                )
+                .unwrap();
+                assert_eq!(auto.id, manual.id);
+                let words = command_tokens(&auto.command, Shell::current()).unwrap();
+                assert_eq!(words.last().unwrap(), prompt);
+                assert!(!manual.command.contains(prompt));
+                // A resumed planner isn't prompted to plan again.
+                let resume = auto.resume_command.as_deref().unwrap();
+                assert!(!resume.contains(prompt), "{resume}");
+                assert!(manual.resume_command.is_none());
+                let root = task_root_session_spec(
+                    &project(),
+                    &[],
+                    &terminal,
+                    None,
+                    &AllowAll,
+                    &[],
+                    Some(kickoff),
+                );
+                assert!(root.is_err());
             }
-            .section("plan")];
-            let manual =
-                plan_session_spec(&project(), &[], &terminal, &AllowAll, &[], None).unwrap();
-            let auto = plan_session_spec(
-                &project(),
-                &[],
-                &terminal,
-                &AllowAll,
-                &sections,
-                Some(Kickoff::Plan),
-            )
-            .unwrap();
-            assert_eq!(auto.id, manual.id);
-            let words = command_tokens(&auto.command, Shell::current()).unwrap();
-            assert_eq!(words.last().unwrap(), PLAN_PROMPT);
-            assert!(!manual.command.contains(PLAN_PROMPT));
-            // A resumed planner isn't prompted to plan again.
-            let resume = auto.resume_command.as_deref().unwrap();
-            assert!(!resume.contains(PLAN_PROMPT), "{resume}");
-            assert!(manual.resume_command.is_none());
-            let root = task_root_session_spec(
-                &project(),
-                &[],
-                &terminal,
-                None,
-                &AllowAll,
-                &[],
-                Some(Kickoff::Plan),
-            );
-            assert!(root.is_err());
         }
     }
 

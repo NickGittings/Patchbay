@@ -1,3 +1,5 @@
+import StoryBoard from './components/stories/StoryBoard'
+import { storyProgressPoll } from './lib/storyProgress'
 import WorkspaceRail from './components/WorkspaceRail'
 import RecoveryBanners from './components/RecoveryBanners'
 import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
@@ -103,6 +105,7 @@ function NavigationView() {
   const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open')
   // An open diff reads the same data, so it keeps refreshing while the chat is collapsed.
   const reader = useSimpleData(simple && (!chatPanel.collapsed || !!diff))
+  const storyBoard = useStore((s) => s.storyBoard) && !simple
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
@@ -125,7 +128,14 @@ function NavigationView() {
         <PersistedGroup layoutId="App-2" orientation="vertical">
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
             <div className="simple-canvas">
-              <Canvas />
+              <div
+                className={`navigation-map ${storyBoard ? 'story-map-hidden' : ''}`}
+                aria-hidden={storyBoard}
+                inert={storyBoard}
+              >
+                <Canvas />
+              </div>
+              {storyBoard && <StoryBoard />}
               {simple && chatPanel.collapsed && (
                 <button
                   className="simple-show-chat"
@@ -230,7 +240,17 @@ function AppWorkspace() {
   }, [])
   // Tasks belong to the repo, so each project loads its own when its tab opens.
   useEffect(() => {
-    if (projectId) void refreshTasks()
+    if (projectId) {
+      void refreshTasks()
+      // Completion must be saved even while the board is closed (for example during Merge).
+      const progress = storyProgressPoll(projectId)
+      void progress.poll()
+      const timer = setInterval(() => void progress.poll(), 5000)
+      return () => {
+        progress.dispose()
+        clearInterval(timer)
+      }
+    }
   }, [projectId])
   useGitRefresh()
   useRootSync()

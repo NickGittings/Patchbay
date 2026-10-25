@@ -22,6 +22,7 @@ pub mod proposals;
 pub mod pty;
 pub mod reviews;
 pub mod status;
+pub mod stories;
 pub mod tasks;
 pub mod watch;
 

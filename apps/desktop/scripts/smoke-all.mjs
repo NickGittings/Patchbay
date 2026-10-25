@@ -45,6 +45,7 @@ const SCRIPTS = {
     'autosave-fixture.sh',
   ),
   views: smoke('views.js'),
+  stories: smoke('stories.js'),
   merge: smoke(
     'merge.js',
     {

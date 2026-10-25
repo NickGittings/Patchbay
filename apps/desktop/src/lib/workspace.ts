@@ -64,6 +64,9 @@ export function workspaceDocument(): WorkspaceDocument {
               highlighted: state.highlighted,
               implementationComponents: state.implementationComponents,
               planActive: state.planActive,
+              storyBoard: state.storyBoard,
+              planStory: state.planStory,
+              planStoryTerminal: state.planStoryTerminal,
               planStartedWith: state.planStartedWith,
               agentRoles: state.agentRoles,
               implementSubagents: state.implementSubagents,
@@ -101,7 +104,13 @@ export function restoredLayout(
   const out: Partial<ProjectState> = {}
   out.auto = restoredAuto(layout.auto)
   out.simple = restoredSimple(layout.simple)
-  if (!nested) out.simpleMode = layout.simpleMode === true
+  if (!nested) {
+    out.simpleMode = layout.simpleMode === true
+    out.storyBoard = layout.storyBoard === true
+    out.planStory = typeof layout.planStory === 'string' ? layout.planStory : null
+    out.planStoryTerminal =
+      typeof layout.planStoryTerminal === 'string' ? layout.planStoryTerminal : null
+  }
   if (['navigation', 'plan', 'implementation', 'review'].includes(String(layout.view)))
     out.view = layout.view as ProjectState['view']
   // The active session belongs to the active task's scope, so both are restored together;
@@ -204,6 +213,9 @@ export function restoredLayout(
                 'selectedEdgeId',
                 'viewport',
                 'planStartedWith',
+                'storyBoard',
+                'planStory',
+                'planStoryTerminal',
                 'agentRoles',
                 'implementSubagents',
                 'validatorDeclined',
@@ -332,6 +344,9 @@ export function initializeWorkspace() {
           s.highlighted === prev.highlighted &&
           s.implementationComponents === prev.implementationComponents &&
           s.planActive === prev.planActive &&
+          s.storyBoard === prev.storyBoard &&
+          s.planStory === prev.planStory &&
+          s.planStoryTerminal === prev.planStoryTerminal &&
           s.planStartedWith === prev.planStartedWith &&
           s.agentRoles === prev.agentRoles &&
           s.implementSubagents === prev.implementSubagents &&

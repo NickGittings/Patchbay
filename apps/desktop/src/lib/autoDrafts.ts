@@ -5,6 +5,8 @@ import type { AgentRole, AutoRun, AutoStage, EffortSettings } from '../types'
  * the user's own choices are kept: what the dialog fills in itself is inferred again on reopen.
  */
 export interface AutoDraft {
+  /** Story to link once this draft successfully starts a run. */
+  story?: string
   /** The goal as the user typed it; absent, the dialog infers one. */
   goal?: string
   effort: AutoRun['effort']

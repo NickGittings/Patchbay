@@ -40,6 +40,9 @@ export default function PlanView() {
   const toggleHighlight = useStore((s) => s.toggleHighlight)
   const clearHighlights = useStore((s) => s.clearHighlights)
   const activeId = useStore((s) => s.planActive)
+  const planStory = useStore((s) => s.planStory)
+  const planStoryTerminal = useStore((s) => s.planStoryTerminal)
+  const stories = useStore((s) => s.stories)
   const roles = useStore((s) => s.agentRoles)
   const setActiveId = useStore((s) => s.setPlanActive)
   const proposalKey = project?.id ?? ''
@@ -80,13 +83,14 @@ export default function PlanView() {
     terminals[0]
   const sid = plannerSessionId(active.id)
   const session = sessions[sid]
+  const story = planStoryTerminal === active.id ? (planStory ?? undefined) : undefined
   const nearby = nearbyIds(highlighted, edges)
   const stale = session?.running && startedWith[sid] !== [...highlighted].sort().join(',')
 
   useEffect(() => {
     if (!contextOpen || !project) return
     let disposed = false
-    void planContext(useStore.getState().toProject(), highlighted)
+    void planContext(useStore.getState().toProject(), highlighted, story)
       .then((text) => {
         if (!disposed) setContext(text)
       })
@@ -96,7 +100,7 @@ export default function PlanView() {
     return () => {
       disposed = true
     }
-  }, [contextOpen, project, nodes, edges, highlighted])
+  }, [contextOpen, project, nodes, edges, highlighted, story, stories])
 
   const projectId = project?.id
   useEffect(() => {

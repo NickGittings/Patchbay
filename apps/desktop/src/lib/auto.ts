@@ -62,6 +62,7 @@ import {
 } from './autoSettings'
 import { fnv1a } from './hash'
 import { autoRuns, autoWorkspace } from './autoState'
+import { completeAutoStories } from './stories'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
 export function effortSettings(run: Pick<AutoRun, 'effort' | 'overrides'>): EffortSettings {
@@ -294,6 +295,10 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
       log: text ? [...run.log, { atMs: Date.now(), text }].slice(-100) : run.log,
     },
   })
+  if (update.status === 'done')
+    void completeAutoStories(projectId, task, run.runId).catch((e) =>
+      useStore.getState().setMessage(`Could not save the story’s completion: ${String(e)}`),
+    )
 }
 function active(projectId: string, task: string | null) {
   const s = useStore.getState()

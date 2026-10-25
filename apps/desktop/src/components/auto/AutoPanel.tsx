@@ -14,7 +14,7 @@ import {
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
-import { autoDraftKey } from '../../lib/autoDrafts'
+import { autoDraftKey, autoDrafts } from '../../lib/autoDrafts'
 import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
 import PanelContent from '../PanelContent'
 import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
@@ -41,11 +41,15 @@ export default function AutoPanel({
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
+  const draftVersion = useStore((s) => s.autoDraftVersion)
   const [error, setError] = useState('')
   // The finished run New run was pressed for; another run or worktree shows its own state.
   const [newRunFor, setNewRunFor] = useState<string | null>(null)
   const finished = !!run && ended(run.status)
-  const newRun = finished && newRunFor === JSON.stringify([projectId, task, run.runId])
+  const newRun =
+    finished &&
+    (newRunFor === JSON.stringify([projectId, task, run.runId]) ||
+      !!autoDrafts.get(autoDraftKey(projectId, task))?.story)
   const act = (
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
@@ -67,7 +71,7 @@ export default function AutoPanel({
     <PanelContent>
       {!run || newRun ? (
         <AutoDialog
-          key={autoDraftKey(projectId, task)}
+          key={`${autoDraftKey(projectId, task)}/${draftVersion}`}
           onIntegrations={onIntegrations}
           simple={simple}
         />

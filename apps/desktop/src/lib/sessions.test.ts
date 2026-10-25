@@ -399,6 +399,7 @@ test('planner restart applies the current highlights and clears the scope warnin
     true,
     undefined,
     undefined,
+    undefined,
   )
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -694,7 +695,11 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[7]).toEqual(auto)
   tracking(plannerSid, { kind: 'plan' })
   await restartTerminal(PLAN_SCOPE, 'claude')
-  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([{ kind: 'plan' }, auto])
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    { kind: 'plan' },
+    auto,
+    undefined,
+  ])
   // Once the run moved on, the terminal starts like any other.
   tracking('other')
   await startTerminal(TASK_ROOT_SCOPE, fixId, null, 'p')
@@ -702,7 +707,11 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
   // A stopped run briefs nothing either.
   tracking(plannerSid, { kind: 'plan' }, 'stopped')
   await restartTerminal(PLAN_SCOPE, 'claude')
-  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([undefined, undefined])
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ])
 })
 
 test('Restart resumes Implement without repeating its subagent kickoff', async () => {
@@ -893,3 +902,115 @@ test.each(['ad-hoc', 'mapped', 'review'])(
     else expect(useStore.getState().runtimeTerminals[sid]).toBeUndefined()
   },
 )
+
+test('a story planner keeps its kickoff and id on Restart and clears them on a plain start', async () => {
+  await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
+    kickoff: { kind: 'planStory' },
+    story: 'story1',
+  })
+  expect(ipc.planStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    [],
+    expect.anything(),
+    expect.any(String),
+    false,
+    { kind: 'planStory' },
+    undefined,
+    'story1',
+  )
+  expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
+  await restartTerminal(PLAN_SCOPE, 'claude', null)
+  expect(ipc.planStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    [],
+    expect.anything(),
+    expect.any(String),
+    true,
+    { kind: 'planStory' },
+    undefined,
+    'story1',
+  )
+  await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
+  expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
+})
+
+test('a lost story planner reply still keeps the story for Restart', async () => {
+  vi.mocked(ipc.planStart).mockRejectedValueOnce(new Error('Reply lost'))
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as TerminalSnapshot)
+  await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
+    story: 'story1',
+    kickoff: { kind: 'planStory' },
+  })
+  expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
+  await restartTerminal(PLAN_SCOPE, 'claude', null)
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    { kind: 'planStory' },
+    undefined,
+    'story1',
+  ])
+})
+
+test('a story cannot silently reuse an unrelated planner launch still in progress', async () => {
+  const gate = deferred()
+  vi.mocked(ipc.planStart).mockImplementationOnce(async () => {
+    await gate.promise
+    return ''
+  })
+  const launching = startTerminal(PLAN_SCOPE, 'claude', null, 'p')
+  await expect(
+    startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
+      story: 'story1',
+      kickoff: { kind: 'planStory' },
+    }),
+  ).rejects.toThrow('already starting')
+  gate.resolve()
+  await launching
+  expect(useStore.getState().planStory).toBeNull()
+})
+
+test('another planner preset leaves the story planner linked for Restart and Implement', async () => {
+  useStore.getState().setDevices([
+    { ...agent, id: 'claude', name: 'Claude', command: 'claude', adapter: 'claude' },
+    { ...agent, id: 'codex', name: 'Codex', command: 'codex', adapter: 'codex' },
+  ])
+  await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
+    story: 'story1',
+    kickoff: { kind: 'planStory' },
+  })
+  await startTerminal(PLAN_SCOPE, 'codex', null, 'p', {
+    kickoff: { kind: 'plan' },
+    auto: { goal: 'Other goal', fixFloor: 'medium', effortNote: '', commit: true },
+  })
+  expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
+  await restartTerminal(PLAN_SCOPE, 'claude', null)
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    { kind: 'planStory' },
+    undefined,
+    'story1',
+  ])
+})
+test('a direct story launch cannot take an Auto planner even when its session is running', async () => {
+  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+  const auto = { goal: 'Goal', fixFloor: 'medium' as const, effortNote: '', commit: true }
+  useStore.getState().patchTask('p', null, {
+    auto: {
+      runId: 'r',
+      status: 'running',
+      stage: 'plan',
+      goal: 'Goal',
+      effort: 'standard',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+      device: 'claude',
+      round: 0,
+      log: [],
+      sessionId: sid,
+      sessionBrief: { sessionId: sid, auto, kickoff: { kind: 'plan' } },
+    },
+  })
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as TerminalSnapshot)
+  await expect(startTerminal(PLAN_SCOPE, 'claude', null, 'p', { story: 'story1' })).rejects.toThrow(
+    'Stop the Auto run',
+  )
+  expect(ipc.planStart).not.toHaveBeenCalled()
+  expect(useStore.getState().planStory).toBeNull()
+})

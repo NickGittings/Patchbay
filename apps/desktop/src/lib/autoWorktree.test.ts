@@ -163,3 +163,11 @@ test('the Auto panel opens only while the new worktree is still the active one',
   // The worktree still has the plan in its own project.
   expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
 })
+
+test('a story draft keeps its pending link while moving into a new Auto worktree', async () => {
+  autoDrafts.set(folder, { ...emptyAutoDraft(), goal: 'Story goal', story: 'story1' })
+  seedAutoTask(folder, 'Story goal')
+  await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(autoDrafts.get(target)).toMatchObject({ goal: 'Story goal', story: 'story1' })
+  expect(autoDrafts.has(folder)).toBe(false)
+})

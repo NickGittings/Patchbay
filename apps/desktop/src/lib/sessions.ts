@@ -167,6 +167,7 @@ interface Launch {
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
+  story?: string
   kickoff?: Kickoff
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
@@ -215,11 +216,16 @@ function captureLaunch(
       componentId === TASK_ROOT_SCOPE
         ? workspace?.rootTerminals.find((t) => t.id === terminalId)
         : undefined,
+    story:
+      componentId === PLAN_SCOPE && state?.planStoryTerminal === terminalId
+        ? (state.planStory ?? undefined)
+        : undefined,
     runtime: s.runtimeTerminals[sid],
   }
 }
 
 export interface StartTerminalOptions {
+  story?: string
   kickoff?: Kickoff
   /** Auto's instructions for this launch, in the backend-owned briefing. */
   auto?: AutoBrief
@@ -240,9 +246,10 @@ export function startTerminal(
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
     launch.kickoff = options.kickoff
+    launch.story = options.story
     launch.auto = options.auto
   } catch (e) {
-    if (options.kickoff || options.auto) return Promise.reject(e)
+    if (options.kickoff || options.auto || options.story) return Promise.reject(e)
     useStore.getState().setMessage(String(e))
     return Promise.resolve()
   }
@@ -329,7 +336,7 @@ export async function startMapAgent(projectId: string, preset: TerminalSpec): Pr
 }
 
 /** A handoff or Auto launch, whose caller reports every failure itself. */
-const reports = (launch: Launch) => !!(launch.kickoff || launch.auto)
+const reports = (launch: Launch) => !!(launch.kickoff || launch.auto || launch.story)
 
 /** A handoff must learn its agent didn't start, where other launches just stop quietly. */
 const cancelled = (launch: Launch) =>
@@ -338,10 +345,14 @@ const cancelled = (launch: Launch) =>
 function launchTerminal(launch: Launch): Promise<void> {
   const { sid, componentId, terminalId, project, runtime } = launch
   if (isClosing(launch)) return cancelled(launch)
+  if (launch.story && (launch.auto || autoBriefOf(launch.projectId, sid)))
+    return Promise.reject(new Error('Stop the Auto run before using its planner for a story'))
   const task = launch.task ?? undefined
   const existing = starting.get(sid)
   if (existing)
-    return launch.auto ? Promise.reject(new Error('This agent is already starting')) : existing
+    return launch.auto || launch.story
+      ? Promise.reject(new Error('This agent is already starting'))
+      : existing
   // A retry reuses its request ID so a lost reply can't launch twice; Restart follows a stop,
   // so an earlier request is spent and would be answered as a duplicate without relaunching.
   const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
@@ -378,7 +389,12 @@ function launchTerminal(launch: Launch): Promise<void> {
       const auto = launch.auto ?? recorded?.auto
       const kickoff: Kickoff | undefined = again
         ? { kind: 'fixFindings' }
-        : (launch.kickoff ?? (componentId === PLAN_SCOPE ? recorded?.kickoff : undefined))
+        : (launch.kickoff ??
+          (componentId === PLAN_SCOPE
+            ? launch.story
+              ? { kind: 'planStory' }
+              : recorded?.kickoff
+            : undefined))
       const fix = kickoff?.kind === 'fixFindings'
       if (
         componentId !== PLAN_SCOPE &&
@@ -419,7 +435,16 @@ function launchTerminal(launch: Launch): Promise<void> {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
         const ids = launch.highlighted
-        await planStart(project, ids, terminal, requestId, !!launch.restart, kickoff, auto)
+        await planStart(
+          project,
+          ids,
+          terminal,
+          requestId,
+          !!launch.restart,
+          kickoff,
+          auto,
+          launch.story,
+        )
       } else {
         await terminalStart(
           project,
@@ -436,7 +461,6 @@ function launchTerminal(launch: Launch): Promise<void> {
       // A reset hung the new session up, so a handoff or Auto must not count it as running.
       if (requestedEpoch !== epoch) return await cancelled(launch)
       launch.started = true
-      if (componentId === PLAN_SCOPE) markPlanStarted(launch.projectId, sid, launch.highlighted)
     } catch (e) {
       // Nothing was requested, so there is nothing to check; the handoff reports it.
       if (e instanceof LaunchCancelled) throw e
@@ -459,6 +483,14 @@ function launchTerminal(launch: Launch): Promise<void> {
         // Otherwise skip errors made stale by a reset.
         if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
       }
+    }
+    if (launch.started && componentId === PLAN_SCOPE) {
+      markPlanStarted(launch.projectId, sid, launch.highlighted)
+      if (launch.story || projectStateOf(launch.projectId)?.planStoryTerminal === terminalId)
+        useStore.getState().patchProject(launch.projectId, {
+          planStory: launch.story ?? null,
+          planStoryTerminal: launch.story ? terminalId : null,
+        })
     }
   })().finally(() => {
     if (starting.get(sid) === request) starting.delete(sid)

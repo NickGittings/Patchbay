@@ -16,6 +16,7 @@ import { forgetAutoDrafts } from './lib/autoDrafts'
 import { unseenFinished } from './lib/taskActions'
 import type {
   AgentRoles,
+  Story,
   NotificationSettings,
   NotificationToast,
   ExtensionRegistry,
@@ -176,6 +177,9 @@ export interface ProjectState {
   highlighted: string[]
   /** Components kept in Implementation's header, including hidden ones (UI only). */
   implementationComponents: ImplementationComponent[] | null
+  storyBoard: boolean
+  planStory: string | null
+  planStoryTerminal: string | null
   planStartedWith: Record<string, string>
   agentRoles: AgentRoles
   /** Parallel subagents requested by Implement; 0 disables it (workspace layout only). */
@@ -197,6 +201,7 @@ export interface ProjectState {
   graphAction: ActionRequest | null
   auto: import('./types').AutoRun | null
   graphActionReport: ActionReport | null
+  stories: Story[]
   tasks: Task[]
   activeTask: string | null
 }
@@ -244,6 +249,8 @@ interface State {
   serviceRetirementError?: string
   /** The rail's open utility panel, Sessions and Activity included (UI only). */
   utilityPanel: UtilityPanel | null
+  /** Remount an already open Auto draft when a story supplies a new goal. */
+  autoDraftVersion: number
   /**
    * Sessions Navigation's dock keeps listing after they exit, until closed there: ones revealed,
    * failed, or exited while active (UI only).
@@ -315,6 +322,9 @@ interface State {
   highlighted: string[]
   implementationComponents: ImplementationComponent[] | null
   setImplementationScope: (components: ImplementationComponent[]) => void
+  storyBoard: boolean
+  planStory: string | null
+  planStoryTerminal: string | null
   planStartedWith: Record<string, string>
   /** The agent preset assigned to each role in this project (workspace layout only). */
   agentRoles: AgentRoles
@@ -341,9 +351,12 @@ interface State {
   setRevealed: (revealed: { componentId: string; sid: string } | null) => void
   setSimpleMode: (enabled: boolean) => void
   setView: (view: View) => void
+  setStoryBoard: (show: boolean) => void
   toggleHighlight: (id: string) => void
   clearHighlights: () => void
   markPlanStarted: (sid: string, ids: string[]) => void
+  /** The per-user board, read from the backend story store. */
+  stories: Story[]
   /** The repo's tasks (stored per user by the backend, never in `patchbay.json`). */
   tasks: Task[]
   /** The task whose worktree terminals, changes and review follow; `null` for the open one. */
@@ -562,6 +575,7 @@ const createState: StateCreator<State> = (set, get) => ({
   serviceConnected: false,
   serviceRetirement: 'idle',
   utilityPanel: null,
+  autoDraftVersion: 0,
   dockKept: [],
   reviewAgents: {},
   reviewFocus: null,
@@ -733,6 +747,9 @@ const createState: StateCreator<State> = (set, get) => ({
       highlighted: implementationComponents.filter((c) => c.visible).map((c) => c.id),
       revealed: null,
     }),
+  storyBoard: false,
+  planStory: null,
+  planStoryTerminal: null,
   planStartedWith: {},
   agentRoles: {},
   setAgentRoles: (agentRoles) => set({ agentRoles }),
@@ -749,6 +766,7 @@ const createState: StateCreator<State> = (set, get) => ({
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
   setRevealed: (revealed) => set({ revealed }),
+  stories: [],
   tasks: [],
   activeTask: null,
   setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
@@ -956,6 +974,13 @@ const createState: StateCreator<State> = (set, get) => ({
       simpleMode,
       simple: simpleMode ? (s.simple ?? { startedMs: Date.now(), log: [] }) : s.simple,
     })),
+  setStoryBoard: (storyBoard) =>
+    set({
+      storyBoard,
+      ...(storyBoard
+        ? { selectedId: null, selectedEdgeId: null, view: 'navigation', simpleMode: false }
+        : {}),
+    }),
   setView: (view) =>
     set((s) => ({ view, simpleMode: view === 'navigation' ? s.simpleMode : false })),
   toggleHighlight: (id) =>
@@ -1174,6 +1199,9 @@ function emptyProjectState(): ProjectState {
     view: 'navigation',
     highlighted: [],
     implementationComponents: null,
+    storyBoard: false,
+    planStory: null,
+    planStoryTerminal: null,
     planStartedWith: {},
     agentRoles: {},
     implementSubagents: 0,
@@ -1191,6 +1219,7 @@ function emptyProjectState(): ProjectState {
     graphAction: null,
     auto: null,
     graphActionReport: null,
+    stories: [],
     tasks: [],
     activeTask: null,
   }
@@ -1209,6 +1238,9 @@ function projectState(s: State): ProjectState {
     view,
     highlighted,
     implementationComponents,
+    storyBoard,
+    planStory,
+    planStoryTerminal,
     planStartedWith,
     agentRoles,
     implementSubagents,
@@ -1227,6 +1259,7 @@ function projectState(s: State): ProjectState {
     graphAction,
     auto,
     graphActionReport,
+    stories,
     tasks,
     activeTask,
     taskWorkspaces,
@@ -1247,6 +1280,9 @@ function projectState(s: State): ProjectState {
     view,
     highlighted,
     implementationComponents,
+    storyBoard,
+    planStory,
+    planStoryTerminal,
     planStartedWith,
     agentRoles,
     implementSubagents,
@@ -1265,6 +1301,7 @@ function projectState(s: State): ProjectState {
     graphAction,
     auto,
     graphActionReport,
+    stories,
     tasks,
     activeTask,
     taskWorkspaces: { ...taskWorkspaces, [activeTask ?? '']: taskWorkspace(s) },

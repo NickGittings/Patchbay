@@ -124,6 +124,13 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       enabled: true,
       run: setting('notifications'),
     },
+    {
+      id: 'story-board',
+      title: 'Toggle story board',
+      group: 'workspace',
+      enabled: available,
+      run: () => useStore.getState().setStoryBoard(!useStore.getState().storyBoard),
+    },
     { id: 'files', title: 'Search files…', group: 'workspace', enabled: true, run: showFileSearch },
     ...railViews.map((v): WorkspaceAction => ({
       id: v.id,

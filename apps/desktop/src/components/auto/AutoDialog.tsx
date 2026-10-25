@@ -1,3 +1,4 @@
+import { linkAutoStory } from '../../lib/stories'
 import { logSimple } from '../../lib/simpleActions'
 import { useContext, useEffect, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
@@ -426,6 +427,7 @@ export default function AutoDialog({
         }
         onClick={() => {
           if (!projectId) return
+          const pendingStory = autoDrafts.get(draftKey)?.story
           setStarting(true)
           void startAuto(projectId, task, {
             goal,
@@ -437,7 +439,8 @@ export default function AutoDialog({
             reviewers: reviewers.length > 1 ? reviewers : undefined,
             stage: stage || undefined,
           })
-            .then(() => {
+            .then(async () => {
+              await linkAutoStory(projectId, task, pendingStory)
               autoDrafts.delete(draftKey)
               if (simple)
                 logSimple(projectId, task, { kind: 'action', action: 'autopilot', stage: 'plan' })

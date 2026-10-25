@@ -1,3 +1,4 @@
+import { updateStory } from './stories'
 import { useStore } from '../store'
 import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
@@ -22,6 +23,7 @@ async function handoffPlannerPlan(
   const projectId = initial.project?.id
   if (!projectId) throw new Error('Open a project first')
   const task = initial.activeTask
+  const story = initial.planStoryTerminal === plannerId ? initial.planStory : null
   const device =
     (deviceId && agentDevices(initial.devices).find((d) => d.id === deviceId)) ||
     roleDevice(
@@ -71,6 +73,15 @@ async function handoffPlannerPlan(
     kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
     auto,
   })
+  if (story && task) {
+    try {
+      await updateStory(projectId, story, { task })
+    } catch (e) {
+      useStore
+        .getState()
+        .setMessage(`Implementation started, but its story could not be linked: ${String(e)}`)
+    }
+  }
   // The agent is running now, so a later switch away only skips the view change; its caller
   // still learns the session it has to track.
   const after = useStore.getState()

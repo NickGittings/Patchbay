@@ -8,6 +8,7 @@ vi.mock('./ipc', () => ({
   proposalRead: vi.fn(),
   proposalApply: vi.fn(),
   terminalStop: vi.fn(),
+  storyUpdate: vi.fn(),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
@@ -338,4 +339,33 @@ test('Implement reads the latest subagent setting after awaiting the planner sto
     'p',
     { kickoff: { kind: 'implementPlan', subagents: 5 } },
   )
+})
+
+test('Implement links the planner story to its worktree only after launch succeeds', async () => {
+  const item = {
+    id: 'story1',
+    kind: 'story' as const,
+    parent: null,
+    title: 'Story',
+    description: '',
+    acceptance: [],
+    components: [],
+    task: null,
+    status: 'planned' as const,
+    createdMs: 1,
+    order: 0,
+  }
+  useStore.setState({
+    stories: [item],
+    activeTask: 'task1',
+    planStory: 'story1',
+    planStoryTerminal: 'claude',
+  })
+  vi.mocked(ipc.storyUpdate).mockResolvedValue({ ...item, task: 'task1' })
+  vi.mocked(startTerminal).mockRejectedValueOnce(new Error('Failed'))
+  await expect(implementPlannerPlan('claude')).rejects.toThrow('Failed')
+  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  await implementPlannerPlan('claude')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story1', { task: 'task1' })
+  expect(useStore.getState().stories[0].task).toBe('task1')
 })

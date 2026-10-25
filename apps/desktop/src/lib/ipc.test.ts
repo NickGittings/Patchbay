@@ -43,3 +43,57 @@ test('taskRootStart sends each kickoff field in its backend location only', asyn
   }
   expect(extraContext).toHaveBeenCalledTimes(cases.length)
 })
+
+test('planner kickoffs match Rust tags and story IPC sends only the backend id', async () => {
+  const { planStart } = await import('./ipc')
+  const project: Project = {
+    projectId: 'p',
+    schemaVersion: 4,
+    root: '/p',
+    name: 'P',
+    components: [],
+    links: [],
+  }
+  const terminal: TerminalSpec = { id: 'agent', name: 'Agent', kind: 'agent', command: 'codex' }
+  for (const kickoff of [{ kind: 'plan' }, { kind: 'planStory' }] as const) {
+    expect(JSON.stringify(kickoff)).toBe(`{"kind":"${kickoff.kind}"}`)
+    await planStart(
+      project,
+      [],
+      terminal,
+      'request',
+      false,
+      kickoff,
+      undefined,
+      kickoff.kind === 'planStory' ? 'story1' : undefined,
+    )
+    expect(invoke).toHaveBeenLastCalledWith(
+      'plan_start',
+      expect.objectContaining({
+        kickoff,
+        story: kickoff.kind === 'planStory' ? 'story1' : undefined,
+        extraContext: [],
+      }),
+    )
+  }
+})
+
+test('planner preview sends the same story id as the launch briefing', async () => {
+  const { planContext } = await import('./ipc')
+  const project: Project = {
+    projectId: 'p',
+    schemaVersion: 4,
+    root: '/p',
+    name: 'P',
+    components: [],
+    links: [],
+  }
+  await planContext(project, ['api'], 'story1')
+  expect(invoke).toHaveBeenLastCalledWith('plan_context', {
+    projectId: 'p',
+    project,
+    componentIds: ['api'],
+    story: 'story1',
+    extraContext: [],
+  })
+})

@@ -1,3 +1,4 @@
+import { StoryViewTabs } from './stories/StoryBoard'
 import {
   Background,
   BackgroundVariant,
@@ -122,6 +123,7 @@ export default function Canvas() {
   const {
     project,
     planning,
+    storyBoard,
     highlighted,
     toggleHighlight,
     nodes,
@@ -135,6 +137,7 @@ export default function Canvas() {
     useShallow((s) => ({
       project: s.project,
       planning: s.simpleMode || s.view === 'plan',
+      storyBoard: s.storyBoard,
       highlighted: s.highlighted,
       toggleHighlight: s.toggleHighlight,
       nodes: s.nodes,
@@ -235,7 +238,7 @@ export default function Canvas() {
         nodesConnectable={!planning}
         nodesDraggable={!planning}
         elementsSelectable={!planning}
-        deleteKeyCode={planning ? null : ['Backspace', 'Delete']}
+        deleteKeyCode={planning || storyBoard ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ style: { strokeWidth: 2 } }}
       >
         <Background
@@ -244,6 +247,11 @@ export default function Canvas() {
           size={1}
           color="var(--border-strong)"
         />
+        {!planning && (
+          <Panel position="top-left">
+            <StoryViewTabs />
+          </Panel>
+        )}
         <Controls showInteractive={!planning} />
         <MiniMap
           pannable

@@ -23,12 +23,13 @@ export const isSubagentCount = (n: unknown): n is number =>
  * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
  * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
  * Without one, it starts a former fix terminal again from the branch its own record keeps. `plan`
- * prompts an Auto planner.
+ * prompts an Auto planner; `planStory` plans the backend-owned Story section.
  */
 export type Kickoff =
   | { kind: 'implementPlan'; subagents?: number }
   | { kind: 'fixFindings'; reviewSession?: string }
   | { kind: 'plan' }
+  | { kind: 'planStory' }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
@@ -882,3 +883,36 @@ export interface TaskActivity {
   error: string | null
   previewUrls: string[]
 }
+
+/** Per-user board items, mirrored from `stories.rs`. */
+export type StoryKind = 'epic' | 'feature' | 'story'
+export type StoryStatus = 'backlog' | 'planned' | 'building' | 'done'
+export interface Story {
+  id: string
+  kind: StoryKind
+  parent: string | null
+  title: string
+  description: string
+  acceptance: string[]
+  components: string[]
+  task: string | null
+  /** HEAD when this worktree was linked; old merges do not complete new work. */
+  taskHead?: string | null
+  /** Only this Auto run may complete the story. */
+  autoRunId?: string | null
+  status: StoryStatus
+  createdMs: number
+  order: number
+}
+export interface StoryDraft {
+  kind: StoryKind
+  title: string
+  parent?: string | null
+  description?: string
+  acceptance?: string[]
+  components?: string[]
+}
+/** Use an empty string to clear a parent or task link. */
+export type StoryPatch = Partial<
+  Pick<Story, 'title' | 'description' | 'acceptance' | 'components' | 'status' | 'order'>
+> & { parent?: string; task?: string; autoRunId?: string }

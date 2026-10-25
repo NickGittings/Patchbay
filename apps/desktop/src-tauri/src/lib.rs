@@ -14,6 +14,7 @@ use patchbay_core::navigation::{
 use patchbay_core::policy::AllowAll;
 use patchbay_core::pty::Snapshot;
 use patchbay_core::session::{self, PreviewScan, Record, Request};
+use patchbay_core::stories;
 use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
@@ -804,19 +805,21 @@ async fn plan_context(
     project: Project,
     component_ids: Vec<String>,
     extra_context: Option<Vec<ContextSection>>,
+    story: Option<String>,
 ) -> CmdResult<String> {
-    let scoped = state.project(&project_id)?;
+    let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = scoped.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let story_section = stories::planner_section(&story_root, story.as_deref()).map_err(err)?;
         let sections = briefing_sections(
             &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            None,
+            story_section,
             extra_context,
         );
         Ok(context::plan_context(&project, &component_ids, &sections))
@@ -838,8 +841,9 @@ async fn plan_start(
     terminal: TerminalSpec,
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
+    story: Option<String>,
 ) -> CmdResult<String> {
-    let scoped = state.project(&project_id)?;
+    let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
     let extensions = state.extensions.clone();
     let roots = scoped.roots();
@@ -848,12 +852,31 @@ async fn plan_start(
     // The planner belongs to the project, not a worktree: it always runs in the project folder.
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let story_section = stories::planner_section(&story_root, story.as_deref()).map_err(err)?;
+        if story_section.is_some() && auto.is_some() {
+            return Err("Stop the Auto run before using its planner for a story".into());
+        }
+        if kickoff == Some(context::Kickoff::PlanStory)
+            && story_section.is_none()
+            && !resume.unwrap_or(false)
+        {
+            return Err("Choose a story to plan".into());
+        }
+        let kickoff = if story_section.is_some() {
+            Some(context::Kickoff::PlanStory)
+        } else if kickoff == Some(context::Kickoff::PlanStory) {
+            None
+        } else {
+            kickoff
+        };
         let sections = briefing_sections(
             &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            auto.as_ref().map(context::AutoBrief::plan_section),
+            story_section
+                .into_iter()
+                .chain(auto.as_ref().map(context::AutoBrief::plan_section)),
             extra_context,
         );
         let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
@@ -1147,6 +1170,58 @@ fn task_repo(state: &AppState, project_id: &str) -> CmdResult<(PathBuf, Arc<Proj
 async fn task_list(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Task>> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || tasks::list(&root).map_err(err)).await
+}
+
+#[tauri::command]
+async fn story_list(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<stories::Story>> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::load(&root).map_err(err)).await
+}
+
+#[tauri::command]
+async fn story_create(
+    project_id: String,
+    state: State<'_, AppState>,
+    draft: stories::StoryDraft,
+) -> CmdResult<stories::Story> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::create(&root, draft).map_err(err)).await
+}
+
+#[tauri::command]
+async fn story_update(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+    patch: stories::StoryPatch,
+) -> CmdResult<stories::Story> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::update(&root, &id, patch).map_err(err)).await
+}
+
+#[tauri::command]
+async fn story_remove(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+    cascade: bool,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::remove(&root, &id, cascade).map_err(err)).await
+}
+
+#[tauri::command]
+async fn story_complete_auto(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: String,
+    run_id: String,
+) -> CmdResult<Vec<stories::Story>> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::complete_auto(&root, &task, &run_id).map_err(err)).await
 }
 
 /// Create a branch and worktree beside the repo, and a task for them.
@@ -1481,7 +1556,16 @@ async fn merge_outcome(
     let access = state.project(&project_id)?.access.snapshot();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
-        patchbay_core::merges::outcome(&project, &request).map_err(err)
+        let outcome = patchbay_core::merges::outcome(&project, &request).map_err(err)?;
+        if matches!(
+            outcome,
+            patchbay_core::merges::MergeOutcome::Merged
+                | patchbay_core::merges::MergeOutcome::AlreadyIntegrated
+        ) {
+            stories::complete_merge(Path::new(&project.root), Path::new(&request.source))
+                .map_err(err)?;
+        }
+        Ok(outcome)
     })
     .await
 }
@@ -2256,6 +2340,11 @@ pub fn run() {
                 component_context,
                 git_status,
                 task_list,
+                story_list,
+                story_create,
+                story_update,
+                story_remove,
+                story_complete_auto,
                 task_create,
                 task_attach,
                 task_update,
