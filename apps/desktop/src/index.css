@@ -518,10 +518,7 @@ input[type='radio'] {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
-  padding: 8px 12px;
-}
-.hint.flush {
-  padding: 4px 0;
+  padding: 0;
 }
 
 .kind-dot {
@@ -2509,7 +2506,7 @@ kbd {
   border-bottom: 1px solid var(--border);
 }
 .task-action-result.failed strong {
-  color: var(--red);
+  color: var(--bad);
 }
 .validator-suggestions {
   display: grid;
@@ -2849,7 +2846,7 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 14px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 .utility-header > div {
@@ -2960,4 +2957,67 @@ kbd {
   width: 100%;
   margin: 6px 0;
   text-align: left;
+}
+
+.panel-section + .panel-section {
+  margin-top: 16px;
+}
+.panel-section-head,
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.panel-section-head {
+  justify-content: space-between;
+}
+.panel-section-head .section-title {
+  margin: 0;
+}
+.panel-empty {
+  padding: 16px 0;
+  text-align: center;
+  color: var(--muted);
+}
+.panel-actions {
+  margin-top: 8px;
+}
+.panel-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px;
+  border-radius: 6px;
+}
+.panel-list-row:hover {
+  background: var(--panel);
+}
+.panel-row-actions {
+  opacity: 0;
+}
+.panel-list-row:hover .panel-row-actions,
+.panel-list-row:focus-within .panel-row-actions {
+  opacity: 1;
+}
+.panel-list-row.active {
+  box-shadow: inset 2px 0 var(--accent);
+}
+.dialog-body {
+  padding: 12px;
+}
+.dialog-shell {
+  padding: 0;
+}
+.dialog-shell .utility-header {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+@media (hover: none) {
+  .panel-row-actions {
+    opacity: 1;
+  }
 }
