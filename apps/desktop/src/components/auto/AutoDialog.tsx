@@ -12,6 +12,7 @@ import {
 } from '../../types'
 import {
   autoSnapshot,
+  AutoHooksRequired,
   checkAutoHooks,
   EFFORT,
   inferStage,
@@ -36,6 +37,7 @@ import {
 } from '../../lib/autoDrafts'
 import { seedAutoTask } from '../../lib/autoWorktree'
 import { CloseMenu } from '../menuContext'
+import type { HookProvider } from '../../lib/agentHooks'
 
 /**
  * Apply one change to the draft shown and the one kept under `key`: to a kept draft, else, for the
@@ -56,7 +58,7 @@ export default function AutoDialog({
   onIntegrations,
   simple = false,
 }: {
-  onIntegrations: () => void
+  onIntegrations: (provider?: HookProvider) => void
   simple?: boolean
 }) {
   const projectId = useStore((s) => s.project?.id)
@@ -153,6 +155,7 @@ export default function AutoDialog({
     distinct: string[]
     devices: typeof devices
     installed: boolean
+    provider?: HookProvider
   } | null>(null)
   const integration =
     integrationCheck?.distinct === distinct &&
@@ -222,11 +225,14 @@ export default function AutoDialog({
     let cancelled = false
     void Promise.all(distinct.map(checkAutoHooks))
       .then(
-        () => true,
-        () => false,
+        () => ({ installed: true }),
+        (error: unknown) => ({
+          installed: false,
+          provider: error instanceof AutoHooksRequired ? error.provider : undefined,
+        }),
       )
-      .then((installed) => {
-        if (!cancelled) setIntegrationCheck({ distinct, devices, installed })
+      .then((result) => {
+        if (!cancelled) setIntegrationCheck({ distinct, devices, ...result })
       })
     return () => {
       cancelled = true
@@ -260,7 +266,6 @@ export default function AutoDialog({
   if (needsWorktree)
     return (
       <div className="auto-content">
-        <strong>Auto mode</strong>
         <p>
           Auto needs a branch other than {needsWorktree.branch}; create a worktree for this task.
         </p>
@@ -284,12 +289,13 @@ export default function AutoDialog({
     )
   return (
     <div className="auto-content">
-      <strong>Auto mode</strong>
       <label>
         Task goal
         <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
       </label>
-      <p>Starting at: {detected}</p>
+      <span className="worktree-tag" title={detected}>
+        Starting at: {decision ? STAGE_LABELS[decision.stage] : 'Detecting…'}
+      </span>
       <label>
         Starting stage
         <select value={stage} onChange={(e) => edit({ stage: e.target.value as AutoStage | '' })}>
@@ -412,7 +418,9 @@ export default function AutoDialog({
       {!integration && (
         <p>
           Auto needs authoritative agent status.{' '}
-          <button onClick={onIntegrations}>Agent status integration</button>
+          <button onClick={() => onIntegrations(integrationCheck?.provider)}>
+            Agent status integration
+          </button>
         </p>
       )}
       {error && <p role="alert">{error}</p>}

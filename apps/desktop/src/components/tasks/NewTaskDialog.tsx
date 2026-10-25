@@ -135,7 +135,7 @@ function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
                 />
               </label>
             </div>
-            <p className="hint flush">
+            <p className="hint">
               Creates the checkout before planning. Start the stopped root shell to set up this
               worktree.
             </p>
@@ -154,14 +154,12 @@ function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
           </label>
         )}
         {assigned && (
-          <p className="hint flush">
+          <p className="hint">
             This checkout belongs to “{assigned.title}”. Creating activates that task.
           </p>
         )}
         <div className="section-title">Components in scope (optional)</div>
-        <p className="hint flush">
-          Leave empty to let the planner decide; the whole map stays in scope.
-        </p>
+        <p className="hint">Leave empty to let the planner decide; the whole map stays in scope.</p>
         <div className="scope-chips">
           {nodes.map((n) => (
             <button

@@ -486,9 +486,9 @@ pub fn metadata(
         task_title: None,
         name: terminal.name.clone(),
         kind: terminal.kind,
-        adapter: terminal
-            .adapter
-            .or_else(|| patchbay_core::adapters::Adapter::default_for(&terminal.command)),
+        // The rule Chat and Auto use to tell a preset's provider, so one they count as Claude or
+        // Codex is also launched with that provider's reporter.
+        adapter: patchbay_core::context::agent_provider(terminal),
         conversation_id: None,
         conversation_pinned: false,
         extension_id: None,
@@ -514,6 +514,34 @@ impl patchbay_core::tasks::TaskSessions for Bridge {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+
+    #[test]
+    fn records_take_the_provider_chat_and_auto_infer() {
+        let project: patchbay_core::Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "components": [], "links": []
+        }))
+        .unwrap();
+        let terminal = |command: &str, adapter: Option<&str>| -> patchbay_core::TerminalSpec {
+            serde_json::from_value(serde_json::json!({
+                "id": "agent", "name": "Agent", "command": command, "kind": "agent",
+                "adapter": adapter,
+            }))
+            .unwrap()
+        };
+        use patchbay_core::adapters::Adapter;
+        for (command, adapter, expected) in [
+            ("claude", None, Some(Adapter::Claude)),
+            ("FOO=1 claude --model opus", None, Some(Adapter::Claude)),
+            ("env FOO=1 codex", None, Some(Adapter::Codex)),
+            ("echo codex", None, None),
+            ("my-agent", Some("codex"), Some(Adapter::Codex)),
+        ] {
+            let spec = terminal(command, adapter);
+            let recorded = metadata("p", &project, "c", &spec).adapter;
+            assert_eq!(recorded, expected, "{command}");
+            assert_eq!(recorded, patchbay_core::context::agent_provider(&spec));
+        }
+    }
 
     #[test]
     fn only_a_lost_reply_is_recovered_and_an_unconfirmed_one_stays_uncertain() {

@@ -55,7 +55,7 @@ export function sessionOwner(componentId: string | undefined, nodes: Snapshot['n
   if (componentId === TASK_ROOT_SCOPE) return 'Task root'
   if (componentId === REVIEW_SCOPE) return 'Review agent'
   if (componentId === MERGE_SCOPE) return 'Merge agent'
-  if (componentId === MAP_SCOPE) return 'Dependency agent'
+  if (componentId === MAP_SCOPE) return 'Map agent'
   return nodes.find((n) => n.id === componentId)?.data.name ?? componentId ?? 'Agent'
 }
 

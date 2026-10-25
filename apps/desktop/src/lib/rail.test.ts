@@ -73,6 +73,29 @@ test('panel widths leave room for the workspace at the minimum window width', ()
   expect(panelWidth(1000, 900)).toBe(440)
   expect(panelWidth(50, 900)).toBe(240)
 })
+test('Chat view selection filters stages while keeping Chat and the last Full view', () => {
+  store.setState({ simpleMode: true, view: 'review' })
+  for (const view of ['plan', 'implementation', 'review'] as const) {
+    selectRailView(view)
+    expect(store.getState().simpleMode).toBe(true)
+    expect(store.getState().view).toBe('review')
+    expect(selectedRailView()).toBe(view)
+  }
+  selectRailView('navigation')
+  expect(store.getState().simpleMode).toBe(true)
+  expect(store.getState().view).toBe('review')
+  expect(selectedRailView()).toBe('navigation')
+  expect(useSimpleUi.getState().worktrees[simpleKey('one', null)].stageFilter).toBe('all')
+})
+test('Full view selection switches views and leaves stage filters alone', () => {
+  for (const view of ['navigation', 'plan', 'implementation', 'review'] as const) {
+    selectRailView(view)
+    expect(store.getState().view).toBe(view)
+    expect(store.getState().simpleMode).toBe(false)
+    expect(selectedRailView()).toBe(view)
+  }
+  expect(useSimpleUi.getState().worktrees).toEqual({})
+})
 test('numbered Chat shortcuts restore the last Full view without changing stage filters', () => {
   for (const view of ['plan', 'implementation', 'review'] as const) {
     store.setState({ simpleMode: true, view: 'review' })
@@ -83,9 +106,14 @@ test('numbered Chat shortcuts restore the last Full view without changing stage 
     store.setState({ simpleMode: true })
     expect(selectedRailView()).toBe('plan')
   }
+  selectRailShortcut('navigation')
+  expect(store.getState().simpleMode).toBe(true)
+  expect(selectedRailView()).toBe('navigation')
   store.setState({ simpleMode: false })
-  selectRailShortcut('implementation')
-  expect(store.getState().view).toBe('implementation')
+  for (const view of ['navigation', 'plan', 'implementation', 'review'] as const) {
+    selectRailShortcut(view)
+    expect(store.getState().view).toBe(view)
+  }
 })
 test('Merge remains a distinct Chat filter from Review', () => {
   store.setState({ simpleMode: true })

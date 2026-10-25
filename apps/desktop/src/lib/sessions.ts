@@ -9,6 +9,7 @@ import { showsSession } from './windows'
 import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
+  STACK_AGENT_TERMINAL,
   PLAN_SCOPE,
   showsInDock,
   isReservedScope,
@@ -27,6 +28,7 @@ import {
 } from '../types'
 import {
   mapAgentStart,
+  stackAgentStart,
   onTerminalEvent,
   taskRootStart,
   planStart,
@@ -284,11 +286,11 @@ function autoBriefOf(projectId: string, sid: string) {
   )?.sessionBrief
 }
 
-/** Presets chosen for dependency detection launches the session list doesn't record yet. */
+/** Presets chosen for map detection launches the session list doesn't record yet. */
 const mapPresets = new Map<string, string>()
 
 /**
- * The agent preset a dependency detection session runs: the one just chosen, else the one its
+ * The agent preset a map detection session (dependencies or stack) runs: the one just chosen, else the one its
  * record keeps (`metadata.lane`), else the planner's role. Never the recorded command, which
  * already carries its briefing.
  */
@@ -298,11 +300,11 @@ function mapPreset(projectId: string, sid: string): TerminalSpec {
   const preset =
     planTerminals(s.devices).find((t) => t.id === id) ??
     roleTerminal(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')
-  if (!preset) throw new Error('Add an agent preset to detect dependencies')
+  if (!preset) throw new Error('Add an agent preset to run detection')
   return preset
 }
 
-/** The preset id dependency detection session `sid` was last launched with, when known. */
+/** The preset id map detection session `sid` was last launched with, when known. */
 export function mapPresetId(sid: string): string | undefined {
   return (
     mapPresets.get(sid) ??
@@ -315,12 +317,16 @@ export function mapPresetId(sid: string): string | undefined {
 export const launching = (sid: string) => starting.has(sid) || restarting.has(sid)
 
 /**
- * Start `projectId`'s dependency detection agent with agent preset `preset`. Resolves whether it
- * started; failures are shown as a message. A launch already on its way keeps its own preset, so
- * this one starts nothing.
+ * Start `projectId`'s map detection agent `terminalId` (dependencies, else the stack) with agent
+ * preset `preset`. Resolves whether it started; failures are shown as a message. A launch already
+ * on its way keeps its own preset, so this one starts nothing.
  */
-export async function startMapAgent(projectId: string, preset: TerminalSpec): Promise<boolean> {
-  const launch = captureLaunch(MAP_SCOPE, MAP_AGENT_TERMINAL, null, projectId)
+export async function startMapAgent(
+  projectId: string,
+  preset: TerminalSpec,
+  terminalId = MAP_AGENT_TERMINAL,
+): Promise<boolean> {
+  const launch = captureLaunch(MAP_SCOPE, terminalId, null, projectId)
   if (launching(launch.sid)) return false
   const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
@@ -430,7 +436,12 @@ function launchTerminal(launch: Launch): Promise<void> {
           task,
         )
       else if (componentId === MAP_SCOPE)
-        await mapAgentStart(project, mapPreset(launch.projectId, sid), requestId, !!launch.restart)
+        await (terminalId === STACK_AGENT_TERMINAL ? stackAgentStart : mapAgentStart)(
+          project,
+          mapPreset(launch.projectId, sid),
+          requestId,
+          !!launch.restart,
+        )
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)

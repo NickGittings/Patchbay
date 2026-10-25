@@ -63,7 +63,7 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
 }
 
 /** The rail's utility panels, one open at a time. */
-export type UtilityPanel = 'project' | 'worktree' | 'auto' | 'activity' | 'sessions'
+export type UtilityPanel = 'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions'
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
@@ -186,6 +186,8 @@ export interface ProjectState {
   implementSubagents: number
   /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
   validatorDeclined: string[]
+  /** Stack suggestions the user declined (`validatorKey`; workspace layout only). */
+  stackDeclined: string[]
   /** "Not now" on the offer to detect dependencies (workspace layout only). */
   dependencyPromptDismissed: boolean
   planActive: string | null
@@ -284,7 +286,7 @@ interface State {
   nodes: FlowNode[]
   edges: FlowEdge[]
   groups: ComponentGroup[]
-  addGroup: (name: string, componentIds: string[]) => void
+  addGroup: (name: string, componentIds: string[], orderedStartup?: boolean) => void
   updateGroup: (id: string, patch: Partial<ComponentGroup>) => void
   removeGroup: (id: string) => void
   graphActionBusy: boolean
@@ -336,6 +338,10 @@ interface State {
   validatorDeclined: string[]
   /** Declines suggestions, dropping keys of terminals no longer on the map. */
   declineValidators: (keys: string[]) => void
+  /** Stack suggestions the user declined in this project (workspace layout only). */
+  stackDeclined: string[]
+  declineStack: (keys: string[]) => void
+  restoreStack: () => void
   /** "Not now" on the offer to detect dependencies (workspace layout only). */
   dependencyPromptDismissed: boolean
   /** Offers every declined suggestion again. */
@@ -653,7 +659,7 @@ const createState: StateCreator<State> = (set, get) => ({
   graphAction: null,
   auto: null,
   graphActionReport: null,
-  addGroup: (name, componentIds) =>
+  addGroup: (name, componentIds, orderedStartup = false) =>
     set((s) => ({
       groups: [
         ...s.groups,
@@ -661,7 +667,7 @@ const createState: StateCreator<State> = (set, get) => ({
           id: newId('group'),
           name,
           componentIds,
-          orderedStartup: false,
+          orderedStartup,
           readinessTimeoutSeconds: 30,
         },
       ],
@@ -761,6 +767,12 @@ const createState: StateCreator<State> = (set, get) => ({
       validatorDeclined: liveDeclined(s.nodes, [...new Set([...s.validatorDeclined, ...keys])]),
     })),
   restoreValidators: () => set({ validatorDeclined: [] }),
+  stackDeclined: [],
+  declineStack: (keys) =>
+    set((s) => ({
+      stackDeclined: liveDeclined(s.nodes, [...new Set([...s.stackDeclined, ...keys])]),
+    })),
+  restoreStack: () => set({ stackDeclined: [] }),
   dependencyPromptDismissed: false,
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
@@ -1206,6 +1218,7 @@ function emptyProjectState(): ProjectState {
     agentRoles: {},
     implementSubagents: 0,
     validatorDeclined: [],
+    stackDeclined: [],
     dependencyPromptDismissed: false,
     planActive: null,
     dirty: false,
@@ -1245,6 +1258,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    stackDeclined,
     dependencyPromptDismissed,
     planActive,
     dirty,
@@ -1287,6 +1301,7 @@ function projectState(s: State): ProjectState {
     agentRoles,
     implementSubagents,
     validatorDeclined,
+    stackDeclined,
     dependencyPromptDismissed,
     planActive,
     dirty,

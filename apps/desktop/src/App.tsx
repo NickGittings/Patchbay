@@ -2,7 +2,7 @@ import StoryBoard from './components/stories/StoryBoard'
 import { storyProgressPoll } from './lib/storyProgress'
 import WorkspaceRail from './components/WorkspaceRail'
 import RecoveryBanners from './components/RecoveryBanners'
-import { useSimpleMapFeedback } from './lib/useSimpleMapFeedback'
+import { useMapActivityFeedback } from './lib/mapActivity'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
@@ -14,6 +14,7 @@ import NavigationDialogs from './components/NavigationDialogs'
 import MapMaintenanceReview from './components/MapMaintenanceReview'
 import DependencyDialog from './components/DependencyDialog'
 import { initializeDependencyDetection } from './lib/dependencies'
+import { initializeStackProposals } from './lib/stackAgent'
 import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
@@ -23,7 +24,6 @@ import { useCollapsed } from './lib/useCollapsed'
 import { listen } from '@tauri-apps/api/event'
 import { Panel, Separator } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
-import Hierarchy from './components/Hierarchy'
 import Inspector from './components/Inspector'
 import ImplementationView from './components/ImplementationView'
 import PlanView from './components/PlanView'
@@ -87,7 +87,7 @@ function useRootSync() {
 }
 
 /**
- * Hierarchy and canvas, with the Inspector while something is selected (or it is opened) and the
+ * The canvas, with the Inspector while something is selected (or it is opened) and the
  * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put
  * and their tabs keep their state.
  */
@@ -95,7 +95,7 @@ function NavigationView() {
   const simple = useStore((s) => s.simpleMode)
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
-  useSimpleMapFeedback(simple)
+  useMapActivityFeedback()
   useEffect(
     () => () => {
       useSimpleUi.getState().patch(scopeKey, { diff: null })
@@ -120,11 +120,7 @@ function NavigationView() {
       orientation="horizontal"
       className="workspace"
     >
-      <Panel id="App-pane-1" defaultSize="14" minSize="10">
-        <Hierarchy />
-      </Panel>
-      <Separator className="separator" />
-      <Panel id="App-pane-2" defaultSize="62">
+      <Panel id="App-pane-2" defaultSize="76">
         <PersistedGroup layoutId="App-2" orientation="vertical">
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
             <div className="simple-canvas">
@@ -183,6 +179,7 @@ function AppWorkspace() {
     const stopAuto = followAuto()
     const stopNotifications = followNotifications()
     const stopDependencies = initializeDependencyDetection()
+    const stopStack = initializeStackProposals()
     return () => {
       stopHost()
       stopMaintenance()
@@ -191,6 +188,7 @@ function AppWorkspace() {
       stopAuto()
       stopNotifications()
       stopDependencies()
+      stopStack()
     }
   }, [])
   useEffect(() => {

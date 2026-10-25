@@ -74,7 +74,7 @@ export default function MergeAgentDialog({
     >
       {({ busy, clearError }) => (
         <>
-          <p className="hint flush" aria-label="Source review status">
+          <p className="hint" aria-label="Source review status">
             {loaded?.error
               ? loaded.error
               : !loaded

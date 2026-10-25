@@ -146,7 +146,7 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       enabled: available,
       run: () => useStore.getState().setSimpleMode(!useStore.getState().simpleMode),
     },
-    ...(['project', 'worktree', 'auto', 'activity', 'sessions'] as const).map(
+    ...(['project', 'worktree', 'auto', 'activity', 'stack', 'sessions'] as const).map(
       (panel): WorkspaceAction => ({
         id: `panel-${panel}`,
         title: `Open ${panel === 'auto' ? 'Auto mode' : panel} panel`,

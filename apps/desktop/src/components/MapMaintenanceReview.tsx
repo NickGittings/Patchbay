@@ -29,7 +29,7 @@ function ReviewDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <h2>Review map changes</h2>
-        <p className="hint flush">
+        <p className="hint">
           Safe additions start selected. Review removals and path repairs. Apply changes the draft;
           Existing map configurations save automatically after Apply.
         </p>

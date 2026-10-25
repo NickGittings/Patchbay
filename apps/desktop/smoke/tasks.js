@@ -183,14 +183,14 @@
       navOverview.querySelector('.worktree-row.active'),
     )
     // Clicking the active card leaves the picker open.
-    click(taskRow.querySelector('.worktree-detail'))
+    click(taskRow)
     await sleep(100)
     assert(
       state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
       'clicking the active worktree card switched or closed the picker',
     )
     // Clicking the card outside its controls switches.
-    click(navOverview.querySelector('.worktree-row:not(.active) .worktree-detail'))
+    click(navOverview.querySelector('.worktree-row:not(.active)'))
     await until(
       'main worktree active',
       () => state().activeTask === null && document.querySelector('[aria-label="Worktree panel"]'),
@@ -204,14 +204,8 @@
     assert(projectRow.textContent.includes('Main worktree'), 'main worktree label missing')
     // Another card's own controls and its path (kept for copying) don't switch.
     const otherRow = overview.querySelector('.worktree-row:not(.active)')
-    for (const selector of ['.worktree-path', '.worktree-notes-detail summary']) {
-      click(otherRow.querySelector(selector))
-      await sleep(100)
-      assert(
-        state().activeTask === null && document.querySelector('[aria-label="Worktree panel"]'),
-        `clicking ${selector} on another worktree switched or closed the picker`,
-      )
-    }
+    assert(otherRow.querySelector('.worktree-row-switch').title, 'Missing worktree path tooltip')
+    assert(!otherRow.querySelector('.worktree-detail'), 'Inactive worktree details are expanded')
     click(otherRow.querySelector('.worktree-row-switch'))
     await until(
       'worktree selected',
@@ -346,7 +340,12 @@
         (row) => row.querySelector('strong')?.textContent === secondTask.title,
       ),
     )
-    click(button(secondRow, 'Remove'))
+    click(secondRow.querySelector('.menu-trigger'))
+    click(
+      await until('Remove menu item', () =>
+        [...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent === 'Remove'),
+      ),
+    )
     await until('task removal options', () => secondRow.querySelector('.worktree-confirm'))
     assert(button(secondRow, 'Forget only'), 'task cannot be forgotten')
     assert(button(secondRow, 'Remove worktree'), 'worktree cannot be removed')
@@ -656,7 +655,12 @@
     // git refuses to remove a dirty worktree; the task stays.
     click(viewButton('Build'))
     await openPicker()
-    click(button(document.querySelector('.worktree-row.active'), 'Remove'))
+    click(document.querySelector('.worktree-row.active .menu-trigger'))
+    click(
+      await until('Remove menu item', () =>
+        [...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent === 'Remove'),
+      ),
+    )
     const confirm = await until('removal options', () =>
       document.querySelector('.worktree-confirm'),
     )

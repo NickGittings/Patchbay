@@ -131,6 +131,7 @@ test('never suggests commands that obviously watch or serve', () => {
     expect(suggests(command), command).toBe(false)
   // Even under a check id.
   expect(suggested(terminal('test', 'npm run dev'))).toEqual([])
+  expect(suggested(terminal('test', 'vite --port 3000'))).toEqual([])
   // Watching turned off, and redirections, still run once.
   for (const command of ['jest --watchAll=false', 'vitest --run --watch=0', 'cargo test 2>&1'])
     expect(suggests(command), command).toBe(true)

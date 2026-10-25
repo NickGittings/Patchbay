@@ -4,6 +4,7 @@ import {
   sameNotifications,
 } from './notificationSettings'
 import { restoredAgentRoles } from './agentRoles'
+import { mergeRestoredHookSources } from './agentHooks'
 import { restoredSimple } from './simple'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
@@ -71,6 +72,7 @@ export function workspaceDocument(): WorkspaceDocument {
               agentRoles: state.agentRoles,
               implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
+              stackDeclined: state.stackDeclined,
               dependencyPromptDismissed: state.dependencyPromptDismissed,
               viewport: state.viewport,
               panels: state.panels,
@@ -155,6 +157,10 @@ export function restoredLayout(
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
       : []
+  if (!nested)
+    out.stackDeclined = Array.isArray(layout.stackDeclined)
+      ? [...new Set(layout.stackDeclined.filter((k): k is string => typeof k === 'string'))]
+      : []
   if (!nested) out.dependencyPromptDismissed = layout.dependencyPromptDismissed === true
   if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
     const report = layout.graphActionReport as ProjectState['graphActionReport']
@@ -219,6 +225,7 @@ export function restoredLayout(
                 'agentRoles',
                 'implementSubagents',
                 'validatorDeclined',
+                'stackDeclined',
                 'dependencyPromptDismissed',
               ].includes(key),
           ),
@@ -231,7 +238,9 @@ export function initializeWorkspace() {
   initialized ??= (async () => {
     // Settings changed during restore win over the saved ones and are saved once it ends.
     const initialNotifications = useStore.getState().notifications
+    const initialHookSources = useStore.getState().workspaceSettings.hookSources
     let restoredSettings: unknown
+    let savedHookSources: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
     await listen('patchbay://quit-request', async () => {
@@ -257,14 +266,23 @@ export function initializeWorkspace() {
       if (!loaded) return
       const { document, opened, errors } = loaded
       restoredSettings = document.settings?.notifications
-      useStore.setState((s) => ({
-        workspaceSettings: document.settings ?? {},
-        notifications: mergeRestoredNotifications(
-          restoredSettings,
-          s.notifications,
-          initialNotifications,
-        ),
-      }))
+      savedHookSources = document.settings?.hookSources
+      useStore.setState((s) => {
+        const { hookSources: _saved, ...settings } = document.settings ?? {}
+        const hookSources = mergeRestoredHookSources(
+          savedHookSources,
+          s.workspaceSettings.hookSources,
+          initialHookSources,
+        )
+        return {
+          workspaceSettings: hookSources ? { ...settings, hookSources } : settings,
+          notifications: mergeRestoredNotifications(
+            restoredSettings,
+            s.notifications,
+            initialNotifications,
+          ),
+        }
+      })
       for (const entry of document.projects) {
         const project = opened.find((p) => p.id === entry.id)
         if (!project) {
@@ -351,6 +369,7 @@ export function initializeWorkspace() {
           s.agentRoles === prev.agentRoles &&
           s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
+          s.stackDeclined === prev.stackDeclined &&
           s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
           s.notifications === prev.notifications &&
           s.workspaceSettings === prev.workspaceSettings &&
@@ -370,7 +389,12 @@ export function initializeWorkspace() {
     })
     // The subscription above missed edits made while restoring.
     if (
-      !sameNotifications(useStore.getState().notifications, restoredNotifications(restoredSettings))
+      !sameNotifications(
+        useStore.getState().notifications,
+        restoredNotifications(restoredSettings),
+      ) ||
+      JSON.stringify(useStore.getState().workspaceSettings.hookSources) !==
+        JSON.stringify(savedHookSources)
     ) {
       clearTimeout(timer)
       timer = setTimeout(() => void flushWorkspace(), 500)

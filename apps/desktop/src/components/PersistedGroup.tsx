@@ -1,4 +1,4 @@
-import { simplePanelLayout } from '../lib/simple'
+import { simplePanelLayout, withoutHierarchy } from '../lib/simple'
 import { useEffect, useMemo } from 'react'
 import { Group, useGroupRef, type GroupProps } from 'react-resizable-panels'
 import { invoke } from '@tauri-apps/api/core'
@@ -17,7 +17,12 @@ export default function PersistedGroup({ layoutId, ...props }: GroupProps & { la
   const panels = useStore((s) => s.panels)
   const original = panels[layoutId]
   const saved = useMemo(
-    () => (layoutId === 'App-1' ? simplePanelLayout(original) : original),
+    () =>
+      layoutId === 'App-1'
+        ? withoutHierarchy(simplePanelLayout(original))
+        : layoutId === 'App-simple'
+          ? withoutHierarchy(original)
+          : original,
     [layoutId, original],
   )
   const valid = validLayout(saved)

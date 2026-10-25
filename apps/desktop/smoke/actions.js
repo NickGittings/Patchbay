@@ -64,7 +64,16 @@
       groups: [],
     }
     state().loadProject(project)
-    await until('hierarchy', () => document.querySelector('.component-groups'))
+    smoke.selectPanel('stack')
+    await until('stack panel', () => document.querySelector('.component-groups'))
+    await until(
+      'dev servers suggested for a stack',
+      () => document.querySelectorAll('.stack-suggestions .validator-suggestion').length === 2,
+    )
+    assert(
+      document.querySelector('[aria-label="API › dev ready when"]')?.value === 'READY',
+      'suggestion lost the terminal’s own ready text',
+    )
     for (const id of ['api', 'web']) {
       state().select(id)
       await until(
@@ -73,6 +82,7 @@
       )
       const rows = document.querySelectorAll('.inspector .terminal-row')
       for (const [index, role] of ['development', 'validation'].entries()) {
+        rows[index].open = true
         const select = Array.from(rows[index].querySelectorAll('select')).find((el) =>
           Array.from(el.options).some((option) => option.value === 'development'),
         )
@@ -84,10 +94,18 @@
         () => state().nodes.find((n) => n.id === id).data.terminals[1].action === 'validation',
       )
     }
+    await until(
+      'marked servers leave the suggestions',
+      () => !document.querySelector('.stack-suggestions'),
+    )
     state().onNodesChange(
       ['web', 'api', 'lib'].map((id) => ({ type: 'select', id, selected: true })),
     )
-    change(document.querySelector('[aria-label="New group name"]'), 'Smoke stack')
+    button(document.querySelector('.component-groups'), '＋ New stack').click()
+    change(
+      await until('new stack form', () => document.querySelector('[aria-label="New stack name"]')),
+      'Smoke stack',
+    )
     await until(
       'group form enabled',
       () => !document.querySelector('.component-groups form button').disabled,
@@ -98,8 +116,10 @@
     await until('group created', () => state().groups.length === 1)
     assert(state().groups[0].componentIds.length === 3, 'selected members missing')
     const groupId = state().groups[0].id
-    const editor = document.querySelector('.component-group')
-    editor.querySelector('summary').click()
+    // Closing the panel unmounts it, so each use looks the open stack up again.
+    const stackEditor = () => document.querySelector('.component-group')
+    let editor = stackEditor()
+    editor.open = true
     const ordered = Array.from(editor.querySelectorAll('label')).find((l) =>
       l.textContent.includes('Start dependencies first'),
     )
@@ -115,15 +135,16 @@
       plan.stages.map((stage) => stage.join(',')).join(';') === 'lib;api;web',
       'incorrect startup order',
     )
-    button(editor, 'Start').click()
+    button(editor.closest('.stack-card'), 'Start').click()
     smoke.selectPanel(null)
-    await until('running activity outside its panel', () =>
+    await until('running stack outside its panel', () =>
       document
-        .querySelector('.workspace-rail [aria-label="Activity"]')
+        .querySelector('.workspace-rail [aria-label="Stack"]')
         ?.getAttribute('aria-description')
-        ?.includes('Starting environment'),
+        ?.includes('Starting stack'),
     )
-    smoke.selectPanel('activity')
+    smoke.selectPanel('stack')
+    editor = await until('stack editor', stackEditor)
     await until(
       'environment startup',
       () => !state().graphActionBusy && state().graphActionReport?.results.length === 2,
@@ -152,7 +173,7 @@
       state().nodes.some((n) => n.id === 'lib'),
       'refused group-member removal changed the map',
     )
-    button(editor, 'Stop').click()
+    button(editor.closest('.stack-card'), 'Stop').click()
     await until(
       'environment stopped',
       () =>
@@ -178,16 +199,19 @@
       'validation scope or outcomes incorrect',
     )
     assert(report.plan.skipped.join(',') === 'lib', 'unconfigured validator was not reported')
+    document.querySelector('.action-results').open = true
     await until('failed result rendered', () => document.querySelector('.action-result .failed'))
     Array.from(document.querySelectorAll('.action-result'))
-      .find((el) => el.dataset.session === smoke.sessionId('web', 'check'))
+      .find((el) => el.dataset.session === smoke.sessionId('api', 'check'))
       .click()
     await until(
       'result terminal selected',
       () =>
-        state().activeSession === smoke.sessionId('web', 'check') && state().selectedId === 'web',
+        state().activeSession === smoke.sessionId('api', 'check') && state().selectedId === 'api',
     )
-    button(editor, 'Plan').click()
+    editor.closest('.stack-card').querySelector('.menu-trigger').click()
+    const stackMenu = await until('stack menu', () => document.querySelector('[role="menu"]'))
+    button(stackMenu, 'Use as plan scope').click()
     await until(
       'group planner scope',
       () => state().view === 'plan' && state().highlighted.length === 3,
@@ -206,9 +230,9 @@
       'project reset retained graph action state',
     )
     await smoke.report(
-      'PASS actions: task roles, saved groups, ordered startup, readiness, stop, affected validation, results, planner scope, removal, reset',
+      'PASS actions: stack suggestions, task roles, saved groups, ordered startup, readiness, stop, affected validation, results, planner scope, removal, reset',
     )
   } catch (e) {
-    await smoke.report(`FAIL actions: ${e?.message ?? e}`)
+    await smoke.report(`FAIL actions: ${e?.message ?? e} ${e?.stack ?? ''}`)
   }
 })()

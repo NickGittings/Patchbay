@@ -14,8 +14,8 @@
   if (new URLSearchParams(location.search).has('component')) return
   const s = () => smoke.store.getState()
   const switcher = () =>
-    document.querySelector('.project-list .row button[aria-pressed="true"]') ??
-    document.querySelector('.project-list .row button')
+    document.querySelector('.project-list .panel-list-row button[aria-pressed="true"]') ??
+    document.querySelector('.project-list .panel-list-row button')
   const projectMenu = async () => {
     smoke.selectPanel('project')
     return until('project panel list', () => document.querySelector('.project-list'))
@@ -46,7 +46,10 @@
     }
     smoke.store.setState({ projects: { [missing.id]: missing }, projectOrder: [missing.id] })
     const missingTab = await until('sole unavailable project', () => switcher())
-    if (!missingTab.textContent.includes('Missing project (unavailable)'))
+    if (
+      !missingTab.textContent.includes('Missing project') ||
+      !missingTab.querySelector('.worktree-tag.bad')
+    )
       throw new Error('Sole unavailable project lost its name or status')
     ;[...(await projectMenu()).querySelectorAll('button[aria-pressed]')]
       .find((item) => item.textContent.includes('Missing project'))
@@ -77,7 +80,7 @@
       const settings = await until('native action opens settings', () =>
         document.querySelector('[aria-label="Notifications"][role="dialog"]'),
       )
-      ;[...settings.querySelectorAll('button')].find((b) => b.textContent === 'Close').click()
+      settings.querySelector('[aria-label="Close Notifications"]').click()
     }
     const first = s().nodes[0]
     s().updateComponent(first.id, {
@@ -98,7 +101,10 @@
     await until('first counter', () => s().sessions[sidOne]?.running)
     await until('sole project name and running count', () => {
       const tab = switcher()
-      return tab?.textContent.includes(one.project.name) && tab.textContent.includes('(1 running)')
+      return (
+        tab?.textContent.includes(one.project.name) &&
+        tab.querySelector('.count')?.textContent === '1'
+      )
     })
     // Both Project close entry points must confirm while work is running.
     const originalConfirm = window.confirm
@@ -140,7 +146,7 @@
       )
       if (
         labels.join(',') !==
-        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Sessions'
+        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Stack,Sessions'
       )
         throw new Error('Rail order changed')
       for (const width of [1440, 1200, 900]) {

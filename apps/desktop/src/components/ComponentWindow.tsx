@@ -180,8 +180,9 @@ export default function ComponentWindow({ id }: { id: string }) {
               {tab === 'files' ? (
                 <FileTree
                   key={`${project.root}/${data.path}`}
-                  root={project.root}
                   path={data.path}
+                  componentId={id}
+                  agentMarks={false}
                 />
               ) : (
                 <ChangesPanel componentId={id} />

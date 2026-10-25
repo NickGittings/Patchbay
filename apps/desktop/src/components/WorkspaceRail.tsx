@@ -21,6 +21,7 @@ import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceAction
 import ProjectSwitcher from './ProjectSwitcher'
 import WorktreePicker from './tasks/WorktreePicker'
 import SessionsPanel from './SessionsPanel'
+import StackPanel from './StackPanel'
 import TaskActivityPanel from './tasks/TaskActivityPanel'
 import { useTaskActivities } from '../lib/useTaskActivities'
 import AutoPanel from './auto/AutoPanel'
@@ -28,6 +29,7 @@ import MapSaveStatus from './MapSaveStatus'
 import AttentionMenu from './status/AttentionMenu'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
+import { integrationsProvider, integrationsSetting } from '../lib/agentHooks'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import Menu, { MenuItem } from './Menu'
@@ -38,6 +40,7 @@ const utilities: Record<UtilityPanel, { label: string }> = {
   worktree: { label: 'Worktree' },
   auto: { label: 'Auto mode' },
   activity: { label: 'Activity' },
+  stack: { label: 'Stack' },
   sessions: { label: 'Sessions' },
 }
 function initialWidth() {
@@ -65,6 +68,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const counts = useStore(useShallow(worktreeAttention))
   const count = Object.values(counts).reduce((sum, n) => sum + n, 0)
   const selected = selectedRailView()
+  const [sessionsActions, setSessionsActions] = useState<HTMLDivElement | null>(null)
   const [sessionsHost, setSessionsHost] = useState<HTMLDivElement | null>(null)
   const [width, setWidth] = useState(initialWidth)
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -85,6 +89,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
     ) {
       e.preventDefault()
       selectPanel(null)
+      document
+        .querySelector<HTMLButtonElement>(`[aria-label="${panel ? utilities[panel].label : ''}"]`)
+        ?.focus()
     }
   }
   useEffect(() => {
@@ -108,9 +115,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         ? 'Map save failed'
         : id === 'auto' && auto
           ? `${STAGE_LABELS[auto.stage]} · ${STATUS_LABELS[auto.status]}`
-          : id === 'activity' && busy
+          : busy && id === (action?.kind === 'startGroup' ? 'stack' : 'activity')
             ? action?.kind === 'startGroup'
-              ? 'Starting environment…'
+              ? 'Starting stack…'
               : 'Validating…'
             : undefined
     const name = panelSubtitle(id)
@@ -186,6 +193,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         <hr />
         {utility('auto')}
         {utility('activity')}
+        {utility('stack')}
         {utility('sessions')}
         <span className="spacer" />
         {!isMac && (
@@ -219,6 +227,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                 <h2>{utilities[panel].label}</h2>
                 <small title={subtitle}>{subtitle}</small>
               </div>
+              {panel === 'sessions' && (
+                <div className="panel-section-head" ref={setSessionsActions} />
+              )}
               <button
                 aria-label={`Close ${utilities[panel].label} panel`}
                 onClick={() => {
@@ -239,9 +250,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                 {panel === 'project' && (
                   <>
                     <ProjectSwitcher />
-                    <hr />
                     <MapSaveStatus />
-                    <div className="project-actions">
+                    <div className="project-actions panel-section">
+                      <div className="section-title">Actions</div>
                       {actions
                         .filter((a) => a.group === 'project' && a.id !== 'save')
                         .map((a) => (
@@ -264,7 +275,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                   <AutoPanel
                     key={JSON.stringify([project.id, activeTask])}
                     simple={simple}
-                    onIntegrations={() => useRail.setState({ settings: 'integrations' })}
+                    onIntegrations={(provider) =>
+                      useRail.setState({ settings: integrationsSetting(provider) })
+                    }
                   />
                 )}
                 {panel === 'activity' && project && (
@@ -273,6 +286,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                     <TaskActivityPanel />
                   </>
                 )}
+                {panel === 'stack' && project && <StackPanel key={project.id} />}
                 {!project && !['project', 'sessions'].includes(panel) && (
                   <p>Open a project to use {utilities[panel].label}.</p>
                 )}
@@ -305,9 +319,13 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
           />
         </>
       )}
-      <SessionsPanel host={sessionsHost} onKeyDown={closeOnEscape} />
-      {settings === 'integrations' && (
-        <AgentIntegrationsPanel onClose={() => useRail.setState({ settings: null })} />
+      <SessionsPanel headerHost={sessionsActions} host={sessionsHost} onKeyDown={closeOnEscape} />
+      {integrationsProvider(settings) !== undefined && (
+        <AgentIntegrationsPanel
+          key={settings}
+          initialProvider={integrationsProvider(settings) ?? undefined}
+          onClose={() => useRail.setState({ settings: null })}
+        />
       )}
       {settings === 'roles' && project && (
         <AgentRolesPanel onClose={() => useRail.setState({ settings: null })} />

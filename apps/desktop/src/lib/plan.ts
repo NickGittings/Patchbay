@@ -46,6 +46,33 @@ let lastHighlighted: string[] | undefined
 let lastEdges: PlanEdge[] | undefined
 let lastNearby = new Set<string>()
 
+let lastChanges: Record<string, number> | null = null
+let lastAffectedEdges: PlanEdge[] | null = null
+let lastAffected = new Set<string>()
+
+/**
+ * Unchanged components that depend, transitively, on a changed one (like `Project::dependents`).
+ * Shared across nodes; recomputed only when the counts or edges change.
+ */
+export function affectedIds(changes: Record<string, number>, edges: PlanEdge[]): Set<string> {
+  if (changes === lastChanges && edges === lastAffectedEdges) return lastAffected
+  const changed = new Set(Object.keys(changes).filter((id) => changes[id] > 0))
+  const affected = new Set<string>()
+  const queue = [...changed]
+  while (queue.length) {
+    const id = queue.pop()!
+    for (const e of edges)
+      if (e.target === id && !changed.has(e.source) && !affected.has(e.source)) {
+        affected.add(e.source)
+        queue.push(e.source)
+      }
+  }
+  lastChanges = changes
+  lastAffectedEdges = edges
+  lastAffected = affected
+  return affected
+}
+
 /** Shared across nodes; recompute only when highlights or edges change. */
 export function nearbyIds(highlighted: string[], edges: PlanEdge[]): Set<string> {
   if (highlighted === lastHighlighted && edges === lastEdges) return lastNearby

@@ -26,12 +26,18 @@ export default function MapSaveStatus() {
   return (
     <section className="map-save-status">
       <PanelContent>
-        <strong role="status">{label}</strong>
-        <p className="map-save-description">
-          {absent
-            ? 'Create patchbay.json to save the component map and terminal presets. Later map edits save automatically.'
-            : 'The component map and terminal presets are saved automatically to patchbay.json.'}
-        </p>
+        <div className="row" role="status">
+          <span
+            className={`status-dot health-${status === 'error' || blocked || status === 'conflict' ? 'fail' : absent || dirty ? 'idle' : status === 'saving' ? 'running' : 'ok'}`}
+          />
+          {label}
+        </div>
+        {absent && (
+          <p className="panel-empty">
+            Create patchbay.json to save the component map and terminal presets. Later edits save
+            automatically.
+          </p>
+        )}
         {entry.mapSave?.error && (
           <p className="map-save-description" role="alert">
             {entry.mapSave.error}
@@ -40,20 +46,25 @@ export default function MapSaveStatus() {
         {blocked && (
           <p className="map-save-description">Resolve project recovery before saving the map.</p>
         )}
-        <hr />
         {status === 'conflict' ? (
           <>
             <button onClick={() => void reloadSavedMap(id)}>Reload saved map</button>
             <button onClick={() => void saveMapNow(id, true)}>Replace with my map</button>
           </>
         ) : (
-          <button disabled={blocked || status === 'saving'} onClick={() => void saveMapNow(id)}>
-            {status === 'error'
-              ? 'Retry'
-              : absent
-                ? 'Create map configuration'
-                : 'Save map configuration now'}
-          </button>
+          (absent || dirty || status === 'error') && (
+            <button
+              className="primary"
+              disabled={blocked || status === 'saving'}
+              onClick={() => void saveMapNow(id)}
+            >
+              {status === 'error'
+                ? 'Retry'
+                : absent
+                  ? 'Create map configuration'
+                  : 'Save map configuration now'}
+            </button>
+          )
         )}
       </PanelContent>
     </section>

@@ -169,6 +169,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         tool.get("file_path")
             .and_then(Value::as_str)
             .or_else(|| tool.get("path").and_then(Value::as_str))
+            .or_else(|| {
+                (input.get("tool_name").and_then(Value::as_str) == Some("apply_patch"))
+                    .then(|| patched_file(tool))
+                    .flatten()
+            })
     });
     Some(HookEvent {
         session: String::new(),
@@ -186,6 +191,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             "apply_patch" => "Edit".into(),
             "read_file" => "Read".into(),
             "write_file" => "Write".into(),
+            "edit_file" => "Edit".into(),
             _ => name,
         }),
         file_target: file_path.is_some(),
@@ -206,6 +212,36 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
                 .map(|s| s.chars().take(200).collect())
         }),
     })
+}
+
+/// The one file a Codex `apply_patch` names in its `*** Add/Update/Delete File:` (and `*** Move
+/// to:`) headers, which the patch grammar puts at the start of a line, where hunk lines (` `, `+`,
+/// `-`, `@@`) can't. A patch naming several files, or none, has no single file target; nothing else
+/// in its body is ever read as a path.
+fn patched_file(tool: &Value) -> Option<&str> {
+    let patch = ["patch", "input", "command"]
+        .iter()
+        .find_map(|name| tool.get(name).and_then(Value::as_str))?;
+    let mut file = None;
+    for line in patch.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let Some(path) = [
+            "*** Add File: ",
+            "*** Update File: ",
+            "*** Delete File: ",
+            "*** Move to: ",
+        ]
+        .iter()
+        .find_map(|header| line.strip_prefix(header))
+        .map(str::trim) else {
+            continue;
+        };
+        if path.is_empty() || file.is_some_and(|f| f != path) {
+            return None;
+        }
+        file = Some(path);
+    }
+    file
 }
 
 /// Called by packaged sessiond before daemon initialization. Always silent and fail-open.
@@ -335,6 +371,7 @@ fn provider_name(provider: Adapter) -> &'static str {
 pub struct Integration {
     pub provider: Adapter,
     pub source: String,
+    pub default_source: Option<String>,
     pub reporter: String,
     pub installed: bool,
     pub disabled: bool,
@@ -356,18 +393,35 @@ pub fn user_source(provider: Adapter) -> Result<PathBuf> {
     let dir = std::env::var_os(variable).map_or_else(|| home.join(default), PathBuf::from);
     anyhow::ensure!(dir.is_absolute(), "{variable} must be absolute");
     if provider == Adapter::Codex {
-        let path = dir.join("config.toml");
-        let text = read_optional(&path)?;
-        if !text.is_empty() {
-            let doc = text
-                .parse::<toml_edit::DocumentMut>()
-                .context("Malformed Codex config.toml; no changes made")?;
-            if doc.contains_key("hooks") {
+        return codex_source(&dir);
+    }
+    Ok(dir.join(file))
+}
+
+// Codex persists trust in config.toml even when definitions live in hooks.json.
+fn codex_hook_metadata(name: &str) -> bool {
+    matches!(name, "state" | "managed_dir" | "windows_managed_dir")
+}
+
+fn codex_source(dir: &Path) -> Result<PathBuf> {
+    let path = dir.join("config.toml");
+    let text = read_optional(&path)?;
+    if !text.is_empty() {
+        let doc = text
+            .parse::<toml_edit::DocumentMut>()
+            .context("Malformed Codex config.toml; no changes made")?;
+        if let Some(hooks) = doc.get("hooks") {
+            // Keep malformed definitions on the validation path, rather than
+            // silently falling back to a different configuration file.
+            if hooks
+                .as_table_like()
+                .is_none_or(|table| table.iter().any(|(name, _)| !codex_hook_metadata(name)))
+            {
                 return Ok(path);
             }
         }
     }
-    Ok(dir.join(file))
+    Ok(dir.join("hooks.json"))
 }
 
 fn stable_reporter() -> Result<PathBuf> {
@@ -387,7 +441,7 @@ fn read_optional(path: &Path) -> Result<String> {
         Err(e) => Err(e.into()),
     }
 }
-fn read_json(path: &Path) -> Result<Value> {
+fn read_json(path: &Path, provider: Adapter) -> Result<Value> {
     let text = read_optional(path)?;
     let value = if text.is_empty() {
         anyhow::ensure!(
@@ -398,10 +452,10 @@ fn read_json(path: &Path) -> Result<Value> {
     } else {
         serde_json::from_str(&text).context("Malformed provider configuration; no changes made")?
     };
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     Ok(value)
 }
-fn validate_shape(value: &Value) -> Result<()> {
+fn validate_shape(value: &Value, provider: Adapter) -> Result<()> {
     anyhow::ensure!(
         value.is_object(),
         "Provider configuration must be an object"
@@ -411,8 +465,12 @@ fn validate_shape(value: &Value) -> Result<()> {
             .as_object()
             .context("Malformed hooks: expected object")?;
         for (name, groups) in hooks {
-            if matches!(name.as_str(), "managed_dir" | "windows_managed_dir") {
-                anyhow::ensure!(groups.is_string(), "Malformed managed hook directory");
+            if provider == Adapter::Codex && codex_hook_metadata(name) {
+                if name == "state" {
+                    anyhow::ensure!(groups.is_object(), "Malformed hook state: expected object");
+                } else {
+                    anyhow::ensure!(groups.is_string(), "Malformed managed hook directory");
+                }
                 continue;
             }
             for group in groups
@@ -479,7 +537,7 @@ fn json_update(
     reporter: &Path,
     install: bool,
 ) -> Result<Value> {
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     if value.get("hooks").is_none() && !install {
         return Ok(value);
     }
@@ -522,7 +580,7 @@ fn toml_update(text: &str, provider: Adapter, reporter: &Path, install: bool) ->
         .context("Malformed Codex TOML; no changes made")?;
     let raw: toml::Value = toml::from_str(text)?;
     let value = serde_json::to_value(raw)?;
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     let updated = json_update(value.clone(), provider, reporter, install)?;
     let Some(updated_hooks) = updated.get("hooks").and_then(Value::as_object) else {
         return Ok(doc.to_string());
@@ -558,9 +616,9 @@ pub fn inspect(provider: Adapter, source_override: Option<&Path>) -> Result<Inte
     let value = if path.extension().is_some_and(|e| e == "toml") {
         serde_json::to_value(toml::from_str::<toml::Value>(&read_optional(&path)?)?)?
     } else {
-        read_json(&path)?
+        read_json(&path, provider)?
     };
-    validate_shape(&value)?;
+    validate_shape(&value, provider)?;
     let installed = events(provider).iter().all(|event| {
         value
             .get("hooks")
@@ -606,6 +664,7 @@ pub fn inspect(provider: Adapter, source_override: Option<&Path>) -> Result<Inte
     Ok(Integration {
         provider,
         source: path.display().to_string(),
+        default_source: user_source(provider).ok().map(|p| p.display().to_string()),
         reporter: stable_reporter()?.display().to_string(),
         installed,
         disabled,
@@ -638,7 +697,7 @@ pub fn configure(
     let bytes = if source.extension().is_some_and(|s| s == "toml") {
         toml_update(&before, provider, &reporter, install)?.into_bytes()
     } else {
-        let value = read_json(&source)?;
+        let value = read_json(&source, provider)?;
         serde_json::to_vec_pretty(&json_update(value, provider, &reporter, install)?)?
     };
     // Validate configuration before deploying the helper or changing its source.
@@ -779,6 +838,76 @@ mod tests {
         }
     }
     #[test]
+    fn codex_uses_json_when_toml_contains_only_hook_metadata() {
+        let fixture = Fixture::new();
+        let config = fixture.0.join("config.toml");
+        let hooks = fixture.0.join("hooks.json");
+        assert_eq!(codex_source(&fixture.0).unwrap(), hooks);
+        for text in [
+            "model = 'user-model'\n",
+            "[hooks]\n",
+            "[hooks.state]\n",
+            "[hooks.state.'user/hooks.json:stop:0:0']\ntrusted_hash = 'keep-me'\nenabled = false\n",
+            "[hooks]\nmanaged_dir = '/managed/hooks'\nwindows_managed_dir = 'C:\\managed'\n",
+        ] {
+            std::fs::write(&config, text).unwrap();
+            assert_eq!(codex_source(&fixture.0).unwrap(), hooks, "{text}");
+            // Choosing JSON and updating its definitions leaves TOML trust untouched.
+            let installed = json_update(
+                json!({}),
+                Adapter::Codex,
+                Path::new("/tmp/patchbay-status-v1"),
+                true,
+            )
+            .unwrap();
+            std::fs::write(&hooks, serde_json::to_vec(&installed).unwrap()).unwrap();
+            assert!(inspect(Adapter::Codex, Some(&hooks)).is_ok());
+            assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+        }
+        for text in [
+            "[hooks]\nStop = []\n[hooks.state]\n",
+            "hooks = { Stop = [], state = {} }\n",
+            "[hooks]\nStop = false\n",
+            "hooks = false\n",
+        ] {
+            std::fs::write(&config, text).unwrap();
+            assert_eq!(codex_source(&fixture.0).unwrap(), config, "{text}");
+        }
+    }
+
+    #[test]
+    fn codex_inline_install_and_remove_preserve_hook_trust_state() {
+        let fixture = Fixture::new();
+        let config = fixture.0.join("config.toml");
+        let reporter = stable_reporter().unwrap();
+        let trust = "# keep trust records verbatim\n[hooks.state.'user/hooks.json:stop:0:0']\ntrusted_hash = 'keep-me'\nenabled = false\n";
+        let original = format!(
+            "[hooks]\nStop = [{{ hooks = [{{ type = 'command', command = 'user-validation' }}] }}]\n{trust}"
+        );
+        std::fs::write(&config, &original).unwrap();
+        assert_eq!(codex_source(&fixture.0).unwrap(), config);
+        assert!(!inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+        let installed = toml_update(&original, Adapter::Codex, &reporter, true).unwrap();
+        assert!(installed.contains(trust));
+        assert_eq!(
+            installed,
+            toml_update(&installed, Adapter::Codex, &reporter, true).unwrap()
+        );
+        std::fs::write(&config, &installed).unwrap();
+        assert!(inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+        let removed = toml_update(&installed, Adapter::Codex, &reporter, false).unwrap();
+        assert!(removed.contains(trust));
+        let value: toml::Value = toml::from_str(&removed).unwrap();
+        assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("user-validation")
+        );
+        std::fs::write(&config, &removed).unwrap();
+        assert!(!inspect(Adapter::Codex, Some(&config)).unwrap().installed);
+    }
+
+    #[test]
     fn install_remove_preserve_user_settings_and_hooks_and_are_idempotent() {
         let reporter = Path::new("/some folder/a'punctuation/$literal/patchbay-status-v1");
         let original = json!({
@@ -858,14 +987,20 @@ mod tests {
             "{\"hooks\":{\"Stop\":[{\"hooks\":null}]}}",
         ] {
             std::fs::write(&path, text).unwrap();
-            assert!(read_json(&path).is_err());
+            assert!(read_json(&path, Adapter::Claude).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         }
+        // Hook metadata is Codex's alone; in Claude settings it is a malformed event.
+        let state = json!({"hooks":{"state":{"x":{}},"managed_dir":"/etc/codex"}});
+        assert!(validate_shape(&state, Adapter::Codex).is_ok());
+        assert!(validate_shape(&state, Adapter::Claude).is_err());
         for text in [
             "hooks = false",
             "[hooks]\nStop = false",
             "[hooks]\nStop = [{ hooks = 12 }]",
             "[hooks]\nStop = [{ hooks = ['wrong'] }]",
+            "[hooks]\nstate = false",
+            "[hooks]\nstate = []",
             "bad = {",
         ] {
             assert!(
@@ -968,11 +1103,44 @@ mod tests {
             assert_eq!(event.target.unwrap().chars().count(), 120);
             assert!(!event.file_target);
             input["tool_name"] = json!("apply_patch");
-            input["tool_input"] = json!({"patch":"*** Add File: src/a.rs"});
+            // One file named by the patch's headers is its target; hunk lines never are.
+            input["tool_input"] = json!({"patch":"*** Begin Patch\r\n*** Update File: src/a.rs\r\n@@\r\n-*** Add File: b\r\n+*** Delete File: c\r\n *** Move to: d\r\n*** End Patch"});
             let event = normalize(provider, &input).unwrap();
             assert_eq!(event.tool.as_deref(), Some("Edit"));
-            assert_eq!(event.target, None);
-            assert!(!event.file_target);
+            assert_eq!(event.target.as_deref(), Some("src/a.rs"));
+            assert!(event.file_target);
+            input["tool_input"] = json!({"command":"*** Begin Patch\n*** Add File: src/new.rs\n+fn main() {}\n*** End Patch"});
+            let event = normalize(provider, &input).unwrap();
+            assert_eq!(event.target.as_deref(), Some("src/new.rs"));
+            assert!(event.file_target);
+            // Several files (a rename too) or none give no file target.
+            for patch in [
+                "*** Update File: src/a.rs\n*** Delete File: src/b.rs",
+                "*** Update File: src/a.rs\n*** Move to: src/b.rs",
+                "*** Add File: \n+x",
+                "src/a.rs",
+            ] {
+                input["tool_input"] = json!({ "patch": patch });
+                let event = normalize(provider, &input).unwrap();
+                assert_eq!(event.target, None, "{patch}");
+                assert!(!event.file_target, "{patch}");
+            }
+            input["tool_name"] = json!("Edit");
+            input["tool_input"] = json!({"patch":"*** Update File: src/a.rs"});
+            assert!(!normalize(provider, &input).unwrap().file_target);
+            for (codex, tool) in [
+                ("read_file", "Read"),
+                ("write_file", "Write"),
+                ("edit_file", "Edit"),
+            ] {
+                input["tool_name"] = json!(codex);
+                input["tool_input"] = json!({"path":"src/c.rs"});
+                let event = normalize(provider, &input).unwrap();
+                assert_eq!(event.tool.as_deref(), Some(tool), "{codex}");
+                assert_eq!(event.target.as_deref(), Some("src/c.rs"));
+                assert!(event.file_target);
+            }
+            input["tool_name"] = json!("apply_patch");
             input["tool_name"] = json!("未知".repeat(120));
             assert_eq!(
                 normalize(provider, &input)

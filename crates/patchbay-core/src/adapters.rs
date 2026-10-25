@@ -10,15 +10,10 @@ pub enum Adapter {
     Codex,
 }
 impl Adapter {
-    /// The adapter a plain `claude` or `codex` launch command implies.
+    /// The provider implied by a launch command, including env/assignment prefixes and wrappers.
     #[must_use]
     pub fn default_for(command: &str) -> Option<Self> {
-        let words = crate::context::launch_words(command)?;
-        match Path::new(words.first()?).file_stem()?.to_str()? {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            _ => None,
-        }
+        crate::context::command_provider(command)
     }
     /// The conversation id in the resume hint a provider prints as it exits.
     /// Callers pass only the tail of a finished run's output, and only UUIDs (the
@@ -70,6 +65,8 @@ impl Adapter {
         let words = crate::context::launch_words(command).ok_or_else(|| {
             anyhow::anyhow!("Cannot safely preserve this launch command's options")
         })?;
+        let (program_index, program_range) =
+            crate::context::launch_program(command).context("Cannot locate provider executable")?;
         if Self::default_for(command) != Some(self) {
             bail!(
                 "Custom commands need a direct provider command to resume with preserved options"
@@ -88,7 +85,7 @@ impl Adapter {
             "--session-id",
         ];
         // Codex -c is configuration and -p selects a profile; both are launch options.
-        for word in words.iter().skip(1) {
+        for word in words.iter().skip(program_index + 1) {
             let flag = word.split('=').next().unwrap_or(word);
             if forbidden.contains(&flag) && !(self == Self::Codex && ["-c", "-p"].contains(&flag)) {
                 bail!("Remove existing resume/continue/print options before resuming");
@@ -98,7 +95,7 @@ impl Adapter {
             Self::has_history(history, id),
             "Provider history for {id} is missing; restore it or set the correct conversation ID"
         );
-        let (program, options) = launch_parts(command);
+        let (program, options) = command.split_at(program_range.end);
         let mut result = program.to_string();
         result.push_str(match self {
             Self::Claude => " --resume ",
@@ -133,28 +130,6 @@ impl Adapter {
         contains(root, id, 6)
     }
 }
-fn launch_parts(command: &str) -> (&str, &str) {
-    let command = command.trim_start();
-    let mut quote = None;
-    let mut escaped = false;
-    for (index, c) in command.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if (cfg!(unix) && c == '\\' && quote != Some('\'')) || (cfg!(windows) && c == '^') {
-            escaped = true;
-        } else if quote == Some(c) {
-            quote = None;
-        } else if quote.is_none() && (c == '"' || (cfg!(unix) && c == '\'')) {
-            quote = Some(c);
-        } else if quote.is_none() && c.is_whitespace() {
-            return (&command[..index], &command[index..]);
-        }
-    }
-    (command, "")
-}
-
 /// Probe the same login-shell PATH before creating a resumed process incarnation.
 ///
 /// # Errors
@@ -165,12 +140,23 @@ pub fn require_executable(
     env: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
     let words = crate::context::launch_words(command).context("Invalid provider command")?;
-    let program = words.first().context("Missing provider executable")?;
+    let (index, _range) =
+        crate::context::launch_program(command).context("Missing provider executable")?;
+    let program = &words[index];
     #[cfg(unix)]
     let mut probe = {
         let mut shell =
             std::process::Command::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
-        shell.args(["-ilc", &format!("command -v {}", launch_parts(command).0)]);
+        // Keep assignments active for executable paths containing shell variables, too.
+        let probe = format!("command -v {}", &command[_range.clone()]);
+        shell.args([
+            "-ilc",
+            &format!(
+                "{} /bin/sh -c {}",
+                &command[.._range.start],
+                crate::context::quote_argument(&probe)
+            ),
+        ]);
         shell
     };
     #[cfg(windows)]
@@ -295,6 +281,68 @@ mod tests {
                 .is_ok()
         );
         std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn resume_preserves_prefixes_wrappers_and_quoted_options() {
+        let fixture = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&fixture).unwrap();
+        let id = "12345678-abcd-4321-aaaa-123456789abc";
+        std::fs::write(fixture.join(format!("{id}.jsonl")), "{}").unwrap();
+        for (provider, program, options, flag) in [
+            (Adapter::Claude, "FOO=1 claude", " --model opus", "--resume"),
+            (
+                Adapter::Claude,
+                "env FOO='one two' claude",
+                " --model \"$MODEL\"",
+                "--resume",
+            ),
+            (
+                Adapter::Claude,
+                "~/bin/claude.sh",
+                " --model opus",
+                "--resume",
+            ),
+            (Adapter::Codex, "codex.ps1", " -p fast", "resume"),
+            (
+                Adapter::Codex,
+                " env A=1 B=two '/my tools/codex'",
+                " -c 'key=value'",
+                "resume",
+            ),
+        ] {
+            let command = format!("{program}{options}");
+            assert_eq!(Adapter::default_for(&command), Some(provider));
+            assert_eq!(
+                provider
+                    .resume_with_history(&command, id, &fixture, &fixture)
+                    .unwrap(),
+                format!(
+                    "{program} {flag} {}{options}",
+                    crate::context::quote_argument(id)
+                )
+            );
+            assert!(
+                provider
+                    .resume_with_history(&format!("{program} --resume old"), id, &fixture, &fixture)
+                    .is_err()
+            );
+        }
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_probe_checks_the_program_after_assignments_and_env() {
+        for command in ["FOO=1 sh", "env FOO='one two' sh", "env FOO=1 /bin/sh"] {
+            require_executable(command, Path::new("/tmp"), &Default::default()).unwrap();
+        }
+        for command in [
+            "FOO=1 patchbay-missing-provider",
+            "env FOO=1 patchbay-missing-provider",
+        ] {
+            assert!(require_executable(command, Path::new("/tmp"), &Default::default()).is_err());
+        }
     }
 
     #[test]

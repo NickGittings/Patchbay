@@ -1,9 +1,17 @@
+import Dialog from './Dialog'
 import { useEffect, useRef, useState } from 'react'
 import { agentHooksCheck, agentHooksConfigure } from '../lib/ipc'
+import { hookSource, rememberAgentHooks, setHookSource, type HookProvider } from '../lib/agentHooks'
 import type { AgentIntegration } from '../types'
 
-export default function AgentIntegrationsPanel({ onClose }: { onClose: () => void }) {
-  const [provider, setProvider] = useState<'claude' | 'codex'>('claude')
+export default function AgentIntegrationsPanel({
+  initialProvider,
+  onClose,
+}: {
+  initialProvider?: HookProvider
+  onClose: () => void
+}) {
+  const [provider, setProvider] = useState<HookProvider>(initialProvider ?? 'claude')
   const [source, setSource] = useState('')
   const [result, setResult] = useState<AgentIntegration>()
   const [error, setError] = useState('')
@@ -12,17 +20,24 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
   useEffect(() => {
     const token = ++request.current
     let canceled = false
-    void agentHooksCheck(provider)
+    const current = () => !canceled && token === request.current
+    const chosen = hookSource(provider)
+    const check = agentHooksCheck(provider, chosen)
+    void check
       .then((value) => {
-        if (canceled || token !== request.current) return
+        if (!current()) return
         setResult(value)
         setSource(value.source)
+        rememberAgentHooks(provider, chosen, value)
       })
       .catch((e) => {
-        if (!canceled && token === request.current) setError(String(e))
+        if (!current()) return
+        setError(String(e))
+        // A remembered source stays in the field even while it can't be read.
+        setSource(chosen ?? '')
       })
       .finally(() => {
-        if (!canceled && token === request.current) setBusy(false)
+        if (current()) setBusy(false)
       })
     return () => {
       canceled = true
@@ -33,12 +48,23 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
     setBusy(true)
     setError('')
     try {
-      if (install !== undefined) await agentHooksConfigure(provider, install, source || undefined)
-      const value = await agentHooksCheck(provider, source || undefined)
+      const value =
+        install === undefined
+          ? await agentHooksCheck(provider, source || undefined)
+          : await agentHooksConfigure(provider, install, source || undefined)
       if (token === request.current) {
         setResult(value)
         setSource(value.source)
       }
+      // The response carries the default path, even when inspecting a custom source.
+      if (value.defaultSource !== null)
+        setHookSource(
+          provider,
+          value.source !== value.defaultSource ? value.source : undefined,
+          value,
+        )
+      else if (token === request.current)
+        setError('The default hook source couldn’t be read, so Chat and Auto keep their source.')
     } catch (e) {
       if (token === request.current) setError(String(e))
     } finally {
@@ -46,92 +72,83 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
     }
   }
   return (
-    <div className="extension-overlay" onClick={onClose}>
-      <div
-        className="extensions-panel panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Agent status integration"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="row">
-          <h2>Agent status integration</h2>
-          <span className="spacer" />
-          <button onClick={onClose}>Close</button>
-        </div>
-        <p>
-          Install optional status hooks to show Working, Needs input, and Ready for review. Hooks
-          report only inside Patchbay and leave provider approvals to you. Claude hooks also pass
-          native plans to Patchbay when Claude presents them for approval.
-        </p>
-        <label>
-          Provider{' '}
-          <select
-            value={provider}
+    <Dialog
+      title="Agent status integration"
+      subtitle="Status hooks for agent sessions"
+      onClose={onClose}
+    >
+      <label className="settings-field">
+        Provider{' '}
+        <select
+          value={provider}
+          disabled={busy}
+          onChange={(e) => {
+            setProvider(e.target.value as HookProvider)
+            setResult(undefined)
+            setSource('')
+            setError('')
+            setBusy(true)
+          }}
+        >
+          <option value="claude">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <p>
+        <label className="settings-field">
+          User hook source
+          <input
+            title="Match the provider’s active user configuration, including CLAUDE_CONFIG_DIR or CODEX_HOME overrides."
+            aria-label="User hook source"
+            value={source}
             disabled={busy}
             onChange={(e) => {
-              setProvider(e.target.value as 'claude' | 'codex')
+              setSource(e.target.value)
               setResult(undefined)
-              setSource('')
-              setError('')
-              setBusy(true)
             }}
-          >
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-          </select>
+            style={{ width: '100%' }}
+          />
         </label>
-        <p>
-          <label>
-            User hook source
-            <input
-              aria-label="User hook source"
-              value={source}
-              disabled={busy}
-              onChange={(e) => {
-                setSource(e.target.value)
-                setResult(undefined)
-              }}
-              style={{ width: '100%' }}
-            />
-          </label>
-        </p>
-        <p>
-          If your terminal sets CLAUDE_CONFIG_DIR or CODEX_HOME, check that this path matches that
-          provider’s active user configuration.
-        </p>
-        {result && (
-          <>
-            <p role="status">
+      </p>
+
+      {result && (
+        <>
+          <div className="panel-actions" role="status">
+            <span
+              className="worktree-tag"
+              title="Reporting is confirmed when a running session sends status events."
+            >
               {result.reportingSessions
-                ? `Reporting confirmed in ${result.reportingSessions} running session(s).`
-                : 'Reporting has not been confirmed in a running session; Active/Quiet remains the fallback.'}
+                ? `${result.reportingSessions} reporting`
+                : 'Reporting unconfirmed'}
+            </span>
+            <span className="worktree-tag">
+              {result.installed ? 'Hooks installed' : 'Hooks not installed'}
+            </span>
+            {result.disabled && <span className="worktree-tag bad">Hooks disabled</span>}
+            {result.installed && !result.reporterAvailable && (
+              <span className="worktree-tag bad">Reporter missing</span>
+            )}
+          </div>
+          {result.guidance.map((text) => (
+            <p role="alert" key={text}>
+              {text}
             </p>
-            <p>
-              {result.installed ? 'Status hooks installed.' : 'Status hooks are not installed.'}{' '}
-              {result.disabled && 'Hooks are disabled in this source.'}{' '}
-              {result.installed &&
-                !result.reporterAvailable &&
-                'The installed reporter is missing; reinstall status hooks.'}
-            </p>
-            {result.guidance.map((text) => (
-              <p key={text}>{text}</p>
-            ))}
-          </>
-        )}
-        {error && <p role="alert">{error}</p>}
-        <div className="row">
-          <button disabled={busy} onClick={() => void perform()}>
-            Check integration
-          </button>
-          <button disabled={busy} onClick={() => void perform(true)}>
-            Install status hooks
-          </button>
-          <button disabled={busy} onClick={() => void perform(false)}>
-            Remove status hooks
-          </button>
-        </div>
+          ))}
+        </>
+      )}
+      {error && <p role="alert">{error}</p>}
+      <div className="row">
+        <button disabled={busy} onClick={() => void perform()}>
+          Check integration
+        </button>
+        <button className="primary" disabled={busy} onClick={() => void perform(true)}>
+          Install status hooks
+        </button>
+        <button disabled={busy} onClick={() => void perform(false)}>
+          Remove status hooks
+        </button>
       </div>
-    </div>
+    </Dialog>
   )
 }

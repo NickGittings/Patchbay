@@ -49,6 +49,27 @@
         adapter: 'codex',
         command: `python3 '${parent}/agent.py'`,
       },
+      {
+        id: 'unhooked-agent',
+        name: 'Unhooked agent',
+        kind: 'agent',
+        category: 'agent',
+        source: 'builtin',
+        // The launcher's private homes leave Claude without hooks; Codex's are installed below.
+        adapter: 'claude',
+        command: `'${parent}/claude'`,
+      },
+      {
+        id: 'reporting-claude',
+        name: 'Reporting Claude',
+        kind: 'agent',
+        category: 'agent',
+        source: 'builtin',
+        // Reports through its session's journal although the app finds no Claude hooks, as when
+        // a shell profile points Claude at another configuration.
+        adapter: 'claude',
+        command: `python3 '${parent}/agent.py'`,
+      },
     ])
     await smoke.syncCurrentRoots()
     await smoke.refreshTasks()
@@ -88,9 +109,43 @@
     state().setView('review')
     await toggleSimple()
     await until('chat', () => document.querySelector('.simple-chat'))
+    // The fake agents journal hook events themselves; the notices follow installed hooks.
+    const activityNotice = await until('activity hooks notice', () =>
+      document.querySelector('.simple-chat > .simple-hook-notice'),
+    )
+    click(button('Set up…', activityNotice))
+    const setup = await until('Agent status integration dialog', () =>
+      document.querySelector('[role="dialog"][aria-label="Agent status integration"]'),
+    )
+    const provider = setup.querySelector('select')
+    // The notice is about the role presets' provider, so the dialog opens on Codex.
+    await until(
+      'Codex integration check',
+      () => !provider.disabled && setup.textContent.includes('Status hooks are not installed.'),
+    )
+    assert(provider.value === 'codex', `integrations opened on ${provider.value}, not Codex`)
+    click(button('Install status hooks', setup))
+    state().setSimpleMode(false)
+    await until('Full while installing hooks', () => !document.querySelector('.simple-chat'))
+    assert(setup.isConnected, 'leaving Chat closed the integrations dialog')
+    state().setSimpleMode(true)
+    await until('Chat while installing hooks', () => document.querySelector('.simple-chat'))
+    assert(
+      document.querySelectorAll('[role="dialog"][aria-label="Agent status integration"]').length ===
+        1,
+      'multiple integrations dialogs opened',
+    )
+    await until('Codex hooks installed', () =>
+      setup.textContent.includes('Status hooks installed.'),
+    )
+    click(setup.querySelector('[aria-label="Close Agent status integration"]'))
+    await until(
+      'activity hooks notice cleared',
+      () => !document.querySelector('.simple-hook-notice'),
+    )
     assert(state().view === 'review', 'Simple lost the last Full view')
     assert(
-      document.querySelectorAll('.workspace-rail > button').length === 10,
+      document.querySelectorAll('.workspace-rail > button').length === 11,
       'rail controls missing',
     )
     assert(
@@ -104,6 +159,40 @@
       [...document.querySelectorAll('.simple-stage-tabs button')].find((b) =>
         b.textContent.startsWith(name),
       )
+    for (const modifier of ['metaKey', 'ctrlKey']) {
+      for (const [i, name] of ['All', 'Plan', 'Build', 'Review'].entries()) {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: String(i + 1), [modifier]: true, bubbles: true }),
+        )
+        if (i > 0) {
+          await until(`${modifier}+${i + 1} restores Full`, () => !state().simpleMode)
+          assert(state().view === 'review', 'Chat shortcut lost the last Full view')
+          state().setSimpleMode(true)
+          await until('Chat after shortcut', () => document.querySelector('.simple-chat'))
+        }
+        click(
+          document.querySelector(
+            `.workspace-rail [aria-label="${name === 'All' ? 'Navigation' : name}"]`,
+          ),
+        )
+        await until(
+          `${name} rail stage filter`,
+          () => stageTab(name).getAttribute('aria-pressed') === 'true',
+        )
+        assert(
+          state().simpleMode && state().view === 'review',
+          'rail stage filter changed mode or Full view',
+        )
+        assert(document.querySelector('.simple-chat'), 'rail stage filter closed Chat')
+        const railLabel = name === 'All' ? 'Navigation' : name
+        assert(
+          document
+            .querySelector(`.workspace-rail [aria-label="${railLabel}"]`)
+            .getAttribute('aria-pressed') === 'true',
+          `${name} rail highlight missing`,
+        )
+      }
+    }
     click(stageTab('Review'))
     await until('Review stage filter', () => {
       const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
@@ -125,6 +214,144 @@
     const prompt = state().simple.log.find((e) => e.kind === 'prompt')
     assert(prompt.text === '  hello mail@example.test\nsecond line  ', 'prompt text was rewritten')
     const planner = prompt.sessionId
+    await until('hooked planner', () => state().sessions[planner]?.status?.agent?.authoritative)
+    input(document.querySelector('[aria-label="Message agent"]'), 'hook notice draft')
+    await until(
+      'hook notice draft',
+      () => document.querySelector('[aria-label="Message agent"]')?.value === 'hook notice draft',
+    )
+    assert(!document.querySelector('.simple-hook-notice'), 'hooked agent shows a hooks notice')
+    await smoke.terminalWrite(planner, 'smoke-wait\n')
+    await until(
+      'planner working',
+      () => state().sessions[planner]?.status?.agent?.state === 'working',
+    )
+    await smoke.terminalWrite(planner, '\u001b')
+    await until(
+      'Esc invalidates prompt authority',
+      () => state().sessions[planner]?.status?.agent?.authoritative === false,
+    )
+    assert(!document.querySelector('.simple-hook-notice'), 'Esc shows a missing hooks notice')
+    const escLabel = document.querySelector('.simple-composer-controls').textContent
+    assert(!escLabel.includes('Chat needs'), 'Esc claims installed hooks are missing')
+    assert(escLabel.includes('continue in its terminal'), `Esc label: ${escLabel}`)
+    await smoke.startTerminal('@plan', 'unhooked-agent', null, projectId)
+    const unhooked = await until('unhooked planner', () =>
+      state().sessionRecords.find((r) => r.metadata.terminalId === 'unhooked-agent'),
+    )
+    await until('unhooked planner running', () => state().sessions[unhooked.id]?.running)
+    const chooseRecipient = (value) => {
+      const select = document.querySelector('[aria-label="Message recipient"]')
+      select.value = value
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    try {
+      chooseRecipient(unhooked.id)
+      await until('unhooked agent notice', () =>
+        document.querySelector('.simple-composer .simple-hook-notice'),
+      )
+      assert(
+        document.querySelector('.simple-chat > .simple-hook-notice'),
+        'unhooked agent shows no activity hooks notice',
+      )
+      await smoke.terminalStop(unhooked.id)
+      await until('unhooked planner stopped', () => !state().sessions[unhooked.id]?.running)
+      // A stopped recipient without hooks is refused before anything resumes it.
+      input(document.querySelector('[aria-label="Message agent"]'), 'unhooked draft')
+      const stoppedNotice = await until('stopped unhooked agent notice', () =>
+        document.querySelector('.simple-composer .simple-hook-notice'),
+      )
+      assert(button('Send').disabled, 'Send enabled for an agent without hooks')
+      assert(
+        document
+          .querySelector('.simple-composer-controls')
+          .textContent.includes('Chat needs agent status integration'),
+        'stopped unhooked agent label',
+      )
+      document
+        .querySelector('[aria-label="Message agent"]')
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      assert(!state().sessions[unhooked.id]?.running, 'Send resumed an agent without hooks')
+      assert(
+        document.querySelector('[aria-label="Message agent"]').value === 'unhooked draft',
+        'refused send cleared the draft',
+      )
+      click(button('Set up…', stoppedNotice))
+      const integrations = await until('Agent status integration dialog', () =>
+        document.querySelector('[role="dialog"][aria-label="Agent status integration"]'),
+      )
+      assert(
+        integrations.querySelector('select').value === 'claude',
+        'integrations did not open on Claude',
+      )
+      click(integrations.closest('.extension-overlay'))
+      input(document.querySelector('[aria-label="Message agent"]'), '   ')
+      await until(
+        'blank draft hides hooks notice',
+        () => !document.querySelector('.simple-composer .simple-hook-notice'),
+      )
+    } finally {
+      await smoke.terminalStop(unhooked.id)
+      await until('unhooked planner stopped', () => !state().sessions[unhooked.id]?.running)
+      await smoke.sessionForget(unhooked.id)
+      await until('unhooked planner forgotten', async () => {
+        await smoke.reconcileSessions()
+        return !state().sessionRecords.some((r) => r.id === unhooked.id)
+      })
+      chooseRecipient('')
+      input(document.querySelector('[aria-label="Message agent"]'), '')
+    }
+    await smoke.startTerminal('@plan', 'reporting-claude', null, projectId)
+    const reporting = await until('reporting Claude planner', () =>
+      state().sessionRecords.find((r) => r.metadata.terminalId === 'reporting-claude'),
+    )
+    try {
+      await until(
+        'reporting Claude ready',
+        () =>
+          state().sessions[reporting.id]?.status?.agent?.authoritative &&
+          state().sessions[reporting.id]?.status?.agent?.state === 'idle',
+      )
+      chooseRecipient(reporting.id)
+      input(document.querySelector('[aria-label="Message agent"]'), 'reporting draft')
+      // Claude's hooks are missing from the app's view, yet a hook-confirmed prompt is sendable.
+      await until('Send enabled for a reporting agent', () => !button('Send')?.disabled)
+      const label = document.querySelector('.simple-composer-controls').textContent
+      assert(label.includes('Ready'), `reporting agent label: ${label}`)
+      assert(!document.querySelector('.simple-hook-notice'), 'reporting agent shows a hooks notice')
+      await smoke.terminalWrite(reporting.id, 'smoke-wait\n')
+      await until(
+        'custom-config agent working',
+        () => state().sessions[reporting.id]?.status?.agent?.state === 'working',
+      )
+      await smoke.terminalWrite(reporting.id, '\u001b')
+      await until(
+        'custom-config Esc revokes readiness',
+        () => state().sessions[reporting.id]?.status?.agent?.authoritative === false,
+      )
+      assert(
+        !document.querySelector('.simple-hook-notice'),
+        'Esc forgot custom-config hook evidence',
+      )
+      assert(button('Send').disabled, 'Esc left the custom-config prompt sendable')
+      assert(
+        document
+          .querySelector('.simple-composer-controls')
+          .textContent.includes('continue in its terminal'),
+        'custom-config Esc asks to install hooks',
+      )
+    } finally {
+      await smoke.terminalStop(reporting.id)
+      await until('reporting planner stopped', () => !state().sessions[reporting.id]?.running)
+      await smoke.sessionForget(reporting.id)
+      await until('reporting planner forgotten', async () => {
+        await smoke.reconcileSessions()
+        return !state().sessionRecords.some((r) => r.id === reporting.id)
+      })
+      chooseRecipient('')
+      input(document.querySelector('[aria-label="Message agent"]'), '')
+    }
     await until('saved plan card', () => button('Implement') && !button('Implement').disabled)
     click(button('Implement'))
     await until('Implement completion', () =>
@@ -133,6 +360,9 @@
     assert(state().simpleMode, 'Implement left Simple')
     const implementation = state().simple.log.find((e) => e.action === 'implement').sessionId
     await until('activity hydration', () => state().sessions[implementation]?.activity?.length)
+    await until('Build agent chip on the map', () =>
+      document.querySelector('.navigation-shell .component-node .agent-role.build'),
+    )
     await until('file card', () => document.querySelector('.simple-file'))
     click(document.querySelector('.simple-file'))
     await until('left diff', () => document.querySelector('.simple-diff .diff'))
@@ -178,10 +408,8 @@
     state().setSimpleMode(true)
     await until('chat again', () => document.querySelector('.simple-chat'))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
-    await until(
-      'Chat shortcut restores last Full view',
-      () => !state().simpleMode && state().view === 'review',
-    )
+    await until('Full review restored after shortcut', () => document.querySelector('.review-view'))
+    assert(!state().simpleMode, 'Chat shortcut did not return to Full')
     assert(state().view === 'review', 'Chat shortcut changed the last full workspace view')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '3', metaKey: true, bubbles: true }))
     await until('Full Build shortcut', () => state().view === 'implementation')
@@ -207,7 +435,7 @@
       'log was not persisted',
     )
     await smoke.report(
-      'PASS simple: toggle, composer, Implement, diff, Review/Fix, activity, worktree drafts, and Full session recovery',
+      'PASS simple: toggle, composer, Implement, diff, Review/Fix, activity, role chips, worktree drafts, and Full session recovery',
     )
   } catch (e) {
     await smoke.report(

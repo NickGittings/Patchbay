@@ -1,9 +1,11 @@
 import { expect, test, vi } from 'vitest'
 import {
+  composerStatus,
   deliverPrompt,
   editedMentions,
   promptReady,
   transmittedText,
+  waitForPrompt,
   type SendContext,
   type SendPort,
 } from './simpleComposer'
@@ -12,7 +14,7 @@ const ready = (): SessionState => ({
   generation: 1,
   running: true,
   status: {
-    agent: { state: 'idle', authoritative: true, sinceMs: 10 },
+    agent: { state: 'idle', authoritative: true, provider: 'claude', sinceMs: 10 },
     lastOutputMs: 9,
     active: false,
   } as SessionState['status'],
@@ -105,7 +107,6 @@ test('an uncertain failed write is attempted once, preserves the draft and clear
 })
 
 test('startup waits for a hook-confirmed prompt, times out at 30 seconds, and cancels generations', async () => {
-  const { waitForPrompt } = await import('./simpleComposer')
   let now = 0
   let session = { generation: 1, running: true } as SessionState
   const waiting = {
@@ -116,7 +117,7 @@ test('startup waits for a hook-confirmed prompt, times out at 30 seconds, and ca
       now += ms
     },
   }
-  await expect(waitForPrompt(context, waiting)).rejects.toThrow('Agent status integration')
+  await expect(waitForPrompt(context, waiting)).rejects.toThrow('No ready prompt after 30 seconds')
   expect(now).toBe(30000)
   now = 0
   waiting.wait = async (ms) => {
@@ -149,4 +150,109 @@ test('a fast reply before write confirmation counts as a completed turn', async 
   })
   await deliverPrompt(context, 'quick question', p)
   expect(promptReady(session, submittedMs)).toBe(true)
+})
+
+test('Esc during startup times out without claiming hooks are missing', async () => {
+  let now = 0
+  const session = ready()
+  session.status!.agent!.authoritative = false
+  await expect(
+    waitForPrompt(context, {
+      current: () => context,
+      session: () => session,
+      now: () => now,
+      wait: async (ms) => {
+        now += ms
+      },
+    }),
+  ).rejects.toThrow(/^No ready prompt after 30 seconds\. Open the terminal to continue\.$/)
+  expect(now).toBe(30000)
+})
+
+test('a startup timeout of an agent that reports no prompt says chat cannot message it', async () => {
+  let now = 0
+  await expect(
+    waitForPrompt(context, {
+      current: () => context,
+      session: () => ({ generation: 1, running: true }) as SessionState,
+      now: () => now,
+      wait: async (ms) => {
+        now += ms
+      },
+      provider: null,
+    }),
+  ).rejects.toThrow('Chat can message only Claude and Codex agents')
+})
+
+test('a hook-confirmed ready prompt is sendable whatever the installed-hooks check says', () => {
+  const base = { pending: false, connected: true, provider: 'claude' as const }
+  const session = ready()
+  for (const installed of [true, false, 'failed', undefined] as const) {
+    const status = composerStatus({ ...base, installed, session, ready: true })
+    expect(status).toEqual({ label: 'Ready', sendable: true })
+  }
+  // A reporting session, ready or not, never asks for hooks.
+  const working = ready()
+  working.status!.agent!.state = 'working'
+  expect(composerStatus({ ...base, installed: false, session: working, ready: false })).toEqual({
+    label: 'Agent is working',
+    sendable: false,
+    notice: undefined,
+  })
+})
+test('installed hooks refuse only starting or resuming, and the label says why Send is off', () => {
+  const base = { pending: false, connected: true, provider: 'codex' as const, ready: false }
+  const stopped: SessionState = { ...ready(), running: false }
+  expect(composerStatus({ ...base, installed: false, session: stopped })).toEqual({
+    label: 'Chat needs agent status integration',
+    sendable: false,
+    notice: 'missing',
+  })
+  expect(composerStatus({ ...base, installed: false, session: undefined }).sendable).toBe(false)
+  // A failed or pending check never starts an agent that may have no hooks.
+  expect(composerStatus({ ...base, installed: 'failed', session: undefined })).toEqual({
+    label: 'Chat needs agent status integration',
+    sendable: false,
+    notice: 'failed',
+  })
+  expect(composerStatus({ ...base, installed: true, session: stopped })).toEqual({
+    label: 'Send to start or resume',
+    sendable: true,
+  })
+  for (const provider of ['codex', undefined] as const)
+    expect(composerStatus({ ...base, provider, installed: undefined, session: stopped })).toEqual({
+      label: 'Checking agent status integration…',
+      sendable: false,
+    })
+  // Running without a confirmed prompt: never sendable, and the label names the reason.
+  const quiet: SessionState = { generation: 1, running: true }
+  expect(composerStatus({ ...base, installed: false, session: quiet })).toMatchObject({
+    label: 'Chat needs agent status integration',
+    sendable: false,
+    notice: 'missing',
+  })
+  expect(composerStatus({ ...base, installed: true, session: quiet })).toMatchObject({
+    label: 'Waiting for the agent',
+    sendable: false,
+  })
+  const escaped = ready()
+  escaped.status!.agent!.authoritative = false
+  expect(composerStatus({ ...base, installed: true, session: escaped })).toMatchObject({
+    label: 'Not confirmed ready: continue in its terminal',
+    sendable: false,
+  })
+  expect(composerStatus({ ...base, installed: false, session: escaped })).toMatchObject({
+    label: 'Not confirmed ready: continue in its terminal',
+    sendable: false,
+    notice: undefined,
+  })
+  expect(
+    composerStatus({ ...base, provider: null, installed: undefined, session: stopped }),
+  ).toEqual({ label: 'Chat can’t message this agent', sendable: false, notice: 'unsupported' })
+  expect(
+    composerStatus({ ...base, connected: false, installed: true, session: ready(), ready: true }),
+  ).toEqual({ label: 'Session service disconnected', sendable: false })
+  expect(
+    composerStatus({ ...base, pending: true, installed: true, session: ready(), ready: true }),
+  ).toEqual({ label: 'Waiting for ready prompt…', sendable: false })
 })

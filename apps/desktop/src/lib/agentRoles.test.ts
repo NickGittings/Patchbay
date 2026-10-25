@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { DeviceManifest } from '../types'
-import { restoredAgentRoles, roleDevice, roleDevices } from './agentRoles'
+import { chatRolePresets, restoredAgentRoles, roleDevice, roleDevices } from './agentRoles'
 
 const device = (id: string, kind: DeviceManifest['kind'] = 'agent'): DeviceManifest => ({
   id,
@@ -32,6 +32,19 @@ test('only review runs several presets', () => {
   expect(roleDevices(devices, roles, 'review')).toEqual([codex, claude])
   expect(roleDevices(devices, roles, 'plan')).toEqual([codex])
   expect(roleDevices(devices, {}, 'review')).toEqual([claude])
+})
+
+test('a chat checks the hooks of every preset its stages launch, each once', () => {
+  const other = device('other')
+  const all = [claude, codex, other]
+  expect(chatRolePresets(all, {})).toEqual([claude])
+  expect(chatRolePresets(all, { plan: ['codex'] })).toEqual([codex, claude])
+  expect(
+    chatRolePresets(all, { plan: ['codex'], review: ['other', 'codex'], fix: ['claude'] }),
+  ).toEqual([codex, other, claude])
+  expect(chatRolePresets(all, { plan: ['codex'], review: ['codex'], merge: ['codex'] })).toEqual([
+    codex,
+  ])
 })
 
 test('restored assignments drop malformed entries and keep one preset outside review', () => {

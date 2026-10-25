@@ -14,6 +14,7 @@ import {
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
+import type { HookProvider } from '../../lib/agentHooks'
 import { autoDraftKey, autoDrafts } from '../../lib/autoDrafts'
 import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
 import PanelContent from '../PanelContent'
@@ -35,7 +36,7 @@ export default function AutoPanel({
   onIntegrations,
   simple = false,
 }: {
-  onIntegrations: () => void
+  onIntegrations: (provider?: HookProvider) => void
   simple?: boolean
 }) {
   const run = useStore((s) => s.auto)
@@ -77,11 +78,49 @@ export default function AutoPanel({
         />
       ) : (
         <div className="auto-content">
-          <strong>Auto mode: {STATUS_LABELS[run.status]}</strong>
-          <p>{run.goal}</p>
-          <p>Current stage: {STAGE_LABELS[run.stage]}</p>
-          {run.reason && run.status !== 'running' && <p>{run.reason}</p>}
-          {run.gateError && <p role="status">Couldn't check merge status: {run.gateError}</p>}
+          <div className="panel-section-head">
+            <span className="worktree-tag">{STATUS_LABELS[run.status]}</span>
+            {run.sessionId && (
+              <button
+                className="auto-session-link"
+                onClick={() =>
+                  revealTerminal({
+                    sid: run.inputSessionId ?? run.sessionId!,
+                    componentId: parseSessionId(run.inputSessionId ?? run.sessionId!).componentId,
+                  })
+                }
+              >
+                Open current session
+              </button>
+            )}
+          </div>
+          <ol className="auto-stepper" aria-label="Run stages">
+            {(['plan', 'implement', 'validate', 'review', 'merge'] as const).map((stage) => (
+              <li
+                key={stage}
+                aria-current={
+                  (run.stage === 'fix'
+                    ? 'implement'
+                    : run.stage === 'mergeGate' || run.stage === 'done'
+                      ? 'merge'
+                      : run.stage) === stage
+                    ? 'step'
+                    : undefined
+                }
+              >
+                {STAGE_LABELS[stage]}
+              </li>
+            ))}
+          </ol>
+          <p className="auto-goal" title={run.goal}>
+            {run.goal}
+          </p>
+          {['paused', 'waitingOnYou', 'failed'].includes(run.status) &&
+            (run.reason || run.gateError) && (
+              <p className="panel-callout" role="status">
+                {run.gateError ? `Couldn't check merge status: ${run.gateError}` : run.reason}
+              </p>
+            )}
           {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
             <AutoFindings
               projectId={projectId}
@@ -89,26 +128,37 @@ export default function AutoPanel({
               refresh={`${run.stage}:${run.status}:${run.log.length}`}
             />
           )}
-          {run.round > 0 && <p>Fix rounds: {run.round}</p>}
-          {run.validation && <p>Validation: {validationSummary(run.validation)}</p>}
-          {run.sessionId && (
-            <button
-              onClick={() =>
-                revealTerminal({
-                  sid: run.inputSessionId ?? run.sessionId!,
-                  componentId: parseSessionId(run.inputSessionId ?? run.sessionId!).componentId,
-                })
-              }
-            >
-              Open current session
-            </button>
+          {(run.round > 0 || run.validation?.some((r) => r.results.length)) && (
+            <dl className="auto-values">
+              {run.round > 0 && (
+                <>
+                  <dt>Fix rounds</dt>
+                  <dd>{run.round}</dd>
+                </>
+              )}
+              {run.validation?.some((r) => r.results.length) && (
+                <>
+                  <dt>Validation</dt>
+                  <dd>{validationSummary(run.validation)}</dd>
+                </>
+              )}
+            </dl>
           )}
           <div className="auto-controls">
             {run.status === 'running' ? (
               <button onClick={() => act('pauseAuto', pauseAuto)}>Pause</button>
             ) : (
               !['done', 'stopped'].includes(run.status) && (
-                <button onClick={() => act('resumeAuto', resumeAuto)}>Resume</button>
+                <button
+                  className={
+                    run.stage === 'mergeGate' && run.status === 'waitingOnYou'
+                      ? undefined
+                      : 'primary'
+                  }
+                  onClick={() => act('resumeAuto', resumeAuto)}
+                >
+                  Resume
+                </button>
               )
             )}
             {!['done', 'stopped'].includes(run.status) && (
@@ -118,10 +168,15 @@ export default function AutoPanel({
               <button onClick={() => act('skipStage', skipStage)}>Skip stage</button>
             )}
             {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
-              <button onClick={() => act('mergeApproval', mergeNow)}>Merge now</button>
+              <button className="primary" onClick={() => act('mergeApproval', mergeNow)}>
+                Merge now
+              </button>
             )}
             {finished && (
-              <button onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}>
+              <button
+                className={run.status === 'failed' ? undefined : 'primary'}
+                onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}
+              >
                 New run
               </button>
             )}
@@ -131,7 +186,6 @@ export default function AutoPanel({
             <summary>Activity and details</summary>
             <p>Merge into: {run.merge.destinationBranch}</p>
             <p>Fix round limit: {effortSettings(run).maxRounds}</p>
-            {run.reason && run.status === 'running' && <p>{run.reason}</p>}
             <ol className="auto-log">
               {[...run.log].reverse().map((l, i) => (
                 <li key={run.log.length - 1 - i}>

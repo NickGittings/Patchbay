@@ -27,13 +27,16 @@ const SCRIPTS = {
       { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-auto/project') },
       'auto-fixture.sh',
     ),
-    run: ['scripts/auto.mjs'],
+    run: ['scripts/hooks-home.mjs'],
   },
-  simple: smoke(
-    'simple.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
-    'simple-fixture.sh',
-  ),
+  simple: {
+    ...smoke(
+      'simple.js',
+      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
+      'simple-fixture.sh',
+    ),
+    run: ['scripts/hooks-home.mjs'],
+  },
   popout: smoke('popout.js'),
   bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
   autosave: smoke(
@@ -59,6 +62,7 @@ const SCRIPTS = {
     { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-actions/project') },
     'actions-fixture.sh',
   ),
+  stack: smoke('stack.js'),
   extensions: smoke('extensions.js', {
     PATCHBAY_EXTENSIONS_DIR: join(root, 'examples/extensions'),
     PATCHBAY_SMOKE_ROOT: dockerFixture,

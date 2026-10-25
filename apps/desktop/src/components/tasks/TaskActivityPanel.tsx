@@ -1,3 +1,4 @@
+import { taskPassed } from '../../lib/autoSettings'
 import { useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
@@ -10,10 +11,10 @@ import {
   type ValidatorSuggestion,
 } from '../../lib/validators'
 import { useStore } from '../../store'
-import { closePanel, selectPanel } from '../../lib/rail'
+import { selectPanel } from '../../lib/rail'
 import { parseSessionId, TASK_ROOT_SCOPE, PLAN_SCOPE } from '../../types'
 
-/** Start or stop an environment group, or validate what a component change may affect. */
+/** Start or stop a stack, or validate what a component change may affect. */
 export function RunSelect() {
   const groups = useStore((s) => s.groups)
   const nodes = useStore((s) => s.nodes)
@@ -39,7 +40,7 @@ export function RunSelect() {
         Run
       </option>
       {!!groups.length && (
-        <optgroup label="Start environment">
+        <optgroup label="Start stack">
           {groups.map((g) => (
             <option key={g.id} value={`start:${g.id}`} disabled={busy}>
               {g.name}
@@ -48,7 +49,7 @@ export function RunSelect() {
         </optgroup>
       )}
       {!!groups.length && (
-        <optgroup label="Stop environment">
+        <optgroup label="Stop stack">
           {groups.map((g) => (
             <option key={g.id} value={`stop:${g.id}`}>
               {g.name}
@@ -77,9 +78,7 @@ export function ActivityStatus() {
   if (!busy) return null
   return (
     <div className="row task-actions">
-      <span role="status">
-        {action?.kind === 'startGroup' ? 'Starting environment…' : 'Validating…'}
-      </span>
+      <span role="status">{action?.kind === 'startGroup' ? 'Starting stack…' : 'Validating…'}</span>
       {(action?.kind === 'validateAffected' || action?.kind === 'validateChanged') && (
         <button onClick={() => void stopValidation()}>Stop checks</button>
       )}
@@ -117,13 +116,9 @@ function ValidatorSetup() {
   const chosen = suggestions.filter(checked)
   return (
     <div className="task-action-result">
-      <strong>Set up validation</strong>
-      {!!suggestions.length && (
-        <p className="hint">
-          Tick checks that exit on their own: validation waits for them (also in{' '}
-          <code>agent validate</code>), so never pick a watch mode or server.
-        </p>
-      )}
+      <strong title="Choose checks that exit on their own. Validation waits for them, so avoid watch modes and servers.">
+        Set up validation
+      </strong>
       <div className="validator-suggestions">
         {suggestions.map((s) => (
           <label key={key(s)} className="validator-suggestion">
@@ -167,6 +162,7 @@ function ValidatorSetup() {
         {!!suggestions.length && (
           <>
             <button
+              className="primary"
               disabled={!chosen.length}
               onClick={() => {
                 for (const s of chosen)
@@ -190,13 +186,11 @@ export default function TaskActivityPanel() {
   const open = useStore((s) => s.utilityPanel === 'activity')
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
-  const tasks = useStore((s) => s.tasks)
   const nodes = useStore((s) => s.nodes)
   const busy = useStore((s) => s.graphActionBusy)
   const activities = useStore((s) => s.taskActivities)
   const records = useStore((s) => s.sessionRecords)
   if (!open || !projectId) return null
-  const close = () => closePanel('activity')
   const own = Object.values(activities).filter((a) => a.projectId === projectId && a.task === task)
   const initiatorLabel = (id: string) => {
     if (id === 'User') return id
@@ -210,78 +204,72 @@ export default function TaskActivityPanel() {
           : (nodes.find((n) => n.id === component)?.data.name ?? component)
     return `${location} · ${record?.metadata.name ?? 'Agent'}`
   }
-  const worktree = tasks.find((t) => t.id === task)?.title ?? 'Main worktree'
   return (
-    <div className="utility-content">
-      <div
-        className="sessions-panel task-activity-panel panel"
-        role="region"
-        aria-label="Worktree activity"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="row">
-          <h2>Activity · {worktree}</h2>
-          <span className="spacer" />
-          <button onClick={close}>Close</button>
-        </div>
-        <p>Environments started or stopped and validations run in this worktree.</p>
-        <ActivityStatus />
-        <ValidatorSetup key={projectId} />
-        {!own.length && <p>No activity in this worktree.</p>}
-        <div className="task-activity">
-          {own
-            .slice()
-            .reverse()
-            .map((activity) => (
-              <div key={activity.id} className={`task-action-result ${activity.state}`}>
-                <div className="row">
-                  <strong>
-                    {['validate', 'validateChanged'].includes(activity.action.kind)
-                      ? 'Validation'
-                      : activity.action.kind === 'environmentStop'
-                        ? 'Stop environment'
-                        : 'Start environment'}{' '}
-                    · {activity.state}
-                  </strong>
-                  <span className="hint flush" title={activity.initiator}>
-                    {initiatorLabel(activity.initiator)}
-                  </span>
-                  {activity.state !== 'running' && (
-                    <button
-                      disabled={busy}
-                      onClick={() =>
-                        activity.action.kind === 'environmentStop'
-                          ? void stopGroup(activity.action.groupId!)
-                          : void runGraphAction(
-                              activity.action.kind === 'validate'
+    <section
+      className="task-activity-panel panel-section"
+      role="region"
+      aria-label="Worktree activity"
+    >
+      <ActivityStatus />
+      {!own.length && (
+        <p className="panel-empty">No stacks started or validations run in this worktree yet.</p>
+      )}
+      <div className="task-activity">
+        {own
+          .slice()
+          .reverse()
+          .map((activity) => (
+            <div key={activity.id} className={`task-action-result panel-section ${activity.state}`}>
+              <div className="row">
+                <strong>
+                  {['validate', 'validateChanged'].includes(activity.action.kind)
+                    ? 'Validation'
+                    : activity.action.kind === 'environmentStop'
+                      ? 'Stop stack'
+                      : 'Start stack'}{' '}
+                  · {activity.state}
+                </strong>
+                <span className="hint" title={activity.initiator}>
+                  {initiatorLabel(activity.initiator)}
+                </span>
+                {activity.state !== 'running' && (
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      activity.action.kind === 'environmentStop'
+                        ? void stopGroup(activity.action.groupId!)
+                        : void runGraphAction(
+                            activity.action.kind === 'validate'
+                              ? {
+                                  kind: 'validateAffected',
+                                  componentId: activity.action.componentId!,
+                                }
+                              : activity.action.kind === 'validateChanged'
                                 ? {
-                                    kind: 'validateAffected',
-                                    componentId: activity.action.componentId!,
+                                    kind: 'validateChanged',
+                                    componentIds: activity.action.componentIds!,
                                   }
-                                : activity.action.kind === 'validateChanged'
-                                  ? {
-                                      kind: 'validateChanged',
-                                      componentIds: activity.action.componentIds!,
-                                    }
-                                  : { kind: 'startGroup', groupId: activity.action.groupId! },
-                            )
-                      }
-                    >
-                      Rerun
-                    </button>
-                  )}
-                </div>
-                {activity.error && <p className="hint file-tree-error">{activity.error}</p>}
-                {!!activity.report?.plan.skipped.length && (
-                  <p className="hint">
-                    Missing configured validators/tasks:{' '}
-                    {activity.report.plan.skipped
-                      .map((id) => nodes.find((n) => n.id === id)?.data.name ?? id)
-                      .join(', ')}
-                  </p>
+                                : { kind: 'startGroup', groupId: activity.action.groupId! },
+                          )
+                    }
+                  >
+                    Rerun
+                  </button>
                 )}
-                <div className="scope-chips">
-                  {activity.report?.results.map((result) => (
+              </div>
+              {activity.error && <p className="hint file-tree-error">{activity.error}</p>}
+              {!!activity.report?.plan.skipped.length && (
+                <p className="hint">
+                  Missing configured validators/tasks:{' '}
+                  {activity.report.plan.skipped
+                    .map((id) => nodes.find((n) => n.id === id)?.data.name ?? id)
+                    .join(', ')}
+                </p>
+              )}
+              <div className="scope-chips">
+                {activity.report?.results
+                  .filter((result) => !taskPassed(result))
+                  .map((result) => (
                     <button
                       key={result.sessionId}
                       className="chip"
@@ -297,22 +285,22 @@ export default function TaskActivityPanel() {
                       : {result.outcome}
                     </button>
                   ))}
-                  {activity.previewUrls.map((url) => (
-                    <button
-                      key={url}
-                      className="chip"
-                      onClick={() =>
-                        void openUrl(url).catch((e) => useStore.getState().setMessage(String(e)))
-                      }
-                    >
-                      Open {url}
-                    </button>
-                  ))}
-                </div>
+                {activity.previewUrls.map((url) => (
+                  <button
+                    key={url}
+                    className="chip"
+                    onClick={() =>
+                      void openUrl(url).catch((e) => useStore.getState().setMessage(String(e)))
+                    }
+                  >
+                    Open {url}
+                  </button>
+                ))}
               </div>
-            ))}
-        </div>
+            </div>
+          ))}
       </div>
-    </div>
+      <ValidatorSetup key={projectId} />
+    </section>
   )
 }

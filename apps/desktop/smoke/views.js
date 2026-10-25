@@ -83,7 +83,10 @@
           '"${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude; fi; done',
       },
     ])
-    await until('navigation layout', () => query('.hierarchy') && nodeElement('alpha'))
+    await until(
+      'navigation layout',
+      () => query('.navigation-shell .canvas') && nodeElement('alpha'),
+    )
     state().setPaletteOpen(true)
     click(await until('Agent roles command', () => query('[data-command-id="roles"]')))
     const rolesPanel = await until('Agent roles panel', () => query('[aria-label="Agent roles"]'))
@@ -112,7 +115,7 @@
     )
     choose(subagents, '0')
     await until('subagents disabled', () => state().implementSubagents === 0)
-    click([...rolesPanel.querySelectorAll('button')].find((b) => b.textContent === 'Close'))
+    click(rolesPanel.querySelector('[aria-label="Close Agent roles"]'))
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
     const visible = (selector) => {
@@ -451,7 +454,7 @@
       })
     }
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', metaKey: true, bubbles: true }))
-    await until('navigation shortcut', () => query('.hierarchy'))
+    await until('navigation shortcut', () => query('.navigation-shell .canvas'))
     await until('navigation viewport restored', () => viewport() === savedViewport)
     assert(state().selectedId === 'beta', 'selection is not shared with navigation')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true, bubbles: true }))
@@ -729,27 +732,27 @@
       )
       return names.includes('index.ts') && names.includes('package.json')
     })
-    const filter = await until('hierarchy filter', () =>
-      query('input[aria-label="Filter components"]'),
+    assert(!query('.hierarchy'), 'Navigation still shows the Hierarchy panel')
+    const search = query('input[aria-label="Search files and commands"]')
+    click(search)
+    choose(search, 'filter 3')
+    const found = await until('component search result', () =>
+      [
+        ...document.querySelectorAll(
+          '.search-results [role="group"][aria-label="Components"] [role="option"]',
+        ),
+      ].find((option) => option.textContent.includes('Filter 3')),
     )
-    choose(filter, 'filter 3')
-    await until('filtered hierarchy', () => {
-      const rows = [...document.querySelectorAll('.hierarchy-item')]
-      return rows.length === 1 && rows[0].textContent.includes('Filter 3')
-    })
-    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
-    await until('highlighted filter row', () => query('.hierarchy-item.highlighted'))
-    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    await until('keyboard focus from filter', () => state().selectedId === 'filter-3')
+    click(found)
+    await until('component focused from search', () => state().selectedId === 'filter-3')
     await until('Files tab reset', () => inspectorTab('Component')?.classList.contains('active'))
-    choose(filter, 'no such component')
-    await until('no filter matches', () => query('.hierarchy').textContent.includes('No matches'))
-    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    click(search)
+    choose(search, 'no such component')
     await until(
-      'filter cleared',
-      () =>
-        document.querySelectorAll('.hierarchy-item').length === navigationProject.components.length,
+      'no component matches',
+      () => query('.search-results') && !query('.search-results [aria-label="Components"]'),
     )
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
 
     const context = (el) =>
       el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 120 }))
@@ -761,10 +764,7 @@
     const menu = await until('node actions menu', () => query('.node-extension-menu'))
     for (const label of ['Open in editor', 'Copy path', 'Open in window', 'Start Shell'])
       assert(menu.textContent.includes(label), `node menu missing ${label}`)
-    await dismissMenu()
-    context(document.getElementById(`hierarchy-${fixture.id}`))
-    await until('hierarchy actions menu', () => query('.node-extension-menu'))
-    assert(state().selectedId === fixture.id, 'context menu did not select the row')
+    assert(state().selectedId === fixture.id, 'context menu did not select the node')
     // Edit the runner's disposable fixture. A root change gives Review a second filter chip.
     const shell = fixture.terminals.find((t) => t.kind === 'shell')
     assert(shell, 'missing fixture shell')
@@ -792,9 +792,7 @@
       return nodeElement(fixture.id)?.querySelector('.changes-badge .git-badge')
     })
     state().select('filter-3')
-    await until('selection before badge', () =>
-      query('.hierarchy-item.active')?.textContent.includes('Filter 3'),
-    )
+    await until('selection before badge', () => state().selectedId === 'filter-3')
     click(nodeElement(fixture.id).querySelector('.changes-badge .git-badge'))
     await until('changed fixture in popover', () =>
       query('.changes-popover .change-row[title$="app/index.ts"]'),
@@ -825,7 +823,7 @@
     state().setActiveSession(null)
     smoke.store.setState({ inspector: null })
     await smoke.report(
-      'PASS views: navigation actions, inspector files, hierarchy filter, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
+      'PASS views: navigation actions, inspector files, component search, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e} ${e?.stack ?? ''}`)

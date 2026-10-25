@@ -3639,3 +3639,17 @@ test('findings that left out untracked files stay current but never merge automa
     mergeableHead(snapshot({ freshness: 'current', findings: uncovered }), current),
   ).toBeUndefined()
 })
+
+test('Auto offers integration setup for a missing saved Codex hook source', async () => {
+  load()
+  const { setHookSource } = await import('./agentHooks')
+  const { checkAutoHooks, AutoHooksRequired } = await import('./auto')
+  setHookSource('codex', '/gone/hooks.json')
+  vi.mocked(ipc.agentProvider).mockResolvedValueOnce('codex')
+  vi.mocked(ipc.agentHooksCheck).mockRejectedValueOnce(new Error('No such directory'))
+  const error = await checkAutoHooks(useStore.getState().devices[0].id).catch((e) => e)
+  expect(error).toBeInstanceOf(AutoHooksRequired)
+  expect(error.provider).toBe('codex')
+  expect(error.message).toContain('Install Agent status integration')
+  expect(ipc.agentHooksCheck).toHaveBeenCalledWith('codex', '/gone/hooks.json')
+})

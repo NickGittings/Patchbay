@@ -50,7 +50,7 @@
       .find((b) => b.textContent === 'Send test notification')
       .click()
     await until('test notification recorded', () => smoke.notificationLog.length > 0)
-    ;[...panel.querySelectorAll('button')].find((b) => b.textContent === 'Close').click()
+    panel.querySelector('[aria-label="Close Notifications"]').click()
     smoke.notificationLog.length = 0
     await smoke.agentHooksConfigure('codex', true)
     smoke.acceptOpened(await smoke.openProject())

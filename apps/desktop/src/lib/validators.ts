@@ -1,7 +1,7 @@
 import type { TerminalSpec } from '../types'
 
-/** The part of a map node these suggestions read. */
-interface ComponentLike {
+/** The part of a map node these suggestions (and the Stack panel's) read. */
+export interface ComponentLike {
   id: string
   data: { name: string; terminals: TerminalSpec[] }
 }
@@ -63,19 +63,20 @@ const watches = (word: string) => {
 /** A script or target name's first segment, so `test:unit`, `test_unit` and `Test` match. */
 const segments = (name: string) => name.toLowerCase().split(/[:._-]/)
 
-const program = (word: string) => word.replace(/^.*[\\/]/, '').toLowerCase()
+export const program = (word: string) => word.replace(/^.*[\\/]/, '').toLowerCase()
 
 /**
  * How one simple command reads, approximately: `check`, `serves` (may never exit) or `other`.
  * Leading `VAR=value` assignments and common wrappers (`env`, `npx`, `pnpm exec`, `uv run`,
- * `python -m`) are skipped.
+ * `python -m`) are skipped. Without `watch`, watching doesn't count, so a test watcher (`jest
+ * --watch`, `vitest`, `npm run test:watch`) reads as the check it runs.
  */
-function readSimple(command: string): 'check' | 'serves' | 'other' {
+function readSimple(command: string, watch = true): 'check' | 'serves' | 'other' {
   let words = command
     .trim()
     .split(/\s+/)
     .map((w) => w.replace(/^['"]|['"]$/g, ''))
-  if (words.some(watches)) return 'serves'
+  if (watch && words.some(watches)) return 'serves'
   for (;;) {
     while (/^[A-Za-z_]\w*=/.test(words[0] ?? '')) words = words.slice(1)
     const [first = '', sub = ''] = words
@@ -92,42 +93,70 @@ function readSimple(command: string): 'check' | 'serves' | 'other' {
   const [first = '', sub = '', third = ''] = words
   const name = program(first)
   if (SERVES.has(sub.toLowerCase())) return 'serves'
-  if (DEV_SERVERS.has(name) && (!sub || name === 'nodemon')) return 'serves'
+  // Flags don't change what a dev server does: `vite --port 3000` still serves.
+  if (DEV_SERVERS.has(name) && (!sub || sub.startsWith('-') || name === 'nodemon')) return 'serves'
   if (PACKAGE_MANAGERS.has(name) || name === 'make' || name === 'just') {
     const script = PACKAGE_MANAGERS.has(name) && ['run', 'run-script'].includes(sub) ? third : sub
     const parts = segments(script)
+    if (!watch && CHECK_SCRIPTS.has(parts[0])) return 'check'
     if (parts.some((part) => SERVES.has(part))) return 'serves'
     return CHECK_SCRIPTS.has(parts[0]) ? 'check' : 'other'
   }
   // Vitest watches unless told to run once.
-  if (name === 'vitest') return sub === 'run' || words.includes('--run') ? 'check' : 'serves'
+  if (name === 'vitest')
+    return !watch || sub === 'run' || words.includes('--run') ? 'check' : 'serves'
   const subs = CHECK_PROGRAMS.get(name)
   return subs && (!subs.length || subs.includes(sub)) ? 'check' : 'other'
 }
 
-/** Readings per terminal object: the map replaces a terminal's object when it changes. */
-const readings = new WeakMap<TerminalSpec, boolean>()
+const simpleCommands = (command: string) =>
+  command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
+
+/**
+ * How each simple command of a command line reads, and whether it ends in the background: a
+ * lone `&` (not `&&`, `&>` or `>&`).
+ */
+export function readCommand(command: string) {
+  const parts = simpleCommands(command)
+  return {
+    background: /(^|[^&>])&(?![&>])/.test(command),
+    reads: parts.map((part) => readSimple(part)),
+  }
+}
+
+/** Whether a terminal runs checks, watching or not: a check id, or a command that reads as one. */
+export const checkLike = (t: TerminalSpec) =>
+  CHECK_IDS.has(t.id) ||
+  simpleCommands(t.command).some((part) => readSimple(part, false) === 'check')
+
+/**
+ * A suggestion test of unassigned task terminals with a command, given how the command reads,
+ * cached per terminal object: the map replaces a terminal's object when it changes.
+ */
+export function suggester(
+  test: (t: TerminalSpec, read: ReturnType<typeof readCommand>) => boolean,
+): (t: TerminalSpec) => boolean {
+  const readings = new WeakMap<TerminalSpec, boolean>()
+  return (t) => {
+    const cached = readings.get(t)
+    if (cached !== undefined) return cached
+    const result =
+      t.kind === 'task' && !t.action && !!t.command.trim() && test(t, readCommand(t.command))
+    readings.set(t, result)
+    return result
+  }
+}
 
 /**
  * Whether to suggest a terminal as a validator: an unassigned task whose id or command looks
  * like a check, unless it obviously watches or serves (a watch flag, a dev/serve/start/preview
- * script or subcommand, a backgrounded `&`). This is approximate, so nothing is pre-checked.
+ * script or subcommand, a dev server, a backgrounded `&`). This is approximate, so nothing is
+ * pre-checked.
  */
-function suggestible(t: TerminalSpec): boolean {
-  const cached = readings.get(t)
-  if (cached !== undefined) return cached
-  let result = false
-  if (t.kind === 'task' && !t.action && t.command.trim()) {
-    // A lone `&` (not `&&`, `&>` or `>&`) runs a job in the background.
-    const background = /(^|[^&>])&(?![&>])/.test(t.command)
-    const parts = t.command.split(/&&|\|\||[;|\n]/).filter((part) => part.trim())
-    const reads = parts.map(readSimple)
-    if (!background && !reads.includes('serves'))
-      result = CHECK_IDS.has(t.id) || reads.includes('check')
-  }
-  readings.set(t, result)
-  return result
-}
+const suggestible = suggester(
+  (t, { background, reads }) =>
+    !background && !reads.includes('serves') && (CHECK_IDS.has(t.id) || reads.includes('check')),
+)
 
 /** Whether a component has a terminal marked as Validation. */
 export const hasValidator = (c: ComponentLike) =>

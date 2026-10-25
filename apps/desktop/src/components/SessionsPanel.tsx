@@ -130,9 +130,46 @@ function SessionList({
   return (
     <>
       {!records.length && <p>No retained sessions.</p>}
+      <div className="panel-section-head">
+        {' '}
+        <label>
+          Show{' '}
+          <select
+            aria-label={'Filter sessions'}
+            value={
+              connected
+                ? (choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS).filter
+                : 'all'
+            }
+            disabled={!connected}
+            onChange={(e) =>
+              groups.forEach((g) =>
+                choose(g.projectId, { filter: e.target.value as SessionFilter }),
+              )
+            }
+          >
+            <option value="all">All</option>
+            <option value="running">Running</option>
+            <option value="closed">Closed</option>
+          </select>
+        </label>
+        <label>
+          Sort{' '}
+          <select
+            aria-label={'Sort sessions'}
+            value={(choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS).sort}
+            onChange={(e) =>
+              groups.forEach((g) => choose(g.projectId, { sort: e.target.value as SessionSort }))
+            }
+          >
+            <option value="latest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
+      </div>
       <div className="session-list">
         {groups.map(({ projectId, projectName, records: group }) => {
-          const chosen = choices[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
+          const chosen = choices[groups[0]?.projectId] ?? DEFAULT_SESSION_LIST_OPTIONS
           // Running state is unknown while disconnected, so the filter shows everything.
           const options = connected ? chosen : { ...chosen, filter: 'all' as const }
           const visible = groupByWorktree(group, options, [
@@ -144,30 +181,6 @@ function SessionList({
               <div className="row session-group-heading">
                 <h3>{projectName}</h3>
                 <span className="spacer" />
-                <label>
-                  Show{' '}
-                  <select
-                    aria-label={`Filter sessions for ${projectName}`}
-                    value={options.filter}
-                    disabled={!connected}
-                    onChange={(e) => choose(projectId, { filter: e.target.value as SessionFilter })}
-                  >
-                    <option value="all">All</option>
-                    <option value="running">Running</option>
-                    <option value="closed">Closed</option>
-                  </select>
-                </label>
-                <label>
-                  Sort{' '}
-                  <select
-                    aria-label={`Sort sessions for ${projectName}`}
-                    value={options.sort}
-                    onChange={(e) => choose(projectId, { sort: e.target.value as SessionSort })}
-                  >
-                    <option value="latest">Newest first</option>
-                    <option value="oldest">Oldest first</option>
-                  </select>
-                </label>
               </div>
               {!visible.length && <p className="hint">{EMPTY[options.filter]}</p>}
               {visible.map((worktree) => (
@@ -177,23 +190,17 @@ function SessionList({
                 >
                   <div className="session-worktree-heading">
                     <div className="session-worktree-label">
-                      <span className="session-worktree-eyebrow">
-                        {worktree.task === null ? 'PROJECT FOLDER' : 'WORKTREE'}
-                      </span>
                       <div className="row">
-                        <h4>{worktree.title}</h4>
+                        <h4 title={worktree.path}>{worktree.title}</h4>
                         {worktree.branch && (
                           <span className="session-worktree-branch mono">{worktree.branch}</span>
                         )}
-                        <span className="session-worktree-count">
+                        <span className="session-worktree-count count">
                           {worktree.rows.length} {COUNTED[options.filter]}
                           {worktree.rows.length === 1 ? 'session' : 'sessions'}
                         </span>
                       </div>
                     </div>
-                    {worktree.path && (
-                      <small className="session-worktree-path mono">{worktree.path}</small>
-                    )}
                   </div>
                   <div className="session-worktree-rows">
                     {worktree.rows.map(({ record: r, time }) => {
@@ -224,24 +231,25 @@ function SessionList({
                       }
                       // Two inline actions at most; a finished review without Resume shows its way
                       // back inline, since that is the row's main action.
-                      const reviewInline = review && !live && !r.metadata.adapter
                       return (
-                        <div className="session-row" key={r.id}>
+                        <div className="session-row panel-list-row" key={r.id} title={r.spec.cwd}>
                           <div>
                             <SessionTitle metadata={r.metadata} />
-                            <small className="mono">{r.spec.cwd}</small>
                           </div>
-                          <span>
-                            {!connected
-                              ? 'Disconnected'
-                              : starting
-                                ? 'Starting'
-                                : live
-                                  ? 'Running'
-                                  : r.interrupted
-                                    ? 'Interrupted'
-                                    : 'Ended'}
-                          </span>
+                          <span
+                            className={`status-dot health-${live ? 'running' : 'idle'}`}
+                            title={
+                              !connected
+                                ? 'Disconnected'
+                                : starting
+                                  ? 'Starting'
+                                  : live
+                                    ? 'Running'
+                                    : r.interrupted
+                                      ? 'Interrupted'
+                                      : 'Ended'
+                            }
+                          />
                           <small>{time !== undefined && <Ago ms={time} />}</small>
                           <button
                             disabled={unavailable || starting}
@@ -254,70 +262,62 @@ function SessionList({
                           >
                             {live ? 'Reconnect' : 'View output'}
                           </button>
-                          {live ? (
-                            <button
-                              title="Stop this session; cancel startup if its plan includes this session"
-                              disabled={unavailable}
-                              onClick={() => void perform(() => terminalStop(r.id))}
-                            >
-                              Stop
-                            </button>
-                          ) : r.metadata.adapter ? (
-                            <button
-                              disabled={unavailable}
-                              onClick={() => void perform(() => sessionResume(r.id))}
-                            >
-                              Resume
-                            </button>
-                          ) : (
-                            reviewInline && (
-                              <button disabled={reopen.disabled} onClick={reopen.onClick}>
+                          <Menu
+                            label="⋯"
+                            title="More session actions"
+                            triggerLabel={`More actions for ${r.metadata.name}`}
+                            caret={false}
+                            portal
+                            align="right"
+                            className="session-menu"
+                            listClassName="session-menu-list"
+                          >
+                            {live && (
+                              <MenuItem
+                                disabled={unavailable}
+                                onClick={() => void perform(() => terminalStop(r.id))}
+                              >
+                                Stop
+                              </MenuItem>
+                            )}
+                            {!live && r.metadata.adapter && (
+                              <MenuItem
+                                disabled={unavailable}
+                                onClick={() => void perform(() => sessionResume(r.id))}
+                              >
+                                Resume
+                              </MenuItem>
+                            )}
+                            {!live && (
+                              <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
                                 {reopen.label}
-                              </button>
-                            )
-                          )}
-                          {(!live || r.metadata.adapter) && (
-                            <Menu
-                              label="⋯"
-                              title="More session actions"
-                              triggerLabel={`More actions for ${r.metadata.name}`}
-                              caret={false}
-                              portal
-                              align="right"
-                              className="session-menu"
-                              listClassName="session-menu-list"
-                            >
-                              {!live && !reviewInline && (
-                                <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
-                                  {reopen.label}
-                                </MenuItem>
-                              )}
-                              {r.metadata.adapter && (
+                              </MenuItem>
+                            )}
+                            {r.metadata.adapter && (
+                              <MenuItem
+                                disabled={unavailable}
+                                onClick={() =>
+                                  onConversation({
+                                    id: r.id,
+                                    value: r.metadata.conversationId ?? '',
+                                  })
+                                }
+                              >
+                                Set conversation ID…
+                              </MenuItem>
+                            )}
+                            {!live && (
+                              <>
+                                <MenuSeparator />
                                 <MenuItem
                                   disabled={unavailable}
-                                  onClick={() =>
-                                    onConversation({
-                                      id: r.id,
-                                      value: r.metadata.conversationId ?? '',
-                                    })
-                                  }
+                                  onClick={() => void perform(() => sessionForget(r.id))}
                                 >
-                                  Set conversation ID…
+                                  Forget
                                 </MenuItem>
-                              )}
-                              {!live && (
-                                <>
-                                  {!reviewInline && <MenuSeparator />}
-                                  <MenuItem
-                                    disabled={unavailable}
-                                    onClick={() => void perform(() => sessionForget(r.id))}
-                                  >
-                                    Forget
-                                  </MenuItem>
-                                </>
-                              )}
-                            </Menu>
-                          )}
+                              </>
+                            )}
+                          </Menu>
                         </div>
                       )
                     })}
@@ -335,9 +335,11 @@ function SessionList({
 /** Keep choices and preview selection while the dock is closed; mount its content in the dock. */
 export default function SessionsPanel({
   host,
+  headerHost,
   onKeyDown,
 }: {
   host: HTMLElement | null
+  headerHost: HTMLElement | null
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>
 }) {
   const open = useStore((s) => s.utilityPanel === 'sessions')
@@ -391,30 +393,31 @@ export default function SessionsPanel({
   }
   if (!open || !host) return null
   return createPortal(
-    <div className="utility-content" onKeyDown={onKeyDown}>
+    <div className="sessions-content" onKeyDown={onKeyDown}>
       <div
-        className="sessions-panel panel"
+        className="sessions-content"
         role="region"
         aria-label="Workspace sessions"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="row">
-          <h2>Workspace sessions</h2>
-          <span className="spacer" />
-          <span>{connected ? 'Connected' : 'Disconnected · reconnecting…'}</span>
-          <button
-            title="Stop work in every project, including sessions hidden by filters"
-            disabled={!connected || busy}
-            onClick={() => setConfirmStopAll(true)}
-          >
-            Stop all work
-          </button>
-          <button onClick={close}>Close</button>
-        </div>
-        <p>
-          Closing tabs, windows, or quitting Patchbay leaves work running. Stop terminates it
-          explicitly.
-        </p>
+        {headerHost &&
+          createPortal(
+            <div className="row">
+              <span
+                className={`status-dot health-${connected ? 'ok' : 'fail'}`}
+                title={connected ? 'Connected' : 'Disconnected · reconnecting…'}
+              />
+              {!connected && <span>Disconnected · reconnecting…</span>}
+              <button
+                title="Closing tabs leaves work running. Stop work in every project, including sessions hidden by filters."
+                disabled={!connected || busy}
+                onClick={() => setConfirmStopAll(true)}
+              >
+                Stop all work
+              </button>
+            </div>,
+            headerHost,
+          )}
         {confirmStopAll && (
           <section role="alertdialog" aria-label="Stop all work confirmation">
             <p>

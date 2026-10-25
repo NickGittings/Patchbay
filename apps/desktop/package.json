@@ -24,6 +24,7 @@
     "smoke:merge": "node scripts/smoke-all.mjs merge",
     "smoke:git": "node scripts/smoke-all.mjs git",
     "smoke:actions": "node scripts/smoke-all.mjs actions",
+    "smoke:stack": "node scripts/smoke-all.mjs stack",
     "smoke:extensions": "node scripts/smoke-all.mjs extensions",
     "smoke:tasks": "node scripts/smoke-all.mjs tasks",
     "prepare:sessiond": "node scripts/sessiond.mjs",

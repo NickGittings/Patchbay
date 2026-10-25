@@ -92,3 +92,20 @@ export function restoredAgents(value: unknown): Partial<Record<AgentRole, string
   const agents = restoredRoles(value, (id) => (typeof id === 'string' && id ? id : undefined))
   return Object.keys(agents).length ? agents : undefined
 }
+
+/**
+ * The presets a worktree's stages launch, each once: the planner, Implement (else the planner's),
+ * every reviewer, Fix when assigned (else a preset of a reviewer's provider) and Merge.
+ */
+export function chatRolePresets(devices: DeviceManifest[], roles: AgentRoles): DeviceManifest[] {
+  const plan = roleDevice(devices, roles, 'plan')
+  return [
+    ...new Set([
+      plan,
+      roleDevice(devices, roles, 'implement', plan),
+      ...roleDevices(devices, roles, 'review'),
+      ...assigned(devices, roles, 'fix'),
+      roleDevice(devices, roles, 'merge'),
+    ]),
+  ].filter((d): d is DeviceManifest => !!d)
+}

@@ -1,3 +1,4 @@
+import Dialog from './Dialog'
 import { useEffect, useState } from 'react'
 import { isPermissionGranted } from '@tauri-apps/plugin-notification'
 import { sendTestNotification } from '../lib/notifications'
@@ -23,65 +24,46 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
     }
   }, [])
   return (
-    <div className="extension-overlay" onClick={onClose}>
-      <div
-        className="extensions-panel panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Notifications"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
-      >
-        <div className="row">
-          <h2>Notifications</h2>
-          <span className="spacer" />
-          <button onClick={onClose}>Close</button>
-        </div>
-        <p>Agent alerts from every project and worktree. These settings apply to all projects.</p>
-        <p>
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.enabled}
-              onChange={(e) => setNotifications({ ...settings, enabled: e.target.checked })}
-            />{' '}
-            Enable notifications
-          </label>
-        </p>
-        <fieldset disabled={!settings.enabled}>
-          <legend>Notify when an agent</legend>
-          {(
-            [
-              ['finished', 'Finished a turn'],
-              ['needsInput', 'Needs input'],
-              ['failed', 'Failed'],
-            ] as const
-          ).map(([key, label]) => (
-            <p key={key}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings[key]}
-                  onChange={(e) => setNotifications({ ...settings, [key]: e.target.checked })}
-                />{' '}
-                {label}
-              </label>
-            </p>
-          ))}
-        </fieldset>
-        <p className="hint">
-          Turn ends rely on Agent status integration. Agents without status hooks only notify when
-          they fail. While Auto mode drives a worktree, its agents' turn ends don't notify; Auto
-          notifies when it waits on you (under Needs input) or fails.
-        </p>
-        <p className="hint">
-          When Patchbay is focused, background sessions show a toast. Otherwise, alerts use native
-          notifications. Alerts also wait here until you return, with links to their sessions.
-        </p>
-        <p>Native notification permission: {permission}</p>
+    <Dialog title="Notifications" subtitle="Agent alerts across all projects" onClose={onClose}>
+      <p>
+        <label className="notifications-toggle">
+          <input
+            type="checkbox"
+            checked={settings.enabled}
+            onChange={(e) => setNotifications({ ...settings, enabled: e.target.checked })}
+          />{' '}
+          Enable notifications
+        </label>
+      </p>
+      <fieldset disabled={!settings.enabled}>
+        <legend title="Turn ends require Agent status integration. Auto notifies when waiting on you or failing. Background alerts use a toast while Patchbay is focused, otherwise native notifications.">
+          Notify when an agent
+        </legend>
+        {(
+          [
+            ['finished', 'Finished a turn'],
+            ['needsInput', 'Needs input'],
+            ['failed', 'Failed'],
+          ] as const
+        ).map(([key, label]) => (
+          <p key={key}>
+            <label className="notifications-toggle">
+              <input
+                type="checkbox"
+                checked={settings[key]}
+                onChange={(e) => setNotifications({ ...settings, [key]: e.target.checked })}
+              />{' '}
+              {label}
+            </label>
+          </p>
+        ))}
+      </fieldset>
+      <div className="panel-actions">
+        <span className="worktree-tag" role="status" title="Native notification permission">
+          {permission}
+        </span>
         <button
+          className="primary"
           disabled={testing}
           onClick={async () => {
             setTesting(true)
@@ -107,6 +89,6 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           Send test notification
         </button>
       </div>
-    </div>
+    </Dialog>
   )
 }
