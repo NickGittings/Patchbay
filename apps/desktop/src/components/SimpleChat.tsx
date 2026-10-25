@@ -1,4 +1,3 @@
-import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,9 +12,17 @@ import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
 import { fixReviewFindings } from '../lib/reviewHandoff'
-import { roleDevice } from '../lib/agentRoles'
+import { chatRolePresets, roleDevice } from '../lib/agentRoles'
 import { reviewState, reviewWorktreeBusy, useRunningReviewLanes } from '../lib/reviewAgents'
 import { graphActionIn } from '../lib/actions'
+import {
+  missingHooks,
+  sessionReportedHooks,
+  openIntegrations,
+  useAgentHooksInstalled,
+  usePresetProviders,
+  type HookProvider,
+} from '../lib/agentHooks'
 import FindingsPanel, { VerdictBadge, SeverityCounts } from './findings/FindingsPanel'
 import ValidationChips from './changes/ValidationChips'
 import { latestChange, latestChangeOf } from '../lib/review'
@@ -50,7 +57,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const key = simpleKey(s.project?.id, s.activeTask)
   const [pending, setPending] = useState(''),
     [failure, setFailure] = useState<{ action: string; text: string }>()
-  const [integrationsOpen, setIntegrationsOpen] = useState(false)
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
@@ -73,6 +79,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
+  const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   if (!s.project) return null
   const projectId = s.project.id,
     task = s.activeTask
@@ -100,6 +107,17 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const planner =
     model.records.filter((r) => r.metadata.componentId === PLAN_SCOPE).at(-1)?.metadata
       .terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan').id
+  // Agents that run or would: the chat's running sessions and the presets its roles launch.
+  const running = model.records.filter((r) => s.sessions[r.id]?.running)
+  const hookProviders = [...running.map((r) => r.metadata.adapter), ...roleProviders].flatMap(
+    (p) => p ?? [],
+  )
+  // Native reporting proves hooks even after Esc temporarily revokes readiness.
+  const reporting = new Set(
+    running.flatMap((r) =>
+      sessionReportedHooks(s.sessions[r.id]) ? (r.metadata.adapter ?? []) : [],
+    ),
+  )
   const run = async (
     action: 'implement' | 'fix' | 'validate',
     stage: SimpleStage,
@@ -170,13 +188,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           </button>
         ))}
       </nav>
-      {integrationsOpen && <AgentIntegrationsPanel onClose={() => setIntegrationsOpen(false)} />}
-      {!model.records.some((r) => s.sessions[r.id]?.status?.agent?.authoritative) && (
-        <p className="simple-hook-notice">
-          Live tool activity needs hooks.{' '}
-          <button onClick={() => setIntegrationsOpen(true)}>Install Agent Integrations</button>
-        </p>
-      )}
+      <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
         <ReviewAgentDialog
@@ -408,5 +420,26 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         openTerminal={openTerminal}
       />
     </div>
+  )
+}
+
+/** Activity lists and map pulses come from hooks: says so while a chat agent's provider lacks them. */
+function ActivityHooksNotice({
+  providers,
+  reporting,
+}: {
+  providers: HookProvider[]
+  reporting: ReadonlySet<HookProvider>
+}) {
+  const hooks = useAgentHooksInstalled(providers)
+  const missing = missingHooks(providers, hooks, reporting)
+  if (!missing) return null
+  return (
+    <p className="simple-hook-notice">
+      {missing.check === false
+        ? 'Live tool activity needs Agent status integration.'
+        : 'Agent status integration couldn’t be checked, so live tool activity may be missing.'}{' '}
+      <button onClick={() => openIntegrations(missing.provider)}>Set up…</button>
+    </p>
   )
 }

@@ -30,7 +30,7 @@ sequence = 0
 def report(event, **extra):
     global sequence
     sequence += 1
-    data = dict(session=os.environ['PATCHBAY_REPORT_SESSION'], generation=int(os.environ['PATCHBAY_REPORT_GENERATION']), provider='codex', sequence=sequence, atMs=int(time.time()*1000), event=event, conversation=conversation, turn=turn, prompt=None, message=None, source=None, **extra)
+    data = dict(session=os.environ['PATCHBAY_REPORT_SESSION'], generation=int(os.environ['PATCHBAY_REPORT_GENERATION']), provider=os.environ['PATCHBAY_REPORT_PROVIDER'], sequence=sequence, atMs=int(time.time()*1000), event=event, conversation=conversation, turn=turn, prompt=None, message=None, source=None, **extra)
     temp = journal / 'pending'
     temp.write_text(json.dumps(data))
     temp.replace(journal / ('%020d.json' % sequence))
@@ -55,5 +55,17 @@ for line in sys.stdin:
     pathlib.Path(__file__).with_name('received.json').write_text(json.dumps(line))
     print('simple-received:' + repr(line), flush=True)
     turn = str(uuid.uuid4())
+    if line.strip() == 'smoke-wait':
+        report('UserPromptSubmit')
+        print('simple-waiting', flush=True)
+        continue
     work()
 PYTHON
+cat > "$dir/claude" <<'SHELL'
+#!/bin/sh
+set -eu
+# A Claude agent without hooks: it never reports a ready prompt.
+printf 'unhooked-ready\n'
+sleep 120
+SHELL
+chmod +x "$dir/claude"

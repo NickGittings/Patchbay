@@ -14,6 +14,7 @@ import {
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import AutoDialog from './AutoDialog'
+import type { HookProvider } from '../../lib/agentHooks'
 import { autoDraftKey } from '../../lib/autoDrafts'
 import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
 import PanelContent from '../PanelContent'
@@ -35,7 +36,7 @@ export default function AutoPanel({
   onIntegrations,
   simple = false,
 }: {
-  onIntegrations: () => void
+  onIntegrations: (provider?: HookProvider) => void
   simple?: boolean
 }) {
   const run = useStore((s) => s.auto)

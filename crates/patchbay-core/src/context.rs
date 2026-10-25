@@ -443,13 +443,27 @@ fn codex_option_takes_value(arg: &str) -> bool {
 /// Resolve status integration using the same command parser as agent briefings.
 #[must_use]
 pub fn agent_provider(terminal: &TerminalSpec) -> Option<crate::adapters::Adapter> {
-    terminal.adapter.or_else(|| {
-        let tokens = command_tokens(&terminal.command, Shell::current())?;
-        match agent_named(&tokens[program_index(&tokens)?])? {
-            Agent::Claude => Some(crate::adapters::Adapter::Claude),
-            Agent::Codex => Some(crate::adapters::Adapter::Codex),
-        }
-    })
+    terminal
+        .adapter
+        .or_else(|| command_provider(&terminal.command))
+}
+
+/// The provider `command` runs, recognised as briefings recognise it (quoted paths, Windows
+/// extensions, leading `env`/assignments; never a compound command). Session records take
+/// their adapter, and with it `PATCHBAY_REPORT_PROVIDER`, from this, so a preset Chat or Auto
+/// counts as Claude or Codex also reports as one.
+#[must_use]
+pub fn command_provider(command: &str) -> Option<crate::adapters::Adapter> {
+    let tokens = command_tokens(command, Shell::current())?;
+    let program = &tokens[program_index(&tokens)?];
+    // Retain provider-named wrapper scripts as well as native executables. Briefing
+    // injection still uses agent_named's narrower invocation rules.
+    let name = program.rsplit(['/', '\\']).next()?;
+    let stem = Path::new(name).file_stem()?.to_str()?;
+    match agent_named(stem)? {
+        Agent::Claude => Some(crate::adapters::Adapter::Claude),
+        Agent::Codex => Some(crate::adapters::Adapter::Codex),
+    }
 }
 
 /// `args` are the arguments after the `codex` program.
@@ -1877,6 +1891,23 @@ pub fn extra_session_spec(
 pub(crate) fn launch_words(command: &str) -> Option<Vec<String>> {
     command_tokens(command, Shell::current())
 }
+/// The actual executable's token index and original byte range, after env/assignments.
+pub(crate) fn launch_program(command: &str) -> Option<(usize, std::ops::Range<usize>)> {
+    let index = program_index(&launch_words(command)?)?;
+    let raw = match Shell::current() {
+        Shell::Unix => sh_tokens(command, true)?,
+        Shell::Windows => cmd_tokens(command, true)?,
+    };
+    let mut end = 0;
+    for (i, word) in raw.iter().enumerate().take(index + 1) {
+        let start = end + command[end..].find(word)?;
+        end = start + word.len();
+        if i == index {
+            return Some((index, start..end));
+        }
+    }
+    None
+}
 pub(crate) fn quote_argument(value: &str) -> String {
     Shell::current().quote(value)
 }
@@ -2946,12 +2977,16 @@ mod tests {
             ),
             ("env FOO=1 codex", Some(crate::adapters::Adapter::Codex)),
             ("FOO=1 claude", Some(crate::adapters::Adapter::Claude)),
+            ("~/bin/claude.sh", Some(crate::adapters::Adapter::Claude)),
+            ("codex.ps1", Some(crate::adapters::Adapter::Codex)),
+            ("env FOO=1 codex.ps1", Some(crate::adapters::Adapter::Codex)),
             ("echo codex", None),
             ("codex && echo done", None),
         ] {
             terminal.command = command.into();
             terminal.adapter = None;
             assert_eq!(agent_provider(&terminal), expected, "{command}");
+            assert_eq!(command_provider(command), expected, "{command}");
         }
         terminal.adapter = Some(crate::adapters::Adapter::Claude);
         assert_eq!(

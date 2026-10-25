@@ -846,7 +846,7 @@ impl PtyManager {
             .get(crate::agent_hooks::PROVIDER_ENV)
             .cloned()
             .or_else(|| {
-                crate::adapters::Adapter::default_for(&spec.command).map(|a| match a {
+                crate::context::command_provider(&spec.command).map(|a| match a {
                     crate::adapters::Adapter::Claude => "claude".into(),
                     crate::adapters::Adapter::Codex => "codex".into(),
                 })

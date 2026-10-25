@@ -6,6 +6,7 @@ import type { SessionRecord } from '../types'
 import { selectRecipient, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
+  composerStatus,
   deliverPrompt,
   editedMentions,
   promptReady,
@@ -17,6 +18,7 @@ import { roleDevice } from '../lib/agentRoles'
 import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
 import { hasVisibleTerminal } from '../lib/terminals'
+import { openIntegrations, useAgentHooksInstalled, usePresetProviders } from '../lib/agentHooks'
 
 const submitted = new Map<string, { generation: number; atMs: number }>()
 export default function SimpleComposer({
@@ -64,8 +66,25 @@ export default function SimpleComposer({
   const lastSubmit = last?.generation === state?.generation ? last?.atMs : undefined
   // Readiness changes only through status events, so no clock subscription is needed.
   const ready = promptReady(state, lastSubmit)
-  const hooked = !!state?.status?.agent?.authoritative
   const running = !!state?.running
+  // The recipient's provider, else that of the planner Send would start; `null` for neither
+  // Claude nor Codex, which can never report a ready prompt.
+  const starts =
+    !recipient && stage === 'plan' ? roleDevice(s.devices, s.agentRoles, 'plan') : undefined
+  const [startProvider] = usePresetProviders([starts])
+  const provider = recipient ? (recipient.metadata.adapter ?? null) : startProvider
+  const hooks = useAgentHooksInstalled(provider ? [provider] : [])
+  // Installed hooks, not `authoritative`, which lapses on Esc and is unset until the first hook.
+  const installed = provider ? hooks[provider] : undefined
+  const status = composerStatus({
+    pending,
+    connected: s.serviceConnected,
+    provider,
+    installed,
+    session: state,
+    ready,
+  })
+  const drafted = !pending && !!ui.draft.trim()
   const query = ui.draft.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/)
   const candidates = query
     ? s.nodes
@@ -73,7 +92,7 @@ export default function SimpleComposer({
         .slice(0, 8)
     : []
   const send = async () => {
-    if (pending || !s.project) return
+    if (!status.sendable || !s.project) return
     const projectId = s.project.id,
       task = s.activeTask,
       draft = ui.draft,
@@ -166,6 +185,7 @@ export default function SimpleComposer({
         await waitForPrompt(captured, {
           current: stillCurrent,
           session: () => useStore.getState().sessions[sid],
+          provider: target!.metadata.adapter ?? null,
         })
       const stamp = submitted.get(sid)
       const previous = stamp?.generation === generation ? stamp.atMs : undefined
@@ -254,7 +274,7 @@ export default function SimpleComposer({
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault()
-            if (!running || ready) void send()
+            if (status.sendable) void send()
           }
         }}
       />
@@ -289,28 +309,30 @@ export default function SimpleComposer({
         </div>
       )}
       <div className="simple-composer-controls">
-        <span>
-          {pending
-            ? 'Waiting for ready prompt…'
-            : running
-              ? ready
-                ? 'Ready'
-                : state?.status?.agent?.state === 'needsInput'
-                  ? 'Answer in terminal'
-                  : hooked
-                    ? 'Agent is working'
-                    : 'Chat needs agent status integration'
-              : 'Send to start or resume'}
-        </span>
+        <span>{status.label}</span>
         {recipient && <button onClick={() => openTerminal(recipient)}>Open terminal</button>}
         <button
           className="primary"
-          disabled={!s.serviceConnected || pending || !ui.draft.trim() || (running && !ready)}
+          disabled={!status.sendable || !ui.draft.trim()}
           onClick={() => void send()}
         >
           Send
         </button>
       </div>
+      {drafted && provider && (status.notice === 'missing' || status.notice === 'failed') && (
+        <p className="simple-hook-notice">
+          {status.notice === 'missing'
+            ? 'Chat can message an agent only with Agent status integration.'
+            : 'Agent status integration couldn’t be checked; Chat can message an agent only once its hooks report.'}{' '}
+          <button onClick={() => openIntegrations(provider)}>Set up…</button>
+        </p>
+      )}
+      {drafted && status.notice === 'unsupported' && (
+        <p className="simple-hook-notice">
+          Chat can message only Claude and Codex agents, which report a ready prompt. Use Open
+          terminal to talk to this one.
+        </p>
+      )}
       {error && <p role="alert">{error}</p>}
     </div>
   )

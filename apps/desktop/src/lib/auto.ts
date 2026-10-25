@@ -24,7 +24,6 @@ import {
   SEVERITIES,
 } from '../types'
 import {
-  agentHooksCheck,
   agentProvider,
   gitBranches,
   gitReview,
@@ -61,6 +60,7 @@ import {
   validOverrides,
 } from './autoSettings'
 import { fnv1a } from './hash'
+import { checkHooks, hooksUsable, type HookProvider } from './agentHooks'
 import { autoRuns, autoWorkspace } from './autoState'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
@@ -516,13 +516,24 @@ export const runAgents = (run: Pick<AutoRun, 'device' | 'agents' | 'reviewers'>)
 ]
 const agentStage = (stage: AutoStage): stage is AgentRole =>
   (AGENT_ROLES as string[]).includes(stage)
+export class AutoHooksRequired extends Error {
+  readonly provider: HookProvider
+  constructor(provider: HookProvider) {
+    super('Install Agent status integration before starting Auto mode')
+    this.provider = provider
+  }
+}
 export async function checkAutoHooks(deviceId: string) {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
   const provider = device ? await agentProvider(device) : null
   if (!provider) throw new Error('Choose an agent preset with Claude or Codex status integration')
-  const hooks = await agentHooksCheck(provider)
-  if (!hooks.installed || hooks.disabled || !hooks.reporterAvailable)
-    throw new Error('Install Agent status integration before starting Auto mode')
+  let usable = false
+  try {
+    usable = hooksUsable(await checkHooks(provider))
+  } catch {
+    // A saved source may have moved or disappeared; offer setup for the same provider.
+  }
+  if (!usable) throw new AutoHooksRequired(provider)
 }
 /** One owner for each worktree's in-flight work and polling state. */
 interface AutoController {

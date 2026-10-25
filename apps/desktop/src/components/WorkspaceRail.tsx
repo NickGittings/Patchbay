@@ -29,6 +29,7 @@ import MapSaveStatus from './MapSaveStatus'
 import AttentionMenu from './status/AttentionMenu'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
+import { integrationsProvider, integrationsSetting } from '../lib/agentHooks'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import Menu, { MenuItem } from './Menu'
@@ -267,7 +268,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                   <AutoPanel
                     key={JSON.stringify([project.id, activeTask])}
                     simple={simple}
-                    onIntegrations={() => useRail.setState({ settings: 'integrations' })}
+                    onIntegrations={(provider) =>
+                      useRail.setState({ settings: integrationsSetting(provider) })
+                    }
                   />
                 )}
                 {panel === 'activity' && project && (
@@ -310,8 +313,12 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         </>
       )}
       <SessionsPanel host={sessionsHost} onKeyDown={closeOnEscape} />
-      {settings === 'integrations' && (
-        <AgentIntegrationsPanel onClose={() => useRail.setState({ settings: null })} />
+      {integrationsProvider(settings) !== undefined && (
+        <AgentIntegrationsPanel
+          key={settings}
+          initialProvider={integrationsProvider(settings) ?? undefined}
+          onClose={() => useRail.setState({ settings: null })}
+        />
       )}
       {settings === 'roles' && project && (
         <AgentRolesPanel onClose={() => useRail.setState({ settings: null })} />

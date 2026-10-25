@@ -371,6 +371,7 @@ fn provider_name(provider: Adapter) -> &'static str {
 pub struct Integration {
     pub provider: Adapter,
     pub source: String,
+    pub default_source: Option<String>,
     pub reporter: String,
     pub installed: bool,
     pub disabled: bool,
@@ -663,6 +664,7 @@ pub fn inspect(provider: Adapter, source_override: Option<&Path>) -> Result<Inte
     Ok(Integration {
         provider,
         source: path.display().to_string(),
+        default_source: user_source(provider).ok().map(|p| p.display().to_string()),
         reporter: stable_reporter()?.display().to_string(),
         installed,
         disabled,

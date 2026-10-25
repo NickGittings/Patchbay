@@ -851,6 +851,7 @@ export interface RuntimeTerminal {
 
 /** Machine-local status-hook setup; installed does not mean provider trust or live reporting. */
 export interface AgentIntegration {
+  defaultSource: string | null
   provider: 'claude' | 'codex'
   source: string
   reporter: string

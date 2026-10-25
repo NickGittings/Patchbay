@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { agentHooksCheck, agentHooksConfigure } from '../lib/ipc'
+import { hookSource, rememberAgentHooks, setHookSource, type HookProvider } from '../lib/agentHooks'
 import type { AgentIntegration } from '../types'
 
-export default function AgentIntegrationsPanel({ onClose }: { onClose: () => void }) {
-  const [provider, setProvider] = useState<'claude' | 'codex'>('claude')
+export default function AgentIntegrationsPanel({
+  initialProvider,
+  onClose,
+}: {
+  initialProvider?: HookProvider
+  onClose: () => void
+}) {
+  const [provider, setProvider] = useState<HookProvider>(initialProvider ?? 'claude')
   const [source, setSource] = useState('')
   const [result, setResult] = useState<AgentIntegration>()
   const [error, setError] = useState('')
@@ -12,17 +19,24 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
   useEffect(() => {
     const token = ++request.current
     let canceled = false
-    void agentHooksCheck(provider)
+    const current = () => !canceled && token === request.current
+    const chosen = hookSource(provider)
+    const check = agentHooksCheck(provider, chosen)
+    void check
       .then((value) => {
-        if (canceled || token !== request.current) return
+        if (!current()) return
         setResult(value)
         setSource(value.source)
+        rememberAgentHooks(provider, chosen, value)
       })
       .catch((e) => {
-        if (!canceled && token === request.current) setError(String(e))
+        if (!current()) return
+        setError(String(e))
+        // A remembered source stays in the field even while it can't be read.
+        setSource(chosen ?? '')
       })
       .finally(() => {
-        if (!canceled && token === request.current) setBusy(false)
+        if (current()) setBusy(false)
       })
     return () => {
       canceled = true
@@ -33,12 +47,23 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
     setBusy(true)
     setError('')
     try {
-      if (install !== undefined) await agentHooksConfigure(provider, install, source || undefined)
-      const value = await agentHooksCheck(provider, source || undefined)
+      const value =
+        install === undefined
+          ? await agentHooksCheck(provider, source || undefined)
+          : await agentHooksConfigure(provider, install, source || undefined)
       if (token === request.current) {
         setResult(value)
         setSource(value.source)
       }
+      // The response carries the default path, even when inspecting a custom source.
+      if (value.defaultSource !== null)
+        setHookSource(
+          provider,
+          value.source !== value.defaultSource ? value.source : undefined,
+          value,
+        )
+      else if (token === request.current)
+        setError('The default hook source couldn’t be read, so Chat and Auto keep their source.')
     } catch (e) {
       if (token === request.current) setError(String(e))
     } finally {
@@ -70,7 +95,7 @@ export default function AgentIntegrationsPanel({ onClose }: { onClose: () => voi
             value={provider}
             disabled={busy}
             onChange={(e) => {
-              setProvider(e.target.value as 'claude' | 'codex')
+              setProvider(e.target.value as HookProvider)
               setResult(undefined)
               setSource('')
               setError('')

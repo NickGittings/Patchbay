@@ -1,5 +1,6 @@
 import type { SessionState } from '../types'
 import type { Mention } from './simpleUi'
+import { sessionReportedHooks, type HooksCheck } from './agentHooks'
 
 /** Only tokens selected through autocomplete are removed. Literal @text stays byte-for-byte. */
 export function transmittedText(draft: string, mentions: readonly Mention[]) {
@@ -45,6 +46,70 @@ export function promptReady(session: SessionState | undefined, submittedMs?: num
     ['idle', 'review'].includes(agent.state) &&
     (submittedMs === undefined || agent.sinceMs > submittedMs)
   )
+}
+/** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
+export type HooksNotice = 'missing' | 'failed' | 'unsupported'
+/**
+ * The composer's status line and whether Send (and Cmd+Enter) may send a nonempty draft; the
+ * label always names why it can't. A hook-confirmed ready prompt is sendable whatever the
+ * installed-hooks check says, since a session's login shell may point the provider at another
+ * configuration; that check refuses only starting or resuming an agent, which could never report
+ * a ready prompt without hooks.
+ */
+export function composerStatus({
+  pending,
+  connected,
+  provider,
+  installed,
+  session,
+  ready,
+}: {
+  pending: boolean
+  connected: boolean
+  /** The agent's provider; `null` for neither Claude nor Codex, `undefined` while unknown. */
+  provider: 'claude' | 'codex' | null | undefined
+  installed: HooksCheck | undefined
+  session: SessionState | undefined
+  /** `promptReady` for the session. */
+  ready: boolean
+}): { label: string; sendable: boolean; notice?: HooksNotice } {
+  if (pending) return { label: 'Waiting for ready prompt…', sendable: false }
+  if (!connected) return { label: 'Session service disconnected', sendable: false }
+  const running = !!session?.running
+  if (running && ready) return { label: 'Ready', sendable: true }
+  if (provider === null)
+    return { label: 'Chat can’t message this agent', sendable: false, notice: 'unsupported' }
+  const agent = session?.status?.agent
+  const reporting = sessionReportedHooks(session) || (running && !!agent?.authoritative)
+  const notice = reporting
+    ? undefined
+    : installed === false
+      ? 'missing'
+      : installed === 'failed'
+        ? 'failed'
+        : undefined
+  const needsHooks = 'Chat needs agent status integration'
+  if (!running) {
+    if (provider === undefined || installed === undefined)
+      return { label: 'Checking agent status integration…', sendable: false }
+    if (installed !== true) return { label: needsHooks, sendable: false, notice }
+    return { label: 'Send to start or resume', sendable: true }
+  }
+  return {
+    label:
+      agent?.state === 'needsInput'
+        ? 'Answer in terminal'
+        : agent?.authoritative
+          ? 'Agent is working'
+          : !reporting && installed === false
+            ? needsHooks
+            : agent
+              ? // Esc or an answered prompt: no hook confirms the prompt until typing.
+                'Not confirmed ready: continue in its terminal'
+              : 'Waiting for the agent',
+    sendable: false,
+    notice,
+  }
 }
 export interface SendContext {
   projectId: string
@@ -110,7 +175,11 @@ export async function deliverPrompt(
 /** Startup is a bounded wait, cancelled immediately when its captured scope or process changes. */
 export async function waitForPrompt(
   context: SendContext,
-  port: Pick<SendPort, 'current' | 'session' | 'now'> & { wait?: (ms: number) => Promise<void> },
+  port: Pick<SendPort, 'current' | 'session' | 'now'> & {
+    wait?: (ms: number) => Promise<void>
+    /** The agent's provider; `null` for neither Claude nor Codex, which never report a prompt. */
+    provider?: 'claude' | 'codex' | null
+  },
 ) {
   const now = port.now ?? Date.now
   const began = now()
@@ -129,11 +198,12 @@ export async function waitForPrompt(
     if (session.status?.agent?.state === 'needsInput')
       throw new Error('The agent needs input in its terminal.')
     if (promptReady(session)) return
+    // The composer adds hook advice from installed state: `authoritative` can't tell an Esc apart.
     if (now() - began >= 30000)
       throw new Error(
-        session.status?.agent?.authoritative
-          ? 'No ready prompt after 30 seconds. Open the terminal to continue.'
-          : 'No ready prompt after 30 seconds. Chat needs Settings → Agent status integration, or open the terminal to continue.',
+        port.provider === null
+          ? 'No ready prompt after 30 seconds. Chat can message only Claude and Codex agents; open the terminal to continue.'
+          : 'No ready prompt after 30 seconds. Open the terminal to continue.',
       )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,
