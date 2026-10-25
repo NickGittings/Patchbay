@@ -92,8 +92,7 @@ function AgentLauncher({
   const presets = planTerminals(devices)
   const [picked, setPicked] = useState<string>()
   const preset = presets.find((t) => t.id === picked) ?? roleTerminal(devices, roles, 'plan')
-  if (!presets.length)
-    return <p className="hint flush">Add an agent preset to detect with an agent.</p>
+  if (!presets.length) return <p className="hint">Add an agent preset to detect with an agent.</p>
   return (
     <div className="row">
       <select
@@ -134,7 +133,7 @@ function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
   const alone = unlinked({ components: nodes, links: edges }).length
   return (
     <Shell projectId={dialog.projectId} title="Detect dependencies" close={close}>
-      <p className="hint flush">
+      <p className="hint">
         {dialog.scanned &&
           (alone === nodes.length
             ? `The project’s manifests name no dependencies between these ${nodes.length} components. `
@@ -193,7 +192,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
       // Dismissing keeps an agent's proposal for later; only Discard forgets it.
       close={() => closeDependencies(dialog.projectId)}
     >
-      <p className="hint flush">
+      <p className="hint">
         {agent
           ? 'The detection agent proposed these dependencies. '
           : 'The project’s manifests name these dependencies. '}
@@ -231,7 +230,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
                 </strong>
                 {link.label && ` (${link.label})`}
                 {!ok && ' — no longer applies to the map'}
-                {link.reason && <span className="hint flush"> — {link.reason}</span>}
+                {link.reason && <span className="hint"> — {link.reason}</span>}
               </span>
             </label>
           )
@@ -239,7 +238,7 @@ function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
       </div>
       {!agent && (
         <>
-          <p className="hint flush">
+          <p className="hint">
             Manifests only show code and folder references. An agent can also find API calls and
             other runtime dependencies.
           </p>

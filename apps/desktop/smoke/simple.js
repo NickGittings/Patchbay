@@ -138,7 +138,7 @@
     await until('Codex hooks installed', () =>
       setup.textContent.includes('Status hooks installed.'),
     )
-    click(button('Close', setup))
+    click(setup.querySelector('[aria-label="Close Agent status integration"]'))
     await until(
       'activity hooks notice cleared',
       () => !document.querySelector('.simple-hook-notice'),

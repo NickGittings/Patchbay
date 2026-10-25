@@ -100,7 +100,7 @@ export default function AgentJobDialog({
               disabled={busy}
             />
             {chosen.length > 1 && (
-              <p className="hint flush">
+              <p className="hint">
                 Each agent reviews independently; their findings are combined for the fix.
               </p>
             )}
@@ -123,7 +123,7 @@ export default function AgentJobDialog({
             </select>
           </label>
         )}
-        <p className="hint flush">{hint}</p>
+        <p className="hint">{hint}</p>
         {!device && <p role="status">Choose at least one agent.</p>}
         {running && <p role="status">{runningText}</p>}
         {!connected && <p role="status">{offlineText}</p>}

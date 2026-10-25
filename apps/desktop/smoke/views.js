@@ -115,7 +115,7 @@
     )
     choose(subagents, '0')
     await until('subagents disabled', () => state().implementSubagents === 0)
-    click([...rolesPanel.querySelectorAll('button')].find((b) => b.textContent === 'Close'))
+    click(rolesPanel.querySelector('[aria-label="Close Agent roles"]'))
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
     const visible = (selector) => {

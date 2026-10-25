@@ -54,7 +54,7 @@ export default function ReviewerPicker({
         list.querySelector<HTMLInputElement>('input:not(:disabled)') ?? undefined
       }
     >
-      {options.length ? options : <p className="hint flush">No agent presets</p>}
+      {options.length ? options : <p className="hint">No agent presets</p>}
     </Popover>
   )
 }

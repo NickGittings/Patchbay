@@ -315,7 +315,7 @@ export default function PlanView() {
                 {handoffError}
               </p>
             )}
-            <div className="hint flush">
+            <div className="hint">
               {highlighted.length
                 ? `${highlighted.length} highlighted · ${nearby.size} nearby`
                 : 'Whole project — click components to focus the plan.'}
@@ -357,7 +357,7 @@ export default function PlanView() {
                 >
                   {proposalBusy ? 'Applying…' : 'Apply selection'}
                 </button>
-                <p className="hint flush">
+                <p className="hint">
                   Saves this plan and assignments to the active worktree and selects its components.
                 </p>
               </details>
@@ -377,7 +377,7 @@ export default function PlanView() {
               onToggle={(e) => setPlanOpen(e.currentTarget.open)}
             >
               <summary>Saved plan</summary>
-              <div className="hint flush">
+              <div className="hint">
                 Belongs to the project; copied to the worktree you implement in.
               </div>
               <textarea
@@ -391,7 +391,7 @@ export default function PlanView() {
                 onChange={(e) => editPlan(e.target.value)}
               />
               <div className="row">
-                <span className="hint flush">
+                <span className="hint">
                   {planCut
                     ? 'The plan is longer than 64 KiB, so only its start is shown; edit the file itself.'
                     : overwrite
