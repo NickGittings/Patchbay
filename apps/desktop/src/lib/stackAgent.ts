@@ -117,7 +117,7 @@ const sameName = (a: string, b: string) => {
  * proposed stack, an ordinary map edit; a stack of the same name gains them, keeping its own
  * startup order, and isn't edited when no member is added. Names match ignoring case and spacing,
  * so applying a submission again changes nothing. When none of the chosen terminals applies, the
- * proposal stays and the user is told. Only for the active project, whose map the store holds.
+ * proposal stays and the user is told; when only some do, the user is told which were left out. Only for the active project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -156,6 +156,18 @@ export async function applyStackProposal(
   if (existing && added.length)
     s.updateGroup(existing.id, { componentIds: [...existing.componentIds, ...added] })
   else if (!existing && added.length) s.addGroup(pending.name, added, pending.orderedStartup)
+  // Some left out: say which, before the clear, whose failure, if any, matters more.
+  const skipped = chosen.filter((t) => !edits.some((e) => e.t === t))
+  if (skipped.length) {
+    const named = skipped.map((t) => {
+      const node = s.nodes.find((n) => n.id === t.component)
+      const terminal = node?.data.terminals.find((x) => x.id === t.terminal)
+      return `${node?.data.name ?? t.component} › ${terminal?.name ?? t.terminal ?? t.name ?? 'Dev'}`
+    })
+    s.setMessage(
+      `Applied the stack without ${named.join(', ')}: removed, renamed, or no longer a task terminal (or a Validation one).`,
+    )
+  }
   await discardStackProposal(projectId, pending.id, true)
 }
 

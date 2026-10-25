@@ -254,19 +254,19 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
 
 /**
  * Start `projectId`'s map detection agent `terminalId` (dependencies or the stack) with `preset`,
- * unless map edits wait for recovery. One already running or on its way is shown instead, and the
- * user is told when it runs another preset; an exited one restarts with `preset`. Only a session
- * that started is revealed. `label` names the job in messages, `tab` its terminal.
+ * unless map edits wait for recovery. One already running or on its way is shown instead (also
+ * while they wait), and the user is told when it runs another preset; an exited one restarts with
+ * `preset`. Only a session that started is revealed. `label` names the job in messages, `tab` its terminal.
  */
 export async function startDetectionAgent(
   projectId: string,
   preset: TerminalSpec,
   { terminalId, label, tab }: { terminalId: string; label: string; tab: string },
 ) {
-  if (!canDetect(projectId)) return
   const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
-  // A launch on its way keeps the preset and tab it started with.
+  // A launch on its way keeps the preset and tab it started with. Showing it edits no map, so it
+  // is shown also while map edits wait.
   if (s.sessions[sid]?.running || launching(sid)) {
     const running = mapPresetId(sid)
     if (running && running !== preset.id) {
@@ -279,6 +279,7 @@ export async function startDetectionAgent(
     if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
     return
   }
+  if (!canDetect(projectId)) return
   // The tab names the preset this launch runs, also when an earlier one ran another, and goes
   // back to the earlier one if the launch doesn't start.
   const previous = s.runtimeTerminals[sid]

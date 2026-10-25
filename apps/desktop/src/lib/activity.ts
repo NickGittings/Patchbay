@@ -28,8 +28,8 @@ export function hydrateActivity(
 }
 /**
  * Commands and patch bodies are never file paths. Only known single-file tool targets link (core
- * names Codex's `read_file`/`write_file` Read/Write, and `apply_patch` Edit with the one file its
- * headers name, `agent_hooks::patched_file`).
+ * names Codex's `read_file`/`write_file`/`edit_file` Read/Write/Edit, and `apply_patch` Edit with
+ * the one file its headers name, `agent_hooks::patched_file`).
  */
 export const fileActivity = (activity: Activity) =>
   activity.fileTarget === true &&

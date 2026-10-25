@@ -2023,6 +2023,18 @@ button.review-name:hover:not(:disabled) {
   max-height: 180px;
   overflow: auto;
 }
+.group-member {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.component-group .group-member .group-option {
+  margin-bottom: 0;
+}
 .component-group .row {
   flex-wrap: wrap;
 }

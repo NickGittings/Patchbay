@@ -97,21 +97,24 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
       </label>
       <div className="group-members">
         {nodes.map((node) => (
-          <label key={node.id} className="group-option">
-            <input
-              type="checkbox"
-              checked={group.componentIds.includes(node.id)}
-              onChange={(e) =>
-                updateGroup(group.id, {
-                  componentIds: e.target.checked
-                    ? [...group.componentIds, node.id]
-                    : group.componentIds.filter((id) => id !== node.id),
-                })
-              }
-            />
-            {node.data.name}
+          // The status chips sit beside the label, so clicking one doesn't toggle membership.
+          <div key={node.id} className="group-member">
+            <label className="group-option">
+              <input
+                type="checkbox"
+                checked={group.componentIds.includes(node.id)}
+                onChange={(e) =>
+                  updateGroup(group.id, {
+                    componentIds: e.target.checked
+                      ? [...group.componentIds, node.id]
+                      : group.componentIds.filter((id) => id !== node.id),
+                  })
+                }
+              />
+              {node.data.name}
+            </label>
             {group.componentIds.includes(node.id) && <DevelopmentStatus node={node} />}
-          </label>
+          </div>
         ))}
       </div>
       <label className="group-option">

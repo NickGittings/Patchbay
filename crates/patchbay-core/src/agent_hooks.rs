@@ -191,6 +191,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             "apply_patch" => "Edit".into(),
             "read_file" => "Read".into(),
             "write_file" => "Write".into(),
+            "edit_file" => "Edit".into(),
             _ => name,
         }),
         file_target: file_path.is_some(),
@@ -1125,6 +1126,18 @@ mod tests {
             input["tool_name"] = json!("Edit");
             input["tool_input"] = json!({"patch":"*** Update File: src/a.rs"});
             assert!(!normalize(provider, &input).unwrap().file_target);
+            for (codex, tool) in [
+                ("read_file", "Read"),
+                ("write_file", "Write"),
+                ("edit_file", "Edit"),
+            ] {
+                input["tool_name"] = json!(codex);
+                input["tool_input"] = json!({"path":"src/c.rs"});
+                let event = normalize(provider, &input).unwrap();
+                assert_eq!(event.tool.as_deref(), Some(tool), "{codex}");
+                assert_eq!(event.target.as_deref(), Some("src/c.rs"));
+                assert!(event.file_target);
+            }
             input["tool_name"] = json!("apply_patch");
             input["tool_name"] = json!("未知".repeat(120));
             assert_eq!(
