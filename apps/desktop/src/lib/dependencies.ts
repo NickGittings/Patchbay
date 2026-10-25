@@ -242,9 +242,9 @@ export function dismissDependencies(projectId: string) {
 
 /** Start the dependency detection agent with `preset` through `startDetectionAgent`. */
 export async function startDependencyAgent(projectId: string, preset: TerminalSpec) {
-  if (!canDetect(projectId)) return
-  // Starting a new detection run must not surface an older waiting submission.
-  closeDialog(projectId)
+  // Starting a new detection run must not surface an older waiting submission; a dialog blocked by
+  // recovery stays, while a running agent is still shown.
+  if (canDetect(projectId)) closeDialog(projectId)
   await startDetectionAgent(projectId, preset, {
     terminalId: MAP_AGENT_TERMINAL,
     label: 'Dependency detection',

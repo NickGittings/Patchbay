@@ -29,15 +29,17 @@ export function hydrateActivity(
 /**
  * Commands and patch bodies are never file paths. Only known single-file tool targets link (core
  * names Codex's `read_file`/`write_file`/`edit_file` Read/Write/Edit, and `apply_patch` Edit with
- * the one file its headers name, `agent_hooks::patched_file`).
+ * the one file its headers name, `agent_hooks::patched_file`). The raw Codex names stay accepted:
+ * an installed hook reporter is only replaced on reinstall, so older ones still send them.
  */
+const WRITES = ['Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file']
 export const fileActivity = (activity: Activity) =>
   activity.fileTarget === true &&
-  ['Read', 'Edit', 'Write', 'MultiEdit'].includes(activity.tool) &&
+  ['Read', 'read_file', ...WRITES].includes(activity.tool) &&
   !!activity.target
 /** File activity that changes the file, which alone marks the map and file tree: reading a file isn't working on it. */
 export const writeActivity = (activity: Activity) =>
-  fileActivity(activity) && ['Edit', 'Write', 'MultiEdit'].includes(activity.tool)
+  fileActivity(activity) && WRITES.includes(activity.tool)
 const absolute = (path: string) => path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
 export function normalizedPath(path: string) {
   const parts: string[] = []
@@ -101,6 +103,9 @@ export function activityFile(
   const file = normalizedPath(
     absolute(activity.target) ? activity.target : `${cwd}/${activity.target}`,
   )
+  // Patchbay's plans and findings, and Git's own files, under a `.git` folder aren't work on the
+  // component that contains it.
+  if (file.split('/').includes('.git')) return undefined
   const owner = roots.components.find((c) => inside(file, c.root))
   if (owner) return { componentId: owner.id, path: relativeTo(file, roots.worktree) }
   if (inside(file, roots.worktree))

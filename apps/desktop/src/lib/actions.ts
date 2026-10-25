@@ -73,7 +73,7 @@ export async function stopGroup(groupId: string, everywhere = false) {
   }
   try {
     for (const task of targets) await graphGroupStop(groupId, task ?? undefined, project.id)
-    say('Environment stopped')
+    say('Stack stopped')
     return true
   } catch (e) {
     say(String(e))

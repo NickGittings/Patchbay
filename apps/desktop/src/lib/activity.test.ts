@@ -216,3 +216,28 @@ test('only writes mark components: reading a file is not working on it', () => {
   expect(writeActivity(activity(1, 'src/a.ts', 'MultiEdit'))).toBe(true)
   expect(fileActivity(activity(1, 'src/a.ts', 'Read'))).toBe(true)
 })
+
+test('older hook reporters’ raw Codex tool names still count', () => {
+  expect(writeActivity(activity(1, 'src/a.ts', 'write_file'))).toBe(true)
+  expect(writeActivity(activity(1, 'src/a.ts', 'edit_file'))).toBe(true)
+  expect(writeActivity(activity(1, 'src/a.ts', 'read_file'))).toBe(false)
+  expect(fileActivity(activity(1, 'src/a.ts', 'read_file'))).toBe(true)
+})
+
+test('files under a .git folder are no component’s work', () => {
+  for (const target of ['.git/patchbay/plans/main.md', '/task/.git/patchbay/reviews/x~a.md'])
+    expect(activityFile(activity(1, target), record(), components, '/task'), target).toBeUndefined()
+  const sessions = {
+    s: {
+      generation: 1,
+      running: true,
+      activity: [activity(1, '.git/patchbay/plans/main.md'), activity(2, 'src/.git/config')],
+    },
+  }
+  expect(componentActivity([record()], sessions, 'p', 't', '/task', components, 1000).size).toBe(0)
+  // A name merely containing `.git` is an ordinary file.
+  expect(activityFile(activity(1, '.github/ci.yml'), record(), components, '/task')).toEqual({
+    componentId: 'root',
+    path: '.github/ci.yml',
+  })
+})

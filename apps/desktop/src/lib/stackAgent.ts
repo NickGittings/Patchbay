@@ -84,24 +84,27 @@ export function startStackAgent(projectId: string, preset: TerminalSpec) {
 
 /**
  * Forget the reviewed submission, unless a newer one replaced it, then show any newer one. One
- * already `wasApplied` stays hidden even when it can't be forgotten, so it isn't applied twice.
+ * already `wasApplied` is hidden at once and stays so even when it can't be forgotten, and the
+ * review stays busy until the read after the clear, so it isn't applied twice.
  */
 export async function discardStackProposal(projectId: string, id: string, wasApplied = false) {
   cleared.set(projectId, id)
   setBusy(projectId, true)
+  if (wasApplied && useStackProposals.getState().pending[projectId]?.id === id)
+    setPending(projectId, null)
   try {
-    await stackProposalClear(projectId, id)
-  } catch (e) {
-    if (wasApplied)
-      useStore.getState().setMessage(`Applied the stack, but couldn’t forget the proposal: ${e}`)
-    else {
-      cleared.delete(projectId)
-      useStore.getState().setMessage(String(e))
-    }
+    await stackProposalClear(projectId, id).catch((e: unknown) => {
+      if (wasApplied)
+        useStore.getState().setMessage(`Applied the stack, but couldn’t forget the proposal: ${e}`)
+      else {
+        cleared.delete(projectId)
+        useStore.getState().setMessage(String(e))
+      }
+    })
+    await refreshStackProposal(projectId)
   } finally {
     setBusy(projectId, false)
   }
-  await refreshStackProposal(projectId)
 }
 
 /** Names compared ignoring case and spacing, so `Local  stack` is `local stack`. */
@@ -117,7 +120,8 @@ const sameName = (a: string, b: string) => {
  * proposed stack, an ordinary map edit; a stack of the same name gains them, keeping its own
  * startup order, and isn't edited when no member is added. Names match ignoring case and spacing,
  * so applying a submission again changes nothing. When none of the chosen terminals applies, the
- * proposal stays and the user is told; when only some do, the user is told which were left out. Only for the active project, whose map the store holds.
+ * proposal stays and the user is told; when only some do, the user is told which were left out.
+ * Only for the active project, whose map the store holds.
  */
 export async function applyStackProposal(
   pending: PendingStack,

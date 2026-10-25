@@ -269,7 +269,7 @@ function ComponentInspector({ node }: { node: FlowNode }) {
                   }
                 >
                   <option value="">Manual only</option>
-                  <option value="development">Development environment</option>
+                  <option value="development">Development (starts with its stack)</option>
                   <option value="validation">Validation</option>
                 </select>
               </label>

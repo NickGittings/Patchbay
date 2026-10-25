@@ -69,7 +69,14 @@ export function useMapActivityFeedback() {
       clearTimeout(timer)
       timer = undefined
       const s = useStore.getState()
-      if (!s.project) return
+      if (!s.project) {
+        // No project, no chips: the last one's mustn't linger.
+        roots = undefined
+        const previous = useMapActivity.getState()
+        if (previous.active.length || Object.keys(previous.roles).length)
+          useMapActivity.setState({ active: [], roles: {} })
+        return
+      }
       const worktree = worktreeOf(s, s.project.root)
       roots = rootsFor(s.nodes, worktree)
       const now = Date.now()
