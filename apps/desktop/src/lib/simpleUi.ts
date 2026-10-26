@@ -20,34 +20,35 @@ export interface SimpleUi {
   /** The chat's stage tab: which sections the thread shows. */
   stageFilter: SimpleStage | 'all'
   /**
-   * Stages the user opened (true) or collapsed (false) under All, unlike their default: only the
-   * thread's current stage and stages in use are open. Kept across stage changes.
+   * Saved stage choices under All. Only the current stage opens by default; an open current
+   * stage is saved when the thread moves on, so its content stays in place.
    */
   stages: StageOverrides
+  currentStage?: SimpleStage
 }
 export type StageOverrides = Partial<Record<SimpleStage, boolean>>
-/** User choices win; otherwise keep the current stage and any stage in use open. */
-export const stageOpen = (
-  overrides: StageOverrides,
-  stage: SimpleStage,
-  current: SimpleStage,
-  inUse = false,
-) => overrides[stage] ?? (stage === current || inUse)
-/**
- * The overrides after toggling a stage as shown. Choosing its default again forgets the choice,
- * so the stage follows the current stage again.
- */
+/** User choices win; otherwise only the current stage opens. */
+export const stageOpen = (overrides: StageOverrides, stage: SimpleStage, current: SimpleStage) =>
+  overrides[stage] ?? stage === current
+
+/** Every toggle saves the user's choice, including reopening the current stage. */
 export function toggledStage(
   overrides: StageOverrides,
   stage: SimpleStage,
   current: SimpleStage,
-  inUse = false,
 ): StageOverrides {
-  const open = !stageOpen(overrides, stage, current, inUse)
-  const next = { ...overrides }
-  if (open === (stage === current || inUse)) delete next[stage]
-  else next[stage] = open
-  return next
+  return { ...overrides, [stage]: !stageOpen(overrides, stage, current) }
+}
+
+/** Preserve the previous current stage if it was open when the thread moved on. */
+export function stagesAfterAdvance(
+  overrides: StageOverrides,
+  previous: SimpleStage | undefined,
+  current: SimpleStage,
+): StageOverrides {
+  return previous && previous !== current && stageOpen(overrides, previous, previous)
+    ? { ...overrides, [previous]: true }
+    : overrides
 }
 export const emptySimpleUi = (): SimpleUi => ({
   draft: '',
@@ -63,20 +64,44 @@ export const useSimpleUi = create<{
   worktrees: Record<string, SimpleUi>
   patch: (key: string, patch: Partial<SimpleUi>) => void
   /** Toggles a stage against the latest overrides, so quick clicks never undo each other. */
-  toggleStage: (key: string, stage: SimpleStage, current: SimpleStage, inUse?: boolean) => void
+  toggleStage: (key: string, stage: SimpleStage, current: SimpleStage) => void
+  syncStage: (key: string, current: SimpleStage) => void
 }>((set) => ({
   worktrees: {},
   patch: (key, patch) =>
     set((s) => ({
       worktrees: { ...s.worktrees, [key]: { ...emptySimpleUi(), ...s.worktrees[key], ...patch } },
     })),
-  toggleStage: (key, stage, current, inUse) =>
+  toggleStage: (key, stage, current) =>
     set((s) => {
       const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
       return {
         worktrees: {
           ...s.worktrees,
-          [key]: { ...ui, stages: toggledStage(ui.stages, stage, current, inUse) },
+          [key]: {
+            ...ui,
+            currentStage: current,
+            stages: toggledStage(
+              stagesAfterAdvance(ui.stages, ui.currentStage, current),
+              stage,
+              current,
+            ),
+          },
+        },
+      }
+    }),
+  syncStage: (key, current) =>
+    set((s) => {
+      const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
+      if (ui.currentStage === current) return s
+      return {
+        worktrees: {
+          ...s.worktrees,
+          [key]: {
+            ...ui,
+            currentStage: current,
+            stages: stagesAfterAdvance(ui.stages, ui.currentStage, current),
+          },
         },
       }
     }),

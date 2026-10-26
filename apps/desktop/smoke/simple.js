@@ -254,7 +254,7 @@
         !section.querySelector(':scope > div').hidden
       )
     })
-    // The user's choices outlast filters; toggling back to the defaults forgets them.
+    // The user's choices outlast filters, including explicit choices matching the defaults.
     click(stageTab('All'))
     await expectOpenStages(['Review'])
     click(stageToggle('Review'))
@@ -408,9 +408,10 @@
       input(document.querySelector('[aria-label="Message agent"]'), '')
     }
     await until('saved plan card', () => button('Implement') && !button('Implement').disabled)
+    click(stageToggle('Build'))
     click(stageToggle('Review'))
     click(stageToggle('Merge'))
-    await expectOpenStages(['Plan', 'Review', 'Merge'])
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
     const focusedPlanControl = stageContent('Plan').querySelector('.simple-agent header button')
     focusedPlanControl.focus()
     await until('Plan control focused', () => document.activeElement === focusedPlanControl)
@@ -419,11 +420,39 @@
       state().simple?.log.some((e) => e.action === 'implement'),
     )
     assert(state().simpleMode, 'Implement left Simple')
-    // Auto-advancing must keep focused content visible, alongside stages opened by hand.
+    // Advancing retains the open Plan independently of focus and inline card state.
     await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
     assert(document.activeElement === focusedPlanControl, 'stage advance lost keyboard focus')
-    stageTab('All').focus()
-    await expectOpenStages(['Build', 'Review', 'Merge'])
+    const buildControl = button('Review…')
+    const controlTop = buildControl.getBoundingClientRect().top
+    buildControl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    buildControl.focus()
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
+    assert(buildControl.getBoundingClientRect().top === controlTop, 'blur moved the click target')
+    buildControl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    click(buildControl)
+    const blurDialog = await until('Build click after stage advance', () =>
+      document.querySelector('form[aria-label="Start review agent"]'),
+    )
+    click(button('Cancel', blurDialog))
+    const planAgentToggle = stageContent('Plan').querySelector('.simple-agent header button')
+    click(planAgentToggle)
+    await until('Plan card opened', () => planAgentToggle.getAttribute('aria-expanded') === 'true')
+    click(planAgentToggle)
+    await until('Plan card closed', () => planAgentToggle.getAttribute('aria-expanded') === 'false')
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
+    stageToggle('Plan').focus()
+    click(stageToggle('Plan'))
+    click(stageToggle('Plan'))
+    document.querySelector('[aria-label="Message agent"]').focus()
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
+    // Removing the focused section must not leave behind a reason to keep it open.
+    planAgentToggle.focus()
+    click(stageTab('Merge'))
+    await until('focused Plan removed by filter', () => !planAgentToggle.isConnected)
+    click(stageTab('All'))
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
+    click(stageToggle('Plan'))
     click(stageToggle('Review'))
     click(stageToggle('Merge'))
     await expectOpenStages(['Build'])
@@ -452,6 +481,10 @@
       assert(document.activeElement === planToggle, 'asking stage toggle lost focus')
       const askingAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
       assert(askingAgent.getClientRects().length, 'agent awaiting input is hidden')
+      assert(
+        askingAgent.querySelector('header button').getAttribute('aria-expanded') === 'true',
+        'input did not open terminal',
+      )
       click(stageTab('Merge'))
       await until('input request survives stage filter', () => {
         const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
@@ -464,12 +497,12 @@
         'planner input resolved',
         () => state().sessions[planner]?.status?.agent?.state === 'working',
       )
-      // Its automatically opened terminal still counts as using Plan after the request clears.
-      await expectOpenStages(['Plan', 'Build'])
+      // Input expansion is temporary and does not overwrite the user's card or stage choices.
       const agentToggle = askingAgent.querySelector('header button')
-      assert(agentToggle.getAttribute('aria-expanded') === 'true', 'input did not open terminal')
-      click(agentToggle)
-      stageTab('All').focus()
+      await until(
+        'resolved input card collapses',
+        () => agentToggle.getAttribute('aria-expanded') === 'false',
+      )
       await expectOpenStages(['Build'])
       // A folded stage still says what its agents are doing.
       await until('folded Plan shows its working agent', () =>
@@ -487,10 +520,13 @@
       await smoke.terminalStop(planner)
       await until('shared planner stopped', () => !state().sessions[planner]?.running)
     }
-    // Close the retained inline terminal: stopping alone should not close what the user opened.
+    // Stopping clears automatic input expansion even when the last hook report still asks.
     const stoppedAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
     await until('stopped card no longer asks', () => !stoppedAgent.hasAttribute('data-needs-input'))
-    click(stoppedAgent.querySelector('header button'))
+    assert(
+      stoppedAgent.querySelector('header button').getAttribute('aria-expanded') === 'false',
+      'stopped input left its card expanded',
+    )
     await expectOpenStages(['Build'])
     click(stageTab('Merge'))
     await until('stopped input stays out of Merge filter', () =>
@@ -517,6 +553,7 @@
     assert(document.querySelector('.navigation-shell .react-flow') === canvas, 'diff remounted map')
     click(button('← Map'))
     await until('map restored', () => !document.querySelector('.simple-diff'))
+    click(stageToggle('Review'))
     click(button('Review…'))
     const review = await until('review dialog', () =>
       document.querySelector('form[aria-label="Start review agent"]'),
@@ -526,16 +563,18 @@
     await until('review dispatch logged', () =>
       state().simple?.log.some((e) => e.action === 'review'),
     )
-    await expectOpenStages(['Review'])
+    await expectOpenStages(['Build', 'Review'])
     await until(
       'Findings Fix enabled',
       () => button('Fix findings') && !button('Fix findings').disabled,
     )
     click(button('Fix findings'))
     await until('fix dispatch', () => state().simple?.log.some((e) => e.action === 'fix'))
-    await expectOpenStages(['Build'])
+    await expectOpenStages(['Build', 'Review'])
     const fix = state().simple.log.find((e) => e.action === 'fix').sessionId
     assert(state().simpleMode, 'Fix left Simple')
+    click(stageToggle('Review'))
+    await expectOpenStages(['Build'])
     click(stageToggle('Review'))
     await expectOpenStages(['Build', 'Review'])
     input(document.querySelector('[aria-label="Message agent"]'), 'worktree draft')

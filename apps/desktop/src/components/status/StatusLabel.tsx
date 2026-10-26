@@ -17,7 +17,10 @@ export default function StatusLabel({
   const loud = alwaysShow || status.attention > 0 || status.health === 'fail'
   if (!loud && !status.url) return null
   return (
-    <span className={`status-label health-${status.health}`} title={statusTitle(status)}>
+    <span
+      className={`status-label health-${status.health}`}
+      title={alwaysShow ? statusTitle(status) : status.detail}
+    >
       {loud && status.label}
       {status.url && (
         <button

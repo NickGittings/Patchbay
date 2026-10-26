@@ -18,9 +18,11 @@ import {
   type SessionRecord,
   type TerminalSpec,
 } from '../types'
-import { terminalStatus, type TerminalStatus } from './display'
+import { mostUrgent, terminalStatus, type TerminalStatus } from './display'
 import { planTerminals } from './plan'
 import { unseenFinished } from './taskActions'
+
+export { mostUrgent } from './display'
 
 export interface AttentionItem {
   auto?: boolean
@@ -274,13 +276,6 @@ export function componentAttention(
       terminalStatus(t.kind, sessions[sid]),
     ),
   )
-}
-
-/** The status that most wants the user, if any does. */
-export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
-  let top: TerminalStatus | null = null
-  for (const status of statuses) if (status.attention > (top?.attention ?? 0)) top = status
-  return top
 }
 
 /**

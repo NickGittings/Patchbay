@@ -7,9 +7,14 @@ import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
-import { simpleKey, stageOpen, useSimpleUi, type StageOverrides } from '../lib/simpleUi'
-import { foldedStatus, terminalStatus } from '../lib/display'
-import { useClockTick } from '../lib/clock'
+import {
+  simpleKey,
+  stageOpen,
+  stagesAfterAdvance,
+  useSimpleUi,
+  EMPTY_SIMPLE_UI,
+} from '../lib/simpleUi'
+import { terminalStatus } from '../lib/display'
 import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -32,15 +37,12 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
-import StatusLabel from './status/StatusLabel'
+import SimpleStatus from './SimpleStatus'
 import './simple.css'
 
 const pendingActions = new Set<string>()
-const NO_OVERRIDES: StageOverrides = {}
-const EMPTY_EXPANDED: string[] = []
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
-  useClockTick()
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -67,9 +69,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const stageContentId = useId()
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
-  const stageOverrides = useSimpleUi((u) => u.worktrees[key]?.stages ?? NO_OVERRIDES)
-  const expandedAgents = useSimpleUi((u) => u.worktrees[key]?.expanded ?? EMPTY_EXPANDED)
-  const [focusedStage, setFocusedStage] = useState<SimpleStage>()
+  const stageUi = useSimpleUi(
+    useShallow((u) => ({
+      stages: u.worktrees[key]?.stages ?? EMPTY_SIMPLE_UI.stages,
+      currentStage: u.worktrees[key]?.currentStage,
+    })),
+  )
   const threadRef = useRef<HTMLDivElement>(null)
   // A new filter starts at the top, unless an agent shown is asking for input: it stays in view.
   // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
@@ -78,9 +83,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     if (shownFilter.current === filter) return
     shownFilter.current = filter
     const thread = threadRef.current
-    const asking = thread?.querySelector(
-      '.simple-stage > div:not([hidden]) .simple-agent[data-needs-input]',
-    )
+    const asking = thread?.querySelector('.simple-agent[data-needs-input]')
     if (asking) asking.scrollIntoView({ block: 'nearest' })
     else thread?.scrollTo({ top: 0 })
   }, [filter])
@@ -92,20 +95,25 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       })
   }, [s.project, s.activeTask, s.simple])
   const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
-  if (!s.project) return null
-  const projectId = s.project.id,
+  const projectId = s.project?.id ?? '',
     task = s.activeTask
   const worktree = {
     projectId,
     task,
-    path: source?.path ?? s.tasks.find((t) => t.id === task)?.worktree ?? s.project.root,
+    path: source?.path ?? s.tasks.find((t) => t.id === task)?.worktree ?? s.project?.root ?? '',
     branch: source?.branch,
   }
   const model = thread(
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
-  // Compute once and share the same status with filtering, folded summaries and agent cards.
+  // Derive retained choices before committing the DOM, so advancing never hides focused content.
+  const stageOverrides = stagesAfterAdvance(stageUi.stages, stageUi.currentStage, model.stage)
+  useEffect(() => {
+    if (projectId) useSimpleUi.getState().syncStage(key, model.stage)
+  }, [key, model.stage, projectId])
+  if (!s.project) return null
+  // Share input-request state with filtering and agent cards; status leaves refresh their ages.
   const stageSections = model.sections.map((section) => {
     const agents = section.sessions.map((record) => ({
       record,
@@ -115,7 +123,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       ...section,
       agents,
       asking: agents.some(({ status }) => status.health === 'input'),
-      folded: foldedStatus(agents.map(({ status }) => status)),
     }
   })
   // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
@@ -189,13 +196,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const errorFor = (action: string) =>
     failure?.action === action && <p role="alert">{failure.text}</p>
   return (
-    <div
-      className="simple-chat"
-      onFocusCapture={(event) => {
-        // A filter can remove the focused header without firing blur on its old section.
-        if (!threadRef.current?.contains(event.target)) setFocusedStage(undefined)
-      }}
-    >
+    <div className="simple-chat">
       <header>
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
@@ -257,12 +258,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       <div className="simple-thread" ref={threadRef}>
         {sections.map((section) => {
           const { asking } = section
-          const inUse =
-            focusedStage === section.id ||
-            section.agents.some(({ record }) => expandedAgents.includes(record.id))
           const expanded =
-            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage, inUse)
-          const folded = expanded ? undefined : section.folded
+            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage)
           const contentId = `${stageContentId}-${section.id}`
           const label = section.id[0].toUpperCase() + section.id.slice(1)
           return (
@@ -271,12 +268,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               key={section.id}
               aria-current={model.stage === section.id ? 'step' : undefined}
               data-collapsed={!expanded || undefined}
-              onFocusCapture={() => {
-                if (expanded) setFocusedStage(section.id)
-              }}
-              onBlurCapture={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) setFocusedStage(undefined)
-              }}
             >
               <h2>
                 {filter === 'all' ? (
@@ -289,7 +280,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     title={asking ? 'An agent is waiting for input' : undefined}
                     onClick={() => {
                       if (asking) return
-                      useSimpleUi.getState().toggleStage(key, section.id, model.stage, inUse)
+                      useSimpleUi.getState().toggleStage(key, section.id, model.stage)
                     }}
                   >
                     <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
@@ -302,7 +293,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     Stays open while an agent is waiting for input
                   </span>
                 )}
-                {folded && <StatusLabel status={folded} alwaysShow />}
+                {!expanded && (
+                  <SimpleStatus
+                    sessions={section.agents.map(({ record }) => s.sessions[record.id])}
+                    folded
+                  />
+                )}
               </h2>
               <div id={contentId} hidden={!expanded}>
                 {section.id === 'plan' && (

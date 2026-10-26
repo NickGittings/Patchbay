@@ -185,14 +185,19 @@ export function terminalStatus(
   }
 }
 
+/** The status that most wants the user, if any does. */
+export function mostUrgent(statuses: TerminalStatus[]): TerminalStatus | null {
+  let top: TerminalStatus | null = null
+  for (const status of statuses) if (status.attention > (top?.attention ?? 0)) top = status
+  return top
+}
+
 /**
  * What a folded group of agents shows in place of their cards: the status that most wants the
  * user, else work in progress; acknowledged failures no longer represent the group's health.
  */
 export function foldedStatus(statuses: TerminalStatus[]): TerminalStatus | undefined {
-  let top: TerminalStatus | undefined
-  for (const status of statuses) if (status.attention > (top?.attention ?? 0)) top = status
-  return top ?? statuses.find((status) => status.health === 'working')
+  return mostUrgent(statuses) ?? statuses.find((status) => status.health === 'working')
 }
 
 /** Only component/extension shells start on first use; agents require their launch controls. */
