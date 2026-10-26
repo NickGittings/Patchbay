@@ -1914,8 +1914,16 @@ async fn terminal_seen(state: State<'_, AppState>, session_id: String) -> CmdRes
 async fn terminal_snapshot(
     state: State<'_, AppState>,
     session_id: String,
+    output_limit: Option<usize>,
 ) -> CmdResult<Option<Snapshot>> {
-    service(&state, Request::Snapshot { id: session_id }).await
+    service(
+        &state,
+        Request::Snapshot {
+            id: session_id,
+            output_limit,
+        },
+    )
+    .await
 }
 /// Register this window as a viewer (and, with `claim`, the one that types and
 /// sizes the PTY). Returns no output: windows hydrate with `terminal_snapshot`.

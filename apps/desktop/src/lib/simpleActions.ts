@@ -1,5 +1,5 @@
 import { projectStateOf, useStore } from '../store'
-import type { SimpleEntry } from './simple'
+import { boundedSimpleLog, type SimpleEntry } from './simple'
 /** Completion always belongs to its originating worktree, even if the user moved on. */
 export function logSimple(
   projectId: string,
@@ -31,7 +31,7 @@ export function logSimple(
     id: entry.id ?? crypto.randomUUID(),
     atMs: entry.atMs ?? Date.now(),
   } as SimpleEntry
-  useStore
-    .getState()
-    .patchTask(projectId, task, { simple: { ...simple, log: [...simple.log, complete] } })
+  useStore.getState().patchTask(projectId, task, {
+    simple: { ...simple, log: boundedSimpleLog([...simple.log, complete]) },
+  })
 }

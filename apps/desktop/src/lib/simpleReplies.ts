@@ -22,7 +22,7 @@ export function hydrateReplies(
     .slice(-20)
 }
 
-/** The newest reply sequence persisted per session and generation, so repeats cost nothing. */
+/** Marks belong to each chat: a shared planner can be claimed after another chat saved it. */
 const persisted = new Map<string, { generation: number; sequence: number }>()
 
 export function resetPersistedReplies() {
@@ -36,10 +36,7 @@ export function persistReplies(
   incoming: readonly Reply[],
   record?: SessionRecord,
 ) {
-  const mark = persisted.get(sid)
-  const replies =
-    mark?.generation === generation ? incoming.filter((r) => r.sequence > mark.sequence) : incoming
-  if (!replies.length) return
+  if (!incoming.length) return
   const s = useStore.getState()
   const metadata = record?.metadata ?? sessionMetadata.get(sid)
   if (!metadata) return
@@ -60,6 +57,14 @@ export function persistReplies(
       (e) => e.sessionId === sid && e.generation === generation && e.kind !== 'reply',
     )
     if (metadata.componentId === PLAN_SCOPE && !ownsPlanner) continue
+    const key = JSON.stringify([metadata.projectId, task, simple.startedMs, sid])
+    const mark = persisted.get(key)
+    if ((mark?.generation ?? 0) > generation) continue
+    const replies =
+      mark?.generation === generation
+        ? incoming.filter((r) => r.sequence > mark.sequence)
+        : incoming
+    let sequence = mark?.generation === generation ? mark.sequence : 0
     for (const reply of replies) {
       if (reply.atMs < simple.startedMs) continue
       logSimple(metadata.projectId, task, {
@@ -71,14 +76,8 @@ export function persistReplies(
         text: reply.text,
         atMs: reply.atMs,
       })
+      sequence = Math.max(sequence, reply.sequence)
     }
+    if (sequence) persisted.set(key, { generation, sequence })
   }
-  if ((mark?.generation ?? 0) <= generation)
-    persisted.set(sid, {
-      generation,
-      sequence: Math.max(
-        mark?.generation === generation ? mark.sequence : 0,
-        ...replies.map((r) => r.sequence),
-      ),
-    })
 }

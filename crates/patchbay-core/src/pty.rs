@@ -902,11 +902,23 @@ impl PtyManager {
     /// Panics if an internal lock is poisoned.
     #[must_use]
     pub fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
+        self.snapshot_parts(id, limit, true)
+    }
+
+    /// Lifecycle, activity and latest reply identity, without output or reply text.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn summary(&self, id: &str) -> Option<Snapshot> {
+        self.snapshot_parts(id, 0, false)
+    }
+
+    fn snapshot_parts(&self, id: &str, limit: usize, include_replies: bool) -> Option<Snapshot> {
         let backlogs = self.backlogs.lock().unwrap();
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
         let skip = backlog.data.len().saturating_sub(limit);
-        let replies = backlog.tracker.replies();
         Some(Snapshot {
             launch_directory: backlog.launch.as_ref().map(|spec| spec.cwd.clone()),
             truncated: backlog.end > backlog.data.len() as u64,
@@ -919,8 +931,12 @@ impl PtyManager {
             exited_ms: backlog.exited_ms,
             status,
             activity: backlog.tracker.activity(),
-            last_reply: replies.last().map(|r| r.sequence),
-            replies,
+            last_reply: backlog.tracker.last_reply(),
+            replies: if include_replies {
+                backlog.tracker.replies()
+            } else {
+                Vec::new()
+            },
             notice: backlog.notice.clone(),
         })
     }
@@ -1821,6 +1837,14 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
         let snapshot = pty.snapshot("activity-final").unwrap();
         assert_eq!(snapshot.activity.len(), 1);
         assert_eq!(snapshot.replies[0].text, "Final assistant reply");
+        let summary = pty.summary("activity-final").unwrap();
+        assert!(summary.data.is_empty());
+        assert!(summary.replies.is_empty());
+        assert_eq!(summary.last_reply, snapshot.last_reply);
+        assert_eq!(summary.activity, snapshot.activity);
+        let replies_only = pty.snapshot_with("activity-final", 0).unwrap();
+        assert!(replies_only.data.is_empty());
+        assert_eq!(replies_only.replies, snapshot.replies);
         let serialized = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(serialized["activity"][0]["sequence"], 2);
         let restored: Snapshot = serde_json::from_value(serialized).unwrap();

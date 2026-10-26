@@ -274,6 +274,7 @@ fn planner_root(
         state,
         Request::Snapshot {
             id: launch.agent_session.clone(),
+            output_limit: Some(0),
         },
     )?;
     anyhow::ensure!(
@@ -360,6 +361,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 state,
                 Request::Snapshot {
                     id: session_id.clone(),
+                    output_limit: None,
                 },
             )?;
             let output = snapshot
@@ -585,7 +587,7 @@ mod tests {
                     assert!(!ids.contains(&"other".to_string()));
                     json!(["http://localhost:3000"])
                 }
-                Request::Snapshot { id } => {
+                Request::Snapshot { id, .. } => {
                     assert_eq!(id, "one");
                     Value::Null
                 }

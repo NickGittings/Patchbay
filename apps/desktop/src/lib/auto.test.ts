@@ -3653,3 +3653,28 @@ test('Auto offers integration setup for a missing saved Codex hook source', asyn
   expect(error.message).toContain('Install Agent status integration')
   expect(ipc.agentHooksCheck).toHaveBeenCalledWith('codex', '/gone/hooks.json')
 })
+
+test('plan marks remain compatible with paused runs saved before proposal timestamps', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  const proposal = { version: 1, plan: '# Same proposal', assignments: [] }
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
+  vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
+  const planning = run({ stage: 'plan', status: 'paused' })
+  const old = await autoSnapshot('p', 't', planning)
+  const { fnv1a } = await import('./hash')
+  const legacy = JSON.stringify(['', proposal])
+  expect(old.planMark).toBe(`${legacy.length}:${fnv1a(legacy).toString(16)}`)
+  // Timestamp metadata may be serialized first by a newer backend.
+  vi.mocked(ipc.proposalRead).mockResolvedValue({ savedMs: 10000, ...proposal })
+  const current = await autoSnapshot('p', 't', planning)
+  expect(current.planMark).toBe(old.planMark)
+  expect(inferStage(current, { ...planning, planMark: old.planMark }).stage).toBe('plan')
+  vi.mocked(ipc.proposalRead).mockResolvedValue({
+    ...proposal,
+    plan: '# New proposal',
+    savedMs: 10001,
+  })
+  const changed = await autoSnapshot('p', 't', planning)
+  expect(inferStage(changed, { ...planning, planMark: old.planMark }).stage).toBe('implement')
+})

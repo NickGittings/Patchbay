@@ -4,6 +4,13 @@ import { sessionTimeMs } from './sessionList'
 
 export const SIMPLE_STAGES = ['plan', 'build', 'review', 'merge'] as const
 export type SimpleStage = (typeof SIMPLE_STAGES)[number]
+export const SIMPLE_ROLE_LABEL: Record<SimpleStage, string> = {
+  plan: 'Planner',
+  build: 'Builder',
+  review: 'Reviewer',
+  merge: 'Merge agent',
+}
+
 export const SIMPLE_ACTIONS = [
   'plan',
   'implement',
@@ -45,6 +52,28 @@ export interface SimpleState {
   log: SimpleEntry[]
 }
 
+/** Keep recent reply text bounded while retaining every prompt and action. */
+export const SIMPLE_REPLY_LIMIT = 16 * 1024
+export const SIMPLE_REPLY_BUDGET = 128 * 1024
+export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
+  let remaining = SIMPLE_REPLY_BUDGET
+  return log
+    .toReversed()
+    .flatMap((entry): SimpleEntry[] => {
+      if (entry.kind !== 'reply') return [entry]
+      if (!remaining) return []
+      const limit = Math.min(SIMPLE_REPLY_LIMIT, remaining)
+      const suffix = '\n\n[Reply shortened]'
+      const text =
+        entry.text.length <= limit
+          ? entry.text
+          : entry.text.slice(0, Math.max(0, limit - suffix.length)) + suffix.slice(0, limit)
+      remaining -= text.length
+      return [{ ...entry, text }]
+    })
+    .reverse()
+}
+
 /** Old layouts start empty. Never truncate the worktree's action history. */
 export function restoredSimple(value: unknown): SimpleState | null {
   if (!value || typeof value !== 'object') return null
@@ -54,36 +83,38 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   return {
     startedMs: state.startedMs,
-    log: state.log.filter((entry) => {
-      if (
-        !entry ||
-        typeof entry.id !== 'string' ||
-        seen.has(entry.id) ||
-        !Number.isFinite(entry.atMs) ||
-        !SIMPLE_STAGES.includes(entry.stage)
-      )
-        return false
-      const valid =
-        entry.kind === 'prompt'
-          ? typeof entry.text === 'string' &&
-            Array.isArray(entry.mentions) &&
-            entry.mentions.every((id) => typeof id === 'string')
-          : entry.kind === 'reply'
-            ? typeof entry.sessionId === 'string' &&
-              Number.isSafeInteger(entry.generation) &&
-              entry.generation >= 0 &&
-              Number.isSafeInteger(entry.sequence) &&
-              entry.sequence > 0 &&
-              typeof entry.text === 'string' &&
-              !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-            : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
-      if (valid) {
-        seen.add(entry.id)
-        if (entry.kind === 'reply')
-          replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-      }
-      return valid
-    }),
+    log: boundedSimpleLog(
+      state.log.filter((entry) => {
+        if (
+          !entry ||
+          typeof entry.id !== 'string' ||
+          seen.has(entry.id) ||
+          !Number.isFinite(entry.atMs) ||
+          !SIMPLE_STAGES.includes(entry.stage)
+        )
+          return false
+        const valid =
+          entry.kind === 'prompt'
+            ? typeof entry.text === 'string' &&
+              Array.isArray(entry.mentions) &&
+              entry.mentions.every((id) => typeof id === 'string')
+            : entry.kind === 'reply'
+              ? typeof entry.sessionId === 'string' &&
+                Number.isSafeInteger(entry.generation) &&
+                entry.generation >= 0 &&
+                Number.isSafeInteger(entry.sequence) &&
+                entry.sequence > 0 &&
+                typeof entry.text === 'string' &&
+                !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+              : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
+        if (valid) {
+          seen.add(entry.id)
+          if (entry.kind === 'reply')
+            replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+        }
+        return valid
+      }),
+    ),
   }
 }
 export interface SimpleWorktree {

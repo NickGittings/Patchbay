@@ -903,7 +903,7 @@ test.each(['ad-hoc', 'mapped', 'review'])(
   },
 )
 
-test('a story planner keeps its kickoff and id on Restart and on a plain start', async () => {
+test('a story planner keeps its kickoff on Restart and forgets it after a plain start', async () => {
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
     kickoff: { kind: 'planStory' },
     story: 'story1',
@@ -931,7 +931,13 @@ test('a story planner keeps its kickoff and id on Restart and on a plain start',
     'story1',
   )
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
-  expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
+  expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
+  await restartTerminal(PLAN_SCOPE, 'claude', null)
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ])
 })
 
 test('a lost story planner reply still keeps the story for Restart', async () => {
@@ -1013,4 +1019,30 @@ test('a direct story launch cannot take an Auto planner even when its session is
   )
   expect(ipc.planStart).not.toHaveBeenCalled()
   expect(useStore.getState().planStory).toBeNull()
+})
+
+test('reply reconciliation requests no terminal output and adopts a new run with the same start time', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  useStore.setState({ serviceInstance: 'test' })
+  const sid = sessionId('web', 'dev', null, 'p')
+  useStore.getState().setSession(sid, { running: false, generation: 2, startedMs: 1 })
+  const latest = { ...snapshot(true), lastReply: 1, replies: [] }
+  const record = {
+    id: sid,
+    metadata: { projectId: 'p', componentId: 'web', terminalId: 'dev', kind: 'agent' },
+    spec: { cwd: '/p', command: 'cat' },
+    snapshot: latest,
+    history: [],
+  } as unknown as import('../types').SessionRecord
+  vi.mocked(ipc.sessionsList).mockResolvedValue([record])
+  vi.mocked(ipc.terminalSnapshot)
+    .mockReset()
+    .mockResolvedValue({
+      ...latest,
+      replies: [{ sequence: 1, atMs: 5, turn: null, text: 'Done' }],
+    })
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().sessions[sid].replies).toHaveLength(1))
+  expect(useStore.getState().sessions[sid]).toMatchObject({ generation: 3, running: true })
+  expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid, 0)
 })

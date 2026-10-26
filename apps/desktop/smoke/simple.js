@@ -153,6 +153,21 @@
         document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"]') &&
         chatText().includes('Allow fixture tool?'),
     )
+    const drawer = document.querySelector('.simple-terminal-drawer .xterm')
+    await smoke.terminalWrite(planner, 'a')
+    await until(
+      'first answer character changes status',
+      () => state().sessions[planner]?.status?.agent?.state === 'working',
+    )
+    await sleep(300)
+    assert(
+      document.querySelector('.simple-terminal-drawer .xterm') === drawer,
+      'input terminal unmounted while answering',
+    )
+    assert(
+      document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"]'),
+      'drawer switched away from question',
+    )
     await smoke.terminalStop(planner)
     await until('automatic drawer closes', () => !document.querySelector('.simple-terminal-drawer'))
     const saved = smoke.workspaceDocument().projects.find((p) => p.id === projectId).layout

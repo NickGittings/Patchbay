@@ -316,6 +316,9 @@ pub enum Request {
     },
     Snapshot {
         id: String,
+        /// Maximum output bytes; zero retains replies and lifecycle only.
+        #[serde(default)]
+        output_limit: Option<usize>,
     },
     /// The local URLs a session printed, scanned here so its output never crosses the wire.
     PreviewUrls {
@@ -871,9 +874,22 @@ impl Service {
             .clone()
     }
     fn snapshot(&self, id: &str) -> Option<Snapshot> {
-        self.pty
-            .snapshot(id)
-            .or_else(|| self.records.lock().unwrap().get(id)?.snapshot.clone())
+        self.snapshot_with(id, usize::MAX)
+    }
+    fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
+        self.pty.snapshot_with(id, limit).or_else(|| {
+            let records = self.records.lock().unwrap();
+            let s = records.get(id)?.snapshot.as_ref()?;
+            Some(Snapshot {
+                data: s.data[s.data.len().saturating_sub(limit)..].to_vec(),
+                launch_directory: s.launch_directory.clone(),
+                notice: s.notice.clone(),
+                status: s.status.clone(),
+                activity: s.activity.clone(),
+                replies: s.replies.clone(),
+                ..*s
+            })
+        })
     }
     /// Every record with its live snapshot, output included, for persistence.
     fn list(&self) -> Vec<Record> {
@@ -895,7 +911,9 @@ impl Service {
             notice: s.notice.clone(),
             status: s.status.clone(),
             replies: Vec::new(),
-            last_reply: s.replies.last().map(|r| r.sequence),
+            last_reply: s
+                .last_reply
+                .or_else(|| s.replies.last().map(|r| r.sequence)),
             activity: if include_activity {
                 s.activity.clone()
             } else {
@@ -925,7 +943,7 @@ impl Service {
                     spec,
                     snapshot: self
                         .pty
-                        .snapshot_with(&r.id, 0)
+                        .summary(&r.id)
                         .as_ref()
                         .or(r.snapshot.as_ref())
                         .map(|s| bare(s, true)),
@@ -1468,7 +1486,9 @@ impl Service {
                 metadata,
                 spec,
             } => serde_json::to_value(self.restart(request_id, *metadata, spec)?)?,
-            Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
+            Request::Snapshot { id, output_limit } => {
+                serde_json::to_value(self.snapshot_with(&id, output_limit.unwrap_or(usize::MAX)))?
+            }
             Request::PreviewUrls { id } => {
                 serde_json::to_value(self.snapshot(&id).map(|s| PreviewScan {
                     generation: s.generation,
@@ -4674,6 +4694,9 @@ mod tests {
         }))
         .unwrap();
         service.records.lock().unwrap().insert("s".into(), record);
+        let replies_only = service.snapshot_with("s", 0).unwrap();
+        assert!(replies_only.data.is_empty());
+        assert_eq!(replies_only.replies.len(), 1);
         let summary = service.summaries().pop().unwrap();
         let current = summary.snapshot.unwrap();
         assert_eq!(current.activity.len(), 1);

@@ -65,12 +65,7 @@ export default function StoryBoard() {
   )
   if (activeTask) runs[activeTask] = auto
   const status = (item: Story): StoryProgress => {
-    const own = derivedStatus(
-      item,
-      tasks,
-      runs,
-      sessionRecords.filter((r) => r.metadata.projectId === projectId),
-    )
+    const own = derivedStatus(item, tasks, runs, projectId ?? '', sessionRecords)
     return item.status === 'done' || item.kind === 'story'
       ? own
       : rollup(own, stories.filter((s) => s.parent === item.id).map(status))

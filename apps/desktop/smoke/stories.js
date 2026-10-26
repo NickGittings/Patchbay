@@ -201,11 +201,14 @@
       state().planStory === story.id && state().planStoryTerminal === fake.id,
       'story Restart context was not retained',
     )
-    // A plain planner restart keeps the pending story, even before implementation.
+    // A plain start begins general planning and clears the pending story.
     await smoke.terminalStop(sid)
     await until('planner stopped', () => !state().sessions[sid]?.running)
     await smoke.startTerminal('@plan', fake.id, null, projectId)
-    assert(state().planStory === story.id, 'plain planner restart dropped the story')
+    assert(
+      state().planStory === null && state().planStoryTerminal === null,
+      'plain planner start retained the old story',
+    )
     state().setView('navigation')
     await until('board for worktree creation', () => query('.story-board'))
     chooseCard(story.title)

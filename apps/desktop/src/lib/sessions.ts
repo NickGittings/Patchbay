@@ -498,7 +498,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     }
     if (launch.started && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
-      if (launch.story)
+      if (launch.story || projectStateOf(launch.projectId)?.planStoryTerminal === terminalId)
         useStore.getState().patchProject(launch.projectId, {
           planStory: launch.story ?? null,
           planStoryTerminal: launch.story ? terminalId : null,
@@ -913,7 +913,7 @@ async function fetchReplies(record: SessionRecord) {
   if (fetchingReplies.has(record.id)) return
   fetchingReplies.add(record.id)
   try {
-    const snapshot = await terminalSnapshot(record.id)
+    const snapshot = await terminalSnapshot(record.id, 0)
     const prev = useStore.getState().sessions[record.id]
     if (!snapshot?.replies?.length) return
     if (prev?.generation === snapshot.generation)
@@ -994,7 +994,11 @@ export function reconcileSessions(force = true): Promise<void> {
           const prev = useStore.getState().sessions[r.id]
           // An exit already seen for this run is newer than a list saying it runs.
           const staleRun =
-            prev && !prev.running && next.running && prev.startedMs === next.startedMs
+            prev &&
+            prev.generation === next.generation &&
+            !prev.running &&
+            next.running &&
+            prev.startedMs === next.startedMs
           if (
             (prev?.generation ?? 0) <= snapshot.generation &&
             !staleRun &&

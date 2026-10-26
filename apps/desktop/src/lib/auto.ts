@@ -462,7 +462,16 @@ export async function autoSnapshot(
     // Implement hands off the project plan only, never an older worktree plan.
     plan: plannerPlan.text,
     proposal: !!proposal,
-    planMark: fingerprint(JSON.stringify([plannerPlan.text, proposal])),
+    planMark: fingerprint(
+      JSON.stringify([
+        plannerPlan.text,
+        proposal && {
+          version: proposal.version,
+          plan: proposal.plan,
+          assignments: proposal.assignments,
+        },
+      ]),
+    ),
     // A task's goal is its own: the project plan may be left over from earlier work.
     goal: inferredGoal(
       task ? saved.text : plannerPlan.text,

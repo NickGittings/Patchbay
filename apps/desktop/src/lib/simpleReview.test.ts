@@ -17,6 +17,7 @@ const snapshot = {
 } as TerminalSnapshot
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({ started: [], round: 'round', errors: [] })
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject({
     projectId: 'p',
@@ -88,4 +89,50 @@ test('a busy review is preserved before any stop or launch request', async () =>
   expect(ipc.terminalSnapshot).not.toHaveBeenCalled()
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(agents.startReviewAgents).not.toHaveBeenCalled()
+})
+
+test('a relaunched reviewer is hydrated before Chat records its kickoff generation', async () => {
+  const { logSimple } = await import('./simpleActions')
+  const { flow } = await import('./simpleFlow')
+  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
+  const fresh = {
+    ...snapshot,
+    generation: 2,
+    running: true,
+    startedMs: 200,
+    status: { agent: { state: 'idle', authoritative: true, turnId: null } },
+  } as TerminalSnapshot
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockResolvedValueOnce(fresh)
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({
+    started: [{ sessionId: 'r', requestId: 'request', lane: null }],
+    round: 'round',
+    errors: [],
+  })
+  const result = await startSimpleReview(useStore.getState().toProject(), request, [])
+  const sid = result.started[0].sessionId
+  logSimple('p', null, {
+    kind: 'action',
+    action: 'review',
+    stage: 'review',
+    sessionId: sid,
+    generation: useStore.getState().sessions[sid]?.generation,
+  })
+  const s = useStore.getState()
+  expect(s.simple?.log.at(-1)?.generation).toBe(2)
+  const record = {
+    ...s.sessionRecords[0],
+    metadata: { ...s.sessionRecords[0].metadata, kind: 'agent' as const },
+  }
+  const resultFlow = flow({
+    worktree: { projectId: 'p', task: null, path: '/t' },
+    records: [record],
+    sessions: s.sessions,
+    simple: s.simple,
+    auto: null,
+  })
+  expect(resultFlow.step).toBe('reviewing')
+  expect(resultFlow.prompt).toBeUndefined()
+  expect(ipc.terminalSnapshot).toHaveBeenLastCalledWith('r', 0)
 })

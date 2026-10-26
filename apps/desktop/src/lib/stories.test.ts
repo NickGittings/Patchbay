@@ -94,15 +94,15 @@ test('tree orders each hierarchy level and keeps orphan stories under Unassigned
 })
 test('status ignores old Auto runs on reused tasks and preserves saved completion after cleanup', () => {
   const item = { ...story('s'), task: 'task' }
-  expect(derivedStatus(story('s'), [], {})).toBe('backlog')
-  expect(derivedStatus({ ...item, status: 'planned' }, [], {})).toBe('planned')
-  expect(derivedStatus(item, [task], {})).toBe('building')
-  expect(derivedStatus(item, [{ ...task, missing: true }], {})).toBe('backlog')
+  expect(derivedStatus(story('s'), [], {}, 'p')).toBe('backlog')
+  expect(derivedStatus({ ...item, status: 'planned' }, [], {}, 'p')).toBe('planned')
+  expect(derivedStatus(item, [task], {}, 'p')).toBe('building')
+  expect(derivedStatus(item, [{ ...task, missing: true }], {}, 'p')).toBe('backlog')
   const done = { task: { runId: 'old', status: 'done' as const } }
-  expect(derivedStatus(item, [task], done)).toBe('building')
-  expect(derivedStatus({ ...item, autoRunId: 'new' }, [task], done)).toBe('building')
-  expect(derivedStatus({ ...item, autoRunId: 'old' }, [task], done)).toBe('done')
-  expect(derivedStatus({ ...item, status: 'done' }, [], {})).toBe('done')
+  expect(derivedStatus(item, [task], done, 'p')).toBe('building')
+  expect(derivedStatus({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('building')
+  expect(derivedStatus({ ...item, autoRunId: 'old' }, [task], done, 'p')).toBe('done')
+  expect(derivedStatus({ ...item, status: 'done' }, [], {}, 'p')).toBe('done')
 })
 test('rollup picks the least advanced child and retains a childless parent', () => {
   expect(rollup('planned', [])).toBe('planned')
@@ -275,7 +275,7 @@ test('completion persists only the linked Auto run and stays Done when its workt
   vi.mocked(ipc.storyCompleteAuto).mockResolvedValueOnce([{ ...linked, status: 'done' }])
   await completeAutoStories('p', 'task', 'new')
   expect(ipc.storyCompleteAuto).toHaveBeenCalledWith('p', 'task', 'new')
-  expect(derivedStatus(useStore.getState().stories[0], [], {})).toBe('done')
+  expect(derivedStatus(useStore.getState().stories[0], [], {}, 'p')).toBe('done')
 })
 
 test('latest review, merge or root record determines a live story stage', async () => {
@@ -293,16 +293,23 @@ test('latest review, merge or root record determines a live story stage', async 
   expect(worktreeStage(t, 'p', records)).toBe('merging')
   expect(worktreeStage(t, 'p', [...records, record('@task', 4)])).toBe('building')
   expect(worktreeStage(t, 'other', records)).toBe('building')
-  expect(derivedStatus({ ...story('s'), task: task.id }, [t], {}, records)).toBe('merging')
+  const unrelated = {
+    ...record('@review', 20),
+    metadata: { ...record('@review', 20).metadata, projectId: 'other' },
+  }
+  expect(
+    derivedStatus({ ...story('s'), task: task.id }, [t], {}, 'p', [unrelated, ...records]),
+  ).toBe('merging')
+  expect(derivedStatus({ ...story('s'), task: task.id }, [t], {}, 'p', records)).toBe('merging')
   for (const [stage, expected] of [
     ['review', 'reviewing'],
     ['mergeGate', 'merging'],
     ['merge', 'merging'],
     ['fix', 'building'],
   ] as const)
-    expect(derivedStatus({ ...story('s'), task: task.id }, [t], { task: run({ stage }) })).toBe(
-      expected,
-    )
+    expect(
+      derivedStatus({ ...story('s'), task: task.id }, [t], { task: run({ stage }) }, 'p'),
+    ).toBe(expected)
   expect(rollup('done', ['reviewing', 'merging', 'done'])).toBe('reviewing')
 })
 test('worktree creation for a story scopes descendants and links in its follow-up', async () => {

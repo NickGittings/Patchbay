@@ -4,7 +4,7 @@ import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
-import { recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
+import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -27,12 +27,14 @@ export default function SimpleComposer({
   stage,
   records,
   foreign,
+  terminalRecord,
   openTerminal,
 }: {
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
   foreign: ReadonlySet<string>
+  terminalRecord?: SessionRecord
   openTerminal: (r: SessionRecord) => void
 }) {
   const s = useStore(
@@ -50,6 +52,7 @@ export default function SimpleComposer({
     useSimpleUi.getState().patch(scopeKey, change)
   const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, undefined, foreign))
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
+  const shown = ui.terminal === 'closed' ? recipient : (terminalRecord ?? recipient)
   const [pending, setPending] = useState(false),
     [error, setError] = useState('')
   const [caret, setCaret] = useState(0)
@@ -302,12 +305,7 @@ export default function SimpleComposer({
           onClick={() => recipient && openTerminal(recipient)}
         >
           {ui.terminal === 'closed' ? 'View' : 'Hide'}{' '}
-          {recipient
-            ? { plan: 'Planner', build: 'Builder', review: 'Reviewer', merge: 'Merge agent' }[
-                recordStage(recipient)
-              ]
-            : 'agent'}{' '}
-          terminal
+          {shown ? SIMPLE_ROLE_LABEL[recordStage(shown)] : 'agent'} terminal
         </button>
         <button
           className="primary"

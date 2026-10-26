@@ -14,7 +14,7 @@ import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
-import { simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { inputDrawer, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { terminalStatus } from '../lib/display'
 import { implementPlannerPlan } from '../lib/planHandoff'
 import { fixReviewFindings } from '../lib/reviewHandoff'
@@ -128,6 +128,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const inputKey = asking
     ? `${asking.id}:${s.sessions[asking.id]?.generation}:${s.sessions[asking.id]?.status?.agent?.sinceMs}`
     : ''
+  const drawerRecord = ui.terminalSession
+    ? model.records.find((r) => r.id === ui.terminalSession?.id)
+    : recipient
   const runningReview = useRunningReviewLanes(source?.branch)
   const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   const running = model.records.filter((r) => s.sessions[r.id]?.running)
@@ -147,11 +150,10 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       })
   }, [s.project, s.activeTask, s.simple])
   useEffect(() => {
-    const drawer = useSimpleUi.getState().worktrees[key]?.terminal ?? 'closed'
-    if (inputKey && drawer === 'closed') useSimpleUi.getState().patch(key, { terminal: 'input' })
-    else if (!inputKey && drawer === 'input')
-      useSimpleUi.getState().patch(key, { terminal: 'closed' })
-  }, [key, inputKey])
+    const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
+    const next = inputDrawer(current, asking, s.sessions)
+    if (next !== current) useSimpleUi.getState().patch(key, next)
+  }, [key, asking, s.sessions])
   // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
     model.items.map((i) =>
@@ -471,19 +473,22 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         )}
         {failure && <p role="alert">{failure}</p>}
       </div>
-      {ui.terminal !== 'closed' && recipient && (
-        <div className="simple-terminal-drawer" aria-label={`${recordStage(recipient)} terminal`}>
+      {ui.terminal !== 'closed' && drawerRecord && (
+        <div
+          className="simple-terminal-drawer"
+          aria-label={`${recordStage(drawerRecord)} terminal`}
+        >
           <TerminalPane
-            key={recipient.id}
-            componentId={recipient.metadata.componentId}
+            key={drawerRecord.id}
+            componentId={drawerRecord.metadata.componentId}
             terminal={{
-              id: recipient.metadata.terminalId,
-              name: recipient.metadata.name,
+              id: drawerRecord.metadata.terminalId,
+              name: drawerRecord.metadata.name,
               kind: 'agent',
-              command: recipient.spec.command,
+              command: drawerRecord.spec.command,
             }}
-            task={recipient.metadata.task ?? null}
-            existingSessionId={recipient.id}
+            task={drawerRecord.metadata.task ?? null}
+            existingSessionId={drawerRecord.id}
             focus={false}
           />
         </div>
@@ -493,10 +498,15 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         stage={model.stage}
         records={model.records}
         foreign={model.foreign}
-        openTerminal={(_record: SessionRecord) =>
-          useSimpleUi
-            .getState()
-            .patch(key, { terminal: ui.terminal === 'closed' ? 'user' : 'closed' })
+        terminalRecord={drawerRecord}
+        openTerminal={(record: SessionRecord) =>
+          useSimpleUi.getState().patch(key, {
+            terminal: ui.terminal === 'closed' ? 'user' : 'closed',
+            terminalSession:
+              ui.terminal === 'closed' && record.id === asking?.id
+                ? { id: record.id, generation: s.sessions[record.id]?.generation }
+                : undefined,
+          })
         }
       />
     </div>

@@ -467,6 +467,12 @@ impl Tracker {
         self.replies.iter().cloned().collect()
     }
 
+    /// Latest retained reply identity without copying reply text.
+    #[must_use]
+    pub fn last_reply(&self) -> Option<u64> {
+        self.replies.back().map(|reply| reply.sequence)
+    }
+
     pub fn drain_replies(&mut self) -> Vec<Reply> {
         std::mem::take(&mut self.pending_replies)
     }

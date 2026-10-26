@@ -87,6 +87,7 @@ export function derivedStatus(
     string,
     (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
   >,
+  projectId: string,
   records: readonly SessionRecord[] = [],
 ): StoryProgress {
   if (story.status === 'done') return 'done'
@@ -106,16 +107,7 @@ export function derivedStatus(
         : run.stage === 'mergeGate' || run.stage === 'merge'
           ? 'merging'
           : 'building'
-    return worktreeStage(
-      task,
-      records.find(
-        (r) =>
-          r.metadata.task === task.id ||
-          r.spec.cwd === task.worktree ||
-          r.spec.merge_source === task.worktree,
-      )?.metadata.projectId ?? '',
-      records,
-    )
+    return worktreeStage(task, projectId, records)
   }
   return story.status === 'planned' ? 'planned' : 'backlog'
 }

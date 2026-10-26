@@ -299,7 +299,17 @@ export function revealTerminal(
                 t.worktree === record.spec.cwd,
             )?.id ?? null)
       const path = s.tasks.find((t) => t.id === task)?.worktree ?? s.project.root
-      if (relatedSession(record, { projectId: s.project.id, task, path })) {
+      const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
+      const simple = task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple
+      const used =
+        record.metadata.componentId !== PLAN_SCOPE ||
+        simple?.log.some(
+          (e) =>
+            e.sessionId === record.id &&
+            e.kind !== 'reply' &&
+            (e.generation === undefined || e.generation === generation),
+        )
+      if (used && relatedSession(record, { projectId: s.project.id, task, path })) {
         if (task !== s.activeTask) s.setActiveTask(task, true)
         s.setActiveSession(item.sid)
         useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })

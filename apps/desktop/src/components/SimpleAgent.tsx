@@ -1,5 +1,5 @@
 import type { SimpleEntry } from '../lib/simple'
-import { recordStage } from '../lib/simple'
+import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
 import { useStore } from '../store'
 import type { SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
@@ -20,11 +20,7 @@ export default function SimpleAgent({
 }) {
   const session = useStore((s) => s.sessions[sessionId])
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
-  const role = record
-    ? { plan: 'Planner', build: 'Builder', review: 'Reviewer', merge: 'Merge agent' }[
-        recordStage(record)
-      ]
-    : 'Agent'
+  const role = record ? SIMPLE_ROLE_LABEL[recordStage(record)] : 'Agent'
   const provider = record?.metadata.adapter
   return (
     <article className="simple-agent" data-session={sessionId}>
