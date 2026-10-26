@@ -107,6 +107,18 @@ describe('terminalStatus', () => {
     })
   })
 
+  test('old input reports do not make stopped, disconnected or interrupted agents ask', () => {
+    const waiting = running({ agent: agent('needsInput') })
+    for (const session of [
+      { ...waiting, running: false, exitCode: 0 },
+      { ...waiting, running: false, status: { ...waiting.status!, stopped: true } },
+      { ...waiting, disconnected: true },
+      { ...waiting, interrupted: true },
+    ]) {
+      expect(terminalStatus('agent', session, NOW).health).not.toBe('input')
+    }
+  })
+
   test('a seen review goes back to waiting', () => {
     const seen = running({ agent: agent('review'), seenMs: NOW })
     expect(terminalStatus('agent', seen, NOW)).toMatchObject({ label: 'Waiting', attention: 0 })
@@ -171,7 +183,7 @@ test.each<[string, TerminalKind, boolean]>([
   )
 })
 
-test('foldedStatus prefers attention, then failures, then work', () => {
+test('foldedStatus prefers outstanding attention, then work, ignoring seen failures', () => {
   const quiet = terminalStatus('agent', running({ agent: agent('idle') }), NOW)
   const working = terminalStatus('agent', running({ agent: agent('working') }), NOW)
   const failed = terminalStatus('agent', exited(1, { seenMs: NOW }), NOW)
@@ -180,6 +192,12 @@ test('foldedStatus prefers attention, then failures, then work', () => {
   expect(failed.attention).toBe(0)
   expect(foldedStatus([quiet])).toBeUndefined()
   expect(foldedStatus([quiet, working])).toBe(working)
-  expect(foldedStatus([working, failed])).toBe(failed)
+  expect(foldedStatus([failed])).toBeUndefined()
+  expect(foldedStatus([quiet, failed])).toBeUndefined()
+  expect(foldedStatus([working, failed])).toBe(working)
   expect(foldedStatus([failed, review, working])).toBe(review)
+  const unseenFailure = terminalStatus('agent', exited(1), NOW)
+  expect(foldedStatus([working, unseenFailure, review])).toBe(unseenFailure)
+  const input = terminalStatus('agent', running({ agent: agent('needsInput') }), NOW)
+  expect(foldedStatus([unseenFailure, input, review])).toBe(input)
 })

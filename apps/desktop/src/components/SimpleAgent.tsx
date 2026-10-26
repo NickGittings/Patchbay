@@ -2,7 +2,7 @@ import { activityFile, activityRoot } from '../lib/activity'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { PLAN_SCOPE, type SessionRecord } from '../types'
-import { terminalStatus } from '../lib/display'
+import type { TerminalStatus } from '../lib/display'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
@@ -10,10 +10,12 @@ import TerminalPane from './TerminalPane'
 const attention = new Map<string, string>()
 export default function SimpleAgent({
   record,
+  status,
   scopeKey,
   openTerminal,
 }: {
   record: SessionRecord
+  status: TerminalStatus
   scopeKey: string
   openTerminal: (r: SessionRecord) => void
 }) {
@@ -27,6 +29,7 @@ export default function SimpleAgent({
   const host = useRef<HTMLElement>(null)
   const terminalHost = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
+  const needsInput = status.health === 'input'
   useEffect(() => {
     const el = terminalHost.current
     if (!el || !expanded) return
@@ -36,7 +39,7 @@ export default function SimpleAgent({
   }, [expanded])
   useEffect(() => {
     const agent = session?.status?.agent
-    if (agent?.state !== 'needsInput') return
+    if (!needsInput || !agent) return
     const key = `${session?.generation}:${agent.sinceMs}`
     if (attention.get(record.id) === key) return
     attention.set(record.id, key)
@@ -45,7 +48,7 @@ export default function SimpleAgent({
     if (!current.expanded.includes(record.id))
       ui.patch(scopeKey, { expanded: [...current.expanded, record.id] })
     host.current?.scrollIntoView({ block: 'nearest' })
-  }, [session?.generation, session?.status?.agent, record.id, scopeKey])
+  }, [needsInput, session?.generation, session?.status?.agent, record.id, scopeKey])
   const toggle = () => {
     const ui = useSimpleUi.getState()
     const list = ui.worktrees[scopeKey]?.expanded ?? []
@@ -58,14 +61,14 @@ export default function SimpleAgent({
       className="simple-agent"
       ref={host}
       data-session={record.id}
-      data-needs-input={session?.status?.agent?.state === 'needsInput' || undefined}
+      data-needs-input={needsInput || undefined}
     >
       <header>
         <button aria-expanded={expanded} onClick={toggle}>
           {expanded ? '▾' : '▸'} {record.metadata.name}
         </button>
         {record.metadata.componentId === PLAN_SCOPE && <span>Shared planner</span>}
-        <StatusLabel status={terminalStatus('agent', session)} />
+        <StatusLabel status={status} />
         <button onClick={() => openTerminal(record)}>Open terminal</button>
       </header>
       {!!session?.activity?.length && (

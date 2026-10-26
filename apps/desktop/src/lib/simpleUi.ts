@@ -21,14 +21,18 @@ export interface SimpleUi {
   stageFilter: SimpleStage | 'all'
   /**
    * Stages the user opened (true) or collapsed (false) under All, unlike their default: only the
-   * thread's current stage is open. Kept across stage changes, so Auto moving on keeps them.
+   * thread's current stage and stages in use are open. Kept across stage changes.
    */
   stages: StageOverrides
 }
 export type StageOverrides = Partial<Record<SimpleStage, boolean>>
-/** Whether a stage is open under All: the user's choice, else open only while current. */
-export const stageOpen = (overrides: StageOverrides, stage: SimpleStage, current: SimpleStage) =>
-  overrides[stage] ?? stage === current
+/** User choices win; otherwise keep the current stage and any stage in use open. */
+export const stageOpen = (
+  overrides: StageOverrides,
+  stage: SimpleStage,
+  current: SimpleStage,
+  inUse = false,
+) => overrides[stage] ?? (stage === current || inUse)
 /**
  * The overrides after toggling a stage as shown. Choosing its default again forgets the choice,
  * so the stage follows the current stage again.
@@ -37,10 +41,11 @@ export function toggledStage(
   overrides: StageOverrides,
   stage: SimpleStage,
   current: SimpleStage,
+  inUse = false,
 ): StageOverrides {
-  const open = !stageOpen(overrides, stage, current)
+  const open = !stageOpen(overrides, stage, current, inUse)
   const next = { ...overrides }
-  if (open === (stage === current)) delete next[stage]
+  if (open === (stage === current || inUse)) delete next[stage]
   else next[stage] = open
   return next
 }
@@ -58,20 +63,20 @@ export const useSimpleUi = create<{
   worktrees: Record<string, SimpleUi>
   patch: (key: string, patch: Partial<SimpleUi>) => void
   /** Toggles a stage against the latest overrides, so quick clicks never undo each other. */
-  toggleStage: (key: string, stage: SimpleStage, current: SimpleStage) => void
+  toggleStage: (key: string, stage: SimpleStage, current: SimpleStage, inUse?: boolean) => void
 }>((set) => ({
   worktrees: {},
   patch: (key, patch) =>
     set((s) => ({
       worktrees: { ...s.worktrees, [key]: { ...emptySimpleUi(), ...s.worktrees[key], ...patch } },
     })),
-  toggleStage: (key, stage, current) =>
+  toggleStage: (key, stage, current, inUse) =>
     set((s) => {
       const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
       return {
         worktrees: {
           ...s.worktrees,
-          [key]: { ...ui, stages: toggledStage(ui.stages, stage, current) },
+          [key]: { ...ui, stages: toggledStage(ui.stages, stage, current, inUse) },
         },
       }
     }),

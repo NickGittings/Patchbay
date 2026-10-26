@@ -237,6 +237,7 @@
     const buildContent = stageContent('Build')
     stageToggle('Build').focus()
     assert(document.activeElement === stageToggle('Build'), 'stage toggle cannot receive focus')
+    await expectOpenStages(['Plan'])
     click(stageToggle('Build'))
     click(stageToggle('Review'))
     await expectOpenStages(['Plan', 'Build', 'Review'])
@@ -410,12 +411,18 @@
     click(stageToggle('Review'))
     click(stageToggle('Merge'))
     await expectOpenStages(['Plan', 'Review', 'Merge'])
+    const focusedPlanControl = stageContent('Plan').querySelector('.simple-agent header button')
+    focusedPlanControl.focus()
+    await until('Plan control focused', () => document.activeElement === focusedPlanControl)
     click(button('Implement'))
     await until('Implement completion', () =>
       state().simple?.log.some((e) => e.action === 'implement'),
     )
     assert(state().simpleMode, 'Implement left Simple')
-    // Stages opened by hand stay open as the thread moves on to Build.
+    // Auto-advancing must keep focused content visible, alongside stages opened by hand.
+    await expectOpenStages(['Plan', 'Build', 'Review', 'Merge'])
+    assert(document.activeElement === focusedPlanControl, 'stage advance lost keyboard focus')
+    stageTab('All').focus()
     await expectOpenStages(['Build', 'Review', 'Merge'])
     click(stageToggle('Review'))
     click(stageToggle('Merge'))
@@ -457,6 +464,12 @@
         'planner input resolved',
         () => state().sessions[planner]?.status?.agent?.state === 'working',
       )
+      // Its automatically opened terminal still counts as using Plan after the request clears.
+      await expectOpenStages(['Plan', 'Build'])
+      const agentToggle = askingAgent.querySelector('header button')
+      assert(agentToggle.getAttribute('aria-expanded') === 'true', 'input did not open terminal')
+      click(agentToggle)
+      stageTab('All').focus()
       await expectOpenStages(['Build'])
       // A folded stage still says what its agents are doing.
       await until('folded Plan shows its working agent', () =>
@@ -464,11 +477,35 @@
           ?.parentElement.querySelector('.status-label')
           ?.textContent.includes('Working'),
       )
+      const foldedChip = stageToggle('Plan').parentElement.querySelector('.status-label')
+      const previousTitle = foldedChip.title
+      await until('folded tooltip age refreshes', () => foldedChip.title !== previousTitle)
+      // Stop while the last report still asks, then remount that card through a stage filter.
+      await smoke.terminalWrite(planner, 'smoke-input\n')
+      await until('planner asks again', () => askingAgent.hasAttribute('data-needs-input'))
     } finally {
       await smoke.terminalStop(planner)
       await until('shared planner stopped', () => !state().sessions[planner]?.running)
     }
-    // A stopped agent's last needsInput report no longer holds its stage open.
+    // Close the retained inline terminal: stopping alone should not close what the user opened.
+    const stoppedAgent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
+    await until('stopped card no longer asks', () => !stoppedAgent.hasAttribute('data-needs-input'))
+    click(stoppedAgent.querySelector('header button'))
+    await expectOpenStages(['Build'])
+    click(stageTab('Merge'))
+    await until('stopped input stays out of Merge filter', () =>
+      [...document.querySelectorAll('.simple-stage > h2')].every((h) => h.textContent === 'Merge'),
+    )
+    click(stageTab('Plan'))
+    await until('stopped card remounted without auto-expanding', () => {
+      const agent = document.querySelector(`.simple-agent[data-session="${planner}"]`)
+      return (
+        agent &&
+        !agent.hasAttribute('data-needs-input') &&
+        agent.querySelector('header button').getAttribute('aria-expanded') === 'false'
+      )
+    })
+    click(stageTab('All'))
     await expectOpenStages(['Build'])
     await until('activity hydration', () => state().sessions[implementation]?.activity?.length)
     await until('Build agent chip on the map', () =>

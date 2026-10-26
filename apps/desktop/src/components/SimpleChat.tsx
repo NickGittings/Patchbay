@@ -8,7 +8,8 @@ import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
 import { simpleKey, stageOpen, useSimpleUi, type StageOverrides } from '../lib/simpleUi'
-import { foldedStatus, statusTitle, terminalStatus } from '../lib/display'
+import { foldedStatus, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -31,12 +32,15 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
+import StatusLabel from './status/StatusLabel'
 import './simple.css'
 
 const pendingActions = new Set<string>()
 const NO_OVERRIDES: StageOverrides = {}
+const EMPTY_EXPANDED: string[] = []
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
+  useClockTick()
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -64,6 +68,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const runningReview = useRunningReviewLanes(source?.branch)
   const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
   const stageOverrides = useSimpleUi((u) => u.worktrees[key]?.stages ?? NO_OVERRIDES)
+  const expandedAgents = useSimpleUi((u) => u.worktrees[key]?.expanded ?? EMPTY_EXPANDED)
+  const [focusedStage, setFocusedStage] = useState<SimpleStage>()
   const threadRef = useRef<HTMLDivElement>(null)
   // A new filter starts at the top, unless an agent shown is asking for input: it stays in view.
   // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
@@ -72,7 +78,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     if (shownFilter.current === filter) return
     shownFilter.current = filter
     const thread = threadRef.current
-    const asking = thread?.querySelector('.simple-agent[data-needs-input]')
+    const asking = thread?.querySelector(
+      '.simple-stage > div:not([hidden]) .simple-agent[data-needs-input]',
+    )
     if (asking) asking.scrollIntoView({ block: 'nearest' })
     else thread?.scrollTo({ top: 0 })
   }, [filter])
@@ -97,14 +105,22 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
-  const statuses = (section: (typeof model.sections)[number]) =>
-    section.sessions.map((r) => terminalStatus('agent', s.sessions[r.id]))
-  // Only a running agent asks: a stopped or disconnected one's last report no longer holds.
-  const needsInput = (section: (typeof model.sections)[number]) =>
-    statuses(section).some((status) => status.health === 'input')
+  // Compute once and share the same status with filtering, folded summaries and agent cards.
+  const stageSections = model.sections.map((section) => {
+    const agents = section.sessions.map((record) => ({
+      record,
+      status: terminalStatus('agent', s.sessions[record.id]),
+    }))
+    return {
+      ...section,
+      agents,
+      asking: agents.some(({ status }) => status.health === 'input'),
+      folded: foldedStatus(agents.map(({ status }) => status)),
+    }
+  })
   // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
-  const sections = model.sections.filter(
-    (section) => filter === 'all' || section.id === filter || needsInput(section),
+  const sections = stageSections.filter(
+    (section) => filter === 'all' || section.id === filter || section.asking,
   )
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
@@ -173,7 +189,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const errorFor = (action: string) =>
     failure?.action === action && <p role="alert">{failure.text}</p>
   return (
-    <div className="simple-chat">
+    <div
+      className="simple-chat"
+      onFocusCapture={(event) => {
+        // A filter can remove the focused header without firing blur on its old section.
+        if (!threadRef.current?.contains(event.target)) setFocusedStage(undefined)
+      }}
+    >
       <header>
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
@@ -234,10 +256,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       )}
       <div className="simple-thread" ref={threadRef}>
         {sections.map((section) => {
-          const asking = needsInput(section)
+          const { asking } = section
+          const inUse =
+            focusedStage === section.id ||
+            section.agents.some(({ record }) => expandedAgents.includes(record.id))
           const expanded =
-            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage)
-          const folded = expanded ? undefined : foldedStatus(statuses(section))
+            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage, inUse)
+          const folded = expanded ? undefined : section.folded
           const contentId = `${stageContentId}-${section.id}`
           const label = section.id[0].toUpperCase() + section.id.slice(1)
           return (
@@ -246,6 +271,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               key={section.id}
               aria-current={model.stage === section.id ? 'step' : undefined}
               data-collapsed={!expanded || undefined}
+              onFocusCapture={() => {
+                if (expanded) setFocusedStage(section.id)
+              }}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setFocusedStage(undefined)
+              }}
             >
               <h2>
                 {filter === 'all' ? (
@@ -258,7 +289,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     title={asking ? 'An agent is waiting for input' : undefined}
                     onClick={() => {
                       if (asking) return
-                      useSimpleUi.getState().toggleStage(key, section.id, model.stage)
+                      useSimpleUi.getState().toggleStage(key, section.id, model.stage, inUse)
                     }}
                   >
                     <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
@@ -271,15 +302,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     Stays open while an agent is waiting for input
                   </span>
                 )}
-                {folded && (
-                  <span
-                    className={`status-label health-${folded.health}`}
-                    title={statusTitle(folded)}
-                  >
-                    <span className="status-dot" />
-                    {folded.label}
-                  </span>
-                )}
+                {folded && <StatusLabel status={folded} alwaysShow />}
               </h2>
               <div id={contentId} hidden={!expanded}>
                 {section.id === 'plan' && (
@@ -454,8 +477,14 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     )}
                   </article>
                 ))}
-                {section.sessions.map((r) => (
-                  <SimpleAgent key={r.id} record={r} scopeKey={key} openTerminal={openTerminal} />
+                {section.agents.map(({ record, status }) => (
+                  <SimpleAgent
+                    key={record.id}
+                    record={record}
+                    status={status}
+                    scopeKey={key}
+                    openTerminal={openTerminal}
+                  />
                 ))}
               </div>
             </section>

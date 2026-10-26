@@ -4,11 +4,13 @@
 }
 .navigation-map.story-map-hidden {
   visibility: hidden;
-  /* React Flow nodes set visibility: visible inline; hide the whole layer as well. */
-  opacity: 0;
   pointer-events: none;
   position: absolute;
   inset: 0;
+}
+/* Nodes override visibility inline. Remove them from layout and hit-testing on the board. */
+.story-map-hidden .react-flow__node {
+  display: none;
 }
 .story-board {
   height: 100%;

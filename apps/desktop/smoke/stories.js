@@ -68,6 +68,14 @@
     click(await until('Stories toggle', () => button('.navigation-map .view-tabs', 'Stories')))
     await until('story board', () => query('[aria-label="Story board"]'))
     assert(!mapNodeVisible(), 'map component is still visible over Stories')
+    assert(mapNode.getClientRects().length === 0, 'hidden map node still participates in layout')
+    const boardBounds = query('[aria-label="Story board"]').getBoundingClientRect()
+    assert(
+      !document
+        .elementFromPoint(boardBounds.x + boardBounds.width / 2, boardBounds.y + 30)
+        ?.closest('.navigation-map'),
+      'hidden map intercepts story board input',
+    )
     assert(
       state().selectedId === null && state().view === 'navigation',
       'board became a fifth view',

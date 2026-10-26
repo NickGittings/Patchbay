@@ -1,16 +1,23 @@
 import { openUrl } from '@tauri-apps/plugin-opener'
-import type { TerminalStatus } from '../../lib/display'
+import { statusTitle, type TerminalStatus } from '../../lib/display'
 import { useStore } from '../../store'
 
 /**
  * A terminal's status in words when it wants the user, with the service's URL when it printed
  * one; otherwise just the URL, or nothing.
  */
-export default function StatusLabel({ status }: { status: TerminalStatus }) {
-  const loud = status.attention > 0 || status.health === 'fail'
+export default function StatusLabel({
+  status,
+  alwaysShow = false,
+}: {
+  status: TerminalStatus
+  /** Group summaries also name quiet work in progress. */
+  alwaysShow?: boolean
+}) {
+  const loud = alwaysShow || status.attention > 0 || status.health === 'fail'
   if (!loud && !status.url) return null
   return (
-    <span className={`status-label health-${status.health}`} title={status.detail}>
+    <span className={`status-label health-${status.health}`} title={statusTitle(status)}>
       {loud && status.label}
       {status.url && (
         <button

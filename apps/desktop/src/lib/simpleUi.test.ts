@@ -1,5 +1,9 @@
-import { expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test } from 'vitest'
 import { simpleKey, stageOpen, toggledStage, useSimpleUi } from './simpleUi'
+
+const initialState = useSimpleUi.getInitialState()
+beforeEach(() => useSimpleUi.setState(initialState, true))
+afterEach(() => useSimpleUi.setState(initialState, true))
 
 test('only the current stage opens by default', () => {
   expect(stageOpen({}, 'build', 'build')).toBe(true)
@@ -18,6 +22,15 @@ test('choices survive stage changes until toggled back to the default', () => {
   expect(stageOpen(stages, 'build', 'build')).toBe(true)
   expect(toggledStage(stages, 'review', 'build')).toEqual({ plan: false })
   expect(toggledStage({ plan: false }, 'plan', 'build')).toEqual({ plan: true })
+})
+
+test('stages in use stay open as the thread advances, until explicitly collapsed', () => {
+  expect(stageOpen({}, 'plan', 'build', true)).toBe(true)
+  expect(stageOpen({}, 'plan', 'build', false)).toBe(false)
+  const closed = toggledStage({}, 'plan', 'build', true)
+  expect(closed).toEqual({ plan: false })
+  expect(stageOpen(closed, 'plan', 'build', true)).toBe(false)
+  expect(toggledStage(closed, 'plan', 'build', true)).toEqual({})
 })
 
 test('toggles apply to the latest overrides of their worktree only', () => {
