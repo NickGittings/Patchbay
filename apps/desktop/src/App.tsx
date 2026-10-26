@@ -110,7 +110,7 @@ function NavigationView() {
   })
   // An open diff reads the same data, so it keeps refreshing while the chat is collapsed.
   const reader = useSimpleData(simple && (!chatPanel.collapsed || !!diff))
-  const storyBoard = useStore((s) => s.storyBoard) && !simple
+  const storyBoard = useStore((s) => s.storyBoard)
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews

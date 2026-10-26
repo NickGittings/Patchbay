@@ -11,11 +11,13 @@ const attention = new Map<string, string>()
 export default function SimpleAgent({
   record,
   status,
+  inputOpen,
   scopeKey,
   openTerminal,
 }: {
   record: SessionRecord
   status: TerminalStatus
+  inputOpen: boolean
   scopeKey: string
   openTerminal: (r: SessionRecord) => void
 }) {
@@ -30,7 +32,7 @@ export default function SimpleAgent({
   const terminalHost = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
   const needsInput = status.health === 'input'
-  const expanded = manuallyExpanded || needsInput
+  const expanded = manuallyExpanded || inputOpen
   useEffect(() => {
     const el = terminalHost.current
     if (!el || !expanded) return
@@ -51,9 +53,12 @@ export default function SimpleAgent({
     const ui = useSimpleUi.getState()
     const list = ui.worktrees[scopeKey]?.expanded ?? []
     ui.patch(scopeKey, {
-      expanded: list.includes(record.id)
-        ? list.filter((id) => id !== record.id)
-        : [...list, record.id],
+      expanded: expanded ? list.filter((id) => id !== record.id) : [...list, record.id],
+      inputRequests: Object.fromEntries(
+        Object.entries(ui.worktrees[scopeKey]?.inputRequests ?? {}).filter(
+          ([sid]) => sid !== record.id,
+        ),
+      ),
     })
   }
   return (
@@ -62,13 +67,14 @@ export default function SimpleAgent({
       ref={host}
       data-session={record.id}
       data-needs-input={needsInput || undefined}
+      data-input-open={inputOpen || undefined}
     >
       <header>
         <button aria-expanded={expanded} aria-disabled={needsInput || undefined} onClick={toggle}>
           {expanded ? '▾' : '▸'} {record.metadata.name}
         </button>
         {record.metadata.componentId === PLAN_SCOPE && <span>Shared planner</span>}
-        <SimpleStatus sessions={[session]} />
+        <SimpleStatus status={status} />
         <button onClick={() => openTerminal(record)}>Open terminal</button>
       </header>
       {!!session?.activity?.length && (

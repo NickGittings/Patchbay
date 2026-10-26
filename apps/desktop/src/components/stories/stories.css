@@ -152,6 +152,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.story-stage {
+  color: var(--running);
+  font-size: 11px;
+}
+.story-stage.waitingOnYou,
+.story-stage.paused {
+  color: var(--input);
+}
+.story-stage.done {
+  color: var(--ok);
+}
+.story-stage.failed {
+  color: var(--bad);
+}
+.story-stage.stopped {
+  color: var(--muted);
+}
 .story-hint {
   color: var(--muted);
   font-size: 11px;

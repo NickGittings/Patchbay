@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import type { SessionState, TerminalSpec } from '../types'
 import { PLAN_SCOPE, sessionId, setProjectIdentity } from '../types'
+import { mostUrgent } from './display'
 
 const revealState = vi.hoisted(() => ({
   project: { id: 'p-1' },
@@ -10,7 +11,7 @@ const revealState = vi.hoisted(() => ({
   select: vi.fn(),
 }))
 vi.mock('../store', () => ({ useStore: { getState: () => revealState } }))
-const { attentionCounts, attentionItems, componentTerminals, mostUrgent, worktreeAttention } =
+const { attentionCounts, attentionItems, componentTerminals, worktreeAttention } =
   await import('./attention')
 
 setProjectIdentity('p-1')

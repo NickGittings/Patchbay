@@ -162,6 +162,7 @@ export default function Canvas() {
     project,
     planning,
     storyBoard,
+    boardToggle,
     highlighted,
     toggleHighlight,
     nodes,
@@ -176,6 +177,7 @@ export default function Canvas() {
       project: s.project,
       planning: s.simpleMode || s.view === 'plan',
       storyBoard: s.storyBoard,
+      boardToggle: s.simpleMode || s.view !== 'plan',
       highlighted: s.highlighted,
       toggleHighlight: s.toggleHighlight,
       nodes: s.nodes,
@@ -288,7 +290,7 @@ export default function Canvas() {
           size={1}
           color="var(--border-strong)"
         />
-        {!planning && (
+        {boardToggle && (
           <Panel position="top-left">
             <StoryViewTabs />
           </Panel>

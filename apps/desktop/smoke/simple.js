@@ -234,6 +234,24 @@
     click(stageTab('All'))
     await until('every stage shown', () => document.querySelectorAll('.simple-stage').length === 4)
     await expectOpenStages(['Plan'])
+    // Empty startup can briefly project Plan before restored action history arrives. Neither
+    // that provisional stage nor later review/fix rounds should become a disclosure choice.
+    const beforeRestore = state().simple
+    try {
+      for (const [i, action] of ['implement', 'review', 'fix', 'review', 'merge'].entries()) {
+        const stage = action === 'review' ? 'review' : action === 'merge' ? 'merge' : 'build'
+        state().patchTask(projectId, task.id, {
+          simple: {
+            ...beforeRestore,
+            log: [{ id: `restore-${i}`, atMs: Date.now(), kind: 'action', action, stage }],
+          },
+        })
+        await expectOpenStages([stage[0].toUpperCase() + stage.slice(1)])
+      }
+    } finally {
+      state().patchTask(projectId, task.id, { simple: beforeRestore })
+    }
+    await expectOpenStages(['Plan'])
     const buildContent = stageContent('Build')
     stageToggle('Build').focus()
     assert(document.activeElement === stageToggle('Build'), 'stage toggle cannot receive focus')
@@ -490,14 +508,43 @@
         const shown = [...document.querySelectorAll('.simple-stage > h2')].map((h) => h.textContent)
         return shown.join(',') === 'Plan,Merge' && askingAgent.getClientRects().length
       })
+      askingAgent.querySelector('.simple-terminal').scrollIntoView({ block: 'center' })
+      // Background smoke windows don't intersect the screen, so observe the container that
+      // owns the lazy TerminalPane mount instead of waiting for xterm's viewport observer.
+      const terminal = askingAgent.querySelector('.simple-terminal')
+      assert(terminal, 'input terminal container missing')
+      const thread = document.querySelector('.simple-thread')
+      const beforeAnswer = thread.scrollTop
+      await smoke.terminalWrite(planner, 's')
+      await until(
+        'first answer letter revokes input status',
+        () =>
+          state().sessions[planner]?.status?.agent?.state === 'working' &&
+          !askingAgent.hasAttribute('data-needs-input'),
+      )
+      assert(askingAgent.getClientRects().length, 'partial answer hid its filtered stage')
+      assert(terminal.isConnected, 'first answer letter unmounted the terminal')
+      assert(thread.scrollTop === beforeAnswer, 'first answer letter moved the chat scroll')
       click(stageTab('All'))
       await expectOpenStages(['Plan', 'Build'])
-      await smoke.terminalWrite(planner, 'smoke-wait\n')
+      for (const char of 'moke-wait') {
+        await smoke.terminalWrite(planner, char)
+        await sleep(50)
+        assert(terminal.isConnected, 'typing an answer unmounted the terminal')
+        assert(askingAgent.getClientRects().length, 'typing an answer hid its stage')
+      }
+      await smoke.terminalWrite(planner, '\n')
       await until(
         'planner input resolved',
-        () => state().sessions[planner]?.status?.agent?.state === 'working',
+        () =>
+          state().sessions[planner]?.status?.agent?.state === 'working' &&
+          state().sessions[planner]?.status?.agent?.authoritative,
       )
-      // Input expansion is temporary and does not overwrite the user's card or stage choices.
+      assert(
+        smoke.terminalText(planner).text.includes("simple-received:'smoke-wait\\n'"),
+        'partial answer text was lost',
+      )
+      // Only provider confirmation ends automatic expansion, preserving the user's choices.
       const agentToggle = askingAgent.querySelector('header button')
       await until(
         'resolved input card collapses',

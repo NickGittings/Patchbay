@@ -163,6 +163,14 @@
       query('.react-flow__viewport')?.style.transform === viewport,
       'toggle changed the map viewport',
     )
+    // Chat mode shows the board in place of its map, keeping the chat open.
+    state().setSimpleMode(true)
+    click(await until('Chat Stories toggle', () => button('.navigation-map .view-tabs', 'Stories')))
+    await until('board beside chat', () => query('.story-board'))
+    assert(state().simpleMode && state().view === 'navigation', 'Stories left Chat mode')
+    click(button('.story-board-header', 'Map'))
+    await until('Chat map visible', () => !state().storyBoard && mapNodeVisible())
+    state().setSimpleMode(false)
     click(button('.navigation-map .view-tabs', 'Stories'))
     await until('board restored', () => query('.story-board'))
     click(

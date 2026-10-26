@@ -7,14 +7,9 @@ import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
-import {
-  simpleKey,
-  stageOpen,
-  stagesAfterAdvance,
-  useSimpleUi,
-  EMPTY_SIMPLE_UI,
-} from '../lib/simpleUi'
-import { terminalStatus } from '../lib/display'
+import { simpleKey, stageOpen, pendingInput, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { foldedStatus, terminalStatus } from '../lib/display'
+import { useClockTick } from '../lib/clock'
 import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -43,6 +38,7 @@ import './simple.css'
 const pendingActions = new Set<string>()
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
+  useClockTick()
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -72,18 +68,18 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const stageUi = useSimpleUi(
     useShallow((u) => ({
       stages: u.worktrees[key]?.stages ?? EMPTY_SIMPLE_UI.stages,
-      currentStage: u.worktrees[key]?.currentStage,
+      inputRequests: u.worktrees[key]?.inputRequests ?? EMPTY_SIMPLE_UI.inputRequests,
     })),
   )
   const threadRef = useRef<HTMLDivElement>(null)
-  // A new filter starts at the top, unless an agent shown is asking for input: it stays in view.
+  // A new filter starts at the top, unless an input request or answer needs to stay in view.
   // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
   const shownFilter = useRef(filter)
   useEffect(() => {
     if (shownFilter.current === filter) return
     shownFilter.current = filter
     const thread = threadRef.current
-    const asking = thread?.querySelector('.simple-agent[data-needs-input]')
+    const asking = thread?.querySelector('.simple-agent[data-input-open]')
     if (asking) asking.scrollIntoView({ block: 'nearest' })
     else thread?.scrollTo({ top: 0 })
   }, [filter])
@@ -107,27 +103,37 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
     worktree,
   )
-  // Derive retained choices before committing the DOM, so advancing never hides focused content.
-  const stageOverrides = stagesAfterAdvance(stageUi.stages, stageUi.currentStage, model.stage)
-  useEffect(() => {
-    if (projectId) useSimpleUi.getState().syncStage(key, model.stage)
-  }, [key, model.stage, projectId])
-  if (!s.project) return null
-  // Share input-request state with filtering and agent cards; status leaves refresh their ages.
+  // Share a single status with filtering, disclosures, cards and labels.
   const stageSections = model.sections.map((section) => {
-    const agents = section.sessions.map((record) => ({
-      record,
-      status: terminalStatus('agent', s.sessions[record.id]),
-    }))
+    const agents = section.sessions.map((record) => {
+      const status = terminalStatus('agent', s.sessions[record.id])
+      const input = pendingInput(
+        record.id,
+        s.sessions[record.id],
+        status,
+        stageUi.inputRequests[record.id],
+      )
+      return { record, status, input }
+    })
     return {
       ...section,
       agents,
       asking: agents.some(({ status }) => status.health === 'input'),
+      inputOpen: agents.some(({ input }) => !!input),
     }
   })
-  // A stage whose agent asks for input stays shown whatever the filter, so the request is seen.
+  const inputRequests = Object.fromEntries(
+    stageSections.flatMap(({ agents }) =>
+      agents.flatMap(({ record, input }) => (input ? [[record.id, input]] : [])),
+    ),
+  )
+  useEffect(() => {
+    if (projectId) useSimpleUi.getState().syncInputRequests(key, inputRequests)
+  }, [key, projectId, inputRequests])
+  if (!s.project) return null
+  // Keep requests and partially typed answers visible whatever the filter.
   const sections = stageSections.filter(
-    (section) => filter === 'all' || section.id === filter || section.asking,
+    (section) => filter === 'all' || section.id === filter || section.inputOpen,
   )
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
@@ -259,7 +265,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         {sections.map((section) => {
           const { asking } = section
           const expanded =
-            filter !== 'all' || asking || stageOpen(stageOverrides, section.id, model.stage)
+            filter !== 'all' ||
+            section.inputOpen ||
+            stageOpen(stageUi.stages, section.id, model.stage)
           const contentId = `${stageContentId}-${section.id}`
           const label = section.id[0].toUpperCase() + section.id.slice(1)
           return (
@@ -280,7 +288,14 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     title={asking ? 'An agent is waiting for input' : undefined}
                     onClick={() => {
                       if (asking) return
-                      useSimpleUi.getState().toggleStage(key, section.id, model.stage)
+                      useSimpleUi.getState().toggleStage(
+                        key,
+                        section.id,
+                        model.stage,
+                        section.agents
+                          .filter(({ input }) => !!input)
+                          .map(({ record }) => record.id),
+                      )
                     }}
                   >
                     <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
@@ -295,7 +310,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                 )}
                 {!expanded && (
                   <SimpleStatus
-                    sessions={section.agents.map(({ record }) => s.sessions[record.id])}
+                    status={foldedStatus(section.agents.map(({ status }) => status))}
                     folded
                   />
                 )}
@@ -473,11 +488,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     )}
                   </article>
                 ))}
-                {section.agents.map(({ record, status }) => (
+                {section.agents.map(({ record, status, input }) => (
                   <SimpleAgent
                     key={record.id}
                     record={record}
                     status={status}
+                    inputOpen={!!input}
                     scopeKey={key}
                     openTerminal={openTerminal}
                   />

@@ -22,8 +22,6 @@ import { mostUrgent, terminalStatus, type TerminalStatus } from './display'
 import { planTerminals } from './plan'
 import { unseenFinished } from './taskActions'
 
-export { mostUrgent } from './display'
-
 export interface AttentionItem {
   auto?: boolean
   sid: string

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind, StoryStatus } from '../../types'
+import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
 import { derivedStatus, rollup, tree } from '../../lib/stories'
 import { shortTitle } from '../../lib/tasks'
 import StoryEditor from './StoryEditor'
@@ -112,6 +113,9 @@ export default function StoryBoard() {
         {items.map((item) => {
           const worktree = tasks.find((t) => t.id === item.task)
           const value = status(item)
+          // The worktree's Auto run: this item's own, or whatever still runs there.
+          const run = worktree && runs[worktree.id]
+          const stage = run && (run.runId === item.autoRunId || unfinished(run.status)) && run
           return (
             <button
               key={item.id}
@@ -131,6 +135,11 @@ export default function StoryBoard() {
                 <span className="story-worktree" title={worktree.worktree}>
                   {shortTitle(worktree.title)}
                   {worktree.missing ? ' · missing' : ''}
+                </span>
+              )}
+              {stage && (
+                <span className={`story-stage ${stage.status}`}>
+                  {STAGE_LABELS[stage.stage]} · {STATUS_LABELS[stage.status]}
                 </span>
               )}
             </button>

@@ -986,13 +986,18 @@ const createState: StateCreator<State> = (set, get) => ({
       simpleMode,
       simple: simpleMode ? (s.simple ?? { startedMs: Date.now(), log: [] }) : s.simple,
     })),
+  // Chat mode keeps its last Full view; the board takes the place of its map.
   setStoryBoard: (storyBoard) =>
-    set({
+    set((s) => ({
       storyBoard,
       ...(storyBoard
-        ? { selectedId: null, selectedEdgeId: null, view: 'navigation', simpleMode: false }
+        ? {
+            selectedId: null,
+            selectedEdgeId: null,
+            ...(s.simpleMode ? {} : { view: 'navigation' as const }),
+          }
         : {}),
-    }),
+    })),
   setView: (view) =>
     set((s) => ({ view, simpleMode: view === 'navigation' ? s.simpleMode : false })),
   toggleHighlight: (id) =>

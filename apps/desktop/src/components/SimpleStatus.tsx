@@ -1,18 +1,13 @@
-import type { SessionState } from '../types'
-import { useClockTick } from '../lib/clock'
-import { foldedStatus, terminalStatus } from '../lib/display'
+import type { TerminalStatus } from '../lib/display'
 import StatusLabel from './status/StatusLabel'
 
-/** Keep tooltip ages current without re-rendering the chat or its terminal cards. */
+/** Use the same computed status for the label, disclosures and input visibility. */
 export default function SimpleStatus({
-  sessions,
+  status,
   folded = false,
 }: {
-  sessions: (SessionState | undefined)[]
+  status: TerminalStatus | undefined
   folded?: boolean
 }) {
-  useClockTick()
-  const statuses = sessions.map((session) => terminalStatus('agent', session))
-  const status = folded ? foldedStatus(statuses) : statuses[0]
   return status ? <StatusLabel status={status} alwaysShow={folded} /> : null
 }
