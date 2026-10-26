@@ -26,11 +26,13 @@ export default function SimpleComposer({
   scopeKey,
   stage,
   records,
+  foreign,
   openTerminal,
 }: {
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
+  foreign: ReadonlySet<string>
   openTerminal: (r: SessionRecord) => void
 }) {
   const s = useStore(
@@ -46,7 +48,7 @@ export default function SimpleComposer({
   const ui = useSimpleUi((s) => s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI)
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
-  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage))
+  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, undefined, foreign))
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   const [pending, setPending] = useState(false),
     [error, setError] = useState('')

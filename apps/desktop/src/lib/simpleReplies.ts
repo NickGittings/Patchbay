@@ -22,13 +22,23 @@ export function hydrateReplies(
     .slice(-20)
 }
 
+/** The newest reply sequence persisted per session and generation, so repeats cost nothing. */
+const persisted = new Map<string, { generation: number; sequence: number }>()
+
+export function resetPersistedReplies() {
+  persisted.clear()
+}
+
 /** Persist at ingestion, including snapshots, even while Chat is unmounted. */
 export function persistReplies(
   sid: string,
   generation: number,
-  replies: readonly Reply[],
+  incoming: readonly Reply[],
   record?: SessionRecord,
 ) {
+  const mark = persisted.get(sid)
+  const replies =
+    mark?.generation === generation ? incoming.filter((r) => r.sequence > mark.sequence) : incoming
   if (!replies.length) return
   const s = useStore.getState()
   const metadata = record?.metadata ?? sessionMetadata.get(sid)
@@ -63,4 +73,12 @@ export function persistReplies(
       })
     }
   }
+  if ((mark?.generation ?? 0) <= generation)
+    persisted.set(sid, {
+      generation,
+      sequence: Math.max(
+        mark?.generation === generation ? mark.sequence : 0,
+        ...replies.map((r) => r.sequence),
+      ),
+    })
 }

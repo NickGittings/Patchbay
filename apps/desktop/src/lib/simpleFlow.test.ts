@@ -29,13 +29,27 @@ const findings = (clean: boolean): ReviewFindings =>
     verdict: { clean, counts: { critical: 0, high: clean ? 0 : 2, medium: 0, low: 0 } },
   }) as ReviewFindings
 
+/** This chat prompted the shared planner's run, so it is this conversation's. */
+const prompted = (s: FlowSnapshot) => {
+  s.simple!.log.push({
+    id: 'ask',
+    kind: 'prompt',
+    stage: 'plan',
+    atMs: 5,
+    sessionId: '@plan',
+    generation: 1,
+    text: 'Plan it',
+    mentions: [],
+  })
+  return s
+}
 test('idle and planning ignore old shared plans until the planner finishes a fresh one', () => {
   expect(flow(snapshot()).step).toBe('idle')
   expect(
     flow({ ...snapshot(), plan: { text: 'old', cut: false, savedMs: 0 } }).prompt,
   ).toBeUndefined()
-  expect(flow(snapshot('@plan', 'working')).step).toBe('planning')
-  const ready = { ...snapshot('@plan'), plan: { text: 'new', cut: false, savedMs: 30 } }
+  expect(flow(prompted(snapshot('@plan', 'working'))).step).toBe('planning')
+  const ready = { ...prompted(snapshot('@plan')), plan: { text: 'new', cut: false, savedMs: 30 } }
   expect(flow(ready)).toMatchObject({
     step: 'planReady',
     prompt: { text: 'Build this plan?', actions: [{ action: 'build' }, { action: 'plan' }] },
@@ -135,4 +149,44 @@ test('a later planning action supersedes an earlier merge outcome and completed 
     mentions: [],
   })
   expect(flow(s)).toMatchObject({ step: 'planning' })
+})
+test('an agent at its prompt after a resume nobody here prompted is done, a fresh kickoff is not', () => {
+  const resumed = snapshot('@task', 'idle')
+  resumed.sessions['@task'].status!.agent!.turnId = null
+  expect(flow(resumed)).toMatchObject({ step: 'built' })
+  const launched = snapshot('@task', 'idle')
+  launched.sessions['@task'].status!.agent!.turnId = null
+  launched.simple!.log.push({
+    id: 'build',
+    atMs: 11,
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    sessionId: '@task',
+    generation: 1,
+  })
+  expect(flow(launched)).toMatchObject({ step: 'building', busyAgent: { id: '@task' } })
+  // Another run of that agent (a later generation) is no longer waiting for this kickoff.
+  launched.sessions['@task'].generation = 2
+  expect(flow(launched).step).toBe('built')
+})
+test('a reviewer whose idle is stale or unconfirmed still holds the review open', () => {
+  const s = snapshot('@review')
+  const other = { ...record('@review'), id: 'other' }
+  s.records = [...s.records, other]
+  s.findings = findings(false)
+  for (const authoritative of [false, undefined]) {
+    s.sessions.other = session('idle')
+    s.sessions.other.status!.agent!.authoritative = authoritative
+    expect(flow(s)).toMatchObject({ step: 'reviewing', busyAgent: { id: 'other' } })
+  }
+  s.sessions.other = session('idle')
+  expect(flow(s).step).toBe('reviewed')
+})
+test('a shared planner another chat is using does not make this one plan', () => {
+  const s = snapshot('@plan', 'working')
+  s.plan = { text: 'new', cut: false, savedMs: 30 }
+  expect(flow(s).step).toBe('planReady')
+  expect(flow(s).busyAgent).toBeUndefined()
+  expect(flow(prompted(s)).step).toBe('planning')
 })

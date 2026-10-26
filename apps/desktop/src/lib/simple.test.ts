@@ -28,11 +28,10 @@ test('stable stages isolate projects/worktrees and explicitly share only planner
   const planner = record('p', '@plan', null),
     other = record('other', 'app', 'other')
   const model = thread(snapshot([planner, other, record('root', '@task', 't')]), worktree)
-  expect(model.items.filter((i) => i.kind === 'agent').map((i) => i.sessionId)).toEqual([
-    'p',
-    'root',
-  ])
+  // The shared planner stays a recipient, but a run this chat never used isn't in its thread.
+  expect(model.items.filter((i) => i.kind === 'agent').map((i) => i.sessionId)).toEqual(['root'])
   expect(model.records.map((r) => r.id)).toEqual(['p', 'root'])
+  expect([...model.foreign]).toEqual(['p'])
   expect(
     relatedSession({ ...planner, metadata: { ...planner.metadata, projectId: 'other' } }, worktree),
   ).toBe(false)
@@ -195,4 +194,44 @@ test('a story planning action remains the boundary when its process starts a mom
   r.snapshot!.generation = 2
   r.snapshot!.startedMs = 20
   expect(thread(s, worktree)).toMatchObject({ planningStarted: 20, planReady: false })
+})
+test('another chat’s planner run never shows here or takes over the recipient with its question', () => {
+  const planner = record('p', '@plan', null, 5)
+  const build = record('build', '@task', 't', 2)
+  const sessions = {
+    p: {
+      generation: 3,
+      running: true,
+      status: { agent: { state: 'needsInput', sinceMs: 6 } },
+    },
+  } as never
+  const model = thread({ ...snapshot([build, planner]), sessions }, worktree)
+  expect(model.items.some((i) => i.kind === 'agent' && i.sessionId === 'p')).toBe(false)
+  expect(selectRecipient(model.records, sessions, 'build', undefined, model.foreign)?.id).toBe(
+    'build',
+  )
+  const used = thread(
+    {
+      ...snapshot([build, planner]),
+      sessions,
+      simple: {
+        startedMs: 1,
+        log: [
+          {
+            id: 'ask',
+            kind: 'prompt',
+            stage: 'plan',
+            atMs: 7,
+            sessionId: 'p',
+            generation: 3,
+            text: 'Plan it',
+            mentions: [],
+          },
+        ],
+      },
+    },
+    worktree,
+  )
+  expect(used.foreign.size).toBe(0)
+  expect(selectRecipient(used.records, sessions, 'build', undefined, used.foreign)?.id).toBe('p')
 })

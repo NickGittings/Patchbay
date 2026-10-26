@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
-import { hydrateReplies, persistReplies } from './simpleReplies'
+import { hydrateReplies, persistReplies, resetPersistedReplies } from './simpleReplies'
 import { revealTerminal } from './attention'
 import { sessionMetadata, type Reply, type SessionRecord, type Task } from '../types'
 const reply = (sequence: number): Reply => ({
@@ -29,6 +29,7 @@ beforeEach(() => {
   })
   useStore.setState({ tasks: [{ id: 't', title: 'Task', worktree: '/t', createdMs: 1 } as Task] })
   sessionMetadata.clear()
+  resetPersistedReplies()
 })
 test('live and snapshot reply races merge by sequence within one generation only', () => {
   expect(

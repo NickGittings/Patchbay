@@ -335,3 +335,24 @@ test('planning a story in Chat retains the board, view and mode and logs the sto
     text: 'Feature name',
   })
 })
+test('a replacing story planner logs its new run, and a worktree switch while stopping refuses', async () => {
+  planner()
+  useStore.getState().setSimpleMode(true)
+  const sid = plannerSessionId('agent', 'p')
+  useStore.getState().setSession(sid, { generation: 4, running: false })
+  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ running: true } as never)
+    .mockResolvedValueOnce({ running: false } as never)
+    .mockResolvedValueOnce({ running: true, generation: 5 } as never)
+  await planStory('p', story('Feature name'))
+  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({ sessionId: sid, generation: 5 })
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ running: true } as never)
+    .mockImplementationOnce(async () => {
+      useStore.setState({ activeTask: 'other' })
+      return { running: false } as never
+    })
+  await expect(planStory('p', story('Feature name'))).rejects.toThrow('The worktree changed')
+  vi.unstubAllGlobals()
+})

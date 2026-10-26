@@ -19,6 +19,19 @@ pub struct Proposal {
     pub version: u32,
     pub plan: String,
     pub assignments: Vec<Assignment>,
+    /// When the pending proposal was submitted (Unix ms), set by [`read`]; never saved, and
+    /// ignored when [`apply`] compares the proposal it was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_ms: Option<u64>,
+}
+
+impl Proposal {
+    fn unstamped(&self) -> Self {
+        Self {
+            saved_ms: None,
+            ..self.clone()
+        }
+    }
 }
 
 impl Proposal {
@@ -91,11 +104,11 @@ fn save(root: &Path, task: Option<&str>, proposal: &Proposal, applied: bool) -> 
     let path = file(root, task, applied)?;
     let bytes = if applied {
         serde_json::to_vec_pretty(&Applied {
-            proposal: proposal.clone(),
+            proposal: proposal.unstamped(),
             plan_modified_ns: plan_stamp(root, task)?,
         })?
     } else {
-        serde_json::to_vec_pretty(proposal)?
+        serde_json::to_vec_pretty(&proposal.unstamped())?
     };
     crate::workspace::atomic_write(&path, &bytes)
 }
@@ -111,19 +124,32 @@ pub fn read(root: &Path, task: Option<&str>, applied: bool) -> Result<Option<Pro
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     });
-    match std::fs::read(file(root, task, applied)?) {
-        Ok(bytes) if applied => {
-            let saved: Applied = serde_json::from_slice(&bytes)?;
-            let plan = plans::read(root, task)?;
-            Ok((!plan.cut
-                && plan.text == saved.proposal.plan
-                && plan_stamp(root, task).ok() == Some(saved.plan_modified_ns))
-            .then_some(saved.proposal))
-        }
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+    let mut file = match std::fs::File::open(file(root, task, applied)?) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    if applied {
+        let saved: Applied = serde_json::from_slice(&bytes)?;
+        let plan = plans::read(root, task)?;
+        return Ok((!plan.cut
+            && plan.text == saved.proposal.plan
+            && plan_stamp(root, task).ok() == Some(saved.plan_modified_ns))
+        .then(|| saved.proposal.unstamped()));
     }
+    // The stamp comes from the file just read, so it can't belong to a newer submission.
+    let saved_ms = file
+        .metadata()?
+        .modified()?
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok());
+    Ok(Some(Proposal {
+        saved_ms,
+        ..serde_json::from_slice::<Proposal>(&bytes)?
+    }))
 }
 
 /// Save a planner's proposal for review, replacing any pending one.
@@ -164,7 +190,7 @@ pub fn apply(
     let pending = read(root, from, false)?.ok_or_else(|| {
         anyhow::anyhow!("This proposal is no longer pending; refresh before applying")
     })?;
-    if &pending != expected {
+    if pending.unstamped() != expected.unstamped() {
         bail!("The planner submitted a newer proposal; refresh before applying");
     }
     let ids = expected
@@ -201,10 +227,7 @@ pub fn apply(
 }
 
 /// When `task`'s pending proposal was submitted, if it has one.
-///
-/// # Errors
-/// Fails when the proposal metadata cannot be read.
-pub fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::time::SystemTime>> {
+pub(crate) fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::time::SystemTime>> {
     match std::fs::metadata(file(root, task, false)?) {
         Ok(meta) => Ok(Some(meta.modified()?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -292,6 +315,7 @@ mod tests {
                 component_id: "web".into(),
                 assignment: "Add button".into(),
             }],
+            saved_ms: None,
         }
     }
     #[test]
@@ -330,7 +354,12 @@ mod tests {
         submit(&p, None, &proposed).unwrap();
         assert!(plans::read(&root, None).unwrap().text.is_empty());
         assert!(section(&p, None, &["web".into()]).is_none());
-        assert_eq!(apply(&p, None, None, &proposed).unwrap(), ["web"]);
+        // The reviewer sends back the stamped proposal it read, `savedMs` included.
+        let pending = read(&root, None, false).unwrap().unwrap();
+        assert!(pending.saved_ms.is_some());
+        let wire: Proposal =
+            serde_json::from_value(serde_json::to_value(&pending).unwrap()).unwrap();
+        assert_eq!(apply(&p, None, None, &wire).unwrap(), ["web"]);
         assert!(read(&root, None, false).unwrap().is_none());
         assert!(apply(&p, None, None, &proposed).is_err());
         assert!(

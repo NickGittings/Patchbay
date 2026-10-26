@@ -502,7 +502,9 @@ export interface PlanText {
 }
 
 export interface TerminalSnapshot {
+  /** Session lists leave `replies` out and name only the latest one's sequence. */
   replies?: Reply[]
+  lastReply?: number | null
   activity?: Activity[]
   /** Original launch folder for this incarnation; absent in legacy history. */
   launchDirectory?: string | null

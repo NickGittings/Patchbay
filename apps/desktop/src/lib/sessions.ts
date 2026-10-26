@@ -907,6 +907,28 @@ export function withoutForgotten(
   return next
 }
 
+const fetchingReplies = new Set<string>()
+/** Session lists name only the latest reply: read a snapshot for replies this window missed. */
+async function fetchReplies(record: SessionRecord) {
+  if (fetchingReplies.has(record.id)) return
+  fetchingReplies.add(record.id)
+  try {
+    const snapshot = await terminalSnapshot(record.id)
+    const prev = useStore.getState().sessions[record.id]
+    if (!snapshot?.replies?.length) return
+    if (prev?.generation === snapshot.generation)
+      useStore.getState().setSession(record.id, {
+        ...prev,
+        replies: hydrateReplies(prev, snapshot.generation, snapshot.replies),
+      })
+    persistReplies(record.id, snapshot.generation, snapshot.replies, record)
+  } catch {
+    // The next reconcile tries again.
+  } finally {
+    fetchingReplies.delete(record.id)
+  }
+}
+
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
@@ -944,7 +966,10 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot) {
-          persistReplies(r.id, snapshot.generation, snapshot.replies ?? [], r)
+          const known = useStore.getState().sessions[r.id]
+          const seen =
+            known?.generation === snapshot.generation ? (known.replies?.at(-1)?.sequence ?? 0) : 0
+          if ((snapshot.lastReply ?? 0) > seen) void fetchReplies(r)
           const next: SessionState = {
             generation: snapshot.generation,
             running: snapshot.running,

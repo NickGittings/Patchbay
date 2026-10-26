@@ -249,6 +249,10 @@ pub struct Snapshot {
     pub activity: Vec<crate::status::Activity>,
     #[serde(default)]
     pub replies: Vec<crate::status::Reply>,
+    /// Sequence of the latest reply. Session lists leave `replies` out and carry only this,
+    /// so clients fetch a snapshot just when a reply they haven't seen exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<u64>,
     /// The spec's notice. Full-screen programs hide the dim backlog line, so
     /// windows show this outside the terminal as well.
     pub notice: Option<String>,
@@ -902,6 +906,7 @@ impl PtyManager {
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
         let skip = backlog.data.len().saturating_sub(limit);
+        let replies = backlog.tracker.replies();
         Some(Snapshot {
             launch_directory: backlog.launch.as_ref().map(|spec| spec.cwd.clone()),
             truncated: backlog.end > backlog.data.len() as u64,
@@ -914,7 +919,8 @@ impl PtyManager {
             exited_ms: backlog.exited_ms,
             status,
             activity: backlog.tracker.activity(),
-            replies: backlog.tracker.replies(),
+            last_reply: replies.last().map(|r| r.sequence),
+            replies,
             notice: backlog.notice.clone(),
         })
     }

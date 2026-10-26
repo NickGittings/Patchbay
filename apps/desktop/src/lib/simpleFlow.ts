@@ -1,4 +1,5 @@
 import type { MergeOutcome, ReviewFindings, SessionRecord } from '../types'
+import { reviewerBusy } from './review'
 import {
   recordStage,
   selectRecipient,
@@ -40,21 +41,29 @@ export interface SimpleFlow {
 }
 const button = (action: FlowAction, label: string) => ({ action, label })
 
-/** State alone scripts the chat. No models, terminal parsing, or effects. */
-export function flow(snapshot: FlowSnapshot): SimpleFlow {
-  const model = thread(snapshot, snapshot.worktree)
-  const agent = selectRecipient(model.records, snapshot.sessions, model.stage)
-  const session = agent ? (snapshot.sessions[agent.id] ?? agent.snapshot) : undefined
+/**
+ * State alone scripts the chat. No models, terminal parsing, or effects. Callers that already
+ * projected the thread and chose the recipient pass them in.
+ */
+export function flow(
+  snapshot: FlowSnapshot,
+  model = thread(snapshot, snapshot.worktree),
+  agent = selectRecipient(model.records, snapshot.sessions, model.stage, undefined, model.foreign),
+): SimpleFlow {
+  // A shared planner another chat is using is no agent of this conversation.
+  const own = agent && !model.foreign.has(agent.id) ? agent : undefined
+  const session = own ? (snapshot.sessions[own.id] ?? own.snapshot) : undefined
   const state = session?.status?.agent
   const ended =
-    !!session &&
-    (!session.running ||
-      state?.state === 'review' ||
-      state?.state === 'ended' ||
-      (state?.state === 'idle' &&
-        state.authoritative &&
-        (!!state.turnId || !!session.replies?.length)))
-  const working = !!agent && !ended
+    !own ||
+    (!!session &&
+      (!session.running ||
+        state?.state === 'review' ||
+        state?.state === 'ended' ||
+        (state?.state === 'idle' &&
+          !!state.authoritative &&
+          (!!state.turnId || !!session.replies?.length || !awaitingTurn(snapshot, own, session)))))
+  const working = !!own && !ended
   const auto = snapshot.auto
   const manualAfterAuto =
     auto?.status === 'done' &&
@@ -128,8 +137,7 @@ export function flow(snapshot: FlowSnapshot): SimpleFlow {
     model.records.find((r) => {
       if (recordStage(r) !== 'review') return false
       const s = snapshot.sessions[r.id] ?? r.snapshot
-      const a = s?.status?.agent
-      return s?.running && (!a || !['review', 'idle', 'ended'].includes(a.state))
+      return reviewerBusy(s, !!s?.running)
     })
   if (pendingReviewer)
     return {
@@ -167,7 +175,7 @@ export function flow(snapshot: FlowSnapshot): SimpleFlow {
         actions: [button('checkMerge', 'Check conflicts')],
       },
     }
-  if (model.stage === 'review' && ended) {
+  if (model.stage === 'review' && own && ended) {
     const verdict = snapshot.findings?.verdict
     if (!verdict)
       return {
@@ -192,7 +200,7 @@ export function flow(snapshot: FlowSnapshot): SimpleFlow {
           : mergePrompt(),
     }
   }
-  if (model.stage === 'build' && ended)
+  if (model.stage === 'build' && own && ended)
     return isFix(snapshot, agent)
       ? {
           step: 'fixed',
@@ -221,7 +229,26 @@ export function flow(snapshot: FlowSnapshot): SimpleFlow {
         actions: [button('build', 'Build'), button('plan', 'Keep planning')],
       },
     }
-  return { step: agent ? 'planning' : 'idle', agent }
+  return { step: own ? 'planning' : 'idle', agent }
+}
+/**
+ * An agent this chat launched or prompted in this run that hasn't begun the turn it was given:
+ * its provider confirms `idle` at startup, before the kickoff or prompt arrives. A run nobody
+ * here prompted (a resume from another view) is idle at its prompt and done.
+ */
+function awaitingTurn(
+  snapshot: FlowSnapshot,
+  agent: SessionRecord,
+  session: { generation?: number; startedMs?: number },
+) {
+  return !!snapshot.simple?.log.some(
+    (e) =>
+      e.sessionId === agent.id &&
+      e.kind !== 'reply' &&
+      (e.generation === undefined
+        ? e.atMs >= (session.startedMs ?? 0)
+        : e.generation === session.generation),
+  )
 }
 function isFix(snapshot: FlowSnapshot, agent: SessionRecord | undefined) {
   if (!agent || recordStage(agent) !== 'build') return false

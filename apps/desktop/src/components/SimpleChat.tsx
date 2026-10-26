@@ -103,14 +103,24 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     target?.branch ??
     (source && defaultReviewBase(source, s.tasks, data?.worktrees ?? [], []))
   const checkKey = JSON.stringify([key, source?.head, target?.head])
-  const state = flow({
-    ...snapshot,
-    worktree,
-    findings: findings?.findings,
-    base: base ?? undefined,
-    conflicts: check?.key === checkKey ? check.paths : undefined,
-  })
-  const recipient = selectRecipient(model.records, s.sessions, model.stage)
+  const recipient = selectRecipient(
+    model.records,
+    s.sessions,
+    model.stage,
+    undefined,
+    model.foreign,
+  )
+  const state = flow(
+    {
+      ...snapshot,
+      worktree,
+      findings: findings?.findings,
+      base: base ?? undefined,
+      conflicts: check?.key === checkKey ? check.paths : undefined,
+    },
+    model,
+    recipient,
+  )
   const asking =
     recipient && terminalStatus('agent', s.sessions[recipient.id]).health === 'input'
       ? recipient
@@ -142,8 +152,15 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     else if (!inputKey && drawer === 'input')
       useSimpleUi.getState().patch(key, { terminal: 'closed' })
   }, [key, inputKey])
+  // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
-    model.items,
+    model.items.map((i) =>
+      i.kind === 'agent'
+        ? `${i.id}:${i.entries.length}`
+        : i.kind === 'plan'
+          ? `${i.id}:${i.text.length}:${i.stale}`
+          : `${i.id}:${i.atMs}`,
+    ),
     state.step,
     state.prompt,
     inputKey,
@@ -475,6 +492,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         scopeKey={key}
         stage={model.stage}
         records={model.records}
+        foreign={model.foreign}
         openTerminal={(_record: SessionRecord) =>
           useSimpleUi
             .getState()

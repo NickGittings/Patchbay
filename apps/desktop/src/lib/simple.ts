@@ -241,6 +241,21 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     }
   }
   log.sort((a, b) => a.atMs - b.atMs)
+  // The shared planner's current run belongs to the chats that launched or prompted it.
+  const foreign = new Set(
+    records
+      .filter((r) => recordStage(r) === 'plan')
+      .filter((r) => {
+        const generation = (snapshot.sessions[r.id] ?? r.snapshot)?.generation
+        return !log.some(
+          (e) =>
+            e.sessionId === r.id &&
+            e.kind !== 'reply' &&
+            (e.generation === undefined || e.generation === generation),
+        )
+      })
+      .map((r) => r.id),
+  )
   const latest = records.filter((r) => recordStage(r) !== 'plan').at(-1) ?? records.at(-1)
   let stage = latest ? recordStage(latest) : 'plan'
   const action = log
@@ -296,12 +311,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   }
   for (const record of records) {
     if (items.some((i) => i.kind === 'agent' && i.sessionId === record.id)) continue
-    if (
-      recordStage(record) === 'plan' &&
-      !log.some((e) => e.sessionId === record.id) &&
-      (stageSessionTime(record) ?? 0) < (snapshot.simple?.startedMs ?? 0)
-    )
-      continue
+    if (foreign.has(record.id)) continue
     items.push({
       kind: 'agent',
       id: `agent:${record.id}`,
@@ -336,7 +346,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       })
   }
   items.sort((a, b) => a.atMs - b.atMs)
-  return { stage, planReady: currentPlan, records, items, planningStarted: start }
+  return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start }
 }
 
 /** Input waits take priority; otherwise Send and the drawer follow the current role. */
@@ -345,12 +355,15 @@ export function selectRecipient(
   sessions: Record<string, SessionState>,
   stage: SimpleStage,
   override?: string,
+  /** Shared planner runs this chat never used (`thread`'s `foreign`): their questions aren't its. */
+  foreign: ReadonlySet<string> = new Set(),
 ) {
   const eligible = records.filter((r) => r.metadata.kind === 'agent')
   const asking = [...eligible]
     .reverse()
     .find(
       (r) =>
+        !foreign.has(r.id) &&
         sessions[r.id]?.running &&
         !sessions[r.id]?.disconnected &&
         sessions[r.id]?.status?.agent?.state === 'needsInput',

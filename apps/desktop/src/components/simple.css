@@ -95,6 +95,9 @@
   margin-right: 8px;
 }
 .simple-terminal-drawer {
+  /* The pane's terminal area is `flex: 1` around an absolute host, so it needs a flex parent. */
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
   height: 260px;
   min-height: 120px;

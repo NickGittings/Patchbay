@@ -1011,6 +1011,7 @@ mod tests {
                 status: Default::default(),
                 activity: Vec::new(),
                 replies: Vec::new(),
+                last_reply: None,
                 notice: None,
             }),
             history: vec![],

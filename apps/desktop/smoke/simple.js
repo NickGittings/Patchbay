@@ -73,7 +73,7 @@
     )
     click(button('View Planner terminal'))
     await until('planner drawer', () =>
-      document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"]'),
+      document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
     )
     click(button('Build'))
     const dialog = await until('new worktree offered', () =>
@@ -97,7 +97,7 @@
     await until(
       'open drawer follows Builder',
       () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="build terminal"]') &&
+        document.querySelector('.simple-terminal-drawer[aria-label="build terminal"] .xterm') &&
         button('Hide Builder terminal'),
     )
     click(button('Hide Builder terminal'))
@@ -105,6 +105,13 @@
     click(button('Review'))
     await until('review findings', () => chatText().includes('1 issues found.') && button('Fix'))
     inChat()
+    await until('reviewer terminal button', () => button('View Reviewer terminal'))
+    click(button('View Reviewer terminal'))
+    await until('reviewer drawer shows its terminal', () =>
+      document.querySelector('.simple-terminal-drawer[aria-label="review terminal"] .xterm'),
+    )
+    click(button('Hide Reviewer terminal'))
+    await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     click(button('Fix'))
     await until('fix done', () => chatText().includes('Fixes done.'))
     click(button('Review again'))
@@ -118,8 +125,27 @@
     const merger = state().simple.log.findLast((e) => e.action === 'merge').sessionId
     await smoke.terminalStop(merger)
     await until('merge agent stopped', () => !state().sessions[merger]?.running)
-    // A permission wait switches both recipient and drawer to the waiting planner.
+    // A permission wait of a planner run this chat started switches both recipient and drawer
+    // to it; another chat's run of the shared planner never does.
     await smoke.startTerminal('@plan', fake.id, null, projectId)
+    await until('planner restarted', () => state().sessions[planner]?.running)
+    state().patchTask(projectId, task, {
+      simple: {
+        ...state().simple,
+        log: [
+          ...state().simple.log,
+          {
+            id: 'smoke-plan',
+            kind: 'action',
+            action: 'plan',
+            stage: 'plan',
+            sessionId: planner,
+            generation: state().sessions[planner].generation,
+            atMs: Date.now(),
+          },
+        ],
+      },
+    })
     await smoke.terminalWrite(planner, 'smoke-input\n')
     await until(
       'input opens planner drawer',

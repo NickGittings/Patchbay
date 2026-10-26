@@ -894,11 +894,8 @@ impl Service {
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
-            replies: if include_activity {
-                s.replies.clone()
-            } else {
-                Vec::new()
-            },
+            replies: Vec::new(),
+            last_reply: s.replies.last().map(|r| r.sequence),
             activity: if include_activity {
                 s.activity.clone()
             } else {
@@ -929,7 +926,9 @@ impl Service {
                     snapshot: self
                         .pty
                         .snapshot_with(&r.id, 0)
-                        .or_else(|| r.snapshot.as_ref().map(|s| bare(s, true))),
+                        .as_ref()
+                        .or(r.snapshot.as_ref())
+                        .map(|s| bare(s, true)),
                     history: r.history.iter().map(|s| bare(s, false)).collect(),
                     launch_command: String::new(),
                     restart_context: None,
@@ -4546,6 +4545,7 @@ mod tests {
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
             replies: Vec::new(),
+            last_reply: None,
             notice: None,
         };
         assert_eq!(restart_conversation(Adapter::Claude, &snapshot), None);
@@ -4651,7 +4651,7 @@ mod tests {
     }
 
     #[test]
-    fn summaries_keep_current_activity_without_copying_history_logs() {
+    fn summaries_keep_current_activity_and_only_the_latest_reply_sequence() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
@@ -4660,7 +4660,8 @@ mod tests {
             "exitCode": 0, "startedMs": 1, "exitedMs": 2, "truncated": false,
             "status": crate::status::SessionStatus::default(), "notice": null,
             "activity": [{"sequence": 1, "atMs": 1, "tool": "Read",
-                "target": "src/main.rs", "fileTarget": true, "turn": null}]
+                "target": "src/main.rs", "fileTarget": true, "turn": null}],
+            "replies": [{"sequence": 4, "atMs": 1, "turn": null, "text": "Done."}]
         });
         let record: Record = serde_json::from_value(serde_json::json!({
             "id": "s", "metadata": {"projectId": "p", "projectName": "P",
@@ -4674,9 +4675,16 @@ mod tests {
         .unwrap();
         service.records.lock().unwrap().insert("s".into(), record);
         let summary = service.summaries().pop().unwrap();
-        assert_eq!(summary.snapshot.unwrap().activity.len(), 1);
+        let current = summary.snapshot.unwrap();
+        assert_eq!(current.activity.len(), 1);
+        assert!(current.replies.is_empty());
+        assert_eq!(current.last_reply, Some(4));
         assert!(summary.history[0].activity.is_empty());
         assert_eq!(service.list()[0].history[0].activity.len(), 1);
+        assert_eq!(
+            service.list()[0].snapshot.as_ref().unwrap().replies.len(),
+            1
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4695,6 +4703,7 @@ mod tests {
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
             replies: Vec::new(),
+            last_reply: None,
             notice: None,
         };
         let mut history: Vec<_> = (0..10).map(snapshot).collect();

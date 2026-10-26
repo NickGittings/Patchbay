@@ -209,7 +209,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         reply: (event == "Stop")
             .then(|| {
                 let text = input.get("last_assistant_message")?.as_str()?;
-                let mut end = text.len().min(crate::plans::PLAN_LIMIT);
+                let mut end = text.len().min(REPLY_LIMIT);
                 while !text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -357,6 +357,12 @@ fn journal(dir: &Path, mut event: HookEvent) -> Result<()> {
     Ok(())
 }
 
+/// Bytes of a final assistant message relayed with `Stop`; the plan itself travels as a file.
+pub const REPLY_LIMIT: usize = 16 * 1024;
+/// Largest journal entry `drain` reads: a reply escaped at worst six bytes per byte
+/// (`\u001f`), plus room for the other fields, so no `Stop` is ever dropped for its size.
+const ENTRY_LIMIT: usize = 6 * REPLY_LIMIT + 64 * 1024;
+
 /// Read committed events, ordered and consumed once. Called under the tracker lock.
 pub(crate) fn drain(dir: &Path) -> Vec<HookEvent> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -374,7 +380,7 @@ pub(crate) fn drain(dir: &Path) -> Vec<HookEvent> {
         .filter_map(|path| {
             let event = std::fs::read(&path)
                 .ok()
-                .filter(|b| b.len() <= 16 * 1024)
+                .filter(|b| b.len() <= ENTRY_LIMIT)
                 .and_then(|b| serde_json::from_slice(&b).ok());
             let _ = std::fs::remove_file(path);
             event
@@ -861,6 +867,17 @@ mod tests {
         }
     }
     #[test]
+    fn a_longest_escaped_reply_survives_the_journal() {
+        let fixture = Fixture::new();
+        let input = json!({"hook_event_name":"Stop", "session_id":"12345678-session", "turn_id":"12345678-turn", "last_assistant_message":"\u{1}".repeat(REPLY_LIMIT * 2)});
+        let mut event = normalize(Adapter::Claude, &input).unwrap();
+        event.target = Some("界".repeat(4096));
+        journal(&fixture.0, event).unwrap();
+        let drained = drain(&fixture.0);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].reply.as_ref().unwrap().len(), REPLY_LIMIT);
+    }
+    #[test]
     fn codex_uses_json_when_toml_contains_only_hook_metadata() {
         let fixture = Fixture::new();
         let config = fixture.0.join("config.toml");
@@ -1194,9 +1211,9 @@ mod tests {
                 normalize(provider, &input).unwrap().reply.as_deref(),
                 Some("Hello **world**")
             );
-            input["last_assistant_message"] = json!("界".repeat(crate::plans::PLAN_LIMIT));
+            input["last_assistant_message"] = json!("界".repeat(REPLY_LIMIT));
             let reply = normalize(provider, &input).unwrap().reply.unwrap();
-            assert_eq!(reply.len(), crate::plans::PLAN_LIMIT / 3 * 3);
+            assert_eq!(reply.len(), REPLY_LIMIT / 3 * 3);
             input["last_assistant_message"] = json!({"text":"ignore"});
             assert!(normalize(provider, &input).unwrap().reply.is_none());
             input["last_assistant_message"] = json!("not a stop");

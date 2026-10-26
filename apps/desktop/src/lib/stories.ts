@@ -185,6 +185,9 @@ export async function updateStory(projectId: string, id: string, patch: StoryPat
 export async function planStory(projectId: string, story: Story) {
   const s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Select the story’s project first')
+  // The chat the story was planned from, whichever worktree is shown once the planner starts.
+  const task = s.activeTask
+  const chat = s.simpleMode
   const device = roleDevice(s.devices, s.agentRoles, 'plan')
   const sid = plannerSessionId(device.id, projectId)
   if (autoRuns(s).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
@@ -199,6 +202,9 @@ export async function planStory(projectId: string, story: Story) {
         throw new Error('The previous planner is still stopping. Try Plan again.')
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
+    const now = useStore.getState()
+    if (now.project?.id !== projectId || now.activeTask !== task)
+      throw new Error('The worktree changed. Choose Plan again in the intended worktree.')
   }
   const items = [story, ...descendants(s.stories, story)]
   s.clearHighlights()
@@ -210,14 +216,17 @@ export async function planStory(projectId: string, story: Story) {
     kickoff: { kind: 'planStory' },
     story: story.id,
   })
-  if (s.simpleMode)
-    logSimple(projectId, s.activeTask, {
+  if (chat)
+    logSimple(projectId, task, {
       kind: 'action',
       action: 'plan',
       stage: 'plan',
       sessionId: sid,
+      // The store may still hold the stopped planner's run until its `started` event arrives;
+      // the service already knows the one just launched.
       generation:
-        useStore.getState().sessions[sid]?.generation ?? (await terminalSnapshot(sid))?.generation,
+        (await terminalSnapshot(sid).catch(() => null))?.generation ??
+        useStore.getState().sessions[sid]?.generation,
       text: story.title,
       atMs: planningAtMs,
     })
