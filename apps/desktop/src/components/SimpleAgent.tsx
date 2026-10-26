@@ -28,11 +28,16 @@ export default function SimpleAgent({
   const manuallyExpanded = useSimpleUi((s) =>
     (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).expanded.includes(record.id),
   )
+  const inputCollapsed = useSimpleUi((s) =>
+    (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).inputCollapsed.includes(record.id),
+  )
   const host = useRef<HTMLElement>(null)
   const terminalHost = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
+  // Typing in the inline terminal keeps it mounted, whatever ends its input expansion.
+  const [typing, setTyping] = useState(false)
   const needsInput = status.health === 'input'
-  const expanded = manuallyExpanded || inputOpen
+  const expanded = manuallyExpanded || (inputOpen && (needsInput || !inputCollapsed)) || typing
   useEffect(() => {
     const el = terminalHost.current
     if (!el || !expanded) return
@@ -48,18 +53,11 @@ export default function SimpleAgent({
     attention.set(record.id, key)
     host.current?.scrollIntoView({ block: 'nearest' })
   }, [needsInput, session?.generation, session?.status?.agent, record.id, scopeKey])
+  // Folding a card only folds the card: its stage keeps any input expansion it has.
   const toggle = () => {
     if (needsInput) return
-    const ui = useSimpleUi.getState()
-    const list = ui.worktrees[scopeKey]?.expanded ?? []
-    ui.patch(scopeKey, {
-      expanded: expanded ? list.filter((id) => id !== record.id) : [...list, record.id],
-      inputRequests: Object.fromEntries(
-        Object.entries(ui.worktrees[scopeKey]?.inputRequests ?? {}).filter(
-          ([sid]) => sid !== record.id,
-        ),
-      ),
-    })
+    setTyping(false)
+    useSimpleUi.getState().toggleAgent(scopeKey, record.id, expanded, inputOpen)
   }
   return (
     <article
@@ -74,7 +72,7 @@ export default function SimpleAgent({
           {expanded ? '▾' : '▸'} {record.metadata.name}
         </button>
         {record.metadata.componentId === PLAN_SCOPE && <span>Shared planner</span>}
-        <SimpleStatus status={status} />
+        <SimpleStatus sessions={[session]} />
         <button onClick={() => openTerminal(record)}>Open terminal</button>
       </header>
       {!!session?.activity?.length && (
@@ -103,7 +101,14 @@ export default function SimpleAgent({
         </ol>
       )}
       {expanded && (
-        <div className="simple-terminal" ref={terminalHost}>
+        <div
+          className="simple-terminal"
+          ref={terminalHost}
+          onFocus={() => setTyping(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) setTyping(false)
+          }}
+        >
           {visible && (
             <TerminalPane
               componentId={record.metadata.componentId}

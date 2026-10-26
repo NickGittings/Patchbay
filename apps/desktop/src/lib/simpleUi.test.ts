@@ -33,12 +33,15 @@ test('reopening the current stage saves the choice even though it matches the de
   expect(stageOpen(reopened, 'plan', 'build')).toBe(true)
 })
 
-test('empty startup followed by recovered stage and Auto rounds never retains default openings', () => {
+test('stage advances add no overrides: only the current stage opens, choices still win', () => {
   const key = simpleKey('p', 't')
-  useSimpleUi.getState().patch(key, { draft: 'kept' })
   const worktree = { projectId: 'p', task: 't', path: '/t' }
   const snapshot: SimpleSnapshot = { records: [], sessions: {}, simple: null, auto: null }
+  const { toggleStage } = useSimpleUi.getState()
   expect(thread(snapshot, worktree).stage).toBe('plan')
+  // Closing and reopening Plan while current saves an explicit choice matching the default.
+  toggleStage(key, 'plan', 'plan')
+  toggleStage(key, 'plan', 'plan')
   // The real actions arrive on restore/reconnect, then Auto continues review/fix rounds.
   const log = ['implement', 'review', 'fix', 'review', 'merge'] as const
   for (const [index, action] of log.entries()) {
@@ -55,11 +58,21 @@ test('empty startup followed by recovered stage and Auto rounds never retains de
     )
     expect(model.stage).toBe(stage)
     const stages = useSimpleUi.getState().worktrees[key].stages
-    expect(stages).toEqual({})
+    expect(stages).toEqual({ plan: true })
     expect(
       model.sections.filter((s) => stageOpen(stages, s.id, model.stage)).map((s) => s.id),
-    ).toEqual([stage])
+    ).toEqual(['plan', stage])
   }
+})
+
+test('a stage in use stays open after an advance until the user collapses it', () => {
+  const key = simpleKey('p', 't')
+  // Build was open as the current stage; the thread moves to Review while it holds focus.
+  expect(stageOpen({}, 'build', 'review', true)).toBe(true)
+  expect(stageOpen({}, 'build', 'review', false)).toBe(false)
+  expect(stageOpen({ build: false }, 'build', 'review', true)).toBe(false)
+  useSimpleUi.getState().toggleStage(key, 'build', 'review', { inUse: true })
+  expect(useSimpleUi.getState().worktrees[key].stages).toEqual({ build: false })
 })
 
 test('toggles apply to the latest overrides of their worktree only', () => {
@@ -91,14 +104,28 @@ const session = (state: 'needsInput' | 'working' | 'idle', authoritative = true)
 const retained = (s: SessionState | undefined, previous?: string) =>
   pendingInput('planner', s, terminalStatus('agent', s), previous)
 
-test('input expansion survives partial answers and quiet time until a provider confirms', () => {
+test('input expansion survives a partial answer until any other state', () => {
   const request = retained(session('needsInput'))
   expect(request).toBe(sessionRun('planner', session('needsInput')))
+  // Typing turns the request into unconfirmed work.
   expect(retained(session('working', false), request)).toBe(request)
-  expect(retained(session('idle', false), request)).toBe(request)
+  // Esc or an interrupt (and quiet decay) leaves an unconfirmed idle, which nothing confirms.
+  expect(retained(session('idle', false), request)).toBeUndefined()
   expect(retained(session('working'), request)).toBeUndefined()
   expect(retained(session('idle'), request)).toBeUndefined()
   expect(retained(session('working', false))).toBeUndefined()
+})
+
+test('status-file reports, never authoritative, end input expansion once they move on', () => {
+  const fileReport = (state: 'needsInput' | 'working' | 'review' | 'idle') => {
+    const s = session(state as 'working', false)
+    return { ...s, status: { ...s.status!, agent: { ...s.status!.agent!, state, provider: null } } }
+  }
+  const request = retained(fileReport('needsInput'))
+  expect(request).toBeDefined()
+  expect(retained(fileReport('working'), request)).toBe(request)
+  expect(retained(fileReport('review'), request)).toBeUndefined()
+  expect(retained(fileReport('idle'), request)).toBeUndefined()
 })
 
 test('input expansion ends on exit, disconnect, interruption, a new run or a missing session', () => {
@@ -121,14 +148,37 @@ test('input disclosures are scoped and do not overwrite user stage choices', () 
     b = simpleKey('p', 't')
   const { syncInputRequests, toggleStage } = useSimpleUi.getState()
   toggleStage(a, 'plan', 'plan')
-  syncInputRequests(a, { planner: 'run' })
+  syncInputRequests(a, { planner: 'run' }, [])
   expect(useSimpleUi.getState().worktrees[a].stages).toEqual({ plan: false })
   expect(useSimpleUi.getState().worktrees[b]).toBeUndefined()
   const unchanged = useSimpleUi.getState()
-  syncInputRequests(a, { planner: 'run' })
+  syncInputRequests(a, { planner: 'run' }, [])
   expect(useSimpleUi.getState()).toBe(unchanged)
-  // An explicit collapse while answering dismisses the retained input expansion.
-  toggleStage(a, 'plan', 'build', ['planner'])
+  // An explicit stage collapse while answering dismisses the retained input expansion.
+  toggleStage(a, 'plan', 'build', { inputs: ['planner'] })
   expect(useSimpleUi.getState().worktrees[a].inputRequests).toEqual({})
   expect(useSimpleUi.getState().worktrees[a].stages).toEqual({ plan: false })
+})
+
+test('folding an input-expanded card keeps its stage input expansion until a new request', () => {
+  const key = simpleKey('p', null)
+  const ui = () => useSimpleUi.getState().worktrees[key]
+  const { syncInputRequests, toggleAgent } = useSimpleUi.getState()
+  syncInputRequests(key, { planner: 'run' }, [])
+  toggleAgent(key, 'planner', true, true)
+  expect(ui().inputRequests).toEqual({ planner: 'run' })
+  expect(ui().inputCollapsed).toEqual(['planner'])
+  expect(ui().expanded).toEqual([])
+  // Unfolding again shows it as a manual expansion.
+  toggleAgent(key, 'planner', false, true)
+  expect(ui().inputCollapsed).toEqual([])
+  expect(ui().expanded).toEqual(['planner'])
+  toggleAgent(key, 'planner', true, true)
+  expect(ui().expanded).toEqual([])
+  // Asking again unfolds the card; an ended request forgets the fold.
+  syncInputRequests(key, { planner: 'run' }, ['planner'])
+  expect(ui().inputCollapsed).toEqual([])
+  toggleAgent(key, 'planner', true, true)
+  syncInputRequests(key, {}, [])
+  expect(ui().inputCollapsed).toEqual([])
 })

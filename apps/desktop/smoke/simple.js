@@ -544,7 +544,7 @@
         smoke.terminalText(planner).text.includes("simple-received:'smoke-wait\\n'"),
         'partial answer text was lost',
       )
-      // Only provider confirmation ends automatic expansion, preserving the user's choices.
+      // A confirmed provider state ends automatic expansion, preserving the user's choices.
       const agentToggle = askingAgent.querySelector('header button')
       await until(
         'resolved input card collapses',

@@ -29,6 +29,7 @@ The following checks require an interactive desktop session. They have not been 
 - With Simple enabled, send to a ready planner, then repeat with a component pop-out focused. Verify only the intended focused viewer controls typing and PTY sizing.
 - Expand/collapse an inline terminal, scroll it out of view, switch to its Full view and dock/pop-out, then return. Verify hidden hosts do not reclaim it and scrollback stays intact.
 - Keep keyboard focus or an open inline terminal in a stage while Auto advances. Verify the stage stays open and typing continues; collapsing its header explicitly still works.
+- Answer a provider question partially, then press Esc instead. Verify the card stays open while its terminal has focus and folds once focus leaves; folding the card itself while an answer is pending leaves its stage open.
 - Trigger a real provider permission request. Verify the terminal expands once, Send is disabled, the draft stays intact and answers go through the provider's native terminal UI.
 - With Agent status integration not installed, open a Claude or Codex recipient. Verify Send stays disabled with “Chat needs agent status integration”, also while a permission dialog sits quietly.
 - Switch worktrees or recipients during slow startup, restart/exit the recipient during a claim and toggle Simple off during a pending send. Verify cancellation preserves the draft and sends no prompt to a replacement generation.

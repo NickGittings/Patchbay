@@ -139,7 +139,10 @@ export default function StoryBoard() {
               )}
               {stage && (
                 <span className={`story-stage ${stage.status}`}>
-                  {STAGE_LABELS[stage.stage]} · {STATUS_LABELS[stage.status]}
+                  {/* The done stage says nothing its status doesn't. */}
+                  {stage.stage === 'done'
+                    ? STATUS_LABELS[stage.status]
+                    : `${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]}`}
                 </span>
               )}
             </button>

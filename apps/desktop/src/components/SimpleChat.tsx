@@ -8,8 +8,7 @@ import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
 import { simpleKey, stageOpen, pendingInput, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
-import { foldedStatus, terminalStatus } from '../lib/display'
-import { useClockTick } from '../lib/clock'
+import { terminalStatus } from '../lib/display'
 import { revealTerminal } from '../lib/attention'
 import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -38,7 +37,6 @@ import './simple.css'
 const pendingActions = new Set<string>()
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
-  useClockTick()
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -69,8 +67,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     useShallow((u) => ({
       stages: u.worktrees[key]?.stages ?? EMPTY_SIMPLE_UI.stages,
       inputRequests: u.worktrees[key]?.inputRequests ?? EMPTY_SIMPLE_UI.inputRequests,
+      expandedAgents: u.worktrees[key]?.expanded ?? EMPTY_SIMPLE_UI.expanded,
     })),
   )
+  // The stage holding keyboard focus, which an advance must not fold out from under the user.
+  const [focusedStage, setFocusedStage] = useState<SimpleStage>()
   const threadRef = useRef<HTMLDivElement>(null)
   // A new filter starts at the top, unless an input request or answer needs to stay in view.
   // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
@@ -79,6 +80,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     if (shownFilter.current === filter) return
     shownFilter.current = filter
     const thread = threadRef.current
+    // A filter can unmount the focused control without a blur reaching its section.
+    if (!thread?.contains(document.activeElement)) setFocusedStage(undefined)
     const asking = thread?.querySelector('.simple-agent[data-input-open]')
     if (asking) asking.scrollIntoView({ block: 'nearest' })
     else thread?.scrollTo({ top: 0 })
@@ -122,14 +125,23 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       inputOpen: agents.some(({ input }) => !!input),
     }
   })
-  const inputRequests = Object.fromEntries(
+  // A string, so the store is synced only when the requests or the agents asking change.
+  const inputSync = JSON.stringify(
     stageSections.flatMap(({ agents }) =>
-      agents.flatMap(({ record, input }) => (input ? [[record.id, input]] : [])),
+      agents.flatMap(({ record, input, status }) =>
+        input ? [[record.id, input, status.health === 'input']] : [],
+      ),
     ),
   )
   useEffect(() => {
-    if (projectId) useSimpleUi.getState().syncInputRequests(key, inputRequests)
-  }, [key, projectId, inputRequests])
+    if (!projectId) return
+    const requests = JSON.parse(inputSync) as [string, string, boolean][]
+    useSimpleUi.getState().syncInputRequests(
+      key,
+      Object.fromEntries(requests.map(([sid, run]) => [sid, run])),
+      requests.flatMap(([sid, , asking]) => (asking ? [sid] : [])),
+    )
+  }, [key, projectId, inputSync])
   if (!s.project) return null
   // Keep requests and partially typed answers visible whatever the filter.
   const sections = stageSections.filter(
@@ -264,10 +276,14 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       <div className="simple-thread" ref={threadRef}>
         {sections.map((section) => {
           const { asking } = section
+          // Focus or an inline terminal opened here keeps the stage open as the thread advances.
+          const inUse =
+            focusedStage === section.id ||
+            section.agents.some(({ record }) => stageUi.expandedAgents.includes(record.id))
           const expanded =
             filter !== 'all' ||
             section.inputOpen ||
-            stageOpen(stageUi.stages, section.id, model.stage)
+            stageOpen(stageUi.stages, section.id, model.stage, inUse)
           const contentId = `${stageContentId}-${section.id}`
           const label = section.id[0].toUpperCase() + section.id.slice(1)
           return (
@@ -276,6 +292,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               key={section.id}
               aria-current={model.stage === section.id ? 'step' : undefined}
               data-collapsed={!expanded || undefined}
+              onFocusCapture={() => {
+                if (expanded) setFocusedStage(section.id)
+              }}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget))
+                  setFocusedStage((stage) => (stage === section.id ? undefined : stage))
+              }}
             >
               <h2>
                 {filter === 'all' ? (
@@ -288,14 +311,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                     title={asking ? 'An agent is waiting for input' : undefined}
                     onClick={() => {
                       if (asking) return
-                      useSimpleUi.getState().toggleStage(
-                        key,
-                        section.id,
-                        model.stage,
-                        section.agents
+                      useSimpleUi.getState().toggleStage(key, section.id, model.stage, {
+                        inputs: section.agents
                           .filter(({ input }) => !!input)
                           .map(({ record }) => record.id),
-                      )
+                        inUse,
+                      })
                     }}
                   >
                     <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
@@ -310,7 +331,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                 )}
                 {!expanded && (
                   <SimpleStatus
-                    status={foldedStatus(section.agents.map(({ status }) => status))}
+                    sessions={section.agents.map(({ record }) => s.sessions[record.id])}
                     folded
                   />
                 )}
