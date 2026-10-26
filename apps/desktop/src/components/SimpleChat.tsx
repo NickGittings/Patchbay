@@ -184,8 +184,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const groups = changeGroups(s.nodes, data?.review)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const planner =
-    model.records.filter((r) => r.metadata.componentId === PLAN_SCOPE).at(-1)?.metadata
-      .terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan')?.id
+    model.records
+      .filter((r) => r.metadata.componentId === PLAN_SCOPE && !model.foreign.has(r.id))
+      .at(-1)?.metadata.terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan')?.id
   const openFile = (path: string, line?: number) => {
     const files = groups.flatMap((g) => g.files.map((f) => ({ componentId: g.id, path: f.path })))
     const exact = files.find((f) => f.path === path)
@@ -232,7 +233,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         if (task) await build()
         else {
           const conversation = s.simple
-          const story = useStore.getState().planStory
+          const state = useStore.getState()
+          const story = state.planStoryTerminal === planner ? state.planStory : null
           seedNewTask(
             (created, pid) => {
               if (ui.terminal === 'user')
@@ -240,6 +242,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               if (conversation)
                 useStore.getState().patchTask(pid, created.id, {
                   simple: {
+                    ...conversation,
                     startedMs: model.planningStarted,
                     log: conversation.log.filter((e) => e.atMs >= model.planningStarted),
                   },
@@ -272,13 +275,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           setDialog('merge')
           return
         }
-        const project = useStore.getState().toProject()
         const trees = await gitWorktrees(projectId)
         const from = trees.find((w) => w.path === source.path)
         const to = trees.find((w) => w.path === target.path)
         if (!from || !to)
           throw new Error('The merge worktrees changed. Choose a destination again.')
-        const paths = await mergeConflicts(project, from.head, to.head)
+        const paths = await mergeConflicts(projectId, from.head, to.head)
         setCheck({ key: JSON.stringify([key, from.head, to.head]), paths })
       } else if (action === 'merge' && source?.branch && target?.branch) {
         const request = {

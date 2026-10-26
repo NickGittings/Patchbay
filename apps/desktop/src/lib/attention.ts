@@ -1,4 +1,5 @@
 import { relatedSession } from './simple'
+import { simpleKey, useSimpleUi } from './simpleUi'
 import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
@@ -289,30 +290,44 @@ export function revealTerminal(
   if (s.simpleMode && s.project) {
     const record = s.sessionRecords.find((r) => r.id === item.sid)
     if (record) {
-      const task =
-        record.metadata.componentId === PLAN_SCOPE
-          ? s.activeTask
-          : (s.tasks.find(
-              (t) =>
-                t.id === record.metadata.task ||
-                t.worktree === record.spec.merge_source ||
-                t.worktree === record.spec.cwd,
-            )?.id ?? null)
-      const path = s.tasks.find((t) => t.id === task)?.worktree ?? s.project.root
       const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
-      const simple = task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple
-      const used =
-        record.metadata.componentId !== PLAN_SCOPE ||
+      const ownsPlanner = (simple: typeof s.simple) =>
         simple?.log.some(
           (e) =>
             e.sessionId === record.id &&
             e.kind !== 'reply' &&
             (e.generation === undefined || e.generation === generation),
         )
-      if (used && relatedSession(record, { projectId: s.project.id, task, path })) {
+      const plannerTask = ownsPlanner(s.simple)
+        ? s.activeTask
+        : Object.entries(s.taskWorkspaces).find(
+            ([task, workspace]) => (task || null) !== s.activeTask && ownsPlanner(workspace.simple),
+          )?.[0]
+      const task =
+        record.metadata.componentId === PLAN_SCOPE
+          ? plannerTask === undefined
+            ? s.activeTask
+            : plannerTask || null
+          : record.metadata.componentId === MERGE_SCOPE
+            ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
+            : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
+              s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
+              null)
+      const worktree = s.tasks.find((t) => t.id === task)
+      const path = worktree?.worktree ?? s.project.root
+      if (
+        relatedSession(record, { projectId: s.project.id, task, path, branch: worktree?.branch })
+      ) {
         if (task !== s.activeTask) s.setActiveTask(task, true)
         s.setActiveSession(item.sid)
         useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })
+        // A planner launched outside Chat has no conversation block; its input is still
+        // accessible in the chat drawer without changing the conversation's ownership.
+        if (record.metadata.componentId === PLAN_SCOPE && plannerTask === undefined)
+          useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
+            terminal: 'user',
+            terminalSession: { id: record.id, generation },
+          })
         return
       }
     }

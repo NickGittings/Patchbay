@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import type { SessionRecord, TerminalSnapshot } from '../types'
+import type { DeviceManifest, SessionRecord, TerminalSnapshot } from '../types'
 vi.mock('./ipc', () => ({ terminalSnapshot: vi.fn(), terminalStop: vi.fn() }))
 vi.mock('./reviewAgents', () => ({
   reviewWorktreeBusy: vi.fn(() => false),
@@ -9,6 +9,7 @@ vi.mock('./reviewAgents', () => ({
 const ipc = await import('./ipc')
 const agents = await import('./reviewAgents')
 const { startSimpleReview } = await import('./simpleReview')
+const devices = [{ id: 'claude' } as DeviceManifest]
 const request = { worktree: '/t', branch: 'feature', base: 'main' }
 const snapshot = {
   generation: 1,
@@ -43,12 +44,12 @@ test('review again stops a settled previous generation before starting a new rou
   vi.mocked(ipc.terminalSnapshot)
     .mockResolvedValueOnce(snapshot)
     .mockResolvedValueOnce({ ...snapshot, running: false })
-  await startSimpleReview(useStore.getState().toProject(), request, [])
+  await startSimpleReview(useStore.getState().toProject(), request, devices)
   expect(ipc.terminalStop).toHaveBeenCalledWith('r')
   expect(agents.startReviewAgents).toHaveBeenCalledWith(
     expect.objectContaining({ projectId: 'p' }),
     request,
-    [],
+    devices,
   )
   expect(vi.mocked(ipc.terminalStop).mock.invocationCallOrder[0]).toBeLessThan(
     vi.mocked(agents.startReviewAgents).mock.invocationCallOrder[0],
@@ -66,26 +67,26 @@ test('another turn, generation, or worktree prevents stopping the reviewer', asy
     },
   ]) {
     vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(changed)
-    await expect(startSimpleReview(useStore.getState().toProject(), request, [])).rejects.toThrow(
-      'another turn',
-    )
+    await expect(
+      startSimpleReview(useStore.getState().toProject(), request, devices),
+    ).rejects.toThrow('another turn')
   }
   vi.mocked(ipc.terminalSnapshot).mockImplementationOnce(async () => {
     useStore.setState({ activeTask: 'other' })
     return snapshot
   })
-  await expect(startSimpleReview(useStore.getState().toProject(), request, [])).rejects.toThrow(
-    'worktree changed',
-  )
+  await expect(
+    startSimpleReview(useStore.getState().toProject(), request, devices),
+  ).rejects.toThrow('worktree changed')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(agents.startReviewAgents).not.toHaveBeenCalled()
 })
 
 test('a busy review is preserved before any stop or launch request', async () => {
   vi.mocked(agents.reviewWorktreeBusy).mockReturnValueOnce(true)
-  await expect(startSimpleReview(useStore.getState().toProject(), request, [])).rejects.toThrow(
-    'current review',
-  )
+  await expect(
+    startSimpleReview(useStore.getState().toProject(), request, devices),
+  ).rejects.toThrow('current review')
   expect(ipc.terminalSnapshot).not.toHaveBeenCalled()
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(agents.startReviewAgents).not.toHaveBeenCalled()
@@ -110,7 +111,7 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
     round: 'round',
     errors: [],
   })
-  const result = await startSimpleReview(useStore.getState().toProject(), request, [])
+  const result = await startSimpleReview(useStore.getState().toProject(), request, devices)
   const sid = result.started[0].sessionId
   logSimple('p', null, {
     kind: 'action',
@@ -135,4 +136,57 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
   expect(resultFlow.step).toBe('reviewing')
   expect(resultFlow.prompt).toBeUndefined()
   expect(ipc.terminalSnapshot).toHaveBeenLastCalledWith('r', 0)
+})
+
+test('review again stops only the lanes the selected presets will reuse', async () => {
+  const base = useStore.getState().sessionRecords[0]
+  const records = [null, 'claude', 'codex', 'other'].map((lane) => ({
+    ...base,
+    id: lane ?? 'single',
+    metadata: { ...base.metadata, lane },
+  }))
+  useStore.setState({ sessionRecords: records })
+  vi.mocked(ipc.terminalSnapshot).mockImplementation(async (sid) => ({
+    ...snapshot,
+    running: !vi.mocked(ipc.terminalStop).mock.calls.some(([stopped]) => stopped === sid),
+  }))
+  await startSimpleReview(useStore.getState().toProject(), request, [
+    { id: 'claude' },
+    { id: 'codex' },
+  ] as DeviceManifest[])
+  expect(vi.mocked(ipc.terminalStop).mock.calls).toEqual([['claude'], ['codex']])
+  vi.mocked(ipc.terminalStop).mockClear()
+  await startSimpleReview(useStore.getState().toProject(), request, devices)
+  expect(vi.mocked(ipc.terminalStop).mock.calls).toEqual([['single']])
+})
+
+test('an empty preset selection cannot retire any reviewers', async () => {
+  await expect(startSimpleReview(useStore.getState().toProject(), request, [])).rejects.toThrow(
+    'at least one agent',
+  )
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(agents.startReviewAgents).not.toHaveBeenCalled()
+})
+
+test('review hydration stores session fields without terminal output or snapshot metadata', async () => {
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockResolvedValueOnce({
+      ...snapshot,
+      generation: 2,
+      data: 'large output',
+      end: 999,
+      launchDirectory: '/t',
+      lastReply: 10,
+    })
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({
+    started: [{ sessionId: 'r', requestId: 'new', lane: null }],
+    round: 'round',
+    errors: [],
+  })
+  await startSimpleReview(useStore.getState().toProject(), request, devices)
+  const stored = useStore.getState().sessions.r
+  expect(stored).toMatchObject({ generation: 2, running: true })
+  for (const key of ['data', 'end', 'launchDirectory', 'lastReply'])
+    expect(stored).not.toHaveProperty(key)
 })

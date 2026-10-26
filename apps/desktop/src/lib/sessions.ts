@@ -1,5 +1,6 @@
 import { hydrateReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
+import { stopAndWait } from './stopAndWait'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
@@ -558,13 +559,11 @@ export async function removeTaskTerminal(componentId: string, terminalId: string
     return { runtimeTerminals }
   })
   try {
-    if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
-    if (saved) return
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(sid))?.running) {
-      if (Date.now() >= deadline) throw new Error('Terminal is still stopping; remove it again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
+    if (saved) {
+      if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
+      return
     }
+    await stopAndWait(sid, 'Terminal is still stopping; remove it again.')
     if (sessionMetadata.has(sid)) await sessionForget(sid)
   } catch (e) {
     useStore.getState().setMessage(String(e))
@@ -602,17 +601,14 @@ export async function closeTerminal(componentId: string, terminalId: string) {
       if (m.projectId === projectId && m.componentId === componentId && m.terminalId === terminalId)
         sids.add(record.id)
     }
-    await Promise.all([...sids].map((sid) => terminalStop(sid)))
-    const deadline = Date.now() + 10000
-    while (
-      (await Promise.all([...sids].map((sid) => terminalSnapshot(sid)))).some(
-        (snapshot) => snapshot?.running,
-      )
-    ) {
-      if (requestedEpoch !== epoch) return false
-      if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Close again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+    if (
+      !(await stopAndWait(
+        sids,
+        'Terminal is still stopping. Try Close again.',
+        () => requestedEpoch === epoch,
+      ))
+    )
+      return false
     if (requestedEpoch !== epoch) return false
     useStore.getState().removeTerminal(componentId, terminalId, projectId)
     return true
@@ -647,14 +643,14 @@ export function restartTerminal(
     try {
       await starting.get(launch.sid)
       if (requestedEpoch !== epoch || isClosing(launch)) return
-      await terminalStop(launch.sid)
-      const deadline = Date.now() + 10000
-      while ((await terminalSnapshot(launch.sid))?.running) {
-        if (requestedEpoch !== epoch || isClosing(launch)) return
-        if (Date.now() >= deadline)
-          throw new Error('Terminal is still stopping. Try Restart again.')
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
+      if (
+        !(await stopAndWait(
+          launch.sid,
+          'Terminal is still stopping. Try Restart again.',
+          () => requestedEpoch === epoch && !isClosing(launch),
+        ))
+      )
+        return
       launch.restart = true
       if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
     } catch (e) {

@@ -577,10 +577,9 @@ export const reviewRead = (projectId: string, branch: string) =>
 
 export const reviewPrune = (projectId: string) => invoke<void>('review_prune', { projectId })
 
-export const mergeConflicts = (project: Project, source: string, destination: string) =>
+export const mergeConflicts = (projectId: string, source: string, destination: string) =>
   invoke<string[]>('merge_conflicts', {
-    projectId: project.projectId,
-    project,
+    projectId,
     source,
     destination,
   })

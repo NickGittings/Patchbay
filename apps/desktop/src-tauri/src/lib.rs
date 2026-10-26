@@ -1581,16 +1581,11 @@ async fn merge_conflicts(
     project_id: String,
     source: String,
     destination: String,
-    mut project: Project,
 ) -> CmdResult<Vec<String>> {
     main_only(&window)?;
-    let access = state.project(&project_id)?.access.snapshot();
-    blocking(move || {
-        access.trust(&mut project).map_err(err)?;
-        patchbay_core::merges::conflicts(Path::new(&project.root), &source, &destination)
-            .map_err(err)
-    })
-    .await
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::merges::conflicts(&root, &source, &destination).map_err(err))
+        .await
 }
 
 #[tauri::command]

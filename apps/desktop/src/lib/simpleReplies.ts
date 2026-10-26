@@ -22,13 +22,6 @@ export function hydrateReplies(
     .slice(-20)
 }
 
-/** Marks belong to each chat: a shared planner can be claimed after another chat saved it. */
-const persisted = new Map<string, { generation: number; sequence: number }>()
-
-export function resetPersistedReplies() {
-  persisted.clear()
-}
-
 /** Persist at ingestion, including snapshots, even while Chat is unmounted. */
 export function persistReplies(
   sid: string,
@@ -57,15 +50,7 @@ export function persistReplies(
       (e) => e.sessionId === sid && e.generation === generation && e.kind !== 'reply',
     )
     if (metadata.componentId === PLAN_SCOPE && !ownsPlanner) continue
-    const key = JSON.stringify([metadata.projectId, task, simple.startedMs, sid])
-    const mark = persisted.get(key)
-    if ((mark?.generation ?? 0) > generation) continue
-    const replies =
-      mark?.generation === generation
-        ? incoming.filter((r) => r.sequence > mark.sequence)
-        : incoming
-    let sequence = mark?.generation === generation ? mark.sequence : 0
-    for (const reply of replies) {
+    for (const reply of [...incoming].sort((a, b) => a.sequence - b.sequence)) {
       if (reply.atMs < simple.startedMs) continue
       logSimple(metadata.projectId, task, {
         kind: 'reply',
@@ -76,8 +61,6 @@ export function persistReplies(
         text: reply.text,
         atMs: reply.atMs,
       })
-      sequence = Math.max(sequence, reply.sequence)
     }
-    if (sequence) persisted.set(key, { generation, sequence })
   }
 }

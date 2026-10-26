@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import { REVIEW_SCOPE, type DeviceManifest, type Project, type ReviewRequest } from '../types'
-import { terminalSnapshot, terminalStop } from './ipc'
+import { terminalSnapshot } from './ipc'
+import { stopAndWait } from './stopAndWait'
 import { reviewWorktreeBusy, startReviewAgents } from './reviewAgents'
 import { hydrateReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
@@ -11,6 +12,7 @@ export async function startSimpleReview(
   request: ReviewRequest,
   devices: DeviceManifest[],
 ) {
+  if (!devices.length) throw new Error('Choose at least one agent')
   const initial = useStore.getState()
   const task = initial.activeTask
   const current = () => {
@@ -28,6 +30,12 @@ export async function startSimpleReview(
   if (reviewWorktreeBusy(records, initial.sessions, request.worktree))
     throw new Error('Wait for the current review to finish before reviewing again.')
   for (const record of records) {
+    // A single review uses the shared slot; parallel reviews use one slot per preset.
+    const lane = record.metadata.lane ?? null
+    if (
+      devices.length === 1 ? lane !== (request.lane || null) : !devices.some((d) => d.id === lane)
+    )
+      continue
     current()
     const previous = initial.sessions[record.id] ?? record.snapshot
     const snapshot = await terminalSnapshot(record.id, 0)
@@ -45,14 +53,14 @@ export async function startSimpleReview(
         'The reviewer started another turn. Wait for it to finish before reviewing again.',
       )
     current()
-    await terminalStop(record.id)
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(record.id, 0))?.running) {
-      current()
-      if (Date.now() >= deadline)
-        throw new Error('The previous reviewer is still stopping. Try Review again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+    await stopAndWait(
+      record.id,
+      'The previous reviewer is still stopping. Try Review again.',
+      () => {
+        current()
+        return true
+      },
+    )
   }
   current()
   const result = await startReviewAgents(project, request, devices)
@@ -66,7 +74,11 @@ export async function startSimpleReview(
         initial.sessions[sessionId] ?? records.find((r) => r.id === sessionId)?.snapshot
       if (snapshot && (snapshot.generation ?? 0) > (known?.generation ?? 0)) {
         useStore.getState().setSession(sessionId, {
-          ...snapshot,
+          generation: snapshot.generation,
+          running: snapshot.running,
+          startedMs: snapshot.startedMs,
+          status: snapshot.status,
+          truncated: snapshot.truncated,
           replies: hydrateReplies(known, snapshot.generation, snapshot.replies),
           activity: hydrateActivity(known, snapshot.generation, snapshot.activity),
           exitCode: snapshot.exitCode ?? undefined,

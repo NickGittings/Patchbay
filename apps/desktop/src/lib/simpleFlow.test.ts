@@ -190,3 +190,55 @@ test('a shared planner another chat is using does not make this one plan', () =>
   expect(flow(s).busyAgent).toBeUndefined()
   expect(flow(prompted(s)).step).toBe('planning')
 })
+
+test('follow-ups hide next-step actions until each prompted agent finishes its new turn', () => {
+  for (const scope of ['@plan', '@task', '@review', '@merge']) {
+    for (const finished of ['idle', 'review', 'ended']) {
+      const s = snapshot(scope, finished)
+      s.plan = { text: 'Plan', savedMs: 70, cut: false }
+      s.findings = findings(false)
+      s.sessions[scope].replies = [{ sequence: 1, atMs: 20, text: 'Done', turn: 'previous' }]
+      s.simple!.log.push({
+        id: 'follow-up',
+        kind: 'prompt',
+        stage:
+          scope === '@plan'
+            ? 'plan'
+            : scope === '@review'
+              ? 'review'
+              : scope === '@merge'
+                ? 'merge'
+                : 'build',
+        sessionId: scope,
+        generation: 1,
+        atMs: 40,
+        text: 'One more thing',
+        mentions: [],
+      })
+      const waiting = flow(s)
+      expect(waiting.prompt).toBeUndefined()
+      expect(waiting.busyAgent?.id).toBe(scope)
+      s.sessions[scope].status!.agent!.sinceMs = 60
+      expect(flow(s).prompt).toBeDefined()
+    }
+  }
+})
+
+test('a follow-up sent to another review lane keeps the whole review open', () => {
+  const s = snapshot('@review')
+  s.records = [...s.records, { ...record('@review'), id: 'other' }]
+  s.sessions.other = session('review')
+  s.findings = findings(true)
+  s.simple!.log.push({
+    id: 'follow-up',
+    kind: 'prompt',
+    stage: 'review',
+    sessionId: 'other',
+    generation: 1,
+    atMs: 40,
+    text: 'Check again',
+    mentions: [],
+  })
+  expect(flow(s)).toMatchObject({ step: 'reviewing', busyAgent: { id: 'other' } })
+  expect(flow(s).prompt).toBeUndefined()
+})

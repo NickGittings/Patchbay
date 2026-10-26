@@ -16,7 +16,8 @@ import { roleDevice } from './agentRoles'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
 import { autoRuns, autoWorkspace } from './autoState'
 import { finished, unfinished } from './autoSettings'
-import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot, terminalStop } from './ipc'
+import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './ipc'
+import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
 import { logSimple } from './simpleActions'
@@ -184,16 +185,10 @@ export async function planStory(projectId: string, story: Story) {
   const sid = plannerSessionId(device.id, projectId)
   if (autoRuns(s).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
     throw new Error('Stop the Auto run before using its planner for a story')
-  if ((await terminalSnapshot(sid))?.running) {
+  if ((await terminalSnapshot(sid, 0))?.running) {
     if (!window.confirm('Stop the running planner and replace it with this story’s planner?'))
       return
-    await terminalStop(sid)
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(sid))?.running) {
-      if (Date.now() >= deadline)
-        throw new Error('The previous planner is still stopping. Try Plan again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+    await stopAndWait(sid, 'The previous planner is still stopping. Try Plan again.')
     const now = useStore.getState()
     if (now.project?.id !== projectId || now.activeTask !== task)
       throw new Error('The worktree changed. Choose Plan again in the intended worktree.')
@@ -217,7 +212,7 @@ export async function planStory(projectId: string, story: Story) {
       // The store may still hold the stopped planner's run until its `started` event arrives;
       // the service already knows the one just launched.
       generation:
-        (await terminalSnapshot(sid).catch(() => null))?.generation ??
+        (await terminalSnapshot(sid, 0).catch(() => null))?.generation ??
         useStore.getState().sessions[sid]?.generation,
       text: story.title,
       atMs: planningAtMs,

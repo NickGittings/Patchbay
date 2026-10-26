@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
-import { hydrateReplies, persistReplies, resetPersistedReplies } from './simpleReplies'
+import { hydrateReplies, persistReplies } from './simpleReplies'
 import { revealTerminal } from './attention'
 import { sessionMetadata, type Reply, type SessionRecord, type Task } from '../types'
 const reply = (sequence: number): Reply => ({
@@ -29,7 +29,6 @@ beforeEach(() => {
   })
   useStore.setState({ tasks: [{ id: 't', title: 'Task', worktree: '/t', createdMs: 1 } as Task] })
   sessionMetadata.clear()
-  resetPersistedReplies()
 })
 test('live and snapshot reply races merge by sequence within one generation only', () => {
   expect(
@@ -122,16 +121,15 @@ test('a reply arriving before its planner claim is persisted once the prompt is 
   ).toHaveLength(1)
 })
 
-test('View falls back to the planner tab for a run absent from this chat', async () => {
+test('View opens the drawer without leaving Chat for an unclaimed planner run', async () => {
   const { plannerSessionId } = await import('../types')
   const sid = plannerSessionId('claude', 'p')
   const r = { ...record('@plan'), id: sid }
   useStore.setState({ sessionRecords: [r], simpleMode: true, view: 'navigation' })
   revealTerminal({ sid, componentId: '@plan' })
   expect(useStore.getState()).toMatchObject({
-    simpleMode: false,
-    view: 'plan',
-    planActive: 'claude',
+    simpleMode: true,
+    view: 'navigation',
     activeSession: sid,
   })
 })
@@ -205,4 +203,95 @@ test('reply text stays bounded across ingestion and restoring old layouts', asyn
   expect(restoredSimple({ startedMs: 1, log: [prompt, ...legacy] })?.log).toEqual(
     boundedSimpleLog([prompt, ...legacy]),
   )
+})
+
+test('evicted replies stay evicted across repeated restarts, including fully evicted runs', async () => {
+  const { logSimple } = await import('./simpleActions')
+  const { restoredSimple, thread, SIMPLE_REPLY_LIMIT } = await import('./simple')
+  const r = record()
+  useStore.setState({ activeTask: 't', simple: { startedMs: 1, log: [] }, sessionRecords: [r] })
+  const old = { ...r, id: 'old' }
+  logSimple('p', 't', {
+    kind: 'reply',
+    stage: 'build',
+    sessionId: 'old',
+    generation: 1,
+    sequence: 1,
+    text: 'old reply',
+    atMs: 2,
+  })
+  const incoming = Array.from({ length: 20 }, (_, i) => ({
+    ...reply(i + 1),
+    text: 'x'.repeat(SIMPLE_REPLY_LIMIT),
+  }))
+  persistReplies('s', 1, incoming, r)
+  const saved = useStore.getState().simple!
+  expect(saved.log).toHaveLength(8)
+  for (let i = 0; i < 3; i++) {
+    const restored = restoredSimple(JSON.parse(JSON.stringify(useStore.getState().simple)))!
+    useStore.setState({ simple: restored })
+    const model = thread(
+      {
+        records: [old, r],
+        simple: restored,
+        auto: null,
+        sessions: {
+          old: { running: false, generation: 1, replies: [{ ...reply(1), atMs: 2 }] },
+          s: { running: true, generation: 1, replies: incoming },
+        },
+      },
+      { projectId: 'p', task: 't', path: '/t' },
+    )
+    expect(model.items.flatMap((item) => (item.kind === 'agent' ? item.entries : []))).toEqual(
+      saved.log,
+    )
+    persistReplies('old', 1, [{ ...reply(1), atMs: 2 }], old)
+    persistReplies('s', 1, incoming, r)
+    expect(useStore.getState().simple).toEqual(saved)
+  }
+  persistReplies('s', 1, [{ ...reply(21), text: 'new' }], r)
+  expect(useStore.getState().simple!.log.at(-1)).toMatchObject({ sequence: 21, text: 'new' })
+})
+
+test('View finds the chat that used the current planner generation', () => {
+  const r = record('@plan')
+  const claim = {
+    id: 'claim',
+    kind: 'prompt' as const,
+    stage: 'plan' as const,
+    sessionId: 's',
+    generation: 2,
+    atMs: 10,
+    text: 'Plan',
+    mentions: [],
+  }
+  useStore.setState({
+    sessionRecords: [r],
+    sessions: { s: { generation: 2, running: true } },
+    simpleMode: true,
+    simple: { startedMs: 1, log: [{ ...claim, generation: 1 }] },
+  })
+  useStore.getState().patchTask('p', 't', { simple: { startedMs: 1, log: [claim] } })
+  revealTerminal({ sid: 's', componentId: '@plan' })
+  expect(useStore.getState()).toMatchObject({
+    simpleMode: true,
+    activeTask: 't',
+    activeSession: 's',
+  })
+})
+
+test('View selects a merge source even when its destination task is listed first', () => {
+  const r = { ...record('@merge'), spec: { cwd: '/dest', merge_source: '/t', command: 'cat' } }
+  const destination = { id: 'dest', worktree: '/dest' } as Task
+  useStore.setState({
+    sessionRecords: [r],
+    simpleMode: true,
+    tasks: [destination, ...useStore.getState().tasks],
+  })
+  revealTerminal({ sid: 's', componentId: '@merge' })
+  expect(useStore.getState()).toMatchObject({
+    simpleMode: true,
+    activeTask: 't',
+    activeSession: 's',
+  })
 })

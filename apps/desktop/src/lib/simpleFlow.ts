@@ -58,11 +58,10 @@ export function flow(
     !own ||
     (!!session &&
       (!session.running ||
-        state?.state === 'review' ||
-        state?.state === 'ended' ||
-        (state?.state === 'idle' &&
-          !!state.authoritative &&
-          (!!state.turnId || !!session.replies?.length || !awaitingTurn(snapshot, own, session)))))
+        (!awaitingTurn(snapshot, own, session) &&
+          (state?.state === 'review' ||
+            state?.state === 'ended' ||
+            (state?.state === 'idle' && !!state.authoritative)))))
   const working = !!own && !ended
   const auto = snapshot.auto
   const manualAfterAuto =
@@ -137,7 +136,7 @@ export function flow(
     model.records.find((r) => {
       if (recordStage(r) !== 'review') return false
       const s = snapshot.sessions[r.id] ?? r.snapshot
-      return reviewerBusy(s, !!s?.running)
+      return reviewerBusy(s, !!s?.running) || (!!s?.running && awaitingTurn(snapshot, r, s))
     })
   if (pendingReviewer)
     return {
@@ -239,15 +238,21 @@ export function flow(
 function awaitingTurn(
   snapshot: FlowSnapshot,
   agent: SessionRecord,
-  session: { generation?: number; startedMs?: number },
+  session: import('../types').SessionState | import('../types').TerminalSnapshot,
 ) {
-  return !!snapshot.simple?.log.some(
+  const latest = snapshot.simple?.log.findLast(
     (e) =>
       e.sessionId === agent.id &&
       e.kind !== 'reply' &&
       (e.generation === undefined
         ? e.atMs >= (session.startedMs ?? 0)
         : e.generation === session.generation),
+  )
+  if (!latest) return false
+  const state = session.status?.agent
+  return (
+    latest.atMs >= (state?.sinceMs ?? 0) ||
+    (state?.state === 'idle' && !state.turnId && !session.replies?.length)
   )
 }
 function isFix(snapshot: FlowSnapshot, agent: SessionRecord | undefined) {

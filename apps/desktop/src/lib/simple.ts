@@ -50,6 +50,39 @@ export type SimpleEntry = EntryBase &
 export interface SimpleState {
   startedMs: number
   log: SimpleEntry[]
+  /** Persisted journal cursors survive eviction of reply text and application restarts. */
+  replySequences?: Record<string, number>
+}
+
+const replyRun = (sessionId: string, generation: number) => JSON.stringify([sessionId, generation])
+
+export function replySequence(simple: SimpleState, sessionId: string, generation: number) {
+  return (
+    simple.replySequences?.[replyRun(sessionId, generation)] ??
+    simple.log.reduce(
+      (sequence, e) =>
+        e.kind === 'reply' && e.sessionId === sessionId && e.generation === generation
+          ? Math.max(sequence, e.sequence)
+          : sequence,
+      0,
+    )
+  )
+}
+
+/** Record identities before trimming text, including when migrating older layouts. */
+export function boundedSimple(simple: SimpleState): SimpleState {
+  const { replySequences: previous, ...state } = simple
+  const replySequences = { ...previous }
+  for (const entry of simple.log) {
+    if (entry.kind !== 'reply') continue
+    const key = replyRun(entry.sessionId, entry.generation)
+    replySequences[key] = Math.max(replySequences[key] ?? 0, entry.sequence)
+  }
+  return {
+    ...state,
+    ...(Object.keys(replySequences).length ? { replySequences } : {}),
+    log: boundedSimpleLog(simple.log),
+  }
 }
 
 /** Keep recent reply text bounded while retaining every prompt and action. */
@@ -81,41 +114,57 @@ export function restoredSimple(value: unknown): SimpleState | null {
   if (!Number.isFinite(state.startedMs) || !Array.isArray(state.log)) return null
   const seen = new Set<string>()
   const replies = new Set<string>()
-  return {
+  return boundedSimple({
     startedMs: state.startedMs,
-    log: boundedSimpleLog(
-      state.log.filter((entry) => {
-        if (
-          !entry ||
-          typeof entry.id !== 'string' ||
-          seen.has(entry.id) ||
-          !Number.isFinite(entry.atMs) ||
-          !SIMPLE_STAGES.includes(entry.stage)
-        )
+    replySequences: Object.fromEntries(
+      Object.entries(state.replySequences ?? {}).filter(([key, sequence]) => {
+        try {
+          const run = JSON.parse(key)
+          return (
+            Array.isArray(run) &&
+            run.length === 2 &&
+            typeof run[0] === 'string' &&
+            Number.isSafeInteger(run[1]) &&
+            run[1] >= 0 &&
+            Number.isSafeInteger(sequence) &&
+            sequence > 0
+          )
+        } catch {
           return false
-        const valid =
-          entry.kind === 'prompt'
-            ? typeof entry.text === 'string' &&
-              Array.isArray(entry.mentions) &&
-              entry.mentions.every((id) => typeof id === 'string')
-            : entry.kind === 'reply'
-              ? typeof entry.sessionId === 'string' &&
-                Number.isSafeInteger(entry.generation) &&
-                entry.generation >= 0 &&
-                Number.isSafeInteger(entry.sequence) &&
-                entry.sequence > 0 &&
-                typeof entry.text === 'string' &&
-                !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-              : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
-        if (valid) {
-          seen.add(entry.id)
-          if (entry.kind === 'reply')
-            replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
         }
-        return valid
       }),
     ),
-  }
+    log: state.log.filter((entry) => {
+      if (
+        !entry ||
+        typeof entry.id !== 'string' ||
+        seen.has(entry.id) ||
+        !Number.isFinite(entry.atMs) ||
+        !SIMPLE_STAGES.includes(entry.stage)
+      )
+        return false
+      const valid =
+        entry.kind === 'prompt'
+          ? typeof entry.text === 'string' &&
+            Array.isArray(entry.mentions) &&
+            entry.mentions.every((id) => typeof id === 'string')
+          : entry.kind === 'reply'
+            ? typeof entry.sessionId === 'string' &&
+              Number.isSafeInteger(entry.generation) &&
+              entry.generation >= 0 &&
+              Number.isSafeInteger(entry.sequence) &&
+              entry.sequence > 0 &&
+              typeof entry.text === 'string' &&
+              !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+            : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
+      if (valid) {
+        seen.add(entry.id)
+        if (entry.kind === 'reply')
+          replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+      }
+      return valid
+    }),
+  })
 }
 export interface SimpleWorktree {
   projectId: string
@@ -251,7 +300,12 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     if (generation === undefined) continue
     for (const reply of session?.replies ?? []) {
       const key = `${record.id}:${generation}:${reply.sequence}`
-      if (seen.has(key) || reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0))
+      if (
+        seen.has(key) ||
+        (snapshot.simple &&
+          reply.sequence <= replySequence(snapshot.simple, record.id, generation)) ||
+        reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0)
+      )
         continue
       if (
         recordStage(record) === 'plan' &&
