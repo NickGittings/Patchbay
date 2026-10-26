@@ -201,7 +201,10 @@ pub fn apply(
 }
 
 /// When `task`'s pending proposal was submitted, if it has one.
-pub(crate) fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::time::SystemTime>> {
+///
+/// # Errors
+/// Fails when the proposal metadata cannot be read.
+pub fn submitted(root: &Path, task: Option<&str>) -> Result<Option<std::time::SystemTime>> {
     match std::fs::metadata(file(root, task, false)?) {
         Ok(meta) => Ok(Some(meta.modified()?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

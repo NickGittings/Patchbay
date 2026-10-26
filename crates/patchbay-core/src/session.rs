@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-// Snapshots and live events retain tool activity; Prompt pastes and submits a chat message for one
-// generation. 9 meant either this or SessionSpec.rerun_on_resume, depending on the build.
-pub const PROTOCOL: u32 = 10;
+// Snapshots and live events retain final assistant replies as well as tool activity.
+// Protocol 10 added activity and generation-bound prompt delivery.
+pub const PROTOCOL: u32 = 11;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -894,6 +894,11 @@ impl Service {
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
+            replies: if include_activity {
+                s.replies.clone()
+            } else {
+                Vec::new()
+            },
             activity: if include_activity {
                 s.activity.clone()
             } else {
@@ -4540,6 +4545,7 @@ mod tests {
             exited_ms: Some(1),
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
+            replies: Vec::new(),
             notice: None,
         };
         assert_eq!(restart_conversation(Adapter::Claude, &snapshot), None);
@@ -4688,6 +4694,7 @@ mod tests {
             exited_ms: None,
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
+            replies: Vec::new(),
             notice: None,
         };
         let mut history: Vec<_> = (0..10).map(snapshot).collect();

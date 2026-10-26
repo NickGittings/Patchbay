@@ -4,6 +4,7 @@ import type { Story, StoryDraft, StoryStatus } from '../../types'
 import {
   autoStory,
   planStory,
+  newWorktreeForStory,
   refreshStories,
   STORY_STATUSES,
   updateStory,
@@ -64,7 +65,7 @@ export default function StoryEditor({
     onSaved(saved)
     return saved
   }
-  const act = async (action?: 'plan' | 'auto' | 'delete') => {
+  const act = async (action?: 'plan' | 'auto' | 'delete' | 'worktree') => {
     if (busy) return
     setBusy(true)
     setError('')
@@ -78,6 +79,7 @@ export default function StoryEditor({
       const saved = await save()
       if (action === 'plan') await planStory(projectId, saved)
       if (action === 'auto') autoStory(projectId, saved)
+      if (action === 'worktree') newWorktreeForStory(projectId, saved)
     } catch (e) {
       setError(String(e))
       if (action === 'plan') useStore.getState().setMessage(String(e))
@@ -198,6 +200,9 @@ export default function StoryEditor({
             </button>
             <button type="button" disabled={!ready} onClick={() => void act('plan')}>
               Plan →
+            </button>
+            <button type="button" disabled={!ready} onClick={() => void act('worktree')}>
+              New worktree
             </button>
             <button type="button" disabled={!ready} onClick={() => void act('auto')}>
               Auto…

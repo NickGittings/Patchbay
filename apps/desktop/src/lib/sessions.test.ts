@@ -903,7 +903,7 @@ test.each(['ad-hoc', 'mapped', 'review'])(
   },
 )
 
-test('a story planner keeps its kickoff and id on Restart and clears them on a plain start', async () => {
+test('a story planner keeps its kickoff and id on Restart and on a plain start', async () => {
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
     kickoff: { kind: 'planStory' },
     story: 'story1',
@@ -931,7 +931,7 @@ test('a story planner keeps its kickoff and id on Restart and clears them on a p
     'story1',
   )
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
-  expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
+  expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
 })
 
 test('a lost story planner reply still keeps the story for Restart', async () => {

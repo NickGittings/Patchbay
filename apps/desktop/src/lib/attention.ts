@@ -1,3 +1,4 @@
+import { relatedSession } from './simple'
 import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
@@ -285,6 +286,27 @@ export function revealTerminal(
   item: Pick<AttentionItem, 'sid' | 'componentId'> & Partial<Pick<AttentionItem, 'auto' | 'task'>>,
 ) {
   const s = useStore.getState()
+  if (s.simpleMode && s.project) {
+    const record = s.sessionRecords.find((r) => r.id === item.sid)
+    if (record) {
+      const task =
+        record.metadata.componentId === PLAN_SCOPE
+          ? s.activeTask
+          : (s.tasks.find(
+              (t) =>
+                t.id === record.metadata.task ||
+                t.worktree === record.spec.merge_source ||
+                t.worktree === record.spec.cwd,
+            )?.id ?? null)
+      const path = s.tasks.find((t) => t.id === task)?.worktree ?? s.project.root
+      if (relatedSession(record, { projectId: s.project.id, task, path })) {
+        if (task !== s.activeTask) s.setActiveTask(task, true)
+        s.setActiveSession(item.sid)
+        useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })
+        return
+      }
+    }
+  }
   if (item.auto) {
     s.setActiveTask(item.task ?? null, true)
     s.showAutoPanel()

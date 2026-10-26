@@ -36,6 +36,8 @@ pub struct HookEvent {
     pub turn: Option<String>,
     pub prompt: Option<String>,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
     /// Why a session started (`startup`, `resume`, `clear`, `compact`).
     #[serde(default)]
     pub source: Option<String>,
@@ -204,13 +206,34 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
                     .as_str()
                     .map(|s| s.chars().take(120).collect())
             }),
-        message: field("message").or_else(|| {
-            input
-                .get("tool_input")
-                .and_then(|v| v.get("description"))
-                .and_then(Value::as_str)
-                .map(|s| s.chars().take(200).collect())
-        }),
+        reply: (event == "Stop")
+            .then(|| {
+                let text = input.get("last_assistant_message")?.as_str()?;
+                let mut end = text.len().min(crate::plans::PLAN_LIMIT);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (!text[..end].trim().is_empty()).then(|| text[..end].to_owned())
+            })
+            .flatten(),
+        message: field("message")
+            .or_else(|| {
+                input
+                    .get("tool_input")?
+                    .get("questions")?
+                    .as_array()?
+                    .first()?
+                    .get("question")?
+                    .as_str()
+                    .map(|s| s.chars().take(200).collect())
+            })
+            .or_else(|| {
+                input
+                    .get("tool_input")
+                    .and_then(|v| v.get("description"))
+                    .and_then(Value::as_str)
+                    .map(|s| s.chars().take(200).collect())
+            }),
     })
 }
 
@@ -1162,5 +1185,30 @@ mod tests {
             }
             assert!(serde_json::from_value::<HookEvent>(legacy).is_ok());
         }
+    }
+    #[test]
+    fn stop_relays_only_text_replies_capped_at_a_character_boundary() {
+        for provider in [Adapter::Claude, Adapter::Codex] {
+            let mut input = json!({"hook_event_name":"Stop", "session_id":"12345678-session", "turn_id":"12345678-turn", "last_assistant_message":"Hello **world**"});
+            assert_eq!(
+                normalize(provider, &input).unwrap().reply.as_deref(),
+                Some("Hello **world**")
+            );
+            input["last_assistant_message"] = json!("界".repeat(crate::plans::PLAN_LIMIT));
+            let reply = normalize(provider, &input).unwrap().reply.unwrap();
+            assert_eq!(reply.len(), crate::plans::PLAN_LIMIT / 3 * 3);
+            input["last_assistant_message"] = json!({"text":"ignore"});
+            assert!(normalize(provider, &input).unwrap().reply.is_none());
+            input["last_assistant_message"] = json!("not a stop");
+            input["hook_event_name"] = json!("PreToolUse");
+            assert!(normalize(provider, &input).unwrap().reply.is_none());
+        }
+    }
+    #[test]
+    fn user_question_relays_the_question_without_reading_provider_files() {
+        let input = json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn", "tool_name":"AskUserQuestion", "tool_input":{"questions":[{"question":"Which behavior?"}]}});
+        let event = normalize(Adapter::Claude, &input).unwrap();
+        assert_eq!(event.message.as_deref(), Some("Which behavior?"));
+        assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
     }
 }

@@ -225,13 +225,25 @@ pub async fn proposal_read(
     project_id: String,
     task: Option<String>,
     state: State<'_, AppState>,
-) -> CmdResult<Option<patchbay_core::proposals::Proposal>> {
+) -> CmdResult<Option<serde_json::Value>> {
     let (root, _) = crate::task_repo(&state, &project_id)?;
     blocking(move || {
         if let Some(id) = &task {
             patchbay_core::tasks::find(&root, id).map_err(err)?;
         }
-        patchbay_core::proposals::read(&root, task.as_deref(), false).map_err(err)
+        let proposal =
+            patchbay_core::proposals::read(&root, task.as_deref(), false).map_err(err)?;
+        proposal
+            .map(|p| {
+                let mut value = serde_json::to_value(p).map_err(err)?;
+                let saved = patchbay_core::proposals::submitted(&root, task.as_deref())
+                    .map_err(err)?
+                    .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                    .and_then(|d| u64::try_from(d.as_millis()).ok());
+                value["savedMs"] = serde_json::json!(saved);
+                Ok(value)
+            })
+            .transpose()
     })
     .await
 }

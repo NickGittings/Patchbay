@@ -369,3 +369,22 @@ test('Implement links the planner story to its worktree only after launch succee
   expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story1', { task: 'task1' })
   expect(useStore.getState().stories[0].task).toBe('task1')
 })
+
+test('a pending story from another planner links once and is cleared after handoff', async () => {
+  const item = { id: 'story', task: null } as unknown as import('../types').Story
+  useStore.setState({
+    stories: [item],
+    activeTask: 'task',
+    planStory: 'story',
+    planStoryTerminal: 'different',
+  })
+  vi.mocked(ipc.storyUpdate).mockResolvedValue({ ...item, task: 'task' })
+  await implementPlannerPlan('claude', undefined, undefined, 'stay')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story', { task: 'task' })
+  expect(useStore.getState().planStory).toBeNull()
+  useStore.setState({ planStory: 'story', planStoryTerminal: 'different' })
+  vi.mocked(ipc.storyUpdate).mockClear()
+  await implementPlannerPlan('claude', undefined, undefined, 'stay')
+  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  expect(useStore.getState().planStory).toBeNull()
+})

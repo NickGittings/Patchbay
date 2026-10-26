@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
-import type { AutoRun, Story, StoryDraft, StoryKind, StoryStatus } from '../../types'
+import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
-import { derivedStatus, rollup, tree } from '../../lib/stories'
+import { derivedStatus, rollup, tree, type StoryProgress } from '../../lib/stories'
 import { shortTitle } from '../../lib/tasks'
 import StoryEditor from './StoryEditor'
 import './stories.css'
@@ -28,7 +28,7 @@ export function StoryViewTabs() {
 }
 
 export default function StoryBoard() {
-  const { project, stories, tasks, taskWorkspaces, activeTask, auto } = useStore(
+  const { project, stories, tasks, taskWorkspaces, activeTask, auto, sessionRecords } = useStore(
     useShallow((s) => ({
       project: s.project,
       stories: s.stories,
@@ -36,6 +36,7 @@ export default function StoryBoard() {
       taskWorkspaces: s.taskWorkspaces,
       activeTask: s.activeTask,
       auto: s.auto,
+      sessionRecords: s.sessionRecords,
     })),
   )
   const [epic, setEpic] = useState<string | null>(null)
@@ -63,8 +64,13 @@ export default function StoryBoard() {
     Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
   )
   if (activeTask) runs[activeTask] = auto
-  const status = (item: Story): StoryStatus => {
-    const own = derivedStatus(item, tasks, runs)
+  const status = (item: Story): StoryProgress => {
+    const own = derivedStatus(
+      item,
+      tasks,
+      runs,
+      sessionRecords.filter((r) => r.metadata.projectId === projectId),
+    )
     return item.status === 'done' || item.kind === 'story'
       ? own
       : rollup(own, stories.filter((s) => s.parent === item.id).map(status))
@@ -128,7 +134,9 @@ export default function StoryBoard() {
                 {item.title}
               </span>
               <span className="story-card-meta">
-                <span className={`chip story-status ${value}`}>{value}</span>
+                <span className={`chip story-status ${value}`}>
+                  {value === 'reviewing' ? 'review' : value === 'merging' ? 'merge' : value}
+                </span>
                 <span>{item.components.length} components</span>
               </span>
               {worktree && (

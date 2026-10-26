@@ -5,6 +5,7 @@ import { sessionTimeMs } from './sessionList'
 export const SIMPLE_STAGES = ['plan', 'build', 'review', 'merge'] as const
 export type SimpleStage = (typeof SIMPLE_STAGES)[number]
 export const SIMPLE_ACTIONS = [
+  'plan',
   'implement',
   'review',
   'fix',
@@ -30,9 +31,11 @@ interface EntryBase {
 export type SimpleEntry = EntryBase &
   (
     | { kind: 'prompt'; text: string; mentions: string[] }
+    | { kind: 'reply'; sessionId: string; generation: number; sequence: number; text: string }
     | {
         kind: 'action'
         action: SimpleAction
+        text?: string
         mentions?: string[]
         request?: import('../types').MergeRequest
       }
@@ -48,6 +51,7 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const state = value as SimpleState
   if (!Number.isFinite(state.startedMs) || !Array.isArray(state.log)) return null
   const seen = new Set<string>()
+  const replies = new Set<string>()
   return {
     startedMs: state.startedMs,
     log: state.log.filter((entry) => {
@@ -64,8 +68,20 @@ export function restoredSimple(value: unknown): SimpleState | null {
           ? typeof entry.text === 'string' &&
             Array.isArray(entry.mentions) &&
             entry.mentions.every((id) => typeof id === 'string')
-          : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
-      if (valid) seen.add(entry.id)
+          : entry.kind === 'reply'
+            ? typeof entry.sessionId === 'string' &&
+              Number.isSafeInteger(entry.generation) &&
+              entry.generation >= 0 &&
+              Number.isSafeInteger(entry.sequence) &&
+              entry.sequence > 0 &&
+              typeof entry.text === 'string' &&
+              !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+            : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
+      if (valid) {
+        seen.add(entry.id)
+        if (entry.kind === 'reply')
+          replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+      }
       return valid
     }),
   }
@@ -85,6 +101,7 @@ export interface SimpleSnapshot {
   acceptedPlan?: PlanText
   proposal?: import('../types').PlannerProposal | null
   review?: Review
+  createdMs?: number
 }
 export const recordStage = (record: SessionRecord): SimpleStage =>
   record.metadata.componentId === PLAN_SCOPE
@@ -116,8 +133,7 @@ export function relatedSession(record: SessionRecord, worktree: SimpleWorktree) 
 const stageSessionTime = (record: SessionRecord) =>
   record.snapshot?.startedMs ?? record.history.at(-1)?.startedMs ?? sessionTimeMs(record)
 
-/** Pure projection: stable sections and cards, never terminal-text interpretation or IPC. */
-/** The Simple section an Auto stage belongs to. */
+/** The Simple role an Auto stage belongs to. */
 export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
   stage === 'plan'
     ? 'plan'
@@ -126,44 +142,204 @@ export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
       : stage === 'review'
         ? 'review'
         : 'build'
+
+/** Start of this planning attempt, rather than a follow-up message within its turn. */
+export function planningStarted(snapshot: SimpleSnapshot) {
+  const log = snapshot.simple?.log ?? []
+  const start = log
+    .filter(
+      (e) =>
+        e.stage === 'plan' && (e.kind === 'prompt' || (e.kind === 'action' && e.action === 'plan')),
+    )
+    .at(-1)
+  if (start) {
+    const first = log.find(
+      (e) =>
+        e.stage === 'plan' &&
+        e.sessionId === start.sessionId &&
+        e.generation === start.generation &&
+        (e.kind === 'prompt' || e.kind === 'action'),
+    )
+    const record = snapshot.records.find((r) => r.id === start.sessionId)
+    const atMs = first?.atMs ?? start.atMs
+    return start.generation !== undefined &&
+      record?.snapshot?.generation !== undefined &&
+      record.snapshot.generation !== start.generation
+      ? Math.max(atMs, record.snapshot.startedMs)
+      : atMs
+  }
+  return snapshot.createdMs ?? snapshot.simple?.startedMs ?? 0
+}
+export type TimelineItem =
+  | {
+      kind: 'agent'
+      id: string
+      atMs: number
+      record?: SessionRecord
+      sessionId: string
+      entries: SimpleEntry[]
+    }
+  | { kind: 'line'; id: string; atMs: number; text: string }
+  | { kind: 'plan'; id: string; atMs: number; text: string; stale: boolean }
+  | { kind: 'result'; id: string; atMs: number; result: 'review' | 'changes' | 'merge' }
+
+const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
+  ({
+    plan: `Planning${entry.text ? ` ${entry.text}` : ''}…`,
+    implement: 'Building…',
+    review: 'Reviewing…',
+    fix: 'Fixing findings…',
+    merge: 'Checking and merging…',
+    validate: 'Running validation…',
+    autopilot: 'Auto started.',
+    resume: 'Agent resumed.',
+    scope: 'Scope updated.',
+    pauseAuto: 'Auto paused.',
+    resumeAuto: 'Auto resumed.',
+    stopAuto: 'Auto stopped.',
+    mergeApproval: 'Merge approved.',
+    skipStage: 'Stage skipped.',
+  })[entry.action]
+
+/** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
     .filter((r) => relatedSession(r, worktree))
     .sort(
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
     )
-  const log = [...(snapshot.simple?.log ?? [])].sort((a, b) => a.atMs - b.atMs)
-  const scoped = records.filter((r) => r.metadata.componentId !== PLAN_SCOPE)
-  const latestRecord = scoped.at(-1) ?? records.at(-1)
-  let stage: SimpleStage = recordStageOrPlan(latestRecord)
+  const log = [...(snapshot.simple?.log ?? [])]
+  const seen = new Set(
+    log.flatMap((e) =>
+      e.kind === 'reply' ? [`${e.sessionId}:${e.generation}:${e.sequence}`] : [],
+    ),
+  )
+  for (const record of records) {
+    const session = snapshot.sessions[record.id] ?? record.snapshot
+    const generation = session?.generation
+    if (generation === undefined) continue
+    for (const reply of session?.replies ?? []) {
+      const key = `${record.id}:${generation}:${reply.sequence}`
+      if (seen.has(key) || reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0))
+        continue
+      if (
+        recordStage(record) === 'plan' &&
+        !log.some((e) => e.sessionId === record.id && e.generation === generation)
+      )
+        continue
+      seen.add(key)
+      log.push({
+        id: `reply:${key}`,
+        kind: 'reply',
+        stage: recordStage(record),
+        atMs: reply.atMs,
+        sessionId: record.id,
+        generation,
+        sequence: reply.sequence,
+        text: reply.text,
+      })
+    }
+  }
+  log.sort((a, b) => a.atMs - b.atMs)
+  const latest = records.filter((r) => recordStage(r) !== 'plan').at(-1) ?? records.at(-1)
+  let stage = latest ? recordStage(latest) : 'plan'
   const action = log
     .filter(
-      (e) => e.kind === 'action' && ['implement', 'review', 'fix', 'merge'].includes(e.action),
+      (e) =>
+        (e.kind === 'action' &&
+          ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action)) ||
+        e.kind === 'prompt',
     )
     .at(-1)
-  if (
-    action?.kind === 'action' &&
-    action.atMs >= (latestRecord ? (stageSessionTime(latestRecord) ?? 0) : 0)
-  )
-    stage = action.action === 'review' ? 'review' : action.action === 'merge' ? 'merge' : 'build'
-  if (snapshot.auto && !['stopped', 'failed', 'done'].includes(snapshot.auto.status)) {
+  if (action && action.atMs >= (latest ? (stageSessionTime(latest) ?? 0) : 0)) stage = action.stage
+  if (snapshot.auto && !['stopped', 'failed', 'done'].includes(snapshot.auto.status))
     stage = simpleStageOf(snapshot.auto.stage)
+  const start = planningStarted(snapshot)
+  const plan =
+    (snapshot.proposal?.savedMs ?? 0) > (snapshot.plan?.savedMs ?? 0)
+      ? { text: snapshot.proposal!.plan, savedMs: snapshot.proposal!.savedMs }
+      : snapshot.plan
+  const currentPlan = !!plan?.text.trim() && (plan.savedMs ?? 0) >= start
+  const items: TimelineItem[] = []
+  const planning = new Set<string>()
+  for (const entry of log) {
+    if (
+      entry.stage === 'plan' &&
+      (entry.kind === 'prompt' || (entry.kind === 'action' && entry.action === 'plan'))
+    ) {
+      const run = `${entry.sessionId}:${entry.generation}`
+      if (entry.kind === 'prompt' && !planning.has(run))
+        items.push({
+          kind: 'line',
+          id: `planning:${entry.id}`,
+          atMs: entry.atMs - 0.1,
+          text: 'Planning…',
+        })
+      planning.add(run)
+    }
+    if (entry.kind === 'action') {
+      items.push({ kind: 'line', id: entry.id, atMs: entry.atMs, text: actionText(entry) })
+      continue
+    }
+    const sid = entry.sessionId ?? 'you'
+    const previous = items.at(-1)
+    if (previous?.kind === 'agent' && previous.sessionId === sid) previous.entries.push(entry)
+    else
+      items.push({
+        kind: 'agent',
+        id: entry.id,
+        atMs: entry.atMs,
+        record: records.find((r) => r.id === sid),
+        sessionId: sid,
+        entries: [entry],
+      })
   }
-  return {
-    stage,
-    planReady: !!(snapshot.plan?.text.trim() || snapshot.proposal),
-    sections: SIMPLE_STAGES.map((id) => ({
-      id,
-      entries: log.filter((e) => e.stage === id),
-      sessions: records.filter((r) => recordStage(r) === id),
-    })),
-    records,
+  for (const record of records) {
+    if (items.some((i) => i.kind === 'agent' && i.sessionId === record.id)) continue
+    if (
+      recordStage(record) === 'plan' &&
+      !log.some((e) => e.sessionId === record.id) &&
+      (stageSessionTime(record) ?? 0) < (snapshot.simple?.startedMs ?? 0)
+    )
+      continue
+    items.push({
+      kind: 'agent',
+      id: `agent:${record.id}`,
+      atMs: stageSessionTime(record) ?? start,
+      record,
+      sessionId: record.id,
+      entries: [],
+    })
   }
+  const plannerEnd = Math.max(
+    0,
+    ...log.filter((e) => e.stage === 'plan' && e.kind === 'reply').map((e) => e.atMs),
+  )
+  if (plan?.text.trim())
+    items.push({
+      kind: 'plan',
+      id: 'plan',
+      atMs: currentPlan ? Math.max(plan.savedMs ?? 0, plannerEnd) + 0.1 : start,
+      text: plan.text,
+      stale: !currentPlan,
+    })
+  for (const result of ['changes', 'review', 'merge'] as const) {
+    const r = records
+      .filter((r) => recordStage(r) === (result === 'changes' ? 'build' : result))
+      .at(-1)
+    if (r)
+      items.push({
+        kind: 'result',
+        id: result,
+        atMs: snapshot.sessions[r.id]?.status?.agent?.sinceMs ?? stageSessionTime(r) ?? start,
+        result,
+      })
+  }
+  items.sort((a, b) => a.atMs - b.atMs)
+  return { stage, planReady: currentPlan, records, items, planningStarted: start }
 }
-const recordStageOrPlan = (record: SessionRecord | undefined): SimpleStage =>
-  record ? recordStage(record) : 'plan'
 
-/** An explicit recipient survives stage changes while it remains eligible. */
+/** Input waits take priority; otherwise Send and the drawer follow the current role. */
 export function selectRecipient(
   records: readonly SessionRecord[],
   sessions: Record<string, SessionState>,
@@ -171,6 +347,15 @@ export function selectRecipient(
   override?: string,
 ) {
   const eligible = records.filter((r) => r.metadata.kind === 'agent')
+  const asking = [...eligible]
+    .reverse()
+    .find(
+      (r) =>
+        sessions[r.id]?.running &&
+        !sessions[r.id]?.disconnected &&
+        sessions[r.id]?.status?.agent?.state === 'needsInput',
+    )
+  if (asking) return asking
   const explicit = eligible.find((r) => r.id === override)
   if (explicit) return explicit
   const stageRecords = eligible.filter((r) => recordStage(r) === stage)

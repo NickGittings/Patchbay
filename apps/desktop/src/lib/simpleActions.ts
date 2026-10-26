@@ -15,6 +15,17 @@ export function logSimple(
   const simple = (state.activeTask === task
     ? state.simple
     : state.taskWorkspaces[task ?? '']?.simple) ?? { startedMs: Date.now(), log: [] }
+  if (
+    entry.kind === 'reply' &&
+    simple.log.some(
+      (e) =>
+        e.kind === 'reply' &&
+        e.sessionId === entry.sessionId &&
+        e.generation === entry.generation &&
+        e.sequence === entry.sequence,
+    )
+  )
+    return
   const complete = {
     ...entry,
     id: entry.id ?? crypto.randomUUID(),

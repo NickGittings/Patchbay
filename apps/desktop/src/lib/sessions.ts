@@ -1,3 +1,4 @@
+import { hydrateReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
@@ -497,7 +498,7 @@ function launchTerminal(launch: Launch): Promise<void> {
     }
     if (launch.started && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
-      if (launch.story || projectStateOf(launch.projectId)?.planStoryTerminal === terminalId)
+      if (launch.story)
         useStore.getState().patchProject(launch.projectId, {
           planStory: launch.story ?? null,
           planStoryTerminal: launch.story ? terminalId : null,
@@ -714,6 +715,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
       s.setSession(e.sessionId, {
         ...s.sessions[e.sessionId],
         activity: hydrateActivity(s.sessions[e.sessionId], e.generation),
+        replies: hydrateReplies(s.sessions[e.sessionId], e.generation),
         generation: e.generation,
         running: false,
         exitCode: e.exitCode,
@@ -728,6 +730,18 @@ export function handleTerminalEvent(e: TerminalEvent) {
       )
         s.keepInDock(e.sessionId)
       break
+    case 'reply': {
+      const prev = s.sessions[e.sessionId]
+      const fresh = prev?.generation !== e.generation
+      s.setSession(e.sessionId, {
+        ...(fresh ? {} : prev),
+        generation: e.generation,
+        running: fresh || prev.running,
+        replies: hydrateReplies(prev, e.generation, [e.reply]),
+      })
+      persistReplies(e.sessionId, e.generation, [e.reply])
+      break
+    }
     case 'activity': {
       const prev = s.sessions[e.sessionId]
       // Live activity can be the first event this window sees of a run: nothing of the
@@ -750,6 +764,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         running: newGeneration || (prev?.running ?? true),
         status: e.status,
         activity: hydrateActivity(prev, e.generation),
+        replies: hydrateReplies(prev, e.generation),
       })
       break
     }
@@ -778,6 +793,11 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           startedMs: snapshot.startedMs,
           exitedMs: snapshot.exitedMs ?? undefined,
           status: snapshot.status,
+          replies: hydrateReplies(
+            useStore.getState().sessions[sid],
+            snapshot.generation,
+            snapshot.replies,
+          ),
           activity: hydrateActivity(
             useStore.getState().sessions[sid],
             snapshot.generation,
@@ -788,6 +808,7 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           truncated: snapshot.truncated,
         })
       }
+      if (snapshot) persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
       return snapshot
     } finally {
       if (started === epoch) {
@@ -856,7 +877,8 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
     a.truncated === b.truncated &&
     a.disconnected === undefined &&
     JSON.stringify(a.status) === JSON.stringify(b.status) &&
-    JSON.stringify(a.activity) === JSON.stringify(b.activity)
+    JSON.stringify(a.activity) === JSON.stringify(b.activity) &&
+    JSON.stringify(a.replies) === JSON.stringify(b.replies)
   )
 }
 
@@ -922,6 +944,7 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot) {
+          persistReplies(r.id, snapshot.generation, snapshot.replies ?? [], r)
           const next: SessionState = {
             generation: snapshot.generation,
             running: snapshot.running,
@@ -929,6 +952,11 @@ export function reconcileSessions(force = true): Promise<void> {
             startedMs: snapshot.startedMs,
             exitedMs: snapshot.exitedMs ?? undefined,
             status: snapshot.status,
+            replies: hydrateReplies(
+              useStore.getState().sessions[r.id],
+              snapshot.generation,
+              snapshot.replies,
+            ),
             activity: hydrateActivity(
               useStore.getState().sessions[r.id],
               snapshot.generation,

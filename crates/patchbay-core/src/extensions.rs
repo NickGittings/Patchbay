@@ -1010,6 +1010,7 @@ mod tests {
                 exited_ms: None,
                 status: Default::default(),
                 activity: Vec::new(),
+                replies: Vec::new(),
                 notice: None,
             }),
             history: vec![],

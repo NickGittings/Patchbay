@@ -23,7 +23,7 @@ async function handoffPlannerPlan(
   const projectId = initial.project?.id
   if (!projectId) throw new Error('Open a project first')
   const task = initial.activeTask
-  const story = initial.planStoryTerminal === plannerId ? initial.planStory : null
+  const story = initial.planStory
   const device =
     (deviceId && agentDevices(initial.devices).find((d) => d.id === deviceId)) ||
     roleDevice(
@@ -75,7 +75,10 @@ async function handoffPlannerPlan(
   })
   if (story && task) {
     try {
-      await updateStory(projectId, story, { task })
+      if (current().stories.find((s) => s.id === story)?.task !== task)
+        await updateStory(projectId, story, { task })
+      if (useStore.getState().planStory === story)
+        useStore.getState().patchProject(projectId, { planStory: null, planStoryTerminal: null })
     } catch (e) {
       useStore
         .getState()

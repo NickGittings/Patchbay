@@ -49,6 +49,16 @@ pub enum AgentState {
     Ended,
 }
 
+/// An accepted final assistant message for one process generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reply {
+    pub sequence: u64,
+    pub at_ms: u64,
+    pub turn: Option<String>,
+    pub text: String,
+}
+
 /// Accepted tool activity for one process generation. Mirrored in desktop `types.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -406,6 +416,8 @@ pub struct Tracker {
     hook_sequence: u64,
     activity: std::collections::VecDeque<Activity>,
     pending_activity: Vec<Activity>,
+    replies: std::collections::VecDeque<Reply>,
+    pending_replies: Vec<Reply>,
     hook_conversation: Option<String>,
     hook_turn: Option<String>,
     retired_turns: std::collections::HashSet<String>,
@@ -447,6 +459,16 @@ impl Tracker {
     /// Activity accepted since the last event delivery.
     pub fn drain_activity(&mut self) -> Vec<Activity> {
         std::mem::take(&mut self.pending_activity)
+    }
+
+    /// Retained replies, oldest first.
+    #[must_use]
+    pub fn replies(&self) -> Vec<Reply> {
+        self.replies.iter().cloned().collect()
+    }
+
+    pub fn drain_replies(&mut self) -> Vec<Reply> {
+        std::mem::take(&mut self.pending_replies)
     }
 
     /// Consume a native provider event. Unknown sessions, retired conversations/turns,
@@ -524,6 +546,9 @@ impl Tracker {
             } // Compaction does not end an active turn.
             "SessionStart" | "Interrupt" | "StopFailure" => AgentState::Idle,
             "SessionEnd" => AgentState::Ended,
+            "PreToolUse" if event.tool.as_deref() == Some("AskUserQuestion") => {
+                AgentState::NeedsInput
+            }
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
                 AgentState::Working
             }
@@ -568,6 +593,22 @@ impl Tracker {
                 self.activity.pop_front();
             }
             self.pending_activity.push(activity);
+        }
+        if event.event == "Stop"
+            && state == AgentState::Review
+            && let Some(text) = &event.reply
+        {
+            let reply = Reply {
+                sequence: event.sequence,
+                at_ms: event.at_ms,
+                turn: event.turn.clone(),
+                text: text.clone(),
+            };
+            self.replies.push_back(reply.clone());
+            if self.replies.len() > 20 {
+                self.replies.pop_front();
+            }
+            self.pending_replies.push(reply);
         }
         let previous = self.report.take();
         let turn = event.turn.or_else(|| self.hook_turn.clone());
@@ -1261,6 +1302,7 @@ mod tests {
             turn: turn.map(str::to_string),
             prompt: (event == "UserPromptSubmit").then(|| "build it".into()),
             message: (event == "PermissionRequest").then(|| "Allow Bash?".into()),
+            reply: None,
             source: None,
         }
     }
@@ -1861,5 +1903,64 @@ mod tests {
                 .activity()
                 .is_empty()
         );
+    }
+    #[test]
+    fn replies_obey_generation_conversation_and_turn_identity_and_retain_twenty() {
+        let mut tracker = Tracker::new("", false).with_identity("session", 1);
+        // Use the same identity as the existing hook fixtures.
+        let identity = hook("SessionStart", None, 1);
+        tracker = tracker.with_identity(&identity.session, identity.generation);
+        tracker.on_hook(identity, 100);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 2), 200);
+        let stop = |sequence| {
+            let mut e = hook("Stop", Some("turn"), sequence);
+            e.reply = Some("Final reply".into());
+            e
+        };
+        let mut wrong = stop(3);
+        wrong.generation += 1;
+        tracker.on_hook(wrong, 300);
+        let mut nested = stop(4);
+        nested.conversation = "nested".into();
+        tracker.on_hook(nested, 400);
+        let mut turn = stop(5);
+        turn.turn = Some("other".into());
+        tracker.on_hook(turn, 500);
+        assert!(tracker.replies().is_empty());
+        tracker.on_hook(stop(6), 600);
+        tracker.on_hook(stop(7), 700);
+        assert_eq!(tracker.replies().len(), 1);
+        for i in 0..25 {
+            let name = format!("turn-{i}");
+            tracker.on_hook(
+                hook("UserPromptSubmit", Some(&name), 8 + i * 2),
+                800 + i * 200,
+            );
+            let mut e = hook("Stop", Some(&name), 9 + i * 2);
+            e.reply = Some(name);
+            tracker.on_hook(e, 900 + i * 200);
+        }
+        assert_eq!(tracker.replies().len(), 20);
+        assert_eq!(tracker.drain_replies().len(), 26);
+        assert!(tracker.drain_replies().is_empty());
+        let restored: Vec<Reply> =
+            serde_json::from_value(serde_json::to_value(tracker.replies()).unwrap()).unwrap();
+        assert_eq!(restored, tracker.replies());
+    }
+    #[test]
+    fn user_question_waits_for_input_until_the_tool_returns() {
+        let start = hook("UserPromptSubmit", Some("turn"), 1);
+        let mut tracker = Tracker::new("", false).with_identity(&start.session, start.generation);
+        tracker.on_hook(start, 100);
+        let mut question = hook("PreToolUse", Some("turn"), 2);
+        question.tool = Some("AskUserQuestion".into());
+        question.message = Some("Which behavior?".into());
+        tracker.on_hook(question, 200);
+        assert_eq!(
+            tracker.report.as_ref().unwrap().state,
+            AgentState::NeedsInput
+        );
+        tracker.on_hook(hook("PostToolUse", Some("turn"), 3), 300);
+        assert_eq!(tracker.report.as_ref().unwrap().state, AgentState::Working);
     }
 }

@@ -277,3 +277,61 @@ test('completion persists only the linked Auto run and stays Done when its workt
   expect(ipc.storyCompleteAuto).toHaveBeenCalledWith('p', 'task', 'new')
   expect(derivedStatus(useStore.getState().stories[0], [], {})).toBe('done')
 })
+
+test('latest review, merge or root record determines a live story stage', async () => {
+  const { worktreeStage } = await import('./stories')
+  const record = (scope: string, startedMs: number) =>
+    ({
+      id: `${scope}:${startedMs}`,
+      metadata: { projectId: 'p', componentId: scope, task: task.id, branch: 'feature' },
+      spec: { cwd: task.worktree, merge_source: task.worktree },
+      snapshot: { startedMs },
+    }) as unknown as import('../types').SessionRecord
+  const t = { ...task, branch: 'feature' }
+  const records = [record('@task', 1), record('@review', 2), record('@merge', 3)]
+  expect(worktreeStage(t, 'p', records.slice(0, 2))).toBe('reviewing')
+  expect(worktreeStage(t, 'p', records)).toBe('merging')
+  expect(worktreeStage(t, 'p', [...records, record('@task', 4)])).toBe('building')
+  expect(worktreeStage(t, 'other', records)).toBe('building')
+  expect(derivedStatus({ ...story('s'), task: task.id }, [t], {}, records)).toBe('merging')
+  for (const [stage, expected] of [
+    ['review', 'reviewing'],
+    ['mergeGate', 'merging'],
+    ['merge', 'merging'],
+    ['fix', 'building'],
+  ] as const)
+    expect(derivedStatus({ ...story('s'), task: task.id }, [t], { task: run({ stage }) })).toBe(
+      expected,
+    )
+  expect(rollup('done', ['reviewing', 'merging', 'done'])).toBe('reviewing')
+})
+test('worktree creation for a story scopes descendants and links in its follow-up', async () => {
+  const { newWorktreeForStory } = await import('./stories')
+  const tasks = await import('./tasks')
+  const seeded = vi.spyOn(tasks, 'seedNewTask')
+  const parent = story('parent', 'feature')
+  useStore.setState({
+    stories: [parent, { ...story('child', 'story', 'parent'), components: ['web'] }],
+  })
+  newWorktreeForStory('p', parent)
+  expect(useStore.getState().newTask).toMatchObject({ title: 'parent', components: ['api', 'web'] })
+  await seeded.mock.calls[0][0]!(task, 'p')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'parent', { task: task.id })
+  seeded.mockRestore()
+})
+test('planning a story in Chat retains the board, view and mode and logs the story name', async () => {
+  planner()
+  useStore.getState().setSimpleMode(true)
+  useStore.getState().setStoryBoard(true)
+  await planStory('p', story('Feature name'))
+  expect(useStore.getState()).toMatchObject({
+    simpleMode: true,
+    view: 'navigation',
+    storyBoard: true,
+  })
+  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
+    kind: 'action',
+    action: 'plan',
+    text: 'Feature name',
+  })
+})

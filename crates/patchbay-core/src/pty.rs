@@ -189,6 +189,15 @@ impl Backlog {
     ) {
         for event in hooks {
             self.tracker.on_hook(event, now);
+            for reply in self.tracker.drain_replies() {
+                if self.running {
+                    sink.emit(TerminalEvent::Reply {
+                        session_id: id.to_owned(),
+                        generation: self.generation,
+                        reply,
+                    });
+                }
+            }
             for activity in self.tracker.drain_activity() {
                 if self.running {
                     sink.emit(TerminalEvent::Activity {
@@ -238,6 +247,8 @@ pub struct Snapshot {
     pub status: SessionStatus,
     #[serde(default)]
     pub activity: Vec<crate::status::Activity>,
+    #[serde(default)]
+    pub replies: Vec<crate::status::Reply>,
     /// The spec's notice. Full-screen programs hide the dim backlog line, so
     /// windows show this outside the terminal as well.
     pub notice: Option<String>,
@@ -903,6 +914,7 @@ impl PtyManager {
             exited_ms: backlog.exited_ms,
             status,
             activity: backlog.tracker.activity(),
+            replies: backlog.tracker.replies(),
             notice: backlog.notice.clone(),
         })
     }
@@ -1778,6 +1790,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         let command = r#"printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":1,"atMs":1,"event":"UserPromptSubmit","conversation":"conversation","turn":"turn","prompt":null,"message":null}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000001.json"
 printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":2,"atMs":2,"event":"PreToolUse","conversation":"conversation","turn":"turn","prompt":null,"message":null,"tool":"Read","target":"src/lib.rs","fileTarget":true}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000002.json"
+printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":3,"atMs":3,"event":"Stop","conversation":"conversation","turn":"turn","reply":"Final assistant reply","prompt":null,"message":null}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000003.json"
 "#;
         pty.spawn(
             SessionSpec {
@@ -1801,10 +1814,12 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
         assert_eq!(sink.wait_for_exit(), 0);
         let snapshot = pty.snapshot("activity-final").unwrap();
         assert_eq!(snapshot.activity.len(), 1);
+        assert_eq!(snapshot.replies[0].text, "Final assistant reply");
         let serialized = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(serialized["activity"][0]["sequence"], 2);
         let restored: Snapshot = serde_json::from_value(serialized).unwrap();
         assert_eq!(restored.activity, snapshot.activity);
+        assert_eq!(restored.replies, snapshot.replies);
         let events = sink.0.lock().unwrap();
         let activity = events
             .iter()
@@ -1817,6 +1832,11 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
             .position(|e| matches!(e, TerminalEvent::Exited { .. }))
             .unwrap();
         assert!(activity < exit);
+        let reply = events
+            .iter()
+            .position(|e| matches!(e, TerminalEvent::Reply { .. }))
+            .unwrap();
+        assert!(reply < exit);
         assert!(
             pty.write_generation("activity-final", snapshot.generation, b"no")
                 .is_err()
@@ -1845,6 +1865,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 file_target: true,
                 target: Some("src/lib.rs".into()),
                 prompt: None,
+                reply: None,
                 message: None,
                 source: None,
             })

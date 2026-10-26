@@ -24,6 +24,7 @@ import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
 
 import { planDrafts } from '../lib/planDrafts'
+import { linkStory } from '../lib/stories'
 import { implementPlannerPlan } from '../lib/planHandoff'
 
 export default function PlanView() {
@@ -275,13 +276,36 @@ export default function PlanView() {
           <aside className="plan-scope">
             <div className="row plan-scope-header">
               <span className="section-title">Planner scope</span>
+              {planStory && (
+                <span className="chip">
+                  Story: {stories.find((s) => s.id === planStory)?.title ?? planStory}{' '}
+                  <button
+                    aria-label="Dismiss story"
+                    onClick={() =>
+                      projectId &&
+                      useStore
+                        .getState()
+                        .patchProject(projectId, { planStory: null, planStoryTerminal: null })
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
               <span className="spacer" />
               <button disabled={highlighted.length === 0} onClick={clearHighlights}>
                 Clear
               </button>
               <button
                 title="Create a branch and worktree for the highlighted components, or the selected one, starting with a copy of the plan. The planner and its plan stay."
-                onClick={() => seedNewTask(undefined, { copyPlan: true })}
+                onClick={() =>
+                  seedNewTask(
+                    (created, pid) => {
+                      if (planStory) void linkStory(pid, planStory, created.id)
+                    },
+                    { copyPlan: true },
+                  )
+                }
               >
                 ＋ New task
               </button>
@@ -303,7 +327,10 @@ export default function PlanView() {
                   <MenuItem
                     onClick={() =>
                       seedNewTask(
-                        (created) => void implement(`${projectId ?? ''}\n${created.id}`),
+                        async (created, pid) => {
+                          if (planStory) await linkStory(pid, planStory, created.id)
+                          await implement(`${projectId ?? ''}\n${created.id}`)
+                        },
                         { copyPlan: true },
                       )
                     }

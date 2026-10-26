@@ -1,9 +1,10 @@
+import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
-import { selectRecipient, type SimpleStage } from '../lib/simple'
+import { recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -45,7 +46,7 @@ export default function SimpleComposer({
   const ui = useSimpleUi((s) => s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI)
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
-  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, ui.recipient))
+  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage))
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   const [pending, setPending] = useState(false),
     [error, setError] = useState('')
@@ -59,9 +60,11 @@ export default function SimpleComposer({
     [],
   )
   const recipientRef = useRef(recipient?.id)
+  const stageRef = useRef(stage)
   useEffect(() => {
     recipientRef.current = recipient?.id
-  }, [recipient?.id])
+    stageRef.current = stage
+  }, [recipient?.id, stage])
   const last = recipient ? submitted.get(recipient.id) : undefined
   const lastSubmit = last?.generation === state?.generation ? last?.atMs : undefined
   // Readiness changes only through status events, so no clock subscription is needed.
@@ -98,7 +101,6 @@ export default function SimpleComposer({
       draft = ui.draft,
       mentions = [...ui.mentions]
     const mountedEpoch = lifecycle.current
-    const requestedOverride = ui.recipient
     const initialGeneration = state?.generation
     const text = transmittedText(draft, mentions)
     if (!text.trim()) {
@@ -167,15 +169,11 @@ export default function SimpleComposer({
       if (generation === undefined)
         throw new Error('The session has no active process. Open its terminal to continue.')
       const captured = { projectId, task, recipient: sid, generation }
-      const targetOverride = requestedOverride
       if (running && generation !== initialGeneration)
         throw new Error('The process changed. Your draft was kept.')
       const stillCurrent = () => {
         check()
-        if (
-          useSimpleUi.getState().worktrees[scopeKey]?.recipient !== targetOverride ||
-          (recipient && recipientRef.current !== recipient.id)
-        )
+        if (stageRef.current !== stage || (recipientRef.current && recipientRef.current !== sid))
           return undefined
         const current = useStore.getState().sessions[sid]
         return { ...captured, generation: current?.generation ?? -1 }
@@ -212,9 +210,11 @@ export default function SimpleComposer({
         stage,
         sessionId: sid,
         generation,
+        atMs: submitted.get(sid)?.atMs,
         text,
         mentions: mentions.map((m) => m.id),
       })
+      persistReplies(sid, generation, useStore.getState().sessions[sid]?.replies ?? [])
       const latest = useSimpleUi.getState().worktrees[scopeKey]
       if (latest?.draft === draft && JSON.stringify(latest.mentions) === JSON.stringify(mentions))
         patch({ draft: '', mentions: [] })
@@ -227,22 +227,6 @@ export default function SimpleComposer({
   }
   return (
     <div className="simple-composer">
-      <label>
-        To{' '}
-        <select
-          aria-label="Message recipient"
-          value={recipient?.id ?? ''}
-          onChange={(e) => patch({ recipient: e.target.value || undefined })}
-        >
-          <option value="">Current stage · {stage}</option>
-          {records.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.metadata.name}
-              {r.metadata.componentId === PLAN_SCOPE ? ' · shared planner' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
       <div className="simple-mentions">
         {ui.mentions.map((m) => (
           <button
@@ -310,7 +294,19 @@ export default function SimpleComposer({
       )}
       <div className="simple-composer-controls">
         <span>{status.label}</span>
-        {recipient && <button onClick={() => openTerminal(recipient)}>Open terminal</button>}
+        <button
+          disabled={!recipient}
+          aria-expanded={ui.terminal !== 'closed'}
+          onClick={() => recipient && openTerminal(recipient)}
+        >
+          {ui.terminal === 'closed' ? 'View' : 'Hide'}{' '}
+          {recipient
+            ? { plan: 'Planner', build: 'Builder', review: 'Reviewer', merge: 'Merge agent' }[
+                recordStage(recipient)
+              ]
+            : 'agent'}{' '}
+          terminal
+        </button>
         <button
           className="primary"
           disabled={!status.sendable || !ui.draft.trim()}
@@ -329,7 +325,7 @@ export default function SimpleComposer({
       )}
       {drafted && status.notice === 'unsupported' && (
         <p className="simple-hook-notice">
-          Chat can message only Claude and Codex agents, which report a ready prompt. Use Open
+          Chat can message only Claude and Codex agents, which report a ready prompt. Use View
           terminal to talk to this one.
         </p>
       )}

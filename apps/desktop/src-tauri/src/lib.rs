@@ -1575,6 +1575,25 @@ async fn stack_agent_start(
 }
 
 #[tauri::command]
+async fn merge_conflicts(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    source: String,
+    destination: String,
+    mut project: Project,
+) -> CmdResult<Vec<String>> {
+    main_only(&window)?;
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        patchbay_core::merges::conflicts(Path::new(&project.root), &source, &destination)
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -2392,6 +2411,7 @@ pub fn run() {
                 map_agent_start,
                 stack_agent_start,
                 merge_outcome,
+                merge_conflicts,
                 review_agent_start,
                 review_read,
                 review_fix_task,

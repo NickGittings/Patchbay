@@ -442,7 +442,15 @@ export interface Activity {
   target: string | null
   turn: string | null
 }
+/** `status::Reply`; scoped to a session process generation. */
+export interface Reply {
+  sequence: number
+  atMs: number
+  turn: string | null
+  text: string
+}
 export type TerminalEvent = (
+  | { type: 'reply'; sessionId: string; generation: number; reply: Reply }
   | { type: 'activity'; sessionId: string; generation: number; activity: Activity }
   | {
       type: 'started'
@@ -488,11 +496,13 @@ export interface SessionStatus {
 
 /** `plans::Plan`: a saved plan for the editor, `cut` when the file is longer than it holds. */
 export interface PlanText {
+  savedMs?: number | null
   text: string
   cut: boolean
 }
 
 export interface TerminalSnapshot {
+  replies?: Reply[]
   activity?: Activity[]
   /** Original launch folder for this incarnation; absent in legacy history. */
   launchDirectory?: string | null
@@ -518,6 +528,7 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  replies?: Reply[]
   activity?: Activity[]
   /** Process incarnation, available even before the start timestamp is hydrated. */
   generation?: number
@@ -894,6 +905,7 @@ export interface ComponentSessionSummary {
 }
 
 export interface PlannerProposal {
+  savedMs?: number | null
   version: number
   plan: string
   assignments: { componentId: string; assignment: string }[]

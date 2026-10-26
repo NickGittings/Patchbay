@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { useStore, type UtilityPanel } from '../store'
-import { simpleKey, useSimpleUi } from './simpleUi'
 import type { View } from '../types'
 
 export type { UtilityPanel }
@@ -31,34 +30,19 @@ useStore.subscribe((s, previous) => {
   )
     useRail.setState({ settings: null })
 })
-/** Chat keeps the last Full view; its numbered shortcuts return there. */
+/** Rail clicks and numbered shortcuts open the selected Full view. */
 export function selectRailShortcut(view: View) {
-  const s = useStore.getState()
-  if (!s.project) return
-  if (s.simpleMode && view !== 'navigation') s.setSimpleMode(false)
-  else selectRailView(view)
+  selectRailView(view)
 }
 export function selectRailView(view: View) {
   const s = useStore.getState()
   if (!s.project) return
-  if (!s.simpleMode) s.setView(view)
-  else
-    useSimpleUi.getState().patch(simpleKey(s.project.id, s.activeTask), {
-      stageFilter: view === 'navigation' ? 'all' : view === 'implementation' ? 'build' : view,
-    })
+  if (s.simpleMode) s.setSimpleMode(false)
+  s.setView(view)
 }
 export function selectedRailView(): View | null {
   const s = useStore.getState()
-  if (!s.simpleMode) return s.view
-  const filter =
-    useSimpleUi.getState().worktrees[simpleKey(s.project?.id, s.activeTask)]?.stageFilter
-  return !filter || filter === 'all'
-    ? 'navigation'
-    : filter === 'build'
-      ? 'implementation'
-      : filter === 'merge'
-        ? null
-        : filter
+  return s.simpleMode ? 'navigation' : s.view
 }
 export function panelWidth(width: number, windowWidth: number) {
   return Math.max(240, Math.min(Number.isFinite(width) ? width : 360, 640, windowWidth - 460))

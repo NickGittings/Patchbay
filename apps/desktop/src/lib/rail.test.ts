@@ -24,7 +24,7 @@ const {
   useRail,
   panelWidth,
 } = await import('./rail')
-const { useSimpleUi, simpleKey } = await import('./simpleUi')
+const { useSimpleUi } = await import('./simpleUi')
 beforeEach(() => {
   store.setState({
     project: { id: 'one' } as never,
@@ -50,77 +50,25 @@ test('utility selection is exclusive, toggles closed, and closes only the named 
   closePanel('auto')
   expect(panel()).toBeNull()
 })
-test('chat filters and full workspace selection restore independently per worktree', () => {
-  store.setState({ simpleMode: true })
-  selectRailView('review')
-  expect(selectedRailView()).toBe('review')
-  expect(store.getState().view).toBe('plan')
-  store.setState({ activeTask: 'feature' })
-  expect(selectedRailView()).toBe('navigation')
-  selectRailView('implementation')
-  expect(selectedRailView()).toBe('implementation')
-  store.setState({ simpleMode: false })
-  expect(selectedRailView()).toBe('plan')
-  selectRailView('review')
-  store.setState({ simpleMode: true })
-  expect(selectedRailView()).toBe('implementation')
-  store.setState({ activeTask: null })
-  expect(selectedRailView()).toBe('review')
-})
 test('panel widths leave room for the workspace at the minimum window width', () => {
   expect(panelWidth(360, 1440)).toBe(360)
   expect(panelWidth(1000, 1440)).toBe(640)
   expect(panelWidth(1000, 900)).toBe(440)
   expect(panelWidth(50, 900)).toBe(240)
 })
-test('Chat view selection filters stages while keeping Chat and the last Full view', () => {
-  store.setState({ simpleMode: true, view: 'review' })
-  for (const view of ['plan', 'implementation', 'review'] as const) {
-    selectRailView(view)
-    expect(store.getState().simpleMode).toBe(true)
-    expect(store.getState().view).toBe('review')
-    expect(selectedRailView()).toBe(view)
+test('rail buttons and numbered shortcuts leave Chat for the requested Full view', () => {
+  for (const select of [selectRailView, selectRailShortcut]) {
+    for (const view of ['navigation', 'plan', 'implementation', 'review'] as const) {
+      store.setState({ simpleMode: true, view: 'navigation' })
+      select(view)
+      expect(store.getState()).toMatchObject({ simpleMode: false, view })
+      expect(selectedRailView()).toBe(view)
+    }
   }
-  selectRailView('navigation')
-  expect(store.getState().simpleMode).toBe(true)
-  expect(store.getState().view).toBe('review')
-  expect(selectedRailView()).toBe('navigation')
-  expect(useSimpleUi.getState().worktrees[simpleKey('one', null)].stageFilter).toBe('all')
-})
-test('Full view selection switches views and leaves stage filters alone', () => {
-  for (const view of ['navigation', 'plan', 'implementation', 'review'] as const) {
-    selectRailView(view)
-    expect(store.getState().view).toBe(view)
-    expect(store.getState().simpleMode).toBe(false)
-    expect(selectedRailView()).toBe(view)
-  }
-  expect(useSimpleUi.getState().worktrees).toEqual({})
-})
-test('numbered Chat shortcuts restore the last Full view without changing stage filters', () => {
-  for (const view of ['plan', 'implementation', 'review'] as const) {
-    store.setState({ simpleMode: true, view: 'review' })
-    selectRailView('plan')
-    selectRailShortcut(view)
-    expect(store.getState().simpleMode).toBe(false)
-    expect(store.getState().view).toBe('review')
-    store.setState({ simpleMode: true })
-    expect(selectedRailView()).toBe('plan')
-  }
-  selectRailShortcut('navigation')
-  expect(store.getState().simpleMode).toBe(true)
-  expect(selectedRailView()).toBe('navigation')
-  store.setState({ simpleMode: false })
-  for (const view of ['navigation', 'plan', 'implementation', 'review'] as const) {
-    selectRailShortcut(view)
-    expect(store.getState().view).toBe(view)
-  }
-})
-test('Merge remains a distinct Chat filter from Review', () => {
   store.setState({ simpleMode: true })
-  useSimpleUi.getState().patch(simpleKey('one', null), { stageFilter: 'merge' })
-  expect(selectedRailView()).toBeNull()
-  selectRailView('review')
-  expect(useSimpleUi.getState().worktrees[simpleKey('one', null)].stageFilter).toBe('review')
+  selectRailView('navigation')
+  expect(store.getState().simpleMode).toBe(false)
+  expect(selectedRailView()).toBe('navigation')
 })
 test('project role settings close when switching or closing projects', () => {
   useRail.setState({ settings: 'roles' })
