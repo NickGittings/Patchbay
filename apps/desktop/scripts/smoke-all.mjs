@@ -108,6 +108,17 @@ const SCRIPTS = {
     },
     'integrations-fixture.sh',
   ),
+  // Not a check: rewrites docs/screenshots, so it only runs when named (`npm run screenshots`).
+  readme: {
+    ...smoke(
+      'readme.js',
+      // A short path, since Review shows the worktree's path; the fixture builds it there.
+      { PATCHBAY_SMOKE_ROOT: '/tmp/patchbay-readme/northstar' },
+      'readme-fixture.sh',
+    ),
+    run: ['scripts/readme-shots.mjs'],
+    manual: true,
+  },
 }
 
 const args = process.argv.slice(2)
@@ -118,7 +129,7 @@ if (unknown.length) {
   console.error(`Unknown smoke script: ${unknown.join(', ')} (have ${Object.keys(SCRIPTS)})`)
   process.exit(2)
 }
-const selected = names.length ? names : Object.keys(SCRIPTS)
+const selected = names.length ? names : Object.keys(SCRIPTS).filter((n) => !SCRIPTS[n].manual)
 
 // One build, the same `tauri dev` makes, so switching between them doesn't recompile.
 execFileSync(process.execPath, [at('scripts/sessiond.mjs')], { cwd: desktop, stdio: 'inherit' })

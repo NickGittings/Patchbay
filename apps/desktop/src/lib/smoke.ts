@@ -128,6 +128,10 @@ const hooks = {
     const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window')
     await getCurrentWindow().setSize(new LogicalSize(width, height))
   },
+  focusWindow: async () => {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    await getCurrentWindow().setFocus()
+  },
   windowLabels: () =>
     import('@tauri-apps/api/webviewWindow').then(async ({ getAllWebviewWindows }) =>
       (await getAllWebviewWindows()).map((w) => w.label),
@@ -182,6 +186,29 @@ const hooks = {
   refreshTasks,
   removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
+  /**
+   * Reports `message`, then resolves to the launcher's answer to it, a `<message>: <answer>` line
+   * on the app's stdin (forwarded by `smoke.rs`).
+   */
+  reportAndWait: async (message: string, timeout = 60000) => {
+    const { listen } = await import('@tauri-apps/api/event')
+    let answer = (_: string) => {}
+    const answered = new Promise<string>((resolve) => (answer = resolve))
+    const unlisten = await listen<string>('patchbay://smoke-ack', ({ payload }) => {
+      if (payload.startsWith(`${message}: `)) answer(payload.slice(message.length + 2))
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer to ${message}`)), timeout)
+    })
+    try {
+      await emit('patchbay://smoke-report', message)
+      return await Promise.race([answered, expired])
+    } finally {
+      clearTimeout(timer)
+      unlisten()
+    }
+  },
 }
 
 declare global {

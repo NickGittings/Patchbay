@@ -6,10 +6,14 @@
 
 use std::time::Duration;
 use tauri::webview::PageLoadEvent;
-use tauri::{Builder, Listener, Manager, Wry};
+use tauri::{Builder, Emitter, Listener, Manager, Wry};
 
 const REPORT_EVENT: &str = "patchbay://smoke-report";
+/// The launcher's answers to reports, one line each, read from stdin in screenshot runs.
+const ACK_EVENT: &str = "patchbay://smoke-ack";
 const TIMEOUT: Duration = Duration::from_secs(90);
+/// Screenshot runs stage much more and may wait on a macOS permission prompt.
+const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     let Ok(path) = std::env::var("PATCHBAY_SMOKE_SCRIPT") else {
@@ -24,13 +28,23 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     };
     // Don't activate at launch, before `setup` can make the app prohibited.
     #[cfg(target_os = "macos")]
-    let builder = builder.activate_ignoring_other_apps(false);
+    let builder = if foreground() {
+        builder
+    } else {
+        builder.activate_ignoring_other_apps(false)
+    };
 
     builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
             let _ = webview.eval(&script);
         }
     })
+}
+
+/// Set by `scripts/readme-shots.mjs`, whose captures need the window on screen, and which answers
+/// reports on the app's stdin.
+fn foreground() -> bool {
+    std::env::var_os("PATCHBAY_SMOKE_FOREGROUND").is_some()
 }
 
 /// A root configured by the test process, never by an IPC caller.
@@ -66,15 +80,18 @@ pub fn setup(app: &mut tauri::App) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return;
     }
-    // Only smoke runs may resize the main window through the dev-only frontend hook.
+    // Only smoke runs may resize the main window through the dev-only frontend hooks.
     app.add_capability(
         r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size"]}"#,
     )
     .expect("smoke resize capability");
     // Run in the background: wry activates the app for every new top-level webview, which
     // would take focus from whatever the user is doing, but a prohibited app can't activate.
+    // Screenshot runs need a window on screen, where WebKit paints terminals.
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+    if !foreground() {
+        app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+    }
 
     let handle = app.handle().clone();
     app.listen(REPORT_EVENT, move |event| {
@@ -86,13 +103,32 @@ pub fn setup(app: &mut tauri::App) {
             handle.exit(1);
         }
     });
+    if foreground() {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || forward_acks(&handle));
+    }
+    let timeout = if foreground() {
+        FOREGROUND_TIMEOUT
+    } else {
+        TIMEOUT
+    };
     let handle = app.handle().clone();
     std::thread::spawn(move || {
-        std::thread::sleep(TIMEOUT);
+        std::thread::sleep(timeout);
         eprintln!(
             "PATCHBAY_SMOKE: FAIL timed out after {}s",
-            TIMEOUT.as_secs()
+            timeout.as_secs()
         );
         handle.exit(1);
     });
+}
+
+/// Emits each line the launcher writes to stdin on [`ACK_EVENT`], so a script can wait for the
+/// launcher to act on a report (`scripts/readme-shots.mjs` captures the window).
+fn forward_acks(handle: &tauri::AppHandle) {
+    use std::io::BufRead;
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { return };
+        let _ = handle.emit(ACK_EVENT, line.trim_end());
+    }
 }
