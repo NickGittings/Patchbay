@@ -52,17 +52,20 @@ export interface SimpleState {
   log: SimpleEntry[]
 }
 
-/** Legacy prompts without a generation claim the planner's current run too. */
+/**
+ * Whether this chat launched or prompted that run of a shared planner. Only entries naming the
+ * run's generation claim it: one logged without a generation claims no run, never every later one.
+ */
 export function ownsPlanner(
   simple: SimpleState | null | undefined,
   sessionId: string,
   generation: number | undefined,
 ) {
-  return !!simple?.log.some(
-    (e) =>
-      e.kind !== 'reply' &&
-      e.sessionId === sessionId &&
-      (e.generation === undefined || e.generation === generation),
+  return (
+    generation !== undefined &&
+    !!simple?.log.some(
+      (e) => e.kind !== 'reply' && e.sessionId === sessionId && e.generation === generation,
+    )
   )
 }
 

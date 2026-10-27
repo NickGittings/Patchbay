@@ -450,7 +450,14 @@ export interface Reply {
   text: string
 }
 export type TerminalEvent = (
-  | { type: 'reply'; sessionId: string; generation: number; reply: Reply }
+  | {
+      type: 'reply'
+      sessionId: string
+      generation: number
+      /** The sequence of the reply this run accepted before this one, null for its first. */
+      previous: number | null
+      reply: Reply
+    }
   | { type: 'activity'; sessionId: string; generation: number; activity: Activity }
   | {
       type: 'started'

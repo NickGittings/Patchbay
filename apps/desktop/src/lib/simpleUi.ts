@@ -20,15 +20,23 @@ export interface SimpleUi {
   inputRequest?: string
 }
 
-/** Typing only guesses that work resumed. Keep the question's terminal until hooks confirm it. */
+/**
+ * Typing only guesses that work resumed. Keep the question's terminal until hooks confirm it.
+ * A new input wait takes the drawer even from a terminal View pinned.
+ */
 export function inputDrawer(
   ui: SimpleUi,
   asking: SessionRecord | undefined,
   sessions: Record<string, SessionState>,
+  records: readonly Pick<SessionRecord, 'id'>[],
 ): SimpleUi {
-  // View explicitly selects a terminal, including settled runs, until the user hides it.
-  if (ui.terminal === 'user' && ui.terminalSession?.pinned) return ui
-  if (ui.terminal !== 'closed' && ui.terminalSession) {
+  // View explicitly selects a terminal, including settled runs, until the user hides it. A pin
+  // whose record is gone renders nothing, so it closes rather than holding the drawer.
+  const pin = ui.terminal === 'user' && ui.terminalSession?.pinned ? ui.terminalSession : undefined
+  if (pin && !records.some((r) => r.id === pin.id))
+    ui = { ...ui, terminal: 'closed', terminalSession: undefined }
+  const pinned = pin && ui.terminalSession === pin
+  if (!pinned && ui.terminal !== 'closed' && ui.terminalSession) {
     const session = sessions[ui.terminalSession.id]
     if (
       session?.running &&
@@ -48,6 +56,7 @@ export function inputDrawer(
       terminalSession: { id: asking.id, generation: session?.generation },
     }
   }
+  if (pinned) return ui
   if (ui.terminal === 'input') return { ...ui, terminal: 'closed', terminalSession: undefined }
   return ui.terminalSession ? { ...ui, terminalSession: undefined } : ui
 }

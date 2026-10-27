@@ -14,7 +14,7 @@ import {
   transmittedText,
   waitForPrompt,
 } from '../lib/simpleComposer'
-import { logSimple } from '../lib/simpleActions'
+import { currentRun, logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
 import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
@@ -52,7 +52,9 @@ export default function SimpleComposer({
     useSimpleUi.getState().patch(scopeKey, change)
   const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, undefined, foreign))
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
-  const shown = ui.terminal === 'closed' ? recipient : (terminalRecord ?? recipient)
+  // The drawer renders only its record; one whose session is gone reads as closed.
+  const open = ui.terminal !== 'closed' && !!terminalRecord
+  const shown = open ? terminalRecord : recipient
   const [pending, setPending] = useState(false),
     [error, setError] = useState('')
   const [caret, setCaret] = useState(0)
@@ -145,14 +147,19 @@ export default function SimpleComposer({
       if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
         await sessionResume(target.id)
-        logSimple(projectId, task, {
-          kind: 'action',
-          action: 'resume',
-          stage,
-          sessionId: target.id,
-        })
-        await reconcileFreshSessions()
-        await refreshSession(target.id)
+        try {
+          await reconcileFreshSessions()
+          await refreshSession(target.id)
+        } finally {
+          // Name the resumed run, so the entry claims that run of a shared planner and no other.
+          logSimple(projectId, task, {
+            kind: 'action',
+            action: 'resume',
+            stage,
+            sessionId: target.id,
+            generation: (await currentRun(target.id)).generation,
+          })
+        }
       } else if (!target) {
         if (stage !== 'plan')
           throw new Error('Open a stage terminal or choose another recipient to continue.')
@@ -301,11 +308,11 @@ export default function SimpleComposer({
         <span>{status.label}</span>
         <button
           disabled={!recipient}
-          aria-expanded={ui.terminal !== 'closed'}
+          aria-expanded={open}
           onClick={() => recipient && openTerminal(recipient)}
         >
-          {ui.terminal === 'closed' ? 'View' : 'Hide'}{' '}
-          {shown ? SIMPLE_ROLE_LABEL[recordStage(shown)] : 'agent'} terminal
+          {open ? 'Hide' : 'View'} {shown ? SIMPLE_ROLE_LABEL[recordStage(shown)] : 'agent'}{' '}
+          terminal
         </button>
         <button
           className="primary"

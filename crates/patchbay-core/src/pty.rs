@@ -189,11 +189,12 @@ impl Backlog {
     ) {
         for event in hooks {
             self.tracker.on_hook(event, now);
-            for reply in self.tracker.drain_replies() {
+            for (previous, reply) in self.tracker.drain_replies() {
                 if self.running {
                     sink.emit(TerminalEvent::Reply {
                         session_id: id.to_owned(),
                         generation: self.generation,
+                        previous,
                         reply,
                     });
                 }

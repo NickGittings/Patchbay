@@ -33,6 +33,8 @@ pub enum TerminalEvent {
     Reply {
         session_id: String,
         generation: u64,
+        /// The sequence of the reply this run accepted before this one, `None` for its first.
+        previous: Option<u64>,
         reply: crate::status::Reply,
     },
     Activity {

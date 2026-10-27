@@ -20,7 +20,7 @@ import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './i
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
-import { logSimple } from './simpleActions'
+import { currentRun, logSimple } from './simpleActions'
 
 const ordered = (items: Story[]) =>
   [...items].sort(
@@ -209,11 +209,7 @@ export async function planStory(projectId: string, story: Story) {
       action: 'plan',
       stage: 'plan',
       sessionId: sid,
-      // The store may still hold the stopped planner's run until its `started` event arrives;
-      // the service already knows the one just launched.
-      generation:
-        (await terminalSnapshot(sid, 0).catch(() => null))?.generation ??
-        useStore.getState().sessions[sid]?.generation,
+      generation: (await currentRun(sid)).generation,
       text: story.title,
       atMs: planningAtMs,
     })

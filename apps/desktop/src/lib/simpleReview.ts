@@ -9,8 +9,7 @@ import {
 import { terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { reviewWorktreeBusy, startReviewAgents } from './reviewAgents'
-import { hydrateReplies } from './simpleReplies'
-import { hydrateActivity } from './activity'
+import { sessionFromSnapshot } from './sessionState'
 
 export function simpleReviewRequest(
   source: Pick<Worktree, 'path' | 'branch'> | undefined,
@@ -90,18 +89,10 @@ export async function startSimpleReview(
       const previous =
         initial.sessions[sessionId] ?? records.find((r) => r.id === sessionId)?.snapshot
       if (snapshot && (snapshot.generation ?? 0) > (known?.generation ?? 0)) {
-        useStore.getState().setSession(sessionId, {
-          generation: snapshot.generation,
-          running: snapshot.running,
-          startedMs: snapshot.startedMs,
-          status: snapshot.status,
-          truncated: snapshot.truncated,
-          replies: hydrateReplies(known, snapshot.generation, snapshot.replies),
-          activity: hydrateActivity(known, snapshot.generation, snapshot.activity),
-          exitCode: snapshot.exitCode ?? undefined,
-          exitedMs: snapshot.exitedMs ?? undefined,
-          notice: snapshot.notice ?? undefined,
-        })
+        const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
+        useStore
+          .getState()
+          .setSession(sessionId, sessionFromSnapshot(known, snapshot, record?.interrupted))
       } else if (!snapshot && known?.generation === previous?.generation) {
         useStore.getState().setSession(sessionId, { running: true })
       }

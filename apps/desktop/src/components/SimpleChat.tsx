@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
-import { PLAN_SCOPE, REVIEW_SCOPE, type SessionRecord } from '../types'
+import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
 import {
   recordStage,
   selectRecipient,
@@ -10,7 +10,7 @@ import {
   type SimpleStage,
 } from '../lib/simple'
 import { flow, type FlowAction } from '../lib/simpleFlow'
-import { logSimple } from '../lib/simpleActions'
+import { currentRun, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
@@ -131,6 +131,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const drawerRecord = ui.terminalSession
     ? model.records.find((r) => r.id === ui.terminalSession?.id)
     : recipient
+  const drawerShown = ui.terminal !== 'closed' && !!drawerRecord
   const runningReview = useRunningReviewLanes(source?.branch)
   const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   const running = model.records.filter((r) => s.sessions[r.id]?.running)
@@ -151,9 +152,9 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   }, [s.project, s.activeTask, s.simple])
   useEffect(() => {
     const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
-    const next = inputDrawer(current, asking, s.sessions)
+    const next = inputDrawer(current, asking, s.sessions, model.records)
     if (next !== current) useSimpleUi.getState().patch(key, next)
-  }, [key, asking, s.sessions])
+  }, [key, asking, s.sessions, model.records])
   // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
     model.items.map((i) =>
@@ -196,14 +197,31 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
-  const log = (action: SimpleAction, stage: SimpleStage, sid?: string, destinationTask = task) =>
+  // Entries name their run, resolved before logging, so a shared planner's later runs stay unclaimed.
+  const log = async (
+    action: SimpleAction,
+    stage: SimpleStage,
+    sid?: string,
+    destinationTask = task,
+  ) => {
+    const run = await currentRun(sid)
     logSimple(projectId, destinationTask, {
       kind: 'action',
       action,
       stage,
       sessionId: sid,
-      atMs: sid ? useStore.getState().sessions[sid]?.startedMs : undefined,
-      generation: sid ? useStore.getState().sessions[sid]?.generation : undefined,
+      atMs: run.startedMs,
+      generation: run.generation,
+    })
+  }
+  const logMerge = async (request: MergeRequest, sid: string) =>
+    logSimple(projectId, task, {
+      kind: 'action',
+      action: 'merge',
+      stage: 'merge',
+      request,
+      sessionId: sid,
+      generation: (await currentRun(sid)).generation,
     })
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = `${key}:${action}`
@@ -225,7 +243,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     if (current.project?.id !== projectId || current.activeTask !== destinationTask)
       throw new Error('The worktree changed. Choose Build in the intended chat.')
     const sid = await implementPlannerPlan(planner, undefined, undefined, 'stay')
-    log('implement', 'build', sid, destinationTask)
+    await log('implement', 'build', sid, destinationTask)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -261,16 +279,20 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           ?.querySelector<HTMLTextAreaElement>('textarea')
           ?.focus()
       } else if (action === 'review') {
-        if (source?.branch && !base) setDialog('review')
+        // Without a base, Options asks for one; the review starts from that dialog.
+        if (source?.branch && !base) {
+          setDialog('review')
+          return
+        }
         const { started, errors } = await startSimpleReview(
           useStore.getState().toProject(),
           simpleReviewRequest(source, base),
           roleDevices(s.devices, s.agentRoles, 'review'),
         )
-        for (const r of started) log('review', 'review', r.sessionId)
+        for (const r of started) await log('review', 'review', r.sessionId)
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))
+        await log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -296,20 +318,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           roleDevice(s.devices, s.agentRoles, 'merge'),
           crypto.randomUUID(),
         )
-        logSimple(projectId, task, {
-          kind: 'action',
-          action: 'merge',
-          stage: 'merge',
-          request,
-          sessionId: sid,
-          generation: useStore.getState().sessions[sid]?.generation,
-        })
+        await logMerge(request, sid)
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
-        log('resumeAuto', model.stage)
+        await log('resumeAuto', model.stage)
       } else if (action === 'mergeApproval') {
         mergeNow(projectId, task)
-        log('mergeApproval', 'merge')
+        await log('mergeApproval', 'merge')
       }
     })
   const items = model.items
@@ -329,7 +344,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}
           launched={(sid) => {
-            log('review', 'review', sid)
+            void log('review', 'review', sid)
             setDialog(undefined)
           }}
         />
@@ -340,16 +355,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           worktrees={data?.worktrees ?? []}
           findings={findings}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid) =>
-            logSimple(projectId, task, {
-              kind: 'action',
-              action: 'merge',
-              stage: 'merge',
-              request,
-              sessionId: sid,
-              generation: useStore.getState().sessions[sid]?.generation,
-            })
-          }
+          onRequest={(request, sid) => void logMerge(request, sid)}
           launched={() => setDialog(undefined)}
         />
       )}
@@ -476,7 +482,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         )}
         {failure && <p role="alert">{failure}</p>}
       </div>
-      {ui.terminal !== 'closed' && drawerRecord && (
+      {drawerShown && drawerRecord && (
         <div
           className="simple-terminal-drawer"
           aria-label={`${recordStage(drawerRecord)} terminal`}
@@ -503,10 +509,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         foreign={model.foreign}
         terminalRecord={drawerRecord}
         openTerminal={(record: SessionRecord) =>
+          // A drawer whose session is gone shows nothing, so the toggle opens it in one click.
           useSimpleUi.getState().patch(key, {
-            terminal: ui.terminal === 'closed' ? 'user' : 'closed',
+            terminal: drawerShown ? 'closed' : 'user',
             terminalSession:
-              ui.terminal === 'closed' && record.id === asking?.id
+              !drawerShown && record.id === asking?.id
                 ? { id: record.id, generation: s.sessions[record.id]?.generation }
                 : undefined,
           })

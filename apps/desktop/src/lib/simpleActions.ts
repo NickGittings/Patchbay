@@ -1,5 +1,19 @@
 import { projectStateOf, useStore } from '../store'
 import { boundedSimple, type SimpleEntry } from './simple'
+import { terminalSnapshot } from './ipc'
+
+/**
+ * The run an action entry names. The store may still hold a stopped run until the new one's
+ * `started` event arrives, or nothing before hydration; the service already knows the current one.
+ */
+export async function currentRun(
+  sid: string | undefined,
+): Promise<{ generation?: number; startedMs?: number }> {
+  if (!sid) return {}
+  const snapshot = await terminalSnapshot(sid, 0).catch(() => null)
+  const run = snapshot ?? useStore.getState().sessions[sid]
+  return { generation: run?.generation, startedMs: run?.startedMs }
+}
 /** Completion always belongs to its originating worktree, even if the user moved on. */
 export function logSimple(
   projectId: string,

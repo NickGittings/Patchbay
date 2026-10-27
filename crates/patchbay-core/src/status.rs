@@ -417,7 +417,8 @@ pub struct Tracker {
     activity: std::collections::VecDeque<Activity>,
     pending_activity: Vec<Activity>,
     replies: std::collections::VecDeque<Reply>,
-    pending_replies: Vec<Reply>,
+    /// Accepted replies not yet delivered, each with the sequence of the reply before it.
+    pending_replies: Vec<(Option<u64>, Reply)>,
     hook_conversation: Option<String>,
     hook_turn: Option<String>,
     retired_turns: std::collections::HashSet<String>,
@@ -473,7 +474,9 @@ impl Tracker {
         self.replies.back().map(|reply| reply.sequence)
     }
 
-    pub fn drain_replies(&mut self) -> Vec<Reply> {
+    /// Replies accepted since the last event delivery, each with the sequence of the reply this
+    /// run accepted before it (`None` for its first), so a consumer can tell it missed none.
+    pub fn drain_replies(&mut self) -> Vec<(Option<u64>, Reply)> {
         std::mem::take(&mut self.pending_replies)
     }
 
@@ -610,11 +613,12 @@ impl Tracker {
                 turn: event.turn.clone(),
                 text: text.clone(),
             };
+            let previous = self.last_reply();
             self.replies.push_back(reply.clone());
             if self.replies.len() > 20 {
                 self.replies.pop_front();
             }
-            self.pending_replies.push(reply);
+            self.pending_replies.push((previous, reply));
         }
         let previous = self.report.take();
         let turn = event.turn.or_else(|| self.hook_turn.clone());
@@ -1947,7 +1951,14 @@ mod tests {
             tracker.on_hook(e, 900 + i * 200);
         }
         assert_eq!(tracker.replies().len(), 20);
-        assert_eq!(tracker.drain_replies().len(), 26);
+        let drained = tracker.drain_replies();
+        assert_eq!(drained.len(), 26);
+        assert_eq!(drained[0].0, None);
+        assert!(
+            drained
+                .windows(2)
+                .all(|pair| pair[1].0 == Some(pair[0].1.sequence))
+        );
         assert!(tracker.drain_replies().is_empty());
         let restored: Vec<Reply> =
             serde_json::from_value(serde_json::to_value(tracker.replies()).unwrap()).unwrap();

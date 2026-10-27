@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
-import { hydrateReplies, persistReplies } from './simpleReplies'
+import { hydrateReplies, persistReplies, repliesKey } from './simpleReplies'
 import { revealTerminal } from './attention'
 import { inputDrawer, simpleKey, useSimpleUi } from './simpleUi'
 import { ownsPlanner, thread } from './simple'
@@ -106,7 +106,8 @@ test.each([undefined, 1, 2])(
         },
       ],
     }
-    const owned = generation !== 2
+    // A claim without a generation names no run, so it never owns the planner's later ones.
+    const owned = generation === 1
     const sessions = { s: { generation: 1, running: true, replies: [reply(1)] } }
     useStore.setState({ simpleMode: true, sessionRecords: [r], sessions })
     useStore.getState().patchTask('p', 't', { simple })
@@ -245,7 +246,7 @@ test.each([0, 1])('View pins an unclaimed exited planner (exit %i) in Chat', asy
     terminal: 'user',
     terminalSession: { id: sid, generation: 1, pinned: true },
   })
-  expect(inputDrawer(ui, undefined, useStore.getState().sessions)).toBe(ui)
+  expect(inputDrawer(ui, undefined, useStore.getState().sessions, [r])).toBe(ui)
   expect(useStore.getState().simple).toBeNull()
 })
 
@@ -419,4 +420,36 @@ test('View selects a merge source even when its destination task is listed first
     activeTask: 't',
     activeSession: 's',
   })
+})
+
+test('the persistence key changes only with the replies or the chats receiving them', () => {
+  const r = record('@plan')
+  useStore.getState().patchTask('p', null, { simple: { startedMs: 1, log: [] } })
+  const key = repliesKey('s', 1, [reply(1)], r)
+  persistReplies('s', 1, [reply(1)], r)
+  expect(repliesKey('s', 1, [reply(1)], r)).toBe(key)
+  useStore.getState().patchTask('p', null, {
+    simple: {
+      startedMs: 1,
+      log: [
+        {
+          id: 'claim',
+          kind: 'prompt',
+          stage: 'plan',
+          atMs: 10,
+          sessionId: 's',
+          generation: 1,
+          text: 'Plan',
+          mentions: [],
+        },
+      ],
+    },
+  })
+  const claimed = repliesKey('s', 1, [reply(1)], r)
+  expect(claimed).not.toBe(key)
+  persistReplies('s', 1, [reply(1)], r)
+  // The persisted reply changes the chat's log, not what the key names.
+  expect(repliesKey('s', 1, [reply(1)], r)).toBe(claimed)
+  expect(repliesKey('s', 1, [reply(1), reply(2)], r)).not.toBe(claimed)
+  expect(repliesKey('s', 2, [reply(1)], r)).not.toBe(claimed)
 })

@@ -145,6 +145,7 @@ test('a later planning action supersedes an earlier merge outcome and completed 
     stage: 'plan',
     atMs: 10,
     sessionId: '@plan',
+    generation: 1,
     text: 'Next feature',
     mentions: [],
   })
