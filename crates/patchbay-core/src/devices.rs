@@ -41,9 +41,10 @@ const BUILTIN: &[&str] = &[
     include_str!("../../../devices/lazygit.device.json"),
 ];
 
+/// `devices` in Patchbay's state folder (`~/.patchbay`, or `$PATCHBAY_STATE_DIR` for a test run).
 #[must_use]
 pub fn user_devices_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".patchbay").join("devices"))
+    crate::workspace::home().ok().map(|h| h.join("devices"))
 }
 
 /// Built-in devices, enabled extension devices, then user device files.

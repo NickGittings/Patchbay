@@ -3,7 +3,8 @@
 # with an API and a catalog library, and an "Add product search" worktree with uncommitted work
 # that smoke/readme.js attaches as a task.
 set -eu
-dir="${TMPDIR:-/tmp}/patchbay-readme"
+# smoke-all.mjs keeps the path short (Review shows the worktree's path).
+dir="$(dirname "${PATCHBAY_SMOKE_ROOT:-${TMPDIR:-/tmp}/patchbay-readme/northstar}")"
 # The demo servers' ports, uncommon so they don't meet a real dev server's.
 for port in 41730 41740; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then

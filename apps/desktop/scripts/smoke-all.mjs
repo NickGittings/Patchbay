@@ -112,8 +112,8 @@ const SCRIPTS = {
   readme: {
     ...smoke(
       'readme.js',
-      // A short temp folder, since Review shows the worktree's path.
-      { TMPDIR: '/tmp', PATCHBAY_SMOKE_ROOT: '/tmp/patchbay-readme/northstar' },
+      // A short path, since Review shows the worktree's path; the fixture builds it there.
+      { PATCHBAY_SMOKE_ROOT: '/tmp/patchbay-readme/northstar' },
       'readme-fixture.sh',
     ),
     run: ['scripts/readme-shots.mjs'],

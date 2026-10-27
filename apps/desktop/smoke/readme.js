@@ -29,13 +29,16 @@
     const sid = smoke.sessionId(component, terminal, task)
     return until(`${component}/${terminal} output`, () => state().sessions[sid]?.running && sid)
   }
-  // Waits for a terminal to print `text`, failing early once it exits.
+  // Waits for a terminal to print `text`, failing early once it exits. The exit can arrive before
+  // xterm has parsed the output before it, so look once more a moment later.
   const printed = (sid, what, text) =>
-    until(what, () => {
+    until(what, async () => {
       if (textOf(sid).includes(text)) return true
       const session = state().sessions[sid]
-      if (session && !session.running && session.exitCode !== undefined)
-        throw new Error(`${what}: exited\n${textOf(sid)}`)
+      if (!session || session.running || session.exitCode === undefined) return false
+      await sleep(500)
+      if (textOf(sid).includes(text)) return true
+      throw new Error(`${what}: exited\n${textOf(sid)}`)
     })
   // WebKit stops painting terminals in a window something else covers, so raise it first, and
   // hold the view until the launcher has captured it.
@@ -52,17 +55,11 @@
     state().loadProject(opened.project)
     await smoke.syncCurrentRoots()
     const root = opened.project.root
-    // The Claude preset, played by the fixture's stand-in planner. The app loads presets on its
-    // own too, so put the stand-in back whenever a load replaces it, until the planner started.
-    const standIn = `"${root}/../claude"`
-    const playClaude = () => {
-      const devices = state().devices
-      if (devices.some((d) => d.id === 'claude' && d.command !== standIn))
-        state().setDevices(devices.map((d) => (d.id === 'claude' ? { ...d, command: standIn } : d)))
-    }
-    await smoke.refreshExtensions()
-    playClaude()
-    const stopPlaying = smoke.store.subscribe(playClaude)
+    // The Claude preset, played by the fixture's stand-in planner (a preset readme-shots.mjs
+    // writes into the run's state folder).
+    const standIn = await until('stand-in Claude preset', () =>
+      state().devices.find((d) => d.id === 'claude' && d.command.endsWith('/claude"')),
+    )
     const fit = async () => {
       click(await until('fit view', () => query('.react-flow__controls-fitview')))
       await sleep(400)
@@ -85,10 +82,9 @@
     state().toggleHighlight('web')
     state().toggleHighlight('catalog')
     state().setPlanActive('claude')
-    if (state().devices.find((d) => d.id === 'claude')?.command !== standIn)
+    if (state().devices.find((d) => d.id === 'claude')?.command !== standIn.command)
       throw new Error('the stand-in planner is not the Claude preset')
     await smoke.startTerminal('@plan', 'claude')
-    stopPlaying()
     const planner = await running('@plan', 'claude')
     // Only the stand-in prints this; stop anything else at once.
     await until(

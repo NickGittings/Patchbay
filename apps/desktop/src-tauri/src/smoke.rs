@@ -9,9 +9,11 @@ use tauri::webview::PageLoadEvent;
 use tauri::{Builder, Emitter, Listener, Manager, Wry};
 
 const REPORT_EVENT: &str = "patchbay://smoke-report";
-/// The launcher's answers to reports, one line each, read from `PATCHBAY_SMOKE_ACK_FILE`.
+/// The launcher's answers to reports, one line each, read from stdin in screenshot runs.
 const ACK_EVENT: &str = "patchbay://smoke-ack";
 const TIMEOUT: Duration = Duration::from_secs(90);
+/// Screenshot runs stage much more and may wait on a macOS permission prompt.
+const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     let Ok(path) = std::env::var("PATCHBAY_SMOKE_SCRIPT") else {
@@ -39,8 +41,8 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     })
 }
 
-/// Set by `scripts/readme-shots.mjs`, whose captures need the window on screen.
-#[cfg(target_os = "macos")]
+/// Set by `scripts/readme-shots.mjs`, whose captures need the window on screen, and which answers
+/// reports on the app's stdin.
 fn foreground() -> bool {
     std::env::var_os("PATCHBAY_SMOKE_FOREGROUND").is_some()
 }
@@ -78,10 +80,9 @@ pub fn setup(app: &mut tauri::App) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return;
     }
-    // Only smoke runs may resize (and, for screenshots, raise) the main window through the
-    // dev-only frontend hooks.
+    // Only smoke runs may resize the main window through the dev-only frontend hooks.
     app.add_capability(
-        r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size","core:window:allow-set-focus"]}"#,
+        r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size"]}"#,
     )
     .expect("smoke resize capability");
     // Run in the background: wry activates the app for every new top-level webview, which
@@ -102,36 +103,32 @@ pub fn setup(app: &mut tauri::App) {
             handle.exit(1);
         }
     });
-    if let Some(path) = std::env::var_os("PATCHBAY_SMOKE_ACK_FILE") {
+    if foreground() {
         let handle = app.handle().clone();
-        std::thread::spawn(move || forward_acks(&handle, &path));
+        std::thread::spawn(move || forward_acks(&handle));
     }
+    let timeout = if foreground() {
+        FOREGROUND_TIMEOUT
+    } else {
+        TIMEOUT
+    };
     let handle = app.handle().clone();
     std::thread::spawn(move || {
-        std::thread::sleep(TIMEOUT);
+        std::thread::sleep(timeout);
         eprintln!(
             "PATCHBAY_SMOKE: FAIL timed out after {}s",
-            TIMEOUT.as_secs()
+            timeout.as_secs()
         );
         handle.exit(1);
     });
 }
 
-/// Emits each complete line the launcher appends to `path` on [`ACK_EVENT`], so a script can wait
-/// for the launcher to act on a report (`scripts/readme-shots.mjs` captures the window).
-fn forward_acks(handle: &tauri::AppHandle, path: &std::ffi::OsStr) {
-    let mut seen = 0;
-    loop {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            let lines: Vec<&str> = text
-                .split_inclusive('\n')
-                .filter(|line| line.ends_with('\n'))
-                .collect();
-            for line in lines.iter().skip(seen) {
-                let _ = handle.emit(ACK_EVENT, line.trim_end());
-            }
-            seen = seen.max(lines.len());
-        }
-        std::thread::sleep(Duration::from_millis(100));
+/// Emits each line the launcher writes to stdin on [`ACK_EVENT`], so a script can wait for the
+/// launcher to act on a report (`scripts/readme-shots.mjs` captures the window).
+fn forward_acks(handle: &tauri::AppHandle) {
+    use std::io::BufRead;
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { return };
+        let _ = handle.emit(ACK_EVENT, line.trim_end());
     }
 }

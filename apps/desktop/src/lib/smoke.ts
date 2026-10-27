@@ -188,7 +188,7 @@ const hooks = {
   report: (message: string) => emit('patchbay://smoke-report', message),
   /**
    * Reports `message`, then resolves to the launcher's answer to it, a `<message>: <answer>` line
-   * in `PATCHBAY_SMOKE_ACK_FILE` (forwarded by `smoke.rs`).
+   * on the app's stdin (forwarded by `smoke.rs`).
    */
   reportAndWait: async (message: string, timeout = 60000) => {
     const { listen } = await import('@tauri-apps/api/event')
