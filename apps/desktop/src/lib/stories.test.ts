@@ -7,6 +7,7 @@ vi.mock('./ipc', () => ({
   storyCompleteAuto: vi.fn(async () => []),
   terminalSnapshot: vi.fn(async () => null),
   terminalStop: vi.fn(),
+  sessionsList: vi.fn(async () => []),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 const {
@@ -351,7 +352,11 @@ test('a replacing story planner logs its new run, and a worktree switch while st
   vi.mocked(ipc.terminalSnapshot)
     .mockResolvedValueOnce({ running: true } as never)
     .mockResolvedValueOnce({ running: false } as never)
-    .mockResolvedValueOnce({ running: true, generation: 5, startedMs: Date.now() + 1000 } as never)
+  // The run the story's launch request started, whatever the clocks say.
+  vi.mocked(startTerminal).mockResolvedValueOnce('request')
+  vi.mocked(ipc.sessionsList).mockResolvedValueOnce([
+    { id: sid, snapshot: { running: true, generation: 5, startedMs: 1 }, requestIds: ['request'] },
+  ] as never)
   await planStory('p', story('Feature name'))
   await vi.waitFor(() =>
     expect(useStore.getState().simple?.log.at(-1)).toMatchObject({ sessionId: sid, generation: 5 }),

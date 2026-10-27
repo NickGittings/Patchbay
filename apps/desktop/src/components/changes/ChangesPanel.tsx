@@ -1,6 +1,7 @@
 import PersistedGroup from '../PersistedGroup'
 import { useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
+import { stepChange } from '../../lib/changeNav'
 import { latestChange, lineTotals } from '../../lib/review'
 import { activeWorktree } from '../../lib/tasks'
 import { useStore } from '../../store'
@@ -21,6 +22,12 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
   const worktree = useStore(activeWorktree)
 
   const file = files?.find((f) => f.path === selected) ?? files?.[0] ?? null
+  const order = (files ?? []).map((f) => ({ componentId, path: f.path }))
+  const step = (delta: -1 | 1) => {
+    const next = stepChange(order, file && { componentId, path: file.path }, delta)
+    if (next) setSelected(next.path)
+  }
+  const position = file ? order.findIndex((r) => r.path === file.path) : -1
   return (
     <div className="changes-panel">
       <div className="changes-header">
@@ -51,6 +58,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
               base={base}
               selected={file?.path}
               onSelect={setSelected}
+              onStep={step}
               task={task}
               worktree={worktree}
             />
@@ -62,6 +70,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
               file={file}
               revision={revision}
               worktree={worktree}
+              nav={{ position, total: order.length, step }}
             />
           </Panel>
         </PersistedGroup>

@@ -1,6 +1,8 @@
 import { projectStateOf, useStore } from '../store'
 import { boundedSimple, type SimpleEntry } from './simple'
-import { terminalSnapshot } from './ipc'
+import { sessionsList } from './ipc'
+import { sessionFromSnapshot } from './sessionState'
+import type { SessionRecord } from '../types'
 
 type Entry = SimpleEntry extends infer E
   ? E extends SimpleEntry
@@ -9,30 +11,48 @@ type Entry = SimpleEntry extends infer E
   : never
 
 type Run = { generation?: number; startedMs?: number } | null | undefined
-/** A run is this launch's only if it started once the launch began: never a stopped or older one. */
-const launchedRun = (run: Run, launchedAtMs: number) =>
-  run?.generation !== undefined && (run.startedMs ?? -Infinity) >= launchedAtMs ? run : undefined
 
 /**
- * Log an action that started or resumed `entry.sessionId` at `launchedAtMs`, claiming the run only
- * when an authoritative source names it: the entry's own generation (a launch that reported it),
- * else a run the store or then the service holds that started since the launch. Without one the
- * entry names no run rather than a guess. With `atRunStart`, it is dated at its run's start,
- * before that run's replies.
+ * The run launch `requestId` started in `sid`: the run of the record whose latest request it is,
+ * so never one from before the launch or one a later launch started. Reads the store's records,
+ * else the service's list, whose newer run it also applies to the store, so a reconciliation that
+ * failed after the launch never leaves the settled run there. Undefined while no record names it.
+ */
+export async function launchedRun(sid: string, requestId: string) {
+  const ours = (records: readonly SessionRecord[]) =>
+    records.find((r) => r.id === sid && !!r.snapshot && r.requestIds?.at(-1) === requestId)
+  let record = ours(useStore.getState().sessionRecords)
+  if (!record) {
+    record = ours(await sessionsList().catch(() => []))
+    const known = useStore.getState().sessions[sid]
+    if (record?.snapshot && record.snapshot.generation > (known?.generation ?? -1))
+      useStore.getState().setSession(sid, sessionFromSnapshot(known, record.snapshot, record))
+  }
+  return record?.snapshot
+    ? { generation: record.snapshot.generation, startedMs: record.snapshot.startedMs }
+    : undefined
+}
+
+/**
+ * Log an action that started or resumed `entry.sessionId` with launch request `requestId`,
+ * claiming the run only when one is known to be that launch's: the entry's own generation, else
+ * the run `launchedRun` finds. Without one the entry names no run rather than a guess. With
+ * `atRunStart`, it is dated at its run's start, before that run's replies.
  */
 export async function logLaunch(
   projectId: string,
   task: string | null,
   entry: Extract<Entry, { kind: 'action' }>,
-  launchedAtMs: number,
+  requestId: string | undefined,
   options?: { atRunStart?: boolean },
 ) {
   const sid = entry.sessionId
-  let run: Run = entry.generation === undefined ? undefined : entry
-  if (!run && sid)
-    run =
-      launchedRun(useStore.getState().sessions[sid], launchedAtMs) ??
-      launchedRun(await terminalSnapshot(sid, 0).catch(() => null), launchedAtMs)
+  const run: Run =
+    entry.generation !== undefined
+      ? entry
+      : sid && requestId
+        ? await launchedRun(sid, requestId)
+        : undefined
   logSimple(projectId, task, {
     ...entry,
     generation: run?.generation,

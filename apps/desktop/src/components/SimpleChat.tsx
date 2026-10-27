@@ -48,12 +48,6 @@ import TerminalPane from './TerminalPane'
 import './simple.css'
 
 const pendingActions = new Set<string>()
-/** Run a launch and say when it began, so `logLaunch` claims only a run it started. */
-async function timed<T>(launch: () => Promise<T>) {
-  const atMs = Date.now()
-  return { result: await launch(), atMs }
-}
-
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
   const s = useStore(
     useShallow((s) => ({
@@ -205,37 +199,28 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
-  // A launch's entry claims only the run that launch started, dated at its start (`logLaunch`).
+  // A launch's entry claims only the run its request started, dated at its start (`logLaunch`).
   const log = (
     action: SimpleAction,
     stage: SimpleStage,
-    sid: string,
-    launchedAtMs: number,
+    launched: { sessionId: string; requestId?: string },
     destinationTask = task,
-    run?: { generation?: number; startedMs?: number },
   ) =>
     logLaunch(
       projectId,
       destinationTask,
-      {
-        kind: 'action',
-        action,
-        stage,
-        sessionId: sid,
-        atMs: run?.startedMs,
-        generation: run?.generation,
-      },
-      launchedAtMs,
+      { kind: 'action', action, stage, sessionId: launched.sessionId },
+      launched.requestId,
       { atRunStart: true },
     )
-  const logReviewers = (reviewers: StartedReviewer[], launchedAtMs: number) =>
-    Promise.all(reviewers.map((r) => log('review', 'review', r.sessionId, launchedAtMs, task, r)))
-  const logMerge = (request: MergeRequest, sid: string, launchedAtMs: number) =>
+  const logReviewers = (reviewers: StartedReviewer[]) =>
+    Promise.all(reviewers.map((r) => log('review', 'review', r)))
+  const logMerge = (request: MergeRequest, sid: string, requestId: string) =>
     logLaunch(
       projectId,
       task,
       { kind: 'action', action: 'merge', stage: 'merge', request, sessionId: sid },
-      launchedAtMs,
+      requestId,
     )
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = `${key}:${action}`
@@ -256,10 +241,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     const current = useStore.getState()
     if (current.project?.id !== projectId || current.activeTask !== destinationTask)
       throw new Error('The worktree changed. Choose Build in the intended chat.')
-    const { result: sid, atMs } = await timed(() =>
-      implementPlannerPlan(planner, undefined, undefined, 'stay'),
-    )
-    await log('implement', 'build', sid, atMs, destinationTask)
+    const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay')
+    await log('implement', 'build', launched, destinationTask)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -301,21 +284,15 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           return
         }
         const request = simpleReviewRequest(source, base)
-        const { result, atMs } = await timed(() =>
-          startSimpleReview(
-            useStore.getState().toProject(),
-            request,
-            roleDevices(s.devices, s.agentRoles, 'review'),
-          ),
+        const { started, errors } = await startSimpleReview(
+          useStore.getState().toProject(),
+          request,
+          roleDevices(s.devices, s.agentRoles, 'review'),
         )
-        const { started, errors } = result
-        await logReviewers(started, atMs)
+        await logReviewers(started)
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        const { result: sid, atMs } = await timed(() =>
-          fixReviewFindings(reviewer, undefined, undefined, 'stay'),
-        )
-        await log('fix', 'build', sid, atMs)
+        await log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -335,15 +312,14 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           destination: target.path,
           destinationBranch: target.branch,
         }
-        const { result: sid, atMs } = await timed(() =>
-          startMergeAgent(
-            useStore.getState().toProject(),
-            request,
-            roleDevice(s.devices, s.agentRoles, 'merge'),
-            crypto.randomUUID(),
-          ),
+        const requestId = crypto.randomUUID()
+        const sid = await startMergeAgent(
+          useStore.getState().toProject(),
+          request,
+          roleDevice(s.devices, s.agentRoles, 'merge'),
+          requestId,
         )
-        await logMerge(request, sid, atMs)
+        await logMerge(request, sid, requestId)
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
         logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: model.stage })
@@ -368,7 +344,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           source={source}
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}
-          started={(reviewers, launchedAtMs) => void logReviewers(reviewers, launchedAtMs)}
+          started={(reviewers) => void logReviewers(reviewers)}
           launched={() => setDialog(undefined)}
         />
       )}
@@ -378,7 +354,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           worktrees={data?.worktrees ?? []}
           findings={findings}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid, launchedAtMs) => void logMerge(request, sid, launchedAtMs)}
+          onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
           launched={() => setDialog(undefined)}
         />
       )}

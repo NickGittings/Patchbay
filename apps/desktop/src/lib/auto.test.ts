@@ -739,7 +739,10 @@ test.each([false, true])(
       const sid = plannerSessionId('codex', 'p')
       useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
     })
-    vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
+    vi.mocked(implementPlannerPlan).mockResolvedValue({
+      sessionId: 'implementation',
+      requestId: 'r',
+    })
     const stop = followAuto()
     try {
       await startAuto('p', 't', {
@@ -1350,7 +1353,7 @@ test('Auto stops a planner it took over before handing off the completed plan', 
   expect(autoRun('p', 't')?.sessionOwned).not.toBe(true)
   vi.mocked(ipc.planRead).mockResolvedValue({ text: '# New plan', cut: false })
   const { implementPlannerPlan } = await import('./planHandoff')
-  vi.mocked(implementPlannerPlan).mockResolvedValue('implementation')
+  vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: 'implementation', requestId: 'r' })
   agent('review', 1200)
   const stop = followAuto()
   try {
@@ -1405,8 +1408,8 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
     vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
       useStore.setState({ sessions: { [sid]: { running: true } } })
     })
-    vi.mocked(implementPlannerPlan).mockResolvedValue(sid)
-    vi.mocked(fixReviewFindings).mockResolvedValue(sid)
+    vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: sid, requestId: 'r' })
+    vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r' })
     vi.mocked(jobs.startMergeAgent).mockResolvedValue(sid)
     useStore.setState({
       sessionRecords: [
@@ -1494,8 +1497,8 @@ test('shared planner is reserved while a launch is pending without session recor
   let finish!: () => void
   vi.mocked(awaitSessions.startTerminal).mockImplementation(
     () =>
-      new Promise<void>((resolve) => {
-        finish = resolve
+      new Promise<undefined>((resolve) => {
+        finish = () => resolve(undefined)
       }),
   )
   useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan' }) })
@@ -2062,13 +2065,16 @@ test.each(['review', 'fix'] as const)(
         ] as never,
       })
     let finish!: (sid: string) => void
+    const pending = () =>
+      new Promise<string>((resolve) => {
+        finish = resolve
+      })
     const launch = stage === 'fix' ? fixReviewFindings : jobs.startReviewAgent
-    vi.mocked(launch).mockImplementation(
-      () =>
-        new Promise<string>((resolve) => {
-          finish = resolve
-        }),
-    )
+    if (stage === 'fix')
+      vi.mocked(fixReviewFindings).mockImplementation(() =>
+        pending().then((sessionId) => ({ sessionId, requestId: undefined })),
+      )
+    else vi.mocked(jobs.startReviewAgent).mockImplementation(pending)
     useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
     const dispose = followAuto()
     try {
@@ -2692,7 +2698,10 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
     if (failure === 'refused')
       vi.mocked(fixReviewFindings).mockRejectedValue(new Error('Launch refused'))
     else
-      vi.mocked(fixReviewFindings).mockResolvedValue(failure === 'empty' ? '' : 'unknown-session')
+      vi.mocked(fixReviewFindings).mockResolvedValue({
+        sessionId: failure === 'empty' ? '' : 'unknown-session',
+        requestId: undefined,
+      })
     useStore.getState().patchTask('p', 't', { auto: run({ stage: 'fix' }) })
     const dispose = followAuto()
     try {

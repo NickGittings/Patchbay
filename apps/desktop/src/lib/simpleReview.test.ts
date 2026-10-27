@@ -1,7 +1,11 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import type { DeviceManifest, SessionRecord, TerminalSnapshot } from '../types'
-vi.mock('./ipc', () => ({ terminalSnapshot: vi.fn(), terminalStop: vi.fn() }))
+vi.mock('./ipc', () => ({
+  terminalSnapshot: vi.fn(),
+  terminalStop: vi.fn(),
+  sessionsList: vi.fn(),
+}))
 vi.mock('./reviewAgents', () => ({
   reviewWorktreeBusy: vi.fn(() => false),
   startReviewAgents: vi.fn(),
@@ -102,7 +106,7 @@ test('a busy review is preserved before any stop or launch request', async () =>
 })
 
 test('a relaunched reviewer is hydrated before Chat records its kickoff generation', async () => {
-  const { logSimple } = await import('./simpleActions')
+  const { logLaunch } = await import('./simpleActions')
   const { flow } = await import('./simpleFlow')
   useStore.setState({ sessions: { r: { generation: 1, running: false } } })
   const fresh = {
@@ -112,25 +116,28 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
     startedMs: 200,
     status: { agent: { state: 'idle', authoritative: true, turnId: null } },
   } as TerminalSnapshot
-  vi.mocked(ipc.terminalSnapshot)
-    .mockResolvedValueOnce({ ...snapshot, running: false })
-    .mockResolvedValueOnce(fresh)
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ ...snapshot, running: false })
   vi.mocked(agents.startReviewAgents).mockResolvedValue({
     started: [{ sessionId: 'r', requestId: 'request', lane: null }],
     round: 'round',
     errors: [],
   })
+  // The reconciliation after the launch failed, so only the service's list names the new run.
+  vi.mocked(ipc.sessionsList).mockResolvedValue([
+    { ...useStore.getState().sessionRecords[0], snapshot: fresh, requestIds: ['request'] },
+  ])
   const result = await startSimpleReview(useStore.getState().toProject(), request, devices)
-  const sid = result.started[0].sessionId
-  logSimple('p', null, {
-    kind: 'action',
-    action: 'review',
-    stage: 'review',
-    sessionId: sid,
-    generation: useStore.getState().sessions[sid]?.generation,
-  })
+  const [started] = result.started
+  await logLaunch(
+    'p',
+    null,
+    { kind: 'action', action: 'review', stage: 'review', sessionId: started.sessionId },
+    started.requestId,
+    { atRunStart: true },
+  )
   const s = useStore.getState()
-  expect(s.simple?.log.at(-1)?.generation).toBe(2)
+  expect(s.simple?.log.at(-1)).toMatchObject({ generation: 2, atMs: 200 })
+  expect(s.sessions.r).toMatchObject({ generation: 2, running: true })
   const record = {
     ...s.sessionRecords[0],
     metadata: { ...s.sessionRecords[0].metadata, kind: 'agent' as const },
@@ -144,7 +151,6 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
   })
   expect(resultFlow.step).toBe('reviewing')
   expect(resultFlow.prompt).toBeUndefined()
-  expect(ipc.terminalSnapshot).toHaveBeenLastCalledWith('r', 0)
 })
 
 test('review again stops only the lanes the selected presets will reuse', async () => {
@@ -175,48 +181,4 @@ test('an empty preset selection cannot retire any reviewers', async () => {
   )
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(agents.startReviewAgents).not.toHaveBeenCalled()
-})
-
-test('review hydration stores session fields without terminal output or snapshot metadata', async () => {
-  vi.mocked(ipc.terminalSnapshot)
-    .mockResolvedValueOnce({ ...snapshot, running: false })
-    .mockResolvedValueOnce({
-      ...snapshot,
-      generation: 2,
-      data: 'large output',
-      end: 999,
-      launchDirectory: '/t',
-      lastReply: 10,
-    })
-  vi.mocked(agents.startReviewAgents).mockResolvedValue({
-    started: [{ sessionId: 'r', requestId: 'new', lane: null }],
-    round: 'round',
-    errors: [],
-  })
-  await startSimpleReview(useStore.getState().toProject(), request, devices)
-  const stored = useStore.getState().sessions.r
-  expect(stored).toMatchObject({ generation: 2, running: true })
-  for (const key of ['data', 'end', 'launchDirectory', 'lastReply'])
-    expect(stored).not.toHaveProperty(key)
-})
-
-test('a started reviewer carries its run only once the service reports one newer than before', async () => {
-  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
-  vi.mocked(agents.startReviewAgents).mockResolvedValue({
-    started: [{ sessionId: 'r', requestId: 'request', lane: null }],
-    round: 'round',
-    errors: [],
-  })
-  // The slot's settled run, then the same run again after the launch: not this launch's.
-  vi.mocked(ipc.terminalSnapshot)
-    .mockResolvedValueOnce({ ...snapshot, running: false })
-    .mockResolvedValueOnce({ ...snapshot, running: false, startedMs: 5 })
-  const settled = await startSimpleReview(useStore.getState().toProject(), request, devices)
-  expect(settled.started[0]).not.toHaveProperty('generation')
-  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
-  vi.mocked(ipc.terminalSnapshot)
-    .mockResolvedValueOnce({ ...snapshot, running: false })
-    .mockResolvedValueOnce({ ...snapshot, generation: 2, startedMs: 300 })
-  const fresh = await startSimpleReview(useStore.getState().toProject(), request, devices)
-  expect(fresh.started[0]).toMatchObject({ sessionId: 'r', generation: 2, startedMs: 300 })
 })

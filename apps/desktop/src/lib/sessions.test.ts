@@ -212,9 +212,12 @@ test('a handoff whose reply was lost counts as started once its session exists',
   const terminalId = useStore.getState().addRootTerminal(agent)
   vi.mocked(ipc.taskRootStart).mockRejectedValueOnce(new Error('Reply lost'))
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: false } as TerminalSnapshot)
-  await expect(
-    startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff: { kind: 'implementPlan' } }),
-  ).resolves.toBeUndefined()
+  // Resolves with the request, which names the run once the session list shows it.
+  const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+  expect(requestId).toBe(vi.mocked(ipc.taskRootStart).mock.lastCall?.[4])
+  expect(requestId).toBeTruthy()
 })
 test('a failed handoff keeps no request id to retry with', async () => {
   const terminalId = useStore.getState().addRootTerminal(agent)

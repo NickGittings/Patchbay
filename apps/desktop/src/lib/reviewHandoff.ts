@@ -10,7 +10,7 @@ import { refreshTasks } from './tasks'
  * Launch a fresh implementation agent in the reviewed worktree to address its findings. The
  * backend resolves the worktree, branch and task from the review session's own record, and refuses
  * a fix it wouldn't launch before anything here changes. Auto passes its brief and preset. Returns
- * the launched session's id.
+ * the launched session's id and the launch request that started its run.
  */
 export async function fixReviewFindings(
   record: SessionRecord,
@@ -45,8 +45,9 @@ export async function fixReviewFindings(
   const switched = useStore.getState()
   if (switched.activeTask !== task) throw new Error("Couldn't switch to the reviewed worktree")
   const id = switched.addRootTerminal(device)
+  let requestId: string | undefined
   try {
-    await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, {
+    requestId = await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, {
       kickoff: { kind: 'fixFindings', reviewSession: record.id },
       auto,
     })
@@ -63,5 +64,5 @@ export async function fixReviewFindings(
   const after = useStore.getState()
   if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
     after.setView('implementation')
-  return sessionId(TASK_ROOT_SCOPE, id, task, projectId)
+  return { sessionId: sessionId(TASK_ROOT_SCOPE, id, task, projectId), requestId }
 }

@@ -9,7 +9,6 @@ import {
 import { terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { reviewWorktreeBusy, startReviewAgents } from './reviewAgents'
-import { sessionFromSnapshot } from './sessionState'
 
 export function simpleReviewRequest(
   source: Pick<Worktree, 'path' | 'branch'> | undefined,
@@ -22,12 +21,8 @@ export function simpleReviewRequest(
   return { worktree: source.path, branch: source.branch, base }
 }
 
-/** A started reviewer, with its run once the service reported one newer than before the launch. */
-export interface StartedReviewer {
-  sessionId: string
-  generation?: number
-  startedMs?: number
-}
+/** A started reviewer with its launch request, which names its run (`launchedRun`). */
+export type StartedReviewer = Awaited<ReturnType<typeof startReviewAgents>>['started'][number]
 
 /** Reuse review slots only after their previous turns have settled. */
 export async function startSimpleReview(
@@ -86,29 +81,5 @@ export async function startSimpleReview(
     )
   }
   current()
-  const result = await startReviewAgents(project, request, devices)
-  // Reconciliation can fail after a successful launch. Never log that launch using the
-  // settled generation still in the store, or startup idle will look like a finished review.
-  // Each started reviewer carries the run the service reported, for its chat entry.
-  const started = await Promise.all(
-    result.started.map(async (launch) => {
-      const { sessionId } = launch
-      const snapshot = await terminalSnapshot(sessionId, 0).catch(() => null)
-      const known = useStore.getState().sessions[sessionId]
-      const previous =
-        initial.sessions[sessionId] ?? records.find((r) => r.id === sessionId)?.snapshot
-      if (snapshot && (snapshot.generation ?? 0) > (known?.generation ?? 0)) {
-        const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
-        useStore.getState().setSession(sessionId, sessionFromSnapshot(known, snapshot, record))
-      } else if (!snapshot && known?.generation === previous?.generation) {
-        useStore.getState().setSession(sessionId, { running: true })
-      }
-      // Only a run newer than the one before the launch is this launch's; the settled one never is.
-      const fresh = snapshot && snapshot.generation > (previous?.generation ?? -1)
-      return fresh
-        ? { ...launch, generation: snapshot.generation, startedMs: snapshot.startedMs }
-        : launch
-    }),
-  )
-  return { ...result, started }
+  return startReviewAgents(project, request, devices)
 }

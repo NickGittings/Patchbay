@@ -244,9 +244,13 @@ test('Auto implements the project plan and returns the launched session', async 
     effortNote: 'Add tests',
     commit: true,
   }
-  const sid = await implementPlannerPlan('claude', auto)
+  vi.mocked(startTerminal).mockResolvedValueOnce('request')
+  const launched = await implementPlannerPlan('claude', auto)
   const terminalId = useStore.getState().rootTerminals.at(-1)!.id
-  expect(sid).toBe(sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'))
+  expect(launched).toEqual({
+    sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, 'later', 'p'),
+    requestId: 'request',
+  })
   expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminalId, 'later', 'p', {
     kickoff: { kind: 'implementPlan' },
     auto,
@@ -283,8 +287,8 @@ test('overlapping Auto and manual plan approvals launch only one implementation'
   let finish!: () => void
   vi.mocked(startTerminal).mockImplementation(
     () =>
-      new Promise<void>((resolve) => {
-        finish = resolve
+      new Promise<undefined>((resolve) => {
+        finish = () => resolve(undefined)
       }),
   )
   const auto = implementPlannerPlan('claude', {
@@ -322,8 +326,8 @@ test('Implement reads the latest subagent setting after awaiting the planner sto
   let finish!: () => void
   vi.mocked(ipc.terminalStop).mockImplementation(
     () =>
-      new Promise<void>((resolve) => {
-        finish = resolve
+      new Promise<undefined>((resolve) => {
+        finish = () => resolve(undefined)
       }),
   )
   const handoff = implementPlannerPlan('claude')
