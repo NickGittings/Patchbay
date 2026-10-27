@@ -287,3 +287,19 @@ test('hidden reviews reveal again and never enter the dock', async () => {
   s.keepInDock(sid)
   expect(useStore.getState().dockKept).not.toContain(sid)
 })
+
+test('targeted terminal removal clears its saved maximize without changing the selected worktree', () => {
+  const s = useStore.getState()
+  const target = { projectId: 'p', task: 'one' }
+  const root = s.addRootTerminal(null, target)
+  s.patchTask('p', 'one', {
+    maximizedTerminal: sessionId(TASK_ROOT_SCOPE, root, 'one', 'p'),
+  })
+  s.removeTaskTerminal(TASK_ROOT_SCOPE, root, target)
+  const state = useStore.getState()
+  expect(state.taskWorkspaces.one.rootTerminals.map((t) => t.id)).toEqual(['shell'])
+  expect(state.taskWorkspaces.one.maximizedTerminal).toBeNull()
+  expect(state.activeTask).toBeNull()
+  expect(state.rootTerminals.map((t) => t.id)).toEqual(['shell'])
+  expect(state.dirty).toBe(false)
+})

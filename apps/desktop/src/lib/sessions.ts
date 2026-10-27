@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
-import { emptyTaskWorkspace, projectOf, projectStateOf, useStore } from '../store'
+import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import { showsSession } from './windows'
 import {
   MAP_AGENT_TERMINAL,
@@ -199,6 +199,7 @@ function captureLaunch(
   terminalId: string,
   task?: string | null,
   projectId?: string,
+  auto = false,
 ): Launch {
   const s = useStore.getState()
   const id = projectId ?? s.project?.id ?? s.activeProjectId
@@ -209,12 +210,18 @@ function captureLaunch(
   // Dependency detection belongs to the project too.
   const planner = componentId === PLAN_SCOPE || componentId === MAP_SCOPE
   const scope = planner ? null : task === undefined ? (state?.activeTask ?? null) : task
-  const workspace =
-    planner || state?.activeTask === scope
-      ? state
-      : (state?.taskWorkspaces[scope ?? ''] ??
-        emptyTaskWorkspace(state?.tasks.find((t) => t.id === scope)?.components))
   const sid = sessionId(componentId, terminalId, scope, id)
+  // Restart from the Plan dock keeps the tracked run's worktree, just like its initial launch.
+  const tracked = componentId === PLAN_SCOPE ? autoTracking(id, sid) : undefined
+  const workspaceTask =
+    componentId === PLAN_SCOPE && tracked
+      ? tracked.task
+      : componentId === PLAN_SCOPE && auto && task !== undefined
+        ? task
+        : planner
+          ? (state?.activeTask ?? null)
+          : scope
+  const workspace = state ? workspaceOf(state, workspaceTask) : undefined
   return {
     sid,
     componentId,
@@ -259,7 +266,7 @@ export function startTerminal(
 ): Promise<string | undefined> {
   let launch: Launch
   try {
-    launch = captureLaunch(componentId, terminalId, task, projectId)
+    launch = captureLaunch(componentId, terminalId, task, projectId, !!options.auto)
     launch.kickoff = options.kickoff
     launch.story = options.story
     launch.auto = options.auto
@@ -288,15 +295,19 @@ class LaunchCancelled extends Error {
  * The brief (and planner kickoff) an Auto run launched `sid` with, while that run still tracks it,
  * so a later start of the same terminal is briefed the same and can resume.
  */
-function autoBriefOf(projectId: string, sid: string) {
+function autoTracking(projectId: string, sid: string) {
   const state = projectStateOf(projectId)
-  if (!state) return undefined
-  const runs = autoRuns(state).map(({ run }) => run)
   // A stopped, failed or finished run no longer briefs its agent.
-  return runs.find(
-    (run) =>
-      run && unfinished(run.status) && run.sessionId === sid && run.sessionBrief?.sessionId === sid,
-  )?.sessionBrief
+  return state
+    ? autoRuns(state).find(
+        ({ run }) =>
+          unfinished(run.status) && run.sessionId === sid && run.sessionBrief?.sessionId === sid,
+      )
+    : undefined
+}
+
+function autoBriefOf(projectId: string, sid: string) {
+  return autoTracking(projectId, sid)?.run.sessionBrief
 }
 
 /** Presets chosen for map detection launches the session list doesn't record yet. */

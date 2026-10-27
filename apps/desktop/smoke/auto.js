@@ -198,10 +198,14 @@
     )
     autoButton.click()
     const stages = []
+    const firstRun = (s = state()) =>
+      s.activeTask === task.id ? s.auto : s.taskWorkspaces[task.id]?.auto
     const unsubscribe = smoke.store.subscribe((s) => {
-      if (s.auto && stages.at(-1) !== s.auto.stage) stages.push(s.auto.stage)
+      const run = firstRun(s)
+      if (run && stages.at(-1) !== run.stage) stages.push(run.stage)
     })
     await smoke.startAuto(projectId, task.id, {
+      background: true,
       goal: 'Finish the fixture task',
       effort: 'light',
       device: 'auto-fixture',
@@ -218,16 +222,21 @@
           ?.getAttribute('aria-description')
           ?.includes('Running'),
     )
-    await until('merge approval', () => {
-      if (['failed', 'paused'].includes(state().auto?.status)) throw new Error(state().auto.reason)
-      return state().auto?.stage === 'mergeGate' && state().auto.status === 'waitingOnYou'
+    state().setActiveTask(null, true)
+    await until('background fix to merge approval', () => {
+      assert(state().activeTask === null, 'Background fix switched the active worktree')
+      assert(state().view === 'review', 'Background fix changed the current view')
+      const run = firstRun()
+      if (['failed', 'paused'].includes(run?.status)) throw new Error(run.reason)
+      return run?.stage === 'mergeGate' && run.status === 'waitingOnYou'
     })
     assert(stages.join(',') === 'review,fix,review,mergeGate', `Wrong stage sequence ${stages}`)
-    assert(state().auto.round === 1, 'Fix budget counter did not advance')
+    assert(firstRun().round === 1, 'Fix budget counter did not advance')
     assert(
       smoke.attentionItems(state()).some((item) => item.auto),
       'Auto merge approval missing from attention',
     )
+    state().setActiveTask(task.id)
     smoke.selectPanel('auto')
     const merge = await until('Merge now button', () =>
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Merge now'),
@@ -263,21 +272,26 @@
       components: [],
     })
     await smoke.refreshTasks()
-    state().setActiveTask(description.id)
+    state().setActiveTask(task.id)
+    const backgroundRun = () => state().taskWorkspaces[description.id]?.auto
     const descriptionStages = []
     const unsubscribeDescription = smoke.store.subscribe((s) => {
-      if (s.auto && descriptionStages.at(-1) !== s.auto.stage) descriptionStages.push(s.auto.stage)
+      const run = s.taskWorkspaces[description.id]?.auto
+      if (run && descriptionStages.at(-1) !== run.stage) descriptionStages.push(run.stage)
     })
     await smoke.startAuto(projectId, description.id, {
+      background: true,
       goal: 'Finish the fixture task',
       effort: 'standard',
       device: 'auto-fixture',
       merge: { mode: 'auto', destinationBranch: 'main' },
     })
-    await until('description to automatic merge', () => {
-      if (['failed', 'paused', 'waitingOnYou'].includes(state().auto?.status))
-        throw new Error(state().auto.reason)
-      return state().auto?.status === 'done'
+    await until('background description to automatic merge', () => {
+      assert(state().activeTask === task.id, 'Background Auto switched the active worktree')
+      assert(state().view === 'review', 'Background Auto changed the current view')
+      const run = backgroundRun()
+      if (['failed', 'paused', 'waitingOnYou'].includes(run?.status)) throw new Error(run.reason)
+      return run?.status === 'done'
     })
     unsubscribeDescription()
     assert(
@@ -285,12 +299,17 @@
       `Wrong description sequence ${descriptionStages}`,
     )
     assert(
-      state().auto.validation.length === 1 &&
-        state().auto.validation[0].results.every((r) => r.outcome === 'passed'),
+      backgroundRun().validation.length === 1 &&
+        backgroundRun().validation[0].results.every((r) => r.outcome === 'passed'),
       'Affected validation did not run and pass',
     )
+    const backgroundLayout = smoke.workspaceDocument().projects[0].layout
+    const restoredBackground =
+      smoke.restoredLayout(backgroundLayout).taskWorkspaces[description.id].auto
+    assert(restoredBackground.background === true, 'Restore lost background permission')
+    assert(unfinished.auto.pauseKind === 'restored', 'Restore lost its pause kind')
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, description planning/implementation/affected validation and automatic merge',
+      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, background description planning/implementation/affected validation and automatic merge without switching worktrees or views',
     )
   } catch (e) {
     await smoke.report(

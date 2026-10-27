@@ -80,12 +80,17 @@ function worktreeScopes(s: Pick<Snapshot, 'tasks'>): [string | null, string | un
 
 /**
  * Auto runs of a project that want the user: waiting on you (an input wait, a pause it can't
- * resolve, or the merge gate asking for approval) or failed.
+ * resolve, or the merge gate asking for approval), or failures.
  */
 export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: AutoRun })[] {
   return worktreeScopes(s).flatMap(([task, taskTitle]) => {
     const run = autoWorkspace(s, task)?.auto
-    if (!run || !['waitingOnYou', 'failed'].includes(run.status)) return []
+    if (
+      !run ||
+      (!['waitingOnYou', 'failed'].includes(run.status) &&
+        !(run.status === 'paused' && run.pauseKind === 'needsUser'))
+    )
+      return []
     return [
       {
         auto: true,
@@ -102,7 +107,7 @@ export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: Aut
           label: STATUS_LABELS[run.status],
           detail: run.reason,
         },
-        sinceMs: run.log.at(-1)?.atMs ?? 0,
+        sinceMs: run.pausedMs ?? run.log.at(-1)?.atMs ?? 0,
       },
     ]
   })

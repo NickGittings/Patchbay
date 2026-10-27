@@ -1228,3 +1228,64 @@ test('replies read for a newer run keep every field of its snapshot', async () =
   // The listing's `interrupted` described its run, not the newer one just read.
   expect(useStore.getState().sessions[r.id].interrupted).toBeUndefined()
 })
+
+test('an Auto planner uses its background worktree highlights while keeping a project-wide session', async () => {
+  useStore.setState({ highlighted: [] })
+  useStore.getState().patchTask('p', 'background', { highlighted: ['web'] })
+  const auto = { goal: 'Background goal', fixFloor: null, effortNote: '', commit: false }
+  await startTerminal(PLAN_SCOPE, 'claude', 'background', 'p', { kickoff: { kind: 'plan' }, auto })
+  expect(ipc.planStart).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: 'p' }),
+    ['web'],
+    expect.anything(),
+    expect.any(String),
+    false,
+    { kind: 'plan' },
+    auto,
+    undefined,
+  )
+  expect(useStore.getState().highlighted).toEqual([])
+  expect(useStore.getState().activeTask).toBeNull()
+  expect(useStore.getState().planStartedWith[sessionId(PLAN_SCOPE, 'claude', null, 'p')]).toBe(
+    'web',
+  )
+})
+
+test.each(['start', 'restart'] as const)(
+  'Plan dock %s keeps a tracked Auto planner’s worktree highlights and briefing',
+  async (action) => {
+    useStore.setState({ highlighted: [] })
+    const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+    const auto = { goal: 'Background goal', fixFloor: null, effortNote: '', commit: false }
+    useStore.getState().patchTask('p', 'background', {
+      highlighted: ['web'],
+      auto: {
+        runId: 'r',
+        status: 'paused',
+        stage: 'plan',
+        goal: auto.goal,
+        effort: 'light',
+        device: 'claude',
+        round: 0,
+        merge: { mode: 'ask', destinationBranch: 'main' },
+        log: [],
+        sessionId: sid,
+        sessionBrief: { sessionId: sid, auto, kickoff: { kind: 'plan' } },
+      },
+    })
+    if (action === 'restart') await restartTerminal(PLAN_SCOPE, 'claude')
+    else await startTerminal(PLAN_SCOPE, 'claude')
+    expect(ipc.planStart).toHaveBeenCalledWith(
+      expect.anything(),
+      ['web'],
+      expect.anything(),
+      expect.any(String),
+      action === 'restart',
+      { kind: 'plan' },
+      auto,
+      undefined,
+    )
+    expect(useStore.getState().highlighted).toEqual([])
+    expect(useStore.getState().planStartedWith[sid]).toBe('web')
+  },
+)

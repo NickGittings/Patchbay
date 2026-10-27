@@ -230,3 +230,40 @@ test('reviews appear beside merges and reveal without switching worktrees', asyn
   expect(revealState.setActiveSession).toHaveBeenCalledWith('job-0')
   expect(revealState.setActiveTask).not.toHaveBeenCalled()
 })
+
+test.each(['needsUser', 'inactive', 'interrupted', 'restored', 'user', undefined] as const)(
+  'only a needsUser pause appears in Attention (%s)',
+  (pauseKind) => {
+    const items = attentionItems(
+      snapshot(
+        {},
+        {
+          activeTask: null,
+          taskWorkspaces: {
+            abc: {
+              auto: {
+                runId: 'r',
+                status: 'paused',
+                stage: 'plan',
+                pauseKind,
+                pausedMs: 123,
+                reason: 'Resume to continue',
+                log: [],
+              },
+            },
+          },
+        },
+      ),
+    )
+    if (pauseKind !== 'needsUser') expect(items).toEqual([])
+    else
+      expect(items).toEqual([
+        expect.objectContaining({
+          auto: true,
+          task: 'abc',
+          sinceMs: 123,
+          status: expect.objectContaining({ attention: 4, detail: 'Resume to continue' }),
+        }),
+      ])
+  },
+)

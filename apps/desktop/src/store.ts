@@ -283,10 +283,17 @@ interface State {
   /** Apply `patch` to open project `id`'s state, whether or not its tab is active. */
   patchProject: (id: string, patch: Partial<ProjectState>) => void
   patchTask: (projectId: string, task: string | null, patch: Partial<TaskWorkspace>) => void
-  addRootTerminal: (device: DeviceManifest | null) => string
+  addRootTerminal: (
+    device: DeviceManifest | null,
+    target?: { projectId: string; task: string | null },
+  ) => string
   addTaskComponentTerminal: (componentId: string, terminalId: string) => void
-  /** Drops a terminal from the active task's list; component terminals stay on the map. */
-  removeTaskTerminal: (componentId: string, terminalId: string) => void
+  /** Drops a terminal from the requested (default: active) task; map terminals stay. */
+  removeTaskTerminal: (
+    componentId: string,
+    terminalId: string,
+    target?: { projectId: string; task: string | null },
+  ) => void
   setMaximizedTerminal: (id: string | null) => void
   nodes: FlowNode[]
   edges: FlowEdge[]
@@ -439,6 +446,14 @@ const mapNode = (nodes: FlowNode[], id: string, f: (d: ComponentData) => Compone
 
 type TaskState = Pick<State, keyof TaskWorkspace | 'tasks' | 'activeTask' | 'taskWorkspaces'>
 
+/** The selected task's live layout, its saved layout, or its initial component scope. */
+export function workspaceOf(state: TaskState, task: string | null): TaskWorkspace {
+  return state.activeTask === task
+    ? state
+    : (state.taskWorkspaces[task ?? ''] ??
+        emptyTaskWorkspace(state.tasks.find((t) => t.id === task)?.components))
+}
+
 /** Restore layout without stopping or retargeting processes. */
 export function switchTaskWorkspace(
   s: TaskState,
@@ -452,7 +467,7 @@ export function switchTaskWorkspace(
   if (activeTask && (!task || task.missing)) return {}
   if (s.activeTask === activeTask) return {}
   const taskWorkspaces = { ...s.taskWorkspaces, [s.activeTask ?? '']: taskWorkspace(s) }
-  const restored = taskWorkspaces[activeTask ?? ''] ?? emptyTaskWorkspace(task?.components)
+  const restored = workspaceOf(s, activeTask)
   return { activeTask, taskWorkspaces, ...restored, revealed: null }
 }
 
@@ -528,28 +543,45 @@ const createState: StateCreator<State> = (set, get) => ({
       activeSession: sessionId(componentId, terminalId, s.activeTask),
       maximizedTerminal: null,
     })),
-  removeTaskTerminal: (componentId, terminalId) =>
-    set((s) => ({
+  removeTaskTerminal: (componentId, terminalId, target) => {
+    const s = get()
+    const state = target ? projectStateOf(target.projectId, s) : s
+    if (!state) return
+    const task = target ? target.task : s.activeTask
+    const workspace = workspaceOf(state, task)
+    const patch = {
       rootTerminals:
         componentId === TASK_ROOT_SCOPE
-          ? s.rootTerminals.filter((t) => t.id !== terminalId)
-          : s.rootTerminals,
-      componentTerminals: s.componentTerminals.filter(
+          ? workspace.rootTerminals.filter((t) => t.id !== terminalId)
+          : workspace.rootTerminals,
+      componentTerminals: workspace.componentTerminals.filter(
         (t) => t.componentId !== componentId || t.terminalId !== terminalId,
       ),
       maximizedTerminal:
-        s.maximizedTerminal === sessionId(componentId, terminalId, s.activeTask)
+        workspace.maximizedTerminal === sessionId(componentId, terminalId, task, state.project?.id)
           ? null
-          : s.maximizedTerminal,
-    })),
+          : workspace.maximizedTerminal,
+    }
+    if (target) s.patchTask(target.projectId, task, patch)
+    else set(patch)
+  },
   setMaximizedTerminal: (maximizedTerminal) => set({ maximizedTerminal }),
-  addRootTerminal: (device) => {
+  addRootTerminal: (device, target) => {
     const terminal: TerminalSpec = {
       id: newId(device?.id ?? 'shell'),
       name: device?.name ?? 'Shell',
       command: device?.command ?? '',
       kind: device?.kind ?? 'shell',
       ...(device?.adapter ? { adapter: device.adapter } : {}),
+    }
+    if (target) {
+      const state = projectStateOf(target.projectId, get())
+      if (!state) throw new Error('Open the project first')
+      const workspace = workspaceOf(state, target.task)
+      get().patchTask(target.projectId, target.task, {
+        rootTerminals: [...workspace.rootTerminals, terminal],
+      })
+      return terminal.id
     }
     set((s) => ({
       rootTerminals: [...s.rootTerminals, terminal],
@@ -568,8 +600,7 @@ const createState: StateCreator<State> = (set, get) => ({
         taskWorkspaces: {
           ...state.taskWorkspaces,
           [task ?? '']: {
-            ...(state.taskWorkspaces[task ?? ''] ??
-              emptyTaskWorkspace(state.tasks.find((t) => t.id === task)?.components)),
+            ...workspaceOf(state, task),
             ...patch,
           },
         },

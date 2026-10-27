@@ -80,3 +80,72 @@ test('parallel reviewers and their sessions survive a restore', () => {
     { sessionId: 'y', startedMs: undefined },
   ])
 })
+
+test('background permission survives restore and only literal true enables it', () => {
+  expect(restoredAuto({ ...saved, background: true })).toMatchObject({
+    background: true,
+    status: 'paused',
+    pauseKind: 'restored',
+    pausedMs: expect.any(Number),
+  })
+  for (const background of [undefined, false, 'true', 1])
+    expect(restoredAuto({ ...saved, background })?.background).toBe(false)
+})
+
+test.each(['user', 'needsUser'] as const)(
+  'restore preserves a %s pause and its reason',
+  (pauseKind) => {
+    expect(
+      restoredAuto({ ...saved, status: 'paused', pauseKind, pausedMs: 1, reason: 'Wait for me' }),
+    ).toMatchObject({
+      status: 'paused',
+      pauseKind,
+      pausedMs: 1,
+      reason: 'Wait for me',
+    })
+  },
+)
+
+test.each(['restored', 'inactive', 'interrupted'] as const)(
+  'restore preserves the pause timestamp after a %s pause',
+  (pauseKind) => {
+    expect(restoredAuto({ ...saved, status: 'paused', pauseKind, pausedMs: 1 })).toMatchObject({
+      status: 'paused',
+      pauseKind: 'restored',
+      pausedMs: 1,
+    })
+  },
+)
+
+test('legacy pauses and pending user input cannot become auto-resumable on restart', () => {
+  for (const pauseKind of [undefined, 'unknown'])
+    expect(restoredAuto({ ...saved, status: 'paused', pauseKind })?.pauseKind).toBe('user')
+  expect(restoredAuto({ ...saved, status: 'waitingOnYou' })?.pauseKind).toBe('needsUser')
+})
+
+test.each(['done', 'stopped', 'failed'] as const)(
+  'finished %s runs keep no pause state',
+  (status) => {
+    expect(restoredAuto({ ...saved, status, pauseKind: 'interrupted', pausedMs: 1 })).toMatchObject(
+      {
+        status,
+        pauseKind: undefined,
+        pausedMs: undefined,
+      },
+    )
+  },
+)
+
+test('restore gives new and legacy pauses a timestamp and ignores invalid saved timestamps', () => {
+  const before = Date.now()
+  for (const pausedMs of [undefined, NaN, Infinity, 'old']) {
+    const result = restoredAuto({ ...saved, status: 'paused', pausedMs })
+    expect(result?.pausedMs).toBeGreaterThanOrEqual(before)
+  }
+  // A running run's leftover pause fields do not date its new restoration pause.
+  expect(restoredAuto({ ...saved, pausedMs: 1 })?.pausedMs).toBeGreaterThanOrEqual(before)
+})
+
+test.each([true, false, undefined])('restore preserves planner ownership (%s)', (plannerTurn) => {
+  expect(restoredAuto({ ...saved, stage: 'implement', plannerTurn })?.plannerTurn).toBe(plannerTurn)
+})

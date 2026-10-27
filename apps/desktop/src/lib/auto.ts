@@ -282,9 +282,21 @@ function workspace(projectId: string, task: string | null) {
   return autoWorkspace(projectStateOf(projectId), task)
 }
 export const autoRun = (projectId: string, task: string | null) => workspace(projectId, task)?.auto
+function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
+  if (update.status === 'paused') {
+    return { pauseKind: 'needsUser', pausedMs: Date.now(), ...update }
+  } else if (update.status) {
+    return { ...update, pauseKind: undefined, pausedMs: undefined }
+  }
+  return update
+}
 function patch(projectId: string, task: string | null, update: Partial<AutoRun>, text?: string) {
   const run = autoRun(projectId, task)
   if (!run) return
+  update = pauseDefaults(update)
+  const next = { ...run, ...update }
+  if (next.stage !== 'plan' && (next.stage !== 'implement' || next.sessionId))
+    update.plannerTurn = false
   useStore.getState().patchTask(projectId, task, {
     auto: {
       ...run,
@@ -301,14 +313,19 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
       useStore.getState().setMessage(`Could not save the story’s completion: ${String(e)}`),
     )
 }
-function active(projectId: string, task: string | null) {
+export function driveable(projectId: string, task: string | null, run = autoRun(projectId, task)) {
   const s = useStore.getState()
-  return s.project?.id === projectId && s.activeTask === task
+  return (
+    (s.project?.id === projectId && s.activeTask === task) ||
+    (run?.background === true && s.projectOrder.includes(projectId) && !!projectStateOf(projectId))
+  )
 }
 function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
   const destination = snapshot.worktrees.find((w) => w.branch === run.merge.destinationBranch)
   if (!destination || destination.path === snapshot.source.path)
-    throw new Error('Choose a different destination branch with an existing worktree')
+    throw new AutoConfigurationError(
+      'Choose a different destination branch with an existing worktree',
+    )
   return {
     source: snapshot.source.path,
     sourceBranch: snapshot.source.branch!,
@@ -316,10 +333,12 @@ function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run:
     destinationBranch: run.merge.destinationBranch,
   }
 }
+/** A setup problem that only an explicit user change can resolve. */
+class AutoConfigurationError extends Error {}
 /** The run's worktree no longer has the run's branch checked out. */
 export class BranchMoved extends Error {}
 /** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
-export class NoReviewBase extends Error {
+export class NoReviewBase extends AutoConfigurationError {
   readonly task: string | null
   readonly path: string
   readonly branch: string
@@ -370,7 +389,7 @@ async function sourceWorktree(
     ? tasks.find((t) => t.id === task)?.worktree
     : worktrees.find((w) => w.current)?.path
   const source = worktrees.find((w) => w.path === path)
-  if (!path || !source?.branch) throw new Error('Choose a worktree with a branch')
+  if (!path || !source?.branch) throw new AutoConfigurationError('Choose a worktree with a branch')
   if (branch && source.branch !== branch)
     throw new BranchMoved(
       `The worktree has ${source.branch} checked out, not this run's ${branch}; check ${branch} out again or Stop`,
@@ -421,6 +440,7 @@ export async function autoSnapshot(
   const records = useStore
     .getState()
     .sessionRecords.filter((r) => r.metadata.projectId === projectId)
+  const turn = plannerOwner(projectId)
   const relevant = records.filter(
     (r) =>
       (r.metadata.kind === 'agent' &&
@@ -432,7 +452,10 @@ export async function autoSnapshot(
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
       // The planner is project-wide: it belongs to this run only while it plans or tracks it.
       (r.metadata.componentId === PLAN_SCOPE &&
-        (r.id === run.sessionId || (run.stage === 'plan' && !run.sessionId))) ||
+        (r.id === run.sessionId ||
+          (run.stage === 'plan' &&
+            !run.sessionId &&
+            sessionAvailable(projectId, task, r.id, true, turn)))) ||
       (r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path),
   )
   const agents = relevant.flatMap((r) => {
@@ -515,7 +538,7 @@ export async function autoSnapshot(
 }
 export type AutoSettings = Pick<
   AutoRun,
-  'goal' | 'effort' | 'overrides' | 'merge' | 'device' | 'agents' | 'reviewers'
+  'goal' | 'effort' | 'overrides' | 'merge' | 'device' | 'agents' | 'reviewers' | 'background'
 > & {
   stage?: AutoStage
 }
@@ -542,7 +565,10 @@ export class AutoHooksRequired extends Error {
 export async function checkAutoHooks(deviceId: string): Promise<HookProvider> {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
   const provider = device ? await agentProvider(device) : null
-  if (!provider) throw new Error('Choose an agent preset with Claude or Codex status integration')
+  if (!provider)
+    throw new AutoConfigurationError(
+      'Choose an agent preset with Claude or Codex status integration',
+    )
   let usable = false
   try {
     usable = hooksUsable(await checkHooks(provider))
@@ -641,19 +667,19 @@ export async function startAuto(projectId: string, task: string | null, settings
     if (!run.goal.trim()) run.goal = snapshot.goal
     if ((settings.stage ?? decision.stage) === 'plan' && !run.goal.trim())
       throw new Error('Describe the task first')
-    if (!active(projectId, task)) throw new Error('The task changed')
+    if (!driveable(projectId, task, run)) throw new Error('The task changed')
     const reviewedHead = mergeableHead(snapshot, run)
     // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
     useStore.getState().patchTask(projectId, task, {
       auto: {
         ...run,
-        ...decision,
+        ...pauseDefaults(stage ? { ...decision, stage, status: 'running' } : decision),
         branch: snapshot.source.branch,
         sessionStartedMs: decision.sessionId ? startedOf(decision.sessionId) : undefined,
         reviewedHead,
         // An adopted planner must still save a plan other than the one it started with.
-        planMark: decision.stage === 'plan' ? snapshot.planMark : undefined,
-        ...(stage ? { stage, status: 'running' as const } : {}),
+        planMark: decision.stage === 'plan' && decision.sessionId ? snapshot.planMark : undefined,
+        plannerTurn: decision.stage === 'plan' && !!decision.sessionId,
         log: [{ atMs: Date.now(), text: decision.reason }],
       },
     })
@@ -663,8 +689,13 @@ export async function startAuto(projectId: string, task: string | null, settings
     if (controller.phase === 'idle') release(controller)
   }
 }
-export function pauseAuto(projectId: string, task: string | null, reason = 'Paused by you') {
-  patch(projectId, task, { status: 'paused', reason }, reason)
+export function pauseAuto(
+  projectId: string,
+  task: string | null,
+  reason = 'Paused by you',
+  pauseKind: NonNullable<AutoRun['pauseKind']> = 'user',
+) {
+  patch(projectId, task, { status: 'paused', reason, pauseKind }, reason)
 }
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
@@ -732,6 +763,9 @@ export async function resumeAuto(projectId: string, task: string | null) {
       launchAtMs: kept.length || decision.sessionId === run.sessionId ? run.launchAtMs : undefined,
       turnSince: decision.turnSince,
       observedWorking: decision.observedWorking ?? false,
+      plannerTurn:
+        plannerOwner(projectId)?.task === task ||
+        (decision.stage === 'plan' && !!decision.sessionId),
     },
     `Resumed: ${
       superseded
@@ -1041,20 +1075,60 @@ function briefing(run: AutoRun): AutoBrief {
 }
 // Reserve a shared planner before awaiting its launch; records arrive only afterwards.
 const launchingSessions = new Map<string, string>()
-function assertSessionAvailable(projectId: string, task: string | null, sessionId?: string) {
-  if (!sessionId) return
+function sessionAvailable(
+  projectId: string,
+  task: string | null,
+  sessionId: string,
+  planner: boolean,
+  turn: ReturnType<typeof plannerOwner>,
+) {
   const key = JSON.stringify([projectId, task])
   const reservation = launchingSessions.get(sessionId)
   const p = projectStateOf(projectId)
-  if (
+  return !(
     (reservation && reservation !== key) ||
+    (planner && turn && turn.task !== task) ||
     (p &&
       autoRuns(p).some(
         ({ task: other, run: owner }) =>
           other !== task && owner.sessionId === sessionId && unfinished(owner.status),
       ))
   )
-    throw new Error('This planner or agent already belongs to another Auto run')
+}
+function assertSessionAvailable(projectId: string, task: string | null, sessionId?: string) {
+  if (!sessionId) return
+  const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
+  if (
+    !sessionAvailable(
+      projectId,
+      task,
+      sessionId,
+      record?.metadata.componentId === PLAN_SCOPE,
+      plannerOwner(projectId),
+    )
+  )
+    throw new AutoConfigurationError('This planner or agent already belongs to another Auto run')
+}
+// Ownership lives with the run, so Resume's new runId and app restarts preserve the same turn.
+// Reads never reserve a planner; a launch acquires it immediately before its first side effect.
+function plannerOwner(projectId: string) {
+  const state = projectStateOf(projectId)
+  return state
+    ? autoRuns(state).find(
+        ({ run }) =>
+          unfinished(run.status) &&
+          (run.stage === 'plan' || (run.stage === 'implement' && !run.sessionId)) &&
+          (run.plannerTurn ||
+            // Older saved runs can prove ownership through a tracked planner or its handoff.
+            (run.plannerTurn === undefined &&
+              ((run.stage === 'plan' && !!run.sessionId) ||
+                (run.stage === 'implement' && run.planMark !== undefined)))),
+      )
+    : undefined
+}
+function plannerAvailable(projectId: string, task: string | null) {
+  const turn = plannerOwner(projectId)
+  return !turn || turn.task === task
 }
 /** Cache only the pinned merge request; outcome checks need no plans, findings or diff. */
 async function approvalOutcome(
@@ -1088,9 +1162,15 @@ async function drive(projectId: string, task: string | null) {
     const r = autoRun(projectId, task)
     return r?.runId === runId && (r.status === 'running' || r.status === 'waitingOnYou') ? r : null
   }
+  const pause = (reason: string, kind: NonNullable<AutoRun['pauseKind']> = 'needsUser') =>
+    pauseAuto(projectId, task, reason, kind)
   let reservedSession: string | undefined
+  let launching = false
   try {
     let run = autoRun(projectId, task)!
+    // The service may reconnect with the same agents still running. Wait without changing run
+    // state, then the serviceConnected subscription drives them again after reconciliation.
+    if (!useStore.getState().serviceConnected) return
     // Approval waits still observe Git, including a merge performed outside Auto.
     if (run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !run.sessionId) {
       const previous = controller.gatePoll
@@ -1153,7 +1233,12 @@ async function drive(projectId: string, task: string | null) {
         } catch (e) {
           controller.gateRequest = undefined
           if (autoRun(projectId, task) === current)
-            pauseAuto(projectId, task, `Couldn't check merge status: ${e}`)
+            pause(
+              `Couldn't check merge status: ${e}`,
+              e instanceof BranchMoved || e instanceof AutoConfigurationError
+                ? 'needsUser'
+                : 'interrupted',
+            )
           return true
         }
         if (autoRun(projectId, task) !== current) return true
@@ -1164,7 +1249,7 @@ async function drive(projectId: string, task: string | null) {
       // Outside review, a failed agent pauses at once; a failed reviewer may have written first.
       if (failed.length && run.stage !== 'review') {
         if (await mergedByHand()) return
-        pauseAuto(projectId, task, failureReason(run, failed[0], waitingOn))
+        pause(failureReason(run, failed[0], waitingOn))
         return
       }
       const input = failed.length
@@ -1244,7 +1329,7 @@ async function drive(projectId: string, task: string | null) {
             ? roundStatus(run, reviewers, snapshot.findings, waitingOn)
             : undefined
         if (round?.status === 'broken' || round?.status === 'superseded') {
-          pauseAuto(projectId, task, round.reason!)
+          pause(round.reason!)
           return
         }
         if (round?.status === 'running') {
@@ -1285,7 +1370,7 @@ async function drive(projectId: string, task: string | null) {
             (run.launchAtMs !== undefined && snapshot.findings.startedMs < run.launchAtMs))
         ) {
           if (Date.now() - completedAt > 30000)
-            pauseAuto(projectId, task, "Couldn't read the review verdict — open findings")
+            pause("Couldn't read the review verdict — open findings")
           return
         }
         // A plan saved before this planner launched is no answer to its goal.
@@ -1295,18 +1380,14 @@ async function drive(projectId: string, task: string | null) {
           ((!snapshot.plan.trim() && !snapshot.proposal) ||
             (run.planMark !== undefined && snapshot.planMark === run.planMark))
         ) {
-          pauseAuto(projectId, task, 'Planner finished without saving a new plan')
+          pause('Planner finished without saving a new plan')
           return
         }
         const decision = following
           ? inferStage({ ...snapshot, agents: otherAgents }, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
         if (!following && run.stage === 'review' && snapshot.freshness !== 'current') {
-          pauseAuto(
-            projectId,
-            task,
-            'The branch changed during review; close the reviewers and Resume to review again',
-          )
+          pause('The branch changed during review; close the reviewers and Resume to review again')
           return
         }
         assertSessionAvailable(projectId, task, decision.sessionId)
@@ -1380,18 +1461,25 @@ async function drive(projectId: string, task: string | null) {
     }
     controller.completionPoll = undefined
     if (run.status !== 'running') return
-    if (!active(projectId, task)) {
-      pauseAuto(
-        projectId,
-        task,
+    if (!driveable(projectId, task)) {
+      pause(
         `Switch to ${projectStateOf(projectId)?.tasks.find((t) => t.id === task)?.title ?? 'the project folder'} to continue`,
+        'inactive',
       )
       return
     }
+    if (
+      (run.stage === 'plan' || (run.stage === 'implement' && run.planMark !== undefined)) &&
+      !plannerAvailable(projectId, task)
+    ) {
+      const reason = 'Waiting for the planner'
+      if (run.reason !== reason) patch(projectId, task, { reason }, reason)
+      return
+    }
     const snapshot = await autoSnapshot(projectId, task, run)
-    if (!live()) return
-    if (!active(projectId, task)) {
-      pauseAuto(projectId, task, 'Switch back to this worktree to continue')
+    if (!live() || !useStore.getState().serviceConnected) return
+    if (!driveable(projectId, task)) {
+      pause('Switch back to this worktree to continue', 'inactive')
       return
     }
     const project = projectOf(projectId)!
@@ -1406,7 +1494,7 @@ async function drive(projectId: string, task: string | null) {
       run.reviewedHead &&
       (run.reviewedHead !== snapshot.source.head || snapshot.freshness !== 'current')
     ) {
-      pauseAuto(projectId, task, 'The branch changed since review; Resume to review again')
+      pause('The branch changed since review; Resume to review again')
       return
     }
     if (
@@ -1414,11 +1502,7 @@ async function drive(projectId: string, task: string | null) {
       run.reviewedHead &&
       mergeableHead(snapshot, run) !== run.reviewedHead
     ) {
-      pauseAuto(
-        projectId,
-        task,
-        'The review no longer permits automatic merging; Resume to review again',
-      )
+      pause('The review no longer permits automatic merging; Resume to review again')
       return
     }
     if (run.stage === 'mergeGate') {
@@ -1431,7 +1515,7 @@ async function drive(projectId: string, task: string | null) {
     }
     if (run.stage === 'validate') {
       if (workspace(projectId, task)?.graphActionBusy) {
-        pauseAuto(projectId, task, 'Another graph action is running')
+        pause('Another graph action is running', 'interrupted')
         return
       }
       const reports: ActionReport[] = []
@@ -1446,7 +1530,7 @@ async function drive(projectId: string, task: string | null) {
         }
       } catch (e) {
         // Another worktree's action or an already running check clears up by itself; Resume retries.
-        if (live()) pauseAuto(projectId, task, `Validation couldn't run: ${e}`)
+        if (live()) pause(`Validation couldn't run: ${e}`, 'interrupted')
         return
       } finally {
         controller.validating = false
@@ -1471,34 +1555,38 @@ async function drive(projectId: string, task: string | null) {
     const deviceId = agentFor(run, run.stage)
     const presets = agentDevices(useStore.getState().devices)
     const device = presets.find((d) => d.id === deviceId)
-    if (!device) throw new Error('The selected agent preset is unavailable')
+    if (!device) throw new AutoConfigurationError('The selected agent preset is unavailable')
     const reviewers =
       run.stage === 'review'
         ? reviewAgents(run).map((id) => {
             const reviewer = presets.find((d) => d.id === id)
-            if (!reviewer) throw new Error('The selected agent preset is unavailable')
+            if (!reviewer)
+              throw new AutoConfigurationError('The selected agent preset is unavailable')
             return reviewer
           })
         : [device]
     // Usage is read beside the hook checks; refreshUsage never rejects.
     const reading = useStore.getState().usageSettings.gateAuto ? refreshUsage() : null
     const providers = await Promise.all(reviewers.map((d) => checkAutoHooks(d.id)))
-    if (!live() || !active(projectId, task)) return
+    if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
     if (reading && useStore.getState().usageSettings.gateAuto) {
       const usage = await reading
-      if (!live() || !active(projectId, task)) return
+      if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
       for (const provider of providers) {
         const blocked = usageBlock(usage, provider, useStore.getState().usageSettings, Date.now())
         if (blocked) {
-          pauseAuto(projectId, task, blocked)
+          pause(blocked)
           return
         }
       }
     }
+    // Another worktree may have acquired the shared planner while this snapshot was pending.
+    if ((run.stage === 'plan' || run.stage === 'implement') && !plannerAvailable(projectId, task))
+      return
     // Guard against a manually launched competing agent.
     const competing = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
     if (competing) {
-      pauseAuto(projectId, task, 'Another agent is active in this worktree')
+      pause('Another agent is active in this worktree')
       return
     }
     // A fixed review/merge slot may still contain a manual agent, even after its turn.
@@ -1508,7 +1596,7 @@ async function drive(projectId: string, task: string | null) {
         (run.stage === 'merge' && a.stage === 'merge'),
     )
     if (occupied) {
-      pauseAuto(projectId, task, 'Close the current agent before starting another in this slot')
+      pause('Close the current agent before starting another in this slot')
       return
     }
     const since = Date.now()
@@ -1526,12 +1614,12 @@ async function drive(projectId: string, task: string | null) {
         turnSince: since,
         launchAtMs: since,
         observedWorking: false,
-        planMark: run.stage === 'plan' ? snapshot.planMark : run.planMark,
       },
       `Starting ${STAGE_LABELS[run.stage]}${run.stage === 'fix' ? ` round ${run.round + 1}` : ''}`,
     )
-    if (!live() || !active(projectId, task)) return
+    if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
     controller.phase = 'launching'
+    const presentation = run.background || projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow'
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(deviceId, projectId)
@@ -1539,14 +1627,12 @@ async function drive(projectId: string, task: string | null) {
         launchingSessions.set(sid, key)
         reservedSession = sid
         if (useStore.getState().sessions[sid]?.running) {
-          pauseAuto(
-            projectId,
-            task,
-            'Close the current planner before starting another in this slot',
-          )
+          pause('Close the current planner before starting another in this slot')
           return
         }
-        if (!live() || !active(projectId, task)) return
+        if (!live() || !driveable(projectId, task)) return
+        patch(projectId, task, { plannerTurn: true, planMark: snapshot.planMark })
+        launching = true
         await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
           kickoff: { kind: 'plan' },
           auto: brief,
@@ -1554,16 +1640,17 @@ async function drive(projectId: string, task: string | null) {
         break
       case 'implement':
         // The planner whose plan is accepted is the plan stage's; the implement agent may differ.
+        patch(projectId, task, { plannerTurn: true })
+        launching = true
         sid = (
-          await implementPlannerPlan(
-            agentFor(run, 'plan'),
-            brief,
-            deviceId,
-            projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow',
-          )
+          await implementPlannerPlan(agentFor(run, 'plan'), brief, deviceId, presentation, {
+            projectId,
+            task,
+          })
         ).sessionId
         break
       case 'review': {
+        launching = true
         const started = await startReviewAgents(
           project,
           { worktree: snapshot.source.path, branch: snapshot.source.branch!, base: snapshot.base },
@@ -1578,14 +1665,13 @@ async function drive(projectId: string, task: string | null) {
       }
       case 'fix':
         if (!snapshot.reviewRecord)
-          throw new Error('Open findings and start a review before fixing')
+          throw new AutoConfigurationError('Open findings and start a review before fixing')
+        launching = true
         sid = (
-          await fixReviewFindings(
-            snapshot.reviewRecord,
-            brief,
-            deviceId,
-            projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow',
-          )
+          await fixReviewFindings(snapshot.reviewRecord, brief, deviceId, presentation, {
+            projectId,
+            task,
+          })
         ).sessionId
         // A refused launch rejects; one that returned may be running even if confirming it fails,
         // so it uses up its round now.
@@ -1593,6 +1679,7 @@ async function drive(projectId: string, task: string | null) {
           patch(projectId, task, { round: run.round + 1 })
         break
       case 'merge':
+        launching = true
         sid = await startMergeAgent(
           project,
           mergeRequest(snapshot, run),
@@ -1634,8 +1721,11 @@ async function drive(projectId: string, task: string | null) {
         kickoff: run.stage === 'plan' ? { kind: 'plan' } : undefined,
       },
       turnSince: since,
-      ...(reviewErrors.length
-        ? { status: 'paused', reason: `Some reviewers didn't start: ${reviewErrors.join('; ')}` }
+      ...(reviewErrors.length && latest.status !== 'paused'
+        ? {
+            status: 'paused',
+            reason: `Some reviewers didn't start: ${reviewErrors.join('; ')}`,
+          }
         : {}),
     })
   } catch (e) {
@@ -1646,11 +1736,20 @@ async function drive(projectId: string, task: string | null) {
         (latest.status === 'waitingOnYou' && latest.stage === 'mergeGate'))
     ) {
       // Checking the run's branch out again and resuming continues it.
-      if (e instanceof BranchMoved) pauseAuto(projectId, task, e.message)
+      if (
+        e instanceof BranchMoved ||
+        e instanceof AutoConfigurationError ||
+        e instanceof AutoHooksRequired
+      )
+        pause(e.message)
       // A session someone else started in the slot, perhaps one whose launch reply was lost.
-      else if (String(e).includes(TERMINAL_RUNNING))
-        pauseAuto(projectId, task, 'Close the current agent in this slot, then Resume')
-      else patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
+      else if (String(e).includes(TERMINAL_RUNNING)) {
+        if (latest.stage === 'plan' && !initial.plannerTurn && !initial.sessionId)
+          patch(projectId, task, { plannerTurn: false, planMark: undefined })
+        pause('Close the current agent in this slot, then Resume')
+      } else if (launching)
+        patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
+      else pause(String(e), 'interrupted')
     }
   } finally {
     if (reservedSession && launchingSessions.get(reservedSession) === key)

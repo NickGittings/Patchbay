@@ -1,5 +1,5 @@
 import { updateStory } from './stories'
-import { useStore } from '../store'
+import { projectOf, projectStateOf, useStore } from '../store'
 import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, planWrite, proposalApply, proposalRead, terminalStop } from './ipc'
 import { roleDevice } from './agentRoles'
@@ -8,8 +8,10 @@ import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
+export type HandoffTarget = { projectId: string; task: string | null }
+
 /**
- * Accept the project's plan into the active worktree and launch a fresh agent there: `deviceId`
+ * Accept the project's plan into the target (default: active) worktree and launch an agent: `deviceId`
  * (Auto's implement agent), else the project's implement role, else the planner's provider. The
  * planner belongs to the project, so the plan may have been written before the worktree existed.
  */
@@ -18,32 +20,40 @@ async function handoffPlannerPlan(
   auto?: import('../types').AutoBrief,
   deviceId?: string,
   presentation: 'stay' | 'follow' = 'follow',
+  target?: HandoffTarget,
 ) {
   const initial = useStore.getState()
-  const projectId = initial.project?.id
+  const projectId = target?.projectId ?? initial.project?.id
   if (!projectId) throw new Error('Open a project first')
-  const task = initial.activeTask
-  const story = initial.planStoryTerminal === plannerId ? initial.planStory : null
+  const state = projectStateOf(projectId)
+  if (!state) throw new Error('Open a project first')
+  const task = target ? target.task : initial.activeTask
+  const story = state.planStoryTerminal === plannerId ? state.planStory : null
   const device =
     (deviceId && agentDevices(initial.devices).find((d) => d.id === deviceId)) ||
     roleDevice(
       initial.devices,
-      initial.agentRoles,
+      state.agentRoles,
       'implement',
       plannerDevice(initial.devices, plannerId),
     )
   const current = () => {
     const s = useStore.getState()
-    if (s.project?.id !== projectId || s.activeTask !== task)
+    if (!target && (s.project?.id !== projectId || s.activeTask !== task))
       throw new Error('The task changed. Choose Implement in the task you want to work on.')
-    return s
+    const state = projectStateOf(projectId, s)
+    if (!state) throw new Error('Open the project first')
+    return state
   }
   await savePlanDraft(projectId, null)
   const proposal = await proposalRead(projectId)
   current()
   if (proposal) {
-    const ids = await proposalApply(current().toProject(), undefined, proposal, task ?? undefined)
-    current().patchTask(projectId, task, {
+    const project = projectOf(projectId)
+    if (!project) throw new Error('Open the project first')
+    const ids = await proposalApply(project, undefined, proposal, task ?? undefined)
+    current()
+    useStore.getState().patchTask(projectId, task, {
       highlighted: ids,
       implementationComponents: ids.map((id) => ({ id, visible: true })),
     })
@@ -61,14 +71,14 @@ async function handoffPlannerPlan(
     throw new Error(
       'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Settings → Agent status integration.',
     )
-  current()
   // Accepting a plan ends its planner, including one Auto took over manually.
   const sid = plannerSessionId(plannerId, projectId)
-  if (current().sessions[sid]?.running) await terminalStop(sid)
+  current()
+  if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
-  const terminalId = s.addRootTerminal(device)
+  const terminalId = useStore.getState().addRootTerminal(device, target)
   const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
     kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
     auto,
@@ -100,13 +110,14 @@ export async function implementPlannerPlan(
   auto?: import('../types').AutoBrief,
   deviceId?: string,
   presentation: 'stay' | 'follow' = 'follow',
+  target?: HandoffTarget,
 ) {
-  const projectId = useStore.getState().project?.id
+  const projectId = target?.projectId ?? useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
   handingOff.add(projectId)
   try {
-    return await handoffPlannerPlan(plannerId, auto, deviceId, presentation)
+    return await handoffPlannerPlan(plannerId, auto, deviceId, presentation, target)
   } finally {
     handingOff.delete(projectId)
   }
