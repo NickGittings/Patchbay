@@ -175,7 +175,7 @@ fn login_path() -> std::ffi::OsString {
     })
     .clone()
 }
-fn find_program(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+pub(crate) fn find_program(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let p = Path::new(program);
     if p.is_absolute() {
         return executable(p).then(|| p.to_path_buf());

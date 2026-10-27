@@ -349,6 +349,42 @@ async fn agent_hooks_configure(
     .await
 }
 
+#[tauri::command]
+async fn usage_read(window: WebviewWindow) -> CmdResult<patchbay_core::usage::Usage> {
+    main_only(&window)?;
+    blocking(|| Ok(patchbay_core::usage::read(patchbay_core::pty::now_ms()))).await
+}
+
+#[tauri::command]
+async fn usage_status_line_check(
+    window: WebviewWindow,
+    source_override: Option<PathBuf>,
+) -> CmdResult<patchbay_core::usage::StatusLine> {
+    main_only(&window)?;
+    blocking(move || {
+        patchbay_core::usage::inspect_status_line(source_override.as_deref()).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn usage_status_line_configure(
+    window: WebviewWindow,
+    source_override: Option<PathBuf>,
+    install: bool,
+) -> CmdResult<patchbay_core::usage::StatusLine> {
+    main_only(&window)?;
+    blocking(move || {
+        patchbay_core::usage::configure_status_line(
+            source_override.as_deref(),
+            &service::helper(),
+            install,
+        )
+        .map_err(err)
+    })
+    .await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Opened {
@@ -2376,6 +2412,9 @@ pub fn run() {
                 agent_provider,
                 agent_hooks_check,
                 agent_hooks_configure,
+                usage_read,
+                usage_status_line_check,
+                usage_status_line_configure,
                 open_project,
                 rescan_project,
                 detect_links,

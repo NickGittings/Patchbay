@@ -8,6 +8,7 @@ import { useSimpleData } from './lib/useSimpleData'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import SimpleChat from './components/SimpleChat'
 import { followNotifications } from './lib/notifications'
+import { followUsage } from './lib/usage'
 import PersistedGroup from './components/PersistedGroup'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
@@ -192,6 +193,7 @@ function AppWorkspace() {
     const stopTasks = followActiveTask()
     const stopAuto = followAuto()
     const stopNotifications = followNotifications()
+    const stopUsage = followUsage()
     const stopDependencies = initializeDependencyDetection()
     const stopStack = initializeStackProposals()
     return () => {
@@ -201,6 +203,7 @@ function AppWorkspace() {
       stopTasks()
       stopAuto()
       stopNotifications()
+      stopUsage()
       stopDependencies()
       stopStack()
     }

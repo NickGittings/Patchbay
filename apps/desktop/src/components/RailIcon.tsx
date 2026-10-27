@@ -9,6 +9,7 @@ const paths: Record<string, string> = {
   auto: 'M19 8a8 8 0 1 0 1 8 M19 3v6h-6 M12 8v4l3 2',
   activity: 'M3 12h4l3-8 4 16 3-8h4',
   stack: 'm12 3 9 5-9 5-9-5Z M3 13l9 5 9-5 M3 17l9 5 9-5',
+  usage: 'M4 18a9 9 0 1 1 16 0 M12 13l5-5 M6 18h12 M5 10l2 1 M12 4v3 M19 10l-2 1',
   sessions: 'M3 4h18v16H3Z M3 9h18 M8 9v11',
   settings: 'M9 3h6l1 4 4 1v8l-4 1-1 4H9l-1-4-4-1V8l4-1Z M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0',
 }

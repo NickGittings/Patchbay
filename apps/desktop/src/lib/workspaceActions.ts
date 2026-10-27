@@ -146,12 +146,12 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       enabled: available,
       run: () => useStore.getState().setSimpleMode(!useStore.getState().simpleMode),
     },
-    ...(['project', 'worktree', 'auto', 'activity', 'stack', 'sessions'] as const).map(
+    ...(['project', 'worktree', 'auto', 'activity', 'stack', 'sessions', 'usage'] as const).map(
       (panel): WorkspaceAction => ({
         id: `panel-${panel}`,
         title: `Open ${panel === 'auto' ? 'Auto mode' : panel} panel`,
         group: 'workspace',
-        enabled: available || panel === 'project' || panel === 'sessions',
+        enabled: available || panel === 'project' || panel === 'sessions' || panel === 'usage',
         run: () => selectPanel(panel),
       }),
     ),

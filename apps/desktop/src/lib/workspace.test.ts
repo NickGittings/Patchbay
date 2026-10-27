@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { MAX_SUBAGENTS, MIN_SUBAGENTS, SUBAGENT_COUNTS } from '../types'
+import { DEFAULT_USAGE, MAX_SUBAGENTS, MIN_SUBAGENTS, SUBAGENT_COUNTS } from '../types'
 import { SIMPLE_VERSION } from './simple'
 vi.mock('./ipc', () => ({ quitPatchbay: vi.fn(), workspaceLoad: vi.fn(), workspaceSave: vi.fn() }))
 vi.mock('./windows', () => ({ openComponentWindow: vi.fn() }))
@@ -110,10 +110,16 @@ test('Auto persists per worktree without dirtying the map and restores paused', 
 })
 
 test('notification settings stay global, persist without projects and never dirty the map', () => {
-  const settings = { enabled: false, finished: true, needsInput: false, failed: true }
+  const settings = {
+    enabled: false,
+    finished: true,
+    needsInput: false,
+    failed: true,
+    usageLimits: true,
+  }
   expect(useStore.getState().dirty).toBe(false)
   useStore.getState().setNotifications(settings)
-  expect(workspaceDocument().settings).toEqual({ notifications: settings })
+  expect(workspaceDocument().settings).toEqual({ notifications: settings, usage: DEFAULT_USAGE })
   expect(useStore.getState().dirty).toBe(false)
   expect(workspaceDocument().projects[0].layout).not.toHaveProperty('notifications')
   useStore.getState().loadProject({
@@ -127,7 +133,7 @@ test('notification settings stay global, persist without projects and never dirt
   expect(useStore.getState().notifications).toEqual(settings)
   useStore.getState().closeProject('second')
   useStore.getState().closeProject('p')
-  expect(workspaceDocument().settings).toEqual({ notifications: settings })
+  expect(workspaceDocument().settings).toEqual({ notifications: settings, usage: DEFAULT_USAGE })
 })
 
 test('saving notifications retains opaque workspace settings', () => {
@@ -139,7 +145,11 @@ test('saving notifications retains opaque workspace settings', () => {
   useStore.setState({ workspaceSettings })
   const notifications = { ...useStore.getState().notifications, needsInput: false }
   useStore.getState().setNotifications(notifications)
-  expect(workspaceDocument().settings).toEqual({ ...workspaceSettings, notifications })
+  expect(workspaceDocument().settings).toEqual({
+    ...workspaceSettings,
+    notifications,
+    usage: DEFAULT_USAGE,
+  })
   expect(workspaceSettings.notifications).toEqual({ enabled: false })
 })
 
@@ -299,4 +309,14 @@ test('story board and planner story persist per project, outside task layouts an
   expect(useStore.getState().storyBoard).toBe(false)
   useStore.getState().activateProject('p')
   expect(useStore.getState().storyBoard).toBe(true)
+})
+
+test('usage thresholds persist without projects and never dirty the map', () => {
+  const usage = { warnPercent: 75, pausePercent: 90, gateAuto: false }
+  useStore.getState().setUsageSettings(usage)
+  expect(workspaceDocument().settings?.usage).toEqual(usage)
+  expect(useStore.getState().dirty).toBe(false)
+  expect(workspaceDocument().projects[0].layout).not.toHaveProperty('usage')
+  useStore.getState().closeProject('p')
+  expect(workspaceDocument().settings?.usage).toEqual(usage)
 })

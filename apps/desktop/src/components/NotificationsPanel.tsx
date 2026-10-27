@@ -37,13 +37,14 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
       </p>
       <fieldset disabled={!settings.enabled}>
         <legend title="Turn ends require Agent status integration. Auto notifies when waiting on you or failing. Background alerts use a toast while Patchbay is focused, otherwise native notifications.">
-          Notify when an agent
+          Notify about
         </legend>
         {(
           [
-            ['finished', 'Finished a turn'],
-            ['needsInput', 'Needs input'],
-            ['failed', 'Failed'],
+            ['finished', 'Finished turns'],
+            ['needsInput', 'Input requests'],
+            ['failed', 'Agent failures'],
+            ['usageLimits', 'Subscription usage limits'],
           ] as const
         ).map(([key, label]) => (
           <p key={key}>

@@ -10,6 +10,7 @@ import {
   type Worktree,
 } from '../types'
 vi.mock('./ipc', () => ({
+  usageRead: vi.fn().mockResolvedValue(null),
   agentHooksCheck: vi.fn(),
   agentProvider: vi.fn(),
   gitBranches: vi.fn(),
@@ -284,6 +285,13 @@ function load() {
     serviceConnected: true,
   })
   useStore.getState().setActiveTask('t')
+  vi.mocked(ipc.usageRead).mockResolvedValue({
+    claude: null,
+    codex: null,
+    claudeCapture: { installed: false, source: '/settings.json', chained: null },
+    claudeError: null,
+    codexError: null,
+  })
   vi.mocked(ipc.terminalStop).mockResolvedValue(undefined)
   vi.mocked(ipc.agentProvider).mockResolvedValue('codex')
   vi.mocked(ipc.agentHooksCheck).mockResolvedValue({
@@ -3687,3 +3695,61 @@ test('plan marks remain compatible with paused runs saved before proposal timest
   const changed = await autoSnapshot('p', 't', planning)
   expect(inferStage(changed, { ...planning, planMark: old.planMark }).stage).toBe('implement')
 })
+
+test.each(['reset', 'threshold', 'disable'] as const)(
+  'usage gate pauses before parallel reviewers launch and rechecks on resume (%s)',
+  async (resume) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    const codex = useStore.getState().devices[0]
+    useStore.setState({
+      devices: [
+        codex,
+        { ...codex, id: 'claude', name: 'Claude', command: 'claude', adapter: 'claude' },
+      ],
+    })
+    vi.mocked(ipc.agentProvider).mockImplementation(async (d) =>
+      d.adapter === 'claude' ? 'claude' : 'codex',
+    )
+    const data = {
+      claude: {
+        provider: 'claude' as const,
+        fiveHour: null,
+        weekly: { usedPercent: 96, resetsAtMs: 2000, windowMinutes: 10080 },
+        observedMs: 1000,
+      },
+      codex: null,
+      claudeCapture: { installed: true, chained: null, source: '/settings.json' },
+      claudeError: null,
+      codexError: null,
+    }
+    vi.mocked(ipc.usageRead).mockResolvedValue(data)
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
+      useStore.setState({
+        sessions: { s: reviewSession('working'), lane: reviewSession('working') },
+      })
+      return request.lane === 'claude' ? 'lane' : 's'
+    })
+    const stop = followAuto()
+    try {
+      await startAuto('p', 't', { ...run(), effort: 'light', reviewers: ['codex', 'claude'] })
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'review' })
+      expect(autoRun('p', 't')?.reason).toMatch(/^Claude weekly limit is 96% used; resets /)
+      expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+      if (resume === 'reset') vi.setSystemTime(2000)
+      else
+        useStore.getState().setUsageSettings({
+          ...useStore.getState().usageSettings,
+          ...(resume === 'disable' ? { gateAuto: false } : { pausePercent: 100 }),
+        })
+      await resumeAuto('p', 't')
+      await flush()
+      expect(jobs.startReviewAgents).toHaveBeenCalledTimes(1)
+      expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
+    } finally {
+      stop()
+    }
+  },
+)

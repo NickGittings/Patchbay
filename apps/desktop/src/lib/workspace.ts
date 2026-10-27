@@ -1,3 +1,4 @@
+import { mergeRestoredUsage, restoredUsage } from './usageSettings'
 import {
   mergeRestoredNotifications,
   restoredNotifications,
@@ -44,7 +45,7 @@ export function workspaceDocument(): WorkspaceDocument {
     version: 1,
     activeProject: s.activeProjectId,
     windows: {},
-    settings: { ...s.workspaceSettings, notifications: s.notifications },
+    settings: { ...s.workspaceSettings, notifications: s.notifications, usage: s.usageSettings },
     projects: s.projectOrder.map((id) => {
       const p = projects[id]
       const state = p.state
@@ -237,6 +238,8 @@ export function restoredLayout(
 export function initializeWorkspace() {
   initialized ??= (async () => {
     // Settings changed during restore win over the saved ones and are saved once it ends.
+    const initialUsage = useStore.getState().usageSettings
+    let savedUsage: unknown
     const initialNotifications = useStore.getState().notifications
     const initialHookSources = useStore.getState().workspaceSettings.hookSources
     let restoredSettings: unknown
@@ -265,6 +268,7 @@ export function initializeWorkspace() {
     try {
       if (!loaded) return
       const { document, opened, errors } = loaded
+      savedUsage = document.settings?.usage
       restoredSettings = document.settings?.notifications
       savedHookSources = document.settings?.hookSources
       useStore.setState((s) => {
@@ -275,6 +279,7 @@ export function initializeWorkspace() {
           initialHookSources,
         )
         return {
+          usageSettings: mergeRestoredUsage(savedUsage, s.usageSettings, initialUsage),
           workspaceSettings: hookSources ? { ...settings, hookSources } : settings,
           notifications: mergeRestoredNotifications(
             restoredSettings,
@@ -372,6 +377,7 @@ export function initializeWorkspace() {
           s.stackDeclined === prev.stackDeclined &&
           s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
           s.notifications === prev.notifications &&
+          s.usageSettings === prev.usageSettings &&
           s.workspaceSettings === prev.workspaceSettings &&
           s.viewport === prev.viewport &&
           s.panels === prev.panels &&
@@ -389,6 +395,8 @@ export function initializeWorkspace() {
     })
     // The subscription above missed edits made while restoring.
     if (
+      JSON.stringify(useStore.getState().usageSettings) !==
+        JSON.stringify(restoredUsage(savedUsage)) ||
       !sameNotifications(
         useStore.getState().notifications,
         restoredNotifications(restoredSettings),

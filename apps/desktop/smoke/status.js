@@ -44,7 +44,36 @@
     const opened = await smoke.openProject()
     smoke.acceptOpened(opened)
     const id = state().nodes[0].id
-    const command = `while IFS= read -r event; do printf '{"hook_event_name":"%s","session_id":"12345678-conversation","turn_id":"12345678-turn"}' "$event" | ${quote(integration.reporter)} report-status codex; done`
+    smoke.selectPanel('usage')
+    await until('Usage panel', () => document.querySelector('[aria-label="Usage panel"]'))
+    const pauseAuto = await until('Pause Auto control', () =>
+      document.querySelector('.usage-controls input[type="checkbox"]'),
+    )
+    const previousSettings = state().usageSettings
+    // Simulate a blur committing a threshold immediately before the checkbox's change event.
+    state().setUsageSettings({ ...previousSettings, warnPercent: 75, pausePercent: 93 })
+    pauseAuto.click()
+    assert(
+      state().usageSettings.warnPercent === 75 &&
+        state().usageSettings.pausePercent === 93 &&
+        state().usageSettings.gateAuto === !previousSettings.gateAuto,
+      'Pause Auto overwrote a freshly committed threshold',
+    )
+    state().setUsageSettings(previousSettings)
+    await until('capture action', () =>
+      [...document.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Capture Claude usage',
+      ),
+    ).then((b) => b.click())
+    await until('capture installed', async () => (await smoke.usageStatusLineCheck()).installed)
+    const reset = Math.floor(Date.now() / 1000) + 7200
+    const usageInput = JSON.stringify({
+      rate_limits: {
+        five_hour: { used_percentage: 96, resets_at: reset },
+        seven_day: { used_percentage: 41, resets_at: reset + 86400 },
+      },
+    })
+    const command = `printf '%s' ${quote(usageInput)} | ${quote(integration.reporter)} status-line; while IFS= read -r event; do printf '{"hook_event_name":"%s","session_id":"12345678-conversation","turn_id":"12345678-turn"}' "$event" | ${quote(integration.reporter)} report-status codex; done`
     state().updateComponent(id, {
       terminals: [
         { id: 'reporter', name: 'Status fixture', command, kind: 'agent', adapter: 'codex' },
@@ -52,6 +81,31 @@
     })
     await smoke.startTerminal(id, 'reporter')
     const sid = smoke.sessionId(id, 'reporter')
+    await until(
+      'captured Claude usage',
+      async () => (await smoke.refreshUsage())?.claude?.fiveHour?.usedPercent === 96,
+    )
+    await until(
+      'usage bars',
+      () => document.querySelector('[aria-label="Claude 5-hour usage"]')?.value === 96,
+    )
+    assert(
+      document.querySelector('[aria-label="Usage limit warning"]'),
+      'Rail usage warning is missing',
+    )
+    assert(
+      (await smoke.usageRead()).claude.weekly.usedPercent === 41,
+      'Weekly Claude usage was not captured',
+    )
+    await until('usage warning toast', () =>
+      state().notificationToast?.message?.includes('Claude 5-hour limit is 96% used'),
+    )
+    await smoke.usageStatusLineConfigure(false)
+    assert(
+      !(await smoke.usageStatusLineCheck()).installed,
+      'Capture removal left the status line installed',
+    )
+    smoke.selectPanel(null)
     const agent = () => state().sessions[sid]?.status?.agent
     for (const [event, expected] of [
       ['UserPromptSubmit', 'working'],
@@ -91,7 +145,7 @@
     await smoke.stopTerminal(id, 'reporter')
     await smoke.agentHooksConfigure('codex', false)
     await smoke.report(
-      'PASS status hooks: native setup/removal, preserved existing sources, portable reporter, authoritative quiet work, permission/review/end, subagent and late-turn guards, setup UI',
+      'PASS status hooks: usage capture/panel/badge/warning/removal, native setup/removal, preserved existing sources, portable reporter, authoritative quiet work, permission/review/end, subagent and late-turn guards, setup UI',
     )
   } catch (error) {
     await smoke.report(`FAIL status hooks: ${error.message ?? error} ${error.stack ?? ''}`)

@@ -159,7 +159,7 @@ pub fn component_context(
 }
 
 /// Single-quote a string for POSIX shells.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
@@ -229,6 +229,11 @@ fn command_tokens(command: &str, shell: Shell) -> Option<Vec<String>> {
         return None;
     }
     Some(tokens)
+}
+
+/// POSIX words of a simple command, or `None` for a compound one.
+pub(crate) fn sh_words(command: &str) -> Option<Vec<String>> {
+    sh_tokens(command, false)
 }
 
 fn sh_tokens(command: &str, raw: bool) -> Option<Vec<String>> {

@@ -1,4 +1,6 @@
 import RailIcon from './RailIcon'
+import UsagePanel from './UsagePanel'
+import { useUsage, usageWarnings } from '../lib/usage'
 import { useClockTick } from '../lib/clock'
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -41,6 +43,7 @@ const utilities: Record<UtilityPanel, { label: string }> = {
   activity: { label: 'Activity' },
   stack: { label: 'Stack' },
   sessions: { label: 'Sessions' },
+  usage: { label: 'Usage' },
 }
 function initialWidth() {
   try {
@@ -51,6 +54,11 @@ function initialWidth() {
 }
 export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] }) {
   useClockTick()
+  const usage = useUsage((s) => s.usage)
+  const usageSettings = useStore((s) => s.usageSettings)
+  // Relative usage windows advance with the shared clock tick.
+  // oxlint-disable-next-line react/purity
+  const usageWarning = usageWarnings(usage, usageSettings, Date.now()).length > 0
   useTaskActivities()
   const panel = useStore((s) => s.utilityPanel)
   const settings = useRail((s) => s.settings)
@@ -75,7 +83,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const panelSubtitle = (id: UtilityPanel) =>
     id === 'project'
       ? (project?.name ?? entry?.name ?? 'No project')
-      : id === 'sessions'
+      : id === 'sessions' || id === 'usage'
         ? 'All projects'
         : `${project?.name ?? 'No project'} · ${worktreeName}`
   const subtitle = panel ? panelSubtitle(panel) : ''
@@ -133,10 +141,13 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         aria-description={status}
         aria-pressed={panel === id}
         title={`${label}: ${name}${status ? ` · ${status}` : ''}`}
-        disabled={!project && id !== 'project' && id !== 'sessions'}
+        disabled={!project && id !== 'project' && id !== 'sessions' && id !== 'usage'}
         onClick={() => togglePanel(id)}
       >
         <RailIcon name={id} />
+        {id === 'usage' && usageWarning && (
+          <span className="rail-status usage-dot" aria-label="Usage limit warning" />
+        )}
         {status && id !== 'project' && (
           <span
             className="rail-status"
@@ -193,6 +204,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         {utility('activity')}
         {utility('stack')}
         {utility('sessions')}
+        {utility('usage')}
         <span className="spacer" />
         {!isMac && (
           <Menu
@@ -285,7 +297,8 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                   </>
                 )}
                 {panel === 'stack' && project && <StackPanel key={project.id} />}
-                {!project && !['project', 'sessions'].includes(panel) && (
+                {panel === 'usage' && <UsagePanel />}
+                {!project && !['project', 'sessions', 'usage'].includes(panel) && (
                   <p>Open a project to use {utilities[panel].label}.</p>
                 )}
               </PanelContent>

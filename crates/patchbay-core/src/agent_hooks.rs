@@ -414,17 +414,27 @@ pub struct Integration {
 /// # Errors
 /// Fails for relative override directories or missing home.
 pub fn user_source(provider: Adapter) -> Result<PathBuf> {
-    let home = dirs::home_dir().context("No home directory")?;
-    let (variable, default, file) = match provider {
-        Adapter::Claude => ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
-        Adapter::Codex => ("CODEX_HOME", ".codex", "hooks.json"),
-    };
-    let dir = std::env::var_os(variable).map_or_else(|| home.join(default), PathBuf::from);
-    anyhow::ensure!(dir.is_absolute(), "{variable} must be absolute");
+    let dir = user_dir(provider)?;
     if provider == Adapter::Codex {
         return codex_source(&dir);
     }
-    Ok(dir.join(file))
+    Ok(dir.join("settings.json"))
+}
+
+/// The provider's effective user directory (`CLAUDE_CONFIG_DIR`/`CODEX_HOME` or the default),
+/// without reading any configuration in it.
+///
+/// # Errors
+/// Fails for relative override directories or missing home.
+pub(crate) fn user_dir(provider: Adapter) -> Result<PathBuf> {
+    let home = dirs::home_dir().context("No home directory")?;
+    let (variable, default) = match provider {
+        Adapter::Claude => ("CLAUDE_CONFIG_DIR", ".claude"),
+        Adapter::Codex => ("CODEX_HOME", ".codex"),
+    };
+    let dir = std::env::var_os(variable).map_or_else(|| home.join(default), PathBuf::from);
+    anyhow::ensure!(dir.is_absolute(), "{variable} must be absolute");
+    Ok(dir)
 }
 
 // Codex persists trust in config.toml even when definitions live in hooks.json.
@@ -453,7 +463,7 @@ fn codex_source(dir: &Path) -> Result<PathBuf> {
     Ok(dir.join("hooks.json"))
 }
 
-fn stable_reporter() -> Result<PathBuf> {
+pub(crate) fn stable_reporter() -> Result<PathBuf> {
     Ok(crate::workspace::home()?
         .join("reporters")
         .join(if cfg!(windows) {
@@ -463,14 +473,14 @@ fn stable_reporter() -> Result<PathBuf> {
         }))
 }
 
-fn read_optional(path: &Path) -> Result<String> {
+pub(crate) fn read_optional(path: &Path) -> Result<String> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e.into()),
     }
 }
-fn read_json(path: &Path, provider: Adapter) -> Result<Value> {
+pub(crate) fn read_json(path: &Path, provider: Adapter) -> Result<Value> {
     let text = read_optional(path)?;
     let value = if text.is_empty() {
         anyhow::ensure!(
@@ -716,10 +726,7 @@ pub fn configure(
 ) -> Result<Integration> {
     let source = source_override.map_or_else(|| user_source(provider), |p| Ok(p.to_owned()))?;
     anyhow::ensure!(source.is_absolute(), "Hook source must be absolute");
-    let state = crate::workspace::home()?.join("reporters");
-    crate::workspace::private_dir(&state)?;
-    let lock = crate::workspace::lock(&state.join("setup.lock"))?;
-    lock.lock()?;
+    let _lock = setup_lock()?;
     inspect(provider, Some(&source))?;
     let before = read_optional(&source)?;
     let reporter = stable_reporter()?;
@@ -731,11 +738,7 @@ pub fn configure(
     };
     // Validate configuration before deploying the helper or changing its source.
     if install {
-        anyhow::ensure!(
-            helper.is_file(),
-            "Packaged status reporter is missing. Reinstall or rebuild Patchbay."
-        );
-        atomic_replace(&reporter, &std::fs::read(helper)?, true)?;
+        deploy_helper(helper, &reporter)?;
     }
     anyhow::ensure!(
         read_optional(&source)? == before,
@@ -747,8 +750,24 @@ pub fn configure(
     inspect(provider, Some(&source))
 }
 
+pub(crate) fn setup_lock() -> Result<std::fs::File> {
+    let state = crate::workspace::home()?.join("reporters");
+    crate::workspace::private_dir(&state)?;
+    let lock = crate::workspace::lock(&state.join("setup.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+pub(crate) fn deploy_helper(helper: &Path, reporter: &Path) -> Result<()> {
+    anyhow::ensure!(
+        helper.is_file(),
+        "Packaged status reporter is missing. Reinstall or rebuild Patchbay."
+    );
+    atomic_replace(reporter, &std::fs::read(helper)?, true)
+}
+
 /// Atomic replacement without changing provider directory permissions.
-fn atomic_replace(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
+pub(crate) fn atomic_replace(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         anyhow::ensure!(
             !meta.file_type().is_symlink() && meta.is_file(),
