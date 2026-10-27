@@ -20,9 +20,10 @@ use std::time::{Duration, Instant};
 mod briefing;
 pub use briefing::with_pending_briefing;
 
-// Snapshots and live events retain tool activity; Prompt pastes and submits a chat message for one
-// generation. 9 meant either this or SessionSpec.rerun_on_resume, depending on the build.
-pub const PROTOCOL: u32 = 10;
+// Snapshots and live events retain final assistant replies as well as tool activity.
+// Protocol 10 added activity and generation-bound prompt delivery; 12 names each live reply's
+// predecessor.
+pub const PROTOCOL: u32 = 12;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -316,6 +317,9 @@ pub enum Request {
     },
     Snapshot {
         id: String,
+        /// Maximum output bytes; zero retains replies and lifecycle only.
+        #[serde(default)]
+        output_limit: Option<usize>,
     },
     /// The local URLs a session printed, scanned here so its output never crosses the wire.
     PreviewUrls {
@@ -871,9 +875,22 @@ impl Service {
             .clone()
     }
     fn snapshot(&self, id: &str) -> Option<Snapshot> {
-        self.pty
-            .snapshot(id)
-            .or_else(|| self.records.lock().unwrap().get(id)?.snapshot.clone())
+        self.snapshot_with(id, usize::MAX)
+    }
+    fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
+        self.pty.snapshot_with(id, limit).or_else(|| {
+            let records = self.records.lock().unwrap();
+            let s = records.get(id)?.snapshot.as_ref()?;
+            Some(Snapshot {
+                data: s.data[s.data.len().saturating_sub(limit)..].to_vec(),
+                launch_directory: s.launch_directory.clone(),
+                notice: s.notice.clone(),
+                status: s.status.clone(),
+                activity: s.activity.clone(),
+                replies: s.replies.clone(),
+                ..*s
+            })
+        })
     }
     /// Every record with its live snapshot, output included, for persistence.
     fn list(&self) -> Vec<Record> {
@@ -894,6 +911,10 @@ impl Service {
             data: Vec::new(),
             notice: s.notice.clone(),
             status: s.status.clone(),
+            replies: Vec::new(),
+            last_reply: s
+                .last_reply
+                .or_else(|| s.replies.last().map(|r| r.sequence)),
             activity: if include_activity {
                 s.activity.clone()
             } else {
@@ -923,8 +944,10 @@ impl Service {
                     spec,
                     snapshot: self
                         .pty
-                        .snapshot_with(&r.id, 0)
-                        .or_else(|| r.snapshot.as_ref().map(|s| bare(s, true))),
+                        .summary(&r.id)
+                        .as_ref()
+                        .or(r.snapshot.as_ref())
+                        .map(|s| bare(s, true)),
                     history: r.history.iter().map(|s| bare(s, false)).collect(),
                     launch_command: String::new(),
                     restart_context: None,
@@ -1464,7 +1487,9 @@ impl Service {
                 metadata,
                 spec,
             } => serde_json::to_value(self.restart(request_id, *metadata, spec)?)?,
-            Request::Snapshot { id } => serde_json::to_value(self.snapshot(&id))?,
+            Request::Snapshot { id, output_limit } => {
+                serde_json::to_value(self.snapshot_with(&id, output_limit.unwrap_or(usize::MAX)))?
+            }
             Request::PreviewUrls { id } => {
                 serde_json::to_value(self.snapshot(&id).map(|s| PreviewScan {
                     generation: s.generation,
@@ -4540,6 +4565,8 @@ mod tests {
             exited_ms: Some(1),
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
+            replies: Vec::new(),
+            last_reply: None,
             notice: None,
         };
         assert_eq!(restart_conversation(Adapter::Claude, &snapshot), None);
@@ -4645,7 +4672,7 @@ mod tests {
     }
 
     #[test]
-    fn summaries_keep_current_activity_without_copying_history_logs() {
+    fn summaries_keep_current_activity_and_only_the_latest_reply_sequence() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
@@ -4654,7 +4681,8 @@ mod tests {
             "exitCode": 0, "startedMs": 1, "exitedMs": 2, "truncated": false,
             "status": crate::status::SessionStatus::default(), "notice": null,
             "activity": [{"sequence": 1, "atMs": 1, "tool": "Read",
-                "target": "src/main.rs", "fileTarget": true, "turn": null}]
+                "target": "src/main.rs", "fileTarget": true, "turn": null}],
+            "replies": [{"sequence": 4, "atMs": 1, "turn": null, "text": "Done."}]
         });
         let record: Record = serde_json::from_value(serde_json::json!({
             "id": "s", "metadata": {"projectId": "p", "projectName": "P",
@@ -4667,10 +4695,20 @@ mod tests {
         }))
         .unwrap();
         service.records.lock().unwrap().insert("s".into(), record);
+        let replies_only = service.snapshot_with("s", 0).unwrap();
+        assert!(replies_only.data.is_empty());
+        assert_eq!(replies_only.replies.len(), 1);
         let summary = service.summaries().pop().unwrap();
-        assert_eq!(summary.snapshot.unwrap().activity.len(), 1);
+        let current = summary.snapshot.unwrap();
+        assert_eq!(current.activity.len(), 1);
+        assert!(current.replies.is_empty());
+        assert_eq!(current.last_reply, Some(4));
         assert!(summary.history[0].activity.is_empty());
         assert_eq!(service.list()[0].history[0].activity.len(), 1);
+        assert_eq!(
+            service.list()[0].snapshot.as_ref().unwrap().replies.len(),
+            1
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4688,6 +4726,8 @@ mod tests {
             exited_ms: None,
             status: crate::status::SessionStatus::default(),
             activity: Vec::new(),
+            replies: Vec::new(),
+            last_reply: None,
             notice: None,
         };
         let mut history: Vec<_> = (0..10).map(snapshot).collect();

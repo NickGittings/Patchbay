@@ -160,6 +160,7 @@ fn load(root: &Path, task: Option<&str>) -> Result<Option<Saved>> {
 pub struct Plan {
     pub text: String,
     pub cut: bool,
+    pub saved_ms: Option<u64>,
 }
 
 /// The saved plan, cut at [`PLAN_LIMIT`].
@@ -171,10 +172,15 @@ pub fn read(root: &Path, task: Option<&str>) -> Result<Plan> {
         || Plan {
             text: String::new(),
             cut: false,
+            saved_ms: None,
         },
         |saved| Plan {
             text: saved.text,
             cut: saved.cut,
+            saved_ms: saved
+                .modified
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .and_then(|d| u64::try_from(d.as_millis()).ok()),
         },
     ))
 }
@@ -461,10 +467,22 @@ mod tests {
     fn plans_round_trip_per_task() {
         let Some(root) = repo() else { return };
         assert_eq!(read(&root, None).unwrap().text, "");
+        assert_eq!(read(&root, None).unwrap().saved_ms, None);
         assert!(section(&root, None).is_none());
         write(&root, None, "1. do it").unwrap();
         write(&root, Some("t1"), "task plan").unwrap();
         assert_eq!(read(&root, None).unwrap().text, "1. do it");
+        let expected = std::fs::metadata(plan_file(&root, None).unwrap())
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        assert_eq!(
+            u128::from(read(&root, None).unwrap().saved_ms.unwrap()),
+            expected
+        );
         assert_eq!(read(&root, Some("t1")).unwrap().text, "task plan");
         let file = plan_file(&root, None).unwrap();
         assert!(file.starts_with(root.join(".git")));

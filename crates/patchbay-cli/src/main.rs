@@ -354,7 +354,10 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
     loop {
         let batch: Batch = client.call(Request::Poll { after })?;
         if batch.gap {
-            let snapshot: Option<Snapshot> = client.call(Request::Snapshot { id: id.into() })?;
+            let snapshot: Option<Snapshot> = client.call(Request::Snapshot {
+                id: id.into(),
+                output_limit: None,
+            })?;
             if let Some(s) = snapshot {
                 let start = s.end.saturating_sub(s.data.len() as u64);
                 let covered = usize::try_from(end.saturating_sub(start))?.min(s.data.len());

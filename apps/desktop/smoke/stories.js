@@ -201,12 +201,30 @@
       state().planStory === story.id && state().planStoryTerminal === fake.id,
       'story Restart context was not retained',
     )
-    // Accept this planner's plan in a real worktree and check the story link.
+    // A plain start begins general planning and clears the pending story.
+    await smoke.terminalStop(sid)
+    await until('planner stopped', () => !state().sessions[sid]?.running)
+    await smoke.startTerminal('@plan', fake.id, null, projectId)
+    assert(
+      state().planStory === null && state().planStoryTerminal === null,
+      'plain planner start retained the old story',
+    )
+    state().setView('navigation')
+    await until('board for worktree creation', () => query('.story-board'))
+    chooseCard(story.title)
+    click(await until('New worktree story action', () => button('.story-editor', 'New worktree')))
+    await until('story worktree dialog', () => state().newTask?.title === story.title)
     const task = await smoke.createTask({
       title: 'Story smoke build',
       branch: 'story-smoke-build',
       components: [component.id],
     })
+    state().setNewTask(null)
+    await until(
+      'story linked at worktree creation',
+      () => state().stories.find((s) => s.id === story.id)?.task === task.id,
+    )
+    state().setView('plan')
     click(
       await until('Implement in worktree', () =>
         [...document.querySelectorAll('.plan-implement button')].find((b) =>
@@ -218,6 +236,12 @@
       'story linked to implementation',
       () => state().stories.find((s) => s.id === story.id)?.task === task.id,
     )
+    await until('implementation session recorded', async () => {
+      await smoke.reconcileSessions()
+      return state().sessionRecords.some(
+        (r) => r.metadata.task === task.id && r.metadata.componentId === '@task',
+      )
+    })
     state().setView('navigation')
     await until('board after Plan', () => query('.story-board'))
     await until('Building card', () =>
@@ -226,6 +250,27 @@
           b.textContent.includes(story.title) &&
           b.textContent.includes('building') &&
           b.textContent.includes(task.title),
+      ),
+    )
+    const rootRecord = state().sessionRecords.find((r) => r.metadata.task === task.id)
+    assert(rootRecord, 'missing implementation session record')
+    smoke.store.setState({
+      sessionRecords: [
+        ...state().sessionRecords,
+        {
+          ...rootRecord,
+          id: 'story-review-record',
+          metadata: { ...rootRecord.metadata, componentId: '@review', branch: task.branch },
+          spec: { ...rootRecord.spec, cwd: task.worktree },
+          snapshot: { ...rootRecord.snapshot, startedMs: Date.now() + 1 },
+        },
+      ],
+    })
+    await until('Review card', () =>
+      [...document.querySelectorAll('.story-card')].find(
+        (b) =>
+          b.textContent.includes(story.title) &&
+          b.querySelector('.story-status.reviewing')?.textContent === 'review',
       ),
     )
     click(

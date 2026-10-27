@@ -28,8 +28,10 @@ test('stable stages isolate projects/worktrees and explicitly share only planner
   const planner = record('p', '@plan', null),
     other = record('other', 'app', 'other')
   const model = thread(snapshot([planner, other, record('root', '@task', 't')]), worktree)
-  expect(model.sections.map((s) => s.id)).toEqual(['plan', 'build', 'review', 'merge'])
+  // The shared planner stays a recipient, but a run this chat never used isn't in its thread.
+  expect(model.items.filter((i) => i.kind === 'agent').map((i) => i.sessionId)).toEqual(['root'])
   expect(model.records.map((r) => r.id)).toEqual(['p', 'root'])
+  expect([...model.foreign]).toEqual(['p'])
   expect(
     relatedSession({ ...planner, metadata: { ...planner.metadata, projectId: 'other' } }, worktree),
   ).toBe(false)
@@ -48,9 +50,10 @@ test('latest recovered review wins, recipient override survives while eligible',
 })
 test('plan readiness uses saved artifacts and complete log restoration has stable identities', () => {
   expect(thread(snapshot([]), worktree).planReady).toBe(false)
-  expect(thread({ ...snapshot([]), plan: { text: 'saved', cut: false } }, worktree).planReady).toBe(
-    true,
-  )
+  expect(
+    thread({ ...snapshot([]), plan: { text: 'saved', cut: false, savedMs: 1 } }, worktree)
+      .planReady,
+  ).toBe(true)
   const entry = {
     id: '1',
     atMs: 1,
@@ -90,4 +93,145 @@ test('a newly used shared planner cannot reset another worktree stage', () => {
     worktree,
   )
   expect(model.stage).toBe('build')
+})
+
+test('timeline groups consecutive messages and deduplicates replies against live snapshots', () => {
+  const r = record('plan', '@plan', null, 10)
+  const entries = [
+    {
+      id: 'prompt',
+      atMs: 10,
+      kind: 'prompt' as const,
+      stage: 'plan' as const,
+      sessionId: 'plan',
+      generation: 1,
+      text: 'Feature',
+      mentions: [],
+    },
+    {
+      id: 'reply',
+      atMs: 20,
+      kind: 'reply' as const,
+      stage: 'plan' as const,
+      sessionId: 'plan',
+      generation: 1,
+      sequence: 2,
+      text: 'Plan ready.',
+    },
+  ]
+  const model = thread(
+    {
+      ...snapshot([r]),
+      simple: { startedMs: 10, log: entries },
+      sessions: {
+        plan: {
+          generation: 1,
+          running: true,
+          replies: [{ atMs: 20, sequence: 2, text: 'Plan ready.', turn: null }],
+        },
+      },
+      plan: { text: '# Plan', cut: false, savedMs: 15 },
+    },
+    worktree,
+  )
+  expect(model.items.map((i) => i.kind)).toEqual(['line', 'agent', 'plan'])
+  expect(model.items[1]).toMatchObject({ entries })
+  expect(model.planReady).toBe(true)
+  const stale = thread(
+    { ...snapshot([]), createdMs: 30, plan: { text: '# Old', cut: false, savedMs: 20 } },
+    worktree,
+  )
+  expect(stale.planReady).toBe(false)
+  expect(stale.items[0]).toMatchObject({ kind: 'plan', stale: true })
+})
+test('restoring replies validates journal identities and deduplicates across entry ids', () => {
+  const reply = {
+    kind: 'reply',
+    stage: 'build',
+    id: 'a',
+    atMs: 10,
+    sessionId: 's',
+    generation: 1,
+    sequence: 2,
+    text: 'Reply',
+  }
+  expect(
+    restoredSimple({
+      startedMs: 1,
+      log: [
+        reply,
+        { ...reply, id: 'b' },
+        { ...reply, id: 'c', sequence: -1 },
+        { ...reply, id: 'd', generation: 2 },
+      ],
+    })?.log,
+  ).toEqual([reply, { ...reply, id: 'd', generation: 2 }])
+})
+
+test('a story planning action remains the boundary when its process starts a moment later', () => {
+  const r = record('plan', '@plan', null, 11)
+  r.snapshot!.generation = 1
+  const s = {
+    ...snapshot([r]),
+    simple: {
+      startedMs: 1,
+      log: [
+        {
+          id: 'story',
+          kind: 'action' as const,
+          action: 'plan' as const,
+          stage: 'plan' as const,
+          sessionId: 'plan',
+          generation: 1,
+          atMs: 10,
+          text: 'Story',
+        },
+      ],
+    },
+    plan: { text: 'Plan', cut: false, savedMs: 12 },
+  }
+  expect(thread(s, worktree)).toMatchObject({ planningStarted: 10, planReady: true })
+  r.snapshot!.generation = 2
+  r.snapshot!.startedMs = 20
+  expect(thread(s, worktree)).toMatchObject({ planningStarted: 20, planReady: false })
+})
+test('another chat’s planner run never shows here or takes over the recipient with its question', () => {
+  const planner = record('p', '@plan', null, 5)
+  const build = record('build', '@task', 't', 2)
+  const sessions = {
+    p: {
+      generation: 3,
+      running: true,
+      status: { agent: { state: 'needsInput', sinceMs: 6 } },
+    },
+  } as never
+  const model = thread({ ...snapshot([build, planner]), sessions }, worktree)
+  expect(model.items.some((i) => i.kind === 'agent' && i.sessionId === 'p')).toBe(false)
+  expect(selectRecipient(model.records, sessions, 'build', undefined, model.foreign)?.id).toBe(
+    'build',
+  )
+  const used = thread(
+    {
+      ...snapshot([build, planner]),
+      sessions,
+      simple: {
+        startedMs: 1,
+        log: [
+          {
+            id: 'ask',
+            kind: 'prompt',
+            stage: 'plan',
+            atMs: 7,
+            sessionId: 'p',
+            generation: 3,
+            text: 'Plan it',
+            mentions: [],
+          },
+        ],
+      },
+    },
+    worktree,
+  )
+  expect(used.foreign.size).toBe(0)
+  expect(selectRecipient(used.records, sessions, 'build', undefined, used.foreign)?.id).toBe('p')
 })

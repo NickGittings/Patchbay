@@ -189,6 +189,16 @@ impl Backlog {
     ) {
         for event in hooks {
             self.tracker.on_hook(event, now);
+            for (previous, reply) in self.tracker.drain_replies() {
+                if self.running {
+                    sink.emit(TerminalEvent::Reply {
+                        session_id: id.to_owned(),
+                        generation: self.generation,
+                        previous,
+                        reply,
+                    });
+                }
+            }
             for activity in self.tracker.drain_activity() {
                 if self.running {
                     sink.emit(TerminalEvent::Activity {
@@ -238,6 +248,12 @@ pub struct Snapshot {
     pub status: SessionStatus,
     #[serde(default)]
     pub activity: Vec<crate::status::Activity>,
+    #[serde(default)]
+    pub replies: Vec<crate::status::Reply>,
+    /// Sequence of the latest reply. Session lists leave `replies` out and carry only this,
+    /// so clients fetch a snapshot just when a reply they haven't seen exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<u64>,
     /// The spec's notice. Full-screen programs hide the dim backlog line, so
     /// windows show this outside the terminal as well.
     pub notice: Option<String>,
@@ -887,6 +903,19 @@ impl PtyManager {
     /// Panics if an internal lock is poisoned.
     #[must_use]
     pub fn snapshot_with(&self, id: &str, limit: usize) -> Option<Snapshot> {
+        self.snapshot_parts(id, limit, true)
+    }
+
+    /// Lifecycle, activity and latest reply identity, without output or reply text.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn summary(&self, id: &str) -> Option<Snapshot> {
+        self.snapshot_parts(id, 0, false)
+    }
+
+    fn snapshot_parts(&self, id: &str, limit: usize, include_replies: bool) -> Option<Snapshot> {
         let backlogs = self.backlogs.lock().unwrap();
         let mut backlog = backlogs.get(id)?.lock().unwrap();
         let status = backlog.tracker.status(now_ms());
@@ -903,6 +932,12 @@ impl PtyManager {
             exited_ms: backlog.exited_ms,
             status,
             activity: backlog.tracker.activity(),
+            last_reply: backlog.tracker.last_reply(),
+            replies: if include_replies {
+                backlog.tracker.replies()
+            } else {
+                Vec::new()
+            },
             notice: backlog.notice.clone(),
         })
     }
@@ -1778,6 +1813,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         let command = r#"printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":1,"atMs":1,"event":"UserPromptSubmit","conversation":"conversation","turn":"turn","prompt":null,"message":null}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000001.json"
 printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":2,"atMs":2,"event":"PreToolUse","conversation":"conversation","turn":"turn","prompt":null,"message":null,"tool":"Read","target":"src/lib.rs","fileTarget":true}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000002.json"
+printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence":3,"atMs":3,"event":"Stop","conversation":"conversation","turn":"turn","reply":"Final assistant reply","prompt":null,"message":null}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000003.json"
 "#;
         pty.spawn(
             SessionSpec {
@@ -1801,10 +1837,20 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
         assert_eq!(sink.wait_for_exit(), 0);
         let snapshot = pty.snapshot("activity-final").unwrap();
         assert_eq!(snapshot.activity.len(), 1);
+        assert_eq!(snapshot.replies[0].text, "Final assistant reply");
+        let summary = pty.summary("activity-final").unwrap();
+        assert!(summary.data.is_empty());
+        assert!(summary.replies.is_empty());
+        assert_eq!(summary.last_reply, snapshot.last_reply);
+        assert_eq!(summary.activity, snapshot.activity);
+        let replies_only = pty.snapshot_with("activity-final", 0).unwrap();
+        assert!(replies_only.data.is_empty());
+        assert_eq!(replies_only.replies, snapshot.replies);
         let serialized = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(serialized["activity"][0]["sequence"], 2);
         let restored: Snapshot = serde_json::from_value(serialized).unwrap();
         assert_eq!(restored.activity, snapshot.activity);
+        assert_eq!(restored.replies, snapshot.replies);
         let events = sink.0.lock().unwrap();
         let activity = events
             .iter()
@@ -1817,6 +1863,11 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
             .position(|e| matches!(e, TerminalEvent::Exited { .. }))
             .unwrap();
         assert!(activity < exit);
+        let reply = events
+            .iter()
+            .position(|e| matches!(e, TerminalEvent::Reply { .. }))
+            .unwrap();
+        assert!(reply < exit);
         assert!(
             pty.write_generation("activity-final", snapshot.generation, b"no")
                 .is_err()
@@ -1845,6 +1896,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 file_target: true,
                 target: Some("src/lib.rs".into()),
                 prompt: None,
+                reply: None,
                 message: None,
                 source: None,
             })

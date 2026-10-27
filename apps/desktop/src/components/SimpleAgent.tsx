@@ -1,130 +1,53 @@
-import { activityFile, activityRoot } from '../lib/activity'
-import { useEffect, useRef, useState } from 'react'
+import type { SimpleEntry } from '../lib/simple'
+import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
 import { useStore } from '../store'
-import { PLAN_SCOPE, type SessionRecord } from '../types'
-import type { TerminalStatus } from '../lib/display'
-import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import type { SessionRecord } from '../types'
+import Markdown from './findings/Markdown'
 import SimpleStatus from './SimpleStatus'
-import TerminalPane from './TerminalPane'
 
-const attention = new Map<string, string>()
 export default function SimpleAgent({
   record,
-  status,
-  inputOpen,
-  scopeKey,
-  openTerminal,
+  sessionId,
+  entries,
+  latest,
+  working,
 }: {
-  record: SessionRecord
-  status: TerminalStatus
-  inputOpen: boolean
-  scopeKey: string
-  openTerminal: (r: SessionRecord) => void
+  record?: SessionRecord
+  sessionId: string
+  entries: SimpleEntry[]
+  latest: boolean
+  working: boolean
 }) {
-  const project = useStore((s) => s.project)
-  const tasks = useStore((s) => s.tasks)
-  const nodes = useStore((s) => s.nodes)
-  const session = useStore((s) => s.sessions[record.id])
-  const manuallyExpanded = useSimpleUi((s) =>
-    (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).expanded.includes(record.id),
-  )
-  const inputCollapsed = useSimpleUi((s) =>
-    (s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI).inputCollapsed.includes(record.id),
-  )
-  const host = useRef<HTMLElement>(null)
-  const terminalHost = useRef<HTMLDivElement>(null)
-  const [visible, setVisible] = useState(false)
-  // Typing in the inline terminal keeps it mounted, whatever ends its input expansion.
-  const [typing, setTyping] = useState(false)
-  const needsInput = status.health === 'input'
-  const expanded = manuallyExpanded || (inputOpen && (needsInput || !inputCollapsed)) || typing
-  useEffect(() => {
-    const el = terminalHost.current
-    if (!el || !expanded) return
-    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting))
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [expanded])
-  useEffect(() => {
-    const agent = session?.status?.agent
-    if (!needsInput || !agent) return
-    const key = `${session?.generation}:${agent.sinceMs}`
-    if (attention.get(record.id) === key) return
-    attention.set(record.id, key)
-    host.current?.scrollIntoView({ block: 'nearest' })
-  }, [needsInput, session?.generation, session?.status?.agent, record.id, scopeKey])
-  // Folding a card only folds the card: its stage keeps any input expansion it has.
-  const toggle = () => {
-    if (needsInput) return
-    setTyping(false)
-    useSimpleUi.getState().toggleAgent(scopeKey, record.id, expanded, inputOpen)
-  }
+  const session = useStore((s) => s.sessions[sessionId])
+  const busy = working || (session?.running && session.status?.agent?.state === 'working')
+  const role = record ? SIMPLE_ROLE_LABEL[recordStage(record)] : 'Agent'
+  const provider = record?.metadata.adapter
   return (
-    <article
-      className="simple-agent"
-      ref={host}
-      data-session={record.id}
-      data-needs-input={needsInput || undefined}
-      data-input-open={inputOpen || undefined}
-    >
+    <article className="simple-agent" data-session={sessionId}>
       <header>
-        <button aria-expanded={expanded} aria-disabled={needsInput || undefined} onClick={toggle}>
-          {expanded ? '▾' : '▸'} {record.metadata.name}
-        </button>
-        {record.metadata.componentId === PLAN_SCOPE && <span>Shared planner</span>}
-        <SimpleStatus sessions={[session]} />
-        <button onClick={() => openTerminal(record)}>Open terminal</button>
+        <strong>
+          {role}
+          {provider
+            ? ` · ${provider === 'claude' ? 'Claude' : 'Codex'}`
+            : record
+              ? ` · ${record.metadata.name}`
+              : ''}
+        </strong>
+        {latest && <SimpleStatus sessions={[session]} />}
       </header>
-      {!!session?.activity?.length && (
-        <ol className="simple-activity">
-          {session.activity.slice(-6).map((activity) => {
-            const worktree = activityRoot(record, tasks, project?.root ?? record.spec.cwd)
-            const file = activityFile(
-              activity,
-              record,
-              nodes.map((n) => ({ id: n.id, path: n.data.path })),
-              worktree,
-            )
-            return (
-              <li key={activity.sequence}>
-                <span>{activity.tool}</span>
-                {file ? (
-                  <button onClick={() => useSimpleUi.getState().patch(scopeKey, { diff: file })}>
-                    {activity.target}
-                  </button>
-                ) : (
-                  <span>{activity.target}</span>
-                )}
-              </li>
-            )
-          })}
-        </ol>
+      {entries.map((entry) =>
+        entry.kind === 'prompt' ? (
+          <div className="simple-prompt" key={entry.id}>
+            <strong>You</strong>
+            <pre>{entry.text}</pre>
+          </div>
+        ) : entry.kind === 'reply' ? (
+          <div className="simple-reply" key={entry.id}>
+            <Markdown text={entry.text} />
+          </div>
+        ) : null,
       )}
-      {expanded && (
-        <div
-          className="simple-terminal"
-          ref={terminalHost}
-          onFocus={() => setTyping(true)}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) setTyping(false)
-          }}
-        >
-          {visible && (
-            <TerminalPane
-              componentId={record.metadata.componentId}
-              terminal={{
-                id: record.metadata.terminalId,
-                name: record.metadata.name,
-                kind: 'agent',
-                command: record.spec.command,
-              }}
-              task={record.metadata.task ?? null}
-              existingSessionId={record.id}
-              focus={false}
-            />
-          )}
-        </div>
-      )}
+      {latest && busy && <p className="simple-working">Working…</p>}
     </article>
   )
 }

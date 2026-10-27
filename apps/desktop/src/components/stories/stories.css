@@ -257,3 +257,10 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.story-status.reviewing {
+  color: var(--accent);
+}
+.story-status.merging {
+  color: #bf96e8;
+}

@@ -10,22 +10,8 @@ import {
   type SessionState,
   type Task,
 } from '../types'
-/** Merge snapshots and live events by journal identity, independent of response order. */
-export function hydrateActivity(
-  previous: SessionState | undefined,
-  generation: number,
-  incoming: readonly Activity[] = [],
-): Activity[] {
-  if (previous?.generation !== undefined && previous.generation > generation)
-    return previous.activity ?? []
-  const events =
-    previous?.generation === generation
-      ? [...(previous.activity ?? []), ...incoming]
-      : [...incoming]
-  return [...new Map(events.map((a) => [a.sequence, a])).values()]
-    .sort((a, b) => a.sequence - b.sequence)
-    .slice(-50)
-}
+import { hydrateJournal } from './journal'
+export const hydrateActivity = hydrateJournal('activity', 50)
 /**
  * Commands and patch bodies are never file paths. Only known single-file tool targets link (core
  * names Codex's `read_file`/`write_file`/`edit_file` Read/Write/Edit, and `apply_patch` Edit with

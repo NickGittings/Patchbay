@@ -132,3 +132,16 @@ export function changedFileRef<T extends { path: string }>(
   const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
   return new Set(suffix.map((f) => f.path)).size === 1 ? suffix[0] : undefined
 }
+
+/** Whether one reviewer, running or not, may still write findings (see `reviewWorktreeBusy`). */
+export function reviewerBusy(
+  s: Pick<SessionState, 'status'> | null | undefined,
+  running: boolean,
+): boolean {
+  if (!running) return false
+  const agent = s?.status?.agent
+  // A self-reported end of turn holds until a follow-up turn produces output again.
+  if (agent?.state === 'review')
+    return !agent.authoritative && (s?.status?.lastOutputMs ?? 0) > agent.sinceMs + 2000
+  return !(agent?.authoritative && (agent.state === 'idle' || agent.state === 'ended'))
+}

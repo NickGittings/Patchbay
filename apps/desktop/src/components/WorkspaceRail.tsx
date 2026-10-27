@@ -3,7 +3,6 @@ import { useClockTick } from '../lib/clock'
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
-import { useSimpleUi } from '../lib/simpleUi'
 import { worktreeAttention } from '../lib/attention'
 import { STAGE_LABELS, STATUS_LABELS } from '../lib/autoSettings'
 import {
@@ -64,7 +63,6 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const auto = useStore((s) => s.auto)
   const busy = useStore((s) => s.graphActionBusy)
   const action = useStore((s) => s.graphAction)
-  useSimpleUi((s) => s.worktrees)
   const counts = useStore(useShallow(worktreeAttention))
   const count = Object.values(counts).reduce((sum, n) => sum + n, 0)
   const selected = selectedRailView()
@@ -173,7 +171,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
             aria-label={v.label}
             aria-pressed={!!project && selected === v.id}
             className={project && selected === v.id ? 'active' : ''}
-            title={`${v.label}${simple ? `: ${v.id === 'navigation' ? 'All stages' : v.label}` : ''} (${mod}${i + 1}${simple && i > 0 ? ': return to Full view' : ''})`}
+            title={`${v.label} (${mod}${i + 1}${simple ? ': open Full view' : ''})`}
             onClick={() => selectRailView(v.id)}
           >
             <RailIcon name={v.id} />

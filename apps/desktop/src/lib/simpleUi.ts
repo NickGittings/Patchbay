@@ -1,7 +1,5 @@
 import { create } from 'zustand'
-import type { SimpleStage } from './simple'
-import type { SessionState } from '../types'
-import { sessionRun, type TerminalStatus } from './display'
+import type { SessionRecord, SessionState } from '../types'
 export interface Mention {
   id: string
   token: string
@@ -16,152 +14,68 @@ export interface SimpleDiff {
 export interface SimpleUi {
   draft: string
   mentions: Mention[]
-  recipient?: string
-  expanded: string[]
-  /** Input-driven expansion: the request's run, kept while an answer is being typed. */
-  inputRequests: Record<string, string>
-  /** Cards folded while their input expansion lasts; their stage stays open and shown. */
-  inputCollapsed: string[]
   diff: SimpleDiff | null
-  /** The chat's stage tab: which sections the thread shows. */
-  stageFilter: SimpleStage | 'all'
-  /**
-   * Explicit user choices under All, including choices matching the current default.
-   * Without a choice, only the current stage opens.
-   */
-  stages: StageOverrides
-}
-export type StageOverrides = Partial<Record<SimpleStage, boolean>>
-/**
- * User choices win; otherwise the current stage opens, as does a stage in use (holding focus or
- * an open inline terminal), so an advance never folds a stage out from under the user.
- */
-export const stageOpen = (
-  overrides: StageOverrides,
-  stage: SimpleStage,
-  current: SimpleStage,
-  inUse = false,
-) => overrides[stage] ?? (stage === current || inUse)
-
-/** Every toggle saves the user's choice, including reopening the current stage. */
-export function toggledStage(
-  overrides: StageOverrides,
-  stage: SimpleStage,
-  current: SimpleStage,
-  inUse = false,
-): StageOverrides {
-  return { ...overrides, [stage]: !stageOpen(overrides, stage, current, inUse) }
+  terminal: 'closed' | 'user' | 'input'
+  terminalSession?: { id: string; generation?: number; pinned?: boolean }
+  inputRequest?: string
 }
 
 /**
- * An input request's expansion lasts through the answer: typing turns `needsInput` into
- * unconfirmed `working`, which decays to idle once quiet. Any other state ends it: a confirmed
- * provider state, Esc or an interrupt (unconfirmed `idle`), a status-file report of its own
- * (never authoritative) once it moves on from working, an exit or a new run.
+ * Typing only guesses that work resumed. Keep the question's terminal until hooks confirm it.
+ * A new input wait takes the drawer even from a terminal View pinned.
  */
-export function pendingInput(
-  sid: string,
-  session: SessionState | undefined,
-  status: TerminalStatus,
-  previous?: string,
-): string | undefined {
-  const run = sessionRun(sid, session)
-  if (status.health === 'input') return run
-  const agent = session?.status?.agent
-  return previous === run &&
-    session?.running &&
-    !session.disconnected &&
-    !session.interrupted &&
-    agent?.state === 'working' &&
-    !agent.authoritative
-    ? run
-    : undefined
+export function inputDrawer(
+  ui: SimpleUi,
+  asking: SessionRecord | undefined,
+  sessions: Record<string, SessionState>,
+  recordIds: readonly string[],
+): SimpleUi {
+  // View explicitly selects a terminal, including settled runs, until the user hides it. A pin
+  // whose record is gone renders nothing, so it closes rather than holding the drawer.
+  const pin = ui.terminal === 'user' && ui.terminalSession?.pinned ? ui.terminalSession : undefined
+  if (pin && !recordIds.includes(pin.id))
+    ui = { ...ui, terminal: 'closed', terminalSession: undefined }
+  const pinned = pin && ui.terminalSession === pin
+  if (!pinned && ui.terminal !== 'closed' && ui.terminalSession) {
+    const session = sessions[ui.terminalSession.id]
+    if (
+      session?.running &&
+      session.generation === ui.terminalSession.generation &&
+      !session.status?.stopped &&
+      (session.status?.agent?.state === 'needsInput' || !session.status?.agent?.authoritative)
+    )
+      return ui
+  }
+  const session = asking && sessions[asking.id]
+  const request = asking && `${asking.id}:${session?.generation}:${session?.status?.agent?.sinceMs}`
+  if (asking && request !== ui.inputRequest) {
+    return {
+      ...ui,
+      inputRequest: request,
+      terminal: ui.terminal === 'user' ? 'user' : 'input',
+      terminalSession: { id: asking.id, generation: session?.generation },
+    }
+  }
+  if (pinned) return ui
+  if (ui.terminal === 'input') return { ...ui, terminal: 'closed', terminalSession: undefined }
+  return ui.terminalSession ? { ...ui, terminalSession: undefined } : ui
 }
-const without = (list: string[], ids: string[]) => list.filter((id) => !ids.includes(id))
 export const emptySimpleUi = (): SimpleUi => ({
   draft: '',
   mentions: [],
-  expanded: [],
-  inputRequests: {},
-  inputCollapsed: [],
   diff: null,
-  stageFilter: 'all',
-  stages: {},
+  terminal: 'closed',
 })
 export const simpleKey = (projectId: string | undefined, task: string | null) =>
   JSON.stringify([projectId ?? '', task])
 export const useSimpleUi = create<{
   worktrees: Record<string, SimpleUi>
   patch: (key: string, patch: Partial<SimpleUi>) => void
-  /** Toggles a stage against the latest overrides, so quick clicks never undo each other. */
-  toggleStage: (
-    key: string,
-    stage: SimpleStage,
-    current: SimpleStage,
-    options?: { inputs?: string[]; inUse?: boolean },
-  ) => void
-  /** Folds or unfolds an agent card without touching its stage's input expansion. */
-  toggleAgent: (key: string, sid: string, expanded: boolean, inputOpen: boolean) => void
-  /** Keeps the input expansions shown; a card asking anew unfolds again. */
-  syncInputRequests: (key: string, requests: Record<string, string>, asking: string[]) => void
 }>((set) => ({
   worktrees: {},
   patch: (key, patch) =>
     set((s) => ({
       worktrees: { ...s.worktrees, [key]: { ...emptySimpleUi(), ...s.worktrees[key], ...patch } },
     })),
-  toggleStage: (key, stage, current, { inputs = [], inUse = false } = {}) =>
-    set((s) => {
-      const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
-      return {
-        worktrees: {
-          ...s.worktrees,
-          [key]: {
-            ...ui,
-            // Collapsing a stage held open by input requests dismisses them.
-            inputRequests: Object.fromEntries(
-              Object.entries(ui.inputRequests).filter(([sid]) => !inputs.includes(sid)),
-            ),
-            inputCollapsed: without(ui.inputCollapsed, inputs),
-            stages: inputs.length
-              ? { ...ui.stages, [stage]: false }
-              : toggledStage(ui.stages, stage, current, inUse),
-          },
-        },
-      }
-    }),
-  toggleAgent: (key, sid, expanded, inputOpen) =>
-    set((s) => {
-      const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
-      const expandedList = without(ui.expanded, [sid]),
-        collapsed = without(ui.inputCollapsed, [sid])
-      return {
-        worktrees: {
-          ...s.worktrees,
-          [key]: {
-            ...ui,
-            expanded: expanded ? expandedList : [...expandedList, sid],
-            inputCollapsed: expanded && inputOpen ? [...collapsed, sid] : collapsed,
-          },
-        },
-      }
-    }),
-  syncInputRequests: (key, requests, asking) =>
-    set((s) => {
-      const ui = { ...emptySimpleUi(), ...s.worktrees[key] }
-      const collapsed = ui.inputCollapsed.filter((sid) => sid in requests && !asking.includes(sid))
-      if (
-        collapsed.length === ui.inputCollapsed.length &&
-        Object.keys(ui.inputRequests).length === Object.keys(requests).length &&
-        Object.entries(requests).every(([sid, run]) => ui.inputRequests[sid] === run)
-      )
-        return s
-      return {
-        worktrees: {
-          ...s.worktrees,
-          [key]: { ...ui, inputRequests: requests, inputCollapsed: collapsed },
-        },
-      }
-    }),
 }))
 export const EMPTY_SIMPLE_UI = emptySimpleUi()

@@ -35,82 +35,76 @@
   flex: 1;
   padding: 12px;
 }
-.simple-stage-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+.simple-thread {
+  min-height: 0;
+  overflow-anchor: none;
 }
-.simple-stage-tabs button[aria-pressed='true'] {
-  color: var(--accent-text);
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.current-stage-dot {
-  margin-left: 6px;
-  color: var(--running);
-}
-.simple-stage {
-  margin-bottom: 24px;
-}
-.simple-stage[data-collapsed] {
-  margin-bottom: 8px;
-}
-.simple-stage h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  text-transform: capitalize;
-}
-.simple-stage h2 .status-label {
-  font-weight: normal;
-  text-transform: none;
-}
-.simple-stage[aria-current] > h2 {
-  color: var(--running);
-}
-.simple-stage-toggle {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border-color: transparent;
-}
-.simple-stage-toggle[aria-disabled] {
-  cursor: default;
-}
-.simple-stage article {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-  margin: 8px 0;
+.simple-agent {
+  margin: 16px 0;
   overflow-wrap: anywhere;
-}
-.simple-stage h3 {
-  font-size: 12px;
-  margin: 0 0 8px;
-}
-.simple-stage pre {
-  white-space: pre-wrap;
-  font: inherit;
-}
-.simple-stage time {
-  color: var(--muted);
-  margin-right: 8px;
 }
 .simple-agent > header {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  color: var(--muted);
 }
-.simple-terminal {
-  height: 270px;
-  margin-top: 10px;
+.simple-prompt {
+  margin: 12px 0 12px 24px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--hover);
+}
+.simple-prompt pre {
+  white-space: pre-wrap;
+  font: inherit;
+  margin: 6px 0 0;
+}
+.simple-reply {
+  margin: 12px 0;
+}
+.simple-narration,
+.simple-working,
+.simple-earlier-plan {
+  color: var(--muted);
+  margin: 16px 0;
+}
+.simple-result {
+  padding: 12px;
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.simple-result h3 {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+.simple-result .findings-panel {
+  min-height: 80px;
+  max-height: 480px;
+}
+.simple-step {
+  margin: 16px 0;
+  padding: 12px 0;
+}
+.simple-step button {
+  margin-right: 8px;
+}
+.simple-terminal-drawer {
+  /* The pane's terminal area is `flex: 1` around an absolute host, so it needs a flex parent. */
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  height: 260px;
+  min-height: 120px;
+  max-height: 60vh;
+  resize: vertical;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
 }
 .simple-composer {
   border-top: 1px solid var(--border);
@@ -187,10 +181,6 @@
   background: var(--hover);
   margin-right: 4px;
 }
-.simple-stage .findings-panel {
-  min-height: 120px;
-  max-height: 600px;
-}
 .simple-activity {
   list-style: none;
   margin: 8px 0 0;
@@ -219,4 +209,11 @@
   top: 10px;
   right: 10px;
   z-index: 4;
+}
+
+.simple-result .findings-toolbar {
+  display: none;
+}
+.simple-result .findings-title-row > .verdict-badge {
+  display: none;
 }

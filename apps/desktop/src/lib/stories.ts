@@ -1,6 +1,10 @@
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
+  REVIEW_SCOPE,
+  MERGE_SCOPE,
+  TASK_ROOT_SCOPE,
+  type SessionRecord,
   plannerSessionId,
   type AutoRun,
   type Story,
@@ -12,8 +16,11 @@ import { roleDevice } from './agentRoles'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
 import { autoRuns, autoWorkspace } from './autoState'
 import { finished, unfinished } from './autoSettings'
-import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot, terminalStop } from './ipc'
+import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './ipc'
+import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
+import { seedNewTask } from './tasks'
+import { logLaunch } from './simpleActions'
 
 const ordered = (items: Story[]) =>
   [...items].sort(
@@ -40,12 +47,50 @@ export function tree(stories: Story[]) {
   }
 }
 
+export type StoryProgress = StoryStatus | 'reviewing' | 'merging'
+export const PROGRESS: StoryProgress[] = [
+  'backlog',
+  'planned',
+  'building',
+  'reviewing',
+  'merging',
+  'done',
+]
+
+/** Most recently started role wins; a later fix returns a story to Building. */
+export function worktreeStage(
+  task: Task,
+  projectId: string,
+  records: readonly SessionRecord[],
+): StoryProgress {
+  const record = records
+    .filter(
+      (r) =>
+        r.metadata.projectId === projectId &&
+        ((r.metadata.componentId === REVIEW_SCOPE && r.metadata.branch === task.branch) ||
+          (r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === task.worktree) ||
+          (r.metadata.componentId === TASK_ROOT_SCOPE && r.metadata.task === task.id)),
+    )
+    .sort((a, b) => (a.snapshot?.startedMs ?? 0) - (b.snapshot?.startedMs ?? 0))
+    .at(-1)
+  return record?.metadata.componentId === REVIEW_SCOPE
+    ? 'reviewing'
+    : record?.metadata.componentId === MERGE_SCOPE
+      ? 'merging'
+      : 'building'
+}
+
 /** A worktree's live state takes precedence over a saved intermediate status. */
 export function derivedStatus(
   story: Story,
   tasks: Task[],
-  autoRuns: Record<string, Pick<AutoRun, 'runId' | 'status'> | null | undefined>,
-): StoryStatus {
+  autoRuns: Record<
+    string,
+    (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
+  >,
+  projectId: string,
+  records: readonly SessionRecord[] = [],
+): StoryProgress {
   if (story.status === 'done') return 'done'
   const task = story.task && tasks.find((t) => t.id === story.task)
   if (
@@ -55,17 +100,24 @@ export function derivedStatus(
     autoRuns[story.task]?.status === 'done'
   )
     return 'done'
-  if (task && !task.missing) return 'building'
+  if (task && !task.missing) {
+    const run = autoRuns[task.id]
+    if (run && unfinished(run.status))
+      return run.stage === 'review'
+        ? 'reviewing'
+        : run.stage === 'mergeGate' || run.stage === 'merge'
+          ? 'merging'
+          : 'building'
+    return worktreeStage(task, projectId, records)
+  }
   return story.status === 'planned' ? 'planned' : 'backlog'
 }
 
 export const STORY_STATUSES: StoryStatus[] = ['backlog', 'planned', 'building', 'done']
 
 /** Parents progress as far as their least advanced child; empty parents keep their own status. */
-export function rollup(parent: StoryStatus, children: StoryStatus[]): StoryStatus {
-  return children.length
-    ? STORY_STATUSES[Math.min(...children.map((s) => STORY_STATUSES.indexOf(s)))]
-    : parent
+export function rollup(parent: StoryProgress, children: StoryProgress[]): StoryProgress {
+  return children.length ? PROGRESS[Math.min(...children.map((s) => PROGRESS.indexOf(s)))] : parent
 }
 
 export function descendants(stories: Story[], item: Story): Story[] {
@@ -126,31 +178,70 @@ export async function updateStory(projectId: string, id: string, patch: StoryPat
 export async function planStory(projectId: string, story: Story) {
   const s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Select the story’s project first')
+  // The chat the story was planned from, whichever worktree is shown once the planner starts.
+  const task = s.activeTask
+  const chat = s.simpleMode
   const device = roleDevice(s.devices, s.agentRoles, 'plan')
   const sid = plannerSessionId(device.id, projectId)
   if (autoRuns(s).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
     throw new Error('Stop the Auto run before using its planner for a story')
-  if ((await terminalSnapshot(sid))?.running) {
+  if ((await terminalSnapshot(sid, 0))?.running) {
     if (!window.confirm('Stop the running planner and replace it with this story’s planner?'))
       return
-    await terminalStop(sid)
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(sid))?.running) {
-      if (Date.now() >= deadline)
-        throw new Error('The previous planner is still stopping. Try Plan again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+    await stopAndWait(sid, 'The previous planner is still stopping. Try Plan again.')
+    const now = useStore.getState()
+    if (now.project?.id !== projectId || now.activeTask !== task)
+      throw new Error('The worktree changed. Choose Plan again in the intended worktree.')
   }
   const items = [story, ...descendants(s.stories, story)]
   s.clearHighlights()
   for (const id of new Set(items.flatMap((s) => s.components))) s.toggleHighlight(id)
-  s.setView('plan')
+  if (!s.simpleMode) s.setView('plan')
   s.setPlanActive(device.id)
+  const planningAtMs = Date.now()
   await startTerminal(PLAN_SCOPE, device.id, null, projectId, {
     kickoff: { kind: 'planStory' },
     story: story.id,
   })
+  if (chat)
+    // Logged in the background, so a run lookup never delays the story's status.
+    void logLaunch(
+      projectId,
+      task,
+      {
+        kind: 'action',
+        action: 'plan',
+        stage: 'plan',
+        sessionId: sid,
+        text: story.title,
+        atMs: planningAtMs,
+      },
+      planningAtMs,
+    )
   await updateStory(projectId, story.id, { status: 'planned' })
+}
+
+export async function linkStory(projectId: string, story: string, task: string) {
+  if (projectStateOf(projectId)?.stories.find((s) => s.id === story)?.task === task) return
+  try {
+    await updateStory(projectId, story, { task })
+  } catch (e) {
+    useStore
+      .getState()
+      .setMessage(`Worktree created, but its story could not be linked: ${String(e)}`)
+  }
+}
+
+export function newWorktreeForStory(projectId: string, story: Story) {
+  const s = useStore.getState()
+  if (s.project?.id !== projectId) return
+  s.clearHighlights()
+  for (const id of new Set([story, ...descendants(s.stories, story)].flatMap((s) => s.components)))
+    s.toggleHighlight(id)
+  seedNewTask((task, pid) => void linkStory(pid, story.id, task.id), {
+    title: story.title,
+    copyPlan: true,
+  })
 }
 
 export function autoStory(projectId: string, story: Story) {

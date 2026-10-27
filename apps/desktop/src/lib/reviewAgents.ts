@@ -17,6 +17,7 @@ import { mergeAgentStart, reviewAgentStart } from './ipc'
 import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
+import { reviewerBusy } from './review'
 
 export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
   return worktrees.filter((w) => w.branch && w.path !== source.path && w.branch !== source.branch)
@@ -67,16 +68,12 @@ export const reviewWorktreeBusy = (
   sessions: Record<string, SessionState>,
   worktree: string,
 ) =>
-  records.some((r) => {
-    if (r.metadata.componentId !== REVIEW_SCOPE || r.spec.cwd !== worktree) return false
-    const s = sessions[r.id]
-    if (!(s?.running ?? sessionLive(r))) return false
-    const agent = s?.status?.agent
-    // A self-reported end of turn holds until a follow-up turn produces output again.
-    if (agent?.state === 'review')
-      return !agent.authoritative && (s?.status?.lastOutputMs ?? 0) > agent.sinceMs + 2000
-    return !(agent?.authoritative && (agent.state === 'idle' || agent.state === 'ended'))
-  })
+  records.some(
+    (r) =>
+      r.metadata.componentId === REVIEW_SCOPE &&
+      r.spec.cwd === worktree &&
+      reviewerBusy(sessions[r.id], sessions[r.id]?.running ?? sessionLive(r)),
+  )
 
 /** Recover review and merge terminals from the session service, even after Review unmounts. */
 /**

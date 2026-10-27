@@ -44,6 +44,7 @@ vi.mock('./terminals', () => ({
 }))
 const ipc = await import('./ipc')
 const terminals = await import('./terminals')
+const { showsSession } = await import('./windows')
 const { savePlanDraft } = await import('./planDrafts')
 const {
   closeTerminal,
@@ -903,7 +904,7 @@ test.each(['ad-hoc', 'mapped', 'review'])(
   },
 )
 
-test('a story planner keeps its kickoff and id on Restart and clears them on a plain start', async () => {
+test('a story planner keeps its kickoff on Restart and forgets it after a plain start', async () => {
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p', {
     kickoff: { kind: 'planStory' },
     story: 'story1',
@@ -932,6 +933,12 @@ test('a story planner keeps its kickoff and id on Restart and clears them on a p
   )
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
+  await restartTerminal(PLAN_SCOPE, 'claude', null)
+  expect(vi.mocked(ipc.planStart).mock.lastCall?.slice(5)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ])
 })
 
 test('a lost story planner reply still keeps the story for Restart', async () => {
@@ -1013,4 +1020,208 @@ test('a direct story launch cannot take an Auto planner even when its session is
   )
   expect(ipc.planStart).not.toHaveBeenCalled()
   expect(useStore.getState().planStory).toBeNull()
+})
+
+test('reply reconciliation requests no terminal output and adopts a new run with the same start time', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  vi.mocked(showsSession).mockReturnValue(true)
+  useStore.setState({ serviceInstance: 'test' })
+  const sid = sessionId('web', 'dev', null, 'p')
+  useStore.getState().setSession(sid, { running: false, generation: 2, startedMs: 1 })
+  const latest = { ...snapshot(true), lastReply: 1, replies: [] }
+  const record = {
+    id: sid,
+    metadata: { projectId: 'p', componentId: 'web', terminalId: 'dev', kind: 'agent' },
+    spec: { cwd: '/p', command: 'cat' },
+    snapshot: latest,
+    history: [],
+  } as unknown as import('../types').SessionRecord
+  vi.mocked(ipc.sessionsList).mockResolvedValue([record])
+  vi.mocked(ipc.terminalSnapshot)
+    .mockReset()
+    .mockResolvedValue({
+      ...latest,
+      replies: [{ sequence: 1, atMs: 5, turn: null, text: 'Done' }],
+    })
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().sessions[sid].replies).toHaveLength(1))
+  expect(useStore.getState().sessions[sid]).toMatchObject({ generation: 3, running: true })
+  expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid, 0)
+})
+
+const replyRecord = (generation = 3, lastReply = 2): import('../types').SessionRecord =>
+  ({
+    id: 'reply-session',
+    metadata: { projectId: 'p', componentId: 'web', terminalId: 'dev', kind: 'agent' },
+    spec: { cwd: '/p', command: 'cat' },
+    snapshot: { ...snapshot(true), generation, lastReply, replies: [] },
+    history: [],
+  }) as unknown as import('../types').SessionRecord
+const replies = [1, 2].map((sequence) => ({
+  sequence,
+  atMs: sequence + 5,
+  text: `Reply ${sequence}`,
+  turn: null,
+}))
+
+test('a live reply before its session record is persisted during reconciliation', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord()
+  useStore.setState({ serviceInstance: 'test', simple: { startedMs: 1, log: [] } })
+  vi.mocked(showsSession).mockReturnValue(true)
+  handleTerminalEvent({
+    type: 'reply',
+    sessionId: r.id,
+    generation: 3,
+    previous: 1,
+    reply: replies[1],
+  })
+  expect(useStore.getState().simple!.log).toEqual([])
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...r.snapshot!, replies })
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().simple!.log).toHaveLength(2))
+  expect(useStore.getState().simple!.log.map((e) => e.kind === 'reply' && e.sequence)).toEqual([
+    1, 2,
+  ])
+})
+
+test('an in-flight reply snapshot preserves earlier replies after a newer live event', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord()
+  const fetched = deferred()
+  useStore.setState({ serviceInstance: 'test', simple: { startedMs: 1, log: [] } })
+  vi.mocked(showsSession).mockReturnValue(true)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockImplementationOnce(async () => {
+    await fetched.promise
+    return { ...r.snapshot!, replies }
+  })
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+  handleTerminalEvent({
+    type: 'reply',
+    sessionId: r.id,
+    generation: 3,
+    previous: 1,
+    reply: replies[1],
+  })
+  fetched.resolve()
+  await vi.waitFor(() => expect(useStore.getState().simple!.log).toHaveLength(2))
+  expect(useStore.getState().simple!.log.map((e) => e.kind === 'reply' && e.sequence)).toEqual([
+    1, 2,
+  ])
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+})
+
+test('reply reconciliation skips sessions outside this window and fetches when shown', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord()
+  useStore.setState({ serviceInstance: 'test' })
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(showsSession).mockReturnValue(false)
+  await reconcileSessions(false)
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).not.toHaveBeenCalled()
+  vi.mocked(showsSession).mockReturnValue(true)
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...r.snapshot!, replies })
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().sessions[r.id].replies).toHaveLength(2))
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+})
+
+test('a reply snapshot older than live state is covered without repeated fetches', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord(2)
+  useStore.setState({ serviceInstance: 'test' })
+  useStore.getState().setSession(r.id, { generation: 3, running: true })
+  vi.mocked(showsSession).mockReturnValue(true)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...r.snapshot!, replies })
+  await reconcileSessions(false)
+  await reconcileSessions(false)
+  expect(useStore.getState().sessions[r.id].generation).toBe(3)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+})
+
+test('contiguous live replies extend snapshot coverage and a gap reads a snapshot', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord(3, 1)
+  useStore.setState({ serviceInstance: 'test' })
+  vi.mocked(showsSession).mockReturnValue(true)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...r.snapshot!, replies: [replies[0]] })
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().sessions[r.id].replies).toHaveLength(1))
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+  // Reply sequences come from the hook journal, so the next reply needn't be sequence + 1.
+  const live = (sequence: number, previous: number) =>
+    handleTerminalEvent({
+      type: 'reply',
+      sessionId: r.id,
+      generation: 3,
+      previous,
+      reply: { sequence, atMs: sequence + 5, text: `Reply ${sequence}`, turn: null },
+    })
+  live(4, 1)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([replyRecord(3, 4)])
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(1)
+  live(9, 7)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([replyRecord(3, 9)])
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+})
+
+test('a first live reply of a newer run is covered without a snapshot', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  useStore.setState({ serviceInstance: 'test' })
+  vi.mocked(showsSession).mockReturnValue(true)
+  handleTerminalEvent({
+    type: 'reply',
+    sessionId: 'reply-session',
+    generation: 3,
+    previous: null,
+    reply: replies[0],
+  })
+  vi.mocked(ipc.sessionsList).mockResolvedValue([replyRecord(3, 1)])
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).not.toHaveBeenCalled()
+})
+
+test('replies read for a newer run keep every field of its snapshot', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = { ...replyRecord(), interrupted: true }
+  useStore.setState({ serviceInstance: 'test' })
+  useStore.getState().setSession(r.id, { generation: 2, running: false })
+  vi.mocked(showsSession).mockReturnValue(true)
+  // A list older than the reply read still names the previous run.
+  vi.mocked(ipc.sessionsList).mockResolvedValue([
+    { ...r, snapshot: { ...r.snapshot!, generation: 2, running: false } },
+  ])
+  await reconcileSessions(false)
+  const activity = [{ sequence: 1, atMs: 5, tool: 'Edit', target: null, turn: null }]
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({
+    ...r.snapshot!,
+    replies,
+    activity,
+    notice: 'Briefing notice',
+    truncated: true,
+  } as TerminalSnapshot)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([
+    { ...r, snapshot: { ...r.snapshot!, generation: 2, running: false, lastReply: 2 } },
+  ])
+  await reconcileSessions(false)
+  await vi.waitFor(() => expect(useStore.getState().sessions[r.id].generation).toBe(3))
+  expect(useStore.getState().sessions[r.id]).toMatchObject({
+    running: true,
+    replies,
+    activity,
+    notice: 'Briefing notice',
+    truncated: true,
+  })
+  // The listing's `interrupted` described its run, not the newer one just read.
+  expect(useStore.getState().sessions[r.id].interrupted).toBeUndefined()
 })

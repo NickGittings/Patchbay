@@ -1,4 +1,7 @@
+import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
+import { stopAndWait } from './stopAndWait'
+import { sessionFromSnapshot } from './sessionState'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
@@ -69,6 +72,12 @@ const lastSeq = new Map<string, Cursor>()
 export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
 const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
+// Snapshot coverage is separate from live replies: seeing sequence N doesn't mean we saw 1…N.
+const replySnapshots = new Map<string, { generation: number; sequence: number }>()
+const fetchingReplies = new Map<string, symbol>()
+// What each reconcile last persisted per session (`persistChangedReplies`' key), so unchanged replies aren't
+// logged again on every pass.
+const persistedReplies = new Map<string, string>()
 const starting = new Map<string, Promise<void>>()
 const restarting = new Map<string, Promise<void>>()
 const closing = new Set<string>()
@@ -92,6 +101,9 @@ export function resetSessions(generationFloor: number) {
   lastSeq.clear()
   pending.clear()
   hydration.clear()
+  replySnapshots.clear()
+  persistedReplies.clear()
+  fetchingReplies.clear()
   starting.clear()
   restarting.clear()
   closing.clear()
@@ -557,13 +569,11 @@ export async function removeTaskTerminal(componentId: string, terminalId: string
     return { runtimeTerminals }
   })
   try {
-    if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
-    if (saved) return
-    const deadline = Date.now() + 10000
-    while ((await terminalSnapshot(sid))?.running) {
-      if (Date.now() >= deadline) throw new Error('Terminal is still stopping; remove it again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
+    if (saved) {
+      if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
+      return
     }
+    await stopAndWait(sid, 'Terminal is still stopping; remove it again.')
     if (sessionMetadata.has(sid)) await sessionForget(sid)
   } catch (e) {
     useStore.getState().setMessage(String(e))
@@ -601,17 +611,14 @@ export async function closeTerminal(componentId: string, terminalId: string) {
       if (m.projectId === projectId && m.componentId === componentId && m.terminalId === terminalId)
         sids.add(record.id)
     }
-    await Promise.all([...sids].map((sid) => terminalStop(sid)))
-    const deadline = Date.now() + 10000
-    while (
-      (await Promise.all([...sids].map((sid) => terminalSnapshot(sid)))).some(
-        (snapshot) => snapshot?.running,
-      )
-    ) {
-      if (requestedEpoch !== epoch) return false
-      if (Date.now() >= deadline) throw new Error('Terminal is still stopping. Try Close again.')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+    if (
+      !(await stopAndWait(
+        sids,
+        'Terminal is still stopping. Try Close again.',
+        () => requestedEpoch === epoch,
+      ))
+    )
+      return false
     if (requestedEpoch !== epoch) return false
     useStore.getState().removeTerminal(componentId, terminalId, projectId)
     return true
@@ -646,14 +653,14 @@ export function restartTerminal(
     try {
       await starting.get(launch.sid)
       if (requestedEpoch !== epoch || isClosing(launch)) return
-      await terminalStop(launch.sid)
-      const deadline = Date.now() + 10000
-      while ((await terminalSnapshot(launch.sid))?.running) {
-        if (requestedEpoch !== epoch || isClosing(launch)) return
-        if (Date.now() >= deadline)
-          throw new Error('Terminal is still stopping. Try Restart again.')
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
+      if (
+        !(await stopAndWait(
+          launch.sid,
+          'Terminal is still stopping. Try Restart again.',
+          () => requestedEpoch === epoch && !isClosing(launch),
+        ))
+      )
+        return
       launch.restart = true
       if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
     } catch (e) {
@@ -714,6 +721,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
       s.setSession(e.sessionId, {
         ...s.sessions[e.sessionId],
         activity: hydrateActivity(s.sessions[e.sessionId], e.generation),
+        replies: hydrateReplies(s.sessions[e.sessionId], e.generation),
         generation: e.generation,
         running: false,
         exitCode: e.exitCode,
@@ -728,6 +736,24 @@ export function handleTerminalEvent(e: TerminalEvent) {
       )
         s.keepInDock(e.sessionId)
       break
+    case 'reply': {
+      const prev = s.sessions[e.sessionId]
+      const fresh = prev?.generation !== e.generation
+      s.setSession(e.sessionId, {
+        ...(fresh ? {} : prev),
+        generation: e.generation,
+        running: fresh || prev.running,
+        replies: hydrateReplies(prev, e.generation, [e.reply]),
+      })
+      // A reply right after the covered ones (its run's first, or the one after the latest
+      // covered) extends the coverage, so the next reconcile reads no snapshot for it.
+      const covered = replySnapshots.get(e.sessionId)
+      const seen = covered?.generation === e.generation ? covered.sequence : 0
+      if ((covered?.generation ?? 0) <= e.generation && (e.previous ?? 0) === seen)
+        replySnapshots.set(e.sessionId, { generation: e.generation, sequence: e.reply.sequence })
+      persistReplies(e.sessionId, e.generation, [e.reply])
+      break
+    }
     case 'activity': {
       const prev = s.sessions[e.sessionId]
       // Live activity can be the first event this window sees of a run: nothing of the
@@ -750,6 +776,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         running: newGeneration || (prev?.running ?? true),
         status: e.status,
         activity: hydrateActivity(prev, e.generation),
+        replies: hydrateReplies(prev, e.generation),
       })
       break
     }
@@ -771,22 +798,18 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
       if (snapshot && (await applySnapshot(sid, snapshot))) {
         // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
         if (!snapshot.running) restoreModes(sid)
-        useStore.getState().setSession(sid, {
-          generation: snapshot.generation,
-          running: snapshot.running,
-          exitCode: snapshot.exitCode ?? undefined,
-          startedMs: snapshot.startedMs,
-          exitedMs: snapshot.exitedMs ?? undefined,
-          status: snapshot.status,
-          activity: hydrateActivity(
+        useStore.getState().setSession(
+          sid,
+          sessionFromSnapshot(
             useStore.getState().sessions[sid],
-            snapshot.generation,
-            snapshot.activity,
+            snapshot,
+            useStore.getState().sessionRecords.find((r) => r.id === sid),
           ),
-          notice: snapshot.notice ?? undefined,
-          interrupted: useStore.getState().sessionRecords.find((r) => r.id === sid)?.interrupted,
-          truncated: snapshot.truncated,
-        })
+        )
+      }
+      if (snapshot) {
+        rememberReplySnapshot(sid, snapshot)
+        persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
       }
       return snapshot
     } finally {
@@ -856,7 +879,8 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
     a.truncated === b.truncated &&
     a.disconnected === undefined &&
     JSON.stringify(a.status) === JSON.stringify(b.status) &&
-    JSON.stringify(a.activity) === JSON.stringify(b.activity)
+    JSON.stringify(a.activity) === JSON.stringify(b.activity) &&
+    JSON.stringify(a.replies) === JSON.stringify(b.replies)
   )
 }
 
@@ -885,6 +909,46 @@ export function withoutForgotten(
   return next
 }
 
+function rememberReplySnapshot(sid: string, snapshot: TerminalSnapshot) {
+  const previous = replySnapshots.get(sid)
+  const sequence = snapshot.lastReply ?? snapshot.replies?.at(-1)?.sequence ?? 0
+  if (
+    !previous ||
+    snapshot.generation > previous.generation ||
+    (snapshot.generation === previous.generation && sequence > previous.sequence)
+  )
+    replySnapshots.set(sid, { generation: snapshot.generation, sequence })
+}
+
+/** Session lists name only the latest reply: read a snapshot for replies this window missed. */
+async function fetchReplies(record: SessionRecord) {
+  if (fetchingReplies.has(record.id)) return
+  const token = Symbol()
+  const requestedEpoch = epoch
+  fetchingReplies.set(record.id, token)
+  try {
+    const snapshot = await terminalSnapshot(record.id, 0)
+    const s = useStore.getState()
+    if (!snapshot || requestedEpoch !== epoch || !s.sessionRecords.some((r) => r.id === record.id))
+      return
+    const prev = s.sessions[record.id]
+    if ((prev?.generation ?? 0) <= snapshot.generation)
+      s.setSession(
+        record.id,
+        // The same run keeps what this window has of it; a newer one comes whole from the snapshot.
+        prev?.generation === snapshot.generation
+          ? { ...prev, replies: hydrateReplies(prev, snapshot.generation, snapshot.replies) }
+          : sessionFromSnapshot(prev, snapshot, record),
+      )
+    rememberReplySnapshot(record.id, snapshot)
+    persistReplies(record.id, snapshot.generation, snapshot.replies ?? [], record)
+  } catch {
+    // The next reconcile tries again.
+  } finally {
+    if (fetchingReplies.get(record.id) === token) fetchingReplies.delete(record.id)
+  }
+}
+
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
@@ -903,6 +967,9 @@ export function reconcileSessions(force = true): Promise<void> {
       const changed = status.instanceId !== current.serviceInstance
       const reconnecting = !current.serviceConnected || changed
       if (changed) resetSessions(0)
+      const listed = new Set(records.map((r) => r.id))
+      for (const sid of replySnapshots.keys()) if (!listed.has(sid)) replySnapshots.delete(sid)
+      for (const sid of persistedReplies.keys()) if (!listed.has(sid)) persistedReplies.delete(sid)
       useStore.setState((s) => ({
         serviceConnected: reconnecting ? false : current.serviceConnected,
         serviceInstance: status.instanceId,
@@ -922,32 +989,34 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot) {
-          const next: SessionState = {
-            generation: snapshot.generation,
-            running: snapshot.running,
-            exitCode: snapshot.exitCode ?? undefined,
-            startedMs: snapshot.startedMs,
-            exitedMs: snapshot.exitedMs ?? undefined,
-            status: snapshot.status,
-            activity: hydrateActivity(
-              useStore.getState().sessions[r.id],
-              snapshot.generation,
-              snapshot.activity,
-            ),
-            notice: snapshot.notice ?? undefined,
-            interrupted: r.interrupted,
-            truncated: snapshot.truncated,
-          }
+          const next = sessionFromSnapshot(useStore.getState().sessions[r.id], snapshot, r)
           const prev = useStore.getState().sessions[r.id]
           // An exit already seen for this run is newer than a list saying it runs.
           const staleRun =
-            prev && !prev.running && next.running && prev.startedMs === next.startedMs
+            prev &&
+            prev.generation === next.generation &&
+            !prev.running &&
+            next.running &&
+            prev.startedMs === next.startedMs
           if (
             (prev?.generation ?? 0) <= snapshot.generation &&
             !staleRun &&
             !sameSession(prev, next)
           )
             current.setSession(r.id, next)
+        }
+        // A live reply may have preceded its metadata or the chat's planner claim. Persist again
+        // only once the replies or the chats receiving them changed since the last pass.
+        const session = useStore.getState().sessions[r.id]
+        if (showsSession(r.metadata) && session?.generation !== undefined) {
+          const key = persistChangedReplies(
+            r.id,
+            session.generation,
+            session.replies ?? [],
+            r,
+            persistedReplies.get(r.id),
+          )
+          persistedReplies.set(r.id, key)
         }
         const state = projects[r.metadata.projectId]?.state
         const root =
@@ -988,10 +1057,19 @@ export function reconcileSessions(force = true): Promise<void> {
       }
       for (const r of records) {
         // Only sessions this window shows, and after lost events only those that fell behind.
-        if (showsSession(r.metadata) && (reconnecting || (force && behind(r.id, r.snapshot)))) {
+        if (!showsSession(r.metadata)) continue
+        if (reconnecting || (force && behind(r.id, r.snapshot))) {
           hydration.delete(r.id)
           await hydrateSession(r.id)
         }
+        const covered = replySnapshots.get(r.id)
+        const seen = covered?.generation === r.snapshot?.generation ? (covered?.sequence ?? 0) : 0
+        if (
+          r.snapshot &&
+          (covered?.generation ?? 0) <= r.snapshot.generation &&
+          (r.snapshot.lastReply ?? 0) > seen
+        )
+          void fetchReplies(r)
       }
       useStore.setState({
         serviceConnected: true,

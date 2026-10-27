@@ -3630,7 +3630,8 @@ mod tests {
                     }
                     TerminalEvent::Started { .. }
                     | TerminalEvent::Status { .. }
-                    | TerminalEvent::Activity { .. } => {}
+                    | TerminalEvent::Activity { .. }
+                    | TerminalEvent::Reply { .. } => {}
                 }
             }
             String::from_utf8(output).unwrap()

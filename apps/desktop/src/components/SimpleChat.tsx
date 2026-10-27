@@ -1,21 +1,36 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
-import { PLAN_SCOPE, REVIEW_SCOPE, isReservedScope, type SessionRecord } from '../types'
-import { SIMPLE_STAGES, thread, type SimpleStage } from '../lib/simple'
-import { logSimple } from '../lib/simpleActions'
+import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
+import {
+  recordStage,
+  selectRecipient,
+  thread,
+  type SimpleAction,
+  type SimpleStage,
+} from '../lib/simple'
+import { flow, type FlowAction } from '../lib/simpleFlow'
+import { logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
-import { simpleKey, stageOpen, pendingInput, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { inputDrawer, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { terminalStatus } from '../lib/display'
-import { revealTerminal } from '../lib/attention'
-import { openComponentWindow } from '../lib/windows'
 import { implementPlannerPlan } from '../lib/planHandoff'
 import { fixReviewFindings } from '../lib/reviewHandoff'
-import { chatRolePresets, roleDevice } from '../lib/agentRoles'
-import { reviewState, reviewWorktreeBusy, useRunningReviewLanes } from '../lib/reviewAgents'
-import { graphActionIn } from '../lib/actions'
+import { chatRolePresets, roleDevice, roleDevices } from '../lib/agentRoles'
+import {
+  defaultMergeDestination,
+  defaultReviewBase,
+  reviewState,
+  startMergeAgent,
+  useRunningReviewLanes,
+} from '../lib/reviewAgents'
+import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
+import { gitWorktrees, mergeConflicts } from '../lib/ipc'
+import { seedNewTask } from '../lib/tasks'
+import { linkStory } from '../lib/stories'
+import { mergeNow, resumeAuto } from '../lib/auto'
 import {
   missingHooks,
   sessionReportedHooks,
@@ -25,16 +40,19 @@ import {
   type HookProvider,
 } from '../lib/agentHooks'
 import FindingsPanel, { VerdictBadge, SeverityCounts } from './findings/FindingsPanel'
-import ValidationChips from './changes/ValidationChips'
-import { latestChange, latestChangeOf } from '../lib/review'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
-import SimpleStatus from './SimpleStatus'
+import TerminalPane from './TerminalPane'
 import './simple.css'
 
 const pendingActions = new Set<string>()
+/** Run a launch and say when it began, so `logLaunch` claims only a run it started. */
+async function timed<T>(launch: () => Promise<T>) {
+  const atMs = Date.now()
+  return { result: await launch(), atMs }
+}
 
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
   const s = useStore(
@@ -49,51 +67,18 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       auto: s.auto,
       devices: s.devices,
       agentRoles: s.agentRoles,
-      graphActionBusy: s.graphActionBusy,
-      setActiveSession: s.setActiveSession,
-      select: s.select,
-      toProject: s.toProject,
+      revealed: s.revealed,
     })),
   )
   const { data, source, error, findings } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
-  const [pending, setPending] = useState(''),
-    [failure, setFailure] = useState<{ action: string; text: string }>()
+  const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
+  const [pending, setPending] = useState('')
+  const [failure, setFailure] = useState('')
   const [dialog, setDialog] = useState<'review' | 'merge'>()
-  const stageContentId = useId()
-  const runningReview = useRunningReviewLanes(source?.branch)
-  const filter = useSimpleUi((u) => u.worktrees[key]?.stageFilter ?? 'all')
-  const stageUi = useSimpleUi(
-    useShallow((u) => ({
-      stages: u.worktrees[key]?.stages ?? EMPTY_SIMPLE_UI.stages,
-      inputRequests: u.worktrees[key]?.inputRequests ?? EMPTY_SIMPLE_UI.inputRequests,
-      expandedAgents: u.worktrees[key]?.expanded ?? EMPTY_SIMPLE_UI.expanded,
-    })),
-  )
-  // The stage holding keyboard focus, which an advance must not fold out from under the user.
-  const [focusedStage, setFocusedStage] = useState<SimpleStage>()
+  const [check, setCheck] = useState<{ key: string; paths: string[] }>()
   const threadRef = useRef<HTMLDivElement>(null)
-  // A new filter starts at the top, unless an input request or answer needs to stay in view.
-  // Only actual changes scroll, so mounting never undoes an agent's own scroll into view.
-  const shownFilter = useRef(filter)
-  useEffect(() => {
-    if (shownFilter.current === filter) return
-    shownFilter.current = filter
-    const thread = threadRef.current
-    // A filter can unmount the focused control without a blur reaching its section.
-    if (!thread?.contains(document.activeElement)) setFocusedStage(undefined)
-    const asking = thread?.querySelector('.simple-agent[data-input-open]')
-    if (asking) asking.scrollIntoView({ block: 'nearest' })
-    else thread?.scrollTo({ top: 0 })
-  }, [filter])
-  useEffect(() => {
-    const current = useStore.getState()
-    if (current.project && !current.simple)
-      current.patchTask(current.project.id, current.activeTask, {
-        simple: { startedMs: Date.now(), log: [] },
-      })
-  }, [s.project, s.activeTask, s.simple])
-  const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
+  const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
   const worktree = {
@@ -102,106 +87,115 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     path: source?.path ?? s.tasks.find((t) => t.id === task)?.worktree ?? s.project?.root ?? '',
     branch: source?.branch,
   }
-  const model = thread(
-    { records: s.sessionRecords, sessions: s.sessions, simple: s.simple, auto: s.auto, ...data },
-    worktree,
+  const snapshot = {
+    records: s.sessionRecords,
+    sessions: s.sessions,
+    simple: s.simple,
+    auto: s.auto,
+    ...data,
+    createdMs: s.tasks.find((t) => t.id === task)?.createdMs,
+  }
+  const model = thread(snapshot, worktree)
+  const target = data?.worktrees.find(
+    (w) => w.path === (source && defaultMergeDestination(source, data.worktrees)),
   )
-  // Share a single status with filtering, disclosures, cards and labels.
-  const stageSections = model.sections.map((section) => {
-    const agents = section.sessions.map((record) => {
-      const status = terminalStatus('agent', s.sessions[record.id])
-      const input = pendingInput(
-        record.id,
-        s.sessions[record.id],
-        status,
-        stageUi.inputRequests[record.id],
-      )
-      return { record, status, input }
-    })
-    return {
-      ...section,
-      agents,
-      asking: agents.some(({ status }) => status.health === 'input'),
-      inputOpen: agents.some(({ input }) => !!input),
-    }
-  })
-  // A string, so the store is synced only when the requests or the agents asking change.
-  const inputSync = JSON.stringify(
-    stageSections.flatMap(({ agents }) =>
-      agents.flatMap(({ record, input, status }) =>
-        input ? [[record.id, input, status.health === 'input']] : [],
-      ),
-    ),
+  const merging = model.records.filter((r) => recordStage(r) === 'merge').at(-1)
+  const mergeBase =
+    model.stage === 'merge'
+      ? data?.worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
+      : undefined
+  const base =
+    mergeBase ??
+    target?.branch ??
+    (source && defaultReviewBase(source, s.tasks, data?.worktrees ?? [], []))
+  const checkKey = JSON.stringify([key, source?.head, target?.head])
+  const recipient = selectRecipient(
+    model.records,
+    s.sessions,
+    model.stage,
+    undefined,
+    model.foreign,
   )
-  useEffect(() => {
-    if (!projectId) return
-    const requests = JSON.parse(inputSync) as [string, string, boolean][]
-    useSimpleUi.getState().syncInputRequests(
-      key,
-      Object.fromEntries(requests.map(([sid, run]) => [sid, run])),
-      requests.flatMap(([sid, , asking]) => (asking ? [sid] : [])),
-    )
-  }, [key, projectId, inputSync])
-  if (!s.project) return null
-  // Keep requests and partially typed answers visible whatever the filter.
-  const sections = stageSections.filter(
-    (section) => filter === 'all' || section.id === filter || section.inputOpen,
+  const state = flow(
+    {
+      ...snapshot,
+      worktree,
+      findings: findings?.findings,
+      base: base ?? undefined,
+      conflicts: check?.key === checkKey ? check.paths : undefined,
+    },
+    model,
+    recipient,
   )
-  const groups = changeGroups(s.nodes, data?.review)
-  const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
-  const busy = reviewWorktreeBusy(model.records, s.sessions, worktree.path)
-  const status = reviewState(findings?.findings, source)
-  const planner =
-    model.records.filter((r) => r.metadata.componentId === PLAN_SCOPE).at(-1)?.metadata
-      .terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan').id
-  // Agents that run or would: the chat's running sessions and the presets its roles launch.
+  const asking =
+    recipient && terminalStatus('agent', s.sessions[recipient.id]).health === 'input'
+      ? recipient
+      : undefined
+  const inputKey = asking
+    ? `${asking.id}:${s.sessions[asking.id]?.generation}:${s.sessions[asking.id]?.status?.agent?.sinceMs}`
+    : ''
+  const drawerRecord = ui.terminalSession
+    ? model.records.find((r) => r.id === ui.terminalSession?.id)
+    : recipient
+  const drawerShown = ui.terminal !== 'closed' && !!drawerRecord
+  const runningReview = useRunningReviewLanes(source?.branch)
+  const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   const running = model.records.filter((r) => s.sessions[r.id]?.running)
   const hookProviders = [...running.map((r) => r.metadata.adapter), ...roleProviders].flatMap(
     (p) => p ?? [],
   )
-  // Native reporting proves hooks even after Esc temporarily revokes readiness.
   const reporting = new Set(
     running.flatMap((r) =>
       sessionReportedHooks(s.sessions[r.id]) ? (r.metadata.adapter ?? []) : [],
     ),
   )
-  const run = async (
-    action: 'implement' | 'fix' | 'validate',
-    stage: SimpleStage,
-    fn: () => Promise<string | void>,
-  ) => {
-    const actionKey = `${key}:${action}`
-    if (pendingActions.has(actionKey)) return
-    pendingActions.add(actionKey)
-    setPending(action)
-    setFailure(undefined)
-    try {
-      const sid = await fn()
-      logSimple(projectId, task, {
-        kind: 'action',
-        action,
-        stage,
-        sessionId: sid ?? undefined,
-        generation: sid ? useStore.getState().sessions[sid]?.generation : undefined,
+  useEffect(() => {
+    const current = useStore.getState()
+    if (current.project && !current.simple)
+      current.patchTask(current.project.id, current.activeTask, {
+        simple: { startedMs: Date.now(), log: [] },
       })
-    } catch (e) {
-      setFailure({ action, text: String(e) })
-    } finally {
-      pendingActions.delete(actionKey)
-      setPending('')
+  }, [s.project, s.activeTask, s.simple])
+  // `thread` lists records afresh on every render; the drawer only needs which ones exist.
+  const recordKey = model.records.map((r) => r.id).join('\n')
+  useEffect(() => {
+    const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
+    const next = inputDrawer(current, asking, s.sessions, recordKey.split('\n'))
+    if (next !== current) useSimpleUi.getState().patch(key, next)
+  }, [key, asking, s.sessions, recordKey])
+  // What can grow the thread, without serializing its records or reply texts on every render.
+  const contentKey = JSON.stringify([
+    model.items.map((i) =>
+      i.kind === 'agent'
+        ? `${i.id}:${i.entries.length}`
+        : i.kind === 'plan'
+          ? `${i.id}:${i.text.length}:${i.stale}`
+          : `${i.id}:${i.atMs}`,
+    ),
+    state.step,
+    state.prompt,
+    inputKey,
+    data?.outcome,
+  ])
+  useEffect(() => {
+    if (atBottom.current) threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight })
+  }, [contentKey, ui.terminal])
+  useEffect(() => {
+    if (!s.revealed) return
+    const blocks = threadRef.current?.querySelectorAll<HTMLElement>('[data-session]')
+    const block = [...(blocks ?? [])].filter((el) => el.dataset.session === s.revealed?.sid).at(-1)
+    if (block) {
+      block.scrollIntoView({ block: 'nearest' })
+      useStore.getState().setRevealed(null)
     }
-  }
-  const openTerminal = (record: SessionRecord) => {
-    if (!isReservedScope(record.metadata.componentId)) {
-      s.setActiveSession(record.id)
-      void openComponentWindow(
-        record.metadata.componentId,
-        s.nodes.find((n) => n.id === record.metadata.componentId)?.data.name ??
-          record.metadata.name,
-        projectId,
-      ).catch((e) => setFailure({ action: 'terminal', text: String(e) }))
-    } else revealTerminal({ sid: record.id, componentId: record.metadata.componentId })
-  }
+  }, [s.revealed, key, contentKey])
+  if (!s.project) return null
+  const groups = changeGroups(s.nodes, data?.review)
+  const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
+  const planner =
+    model.records
+      .filter((r) => r.metadata.componentId === PLAN_SCOPE && !model.foreign.has(r.id))
+      .at(-1)?.metadata.terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan')?.id
   const openFile = (path: string, line?: number) => {
     const files = groups.flatMap((g) => g.files.map((f) => ({ componentId: g.id, path: f.path })))
     const exact = files.find((f) => f.path === path)
@@ -211,47 +205,171 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
-  const errorFor = (action: string) =>
-    failure?.action === action && <p role="alert">{failure.text}</p>
+  // A launch's entry claims only the run that launch started, dated at its start (`logLaunch`).
+  const log = (
+    action: SimpleAction,
+    stage: SimpleStage,
+    sid: string,
+    launchedAtMs: number,
+    destinationTask = task,
+    run?: { generation?: number; startedMs?: number },
+  ) =>
+    logLaunch(
+      projectId,
+      destinationTask,
+      {
+        kind: 'action',
+        action,
+        stage,
+        sessionId: sid,
+        atMs: run?.startedMs,
+        generation: run?.generation,
+      },
+      launchedAtMs,
+      { atRunStart: true },
+    )
+  const logReviewers = (reviewers: StartedReviewer[], launchedAtMs: number) =>
+    Promise.all(reviewers.map((r) => log('review', 'review', r.sessionId, launchedAtMs, task, r)))
+  const logMerge = (request: MergeRequest, sid: string, launchedAtMs: number) =>
+    logLaunch(
+      projectId,
+      task,
+      { kind: 'action', action: 'merge', stage: 'merge', request, sessionId: sid },
+      launchedAtMs,
+    )
+  const run = async (action: string, fn: () => Promise<void>) => {
+    const lock = `${key}:${action}`
+    if (pendingActions.has(lock)) return
+    pendingActions.add(lock)
+    setPending(action)
+    setFailure('')
+    try {
+      await fn()
+    } catch (e) {
+      setFailure(String(e))
+    } finally {
+      pendingActions.delete(lock)
+      setPending('')
+    }
+  }
+  const build = async (destinationTask = task) => {
+    const current = useStore.getState()
+    if (current.project?.id !== projectId || current.activeTask !== destinationTask)
+      throw new Error('The worktree changed. Choose Build in the intended chat.')
+    const { result: sid, atMs } = await timed(() =>
+      implementPlannerPlan(planner, undefined, undefined, 'stay'),
+    )
+    await log('implement', 'build', sid, atMs, destinationTask)
+  }
+  const act = (action: FlowAction) =>
+    void run(action, async () => {
+      if (action === 'build') {
+        if (task) await build()
+        else {
+          const conversation = s.simple
+          const state = useStore.getState()
+          const story = state.planStoryTerminal === planner ? state.planStory : null
+          seedNewTask(
+            (created, pid) => {
+              if (ui.terminal === 'user')
+                useSimpleUi.getState().patch(simpleKey(pid, created.id), { terminal: 'user' })
+              if (conversation)
+                useStore.getState().patchTask(pid, created.id, {
+                  simple: {
+                    ...conversation,
+                    startedMs: model.planningStarted,
+                    log: conversation.log.filter((e) => e.atMs >= model.planningStarted),
+                  },
+                })
+              void run('build', async () => {
+                if (story) await linkStory(pid, story, created.id)
+                await build(created.id)
+              })
+            },
+            { copyPlan: true },
+          )
+        }
+      } else if (action === 'plan') {
+        threadRef.current
+          ?.closest('.simple-chat')
+          ?.querySelector<HTMLTextAreaElement>('textarea')
+          ?.focus()
+      } else if (action === 'review') {
+        // Without a base, Options asks for one; the review starts from that dialog.
+        if (source?.branch && !base) {
+          setDialog('review')
+          return
+        }
+        const request = simpleReviewRequest(source, base)
+        const { result, atMs } = await timed(() =>
+          startSimpleReview(
+            useStore.getState().toProject(),
+            request,
+            roleDevices(s.devices, s.agentRoles, 'review'),
+          ),
+        )
+        const { started, errors } = result
+        await logReviewers(started, atMs)
+        if (errors.length) setFailure(errors.join('\n'))
+      } else if (action === 'fix' && reviewer) {
+        const { result: sid, atMs } = await timed(() =>
+          fixReviewFindings(reviewer, undefined, undefined, 'stay'),
+        )
+        await log('fix', 'build', sid, atMs)
+      } else if (action === 'checkMerge') {
+        if (!target?.branch || !source?.branch) {
+          setDialog('merge')
+          return
+        }
+        const trees = await gitWorktrees(projectId)
+        const from = trees.find((w) => w.path === source.path)
+        const to = trees.find((w) => w.path === target.path)
+        if (!from || !to)
+          throw new Error('The merge worktrees changed. Choose a destination again.')
+        const paths = await mergeConflicts(projectId, from.head, to.head)
+        setCheck({ key: JSON.stringify([key, from.head, to.head]), paths })
+      } else if (action === 'merge' && source?.branch && target?.branch) {
+        const request = {
+          source: source.path,
+          sourceBranch: source.branch,
+          destination: target.path,
+          destinationBranch: target.branch,
+        }
+        const { result: sid, atMs } = await timed(() =>
+          startMergeAgent(
+            useStore.getState().toProject(),
+            request,
+            roleDevice(s.devices, s.agentRoles, 'merge'),
+            crypto.randomUUID(),
+          ),
+        )
+        await logMerge(request, sid, atMs)
+      } else if (action === 'resumeAuto') {
+        await resumeAuto(projectId, task)
+        logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: model.stage })
+      } else if (action === 'mergeApproval') {
+        mergeNow(projectId, task)
+        logSimple(projectId, task, { kind: 'action', action: 'mergeApproval', stage: 'merge' })
+      }
+    })
+  const items = model.items
   return (
     <div className="simple-chat">
       <header>
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
+        <button onClick={() => useStore.getState().showAutoPanel()}>Auto</button>
       </header>
-      <nav className="simple-stage-tabs" aria-label="Chat stages">
-        {(['all', ...SIMPLE_STAGES] as const).map((stage) => (
-          <button
-            key={stage}
-            aria-pressed={filter === stage}
-            onClick={() => useSimpleUi.getState().patch(key, { stageFilter: stage })}
-          >
-            {stage[0].toUpperCase() + stage.slice(1)}
-            {model.stage === stage && (
-              <span className="current-stage-dot" aria-label="Current stage">
-                ●
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
         <ReviewAgentDialog
+          restartSettled
           source={source}
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}
-          launched={(sid) => {
-            logSimple(projectId, task, {
-              kind: 'action',
-              action: 'review',
-              stage: 'review',
-              sessionId: sid,
-              generation: useStore.getState().sessions[sid]?.generation,
-            })
-            setDialog(undefined)
-          }}
+          started={(reviewers, launchedAtMs) => void logReviewers(reviewers, launchedAtMs)}
+          launched={() => setDialog(undefined)}
         />
       )}
       {source && dialog === 'merge' && (
@@ -260,276 +378,169 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           worktrees={data?.worktrees ?? []}
           findings={findings}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid) =>
-            logSimple(projectId, task, {
-              kind: 'action',
-              action: 'merge',
-              stage: 'merge',
-              request,
-              sessionId: sid,
-              generation: useStore.getState().sessions[sid]?.generation,
-            })
-          }
+          onRequest={(request, sid, launchedAtMs) => void logMerge(request, sid, launchedAtMs)}
           launched={() => setDialog(undefined)}
         />
       )}
-      <div className="simple-thread" ref={threadRef}>
-        {sections.map((section) => {
-          const { asking } = section
-          // Focus or an inline terminal opened here keeps the stage open as the thread advances.
-          const inUse =
-            focusedStage === section.id ||
-            section.agents.some(({ record }) => stageUi.expandedAgents.includes(record.id))
-          const expanded =
-            filter !== 'all' ||
-            section.inputOpen ||
-            stageOpen(stageUi.stages, section.id, model.stage, inUse)
-          const contentId = `${stageContentId}-${section.id}`
-          const label = section.id[0].toUpperCase() + section.id.slice(1)
+      <div
+        className="simple-thread"
+        ref={threadRef}
+        onScroll={() => {
+          const el = threadRef.current!
+          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70
+        }}
+      >
+        {!items.length && <p className="simple-narration">Describe a feature to start planning.</p>}
+        {items.map((item, index) => {
+          if (item.kind === 'agent') {
+            const latest = !items
+              .slice(index + 1)
+              .some((i) => i.kind === 'agent' && i.sessionId === item.sessionId)
+            return (
+              <SimpleAgent
+                key={item.id}
+                record={item.record}
+                sessionId={item.sessionId}
+                entries={item.entries}
+                latest={latest}
+                working={state.busyAgent?.id === item.sessionId}
+              />
+            )
+          }
+          if (item.kind === 'line')
+            return (
+              <p className="simple-narration" key={item.id}>
+                {item.text}
+              </p>
+            )
+          if (item.kind === 'plan')
+            return item.stale ? (
+              <details className="simple-earlier-plan" key={item.id}>
+                <summary>
+                  An earlier project plan exists
+                  {data?.plan.savedMs
+                    ? ` (saved ${new Date(data.plan.savedMs).toLocaleString()})`
+                    : ''}{' '}
+                  · Show
+                </summary>
+                <Markdown text={item.text} />
+              </details>
+            ) : (
+              state.step !== 'planning' && (
+                <article className="simple-result" key={item.id}>
+                  <h3>Plan</h3>
+                  <Markdown text={item.text} />
+                </article>
+              )
+            )
+          if (item.result === 'review')
+            return (
+              findings?.findings && (
+                <article className="simple-result" key={item.id}>
+                  <h3>
+                    Review <VerdictBadge findings={findings.findings} running={runningReview} />
+                    <SeverityCounts findings={findings.findings} />
+                  </h3>
+                  <FindingsPanel
+                    loaded={findings}
+                    branch={source?.branch}
+                    status={reviewState(findings.findings, source)}
+                    onOpenFile={(ref) => openFile(ref.path, ref.line)}
+                    canOpen={() => true}
+                  />
+                </article>
+              )
+            )
+          if (item.result === 'changes')
+            return (
+              <article className="simple-result" key={item.id}>
+                <h3>Changes</h3>
+                <p>
+                  {groups.reduce((sum, g) => sum + g.files.length, 0)} uncommitted files ·{' '}
+                  {groups.length} components
+                </p>
+                {groups.flatMap((g) =>
+                  g.files.map((f) => (
+                    <button
+                      className="simple-file"
+                      key={`${g.id}:${f.path}`}
+                      onClick={() => openFile(f.path)}
+                    >
+                      {f.path}
+                    </button>
+                  )),
+                )}
+              </article>
+            )
+          if (state.step === 'merged') return null
           return (
-            <section
-              className="simple-stage"
-              key={section.id}
-              aria-current={model.stage === section.id ? 'step' : undefined}
-              data-collapsed={!expanded || undefined}
-              onFocusCapture={() => {
-                if (expanded) setFocusedStage(section.id)
-              }}
-              onBlurCapture={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget))
-                  setFocusedStage((stage) => (stage === section.id ? undefined : stage))
-              }}
-            >
-              <h2>
-                {filter === 'all' ? (
-                  <button
-                    className="simple-stage-toggle"
-                    aria-expanded={expanded}
-                    aria-controls={contentId}
-                    aria-disabled={asking || undefined}
-                    aria-describedby={asking ? `${contentId}-asking` : undefined}
-                    title={asking ? 'An agent is waiting for input' : undefined}
-                    onClick={() => {
-                      if (asking) return
-                      useSimpleUi.getState().toggleStage(key, section.id, model.stage, {
-                        inputs: section.agents
-                          .filter(({ input }) => !!input)
-                          .map(({ record }) => record.id),
-                        inUse,
-                      })
-                    }}
-                  >
-                    <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {label}
-                  </button>
-                ) : (
-                  label
-                )}
-                {asking && filter === 'all' && (
-                  <span id={`${contentId}-asking`} hidden>
-                    Stays open while an agent is waiting for input
-                  </span>
-                )}
-                {!expanded && (
-                  <SimpleStatus
-                    sessions={section.agents.map(({ record }) => s.sessions[record.id])}
-                    folded
-                  />
-                )}
-              </h2>
-              <div id={contentId} hidden={!expanded}>
-                {section.id === 'plan' && (
-                  <article>
-                    <h3>Project plan · shared across worktree chats</h3>
-                    <Markdown text={data?.plan.text || 'No saved plan yet.'} />
-                    {data?.proposal && <Markdown text={data.proposal.plan} />}
-                    <button
-                      disabled={!model.planReady || !!pending}
-                      onClick={() =>
-                        void run('implement', 'build', () =>
-                          implementPlannerPlan(planner, undefined, undefined, 'stay'),
-                        )
-                      }
-                    >
-                      Implement
-                    </button>
-                    {errorFor('implement')}
-                  </article>
-                )}
-                {section.id === 'build' && (
-                  <>
-                    <article>
-                      <h3>Accepted worktree plan</h3>
-                      <Markdown
-                        text={
-                          task
-                            ? data?.acceptedPlan.text || 'No accepted plan yet.'
-                            : data?.acceptedPlan.text || 'No saved plan yet.'
-                        }
-                      />
-                    </article>
-                    <article>
-                      <h3>Changes</h3>
-                      {groups.length ? (
-                        groups.map((g) => (
-                          <div key={g.id}>
-                            <strong>{g.name}</strong>
-                            {g.id !== '@project' && (
-                              <ValidationChips
-                                componentId={g.id}
-                                changedAt={latestChange(g.files)}
-                                task={task}
-                              />
-                            )}
-                            {g.files.map((f) => (
-                              <button
-                                className="simple-file"
-                                key={f.path}
-                                onClick={() => openFile(f.path)}
-                              >
-                                {f.path}
-                              </button>
-                            ))}
-                          </div>
-                        ))
-                      ) : (
-                        <p>No uncommitted changes.</p>
-                      )}
-                      <button
-                        disabled={!source?.branch || busy || !!pending}
-                        onClick={() => setDialog('review')}
-                      >
-                        Review…
-                      </button>
-                    </article>
-                    {!!data && (groups.length > 0 || data.review.affected.length > 0) && (
-                      <article>
-                        <h3>May affect</h3>
-                        {data.review.affected.map((a) => (
-                          <div key={a.id}>
-                            <button onClick={() => s.select(a.id)}>
-                              {s.nodes.find((n) => n.id === a.id)?.data.name ?? a.id}
-                            </button>
-                            <ValidationChips
-                              componentId={a.id}
-                              changedAt={latestChangeOf(data.review.changes, a.via)}
-                              task={task}
-                            />
-                          </div>
-                        ))}
-                        <button
-                          disabled={s.graphActionBusy || !!pending}
-                          onClick={() =>
-                            void run('validate', 'build', async () => {
-                              await graphActionIn(projectId, task, s.toProject(), {
-                                kind: 'validateChanged',
-                                componentIds: groups
-                                  .filter((g) => g.id !== '@project')
-                                  .map((g) => g.id),
-                              })
-                            })
-                          }
-                        >
-                          Run validation
-                        </button>
-                        {errorFor('validate')}
-                      </article>
-                    )}
-                  </>
-                )}
-                {section.id === 'review' && (
-                  <article>
-                    <h3>
-                      Findings{' '}
-                      {findings?.findings && (
-                        <>
-                          <VerdictBadge findings={findings.findings} running={runningReview} />
-                          <SeverityCounts findings={findings.findings} />
-                        </>
-                      )}
-                    </h3>
-                    <FindingsPanel
-                      loaded={findings}
-                      branch={source?.branch}
-                      status={status}
-                      onOpenFile={(ref) => openFile(ref.path, ref.line)}
-                      canOpen={() => true}
-                    />
-                    {!!findings?.findings?.text.trim() &&
-                      !findings.findings.verdict?.clean &&
-                      reviewer && (
-                        <button
-                          disabled={busy || !!pending}
-                          onClick={() =>
-                            void run('fix', 'build', () =>
-                              fixReviewFindings(reviewer, undefined, undefined, 'stay'),
-                            )
-                          }
-                        >
-                          Fix findings
-                        </button>
-                      )}
-                    {errorFor('fix')}
-                    <button
-                      disabled={
-                        busy ||
-                        !!pending ||
-                        status !== 'current' ||
-                        !findings?.findings?.verdict?.clean ||
-                        !source?.branch
-                      }
-                      onClick={() => setDialog('merge')}
-                    >
-                      Merge…
-                    </button>
-                  </article>
-                )}
-                {section.id === 'merge' && (
-                  <article>
-                    {data?.outcome ??
-                      (data?.outcomeError
-                        ? `Merge status unavailable: ${data.outcomeError}`
-                        : 'Choose a merge destination after review.')}
-                  </article>
-                )}
-                {section.entries.map((entry) => (
-                  <article className="simple-entry" key={entry.id}>
-                    <time>{new Date(entry.atMs).toLocaleTimeString()}</time>
-                    {entry.kind === 'prompt' ? (
-                      <>
-                        <strong>You</strong>
-                        <pre>{entry.text}</pre>
-                        {entry.mentions.map((id) => (
-                          <span className="simple-scope-chip" key={id}>
-                            {s.nodes.find((n) => n.id === id)?.data.name ?? id}
-                          </span>
-                        ))}
-                      </>
-                    ) : (
-                      entry.action
-                    )}
-                  </article>
-                ))}
-                {section.agents.map(({ record, status, input }) => (
-                  <SimpleAgent
-                    key={record.id}
-                    record={record}
-                    status={status}
-                    inputOpen={!!input}
-                    scopeKey={key}
-                    openTerminal={openTerminal}
-                  />
-                ))}
-              </div>
-            </section>
+            <p className="simple-narration" key={item.id}>
+              {data?.outcomeError ??
+                (data?.outcome === 'inProgress'
+                  ? 'Merge in progress…'
+                  : 'Waiting for the merge outcome…')}
+            </p>
           )
         })}
+        {asking && (
+          <p className="simple-narration" role="status">
+            {s.sessions[asking.id]?.status?.agent?.message ??
+              'The agent needs your input in its terminal.'}
+          </p>
+        )}
+        {state.prompt && (
+          <div className="simple-step" data-step={state.step}>
+            <p>{state.prompt.text}</p>
+            {state.prompt.actions.map((b) => (
+              <button disabled={!!pending} key={b.action} onClick={() => act(b.action)}>
+                {b.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {['built', 'reviewed', 'fixed'].includes(state.step) && (
+          <button className="simple-options" onClick={() => setDialog('review')}>
+            Options…
+          </button>
+        )}
+        {failure && <p role="alert">{failure}</p>}
       </div>
-      {errorFor('terminal')}
+      {drawerShown && drawerRecord && (
+        <div
+          className="simple-terminal-drawer"
+          aria-label={`${recordStage(drawerRecord)} terminal`}
+        >
+          <TerminalPane
+            key={drawerRecord.id}
+            componentId={drawerRecord.metadata.componentId}
+            terminal={{
+              id: drawerRecord.metadata.terminalId,
+              name: drawerRecord.metadata.name,
+              kind: 'agent',
+              command: drawerRecord.spec.command,
+            }}
+            task={drawerRecord.metadata.task ?? null}
+            existingSessionId={drawerRecord.id}
+            focus={false}
+          />
+        </div>
+      )}
       <SimpleComposer
         scopeKey={key}
         stage={model.stage}
         records={model.records}
-        openTerminal={openTerminal}
+        foreign={model.foreign}
+        terminalRecord={drawerRecord}
+        openTerminal={(record: SessionRecord) =>
+          // A drawer whose session is gone shows nothing, so the toggle opens it in one click.
+          useSimpleUi.getState().patch(key, {
+            terminal: drawerShown ? 'closed' : 'user',
+            terminalSession:
+              !drawerShown && record.id === asking?.id
+                ? { id: record.id, generation: s.sessions[record.id]?.generation }
+                : undefined,
+          })
+        }
       />
     </div>
   )

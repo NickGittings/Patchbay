@@ -75,7 +75,10 @@ async function handoffPlannerPlan(
   })
   if (story && task) {
     try {
-      await updateStory(projectId, story, { task })
+      if (current().stories.find((s) => s.id === story)?.task !== task)
+        await updateStory(projectId, story, { task })
+      if (current().planStory === story && current().planStoryTerminal === plannerId)
+        useStore.getState().patchProject(projectId, { planStory: null, planStoryTerminal: null })
     } catch (e) {
       useStore
         .getState()

@@ -369,3 +369,19 @@ test('Implement links the planner story to its worktree only after launch succee
   expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story1', { task: 'task1' })
   expect(useStore.getState().stories[0].task).toBe('task1')
 })
+
+test('a handoff preserves a pending story belonging to another planner', async () => {
+  const item = { id: 'story', task: null } as unknown as import('../types').Story
+  useStore.setState({
+    stories: [item],
+    activeTask: 'task',
+    planStory: 'story',
+    planStoryTerminal: 'different',
+  })
+  await implementPlannerPlan('claude', undefined, undefined, 'stay')
+  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  expect(useStore.getState()).toMatchObject({
+    planStory: 'story',
+    planStoryTerminal: 'different',
+  })
+})

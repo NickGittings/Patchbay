@@ -298,8 +298,8 @@ export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<Un
   )
 }
 
-export const terminalSnapshot = (sessionId: string) =>
-  invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId })
+export const terminalSnapshot = (sessionId: string, outputLimit?: number) =>
+  invoke<TerminalSnapshot | null>('terminal_snapshot', { sessionId, outputLimit })
 /** `path` is relative to the open project's root; the backend refuses anything outside it. */
 export const listDir = (
   path: string,
@@ -576,6 +576,13 @@ export const reviewRead = (projectId: string, branch: string) =>
   invoke<import('../types').ReviewFindings | null>('review_read', { projectId, branch })
 
 export const reviewPrune = (projectId: string) => invoke<void>('review_prune', { projectId })
+
+export const mergeConflicts = (projectId: string, source: string, destination: string) =>
+  invoke<string[]>('merge_conflicts', {
+    projectId,
+    source,
+    destination,
+  })
 
 export const mergeOutcome = (project: Project, request: import('../types').MergeRequest) =>
   invoke<import('../types').MergeOutcome>('merge_outcome', {

@@ -97,6 +97,49 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
     )
 }
 
+/// Report conflicting paths without checking out or reading any of those paths.
+///
+/// # Errors
+/// Fails when Git cannot resolve the revisions or perform the merge-tree check.
+pub fn conflicts(repo: &Path, source: &str, dest: &str) -> Result<Vec<String>> {
+    // Resolve refs first so provider/user text can never become command options.
+    let source = git::run(git::git(repo).args([
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        &format!("{source}^{{commit}}"),
+    ]))?;
+    let dest = git::run(git::git(repo).args([
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        &format!("{dest}^{{commit}}"),
+    ]))?;
+    let output = git::git(repo)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            "-z",
+            &dest,
+            &source,
+        ])
+        .output()?;
+    ensure!(
+        output.status.success() || output.status.code() == Some(1),
+        "Couldn't check merge conflicts: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output
+        .stdout
+        .split(|b| *b == 0)
+        .skip(1)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
+}
+
 pub struct AgentJob {
     pub terminal: TerminalSpec,
     pub spec: SessionSpec,
@@ -987,5 +1030,29 @@ mod tests {
         let mut terminal = Fixture::terminal("claude");
         terminal.kind = TerminalKind::Shell;
         assert!(prepare(&f.project, &f.request, &terminal, &AllowAll, None).is_err());
+    }
+    #[test]
+    fn conflict_check_reports_paths_and_leaves_worktrees_untouched() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        assert!(conflicts(root, "feature", "main").unwrap().is_empty());
+        for (path, text) in [
+            (&f.request.source, "source\n"),
+            (&f.request.destination, "destination\n"),
+        ] {
+            fs::write(Path::new(path).join("file.txt"), text).unwrap();
+            git::run(git::git(Path::new(path)).args(["add", "file.txt"])).unwrap();
+            git::run(git::git(Path::new(path)).args(["commit", "-qm", "change"])).unwrap();
+        }
+        assert_eq!(
+            conflicts(root, "feature", "main").unwrap(),
+            vec!["file.txt"]
+        );
+        assert!(
+            git::run(git::git(root).args(["status", "--porcelain"]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(conflicts(root, "--bad-ref", "main").is_err());
     }
 }

@@ -1575,6 +1575,20 @@ async fn stack_agent_start(
 }
 
 #[tauri::command]
+async fn merge_conflicts(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    source: String,
+    destination: String,
+) -> CmdResult<Vec<String>> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::merges::conflicts(&root, &source, &destination).map_err(err))
+        .await
+}
+
+#[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -1895,8 +1909,16 @@ async fn terminal_seen(state: State<'_, AppState>, session_id: String) -> CmdRes
 async fn terminal_snapshot(
     state: State<'_, AppState>,
     session_id: String,
+    output_limit: Option<usize>,
 ) -> CmdResult<Option<Snapshot>> {
-    service(&state, Request::Snapshot { id: session_id }).await
+    service(
+        &state,
+        Request::Snapshot {
+            id: session_id,
+            output_limit,
+        },
+    )
+    .await
 }
 /// Register this window as a viewer (and, with `claim`, the one that types and
 /// sizes the PTY). Returns no output: windows hydrate with `terminal_snapshot`.
@@ -2392,6 +2414,7 @@ pub fn run() {
                 map_agent_start,
                 stack_agent_start,
                 merge_outcome,
+                merge_conflicts,
                 review_agent_start,
                 review_read,
                 review_fix_task,

@@ -19,7 +19,8 @@ export default function MergeAgentDialog({
   findings: loaded,
   onRequest,
 }: {
-  onRequest?: (request: import('../types').MergeRequest, sid: string) => void
+  /** The started merge agent's request, session and when its launch began. */
+  onRequest?: (request: import('../types').MergeRequest, sid: string, launchedAtMs: number) => void
   source: Worktree
   worktrees: Worktree[]
   close: () => void
@@ -45,8 +46,9 @@ export default function MergeAgentDialog({
       runningText="A merge agent is already running in this destination."
       offlineText="Reconnect before starting a merge agent."
       hint="Merges the whole committed branch, resolves conflicts, and runs relevant checks before completing the local merge. Both worktrees must be clean. Leaves pushing to you."
-      launch={([device]) =>
-        startMergeAgent(
+      launch={([device]) => {
+        const launchedAtMs = Date.now()
+        return startMergeAgent(
           project,
           {
             source: source.path,
@@ -65,10 +67,11 @@ export default function MergeAgentDialog({
               destinationBranch: target!.branch!,
             },
             sid,
+            launchedAtMs,
           )
           return sid
         })
-      }
+      }}
       close={close}
       launched={launched}
     >

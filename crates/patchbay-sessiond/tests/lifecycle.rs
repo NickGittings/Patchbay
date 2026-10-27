@@ -30,13 +30,21 @@ fn independent_service_survives_clients_and_serializes_startup() {
         spec: SessionSpec { resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
     }).unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    let before: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
+    let before: Option<Snapshot> = client
+        .call(Request::Snapshot {
+            id: id.clone(),
+            output_limit: None,
+        })
+        .unwrap();
     drop(client); // Desktop quit must be just this: no PTY reset.
     std::thread::sleep(Duration::from_millis(300));
     let mut reconnected = Client::connect(&dir).unwrap();
     assert_eq!(reconnected.instance, instance);
     let after: Option<Snapshot> = reconnected
-        .call(Request::Snapshot { id: id.clone() })
+        .call(Request::Snapshot {
+            id: id.clone(),
+            output_limit: None,
+        })
         .unwrap();
     let (before, after) = (before.unwrap(), after.unwrap());
     assert!(after.running);
@@ -84,7 +92,10 @@ fn independent_service_survives_clients_and_serializes_startup() {
         })
         .unwrap();
     let snapshot: Option<Snapshot> = restarted
-        .call(Request::Snapshot { id: id.clone() })
+        .call(Request::Snapshot {
+            id: id.clone(),
+            output_limit: None,
+        })
         .unwrap();
     assert!(
         snapshot.unwrap().generation > after.generation,
@@ -214,8 +225,12 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
         let id: String = client.call(launch).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let initial = loop {
-            let snapshot: Option<Snapshot> =
-                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            let snapshot: Option<Snapshot> = client
+                .call(Request::Snapshot {
+                    id: id.clone(),
+                    output_limit: None,
+                })
+                .unwrap();
             if let Some(s) = snapshot
                 && !s.running
             {
@@ -263,8 +278,12 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         let resumed = loop {
-            let snapshot: Option<Snapshot> =
-                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            let snapshot: Option<Snapshot> = client
+                .call(Request::Snapshot {
+                    id: id.clone(),
+                    output_limit: None,
+                })
+                .unwrap();
             if let Some(s) = snapshot
                 && String::from_utf8_lossy(&s.data).contains("options:--model fixture")
             {
@@ -306,8 +325,12 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
                 })
                 .is_err()
         );
-        let unchanged: Option<Snapshot> =
-            client.call(Request::Snapshot { id: id.clone() }).unwrap();
+        let unchanged: Option<Snapshot> = client
+            .call(Request::Snapshot {
+                id: id.clone(),
+                output_limit: None,
+            })
+            .unwrap();
         assert_eq!(unchanged.unwrap().generation, resumed.generation);
         // A regenerated scope/plan must start fresh even with a pinned, unavailable conversation.
         std::fs::write(&briefing, "Changed highlights, peers, and plan").unwrap();
@@ -320,8 +343,12 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let snapshot: Option<Snapshot> =
-                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            let snapshot: Option<Snapshot> = client
+                .call(Request::Snapshot {
+                    id: id.clone(),
+                    output_limit: None,
+                })
+                .unwrap();
             if let Some(s) = snapshot
                 && !s.running
             {
@@ -347,8 +374,12 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let snapshot: Option<Snapshot> =
-                client.call(Request::Snapshot { id: id.clone() }).unwrap();
+            let snapshot: Option<Snapshot> = client
+                .call(Request::Snapshot {
+                    id: id.clone(),
+                    output_limit: None,
+                })
+                .unwrap();
             if let Some(s) = snapshot
                 && !s.running
             {
@@ -488,7 +519,12 @@ fn detached_task_environments_preserve_other_projects_and_shared_owners() {
         })
         .unwrap();
     for id in &ids {
-        let snapshot: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
+        let snapshot: Option<Snapshot> = client
+            .call(Request::Snapshot {
+                id: id.clone(),
+                output_limit: None,
+            })
+            .unwrap();
         assert!(
             snapshot.unwrap().running,
             "Removing one shared owner stopped {id}"
@@ -502,7 +538,12 @@ fn detached_task_environments_preserve_other_projects_and_shared_owners() {
         })
         .unwrap();
     for (index, id) in ids.iter().enumerate() {
-        let snapshot: Option<Snapshot> = client.call(Request::Snapshot { id: id.clone() }).unwrap();
+        let snapshot: Option<Snapshot> = client
+            .call(Request::Snapshot {
+                id: id.clone(),
+                output_limit: None,
+            })
+            .unwrap();
         assert_eq!(
             snapshot.unwrap().running,
             index != 1,
