@@ -64,9 +64,6 @@ export default function AutoPanel({
               action,
               stage: simpleStageOf(run?.stage),
               sessionId: run?.sessionId,
-              generation: run?.sessionId
-                ? useStore.getState().sessions[run.sessionId]?.generation
-                : undefined,
             })
         })
         .catch((e) => setError(String(e)))

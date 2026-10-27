@@ -1,4 +1,4 @@
-import { hydrateReplies, persistReplies, repliesKey } from './simpleReplies'
+import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
 import { stopAndWait } from './stopAndWait'
 import { sessionFromSnapshot } from './sessionState'
@@ -75,7 +75,7 @@ const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
 // Snapshot coverage is separate from live replies: seeing sequence N doesn't mean we saw 1…N.
 const replySnapshots = new Map<string, { generation: number; sequence: number }>()
 const fetchingReplies = new Map<string, symbol>()
-// What each reconcile last persisted per session (`repliesKey`), so unchanged replies aren't
+// What each reconcile last persisted per session (`persistChangedReplies`' key), so unchanged replies aren't
 // logged again on every pass.
 const persistedReplies = new Map<string, string>()
 const starting = new Map<string, Promise<void>>()
@@ -798,16 +798,14 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
       if (snapshot && (await applySnapshot(sid, snapshot))) {
         // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
         if (!snapshot.running) restoreModes(sid)
-        useStore
-          .getState()
-          .setSession(
-            sid,
-            sessionFromSnapshot(
-              useStore.getState().sessions[sid],
-              snapshot,
-              useStore.getState().sessionRecords.find((r) => r.id === sid)?.interrupted,
-            ),
-          )
+        useStore.getState().setSession(
+          sid,
+          sessionFromSnapshot(
+            useStore.getState().sessions[sid],
+            snapshot,
+            useStore.getState().sessionRecords.find((r) => r.id === sid),
+          ),
+        )
       }
       if (snapshot) {
         rememberReplySnapshot(sid, snapshot)
@@ -940,7 +938,7 @@ async function fetchReplies(record: SessionRecord) {
         // The same run keeps what this window has of it; a newer one comes whole from the snapshot.
         prev?.generation === snapshot.generation
           ? { ...prev, replies: hydrateReplies(prev, snapshot.generation, snapshot.replies) }
-          : sessionFromSnapshot(prev, snapshot, record.interrupted),
+          : sessionFromSnapshot(prev, snapshot, record),
       )
     rememberReplySnapshot(record.id, snapshot)
     persistReplies(record.id, snapshot.generation, snapshot.replies ?? [], record)
@@ -991,11 +989,7 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot) {
-          const next = sessionFromSnapshot(
-            useStore.getState().sessions[r.id],
-            snapshot,
-            r.interrupted,
-          )
+          const next = sessionFromSnapshot(useStore.getState().sessions[r.id], snapshot, r)
           const prev = useStore.getState().sessions[r.id]
           // An exit already seen for this run is newer than a list saying it runs.
           const staleRun =
@@ -1015,12 +1009,14 @@ export function reconcileSessions(force = true): Promise<void> {
         // only once the replies or the chats receiving them changed since the last pass.
         const session = useStore.getState().sessions[r.id]
         if (showsSession(r.metadata) && session?.generation !== undefined) {
-          const replies = session.replies ?? []
-          const key = repliesKey(r.id, session.generation, replies, r)
-          if (persistedReplies.get(r.id) !== key) {
-            persistedReplies.set(r.id, key)
-            persistReplies(r.id, session.generation, replies, r)
-          }
+          const key = persistChangedReplies(
+            r.id,
+            session.generation,
+            session.replies ?? [],
+            r,
+            persistedReplies.get(r.id),
+          )
+          persistedReplies.set(r.id, key)
         }
         const state = projects[r.metadata.projectId]?.state
         const root =

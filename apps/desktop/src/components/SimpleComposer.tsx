@@ -14,7 +14,7 @@ import {
   transmittedText,
   waitForPrompt,
 } from '../lib/simpleComposer'
-import { currentRun, logSimple } from '../lib/simpleActions'
+import { logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
 import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
@@ -147,19 +147,16 @@ export default function SimpleComposer({
       if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
         await sessionResume(target.id)
-        try {
-          await reconcileFreshSessions()
-          await refreshSession(target.id)
-        } finally {
-          // Name the resumed run, so the entry claims that run of a shared planner and no other.
-          logSimple(projectId, task, {
-            kind: 'action',
-            action: 'resume',
-            stage,
-            sessionId: target.id,
-            generation: (await currentRun(target.id)).generation,
-          })
-        }
+        // Claim the resumed run (`logSimple` asks the service for it) before reconciling, so that
+        // pass already persists its replies and input waits into this chat.
+        await logSimple(projectId, task, {
+          kind: 'action',
+          action: 'resume',
+          stage,
+          sessionId: target.id,
+        })
+        await reconcileFreshSessions()
+        await refreshSession(target.id)
       } else if (!target) {
         if (stage !== 'plan')
           throw new Error('Open a stage terminal or choose another recipient to continue.')

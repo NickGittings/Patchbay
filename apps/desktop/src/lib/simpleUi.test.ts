@@ -4,7 +4,7 @@ import { emptySimpleUi, inputDrawer, simpleKey, useSimpleUi, type SimpleUi } fro
 
 const planner = { id: 'planner' } as SessionRecord
 const builder = { id: 'builder' } as SessionRecord
-const records = [planner, builder]
+const records = [planner.id, builder.id]
 const drawer = (
   ui: SimpleUi,
   asking: SessionRecord | undefined,

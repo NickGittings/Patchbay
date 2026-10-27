@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
-import { hydrateReplies, persistReplies, repliesKey } from './simpleReplies'
+import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { revealTerminal } from './attention'
 import { inputDrawer, simpleKey, useSimpleUi } from './simpleUi'
 import { ownsPlanner, thread } from './simple'
@@ -246,7 +246,7 @@ test.each([0, 1])('View pins an unclaimed exited planner (exit %i) in Chat', asy
     terminal: 'user',
     terminalSession: { id: sid, generation: 1, pinned: true },
   })
-  expect(inputDrawer(ui, undefined, useStore.getState().sessions, [r])).toBe(ui)
+  expect(inputDrawer(ui, undefined, useStore.getState().sessions, [r.id])).toBe(ui)
   expect(useStore.getState().simple).toBeNull()
 })
 
@@ -422,34 +422,65 @@ test('View selects a merge source even when its destination task is listed first
   })
 })
 
-test('the persistence key changes only with the replies or the chats receiving them', () => {
+test('repeated persistence writes only when the replies or the chats receiving them change', () => {
   const r = record('@plan')
+  const claim = {
+    id: 'claim',
+    kind: 'prompt' as const,
+    stage: 'plan' as const,
+    atMs: 10,
+    sessionId: 's',
+    generation: 1,
+    text: 'Plan',
+    mentions: [],
+  }
+  const replies = () => useStore.getState().simple!.log.filter((e) => e.kind === 'reply')
   useStore.getState().patchTask('p', null, { simple: { startedMs: 1, log: [] } })
-  const key = repliesKey('s', 1, [reply(1)], r)
-  persistReplies('s', 1, [reply(1)], r)
-  expect(repliesKey('s', 1, [reply(1)], r)).toBe(key)
-  useStore.getState().patchTask('p', null, {
-    simple: {
-      startedMs: 1,
-      log: [
-        {
-          id: 'claim',
-          kind: 'prompt',
-          stage: 'plan',
-          atMs: 10,
-          sessionId: 's',
-          generation: 1,
-          text: 'Plan',
-          mentions: [],
-        },
-      ],
-    },
+  const unclaimed = persistChangedReplies('s', 1, [reply(1)], r, undefined)
+  expect(persistChangedReplies('s', 1, [reply(1)], r, unclaimed)).toBe(unclaimed)
+  expect(replies()).toEqual([])
+  useStore.getState().patchTask('p', null, { simple: { startedMs: 1, log: [claim] } })
+  const claimed = persistChangedReplies('s', 1, [reply(1)], r, unclaimed)
+  expect(claimed).not.toBe(unclaimed)
+  expect(replies()).toHaveLength(1)
+  // An unchanged key writes nothing, even when the log no longer holds the reply.
+  useStore.getState().patchTask('p', null, { simple: { startedMs: 1, log: [claim] } })
+  expect(persistChangedReplies('s', 1, [reply(1)], r, claimed)).toBe(claimed)
+  expect(replies()).toEqual([])
+  persistChangedReplies('s', 1, [reply(1), reply(2)], r, claimed)
+  expect(replies().map((e) => e.sequence)).toEqual([1, 2])
+})
+
+test('restored legacy entries without a run claim the next run their session logged', async () => {
+  const { restoredSimple } = await import('./simple')
+  const entry = (id: string, atMs: number, generation?: number) => ({
+    id,
+    kind: 'action' as const,
+    action: 'resume' as const,
+    stage: 'plan' as const,
+    atMs,
+    sessionId: 's',
+    generation,
   })
-  const claimed = repliesKey('s', 1, [reply(1)], r)
-  expect(claimed).not.toBe(key)
-  persistReplies('s', 1, [reply(1)], r)
-  // The persisted reply changes the chat's log, not what the key names.
-  expect(repliesKey('s', 1, [reply(1)], r)).toBe(claimed)
-  expect(repliesKey('s', 1, [reply(1), reply(2)], r)).not.toBe(claimed)
-  expect(repliesKey('s', 2, [reply(1)], r)).not.toBe(claimed)
+  const restored = restoredSimple({
+    startedMs: 1,
+    log: [
+      entry('before', 1),
+      { ...reply(1), kind: 'reply', id: 'r', stage: 'plan', sessionId: 's', generation: 2 },
+      entry('between', 200),
+      entry('claimed', 300, 3),
+      entry('last', 400),
+      { ...entry('other', 50), sessionId: 'other' },
+    ],
+  })!
+  expect(Object.fromEntries(restored.log.map((e) => [e.id, e.generation]))).toEqual({
+    before: 2,
+    r: 2,
+    between: 3,
+    claimed: 3,
+    last: undefined,
+    other: undefined,
+  })
+  expect(ownsPlanner(restored, 's', 2)).toBe(true)
+  expect(ownsPlanner(restored, 's', 4)).toBe(false)
 })

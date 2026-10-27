@@ -20,7 +20,7 @@ import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './i
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
-import { currentRun, logSimple } from './simpleActions'
+import { logSimple } from './simpleActions'
 
 const ordered = (items: Story[]) =>
   [...items].sort(
@@ -204,12 +204,11 @@ export async function planStory(projectId: string, story: Story) {
     story: story.id,
   })
   if (chat)
-    logSimple(projectId, task, {
+    await logSimple(projectId, task, {
       kind: 'action',
       action: 'plan',
       stage: 'plan',
       sessionId: sid,
-      generation: (await currentRun(sid)).generation,
       text: story.title,
       atMs: planningAtMs,
     })

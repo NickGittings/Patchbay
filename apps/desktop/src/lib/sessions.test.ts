@@ -1221,6 +1221,7 @@ test('replies read for a newer run keep every field of its snapshot', async () =
     activity,
     notice: 'Briefing notice',
     truncated: true,
-    interrupted: true,
   })
+  // The listing's `interrupted` described its run, not the newer one just read.
+  expect(useStore.getState().sessions[r.id].interrupted).toBeUndefined()
 })

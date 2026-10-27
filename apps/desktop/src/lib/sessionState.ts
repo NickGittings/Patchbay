@@ -1,16 +1,19 @@
-import type { SessionState, TerminalSnapshot } from '../types'
+import type { SessionRecord, SessionState, TerminalSnapshot } from '../types'
 import { hydrateReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
 
 /**
  * A snapshot's run as session state: every field comes from the snapshot, while replies and
- * activity merge with what this window already holds of the same run.
+ * activity merge with what this window already holds of the same run. A listing may predate the
+ * snapshot, so its `interrupted` applies only when it lists that same run.
  */
 export function sessionFromSnapshot(
   previous: SessionState | undefined,
   snapshot: TerminalSnapshot,
-  interrupted: boolean | undefined,
+  record: Pick<SessionRecord, 'interrupted' | 'snapshot'> | undefined,
 ): SessionState {
+  const interrupted =
+    record?.snapshot?.generation === snapshot.generation ? record.interrupted : undefined
   return {
     generation: snapshot.generation,
     running: snapshot.running,

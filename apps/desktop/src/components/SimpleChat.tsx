@@ -10,7 +10,7 @@ import {
   type SimpleStage,
 } from '../lib/simple'
 import { flow, type FlowAction } from '../lib/simpleFlow'
-import { currentRun, logSimple } from '../lib/simpleActions'
+import { logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
@@ -150,11 +150,13 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
+  // `thread` lists records afresh on every render; the drawer only needs which ones exist.
+  const recordIds = JSON.stringify(model.records.map((r) => r.id))
   useEffect(() => {
     const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
-    const next = inputDrawer(current, asking, s.sessions, model.records)
+    const next = inputDrawer(current, asking, s.sessions, JSON.parse(recordIds) as string[])
     if (next !== current) useSimpleUi.getState().patch(key, next)
-  }, [key, asking, s.sessions, model.records])
+  }, [key, asking, s.sessions, recordIds])
   // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
     model.items.map((i) =>
@@ -197,31 +199,34 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
-  // Entries name their run, resolved before logging, so a shared planner's later runs stay unclaimed.
-  const log = async (
+  // Entries date at their run's start; `logSimple` looks the run up when the launch didn't say.
+  const log = (
     action: SimpleAction,
     stage: SimpleStage,
     sid?: string,
     destinationTask = task,
-  ) => {
-    const run = await currentRun(sid)
-    logSimple(projectId, destinationTask, {
-      kind: 'action',
-      action,
-      stage,
-      sessionId: sid,
-      atMs: run.startedMs,
-      generation: run.generation,
-    })
-  }
-  const logMerge = async (request: MergeRequest, sid: string) =>
+    run?: { generation?: number; startedMs?: number },
+  ) =>
+    logSimple(
+      projectId,
+      destinationTask,
+      {
+        kind: 'action',
+        action,
+        stage,
+        sessionId: sid,
+        atMs: run?.startedMs,
+        generation: run?.generation,
+      },
+      { atRunStart: true },
+    )
+  const logMerge = (request: MergeRequest, sid: string) =>
     logSimple(projectId, task, {
       kind: 'action',
       action: 'merge',
       stage: 'merge',
       request,
       sessionId: sid,
-      generation: (await currentRun(sid)).generation,
     })
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = `${key}:${action}`
@@ -289,7 +294,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           simpleReviewRequest(source, base),
           roleDevices(s.devices, s.agentRoles, 'review'),
         )
-        for (const r of started) await log('review', 'review', r.sessionId)
+        await Promise.all(started.map((r) => log('review', 'review', r.sessionId, task, r)))
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
         await log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))

@@ -35,24 +35,6 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
   return { projectId: metadata.projectId, record: r, scopes }
 }
 
-/**
- * What `persistReplies` would write, so a caller repeating it for unchanged replies can skip it:
- * the run, its replies' sequences, and the chats (by start) that receive them.
- */
-export function repliesKey(
-  sid: string,
-  generation: number,
-  replies: readonly Reply[],
-  record?: SessionRecord,
-) {
-  const target = replyScopes(sid, generation, record)
-  return JSON.stringify([
-    generation,
-    replies.map((r) => r.sequence),
-    target?.scopes.map(({ task, simple }) => [task, simple.startedMs]),
-  ])
-}
-
 /** Persist at ingestion, including snapshots, even while Chat is unmounted. */
 export function persistReplies(
   sid: string,
@@ -60,13 +42,42 @@ export function persistReplies(
   incoming: readonly Reply[],
   record?: SessionRecord,
 ) {
-  if (!incoming.length) return
+  if (incoming.length) write(sid, generation, incoming, replyScopes(sid, generation, record))
+}
+
+/**
+ * `persistReplies` for a caller that repeats it, e.g. every reconcile: writes only when the key
+ * (the run, its replies' sequences, and the chats by start that receive them) differs from the
+ * `previous` one it returned, and returns the current key.
+ */
+export function persistChangedReplies(
+  sid: string,
+  generation: number,
+  replies: readonly Reply[],
+  record: SessionRecord | undefined,
+  previous: string | undefined,
+) {
   const target = replyScopes(sid, generation, record)
+  const key = JSON.stringify([
+    generation,
+    replies.map((r) => r.sequence),
+    target?.scopes.map(({ task, simple }) => [task, simple.startedMs]),
+  ])
+  if (key !== previous && replies.length) write(sid, generation, replies, target)
+  return key
+}
+
+function write(
+  sid: string,
+  generation: number,
+  incoming: readonly Reply[],
+  target: ReturnType<typeof replyScopes>,
+) {
   if (!target) return
   for (const { task, simple } of target.scopes) {
     for (const reply of [...incoming].sort((a, b) => a.sequence - b.sequence)) {
       if (reply.atMs < simple.startedMs) continue
-      logSimple(target.projectId, task, {
+      void logSimple(target.projectId, task, {
         kind: 'reply',
         stage: recordStage(target.record),
         sessionId: sid,

@@ -28,12 +28,12 @@ export function inputDrawer(
   ui: SimpleUi,
   asking: SessionRecord | undefined,
   sessions: Record<string, SessionState>,
-  records: readonly Pick<SessionRecord, 'id'>[],
+  recordIds: readonly string[],
 ): SimpleUi {
   // View explicitly selects a terminal, including settled runs, until the user hides it. A pin
   // whose record is gone renders nothing, so it closes rather than holding the drawer.
   const pin = ui.terminal === 'user' && ui.terminalSession?.pinned ? ui.terminalSession : undefined
-  if (pin && !records.some((r) => r.id === pin.id))
+  if (pin && !recordIds.includes(pin.id))
     ui = { ...ui, terminal: 'closed', terminalSession: undefined }
   const pinned = pin && ui.terminalSession === pin
   if (!pinned && ui.terminal !== 'closed' && ui.terminalSession) {
