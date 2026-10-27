@@ -1,5 +1,6 @@
 import { useStore } from '../store'
 import { changeGroups } from '../lib/changeGroups'
+import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import { useSimpleUi, type SimpleDiff as Selection } from '../lib/simpleUi'
 import type { useSimpleData } from '../lib/useSimpleData'
 import ChangeList from './changes/ChangeList'
@@ -21,6 +22,12 @@ export default function SimpleDiff({
     reader.data?.review.changes[selection.componentId]?.find((f) => f.path === selection.path) ??
     null
   const patch = useSimpleUi.getState().patch
+  const order = changeRefs(groups)
+  const step = (delta: -1 | 1) => {
+    const next = stepChange(order, selection, delta)
+    if (next) patch(scopeKey, { diff: next })
+  }
+  const nav = { position: changePosition(order, selection), total: order.length, step }
   return (
     <div className="simple-diff">
       <header>
@@ -40,6 +47,7 @@ export default function SimpleDiff({
                 base={g.base}
                 selected={g.id === selection.componentId ? selection.path : undefined}
                 onSelect={(path) => patch(scopeKey, { diff: { componentId: g.id, path } })}
+                onStep={step}
                 task={task}
                 worktree={reader.source?.path}
               />
@@ -53,6 +61,7 @@ export default function SimpleDiff({
             revision={reader.data?.review}
             worktree={reader.source?.path}
             lineFocus={selection.line}
+            nav={nav}
           />
         ) : (
           <div className="diff-view hint">No diff for {selection.path} in this worktree.</div>

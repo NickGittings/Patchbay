@@ -69,7 +69,7 @@ async function handoffPlannerPlan(
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
   const terminalId = s.addRootTerminal(device)
-  await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
+  const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
     kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
     auto,
   })
@@ -86,11 +86,11 @@ async function handoffPlannerPlan(
     }
   }
   // The agent is running now, so a later switch away only skips the view change; its caller
-  // still learns the session it has to track.
+  // still learns the session it has to track, and the launch request that started its run.
   const after = useStore.getState()
   if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
     after.setView('implementation')
-  return sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId)
+  return { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }
 }
 
 const handingOff = new Set<string>()

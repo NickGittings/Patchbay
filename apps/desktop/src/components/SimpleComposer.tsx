@@ -146,8 +146,8 @@ export default function SimpleComposer({
       let target = recipient
       if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
-        const resumedAt = Date.now()
-        await sessionResume(target.id)
+        const requestId = crypto.randomUUID()
+        await sessionResume(target.id, requestId)
         // Claim the resumed run before reconciling, so that pass persists its replies and input
         // waits into this chat. Replies that arrived before the claim were left out: persist now.
         // The claim is logged even if the worktree changed meanwhile, then the send stops.
@@ -155,7 +155,7 @@ export default function SimpleComposer({
           projectId,
           task,
           { kind: 'action', action: 'resume', stage, sessionId: target.id },
-          resumedAt,
+          requestId,
         )
         const resumed = useStore.getState().sessions[target.id]
         if (resumed?.generation !== undefined)

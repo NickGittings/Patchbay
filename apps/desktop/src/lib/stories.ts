@@ -199,7 +199,7 @@ export async function planStory(projectId: string, story: Story) {
   if (!s.simpleMode) s.setView('plan')
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
-  await startTerminal(PLAN_SCOPE, device.id, null, projectId, {
+  const requestId = await startTerminal(PLAN_SCOPE, device.id, null, projectId, {
     kickoff: { kind: 'planStory' },
     story: story.id,
   })
@@ -216,7 +216,7 @@ export async function planStory(projectId: string, story: Story) {
         text: story.title,
         atMs: planningAtMs,
       },
-      planningAtMs,
+      requestId,
     )
   await updateStory(projectId, story.id, { status: 'planned' })
 }

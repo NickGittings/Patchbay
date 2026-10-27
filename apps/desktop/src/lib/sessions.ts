@@ -78,7 +78,7 @@ const fetchingReplies = new Map<string, symbol>()
 // What each reconcile last persisted per session (`persistChangedReplies`' key), so unchanged replies aren't
 // logged again on every pass.
 const persistedReplies = new Map<string, string>()
-const starting = new Map<string, Promise<void>>()
+const starting = new Map<string, Promise<string | undefined>>()
 const restarting = new Map<string, Promise<void>>()
 const closing = new Set<string>()
 const terminalKey = (projectId: string, componentId: string, terminalId: string) =>
@@ -247,7 +247,8 @@ export interface StartTerminalOptions {
 
 /**
  * Start a terminal of `projectId` (default: the active project) in `task`'s worktree (default:
- * that project's active task; `null` for its own worktree).
+ * that project's active task; `null` for its own worktree). Resolves to the launch's request id
+ * once its session started, which stays the last of the record's `requestIds` for that run.
  */
 export function startTerminal(
   componentId: string,
@@ -255,7 +256,7 @@ export function startTerminal(
   task?: string | null,
   projectId?: string,
   options: StartTerminalOptions = {},
-): Promise<void> {
+): Promise<string | undefined> {
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId)
@@ -265,7 +266,7 @@ export function startTerminal(
   } catch (e) {
     if (options.kickoff || options.auto || options.story) return Promise.reject(e)
     useStore.getState().setMessage(String(e))
-    return Promise.resolve()
+    return Promise.resolve(undefined)
   }
   return launchTerminal(launch)
 }
@@ -357,10 +358,11 @@ export async function startMapAgent(
 const reports = (launch: Launch) => !!(launch.kickoff || launch.auto || launch.story)
 
 /** A handoff must learn its agent didn't start, where other launches just stop quietly. */
-const cancelled = (launch: Launch) =>
-  reports(launch) ? Promise.reject(new LaunchCancelled()) : Promise.resolve()
+const cancelled = (launch: Launch): Promise<undefined> =>
+  reports(launch) ? Promise.reject(new LaunchCancelled()) : Promise.resolve(undefined)
 
-function launchTerminal(launch: Launch): Promise<void> {
+/** Resolves to the launch's request id once its session started. */
+function launchTerminal(launch: Launch): Promise<string | undefined> {
   const { sid, componentId, terminalId, project, runtime } = launch
   if (isClosing(launch)) return cancelled(launch)
   if (launch.story && (launch.auto || autoBriefOf(launch.projectId, sid)))
@@ -515,6 +517,7 @@ function launchTerminal(launch: Launch): Promise<void> {
           planStoryTerminal: launch.story ? terminalId : null,
         })
     }
+    return launch.started ? requestId : undefined
   })().finally(() => {
     if (starting.get(sid) === request) starting.delete(sid)
   })

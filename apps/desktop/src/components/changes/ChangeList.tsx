@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+import { stepKey } from '../../lib/changeNav'
 import { navigationError, openInEditor, revealLabel } from '../../lib/navigation'
 import { revealPath } from '../../lib/ipc'
 import { KIND_LABEL, KIND_LETTER, pathWithin, splitPath } from '../../lib/review'
@@ -11,6 +13,7 @@ export default function ChangeList({
   base,
   selected,
   onSelect,
+  onStep,
   worktree,
   task,
 }: {
@@ -18,6 +21,8 @@ export default function ChangeList({
   base: string
   selected: string | undefined
   onSelect: (path: string) => void
+  /** Moves the selection by one file, possibly into another list; arrow keys call it. */
+  onStep?: (delta: -1 | 1) => void
   /** Explicit review worktree; task is null when reviewing the open workspace. */
   worktree?: string
   task?: string | null
@@ -25,8 +30,36 @@ export default function ChangeList({
   const projectId = useStore((s) => s.project?.id)
   const activeTask = useStore((s) => s.activeTask)
   const originTask = task === undefined ? activeTask : task
+  const list = useRef<HTMLDivElement>(null)
+  // Keep the selected row in view, and give it focus when the keyboard moved here from a row of
+  // any list, so arrows keep stepping across component lists.
+  useEffect(() => {
+    if (!selected) return
+    const row = [...(list.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])].find(
+      (b) => b.dataset.path === selected,
+    )
+    if (!row) return
+    row.scrollIntoView({ block: 'nearest' })
+    const focused = document.activeElement
+    if (
+      focused !== row &&
+      focused?.closest('.change-list') &&
+      focused.getAttribute('role') === 'option'
+    )
+      row.focus()
+  }, [selected])
   return (
-    <div className="change-list" role="listbox">
+    <div
+      ref={list}
+      className="change-list"
+      role="listbox"
+      onKeyDown={(e) => {
+        const delta = onStep && stepKey(e, 'list')
+        if (!delta) return
+        e.preventDefault()
+        onStep(delta)
+      }}
+    >
       {files.map((f) => {
         const [dir, name] = splitPath(pathWithin(f.path, base))
         return (
@@ -34,6 +67,7 @@ export default function ChangeList({
             <button
               role="option"
               aria-selected={f.path === selected}
+              data-path={f.path}
               className={`change-row kind-${f.kind} ${f.path === selected ? 'active' : ''}`}
               title={`${KIND_LABEL[f.kind]}: ${f.oldPath ? `${f.oldPath} → ` : ''}${f.path}`}
               onClick={() => onSelect(f.path)}

@@ -1,4 +1,5 @@
 import { changeGroups } from '../lib/changeGroups'
+import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
@@ -207,6 +208,16 @@ export default function ReviewView() {
   const currentFile = current
     ? (review?.changes[current.componentId]?.find((f) => f.path === current.path) ?? null)
     : null
+
+  // Arrows step through the files of expanded groups, in the order the list shows them.
+  const order = changeRefs(shown.filter((g) => !collapsed[g.id]))
+  const step = (delta: -1 | 1) => {
+    const next = stepChange(order, current, delta)
+    if (!next) return
+    setSelected(next)
+    if (pane === 'findings') setPane('diff')
+  }
+  const nav = { position: changePosition(order, current), total: order.length, step }
 
   // Reviewers name paths relative to their worktree, which is usually the project root too.
   // An exact path wins; otherwise the ref must match one changed file by suffix, so a bare
@@ -418,6 +429,7 @@ export default function ReviewView() {
                             setSelected({ componentId: g.id, path })
                             setPane('diff')
                           }}
+                          onStep={step}
                           task={null}
                           worktree={target}
                         />
@@ -483,6 +495,7 @@ export default function ReviewView() {
                     file={currentFile}
                     revision={review}
                     worktree={target}
+                    nav={nav}
                   />
                 </div>
               ) : current ? (
@@ -491,6 +504,7 @@ export default function ReviewView() {
                   file={currentFile}
                   revision={review}
                   worktree={target}
+                  nav={nav}
                 />
               ) : (
                 <div className="diff-view">

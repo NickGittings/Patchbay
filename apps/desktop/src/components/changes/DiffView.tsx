@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { stepKey } from '../../lib/changeNav'
 import { hunkRange, parsePatch } from '../../lib/diff'
 import { componentPaths } from '../../lib/git'
 import { gitDiff } from '../../lib/ipc'
@@ -9,14 +10,51 @@ import DiffStat from './DiffStat'
 /** Rendering more lines than this makes scrolling sluggish; the rest is summarized. */
 const MAX_LINES = 5000
 
+/** Where the shown file sits among the listed changes, and how to move to a neighbour. */
+export interface DiffNav {
+  /** Zero-based; -1 when the shown file isn't listed. */
+  position: number
+  total: number
+  step: (delta: -1 | 1) => void
+}
+
+function NavButtons({ nav }: { nav: DiffNav }) {
+  const { position, total, step } = nav
+  return (
+    <span className="diff-nav" role="group" aria-label="Changed files">
+      <button
+        title="Previous changed file (←)"
+        aria-label="Previous changed file"
+        disabled={position === 0 || total === 0}
+        onClick={() => step(-1)}
+      >
+        ‹
+      </button>
+      <span className="diff-nav-count">
+        {position < 0 ? '–' : position + 1} / {total}
+      </span>
+      <button
+        title="Next changed file (→)"
+        aria-label="Next changed file"
+        disabled={position === total - 1 || total === 0}
+        onClick={() => step(1)}
+      >
+        ›
+      </button>
+    </span>
+  )
+}
+
 function FileHeader({
   file,
   added,
   removed,
+  nav,
 }: {
   file: ChangedFile
   added?: number
   removed?: number
+  nav?: DiffNav
 }) {
   const [dir, name] = splitPath(file.path)
   return (
@@ -28,6 +66,7 @@ function FileHeader({
         <span className="path-name">{name}</span>
       </span>
       <DiffStat added={added ?? file.added} removed={removed ?? file.removed} bar />
+      {nav && nav.total > 1 && <NavButtons nav={nav} />}
     </div>
   )
 }
@@ -42,8 +81,11 @@ export default function DiffView({
   revision,
   worktree,
   lineFocus,
+  nav,
 }: {
   lineFocus?: number
+  /** Previous/next buttons in the header, and ←/→ while the diff has focus. */
+  nav?: DiffNav
   componentId: string
   file: ChangedFile | null
   revision: unknown
@@ -136,8 +178,22 @@ export default function DiffView({
   // A truncated patch undercounts, so prefer the file list's counts then.
   const counts = parsed && !loaded?.truncated ? parsed : undefined
   return (
-    <div ref={focusHost} className={`diff-view ${loaded || error ? '' : 'diff-loading'}`}>
-      <FileHeader file={file} added={counts?.added} removed={counts?.removed} />
+    // Focusable (not a tab stop) so a click into the diff lets ←/→ switch files,
+    // once long lines can't scroll further that way.
+    <div
+      ref={focusHost}
+      className={`diff-view ${loaded || error ? '' : 'diff-loading'}`}
+      tabIndex={nav ? -1 : undefined}
+      onKeyDown={(e) => {
+        const delta = nav && stepKey(e, 'diff')
+        if (!delta) return
+        const { scrollLeft, scrollWidth, clientWidth } = e.currentTarget
+        if (delta < 0 ? scrollLeft > 0 : scrollLeft + clientWidth < scrollWidth - 1) return
+        e.preventDefault()
+        nav.step(delta)
+      }}
+    >
+      <FileHeader file={file} added={counts?.added} removed={counts?.removed} nav={nav} />
       {body()}
     </div>
   )
