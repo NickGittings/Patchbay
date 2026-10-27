@@ -9,35 +9,40 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 
 ## Workspace views
 
-The current desktop app, shown with the Northstar demo project.
+The current desktop app, shown with the Northstar demo project. The icon rail on the left
+switches views and opens the Project, Worktree, Auto, Activity and Sessions panels.
 
 ### Navigation
 
 Explore the component map, follow dependencies, and inspect a component alongside its live
 terminals.
 
-![Navigation view showing the Northstar component map, Web app inspector, and running development server](docs/screenshots/navigation.png)
+![Navigation view showing the Northstar component map, the Web app inspector, and its running development server](docs/screenshots/navigation.png)
 
 ### Plan
 
 Highlight the components in scope, work with a planner terminal, and save a shared implementation
 plan.
 
-![Plan view showing highlighted components, planner scope, saved plan, and a Codex planner terminal](docs/screenshots/plan.png)
+![Plan view with Web app and Catalog highlighted, the saved plan, and a Claude planner terminal](docs/screenshots/plan.png)
 
-### Implementation
+### Build
 
 Keep each task's worktree and terminals together, with development servers and validation output
 in one view.
 
-![Implementation view showing the Add product search task with live Web and API servers and passing catalog tests](docs/screenshots/implementation.png)
+![Build view for the Add product search worktree, with a shell, live Web and API servers, and passing Catalog tests](docs/screenshots/build.png)
 
 ### Review
 
 Inspect Git changes by component, read diffs, and check affected components before reviewing or
 merging a branch.
 
-![Review view showing component changes and the product search diff in the task worktree](docs/screenshots/review.png)
+![Review view showing the worktree's changes by component, the catalog search diff, and the API as possibly affected](docs/screenshots/review.png)
+
+To retake these screenshots on macOS, stop `tauri dev` and run `npm run screenshots` in
+`apps/desktop`; it stages the Northstar demo with stand-in agents and overwrites
+`docs/screenshots/`.
 
 ## Layout
 

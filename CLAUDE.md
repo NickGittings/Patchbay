@@ -30,6 +30,7 @@ cargo nextest run --workspace                          # or `cargo test --worksp
 (cd apps/desktop && npm run smoke:dependencies)        # first-save dependency detection, manifests then a fake agent
 (cd apps/desktop && npm run smoke:stack)               # stack detection by a fake agent, reviewed in the Stack panel
 (cd apps/desktop && node scripts/smoke-all.mjs views git --bail)  # a subset, stopping at the first failure
+(cd apps/desktop && npm run screenshots)               # macOS: retake README screenshots (smoke/readme.js on the Northstar demo)
 
 # Single test
 cargo test -p patchbay-core context::tests::claude_gets_neighbour_dirs_and_context

@@ -24,13 +24,22 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     };
     // Don't activate at launch, before `setup` can make the app prohibited.
     #[cfg(target_os = "macos")]
-    let builder = builder.activate_ignoring_other_apps(false);
+    let builder = if foreground() {
+        builder
+    } else {
+        builder.activate_ignoring_other_apps(false)
+    };
 
     builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
             let _ = webview.eval(&script);
         }
     })
+}
+
+/// Set by `scripts/readme-shots.mjs`, whose captures need the window on screen.
+fn foreground() -> bool {
+    std::env::var_os("PATCHBAY_SMOKE_FOREGROUND").is_some()
 }
 
 /// A root configured by the test process, never by an IPC caller.
@@ -66,15 +75,19 @@ pub fn setup(app: &mut tauri::App) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return;
     }
-    // Only smoke runs may resize the main window through the dev-only frontend hook.
+    // Only smoke runs may resize (and, for screenshots, raise) the main window through the
+    // dev-only frontend hooks.
     app.add_capability(
-        r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size"]}"#,
+        r#"{"identifier":"smoke-resize","windows":["main"],"permissions":["core:window:allow-set-size","core:window:allow-set-focus"]}"#,
     )
     .expect("smoke resize capability");
     // Run in the background: wry activates the app for every new top-level webview, which
     // would take focus from whatever the user is doing, but a prohibited app can't activate.
+    // Screenshot runs need a window on screen, where WebKit paints terminals.
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+    if !foreground() {
+        app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+    }
 
     let handle = app.handle().clone();
     app.listen(REPORT_EVENT, move |event| {

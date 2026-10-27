@@ -128,6 +128,10 @@ const hooks = {
     const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window')
     await getCurrentWindow().setSize(new LogicalSize(width, height))
   },
+  focusWindow: async () => {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    await getCurrentWindow().setFocus()
+  },
   windowLabels: () =>
     import('@tauri-apps/api/webviewWindow').then(async ({ getAllWebviewWindows }) =>
       (await getAllWebviewWindows()).map((w) => w.label),
