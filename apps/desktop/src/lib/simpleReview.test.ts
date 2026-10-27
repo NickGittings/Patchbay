@@ -116,7 +116,9 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
     startedMs: 200,
     status: { agent: { state: 'idle', authoritative: true, turnId: null } },
   } as TerminalSnapshot
-  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ ...snapshot, running: false })
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockRejectedValueOnce(new Error('disconnected'))
   vi.mocked(agents.startReviewAgents).mockResolvedValue({
     started: [{ sessionId: 'r', requestId: 'request', lane: null }],
     round: 'round',
@@ -181,4 +183,18 @@ test('an empty preset selection cannot retire any reviewers', async () => {
   )
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(agents.startReviewAgents).not.toHaveBeenCalled()
+})
+
+test('a relaunched reviewer never keeps its settled run when no snapshot arrives', async () => {
+  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockRejectedValueOnce(new Error('disconnected'))
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({
+    started: [{ sessionId: 'r', requestId: 'request', lane: null }],
+    round: 'round',
+    errors: [],
+  })
+  await startSimpleReview(useStore.getState().toProject(), request, devices)
+  expect(useStore.getState().sessions.r).toMatchObject({ running: true })
 })

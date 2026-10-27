@@ -178,7 +178,8 @@ export default function DiffView({
   // A truncated patch undercounts, so prefer the file list's counts then.
   const counts = parsed && !loaded?.truncated ? parsed : undefined
   return (
-    // Focusable (not a tab stop) so a click into the diff lets ←/→ switch files.
+    // Focusable (not a tab stop) so a click into the diff lets ←/→ switch files,
+    // once long lines can't scroll further that way.
     <div
       ref={focusHost}
       className={`diff-view ${loaded || error ? '' : 'diff-loading'}`}
@@ -186,6 +187,8 @@ export default function DiffView({
       onKeyDown={(e) => {
         const delta = nav && stepKey(e, 'diff')
         if (!delta) return
+        const { scrollLeft, scrollWidth, clientWidth } = e.currentTarget
+        if (delta < 0 ? scrollLeft > 0 : scrollLeft + clientWidth < scrollWidth - 1) return
         e.preventDefault()
         nav.step(delta)
       }}
