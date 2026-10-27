@@ -169,7 +169,8 @@ struct Backlog {
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
 /// runs can be compared with edits.
-pub(crate) fn now_ms() -> u64 {
+#[must_use]
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()

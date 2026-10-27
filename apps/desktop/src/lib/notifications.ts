@@ -245,6 +245,16 @@ async function send(delivery: NotificationDelivery) {
     })
 }
 
+/** Usage alerts share permission handling, delivery and the debug smoke sink. */
+export async function sendUsageNotification(body: string, stillNeeded: () => boolean) {
+  try {
+    if ((!!smokeLog() || (await notificationPermission())) && stillNeeded())
+      await send({ title: 'Subscription usage', body, events: [] })
+  } catch {
+    forgetNotificationPermission()
+  }
+}
+
 export type TestNotificationResult =
   | { status: 'granted' }
   | { status: 'denied' }

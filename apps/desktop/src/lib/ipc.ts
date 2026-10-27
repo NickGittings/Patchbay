@@ -615,3 +615,12 @@ export const storyRemove = (projectId: string, id: string, cascade: boolean) =>
   invoke<void>('story_remove', { projectId, id, cascade })
 export const storyCompleteAuto = (projectId: string, task: string, runId: string) =>
   invoke<Story[]>('story_complete_auto', { projectId, task, runId })
+
+export const usageRead = () => invoke<import('../types').Usage>('usage_read')
+export const usageStatusLineCheck = (sourceOverride?: string) =>
+  invoke<import('../types').StatusLineCapture>('usage_status_line_check', { sourceOverride })
+export const usageStatusLineConfigure = (install: boolean, sourceOverride?: string) =>
+  invoke<import('../types').StatusLineCapture>('usage_status_line_configure', {
+    install,
+    sourceOverride,
+  })

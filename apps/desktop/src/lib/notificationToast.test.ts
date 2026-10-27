@@ -47,6 +47,20 @@ test('native failure hints show beside unread links and explicit dismissal clear
   expect(mergeNotificationToast(batch, null)).toBeNull()
 })
 
+test('a usage notice stays above agent links that arrive after it', () => {
+  const usage: NotificationToast = { message: 'Claude 5-hour limit is 96% used', sessions: [] }
+  const merged = mergeNotificationToast(usage, batch)!
+  expect(merged.sessions).toBe(batch.sessions)
+  expect(merged.notice).toBe(usage.message)
+  const later = mergeNotificationToast(merged, {
+    message: 'Agent finished',
+    sessions: [{ sid: 'four', label: 'four', message: 'four finished' }],
+  })!
+  expect(later.notice).toBe(usage.message)
+  expect(later.sessions).toHaveLength(4)
+  expect(mergeNotificationToast(null, batch)).toBe(batch)
+})
+
 test('removing an unknown session keeps the same toast', () => {
   expect(removeNotificationSession(batch, 'missing')).toBe(batch)
   expect(removeNotificationSession(null, 'one')).toBeNull()
@@ -61,4 +75,19 @@ test('links name their project only while another project is active', () => {
   expect(notificationLinkLabel(link, 'p')).toBe('Review agent · Codex · feature')
   expect(notificationLinkLabel(link, 'q')).toBe('Review agent · Codex · feature · Api')
   expect(notificationLinkLabel({ sid: 'one', label: 'Root' }, null)).toBe('Root')
+})
+
+test('usage warnings survive viewing or dropping every agent link until explicit dismissal', () => {
+  const usage: NotificationToast = { message: 'Claude 5-hour limit is 96% used', sessions: [] }
+  for (const combined of [
+    mergeNotificationToast(usage, batch),
+    mergeNotificationToast(batch, usage),
+  ]) {
+    const remaining = removeNotificationSession(combined, 'two')!
+    expect(remaining.notice).toBe(usage.message)
+    expect(remaining.sessions.map((s) => s.sid)).toEqual(['one', 'three'])
+    const last = removeNotificationSession(removeNotificationSession(remaining, 'one'), 'three')
+    expect(last).toEqual(usage)
+    expect(mergeNotificationToast(last, null)).toBeNull()
+  }
 })

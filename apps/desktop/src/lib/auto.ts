@@ -1,3 +1,4 @@
+import { refreshUsage, usageBlock } from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
@@ -537,7 +538,8 @@ export class AutoHooksRequired extends Error {
     this.provider = provider
   }
 }
-export async function checkAutoHooks(deviceId: string) {
+/** Resolves the preset's provider once its status integration is usable. */
+export async function checkAutoHooks(deviceId: string): Promise<HookProvider> {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
   const provider = device ? await agentProvider(device) : null
   if (!provider) throw new Error('Choose an agent preset with Claude or Codex status integration')
@@ -548,6 +550,7 @@ export async function checkAutoHooks(deviceId: string) {
     // A saved source may have moved or disappeared; offer setup for the same provider.
   }
   if (!usable) throw new AutoHooksRequired(provider)
+  return provider
 }
 /** One owner for each worktree's in-flight work and polling state. */
 interface AutoController {
@@ -1477,8 +1480,21 @@ async function drive(projectId: string, task: string | null) {
             return reviewer
           })
         : [device]
-    await Promise.all(reviewers.map((d) => checkAutoHooks(d.id)))
+    // Usage is read beside the hook checks; refreshUsage never rejects.
+    const reading = useStore.getState().usageSettings.gateAuto ? refreshUsage() : null
+    const providers = await Promise.all(reviewers.map((d) => checkAutoHooks(d.id)))
     if (!live() || !active(projectId, task)) return
+    if (reading && useStore.getState().usageSettings.gateAuto) {
+      const usage = await reading
+      if (!live() || !active(projectId, task)) return
+      for (const provider of providers) {
+        const blocked = usageBlock(usage, provider, useStore.getState().usageSettings, Date.now())
+        if (blocked) {
+          pauseAuto(projectId, task, blocked)
+          return
+        }
+      }
+    }
     // Guard against a manually launched competing agent.
     const competing = snapshot.agents.find((a) => a.state === 'working' || a.state === 'needsInput')
     if (competing) {

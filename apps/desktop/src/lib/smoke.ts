@@ -1,3 +1,5 @@
+import { refreshUsage, useUsage } from './usage'
+import { usageRead, usageStatusLineCheck, usageStatusLineConfigure } from './ipc'
 import { selectPanel, selectRailView, useRail } from './rail'
 import {
   agentHooksCheck,
@@ -70,6 +72,11 @@ import { attentionItems, revealTerminal } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 const hooks = {
+  refreshUsage,
+  usage: useUsage,
+  usageRead,
+  usageStatusLineCheck,
+  usageStatusLineConfigure,
   inspectNativeMenu,
   nativeMenuAction: (id: string) =>
     import('@tauri-apps/api/event').then(({ emitTo }) =>

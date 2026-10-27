@@ -18,6 +18,7 @@ import type {
   AgentRoles,
   Story,
   NotificationSettings,
+  UsageSettings,
   NotificationToast,
   ExtensionRegistry,
   CommandContribution,
@@ -42,6 +43,7 @@ import type {
 } from './types'
 import {
   DEFAULT_NOTIFICATIONS,
+  DEFAULT_USAGE,
   TASK_ROOT_SCOPE,
   isReviewAgentScope,
   isSubagentCount,
@@ -63,7 +65,8 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
 }
 
 /** The rail's utility panels, one open at a time. */
-export type UtilityPanel = 'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions'
+export type UtilityPanel =
+  'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions' | 'usage'
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 
@@ -229,6 +232,8 @@ interface State {
   notificationToastId: number
   setNotificationToast: (toast: State['notificationToast']) => void
   dismissNotificationSession: (sid: string) => void
+  usageSettings: UsageSettings
+  setUsageSettings: (settings: UsageSettings) => void
   notifications: NotificationSettings
   setNotifications: (settings: NotificationSettings) => void
   taskWorkspaces: Record<string, TaskWorkspace>
@@ -694,6 +699,8 @@ const createState: StateCreator<State> = (set, get) => ({
     })),
   dismissNotificationSession: (sid) =>
     set((s) => ({ notificationToast: removeNotificationSession(s.notificationToast, sid) })),
+  usageSettings: { ...DEFAULT_USAGE },
+  setUsageSettings: (usageSettings) => set({ usageSettings }),
   notifications: { ...DEFAULT_NOTIFICATIONS },
   setNotifications: (notifications) => set({ notifications }),
   runtimeTerminals: {},

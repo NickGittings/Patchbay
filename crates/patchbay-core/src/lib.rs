@@ -24,6 +24,7 @@ pub mod reviews;
 pub mod status;
 pub mod stories;
 pub mod tasks;
+pub mod usage;
 pub mod watch;
 
 pub use events::{EventSink, TerminalEvent};

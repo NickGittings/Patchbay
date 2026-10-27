@@ -27,6 +27,8 @@ enum Cmd {
     },
     /// List local extensions and validation errors.
     Extensions,
+    /// Print subscription usage from local Claude capture and Codex session logs.
+    Usage,
     /// Print the component map Patchbay would suggest for a repository.
     Detect {
         #[arg(default_value = ".")]
@@ -66,6 +68,12 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Sessions { command } => sessions(command)?,
+        Cmd::Usage => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &patchbay_core::usage::read(patchbay_core::pty::now_ms())
+            )?
+        ),
         Cmd::Extensions => println!("{}", serde_json::to_string_pretty(&registry)?),
         Cmd::Detect { dir } => {
             let root = dir.canonicalize()?;

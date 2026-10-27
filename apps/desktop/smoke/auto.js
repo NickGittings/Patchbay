@@ -27,7 +27,7 @@
       document.querySelector('[role="dialog"][aria-label="Notifications"]'),
     )
     const toggles = [...panel.querySelectorAll('input[type="checkbox"]')]
-    assert(toggles.length === 4, 'Missing notification settings')
+    assert(toggles.length === 5, 'Missing notification settings')
     toggles[0].click()
     await until('notifications disabled', () => !state().notifications.enabled)
     assert(
@@ -36,7 +36,7 @@
     )
     toggles[0].click()
     await until('notifications enabled', () => state().notifications.enabled)
-    for (const [index, key] of ['finished', 'needsInput', 'failed'].entries()) {
+    for (const [index, key] of ['finished', 'needsInput', 'failed', 'usageLimits'].entries()) {
       toggles[index + 1].click()
       await until(`${key} disabled`, () => !state().notifications[key])
       assert(

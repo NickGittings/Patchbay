@@ -733,15 +733,20 @@ export interface NotificationSettings {
   finished: boolean
   needsInput: boolean
   failed: boolean
+  usageLimits: boolean
 }
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   enabled: true,
   finished: true,
   needsInput: true,
   failed: true,
+  usageLimits: true,
 }
 export interface WorkspaceDocument {
-  settings?: Record<string, unknown> & { notifications?: NotificationSettings }
+  settings?: Record<string, unknown> & {
+    notifications?: NotificationSettings
+    usage?: UsageSettings
+  }
   version: number
   projects: WorkspaceProject[]
   activeProject: string | null
@@ -868,6 +873,43 @@ export interface RuntimeTerminal {
   extensionId?: string
   /** Names a `terminals.run` session, so repeating the command reuses it. */
   key?: string
+}
+
+/** Subscription snapshots, mirrored from core usage.rs. */
+export interface UsageWindow {
+  usedPercent: number
+  resetsAtMs: number
+  windowMinutes: number
+}
+export interface ProviderUsage {
+  provider: 'claude' | 'codex'
+  fiveHour: UsageWindow | null
+  weekly: UsageWindow | null
+  observedMs: number
+}
+export interface StatusLineCapture {
+  installed: boolean
+  chained: string | null
+  source: string
+}
+export interface Usage {
+  claude: ProviderUsage | null
+  codex: ProviderUsage | null
+  /** Null when Claude's settings can't be read; `claudeError` says why. */
+  claudeCapture: StatusLineCapture | null
+  /** Each provider fails on its own, so one bad configuration never hides the other. */
+  claudeError: string | null
+  codexError: string | null
+}
+export interface UsageSettings {
+  warnPercent: number
+  pausePercent: number
+  gateAuto: boolean
+}
+export const DEFAULT_USAGE: UsageSettings = {
+  warnPercent: 80,
+  pausePercent: 95,
+  gateAuto: true,
 }
 
 /** Machine-local status-hook setup; installed does not mean provider trust or live reporting. */
