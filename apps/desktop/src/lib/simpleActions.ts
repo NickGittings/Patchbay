@@ -1,5 +1,5 @@
 import { projectStateOf, useStore } from '../store'
-import { boundedSimple, replySequence, type SimpleEntry } from './simple'
+import { boundedSimple, type SimpleEntry } from './simple'
 /** Completion always belongs to its originating worktree, even if the user moved on. */
 export function logSimple(
   projectId: string,
@@ -17,7 +17,13 @@ export function logSimple(
     : state.taskWorkspaces[task ?? '']?.simple) ?? { startedMs: Date.now(), log: [] }
   if (
     entry.kind === 'reply' &&
-    entry.sequence <= replySequence(simple, entry.sessionId, entry.generation)
+    simple.log.some(
+      (e) =>
+        e.kind === 'reply' &&
+        e.sessionId === entry.sessionId &&
+        e.generation === entry.generation &&
+        e.sequence === entry.sequence,
+    )
   )
     return
   const complete = {
@@ -25,10 +31,7 @@ export function logSimple(
     id: entry.id ?? crypto.randomUUID(),
     atMs: entry.atMs ?? Date.now(),
   } as SimpleEntry
-  useStore.getState().patchTask(projectId, task, {
-    simple: boundedSimple({
-      ...simple,
-      log: [...simple.log, complete].sort((a, b) => a.atMs - b.atMs),
-    }),
-  })
+  const next = boundedSimple({ ...simple, log: [...simple.log, complete] })
+  if (next.log.length === simple.log.length && next.log.every((e, i) => e === simple.log[i])) return
+  useStore.getState().patchTask(projectId, task, { simple: next })
 }

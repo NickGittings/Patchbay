@@ -1,4 +1,4 @@
-import { relatedSession } from './simple'
+import { ownsPlanner, relatedSession } from './simple'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
@@ -291,17 +291,12 @@ export function revealTerminal(
     const record = s.sessionRecords.find((r) => r.id === item.sid)
     if (record) {
       const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
-      const ownsPlanner = (simple: typeof s.simple) =>
-        simple?.log.some(
-          (e) =>
-            e.sessionId === record.id &&
-            e.kind !== 'reply' &&
-            (e.generation === undefined || e.generation === generation),
-        )
-      const plannerTask = ownsPlanner(s.simple)
+      const plannerTask = ownsPlanner(s.simple, record.id, generation)
         ? s.activeTask
         : Object.entries(s.taskWorkspaces).find(
-            ([task, workspace]) => (task || null) !== s.activeTask && ownsPlanner(workspace.simple),
+            ([task, workspace]) =>
+              (task || null) !== s.activeTask &&
+              ownsPlanner(workspace.simple, record.id, generation),
           )?.[0]
       const task =
         record.metadata.componentId === PLAN_SCOPE
@@ -320,14 +315,15 @@ export function revealTerminal(
       ) {
         if (task !== s.activeTask) s.setActiveTask(task, true)
         s.setActiveSession(item.sid)
-        useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })
-        // A planner launched outside Chat has no conversation block; its input is still
+        // A planner launched outside Chat has no conversation block; its terminal is still
         // accessible in the chat drawer without changing the conversation's ownership.
-        if (record.metadata.componentId === PLAN_SCOPE && plannerTask === undefined)
+        if (record.metadata.componentId === PLAN_SCOPE && plannerTask === undefined) {
           useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
             terminal: 'user',
-            terminalSession: { id: record.id, generation },
+            terminalSession: { id: record.id, generation, pinned: true },
           })
+          useStore.getState().setRevealed(null)
+        } else useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })
         return
       }
     }

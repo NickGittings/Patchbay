@@ -26,7 +26,7 @@ import {
   startMergeAgent,
   useRunningReviewLanes,
 } from '../lib/reviewAgents'
-import { startSimpleReview } from '../lib/simpleReview'
+import { simpleReviewRequest, startSimpleReview } from '../lib/simpleReview'
 import { gitWorktrees, mergeConflicts } from '../lib/ipc'
 import { seedNewTask } from '../lib/tasks'
 import { linkStory } from '../lib/stories'
@@ -260,10 +260,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           ?.closest('.simple-chat')
           ?.querySelector<HTMLTextAreaElement>('textarea')
           ?.focus()
-      } else if (action === 'review' && source?.branch && base) {
+      } else if (action === 'review') {
+        if (source?.branch && !base) setDialog('review')
         const { started, errors } = await startSimpleReview(
           useStore.getState().toProject(),
-          { worktree: source.path, branch: source.branch, base },
+          simpleReviewRequest(source, base),
           roleDevices(s.devices, s.agentRoles, 'review'),
         )
         for (const r of started) log('review', 'review', r.sessionId)

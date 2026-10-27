@@ -1,10 +1,27 @@
 import { useStore } from '../store'
-import { REVIEW_SCOPE, type DeviceManifest, type Project, type ReviewRequest } from '../types'
+import {
+  REVIEW_SCOPE,
+  type DeviceManifest,
+  type Project,
+  type ReviewRequest,
+  type Worktree,
+} from '../types'
 import { terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { reviewWorktreeBusy, startReviewAgents } from './reviewAgents'
 import { hydrateReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
+
+export function simpleReviewRequest(
+  source: Pick<Worktree, 'path' | 'branch'> | undefined,
+  base: string | null | undefined,
+): ReviewRequest {
+  if (!source) throw new Error('Wait for the worktree to load before starting a review.')
+  if (!source.branch)
+    throw new Error('Check out a branch before starting a review. HEAD is detached.')
+  if (!base) throw new Error('Choose a review base in Options before starting a review.')
+  return { worktree: source.path, branch: source.branch, base }
+}
 
 /** Reuse review slots only after their previous turns have settled. */
 export async function startSimpleReview(

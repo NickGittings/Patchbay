@@ -16,7 +16,7 @@ export interface SimpleUi {
   mentions: Mention[]
   diff: SimpleDiff | null
   terminal: 'closed' | 'user' | 'input'
-  terminalSession?: { id: string; generation?: number }
+  terminalSession?: { id: string; generation?: number; pinned?: boolean }
   inputRequest?: string
 }
 
@@ -26,6 +26,8 @@ export function inputDrawer(
   asking: SessionRecord | undefined,
   sessions: Record<string, SessionState>,
 ): SimpleUi {
+  // View explicitly selects a terminal, including settled runs, until the user hides it.
+  if (ui.terminal === 'user' && ui.terminalSession?.pinned) return ui
   if (ui.terminal !== 'closed' && ui.terminalSession) {
     const session = sessions[ui.terminalSession.id]
     if (

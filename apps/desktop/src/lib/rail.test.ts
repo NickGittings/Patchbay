@@ -66,6 +66,7 @@ test('rail buttons and numbered shortcuts leave Chat for the requested Full view
     }
   }
   store.setState({ simpleMode: true })
+  expect(selectedRailView()).toBeNull()
   selectRailView('navigation')
   expect(store.getState().simpleMode).toBe(false)
   expect(selectedRailView()).toBe('navigation')

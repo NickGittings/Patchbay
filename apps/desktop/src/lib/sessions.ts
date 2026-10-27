@@ -71,6 +71,9 @@ const lastSeq = new Map<string, Cursor>()
 export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
 const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
+// Snapshot coverage is separate from live replies: seeing sequence N doesn't mean we saw 1…N.
+const replySnapshots = new Map<string, { generation: number; sequence: number }>()
+const fetchingReplies = new Map<string, symbol>()
 const starting = new Map<string, Promise<void>>()
 const restarting = new Map<string, Promise<void>>()
 const closing = new Set<string>()
@@ -94,6 +97,8 @@ export function resetSessions(generationFloor: number) {
   lastSeq.clear()
   pending.clear()
   hydration.clear()
+  replySnapshots.clear()
+  fetchingReplies.clear()
   starting.clear()
   restarting.clear()
   closing.clear()
@@ -804,7 +809,10 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           truncated: snapshot.truncated,
         })
       }
-      if (snapshot) persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
+      if (snapshot) {
+        rememberReplySnapshot(sid, snapshot)
+        persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
+      }
       return snapshot
     } finally {
       if (started === epoch) {
@@ -903,25 +911,49 @@ export function withoutForgotten(
   return next
 }
 
-const fetchingReplies = new Set<string>()
+function rememberReplySnapshot(sid: string, snapshot: TerminalSnapshot) {
+  const previous = replySnapshots.get(sid)
+  const sequence = snapshot.lastReply ?? snapshot.replies?.at(-1)?.sequence ?? 0
+  if (
+    !previous ||
+    snapshot.generation > previous.generation ||
+    (snapshot.generation === previous.generation && sequence > previous.sequence)
+  )
+    replySnapshots.set(sid, { generation: snapshot.generation, sequence })
+}
+
 /** Session lists name only the latest reply: read a snapshot for replies this window missed. */
 async function fetchReplies(record: SessionRecord) {
   if (fetchingReplies.has(record.id)) return
-  fetchingReplies.add(record.id)
+  const token = Symbol()
+  const requestedEpoch = epoch
+  fetchingReplies.set(record.id, token)
   try {
     const snapshot = await terminalSnapshot(record.id, 0)
-    const prev = useStore.getState().sessions[record.id]
-    if (!snapshot?.replies?.length) return
-    if (prev?.generation === snapshot.generation)
-      useStore.getState().setSession(record.id, {
-        ...prev,
+    const s = useStore.getState()
+    if (!snapshot || requestedEpoch !== epoch || !s.sessionRecords.some((r) => r.id === record.id))
+      return
+    const prev = s.sessions[record.id]
+    if ((prev?.generation ?? 0) <= snapshot.generation)
+      s.setSession(record.id, {
+        ...(prev?.generation === snapshot.generation
+          ? prev
+          : {
+              generation: snapshot.generation,
+              running: snapshot.running,
+              startedMs: snapshot.startedMs,
+              exitedMs: snapshot.exitedMs ?? undefined,
+              exitCode: snapshot.exitCode ?? undefined,
+              status: snapshot.status,
+            }),
         replies: hydrateReplies(prev, snapshot.generation, snapshot.replies),
       })
-    persistReplies(record.id, snapshot.generation, snapshot.replies, record)
+    rememberReplySnapshot(record.id, snapshot)
+    persistReplies(record.id, snapshot.generation, snapshot.replies ?? [], record)
   } catch {
     // The next reconcile tries again.
   } finally {
-    fetchingReplies.delete(record.id)
+    if (fetchingReplies.get(record.id) === token) fetchingReplies.delete(record.id)
   }
 }
 
@@ -943,6 +975,8 @@ export function reconcileSessions(force = true): Promise<void> {
       const changed = status.instanceId !== current.serviceInstance
       const reconnecting = !current.serviceConnected || changed
       if (changed) resetSessions(0)
+      const listed = new Set(records.map((r) => r.id))
+      for (const sid of replySnapshots.keys()) if (!listed.has(sid)) replySnapshots.delete(sid)
       useStore.setState((s) => ({
         serviceConnected: reconnecting ? false : current.serviceConnected,
         serviceInstance: status.instanceId,
@@ -962,10 +996,6 @@ export function reconcileSessions(force = true): Promise<void> {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
         if (snapshot) {
-          const known = useStore.getState().sessions[r.id]
-          const seen =
-            known?.generation === snapshot.generation ? (known.replies?.at(-1)?.sequence ?? 0) : 0
-          if ((snapshot.lastReply ?? 0) > seen) void fetchReplies(r)
           const next: SessionState = {
             generation: snapshot.generation,
             running: snapshot.running,
@@ -1002,6 +1032,10 @@ export function reconcileSessions(force = true): Promise<void> {
           )
             current.setSession(r.id, next)
         }
+        // A live reply may have preceded its metadata or the chat's planner claim.
+        const session = useStore.getState().sessions[r.id]
+        if (showsSession(r.metadata) && session?.generation !== undefined)
+          persistReplies(r.id, session.generation, session.replies ?? [], r)
         const state = projects[r.metadata.projectId]?.state
         const root =
           r.metadata.componentId === TASK_ROOT_SCOPE &&
@@ -1041,10 +1075,19 @@ export function reconcileSessions(force = true): Promise<void> {
       }
       for (const r of records) {
         // Only sessions this window shows, and after lost events only those that fell behind.
-        if (showsSession(r.metadata) && (reconnecting || (force && behind(r.id, r.snapshot)))) {
+        if (!showsSession(r.metadata)) continue
+        if (reconnecting || (force && behind(r.id, r.snapshot))) {
           hydration.delete(r.id)
           await hydrateSession(r.id)
         }
+        const covered = replySnapshots.get(r.id)
+        const seen = covered?.generation === r.snapshot?.generation ? (covered?.sequence ?? 0) : 0
+        if (
+          r.snapshot &&
+          (covered?.generation ?? 0) <= r.snapshot.generation &&
+          (r.snapshot.lastReply ?? 0) > seen
+        )
+          void fetchReplies(r)
       }
       useStore.setState({
         serviceConnected: true,

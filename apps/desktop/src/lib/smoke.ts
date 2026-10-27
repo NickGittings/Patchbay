@@ -66,7 +66,7 @@ import {
 } from './ipc'
 import { startAuto, mergeNow, pauseAuto, resumeAuto, stopAuto } from './auto'
 import { gitWorktrees, taskCreate, mergeOutcome } from './ipc'
-import { attentionItems } from './attention'
+import { attentionItems, revealTerminal } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 const hooks = {
@@ -90,6 +90,7 @@ const hooks = {
   taskCreate,
   mergeOutcome,
   attentionItems,
+  revealTerminal,
   restoredLayout,
   workspaceDocument,
   planRead,

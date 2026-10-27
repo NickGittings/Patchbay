@@ -56,6 +56,12 @@
     await until('chat', () => document.querySelector('.simple-chat'))
     assert(!document.querySelector('.simple-stage-tabs'), 'stage tabs remain')
     assert(!document.querySelector('.simple-terminal-drawer'), 'terminal starts open')
+    assert(
+      document
+        .querySelector('.workspace-rail [aria-label="Navigation"]')
+        .getAttribute('aria-pressed') === 'false',
+      'Full Navigation is pressed in Chat',
+    )
     input(document.querySelector('[aria-label="Message agent"]'), 'Plan the fixture feature')
     click(
       await until('Send ready', () => {
@@ -125,6 +131,38 @@
     const merger = state().simple.log.findLast((e) => e.action === 'merge').sessionId
     await smoke.terminalStop(merger)
     await until('merge agent stopped', () => !state().sessions[merger]?.running)
+    // Runs launched outside Chat have no block to scroll to. View must keep their output open
+    // even after a successful or failed exit, and consume the reveal without claiming the run.
+    for (const exitCode of [0, 1]) {
+      await smoke.startTerminal('@plan', fake.id, null, projectId)
+      await until(
+        'external planner ready',
+        () =>
+          state().sessions[planner]?.running &&
+          state().sessions[planner]?.status?.agent?.state === 'idle',
+      )
+      await smoke.terminalWrite(planner, `smoke-exit-${exitCode}\n`)
+      await until('external planner exited', () => !state().sessions[planner]?.running)
+      smoke.revealTerminal({ sid: planner, componentId: '@plan' })
+      await until('external planner drawer', () =>
+        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
+      )
+      // Reconciliation reruns inputDrawer after View and used to clear the drawer's target.
+      await smoke.reconcileSessions(false)
+      await sleep(300)
+      assert(
+        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
+        `View lost external planner after exit ${exitCode}`,
+      )
+      assert(!state().revealed, 'external planner reveal was not consumed')
+      assert(state().activeTask === task, 'external planner View changed chats')
+      inChat()
+      click(button('Hide Planner terminal'))
+      await until(
+        'external planner hidden',
+        () => !document.querySelector('.simple-terminal-drawer'),
+      )
+    }
     // A permission wait of a planner run this chat started switches both recipient and drawer
     // to it; another chat's run of the shared planner never does.
     await smoke.startTerminal('@plan', fake.id, null, projectId)

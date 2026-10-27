@@ -78,6 +78,8 @@ if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
 for line in sys.stdin:
     pathlib.Path(__file__).with_name('received.json').write_text(json.dumps(line))
     turn = str(uuid.uuid4())
+    if line.strip().startswith('smoke-exit-'):
+        sys.exit(int(line.strip().removeprefix('smoke-exit-')))
     if line.strip() == 'smoke-input':
         report('UserPromptSubmit')
         report('Notification', message='Allow fixture tool?')

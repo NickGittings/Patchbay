@@ -50,37 +50,26 @@ export type SimpleEntry = EntryBase &
 export interface SimpleState {
   startedMs: number
   log: SimpleEntry[]
-  /** Persisted journal cursors survive eviction of reply text and application restarts. */
-  replySequences?: Record<string, number>
 }
 
-const replyRun = (sessionId: string, generation: number) => JSON.stringify([sessionId, generation])
-
-export function replySequence(simple: SimpleState, sessionId: string, generation: number) {
-  return (
-    simple.replySequences?.[replyRun(sessionId, generation)] ??
-    simple.log.reduce(
-      (sequence, e) =>
-        e.kind === 'reply' && e.sessionId === sessionId && e.generation === generation
-          ? Math.max(sequence, e.sequence)
-          : sequence,
-      0,
-    )
+/** Legacy prompts without a generation claim the planner's current run too. */
+export function ownsPlanner(
+  simple: SimpleState | null | undefined,
+  sessionId: string,
+  generation: number | undefined,
+) {
+  return !!simple?.log.some(
+    (e) =>
+      e.kind !== 'reply' &&
+      e.sessionId === sessionId &&
+      (e.generation === undefined || e.generation === generation),
   )
 }
 
-/** Record identities before trimming text, including when migrating older layouts. */
+/** Reapplying old snapshots trims the same oldest text, without persisting per-run cursors. */
 export function boundedSimple(simple: SimpleState): SimpleState {
-  const { replySequences: previous, ...state } = simple
-  const replySequences = { ...previous }
-  for (const entry of simple.log) {
-    if (entry.kind !== 'reply') continue
-    const key = replyRun(entry.sessionId, entry.generation)
-    replySequences[key] = Math.max(replySequences[key] ?? 0, entry.sequence)
-  }
   return {
-    ...state,
-    ...(Object.keys(replySequences).length ? { replySequences } : {}),
+    startedMs: simple.startedMs,
     log: boundedSimpleLog(simple.log),
   }
 }
@@ -91,7 +80,17 @@ export const SIMPLE_REPLY_BUDGET = 128 * 1024
 export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
   let remaining = SIMPLE_REPLY_BUDGET
   return log
-    .toReversed()
+    .toSorted(
+      (a, b) =>
+        a.atMs - b.atMs ||
+        Number(a.kind === 'reply') - Number(b.kind === 'reply') ||
+        (a.kind === 'reply' && b.kind === 'reply'
+          ? a.sessionId.localeCompare(b.sessionId) ||
+            a.generation - b.generation ||
+            a.sequence - b.sequence
+          : 0),
+    )
+    .reverse()
     .flatMap((entry): SimpleEntry[] => {
       if (entry.kind !== 'reply') return [entry]
       if (!remaining) return []
@@ -102,7 +101,7 @@ export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
           ? entry.text
           : entry.text.slice(0, Math.max(0, limit - suffix.length)) + suffix.slice(0, limit)
       remaining -= text.length
-      return [{ ...entry, text }]
+      return [text === entry.text ? entry : { ...entry, text }]
     })
     .reverse()
 }
@@ -116,24 +115,6 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   return boundedSimple({
     startedMs: state.startedMs,
-    replySequences: Object.fromEntries(
-      Object.entries(state.replySequences ?? {}).filter(([key, sequence]) => {
-        try {
-          const run = JSON.parse(key)
-          return (
-            Array.isArray(run) &&
-            run.length === 2 &&
-            typeof run[0] === 'string' &&
-            Number.isSafeInteger(run[1]) &&
-            run[1] >= 0 &&
-            Number.isSafeInteger(sequence) &&
-            sequence > 0
-          )
-        } catch {
-          return false
-        }
-      }),
-    ),
     log: state.log.filter((entry) => {
       if (
         !entry ||
@@ -288,7 +269,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     .sort(
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
     )
-  const log = [...(snapshot.simple?.log ?? [])]
+  let log = [...(snapshot.simple?.log ?? [])]
   const seen = new Set(
     log.flatMap((e) =>
       e.kind === 'reply' ? [`${e.sessionId}:${e.generation}:${e.sequence}`] : [],
@@ -300,17 +281,9 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     if (generation === undefined) continue
     for (const reply of session?.replies ?? []) {
       const key = `${record.id}:${generation}:${reply.sequence}`
-      if (
-        seen.has(key) ||
-        (snapshot.simple &&
-          reply.sequence <= replySequence(snapshot.simple, record.id, generation)) ||
-        reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0)
-      )
+      if (seen.has(key) || reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0))
         continue
-      if (
-        recordStage(record) === 'plan' &&
-        !log.some((e) => e.sessionId === record.id && e.generation === generation)
-      )
+      if (recordStage(record) === 'plan' && !ownsPlanner(snapshot.simple, record.id, generation))
         continue
       seen.add(key)
       log.push({
@@ -325,19 +298,14 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       })
     }
   }
-  log.sort((a, b) => a.atMs - b.atMs)
+  log = boundedSimpleLog(log)
   // The shared planner's current run belongs to the chats that launched or prompted it.
   const foreign = new Set(
     records
       .filter((r) => recordStage(r) === 'plan')
       .filter((r) => {
         const generation = (snapshot.sessions[r.id] ?? r.snapshot)?.generation
-        return !log.some(
-          (e) =>
-            e.sessionId === r.id &&
-            e.kind !== 'reply' &&
-            (e.generation === undefined || e.generation === generation),
-        )
+        return !ownsPlanner(snapshot.simple, r.id, generation)
       })
       .map((r) => r.id),
   )

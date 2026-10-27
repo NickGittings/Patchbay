@@ -32,9 +32,6 @@ impl Proposal {
             ..self.clone()
         }
     }
-}
-
-impl Proposal {
     /// Validate against the accessible, mapped project, including stable IDs.
     ///
     /// # Errors

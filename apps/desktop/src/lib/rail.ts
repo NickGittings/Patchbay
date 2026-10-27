@@ -42,7 +42,7 @@ export function selectRailView(view: View) {
 }
 export function selectedRailView(): View | null {
   const s = useStore.getState()
-  return s.simpleMode ? 'navigation' : s.view
+  return s.simpleMode ? null : s.view
 }
 export function panelWidth(width: number, windowWidth: number) {
   return Math.max(240, Math.min(Number.isFinite(width) ? width : 360, 640, windowWidth - 460))

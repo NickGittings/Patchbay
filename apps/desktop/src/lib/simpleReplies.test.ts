@@ -2,6 +2,8 @@ import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
 import { hydrateReplies, persistReplies } from './simpleReplies'
 import { revealTerminal } from './attention'
+import { inputDrawer, simpleKey, useSimpleUi } from './simpleUi'
+import { ownsPlanner, thread } from './simple'
 import { sessionMetadata, type Reply, type SessionRecord, type Task } from '../types'
 const reply = (sequence: number): Reply => ({
   sequence,
@@ -29,6 +31,7 @@ beforeEach(() => {
   })
   useStore.setState({ tasks: [{ id: 't', title: 'Task', worktree: '/t', createdMs: 1 } as Task] })
   sessionMetadata.clear()
+  useSimpleUi.setState({ worktrees: {} })
 })
 test('live and snapshot reply races merge by sequence within one generation only', () => {
   expect(
@@ -57,6 +60,104 @@ test('ingestion persists an inactive worktree, deduplicates, and keeps old gener
   persistReplies('s', 1, [reply(1)])
   persistReplies('s', 2, [reply(1)])
   expect(useStore.getState().taskWorkspaces.t.simple?.log.map((e) => e.generation)).toEqual([1, 2])
+  expect(useStore.getState().simple).toBeNull()
+})
+
+test('a late snapshot preserves earlier replies after a newer live reply', () => {
+  const r = record()
+  useStore.getState().patchTask('p', 't', { simple: { startedMs: 1, log: [] } })
+  persistReplies('s', 1, [reply(3)], r)
+  persistReplies('s', 1, [reply(1), reply(2), reply(3)], r)
+  persistReplies('s', 1, [reply(2)], r)
+  const simple = useStore.getState().taskWorkspaces.t.simple!
+  expect(simple.log.map((e) => e.kind === 'reply' && e.sequence)).toEqual([1, 2, 3])
+  const model = thread(
+    {
+      records: [r],
+      simple: { ...simple, log: simple.log.slice(-1) },
+      auto: null,
+      sessions: { s: { generation: 1, running: true, replies: [reply(1), reply(2), reply(3)] } },
+    },
+    { projectId: 'p', task: 't', path: '/t' },
+  )
+  expect(
+    model.items.flatMap((i) =>
+      i.kind === 'agent' ? i.entries.map((e) => e.kind === 'reply' && e.sequence) : [],
+    ),
+  ).toEqual([1, 2, 3])
+})
+
+test.each([undefined, 1, 2])(
+  'planner ownership agrees for persistence, inline replies and View (claim generation %s)',
+  (generation) => {
+    const r = record('@plan')
+    const simple = {
+      startedMs: 1,
+      log: [
+        {
+          kind: 'prompt' as const,
+          id: 'claim',
+          stage: 'plan' as const,
+          atMs: 10,
+          sessionId: 's',
+          generation,
+          text: 'Plan',
+          mentions: [],
+        },
+      ],
+    }
+    const owned = generation !== 2
+    const sessions = { s: { generation: 1, running: true, replies: [reply(1)] } }
+    useStore.setState({ simpleMode: true, sessionRecords: [r], sessions })
+    useStore.getState().patchTask('p', 't', { simple })
+    expect(ownsPlanner(simple, 's', 1)).toBe(owned)
+    const model = thread(
+      { records: [r], sessions, simple, auto: null },
+      { projectId: 'p', task: 't', path: '/t' },
+    )
+    expect(model.foreign.has('s')).toBe(!owned)
+    expect(
+      model.items.some((i) => i.kind === 'agent' && i.entries.some((e) => e.kind === 'reply')),
+    ).toBe(owned)
+    persistReplies('s', 1, [reply(1)], r)
+    expect(useStore.getState().taskWorkspaces.t.simple!.log.some((e) => e.kind === 'reply')).toBe(
+      owned,
+    )
+    revealTerminal({ sid: 's', componentId: '@plan' })
+    expect(useStore.getState().activeTask).toBe(owned ? 't' : null)
+  },
+)
+
+test('a reply alone never claims a shared planner run', () => {
+  expect(
+    ownsPlanner(
+      {
+        startedMs: 1,
+        log: [
+          { ...reply(1), kind: 'reply', id: 'r', stage: 'plan', sessionId: 's', generation: 1 },
+        ],
+      },
+      's',
+      1,
+    ),
+  ).toBe(false)
+})
+
+test('merge replies matched by branch persist and restore in their source chat', async () => {
+  const { restoredSimple } = await import('./simple')
+  const r = {
+    ...record('@merge'),
+    metadata: { ...record('@merge').metadata, branch: 'feature' },
+    spec: { cwd: '/destination', command: 'cat' },
+  }
+  useStore.setState({ tasks: [{ ...useStore.getState().tasks[0], branch: 'feature' }] })
+  useStore.getState().patchTask('p', 't', { simple: { startedMs: 1, log: [] } })
+  persistReplies('s', 1, [reply(1)], r)
+  const restored = restoredSimple(
+    JSON.parse(JSON.stringify(useStore.getState().taskWorkspaces.t.simple)),
+  )!
+  expect(restored.log).toHaveLength(1)
+  expect(restored.log[0]).toMatchObject({ kind: 'reply', stage: 'merge', text: 'Reply 1' })
   expect(useStore.getState().simple).toBeNull()
 })
 test('shared planner replies persist only in chats that used that generation', () => {
@@ -121,17 +222,31 @@ test('a reply arriving before its planner claim is persisted once the prompt is 
   ).toHaveLength(1)
 })
 
-test('View opens the drawer without leaving Chat for an unclaimed planner run', async () => {
+test.each([0, 1])('View pins an unclaimed exited planner (exit %i) in Chat', async (exitCode) => {
   const { plannerSessionId } = await import('../types')
   const sid = plannerSessionId('claude', 'p')
   const r = { ...record('@plan'), id: sid }
-  useStore.setState({ sessionRecords: [r], simpleMode: true, view: 'navigation' })
+  useStore.setState({
+    sessionRecords: [r],
+    sessions: { [sid]: { generation: 1, running: false, exitCode } },
+    simpleMode: true,
+    view: 'navigation',
+    revealed: { sid: 'old', componentId: '@task' },
+  })
   revealTerminal({ sid, componentId: '@plan' })
   expect(useStore.getState()).toMatchObject({
     simpleMode: true,
     view: 'navigation',
     activeSession: sid,
+    revealed: null,
   })
+  const ui = useSimpleUi.getState().worktrees[simpleKey('p', null)]
+  expect(ui).toMatchObject({
+    terminal: 'user',
+    terminalSession: { id: sid, generation: 1, pinned: true },
+  })
+  expect(inputDrawer(ui, undefined, useStore.getState().sessions)).toBe(ui)
+  expect(useStore.getState().simple).toBeNull()
 })
 
 test('View keeps a planner run used here in its chat', async () => {
@@ -226,6 +341,7 @@ test('evicted replies stay evicted across repeated restarts, including fully evi
   }))
   persistReplies('s', 1, incoming, r)
   const saved = useStore.getState().simple!
+  expect(saved).not.toHaveProperty('replySequences')
   expect(saved.log).toHaveLength(8)
   for (let i = 0; i < 3; i++) {
     const restored = restoredSimple(JSON.parse(JSON.stringify(useStore.getState().simple)))!
@@ -251,6 +367,15 @@ test('evicted replies stay evicted across repeated restarts, including fully evi
   }
   persistReplies('s', 1, [{ ...reply(21), text: 'new' }], r)
   expect(useStore.getState().simple!.log.at(-1)).toMatchObject({ sequence: 21, text: 'new' })
+})
+
+test('restoring legacy cursors retains late replies and removes cursor state', async () => {
+  const { restoredSimple } = await import('./simple')
+  const simple = restoredSimple({ startedMs: 1, log: [], replySequences: { '["s",1]': 3 } })!
+  expect(simple).toEqual({ startedMs: 1, log: [] })
+  useStore.setState({ activeTask: 't', simple })
+  persistReplies('s', 1, [reply(1)], record())
+  expect(useStore.getState().simple!.log).toHaveLength(1)
 })
 
 test('View finds the chat that used the current planner generation', () => {
