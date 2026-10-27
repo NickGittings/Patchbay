@@ -371,9 +371,9 @@ test('evicted replies stay evicted across repeated restarts, including fully evi
 })
 
 test('restoring legacy cursors retains late replies and removes cursor state', async () => {
-  const { restoredSimple } = await import('./simple')
+  const { restoredSimple, SIMPLE_VERSION } = await import('./simple')
   const simple = restoredSimple({ startedMs: 1, log: [], replySequences: { '["s",1]': 3 } })!
-  expect(simple).toEqual({ startedMs: 1, log: [] })
+  expect(simple).toEqual({ startedMs: 1, log: [], version: SIMPLE_VERSION })
   useStore.setState({ activeTask: 't', simple })
   persistReplies('s', 1, [reply(1)], record())
   expect(useStore.getState().simple!.log).toHaveLength(1)
@@ -471,6 +471,7 @@ test('restored legacy entries without a run claim the next run their session log
       entry('claimed', 300, 3),
       entry('last', 400),
       { ...entry('other', 50), sessionId: 'other' },
+      { ...entry('pause', 150), action: 'pauseAuto' as const },
     ],
   })!
   expect(Object.fromEntries(restored.log.map((e) => [e.id, e.generation]))).toEqual({
@@ -480,7 +481,29 @@ test('restored legacy entries without a run claim the next run their session log
     claimed: 3,
     last: undefined,
     other: undefined,
+    // Auto controls never claim a run, so they gain none.
+    pause: undefined,
   })
   expect(ownsPlanner(restored, 's', 2)).toBe(true)
   expect(ownsPlanner(restored, 's', 4)).toBe(false)
+  // A layout this build saved is never relabelled: a run-less entry there is a failed lookup.
+  const current = restoredSimple(JSON.parse(JSON.stringify(restored)))!
+  expect(
+    restoredSimple({ ...current, log: [entry('before', 1), ...current.log.slice(1)] })!.log[0],
+  ).not.toHaveProperty('generation', 2)
+  expect(current).toEqual(restored)
+})
+
+test('Auto controls never claim a planner run, even naming its generation', () => {
+  const pause = {
+    id: 'pause',
+    kind: 'action' as const,
+    action: 'pauseAuto' as const,
+    stage: 'plan' as const,
+    atMs: 1,
+    sessionId: 's',
+    generation: 1,
+  }
+  expect(ownsPlanner({ startedMs: 1, log: [pause] }, 's', 1)).toBe(false)
+  expect(ownsPlanner({ startedMs: 1, log: [{ ...pause, action: 'resume' }] }, 's', 1)).toBe(true)
 })

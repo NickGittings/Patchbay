@@ -20,7 +20,7 @@ import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './i
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
-import { logSimple } from './simpleActions'
+import { logLaunch } from './simpleActions'
 
 const ordered = (items: Story[]) =>
   [...items].sort(
@@ -204,14 +204,20 @@ export async function planStory(projectId: string, story: Story) {
     story: story.id,
   })
   if (chat)
-    await logSimple(projectId, task, {
-      kind: 'action',
-      action: 'plan',
-      stage: 'plan',
-      sessionId: sid,
-      text: story.title,
-      atMs: planningAtMs,
-    })
+    // Logged in the background, so a run lookup never delays the story's status.
+    void logLaunch(
+      projectId,
+      task,
+      {
+        kind: 'action',
+        action: 'plan',
+        stage: 'plan',
+        sessionId: sid,
+        text: story.title,
+        atMs: planningAtMs,
+      },
+      planningAtMs,
+    )
   await updateStory(projectId, story.id, { status: 'planned' })
 }
 

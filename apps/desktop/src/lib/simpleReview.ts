@@ -22,6 +22,13 @@ export function simpleReviewRequest(
   return { worktree: source.path, branch: source.branch, base }
 }
 
+/** A started reviewer, with its run once the service reported one newer than before the launch. */
+export interface StartedReviewer {
+  sessionId: string
+  generation?: number
+  startedMs?: number
+}
+
 /** Reuse review slots only after their previous turns have settled. */
 export async function startSimpleReview(
   project: Project,
@@ -96,7 +103,11 @@ export async function startSimpleReview(
       } else if (!snapshot && known?.generation === previous?.generation) {
         useStore.getState().setSession(sessionId, { running: true })
       }
-      return { ...launch, generation: snapshot?.generation, startedMs: snapshot?.startedMs }
+      // Only a run newer than the one before the launch is this launch's; the settled one never is.
+      const fresh = snapshot && snapshot.generation > (previous?.generation ?? -1)
+      return fresh
+        ? { ...launch, generation: snapshot.generation, startedMs: snapshot.startedMs }
+        : launch
     }),
   )
   return { ...result, started }

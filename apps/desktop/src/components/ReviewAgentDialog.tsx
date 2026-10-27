@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { startSimpleReview } from '../lib/simpleReview'
+import { startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
 import { gitBranches } from '../lib/ipc'
 import {
   defaultReviewBase,
@@ -17,9 +17,12 @@ export default function ReviewAgentDialog({
   worktrees,
   close,
   launched,
+  started: onStarted,
   restartSettled = false,
 }: {
   restartSettled?: boolean
+  /** Every reviewer started, with its run when known, and when the launch began. */
+  started?: (reviewers: StartedReviewer[], launchedAtMs: number) => void
   source: Worktree
   worktrees: Worktree[]
   close: () => void
@@ -61,6 +64,7 @@ export default function ReviewAgentDialog({
       offlineText="Reconnect before starting a review agent."
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Build. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
+        const launchedAtMs = Date.now()
         const { started, errors } = await (restartSettled ? startSimpleReview : startReviewAgents)(
           project,
           { worktree: source.path, branch: source.branch!, base },
@@ -68,6 +72,7 @@ export default function ReviewAgentDialog({
         )
         if (errors.length)
           useStore.getState().setMessage(`Some reviewers didn't start:\n${errors.join('\n')}`)
+        onStarted?.(started, launchedAtMs)
         return started[0].sessionId
       }}
       close={close}

@@ -199,3 +199,24 @@ test('review hydration stores session fields without terminal output or snapshot
   for (const key of ['data', 'end', 'launchDirectory', 'lastReply'])
     expect(stored).not.toHaveProperty(key)
 })
+
+test('a started reviewer carries its run only once the service reports one newer than before', async () => {
+  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({
+    started: [{ sessionId: 'r', requestId: 'request', lane: null }],
+    round: 'round',
+    errors: [],
+  })
+  // The slot's settled run, then the same run again after the launch: not this launch's.
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockResolvedValueOnce({ ...snapshot, running: false, startedMs: 5 })
+  const settled = await startSimpleReview(useStore.getState().toProject(), request, devices)
+  expect(settled.started[0]).not.toHaveProperty('generation')
+  useStore.setState({ sessions: { r: { generation: 1, running: false } } })
+  vi.mocked(ipc.terminalSnapshot)
+    .mockResolvedValueOnce({ ...snapshot, running: false })
+    .mockResolvedValueOnce({ ...snapshot, generation: 2, startedMs: 300 })
+  const fresh = await startSimpleReview(useStore.getState().toProject(), request, devices)
+  expect(fresh.started[0]).toMatchObject({ sessionId: 'r', generation: 2, startedMs: 300 })
+})

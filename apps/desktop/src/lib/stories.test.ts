@@ -351,9 +351,11 @@ test('a replacing story planner logs its new run, and a worktree switch while st
   vi.mocked(ipc.terminalSnapshot)
     .mockResolvedValueOnce({ running: true } as never)
     .mockResolvedValueOnce({ running: false } as never)
-    .mockResolvedValueOnce({ running: true, generation: 5 } as never)
+    .mockResolvedValueOnce({ running: true, generation: 5, startedMs: Date.now() + 1000 } as never)
   await planStory('p', story('Feature name'))
-  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({ sessionId: sid, generation: 5 })
+  await vi.waitFor(() =>
+    expect(useStore.getState().simple?.log.at(-1)).toMatchObject({ sessionId: sid, generation: 5 }),
+  )
   vi.mocked(ipc.terminalSnapshot)
     .mockResolvedValueOnce({ running: true } as never)
     .mockImplementationOnce(async () => {

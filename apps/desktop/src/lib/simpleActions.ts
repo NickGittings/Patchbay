@@ -8,38 +8,40 @@ type Entry = SimpleEntry extends infer E
     : never
   : never
 
+type Run = { generation?: number; startedMs?: number } | null | undefined
+/** A run is this launch's only if it started once the launch began: never a stopped or older one. */
+const launchedRun = (run: Run, launchedAtMs: number) =>
+  run?.generation !== undefined && (run.startedMs ?? -Infinity) >= launchedAtMs ? run : undefined
+
 /**
- * Completion always belongs to its originating worktree, even if the user moved on. An entry
- * naming a session but not its run waits for the service to name the current one (the store may
- * still hold a stopped run until the new one's `started` event, or nothing before hydration), so
- * no caller can log a claim on a stale run; callers that know the run pass it. With `atRunStart`,
- * a looked-up entry is dated at its run's start, before that run's replies.
+ * Log an action that started or resumed `entry.sessionId` at `launchedAtMs`, claiming the run only
+ * when an authoritative source names it: the entry's own generation (a launch that reported it),
+ * else a run the store or then the service holds that started since the launch. Without one the
+ * entry names no run rather than a guess. With `atRunStart`, it is dated at its run's start,
+ * before that run's replies.
  */
-export function logSimple(
+export async function logLaunch(
   projectId: string,
   task: string | null,
-  entry: Entry,
+  entry: Extract<Entry, { kind: 'action' }>,
+  launchedAtMs: number,
   options?: { atRunStart?: boolean },
-): Promise<void> {
-  if (entry.kind === 'reply' || !entry.sessionId || entry.generation !== undefined) {
-    append(projectId, task, entry)
-    return Promise.resolve()
-  }
+) {
   const sid = entry.sessionId
-  const atMs = entry.atMs ?? Date.now()
-  return terminalSnapshot(sid, 0)
-    .catch(() => null)
-    .then((snapshot) => {
-      const run = snapshot ?? useStore.getState().sessions[sid]
-      append(projectId, task, {
-        ...entry,
-        generation: run?.generation,
-        atMs: (options?.atRunStart && run?.startedMs) || atMs,
-      })
-    })
+  let run: Run = entry.generation === undefined ? undefined : entry
+  if (!run && sid)
+    run =
+      launchedRun(useStore.getState().sessions[sid], launchedAtMs) ??
+      launchedRun(await terminalSnapshot(sid, 0).catch(() => null), launchedAtMs)
+  logSimple(projectId, task, {
+    ...entry,
+    generation: run?.generation,
+    atMs: entry.atMs ?? (options?.atRunStart ? run?.startedMs : undefined),
+  })
 }
 
-function append(projectId: string, task: string | null, entry: Entry) {
+/** Completion always belongs to its originating worktree, even if the user moved on. */
+export function logSimple(projectId: string, task: string | null, entry: Entry) {
   const state = projectStateOf(projectId)
   if (!state) return
   const simple = (state.activeTask === task

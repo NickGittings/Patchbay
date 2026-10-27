@@ -10,7 +10,7 @@ import {
   type SimpleStage,
 } from '../lib/simple'
 import { flow, type FlowAction } from '../lib/simpleFlow'
-import { logSimple } from '../lib/simpleActions'
+import { logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { changeGroups } from '../lib/changeGroups'
@@ -26,7 +26,7 @@ import {
   startMergeAgent,
   useRunningReviewLanes,
 } from '../lib/reviewAgents'
-import { simpleReviewRequest, startSimpleReview } from '../lib/simpleReview'
+import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
 import { gitWorktrees, mergeConflicts } from '../lib/ipc'
 import { seedNewTask } from '../lib/tasks'
 import { linkStory } from '../lib/stories'
@@ -48,6 +48,12 @@ import TerminalPane from './TerminalPane'
 import './simple.css'
 
 const pendingActions = new Set<string>()
+/** Run a launch and say when it began, so `logLaunch` claims only a run it started. */
+async function timed<T>(launch: () => Promise<T>) {
+  const atMs = Date.now()
+  return { result: await launch(), atMs }
+}
+
 export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
   const s = useStore(
     useShallow((s) => ({
@@ -151,12 +157,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       })
   }, [s.project, s.activeTask, s.simple])
   // `thread` lists records afresh on every render; the drawer only needs which ones exist.
-  const recordIds = JSON.stringify(model.records.map((r) => r.id))
+  const recordKey = model.records.map((r) => r.id).join('\n')
   useEffect(() => {
     const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
-    const next = inputDrawer(current, asking, s.sessions, JSON.parse(recordIds) as string[])
+    const next = inputDrawer(current, asking, s.sessions, recordKey.split('\n'))
     if (next !== current) useSimpleUi.getState().patch(key, next)
-  }, [key, asking, s.sessions, recordIds])
+  }, [key, asking, s.sessions, recordKey])
   // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
     model.items.map((i) =>
@@ -199,15 +205,16 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
-  // Entries date at their run's start; `logSimple` looks the run up when the launch didn't say.
+  // A launch's entry claims only the run that launch started, dated at its start (`logLaunch`).
   const log = (
     action: SimpleAction,
     stage: SimpleStage,
-    sid?: string,
+    sid: string,
+    launchedAtMs: number,
     destinationTask = task,
     run?: { generation?: number; startedMs?: number },
   ) =>
-    logSimple(
+    logLaunch(
       projectId,
       destinationTask,
       {
@@ -218,16 +225,18 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         atMs: run?.startedMs,
         generation: run?.generation,
       },
+      launchedAtMs,
       { atRunStart: true },
     )
-  const logMerge = (request: MergeRequest, sid: string) =>
-    logSimple(projectId, task, {
-      kind: 'action',
-      action: 'merge',
-      stage: 'merge',
-      request,
-      sessionId: sid,
-    })
+  const logReviewers = (reviewers: StartedReviewer[], launchedAtMs: number) =>
+    Promise.all(reviewers.map((r) => log('review', 'review', r.sessionId, launchedAtMs, task, r)))
+  const logMerge = (request: MergeRequest, sid: string, launchedAtMs: number) =>
+    logLaunch(
+      projectId,
+      task,
+      { kind: 'action', action: 'merge', stage: 'merge', request, sessionId: sid },
+      launchedAtMs,
+    )
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = `${key}:${action}`
     if (pendingActions.has(lock)) return
@@ -247,8 +256,10 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     const current = useStore.getState()
     if (current.project?.id !== projectId || current.activeTask !== destinationTask)
       throw new Error('The worktree changed. Choose Build in the intended chat.')
-    const sid = await implementPlannerPlan(planner, undefined, undefined, 'stay')
-    await log('implement', 'build', sid, destinationTask)
+    const { result: sid, atMs } = await timed(() =>
+      implementPlannerPlan(planner, undefined, undefined, 'stay'),
+    )
+    await log('implement', 'build', sid, atMs, destinationTask)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -289,15 +300,22 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           setDialog('review')
           return
         }
-        const { started, errors } = await startSimpleReview(
-          useStore.getState().toProject(),
-          simpleReviewRequest(source, base),
-          roleDevices(s.devices, s.agentRoles, 'review'),
+        const request = simpleReviewRequest(source, base)
+        const { result, atMs } = await timed(() =>
+          startSimpleReview(
+            useStore.getState().toProject(),
+            request,
+            roleDevices(s.devices, s.agentRoles, 'review'),
+          ),
         )
-        await Promise.all(started.map((r) => log('review', 'review', r.sessionId, task, r)))
+        const { started, errors } = result
+        await logReviewers(started, atMs)
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        await log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))
+        const { result: sid, atMs } = await timed(() =>
+          fixReviewFindings(reviewer, undefined, undefined, 'stay'),
+        )
+        await log('fix', 'build', sid, atMs)
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -317,19 +335,21 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           destination: target.path,
           destinationBranch: target.branch,
         }
-        const sid = await startMergeAgent(
-          useStore.getState().toProject(),
-          request,
-          roleDevice(s.devices, s.agentRoles, 'merge'),
-          crypto.randomUUID(),
+        const { result: sid, atMs } = await timed(() =>
+          startMergeAgent(
+            useStore.getState().toProject(),
+            request,
+            roleDevice(s.devices, s.agentRoles, 'merge'),
+            crypto.randomUUID(),
+          ),
         )
-        await logMerge(request, sid)
+        await logMerge(request, sid, atMs)
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
-        await log('resumeAuto', model.stage)
+        logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: model.stage })
       } else if (action === 'mergeApproval') {
         mergeNow(projectId, task)
-        await log('mergeApproval', 'merge')
+        logSimple(projectId, task, { kind: 'action', action: 'mergeApproval', stage: 'merge' })
       }
     })
   const items = model.items
@@ -348,10 +368,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           source={source}
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}
-          launched={(sid) => {
-            void log('review', 'review', sid)
-            setDialog(undefined)
-          }}
+          started={(reviewers, launchedAtMs) => void logReviewers(reviewers, launchedAtMs)}
+          launched={() => setDialog(undefined)}
         />
       )}
       {source && dialog === 'merge' && (
@@ -360,7 +378,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
           worktrees={data?.worktrees ?? []}
           findings={findings}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid) => void logMerge(request, sid)}
+          onRequest={(request, sid, launchedAtMs) => void logMerge(request, sid, launchedAtMs)}
           launched={() => setDialog(undefined)}
         />
       )}

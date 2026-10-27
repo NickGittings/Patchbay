@@ -1,6 +1,7 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import { MAX_SUBAGENTS, MIN_SUBAGENTS, SUBAGENT_COUNTS } from '../types'
+import { SIMPLE_VERSION } from './simple'
 vi.mock('./ipc', () => ({ quitPatchbay: vi.fn(), workspaceLoad: vi.fn(), workspaceSave: vi.fn() }))
 vi.mock('./windows', () => ({ openComponentWindow: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileSessions: vi.fn() }))
@@ -257,8 +258,8 @@ test('Simple defaults off, preserves the Full view and restores the complete wor
   useStore.setState({ simple, dirty: false })
   const restored = restoredLayout(workspaceDocument().projects[0].layout)
   expect(restored.simpleMode).toBe(true)
-  expect(restored.simple).toEqual(simple)
-  expect(restored.taskWorkspaces?.[''].simple).toEqual(simple)
+  expect(restored.simple).toEqual({ ...simple, version: SIMPLE_VERSION })
+  expect(restored.taskWorkspaces?.[''].simple).toEqual({ ...simple, version: SIMPLE_VERSION })
   s.setView('implementation')
   expect(useStore.getState().simpleMode).toBe(false)
   expect(useStore.getState().dirty).toBe(false)

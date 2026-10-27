@@ -59,6 +59,7 @@ export default function AutoPanel({
       void Promise.resolve(fn(projectId, task))
         .then(() => {
           if (simple)
+            // Auto controls name the agent for the conversation but never claim its run.
             logSimple(projectId, task, {
               kind: 'action',
               action,

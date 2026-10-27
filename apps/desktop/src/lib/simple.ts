@@ -50,11 +50,27 @@ export type SimpleEntry = EntryBase &
 export interface SimpleState {
   startedMs: number
   log: SimpleEntry[]
+  /** `SIMPLE_VERSION` once saved by a build whose claims name their run; older logs migrate. */
+  version?: number
 }
+export const SIMPLE_VERSION = 2
+
+/** Entries that start, resume or prompt a run, the only ones that may claim it. */
+const CLAIMING_ACTIONS: readonly SimpleAction[] = [
+  'plan',
+  'implement',
+  'review',
+  'fix',
+  'merge',
+  'resume',
+]
+const claimsRun = (e: SimpleEntry) =>
+  e.kind === 'prompt' || (e.kind === 'action' && CLAIMING_ACTIONS.includes(e.action))
 
 /**
- * Whether this chat launched or prompted that run of a shared planner. Only entries naming the
- * run's generation claim it: one logged without a generation claims no run, never every later one.
+ * Whether this chat launched, resumed or prompted that run of a shared planner. Only such entries
+ * naming the run's generation claim it: one without a generation claims no run, never every later
+ * one, and Auto controls claim none.
  */
 export function ownsPlanner(
   simple: SimpleState | null | undefined,
@@ -64,7 +80,7 @@ export function ownsPlanner(
   return (
     generation !== undefined &&
     !!simple?.log.some(
-      (e) => e.kind !== 'reply' && e.sessionId === sessionId && e.generation === generation,
+      (e) => claimsRun(e) && e.sessionId === sessionId && e.generation === generation,
     )
   )
 }
@@ -74,8 +90,19 @@ export function boundedSimple(simple: SimpleState): SimpleState {
   return {
     startedMs: simple.startedMs,
     log: boundedSimpleLog(simple.log),
+    version: SIMPLE_VERSION,
   }
 }
+
+/** Chronological, replies after other entries at the same time, then by journal identity. */
+const entryOrder = (a: SimpleEntry, b: SimpleEntry) =>
+  a.atMs - b.atMs ||
+  Number(a.kind === 'reply') - Number(b.kind === 'reply') ||
+  (a.kind === 'reply' && b.kind === 'reply'
+    ? a.sessionId.localeCompare(b.sessionId) ||
+      a.generation - b.generation ||
+      a.sequence - b.sequence
+    : 0)
 
 /** Keep recent reply text bounded while retaining every prompt and action. */
 export const SIMPLE_REPLY_LIMIT = 16 * 1024
@@ -83,16 +110,7 @@ export const SIMPLE_REPLY_BUDGET = 128 * 1024
 export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
   let remaining = SIMPLE_REPLY_BUDGET
   return log
-    .toSorted(
-      (a, b) =>
-        a.atMs - b.atMs ||
-        Number(a.kind === 'reply') - Number(b.kind === 'reply') ||
-        (a.kind === 'reply' && b.kind === 'reply'
-          ? a.sessionId.localeCompare(b.sessionId) ||
-            a.generation - b.generation ||
-            a.sequence - b.sequence
-          : 0),
-    )
+    .toSorted(entryOrder)
     .reverse()
     .flatMap((entry): SimpleEntry[] => {
       if (entry.kind !== 'reply') return [entry]
@@ -110,24 +128,23 @@ export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
 }
 
 /**
- * Earlier builds logged some session entries (resume, Auto controls) without a run. Each such
- * entry claims the run of that session's next entry naming one (a prompt or a reply this chat
- * persisted), the run it led into; with none after it, it claims no run.
+ * Logs saved before `SIMPLE_VERSION` have entries that started or resumed a session (resume above
+ * all) without naming its run. Each such entry claims the run of that session's next entry naming
+ * one (a prompt or a reply the chat persisted), the run it led into; with none after it, it claims
+ * no run. Other entries, Auto controls included, never gain a run. `log` is in `entryOrder`.
  */
 function withLegacyGenerations(log: SimpleEntry[]): SimpleEntry[] {
-  const order = log
-    .map((entry, index) => ({ entry, index }))
-    .sort((a, b) => a.entry.atMs - b.entry.atMs || a.index - b.index)
   const next = new Map<string, number>()
-  const runs = new Map<number, number>()
-  for (const { entry, index } of order.toReversed()) {
-    if (!entry.sessionId) continue
-    if (Number.isSafeInteger(entry.generation)) next.set(entry.sessionId, entry.generation!)
-    else if (next.has(entry.sessionId)) runs.set(index, next.get(entry.sessionId)!)
-  }
-  return log.map((entry, index) =>
-    runs.has(index) ? ({ ...entry, generation: runs.get(index) } as SimpleEntry) : entry,
-  )
+  return log
+    .toReversed()
+    .map((entry) => {
+      if (!entry.sessionId) return entry
+      if (Number.isSafeInteger(entry.generation)) next.set(entry.sessionId, entry.generation!)
+      else if (claimsRun(entry) && next.has(entry.sessionId))
+        return { ...entry, generation: next.get(entry.sessionId) } as SimpleEntry
+      return entry
+    })
+    .reverse()
 }
 
 /** Old layouts start empty. Never truncate the worktree's action history. */
@@ -137,41 +154,42 @@ export function restoredSimple(value: unknown): SimpleState | null {
   if (!Number.isFinite(state.startedMs) || !Array.isArray(state.log)) return null
   const seen = new Set<string>()
   const replies = new Set<string>()
-  return boundedSimple({
+  const restored = boundedSimple({
     startedMs: state.startedMs,
-    log: withLegacyGenerations(
-      state.log.filter((entry) => {
-        if (
-          !entry ||
-          typeof entry.id !== 'string' ||
-          seen.has(entry.id) ||
-          !Number.isFinite(entry.atMs) ||
-          !SIMPLE_STAGES.includes(entry.stage)
-        )
-          return false
-        const valid =
-          entry.kind === 'prompt'
-            ? typeof entry.text === 'string' &&
-              Array.isArray(entry.mentions) &&
-              entry.mentions.every((id) => typeof id === 'string')
-            : entry.kind === 'reply'
-              ? typeof entry.sessionId === 'string' &&
-                Number.isSafeInteger(entry.generation) &&
-                entry.generation >= 0 &&
-                Number.isSafeInteger(entry.sequence) &&
-                entry.sequence > 0 &&
-                typeof entry.text === 'string' &&
-                !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-              : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
-        if (valid) {
-          seen.add(entry.id)
-          if (entry.kind === 'reply')
-            replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-        }
-        return valid
-      }),
-    ),
+    log: state.log.filter((entry) => {
+      if (
+        !entry ||
+        typeof entry.id !== 'string' ||
+        seen.has(entry.id) ||
+        !Number.isFinite(entry.atMs) ||
+        !SIMPLE_STAGES.includes(entry.stage)
+      )
+        return false
+      const valid =
+        entry.kind === 'prompt'
+          ? typeof entry.text === 'string' &&
+            Array.isArray(entry.mentions) &&
+            entry.mentions.every((id) => typeof id === 'string')
+          : entry.kind === 'reply'
+            ? typeof entry.sessionId === 'string' &&
+              Number.isSafeInteger(entry.generation) &&
+              entry.generation >= 0 &&
+              Number.isSafeInteger(entry.sequence) &&
+              entry.sequence > 0 &&
+              typeof entry.text === 'string' &&
+              !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+            : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
+      if (valid) {
+        seen.add(entry.id)
+        if (entry.kind === 'reply')
+          replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+      }
+      return valid
+    }),
   })
+  return state.version === SIMPLE_VERSION
+    ? restored
+    : { ...restored, log: withLegacyGenerations(restored.log) }
 }
 export interface SimpleWorktree {
   projectId: string

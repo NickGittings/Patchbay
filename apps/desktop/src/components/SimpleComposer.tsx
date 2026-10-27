@@ -14,7 +14,7 @@ import {
   transmittedText,
   waitForPrompt,
 } from '../lib/simpleComposer'
-import { logSimple } from '../lib/simpleActions'
+import { logLaunch, logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
 import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
@@ -146,15 +146,21 @@ export default function SimpleComposer({
       let target = recipient
       if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
+        const resumedAt = Date.now()
         await sessionResume(target.id)
-        // Claim the resumed run (`logSimple` asks the service for it) before reconciling, so that
-        // pass already persists its replies and input waits into this chat.
-        await logSimple(projectId, task, {
-          kind: 'action',
-          action: 'resume',
-          stage,
-          sessionId: target.id,
-        })
+        // Claim the resumed run before reconciling, so that pass persists its replies and input
+        // waits into this chat. Replies that arrived before the claim were left out: persist now.
+        // The claim is logged even if the worktree changed meanwhile, then the send stops.
+        await logLaunch(
+          projectId,
+          task,
+          { kind: 'action', action: 'resume', stage, sessionId: target.id },
+          resumedAt,
+        )
+        const resumed = useStore.getState().sessions[target.id]
+        if (resumed?.generation !== undefined)
+          persistReplies(target.id, resumed.generation, resumed.replies ?? [])
+        check()
         await reconcileFreshSessions()
         await refreshSession(target.id)
       } else if (!target) {
