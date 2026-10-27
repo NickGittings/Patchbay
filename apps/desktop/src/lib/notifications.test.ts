@@ -1254,3 +1254,52 @@ test('a revoked grant is asked for again after a failed send', async () => {
   expect(await notificationPermission()).toBe(false)
   expect(mock.request).toHaveBeenCalledTimes(2)
 })
+
+test.each(['needsUser'] as const)(
+  'a background Auto %s pause alerts once and Resume removes its link',
+  async (pauseKind) => {
+    setAuto(autoRun())
+    stop = followNotifications()
+    setAuto(autoRun({ status: 'paused', pauseKind, reason: 'Resume to continue' }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).toHaveBeenCalledOnce()
+    expect(mock.state.notificationToast?.sessions[0].auto).toBeDefined()
+    setAuto(autoRun({ status: 'paused', pauseKind, reason: 'Resume to continue' }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).toHaveBeenCalledOnce()
+    setAuto(autoRun())
+    expect(mock.state.notificationToast).toBeNull()
+  },
+)
+
+test('changing a deliberate pause to a needsUser pause alerts', async () => {
+  setAuto(autoRun({ status: 'paused', pauseKind: 'user' }))
+  stop = followNotifications()
+  setAuto(autoRun({ status: 'paused', pauseKind: 'needsUser', reason: 'Launch refused' }))
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.toast).toHaveBeenCalledOnce()
+})
+
+test.each(['inactive', 'interrupted', 'restored', 'user'] as const)(
+  'an Auto %s pause does not alert when changing worktrees',
+  async (pauseKind) => {
+    setAuto(autoRun())
+    stop = followNotifications()
+    setAuto(autoRun({ status: 'paused', pauseKind }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).not.toHaveBeenCalled()
+    expect(mock.send).not.toHaveBeenCalled()
+  },
+)
+
+test.each([true, false])(
+  'Auto launch failures respect the failed preference (%s)',
+  async (failed) => {
+    update({ notifications: { ...DEFAULT_NOTIFICATIONS, failed, needsInput: !failed } })
+    setAuto(autoRun())
+    stop = followNotifications()
+    setAuto(autoRun({ status: 'failed', stage: 'implement', reason: 'Launch was not confirmed' }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).toHaveBeenCalledTimes(failed ? 1 : 0)
+  },
+)

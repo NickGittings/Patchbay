@@ -131,7 +131,7 @@ function trackingRuns(s: Snapshot, sid: string) {
 }
 
 const autoSignature = (run: AutoRun) =>
-  [run.runId, run.status, run.stage, run.waitingFor ?? ''].join('|')
+  [run.runId, run.status, run.stage, run.waitingFor ?? '', run.pauseKind ?? ''].join('|')
 const autoSid = (projectId: string, task: string | null) => `auto:${projectId}:${task ?? ''}`
 
 /** The Auto runs of open projects that want the user, from `attention.ts`'s own list. */

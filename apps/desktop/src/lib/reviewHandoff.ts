@@ -1,10 +1,11 @@
-import { useStore } from '../store'
+import { projectStateOf, useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type AutoBrief, type SessionRecord } from '../types'
 import { reviewFixTask } from './ipc'
 import { roleDevice } from './agentRoles'
 import { agentDevices } from './plan'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
+import type { HandoffTarget } from './planHandoff'
 
 /**
  * Launch a fresh implementation agent in the reviewed worktree to address its findings. The
@@ -17,17 +18,21 @@ export async function fixReviewFindings(
   auto?: AutoBrief,
   deviceId?: string,
   presentation: 'stay' | 'follow' = 'follow',
+  target?: HandoffTarget,
 ) {
-  const projectId = useStore.getState().project?.id
+  const projectId = target?.projectId ?? useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (projectId !== record.metadata.projectId) throw new Error('Open the reviewed project first')
   const task = await reviewFixTask(record.id, projectId)
+  if (target && task !== target.task) throw new Error('The reviewed worktree changed')
   // The task may come from the CLI or another window, or its worktree may have come back, since
   // the list was loaded; the backend just checked it exists.
-  if (task !== null && !useStore.getState().tasks.some((t) => t.id === task && !t.missing))
+  if (task !== null && !projectStateOf(projectId)?.tasks.some((t) => t.id === task && !t.missing))
     await refreshTasks(projectId)
   const s = useStore.getState()
-  if (s.project?.id !== projectId) throw new Error('Open the reviewed project first')
+  const state = projectStateOf(projectId)
+  if ((!target && s.project?.id !== projectId) || !state)
+    throw new Error('Open the reviewed project first')
   // Auto's fix agent, else the project's fix role, else the reviewer's provider: session records
   // keep the preset's command but not its id, so match by adapter.
   const agents = agentDevices(s.devices)
@@ -35,16 +40,17 @@ export async function fixReviewFindings(
     (deviceId && agents.find((d) => d.id === deviceId)) ||
     roleDevice(
       s.devices,
-      s.agentRoles,
+      state.agentRoles,
       'fix',
       agents.find((d) => d.adapter === record.metadata.adapter),
     )
   const previous = s.activeTask
   // Exact: a `null` here means no task holds the project folder, so nothing to redirect to.
-  if (previous !== task) s.setActiveTask(task, true)
+  if (!target && previous !== task) s.setActiveTask(task, true)
   const switched = useStore.getState()
-  if (switched.activeTask !== task) throw new Error("Couldn't switch to the reviewed worktree")
-  const id = switched.addRootTerminal(device)
+  if (!target && switched.activeTask !== task)
+    throw new Error("Couldn't switch to the reviewed worktree")
+  const id = switched.addRootTerminal(device, target)
   let requestId: string | undefined
   try {
     requestId = await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, {
@@ -54,7 +60,9 @@ export async function fixReviewFindings(
   } catch (e) {
     // Leave nothing behind for a fix that didn't start, unless the user moved on meanwhile.
     const failed = useStore.getState()
-    if (failed.project?.id === projectId && failed.activeTask === task) {
+    if (target) {
+      failed.removeTaskTerminal(TASK_ROOT_SCOPE, id, target)
+    } else if (failed.project?.id === projectId && failed.activeTask === task) {
       failed.removeTaskTerminal(TASK_ROOT_SCOPE, id)
       if (previous !== task) failed.setActiveTask(previous, true)
     }

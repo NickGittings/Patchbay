@@ -778,6 +778,7 @@ test.each([false, true])(
         expect.objectContaining({ goal: 'Implement the description', commit: true }),
         'codex',
         simpleMode ? 'stay' : 'follow',
+        { projectId: 'p', task: 't' },
       )
     } finally {
       stop()
@@ -1329,11 +1330,9 @@ test.each(['running', 'paused', 'waitingOnYou'] as const)(
       .patchTask('p', 't', { auto: run({ runId: 'second', stage: 'plan', status: 'paused' }) })
     useStore.setState({ sessionRecords: [plannerRecord()] })
     agent('working', 1000)
-    await expect(resumeAuto('p', 't')).rejects.toThrow('already belongs to another Auto run')
-    expect(autoRun('p', 't')).toMatchObject({
-      runId: 'second',
-      status: 'paused',
-    })
+    await resumeAuto('p', 't')
+    expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+    expect(autoRun('p', 'restored')).toMatchObject({ status, sessionId: 's' })
   },
 )
 
@@ -1482,7 +1481,7 @@ test('Auto refuses an unconfirmed launch without recording a phantom session', a
   const stop = followAuto()
   try {
     await flush()
-    expect(autoRun('p', 't')).toMatchObject({ status: 'failed' })
+    expect(autoRun('p', 't')).toMatchObject({ status: 'failed', pauseKind: undefined })
     expect(autoRun('p', 't')?.sessionId).toBeUndefined()
     expect(autoRun('p', 't')?.reason).toContain('launch was not confirmed')
   } finally {
@@ -1516,8 +1515,13 @@ test('shared planner is reserved while a launch is pending without session recor
     })
     await flush()
     expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
-    expect(autoRun('p', null)?.reason).toContain('already belongs to another Auto run')
+    expect(autoRun('p', null)).toMatchObject({
+      status: 'running',
+      reason: 'Waiting for the planner',
+    })
   } finally {
+    stopAuto('p', null)
+    stopAuto('p', 't')
     finish()
     await flush()
     stop()
@@ -2710,6 +2714,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       // An unconfirmed launch may have started an agent, so it counts against the budget.
       expect(autoRun('p', 't')).toMatchObject({
         status: 'failed',
+        pauseKind: undefined,
         round: failure === 'unconfirmed' ? 1 : 0,
       })
       expect(autoRun('p', 't')?.sessionId).toBeUndefined()
@@ -3470,7 +3475,8 @@ test.each([
   try {
     await flush()
     expect(autoRun('p', 't')?.status).toBe(status)
-    if (status === 'paused')
+    expect(autoRun('p', 't')?.pauseKind).toBe(status === 'paused' ? 'needsUser' : undefined)
+    if (error.includes(TERMINAL_RUNNING))
       expect(autoRun('p', 't')?.reason).toBe('Close the current agent in this slot, then Resume')
   } finally {
     dispose()
@@ -3686,4 +3692,744 @@ test('plan marks remain compatible with paused runs saved before proposal timest
   })
   const changed = await autoSnapshot('p', 't', planning)
   expect(inferStage(changed, { ...planning, planMark: old.planMark }).stage).toBe('implement')
+})
+
+test.each([false, true])(
+  'launching an inactive worktree requires background permission (%s)',
+  async (background) => {
+    load()
+    useStore.getState().setActiveTask(null, true)
+    const settings = {
+      goal: 'Background goal',
+      effort: 'light' as const,
+      device: 'codex',
+      background,
+      merge: { mode: 'ask' as const, destinationBranch: 'main' },
+    }
+    if (background) {
+      await startAuto('p', 't', settings)
+      expect(autoRun('p', 't')).toMatchObject({ status: 'running', background: true })
+    } else {
+      await expect(startAuto('p', 't', settings)).rejects.toThrow('The task changed')
+      expect(autoRun('p', 't')).toBeNull()
+    }
+    expect(useStore.getState().activeTask).toBeNull()
+  },
+)
+
+test('a background run starts a review in an inactive project tab without changing the UI', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ background: true }) })
+  useStore.getState().loadProject({
+    projectId: 'q',
+    root: '/q',
+    name: 'Q',
+    schemaVersion: 4,
+    components: [],
+    links: [],
+  })
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    useStore.setState({ sessions: { 'bg-review': { running: true, startedMs: Date.now() } } })
+    return 'bg-review'
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(jobs.startReviewAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'p' }),
+      expect.objectContaining({ worktree: '/p/feature', branch: 'feature' }),
+      expect.anything(),
+      expect.any(String),
+      expect.anything(),
+    )
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 'bg-review' })
+    expect(useStore.getState().project?.id).toBe('q')
+    expect(useStore.getState().activeTask).toBeNull()
+  } finally {
+    dispose()
+  }
+})
+
+test('foreground runs pause as inactive and a user Pause replaces that reason', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  useStore.getState().setActiveTask(null, true)
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'inactive',
+      pausedMs: expect.any(Number),
+    })
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    pauseAuto('p', 't')
+    expect(autoRun('p', 't')).toMatchObject({ pauseKind: 'user', reason: 'Paused by you' })
+    dispose()
+    await resumeAuto('p', 't')
+    expect(autoRun('p', 't')).toMatchObject({ pauseKind: undefined, pausedMs: undefined })
+  } finally {
+    dispose()
+  }
+})
+
+test('service disconnection waits without pausing and reconnect continues driving', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's' }) })
+  agent('working', 2000)
+  useStore.setState({ serviceConnected: false })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      sessionId: 's',
+    })
+    expect(ipc.reviewRead).not.toHaveBeenCalled()
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', observedWorking: true })
+    expect(autoRun('p', 't')?.pauseKind).toBeUndefined()
+  } finally {
+    dispose()
+  }
+})
+
+test('background runs wait for a shared planner through its implementation handoff', async () => {
+  vi.useFakeTimers()
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan', background: true }) })
+  useStore.getState().setActiveTask(null, true)
+  useStore.getState().patchTask('p', null, {
+    auto: run({
+      runId: 'second',
+      stage: 'plan',
+      background: true,
+      merge: { mode: 'ask', destinationBranch: 'feature' },
+    }),
+  })
+  // A recorded planner owns the project even if a different preset would get another session id.
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'plan', background: true, sessionId: 'owner', planMark: 'old' }),
+  })
+  useStore.setState({ sessions: { owner: reviewSession('working', 1500) } })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', null)).toMatchObject({
+      status: 'running',
+      reason: 'Waiting for the planner',
+    })
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    const { implementPlannerPlan } = await import('./planHandoff')
+    let finish!: () => void
+    vi.mocked(implementPlannerPlan).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
+        }),
+    )
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'implement', background: true, planMark: 'old' }),
+    })
+    await flush()
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    finish()
+    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+      const { plannerSessionId } = await import('../types')
+      const sid = plannerSessionId('codex', 'p')
+      useStore.setState({
+        sessions: {
+          ...useStore.getState().sessions,
+          [sid]: { running: true, startedMs: Date.now() },
+        },
+      })
+      return 'request'
+    })
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledWith(
+      '@plan',
+      'codex',
+      null,
+      'p',
+      expect.anything(),
+    )
+    expect(autoRun('p', null)?.status).toBe('running')
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['agentInput', undefined] as const)(
+  'a disconnect preserves a user wait instead of making it resumable (%s)',
+  async (waitingFor) => {
+    load()
+    useStore.getState().patchTask('p', 't', {
+      auto: run({
+        status: 'waitingOnYou',
+        stage: waitingFor ? 'review' : 'mergeGate',
+        waitingFor,
+        sessionId: waitingFor ? 's' : undefined,
+      }),
+    })
+    useStore.setState({ serviceConnected: false })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+      expect(autoRun('p', 't')?.pauseKind).toBeUndefined()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a partial launch failure cannot replace a user pause made while reviewers started', async () => {
+  load()
+  let finish!: () => void
+  vi.mocked(jobs.startReviewAgents).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () =>
+          resolve({
+            started: [{ sessionId: 's', requestId: 'r', lane: null }],
+            round: 'round',
+            errors: ['Other reviewer failed'],
+          })
+      }),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(jobs.startReviewAgents).toHaveBeenCalledOnce()
+    pauseAuto('p', 't')
+    agent('working', 1400)
+    finish()
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'user',
+      reason: 'Paused by you',
+      sessionId: 's',
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test.each([false, true])(
+  'a start does not adopt another worktree’s planner (background: %s)',
+  async (background) => {
+    load()
+    vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+    const record = plannerRecord()
+    useStore.setState({ sessionRecords: [record], sessions: { s: reviewSession('working', 1500) } })
+    useStore
+      .getState()
+      .patchTask('p', null, { auto: run({ runId: 'owner', stage: 'plan', sessionId: 's' }) })
+    await startAuto('p', 't', {
+      goal: 'Another goal',
+      effort: 'light',
+      device: 'codex',
+      background,
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      stage: 'plan',
+    })
+    expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        status: 'running',
+        reason: 'Waiting for the planner',
+      })
+      expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a handoff keeps priority over a waiting planner when controller reservations are rebuilt', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'implement', background: true, planMark: 'accepted' }),
+  })
+  useStore.getState().setActiveTask(null, true)
+  useStore.getState().patchTask('p', null, {
+    auto: run({
+      runId: 'next',
+      stage: 'plan',
+      background: true,
+      planMark: 'waiting',
+      merge: { mode: 'ask', destinationBranch: 'feature' },
+    }),
+  })
+  const { implementPlannerPlan } = await import('./planHandoff')
+  let finish!: () => void
+  vi.mocked(implementPlannerPlan).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
+      }),
+  )
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
+    expect(vi.mocked(implementPlannerPlan).mock.calls[0][4]).toEqual({ projectId: 'p', task: 't' })
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    expect(autoRun('p', null)).toMatchObject({
+      status: 'running',
+      reason: 'Waiting for the planner',
+    })
+  } finally {
+    dispose()
+    finish()
+    await flush()
+  }
+})
+
+test.each(['preset', 'destination', 'base', 'branch'] as const)(
+  'invalid %s pauses for user action instead of automatic retry',
+  async (problem) => {
+    load()
+    const stage = problem === 'destination' ? 'merge' : 'review'
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage, merge: { mode: 'auto', destinationBranch: 'main' } }),
+    })
+    if (problem === 'preset') useStore.setState({ devices: [] })
+    if (problem === 'destination')
+      useStore.getState().patchTask('p', 't', {
+        auto: run({ stage, merge: { mode: 'auto', destinationBranch: 'missing' } }),
+      })
+    if (problem === 'base') {
+      vi.mocked(ipc.gitBranches).mockResolvedValue(['feature'])
+      vi.mocked(ipc.gitWorktrees).mockResolvedValue([{ ...tree, current: true }])
+      useStore
+        .getState()
+        .setTasks(useStore.getState().tasks.map((t) => ({ ...t, base: 'feature' })))
+    }
+    if (problem === 'branch') vi.mocked(ipc.gitWorktrees).mockResolvedValue([])
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
+      const { autoAttentionItems } = await import('./attention')
+      expect(autoAttentionItems(useStore.getState()).map((item) => item.task)).toContain('t')
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('an inactive run without a planner releases its reservation to a background run', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  let finish!: (value: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve
+    }),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan', planMark: 'initial' }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    useStore.getState().setActiveTask(null, true)
+    useStore.getState().patchTask('p', null, {
+      auto: run({
+        runId: 'next',
+        stage: 'plan',
+        background: true,
+        merge: { mode: 'ask', destinationBranch: 'feature' },
+      }),
+    })
+    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+      const { plannerSessionId } = await import('../types')
+      const sid = plannerSessionId('codex', 'p')
+      useStore.setState({ sessions: { [sid]: { running: true, startedMs: Date.now() } } })
+      return 'request'
+    })
+    finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'inactive' })
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(autoRun('p', null)?.status).toBe('running')
+  } finally {
+    dispose()
+  }
+})
+
+test('a paused implementation handoff preserves its plan while blocked runs wait', async () => {
+  load()
+  useStore.getState().patchTask('p', 't', {
+    auto: run({ stage: 'implement', planMark: 'ready', status: 'paused', pauseKind: 'inactive' }),
+  })
+  useStore.getState().setActiveTask(null, true)
+  useStore.getState().patchTask('p', null, {
+    auto: run({ runId: 'next', stage: 'plan', background: true }),
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', null)).toMatchObject({
+      status: 'running',
+      reason: 'Waiting for the planner',
+    })
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+  } finally {
+    dispose()
+  }
+})
+
+test.each([false, true])(
+  'Start cannot adopt a planner reserved for implementation handoff (background: %s)',
+  async (background) => {
+    load()
+    vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+    useStore.getState().patchTask('p', null, {
+      auto: run({ runId: 'owner', stage: 'implement', planMark: 'ready', status: 'paused' }),
+    })
+    // The owner cleared sessionId when it advanced to Implement, but still holds the shared plan.
+    useStore.setState({
+      sessionRecords: [plannerRecord()],
+      sessions: { s: reviewSession('working', 1500) },
+    })
+    await startAuto('p', 't', {
+      goal: 'Another goal',
+      effort: 'light',
+      device: 'codex',
+      background,
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', stage: 'plan' })
+    expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+  },
+)
+
+test('disconnect during a snapshot waits for reconciliation before launching', async () => {
+  load()
+  let finish!: (value: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve
+    }),
+  )
+  useStore.getState().patchTask('p', 't', { auto: run() })
+  const dispose = followAuto()
+  try {
+    await flush()
+    useStore.setState({ serviceConnected: false })
+    finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running' })
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+      agent('working', 1500)
+      return 's'
+    })
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['implement', 'fix'] as const)(
+  'a disconnected, unconfirmed %s launch fails and never launches twice on reconnect',
+  async (stage) => {
+    load()
+    const { implementPlannerPlan } = await import('./planHandoff')
+    const { fixReviewFindings } = await import('./reviewHandoff')
+    const launch = stage === 'implement' ? implementPlannerPlan : fixReviewFindings
+    useStore.setState({ sessionRecords: [reviewRecord('reviewer', null, reviewSession('review'))] })
+    vi.mocked(launch).mockResolvedValue({ sessionId: 'started', requestId: 'request' })
+    vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+      useStore.setState({ serviceConnected: false })
+      throw new Error('Connection lost while confirming the launch')
+    })
+    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'failed', pauseKind: undefined })
+      useStore.setState({ serviceConnected: true })
+      await flush()
+      expect(launch).toHaveBeenCalledOnce()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test.each([true, false])(
+  'a snapshot error pauses as interrupted (service connected: %s)',
+  async (connected) => {
+    load()
+    vi.mocked(ipc.gitWorktrees).mockImplementation(async () => {
+      useStore.setState({ serviceConnected: connected })
+      throw new Error('Temporary Git or IPC failure')
+    })
+    useStore.getState().patchTask('p', 't', { auto: run() })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'interrupted' })
+      expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('disconnect after stopping a completed planner preserves its implementation handoff', async () => {
+  load()
+  agent('review', 1500)
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Finished plan', cut: false })
+  useStore.getState().patchTask('p', 't', {
+    auto: run({
+      stage: 'plan',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1100,
+      planMark: 'old',
+      plannerTurn: true,
+    }),
+  })
+  vi.mocked(ipc.terminalStop).mockImplementation(async () => {
+    useStore.setState({ serviceConnected: false, sessions: {} })
+  })
+  const { implementPlannerPlan } = await import('./planHandoff')
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'implement',
+      status: 'running',
+      sessionId: undefined,
+      plannerTurn: true,
+    })
+    expect(implementPlannerPlan).not.toHaveBeenCalled()
+    vi.mocked(implementPlannerPlan).mockImplementation(async () => {
+      useStore.setState({ sessions: { implementation: { running: true, startedMs: 2000 } } })
+      return { sessionId: 'implementation', requestId: 'request' }
+    })
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      sessionId: 'implementation',
+      plannerTurn: false,
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test('validation finished during a disconnect is saved and never reruns after reconnect', async () => {
+  load()
+  useStore.getState().addComponent({ x: 0, y: 0 })
+  const componentId = useStore.getState().selectedId!
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    changes: { [componentId]: [{ path: 'file.txt', kind: 'modified' }] },
+    affected: [],
+  })
+  const report = {
+    plan: {
+      request: { kind: 'validateChanged' as const, componentIds: [componentId] },
+      sessions: ['check'],
+      stages: [],
+      skipped: [],
+      task: 't',
+    },
+    results: [{ sessionId: 'check', outcome: 'failed' as const, exitCode: 1 }],
+  }
+  vi.mocked(ipc.graphActionRun).mockImplementation(async () => {
+    useStore.setState({ serviceConnected: false })
+    return report
+  })
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate' }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      stage: 'review',
+      validation: [report],
+      validationFindings: expect.stringContaining('[high] Validation failed'),
+    })
+    expect(jobs.startReviewAgent).not.toHaveBeenCalled()
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+      agent('working', 2000)
+      return 's'
+    })
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(ipc.graphActionRun).toHaveBeenCalledOnce()
+    expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+  } finally {
+    dispose()
+  }
+})
+
+test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)(
+  'a %s pause before a planner launches holds no turn',
+  async (pauseKind) => {
+    load()
+    vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+    useStore.getState().patchTask('p', 't', {
+      auto: run({ stage: 'plan', status: 'paused', pauseKind, planMark: 'legacy-initial-mark' }),
+    })
+    useStore.getState().setActiveTask(null, true)
+    await startAuto('p', null, {
+      ...run({ stage: 'plan' }),
+      background: true,
+      goal: 'Next task',
+      merge: { mode: 'ask', destinationBranch: 'feature' },
+    })
+    expect(autoRun('p', null)?.planMark).toBeUndefined()
+    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+      const { plannerSessionId } = await import('../types')
+      useStore.setState({
+        sessions: { [plannerSessionId('codex', 'p')]: { running: true, startedMs: 2000 } },
+      })
+      return 'request'
+    })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+      expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('restoring and resuming a handoff keeps its turn ahead of a later run, which continues automatically', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Owner plan', cut: false })
+  const { restoredAuto } = await import('./autoRestore')
+  useStore.getState().patchTask('p', 't', {
+    auto: restoredAuto(
+      run({ stage: 'implement', background: true, plannerTurn: true, planMark: 'owner' }),
+    )!,
+  })
+  useStore.getState().setActiveTask(null, true)
+  useStore.getState().patchTask('p', null, {
+    auto: run({
+      runId: 'later',
+      stage: 'plan',
+      background: true,
+      planMark: 'initial',
+      plannerTurn: false,
+      merge: { mode: 'ask', destinationBranch: 'feature' },
+    }),
+  })
+  const { implementPlannerPlan } = await import('./planHandoff')
+  let finish!: () => void
+  vi.mocked(implementPlannerPlan).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => {
+          useStore.setState({ sessions: { implementation: { running: true, startedMs: 2000 } } })
+          resolve({ sessionId: 'implementation', requestId: 'request' })
+        }
+      }),
+  )
+  vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+    const { plannerSessionId } = await import('../types')
+    useStore.setState({
+      sessions: {
+        ...useStore.getState().sessions,
+        [plannerSessionId('codex', 'p')]: { running: true, startedMs: 3000 },
+      },
+    })
+    return 'request'
+  })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', null)).toMatchObject({
+      status: 'running',
+      reason: 'Waiting for the planner',
+    })
+    await resumeAuto('p', 't')
+    expect(autoRun('p', 't')?.runId).not.toBe('run')
+    expect(autoRun('p', 't')?.plannerTurn).toBe(true)
+    await flush()
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    finish()
+    await flush()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
+  } finally {
+    dispose()
+  }
+})
+
+test.each([
+  [false, false, 'follow'],
+  [false, true, 'stay'],
+  [true, false, 'stay'],
+  [true, true, 'stay'],
+] as const)(
+  'fix presentation for background %s and Simple %s is %s',
+  async (background, simpleMode, presentation) => {
+    load()
+    useStore.setState({
+      simpleMode,
+      sessionRecords: [reviewRecord('reviewer', null, reviewSession('review'))],
+    })
+    const { fixReviewFindings } = await import('./reviewHandoff')
+    vi.mocked(fixReviewFindings).mockImplementation(async () => {
+      agent('working', 2000)
+      return { sessionId: 's', requestId: 'request' }
+    })
+    useStore.getState().patchTask('p', 't', { auto: run({ stage: 'fix', background }) })
+    const dispose = followAuto()
+    try {
+      await flush()
+      expect(vi.mocked(fixReviewFindings).mock.calls[0][3]).toBe(presentation)
+    } finally {
+      dispose()
+    }
+  },
+)
+
+test('a refused planner launch acquires no turn or plan fingerprint', async () => {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(awaitSessions.startTerminal).mockRejectedValue(new Error(TERMINAL_RUNNING))
+  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan' }) })
+  const dispose = followAuto()
+  try {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'needsUser',
+      plannerTurn: false,
+      planMark: undefined,
+    })
+  } finally {
+    dispose()
+  }
 })

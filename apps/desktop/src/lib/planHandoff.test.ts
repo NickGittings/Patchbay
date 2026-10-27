@@ -389,3 +389,57 @@ test('a handoff preserves a pending story belonging to another planner', async (
     planStoryTerminal: 'different',
   })
 })
+
+test('an explicit handoff copies the plan and creates a terminal in a background worktree', async () => {
+  const before = useStore.getState().rootTerminals
+  const target = { projectId: 'p', task: 'background' }
+  await implementPlannerPlan('claude', undefined, undefined, 'stay', target)
+  const s = useStore.getState()
+  const terminal = s.taskWorkspaces.background.rootTerminals.at(-1)!
+  expect(s.rootTerminals).toBe(before)
+  expect(s.activeTask).toBeNull()
+  expect(s.activeSession).toBeNull()
+  expect(s.view).toBe('plan')
+  expect(s.dirty).toBe(false)
+  expect(ipc.planWrite).toHaveBeenCalledWith('p', 'background', '# Plan', null)
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminal.id, 'background', 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+})
+
+test('an explicit handoff stays pinned across project and worktree changes during a read', async () => {
+  vi.mocked(ipc.planRead).mockImplementation(async () => {
+    useStore.getState().loadProject({
+      projectId: 'other',
+      root: '/other',
+      name: 'Other',
+      schemaVersion: 4,
+      components: [],
+      links: [],
+    })
+    return { text: '# Plan', cut: false }
+  })
+  await implementPlannerPlan('claude', undefined, undefined, 'stay', { projectId: 'p', task: 'bg' })
+  const s = useStore.getState()
+  expect(s.project?.id).toBe('other')
+  expect(s.rootTerminals.some((t) => t.command === claude.command)).toBe(false)
+  expect(s.projects.p.state!.taskWorkspaces.bg.rootTerminals).toHaveLength(2)
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, expect.any(String), 'bg', 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+})
+
+test('an explicit background proposal updates only the target workspace', async () => {
+  const proposal = { version: 1, plan: '# Scoped', assignments: [] }
+  vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
+  vi.mocked(ipc.proposalApply).mockResolvedValue(['web'])
+  await implementPlannerPlan('claude', undefined, undefined, 'stay', { projectId: 'p', task: 'bg' })
+  expect(ipc.proposalApply).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: 'p' }),
+    undefined,
+    proposal,
+    'bg',
+  )
+  expect(useStore.getState().highlighted).toEqual([])
+  expect(useStore.getState().taskWorkspaces.bg.highlighted).toEqual(['web'])
+})

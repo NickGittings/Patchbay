@@ -109,6 +109,10 @@ export interface AutoLaunch {
 export interface AutoRun {
   runId: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
+  /** Allow this run to launch work while another worktree or project tab is selected. */
+  background?: boolean
+  pauseKind?: 'user' | 'restored' | 'inactive' | 'interrupted' | 'needsUser'
+  pausedMs?: number
   stage: AutoStage
   goal: string
   effort: 'light' | 'standard' | 'thorough'
@@ -146,6 +150,8 @@ export interface AutoRun {
   sessionBrief?: { sessionId: string; auto: AutoBrief; kickoff?: Kickoff }
   /** Fingerprint of the project plan and proposal when the planner launched. */
   planMark?: string
+  /** Acquired when launching or adopting the shared planner; kept until implementation starts. */
+  plannerTurn?: boolean
   log: { atMs: number; text: string }[]
   reason?: string
   /** Why the approval wait couldn't check the merge status; it keeps retrying meanwhile. */

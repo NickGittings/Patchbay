@@ -424,6 +424,14 @@ export default function AutoDialog({
         </p>
       )}
       {error && <p role="alert">{error}</p>}
+      <label>
+        <input
+          type="checkbox"
+          checked={draft.background === true}
+          onChange={(e) => edit({ background: e.target.checked })}
+        />
+        Keep going in background
+      </label>
       <button
         disabled={
           loading ||
@@ -439,6 +447,7 @@ export default function AutoDialog({
           setStarting(true)
           void startAuto(projectId, task, {
             goal,
+            background: draft.background === true,
             effort: simple ? 'light' : effort,
             overrides: simple ? {} : overrides,
             merge: { mode: simple ? 'ask' : mode, destinationBranch: destination },

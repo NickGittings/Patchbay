@@ -31,7 +31,7 @@ function restoredBrief(value: AutoRun['sessionBrief']): AutoRun['sessionBrief'] 
   }
 }
 
-/** Persisted controllers are inert until the user explicitly resumes; finished runs stay finished. */
+/** Restored controllers are inert; pause kinds preserve choices a scheduler must never override. */
 export function restoredAuto(value: unknown): AutoRun | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const r = value as AutoRun
@@ -51,6 +51,17 @@ export function restoredAuto(value: unknown): AutoRun | null {
     return null
   if (r.overrides && (typeof r.overrides !== 'object' || !validOverrides(r.overrides))) return null
   const finished = ended(r.status)
+  // Legacy pauses have no provenance: treat them as deliberate, rather than resuming them later.
+  const pauseKind =
+    r.status === 'waitingOnYou'
+      ? 'needsUser'
+      : r.status === 'paused'
+        ? r.pauseKind === 'user' || r.pauseKind === 'needsUser'
+          ? r.pauseKind
+          : ['restored', 'inactive', 'interrupted'].includes(r.pauseKind ?? '')
+            ? 'restored'
+            : 'user'
+        : 'restored'
   return {
     runId: r.runId,
     stage: r.stage,
@@ -81,6 +92,11 @@ export function restoredAuto(value: unknown): AutoRun | null {
     branch: typeof r.branch === 'string' ? r.branch : undefined,
     round: r.round,
     status: finished ? r.status : 'paused',
+    background: r.background === true,
+    pauseKind: finished ? undefined : pauseKind,
+    pausedMs: finished
+      ? undefined
+      : ((r.status === 'paused' ? finite(r.pausedMs) : undefined) ?? Date.now()),
     // Agents outlive the app in the session service, so Auto keeps tracking (and owning) them.
     sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
     // Ownership needs the launch's start time, or a later session under the same id would count.
@@ -98,6 +114,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     observedWorking: r.observedWorking === true,
     sessionBrief: restoredBrief(r.sessionBrief),
     planMark: typeof r.planMark === 'string' ? r.planMark : undefined,
+    plannerTurn: typeof r.plannerTurn === 'boolean' ? r.plannerTurn : undefined,
     waitingFor: r.waitingFor === 'fixBudget' ? 'fixBudget' : undefined,
     reviewedHead: typeof r.reviewedHead === 'string' ? r.reviewedHead : undefined,
     validation: Array.isArray(r.validation)
@@ -118,6 +135,10 @@ export function restoredAuto(value: unknown): AutoRun | null {
       ? typeof r.reason === 'string'
         ? r.reason
         : undefined
-      : 'Restored after restart — Resume?',
+      : pauseKind === 'user' || pauseKind === 'needsUser'
+        ? typeof r.reason === 'string'
+          ? r.reason
+          : 'Paused — Resume?'
+        : 'Restored after restart — Resume?',
   }
 }

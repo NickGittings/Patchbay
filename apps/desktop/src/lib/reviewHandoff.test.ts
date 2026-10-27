@@ -1,8 +1,8 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import { useStore } from '../store'
+import { projectStateOf, useStore } from '../store'
 import { REVIEW_SCOPE, TASK_ROOT_SCOPE, type DeviceManifest, type SessionRecord } from '../types'
 
-vi.mock('../store', () => ({ useStore: { getState: vi.fn() } }))
+vi.mock('../store', () => ({ useStore: { getState: vi.fn() }, projectStateOf: vi.fn() }))
 vi.mock('./ipc', () => ({ reviewFixTask: vi.fn() }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
@@ -69,6 +69,9 @@ beforeEach(() => {
   state.tasks = [{ id: 'feature' }]
   state.devices = [claude, codex]
   state.agentRoles = {}
+  vi.mocked(projectStateOf).mockImplementation((id) =>
+    id === state.project.id ? (state as never) : undefined,
+  )
   vi.mocked(useStore.getState).mockImplementation(
     () => state as unknown as ReturnType<typeof useStore.getState>,
   )
@@ -78,7 +81,7 @@ test('switches to the task the backend resolves before creating a fresh root age
   await fixReviewFindings(record)
   expect(reviewFixTask).toHaveBeenCalledWith('review', 'p')
   expect(state.setActiveTask).toHaveBeenCalledWith('feature', true)
-  expect(state.addRootTerminal).toHaveBeenCalledWith(codex)
+  expect(state.addRootTerminal).toHaveBeenCalledWith(codex, undefined)
   expect(state.setActiveTask.mock.invocationCallOrder[0]).toBeLessThan(
     state.addRootTerminal.mock.invocationCallOrder[0],
   )
@@ -116,22 +119,25 @@ test('an already active task is not switched again', async () => {
 test('falls back to the first agent preset when the reviewer provider is unavailable', async () => {
   state.devices = [{ ...codex, kind: 'shell' }, claude]
   await fixReviewFindings(record)
-  expect(state.addRootTerminal).toHaveBeenCalledWith(claude)
+  expect(state.addRootTerminal).toHaveBeenCalledWith(claude, undefined)
 })
 
 test("the project's fix role wins over the reviewer's provider, and Auto's preset over both", async () => {
   state.agentRoles = { fix: ['claude'] }
   await fixReviewFindings(record)
-  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude)
+  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude, undefined)
   state.agentRoles = { fix: ['codex'] }
   await fixReviewFindings(record, undefined, 'claude')
-  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude)
+  expect(state.addRootTerminal).toHaveBeenLastCalledWith(claude, undefined)
 })
 
 test('without agent presets the fallback agent launches', async () => {
   state.devices = []
   await fixReviewFindings(record)
-  expect(state.addRootTerminal).toHaveBeenCalledWith(expect.objectContaining({ command: 'claude' }))
+  expect(state.addRootTerminal).toHaveBeenCalledWith(
+    expect.objectContaining({ command: 'claude' }),
+    undefined,
+  )
 })
 
 test('a launch failure removes its tile, switches back and propagates the error', async () => {
@@ -197,4 +203,48 @@ test('a review from another project cannot launch here', async () => {
   state.project.id = 'other'
   await expect(fixReviewFindings(record)).rejects.toThrow('Open the reviewed project first')
   expect(reviewFixTask).not.toHaveBeenCalled()
+})
+
+test('an explicit background fix launches without selecting its worktree or project', async () => {
+  const background = { ...state, project: { id: 'p', root: '/p' }, agentRoles: { fix: ['claude'] } }
+  vi.mocked(projectStateOf).mockImplementation((id) =>
+    id === 'p' ? (background as never) : undefined,
+  )
+  state.project = { id: 'other', root: '/other' }
+  const target = { projectId: 'p', task: 'feature' }
+  await fixReviewFindings(record, undefined, undefined, 'stay', target)
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+  expect(state.setView).not.toHaveBeenCalled()
+  expect(state.addRootTerminal).toHaveBeenCalledWith(claude, target)
+  expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, 'fix-agent', 'feature', 'p', fix)
+  expect(state.project.id).toBe('other')
+})
+
+test('a background fix refuses a backend task that differs from its requested worktree', async () => {
+  await expect(
+    fixReviewFindings(record, undefined, undefined, 'stay', { projectId: 'p', task: 'different' }),
+  ).rejects.toThrow('The reviewed worktree changed')
+  expect(state.addRootTerminal).not.toHaveBeenCalled()
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+})
+
+test('a failed background fix removes only its own terminal without switching the UI', async () => {
+  const patchTask = vi.fn()
+  const background = {
+    ...state,
+    patchTask,
+    taskWorkspaces: { feature: { rootTerminals: [{ id: 'keep' }, { id: 'fix-agent' }] } },
+  }
+  vi.mocked(projectStateOf).mockReturnValue(background as never)
+  vi.mocked(useStore.getState).mockReturnValue(background as never)
+  vi.mocked(startTerminal).mockRejectedValue(new Error('Launch failed'))
+  await expect(
+    fixReviewFindings(record, undefined, undefined, 'stay', { projectId: 'p', task: 'feature' }),
+  ).rejects.toThrow('Launch failed')
+  expect(state.removeTaskTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, 'fix-agent', {
+    projectId: 'p',
+    task: 'feature',
+  })
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+  expect(patchTask).not.toHaveBeenCalled()
 })
