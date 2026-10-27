@@ -186,6 +186,29 @@ const hooks = {
   refreshTasks,
   removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
+  /**
+   * Reports `message`, then resolves to the launcher's answer to it, a `<message>: <answer>` line
+   * in `PATCHBAY_SMOKE_ACK_FILE` (forwarded by `smoke.rs`).
+   */
+  reportAndWait: async (message: string, timeout = 60000) => {
+    const { listen } = await import('@tauri-apps/api/event')
+    let answer = (_: string) => {}
+    const answered = new Promise<string>((resolve) => (answer = resolve))
+    const unlisten = await listen<string>('patchbay://smoke-ack', ({ payload }) => {
+      if (payload.startsWith(`${message}: `)) answer(payload.slice(message.length + 2))
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer to ${message}`)), timeout)
+    })
+    try {
+      await emit('patchbay://smoke-report', message)
+      return await Promise.race([answered, expired])
+    } finally {
+      clearTimeout(timer)
+      unlisten()
+    }
+  },
 }
 
 declare global {

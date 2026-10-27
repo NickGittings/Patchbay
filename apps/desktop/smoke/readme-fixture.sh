@@ -4,6 +4,13 @@
 # that smoke/readme.js attaches as a task.
 set -eu
 dir="${TMPDIR:-/tmp}/patchbay-readme"
+# The demo servers' ports, uncommon so they don't meet a real dev server's.
+for port in 41730 41740; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "readme-fixture: port $port is in use; the Northstar demo servers need it free." >&2
+    exit 1
+  fi
+done
 rm -rf "$dir"
 mkdir -p "$dir/northstar"
 cd "$dir/northstar"
@@ -17,7 +24,12 @@ cat > apps/web/server.js <<'JS'
 const http = require('node:http')
 const fs = require('node:fs')
 const server = http.createServer((_, res) => res.end(fs.readFileSync(`${__dirname}/index.html`)))
-server.listen(Number(process.env.PORT) || 5173, () => {
+const port = Number(process.env.PORT) || 41730
+server.on('error', (e) => {
+  console.error(`Northstar storefront: cannot listen on port ${port}: ${e.message}`)
+  process.exit(1)
+})
+server.listen(port, () => {
   console.log('Northstar storefront · development server\n')
   console.log(`  Local:    http://localhost:${server.address().port}`)
   console.log('  Status:   ready for product search')
@@ -38,7 +50,12 @@ const server = http.createServer((req, res) => {
   res.setHeader('content-type', 'application/json')
   res.end(JSON.stringify(search(query)))
 })
-server.listen(Number(process.env.PORT) || 4000, () => {
+const port = Number(process.env.PORT) || 41740
+server.on('error', (e) => {
+  console.error(`Northstar API: cannot listen on port ${port}: ${e.message}`)
+  process.exit(1)
+})
+server.listen(port, () => {
   console.log('Northstar API · development server\n')
   console.log(`  Local:    http://localhost:${server.address().port}`)
   console.log('  Catalog:  GET /products?q=trail')

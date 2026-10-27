@@ -6,9 +6,11 @@
 
 use std::time::Duration;
 use tauri::webview::PageLoadEvent;
-use tauri::{Builder, Listener, Manager, Wry};
+use tauri::{Builder, Emitter, Listener, Manager, Wry};
 
 const REPORT_EVENT: &str = "patchbay://smoke-report";
+/// The launcher's answers to reports, one line each, read from `PATCHBAY_SMOKE_ACK_FILE`.
+const ACK_EVENT: &str = "patchbay://smoke-ack";
 const TIMEOUT: Duration = Duration::from_secs(90);
 
 pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
@@ -38,6 +40,7 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
 }
 
 /// Set by `scripts/readme-shots.mjs`, whose captures need the window on screen.
+#[cfg(target_os = "macos")]
 fn foreground() -> bool {
     std::env::var_os("PATCHBAY_SMOKE_FOREGROUND").is_some()
 }
@@ -99,6 +102,10 @@ pub fn setup(app: &mut tauri::App) {
             handle.exit(1);
         }
     });
+    if let Some(path) = std::env::var_os("PATCHBAY_SMOKE_ACK_FILE") {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || forward_acks(&handle, &path));
+    }
     let handle = app.handle().clone();
     std::thread::spawn(move || {
         std::thread::sleep(TIMEOUT);
@@ -108,4 +115,23 @@ pub fn setup(app: &mut tauri::App) {
         );
         handle.exit(1);
     });
+}
+
+/// Emits each complete line the launcher appends to `path` on [`ACK_EVENT`], so a script can wait
+/// for the launcher to act on a report (`scripts/readme-shots.mjs` captures the window).
+fn forward_acks(handle: &tauri::AppHandle, path: &std::ffi::OsStr) {
+    let mut seen = 0;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let lines: Vec<&str> = text
+                .split_inclusive('\n')
+                .filter(|line| line.ends_with('\n'))
+                .collect();
+            for line in lines.iter().skip(seen) {
+                let _ = handle.emit(ACK_EVENT, line.trim_end());
+            }
+            seen = seen.max(lines.len());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }

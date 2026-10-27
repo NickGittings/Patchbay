@@ -10,7 +10,7 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 ## Workspace views
 
 The current desktop app, shown with the Northstar demo project. The icon rail on the left
-switches views and opens the Project, Worktree, Auto, Activity and Sessions panels.
+switches views and opens the Project, Worktree, Auto mode, Activity, Stack and Sessions panels.
 
 ### Navigation
 
