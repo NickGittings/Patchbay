@@ -1,4 +1,5 @@
 import Menu, { MenuItem } from '../Menu'
+import RunningTag from '../RunningTag'
 import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
 import { componentTerminals, revealTerminal, worktreeAttention } from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
@@ -264,7 +265,7 @@ function WorktreeRow({
             ±{changedCount}
           </span>
         )}
-        {running.length > 0 && <span className="worktree-tag">{running.length} running</span>}
+        <RunningTag count={running.length} />
         <button
           disabled={!!task?.missing}
           onClick={() => {

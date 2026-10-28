@@ -99,13 +99,22 @@
     await smoke.startTerminal(first.id, 'counter')
     const sidOne = smoke.sessionId(first.id, 'counter')
     await until('first counter', () => s().sessions[sidOne]?.running)
-    await until('sole project name and running count', () => {
+    const projectButton = await until('sole project name and running count', () => {
       const tab = switcher()
       return (
         tab?.textContent.includes(one.project.name) &&
-        tab.querySelector('.count')?.textContent === '1'
+        tab.parentElement.querySelector('.worktree-tag.running')?.textContent === '1 running' &&
+        tab
       )
     })
+    if (
+      projectButton.textContent.trim() !== one.project.name ||
+      projectButton.title !== one.project.root
+    )
+      throw new Error('Running count changed the project button name or path tooltip')
+    const dot = projectButton.parentElement.querySelector('.worktree-tag.running .status-dot')
+    if (getComputedStyle(dot).animationName !== 'none')
+      throw new Error('Project running count dot must remain static')
     // Both Project close entry points must confirm while work is running.
     const originalConfirm = window.confirm
     const confirmations = []
@@ -116,7 +125,7 @@
       }
       ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
       await until('rail close confirmation', () => confirmations.length === 1)
-      ;[...document.querySelectorAll('.project-actions button')]
+      ;[...document.querySelectorAll('.rail-actions button')]
         .find((button) => button.textContent === 'Close project')
         .click()
       await until('Project action close confirmation', () => confirmations.length === 2)

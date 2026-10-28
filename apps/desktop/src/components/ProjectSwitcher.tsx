@@ -2,6 +2,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
 import { closeProjectTab } from '../lib/project'
 import { runningInProject } from '../lib/sessionList'
+import RunningTag from './RunningTag'
 
 /** Open projects in the Project utility panel. */
 export default function ProjectSwitcher() {
@@ -27,14 +28,10 @@ export default function ProjectSwitcher() {
               title={entry.root}
               onClick={() => useStore.getState().activateProject(id)}
             >
-              {entry.name}
+              <span className="project-name">{entry.name}</span>
               {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}
-              {running[i] > 0 && (
-                <span className="count" title="Running sessions">
-                  {running[i]}
-                </span>
-              )}
             </button>
+            <RunningTag count={running[i]} />
             <button
               className="panel-row-actions"
               aria-label={`Close ${entry.name}`}
