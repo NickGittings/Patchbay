@@ -59,7 +59,7 @@ function usage(percent: number, reset = now + 300_000): Usage {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useUsage.setState({ usage: null, error: null })
+  useUsage.setState({ usage: null, error: null, refreshing: false })
   useStore.setState({
     notifications: { ...DEFAULT_NOTIFICATIONS },
     usageSettings: { ...DEFAULT_USAGE },
@@ -70,6 +70,34 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
+
+test.each([false, true])(
+  'refresh shares a pending read and clears busy on error=%s',
+  async (fail) => {
+    let resolve!: (value: Usage) => void
+    let reject!: (error: Error) => void
+    vi.mocked(usageRead).mockReturnValueOnce(
+      new Promise<Usage>((yes, no) => {
+        resolve = yes
+        reject = no
+      }),
+    )
+    const first = refreshUsage()
+    expect(useUsage.getState().refreshing).toBe(true)
+    expect(refreshUsage()).toBe(first)
+    expect(usageRead).toHaveBeenCalledTimes(1)
+    if (fail) reject(new Error('Read failed'))
+    else resolve(usage(50))
+    await first
+    expect(useUsage.getState().refreshing).toBe(false)
+    expect(useUsage.getState().error).toBe(fail ? 'Error: Read failed' : null)
+
+    vi.mocked(usageRead).mockResolvedValueOnce(usage(60))
+    await refreshUsage()
+    expect(usageRead).toHaveBeenCalledTimes(2)
+    expect(useUsage.getState()).toMatchObject({ refreshing: false, error: null, usage: usage(60) })
+  },
+)
 
 test('levels include exact thresholds and allow independently adjusted percentages', () => {
   expect(usageLevel(window(79.9), DEFAULT_USAGE)).toBe('ok')

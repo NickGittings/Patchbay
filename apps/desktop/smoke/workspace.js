@@ -103,7 +103,7 @@
       const tab = switcher()
       return (
         tab?.textContent.includes(one.project.name) &&
-        tab.querySelector('.count')?.textContent === '1'
+        tab.querySelector('.worktree-tag.running')?.textContent === '1 running'
       )
     })
     // Both Project close entry points must confirm while work is running.
@@ -116,7 +116,7 @@
       }
       ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
       await until('rail close confirmation', () => confirmations.length === 1)
-      ;[...document.querySelectorAll('.project-actions button')]
+      ;[...document.querySelectorAll('.rail-actions button')]
         .find((button) => button.textContent === 'Close project')
         .click()
       await until('Project action close confirmation', () => confirmations.length === 2)

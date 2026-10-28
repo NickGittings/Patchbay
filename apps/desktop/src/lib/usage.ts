@@ -139,13 +139,19 @@ export function usageMoved(prev: SessionState | undefined, next: SessionState): 
   return before?.state !== 'review' || before.sinceMs !== agent.sinceMs
 }
 
-export const useUsage = create<{ usage: Usage | null; error: string | null }>(() => ({
+export const useUsage = create<{
+  usage: Usage | null
+  error: string | null
+  refreshing: boolean
+}>(() => ({
   usage: null,
   error: null,
+  refreshing: false,
 }))
 let reading: Promise<Usage | null> | undefined
 /** Share a pending read between the panel, polling and Auto's launch check. */
 export function refreshUsage(): Promise<Usage | null> {
+  if (!reading) useUsage.setState({ refreshing: true })
   reading ??= usageRead()
     .then((usage) => {
       useUsage.setState({ usage, error: null })
@@ -157,6 +163,7 @@ export function refreshUsage(): Promise<Usage | null> {
     })
     .finally(() => {
       reading = undefined
+      useUsage.setState({ refreshing: false })
     })
   return reading
 }

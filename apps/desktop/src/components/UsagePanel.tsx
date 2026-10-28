@@ -45,24 +45,22 @@ export default function UsagePanel() {
   useClockTick()
   const usage = useUsage((s) => s.usage)
   const error = useUsage((s) => s.error)
+  const refreshing = useUsage((s) => s.refreshing)
   const settings = useStore((s) => s.usageSettings)
   const setSettings = useStore((s) => s.setUsageSettings)
   const [busy, setBusy] = useState(false)
+  const capture = usage?.claudeCapture
   // Relative reset times intentionally advance with the shared clock tick.
   // oxlint-disable-next-line react/purity
   const now = Date.now()
   return (
     <div className="usage-panel">
       <p className="usage-note">Subscription limits across all projects and agent sessions.</p>
-      <button onClick={() => void refreshUsage()} disabled={busy}>
-        Refresh usage
-      </button>
       {error && <p role="alert">{error}</p>}
       {!usage && !error && <p role="status">Reading local usage…</p>}
       {USAGE_PROVIDERS.map((provider) => {
         const data = usage?.[provider]
         const hasWindows = USAGE_WINDOWS.some((key) => (data?.[key]?.resetsAtMs ?? 0) > now)
-        const capture = usage?.claudeCapture
         const providerError = provider === 'claude' ? usage?.claudeError : usage?.codexError
         return (
           <section
@@ -179,7 +177,7 @@ export default function UsagePanel() {
             </span>
           </label>
         ))}
-        <label>
+        <label className="usage-check">
           <input
             type="checkbox"
             checked={settings.gateAuto}
@@ -192,6 +190,12 @@ export default function UsagePanel() {
         <p className="usage-note">
           Missing or expired windows allow Auto to continue. Resume checks usage again.
         </p>
+      </section>
+      <section className="rail-actions panel-section" aria-label="Usage actions">
+        <div className="section-title">Actions</div>
+        <button onClick={() => void refreshUsage()} disabled={refreshing}>
+          {refreshing ? 'Refreshing usage…' : 'Refresh usage'}
+        </button>
       </section>
     </div>
   )
