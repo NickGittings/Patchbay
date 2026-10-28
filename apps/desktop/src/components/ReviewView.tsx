@@ -1,3 +1,4 @@
+import { useStepKeys } from './changes/useStepKeys'
 import { changeGroups } from '../lib/changeGroups'
 import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import PersistedGroup from './PersistedGroup'
@@ -217,6 +218,7 @@ export default function ReviewView() {
     setSelected(next)
     if (pane === 'findings') setPane('diff')
   }
+  useStepKeys(step)
   const nav = { position: changePosition(order, current), total: order.length, step }
 
   // Reviewers name paths relative to their worktree, which is usually the project root too.

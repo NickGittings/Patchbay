@@ -1,0 +1,72 @@
+import { useStore } from '../store'
+import { lastSubmission, promptReady, sendToSession } from './simpleComposer'
+import { EMPTY_SIMPLE_UI, useSimpleUi, type QueuedPrompt } from './simpleUi'
+
+function restore(key: string, queued: QueuedPrompt, error?: string) {
+  const ui = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
+  useSimpleUi.getState().patch(key, {
+    draft: [ui.draft, queued.text].filter(Boolean).join('\n\n'),
+    error,
+  })
+}
+
+export function cancelQueued(key: string) {
+  const queued = useSimpleUi.getState().worktrees[key]?.queued
+  if (!queued) return
+  useSimpleUi.getState().patch(key, { queued: undefined })
+  restore(key, queued)
+}
+
+/** Remove before attempting delivery: a failed or uncertain write is never retried. */
+export async function flushQueued(key: string, force = false) {
+  const queued = useSimpleUi.getState().worktrees[key]?.queued
+  if (!queued) return
+  const state = useStore.getState()
+  const session = state.sessions[queued.sessionId]
+  if (!session?.running || session.generation !== queued.generation) {
+    useSimpleUi.getState().patch(key, { queued: undefined })
+    restore(key, queued, 'The agent restarted; your queued message was kept as a draft')
+    return
+  }
+  if (!state.serviceConnected || session.disconnected || session.interrupted) return
+  if (
+    force
+      ? session.status?.agent?.state === 'needsInput'
+      : !promptReady(session, lastSubmission(queued.sessionId, queued.generation))
+  )
+    return
+  useSimpleUi.getState().patch(key, { queued: undefined, error: undefined })
+  const [projectId, task] = JSON.parse(key) as [string, string | null]
+  try {
+    await sendToSession({ projectId, task, sid: queued.sessionId, ...queued, force })
+  } catch (error) {
+    restore(key, queued, `${String(error)}. Your queued message was kept as a draft.`)
+  }
+}
+
+export function followQueuedPrompts() {
+  const follow = () => {
+    for (const [key, ui] of Object.entries(useSimpleUi.getState().worktrees))
+      if (ui.queued) void flushQueued(key)
+  }
+  const stopSessions = useStore.subscribe((state, previous) => {
+    if (
+      state.sessions !== previous.sessions ||
+      state.serviceConnected !== previous.serviceConnected
+    )
+      follow()
+  })
+  const stopQueues = useSimpleUi.subscribe((state, previous) => {
+    if (
+      Object.entries(state.worktrees).some(
+        ([key, ui]) => ui.queued && ui.queued !== previous.worktrees[key]?.queued,
+      )
+    )
+      follow()
+  })
+  follow()
+  return () => {
+    stopSessions()
+    stopQueues()
+  }
+}

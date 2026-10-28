@@ -1881,6 +1881,7 @@ async fn terminal_prompt(
     session_id: String,
     generation: u64,
     text: String,
+    force: Option<bool>,
 ) -> CmdResult<()> {
     service(
         &state,
@@ -1889,6 +1890,7 @@ async fn terminal_prompt(
             viewer: window.label().into(),
             generation,
             text,
+            force: force.unwrap_or(false),
         },
     )
     .await

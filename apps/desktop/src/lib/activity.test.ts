@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import {
   activityFile,
+  latestWrite,
   agentRole,
   componentActivity,
   fileActivity,
@@ -240,4 +241,22 @@ test('files under a .git folder are no component’s work', () => {
     componentId: 'root',
     path: '.github/ci.yml',
   })
+})
+
+test('latestWrite selects the newest write, ignores later reads, and needs hook activity', () => {
+  expect(latestWrite(record(), undefined, components, '/task')).toBeUndefined()
+  expect(
+    latestWrite(
+      record(),
+      {
+        activity: [
+          { ...activity(1, 'src/old.ts', 'Write'), atMs: 1 },
+          { ...activity(3, 'src/read.ts', 'Read'), atMs: 3 },
+          { ...activity(2, 'src/new.ts', 'Edit'), atMs: 2 },
+        ],
+      },
+      components,
+      '/task',
+    ),
+  ).toEqual({ componentId: 'src', path: 'src/new.ts' })
 })

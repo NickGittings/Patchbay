@@ -14,6 +14,8 @@
   position: absolute;
   inset: 0;
   z-index: 5;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 .simple-chat {
@@ -141,13 +143,7 @@
   gap: 6px;
   flex-wrap: wrap;
 }
-.simple-file {
-  display: block;
-  text-align: left;
-  width: 100%;
-  overflow-wrap: anywhere;
-  margin: 4px 0;
-}
+
 .simple-diff {
   display: flex;
   flex-direction: column;
@@ -167,6 +163,8 @@
 }
 .simple-diff-body aside {
   width: 30%;
+  box-sizing: border-box;
+  padding: 0 10px;
   min-width: 160px;
   overflow: auto;
   border-right: 1px solid var(--border);
@@ -216,4 +214,42 @@
 }
 .simple-result .findings-title-row > .verdict-badge {
   display: none;
+}
+
+.simple-diff-body aside h3 {
+  padding: 0 8px;
+  font-size: 12px;
+}
+.simple-diff > header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-section {
+  margin: 8px 0;
+}
+.simple-section > summary {
+  color: var(--muted);
+  padding: 8px 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-edited {
+  display: block;
+  color: var(--muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 8px 0;
+}
+.simple-queued {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
 }

@@ -26,7 +26,10 @@ function NavButtons({ nav }: { nav: DiffNav }) {
         title="Previous changed file (←)"
         aria-label="Previous changed file"
         disabled={position === 0 || total === 0}
-        onClick={() => step(-1)}
+        onClick={(e) => {
+          step(-1)
+          e.currentTarget.closest<HTMLElement>('.diff-view')?.focus()
+        }}
       >
         ‹
       </button>
@@ -37,7 +40,10 @@ function NavButtons({ nav }: { nav: DiffNav }) {
         title="Next changed file (→)"
         aria-label="Next changed file"
         disabled={position === total - 1 || total === 0}
-        onClick={() => step(1)}
+        onClick={(e) => {
+          step(1)
+          e.currentTarget.closest<HTMLElement>('.diff-view')?.focus()
+        }}
       >
         ›
       </button>

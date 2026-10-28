@@ -11,10 +11,21 @@ export interface SimpleDiff {
   path: string
   line?: number
 }
+export interface QueuedPrompt {
+  sessionId: string
+  generation: number
+  text: string
+  mentions: string[]
+  stage: import('./simple').SimpleStage
+  atMs: number
+}
 export interface SimpleUi {
   draft: string
   mentions: Mention[]
   diff: SimpleDiff | null
+  changes: boolean
+  queued?: QueuedPrompt
+  error?: string
   terminal: 'closed' | 'user' | 'input'
   terminalSession?: { id: string; generation?: number; pinned?: boolean }
   inputRequest?: string
@@ -64,6 +75,7 @@ export const emptySimpleUi = (): SimpleUi => ({
   draft: '',
   mentions: [],
   diff: null,
+  changes: false,
   terminal: 'closed',
 })
 export const simpleKey = (projectId: string | undefined, task: string | null) =>

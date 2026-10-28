@@ -98,6 +98,19 @@ export function activityFile(
     return { componentId: '@project', path: relativeTo(file, roots.worktree) }
   return undefined
 }
+/** The latest write reported by hooks, resolved in the worktree's change-list coordinates. */
+export function latestWrite(
+  record: SessionRecord,
+  session: Pick<SessionState, 'activity'> | undefined,
+  components: readonly Pick<Component, 'id' | 'path'>[],
+  worktree: string,
+) {
+  const activity = session?.activity
+    ?.filter(writeActivity)
+    .toSorted((a, b) => b.atMs - a.atMs || b.sequence - a.sequence)[0]
+  return activity ? activityFile(activity, record, components, worktree) : undefined
+}
+
 /** Which role agent a session is, for the map's chips; `null` for scopes that don't work on files. */
 export type AgentRole = 'plan' | 'build' | 'fix' | 'review' | 'merge'
 export function agentRole(record: SessionRecord): AgentRole | null {

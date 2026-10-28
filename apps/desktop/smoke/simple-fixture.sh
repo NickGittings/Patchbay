@@ -47,8 +47,8 @@ def git(*args):
 def work():
     report('UserPromptSubmit')
     report('PreToolUse', tool='Edit', target='src/app.txt', fileTarget=True)
-    time.sleep(0.5)
     component = os.environ.get('PATCHBAY_COMPONENT')
+    time.sleep(4 if component == 'plan' else 1.5)
     if component == 'plan':
         pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Simple fixture plan\n\nUpdate the app.\n')
         reply = 'I planned the **fixture feature**. The plan is ready.'
@@ -77,7 +77,22 @@ if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
     work()
 for line in sys.stdin:
     pathlib.Path(__file__).with_name('received.json').write_text(json.dumps(line))
+    print('simple-received:' + line.strip(), flush=True)
+    line = line.replace('\x1b[200~', '').replace('\x1b[201~', '')
     turn = str(uuid.uuid4())
+    if line.strip() == 'smoke-changes':
+        report('UserPromptSubmit')
+        pathlib.Path('src/app.txt').write_text('uncommitted fixture change\n')
+        pathlib.Path('src/another.txt').write_text('another change\n')
+        pathlib.Path('src/third.txt').write_text('third change\n')
+        report('PreToolUse', tool='Edit', target='src/third.txt', fileTarget=True)
+        report('Stop', last_assistant_message='Edited three fixture files.')
+        continue
+    if line.strip() == 'smoke-clean':
+        git('restore', 'src/app.txt')
+        pathlib.Path('src/another.txt').unlink()
+        pathlib.Path('src/third.txt').unlink()
+        continue
     if line.strip().startswith('smoke-exit-'):
         sys.exit(int(line.strip().removeprefix('smoke-exit-')))
     if line.strip() == 'smoke-input':

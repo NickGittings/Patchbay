@@ -243,3 +243,42 @@ test('a follow-up sent to another review lane keeps the whole review open', () =
   expect(flow(s)).toMatchObject({ step: 'reviewing', busyAgent: { id: 'other' } })
   expect(flow(s).prompt).toBeUndefined()
 })
+
+test.each(['implement', 'fix', 'review', 'merge'] as const)(
+  'a logged %s launch stays working before its record appears',
+  (action) => {
+    const s = snapshot('@review')
+    s.records = [...s.records, record('@task')]
+    s.sessions['@task'] = session('review')
+    s.findings = findings(false)
+    s.simple!.log.push({
+      id: 'launch',
+      atMs: 30,
+      kind: 'action',
+      action,
+      stage: action === 'implement' || action === 'fix' ? 'build' : action,
+      sessionId: 'not-reconciled-yet',
+    })
+    const result = flow(s)
+    expect(result.step).toBe(
+      { implement: 'building', fix: 'fixing', review: 'reviewing', merge: 'merging' }[action],
+    )
+    expect(result.prompt).toBeUndefined()
+    expect(result.step).not.toBe('fixed')
+  },
+)
+
+test('a fresh merge launch does not reuse a previous merged outcome before reconciliation', () => {
+  const s = snapshot('@merge')
+  s.outcome = 'merged'
+  s.simple!.log.push({
+    id: 'merge-again',
+    atMs: 30,
+    kind: 'action',
+    action: 'merge',
+    stage: 'merge',
+    sessionId: 'new-merger',
+  })
+  expect(flow(s)).toMatchObject({ step: 'merging' })
+  expect(flow(s).prompt).toBeUndefined()
+})

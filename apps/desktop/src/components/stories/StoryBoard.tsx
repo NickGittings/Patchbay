@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useContext, useState } from 'react'
+import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
+import { SimpleChangesContext } from './simpleChanges'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
@@ -11,18 +13,44 @@ import './stories.css'
 export function StoryViewTabs() {
   const shown = useStore((s) => s.storyBoard)
   const setShown = useStore((s) => s.setStoryBoard)
+  const simple = useStore((s) => s.simpleMode)
+  const key = useStore((s) => simpleKey(s.project?.id, s.activeTask))
+  const ui = useSimpleUi((s) => s.worktrees[key])
+  const changes = simple && !!ui?.changes
+  const { files, newest } = useContext(SimpleChangesContext)
+  const show = (stories: boolean) => {
+    useSimpleUi.getState().patch(key, { changes: false })
+    setShown(stories)
+  }
   return (
     <div className="view-tabs" role="group" aria-label="Navigation canvas">
       <button
-        className={!shown ? 'active' : ''}
-        aria-pressed={!shown}
-        onClick={() => setShown(false)}
+        className={!shown && !changes ? 'active' : ''}
+        aria-pressed={!shown && !changes}
+        onClick={() => show(false)}
       >
         Map
       </button>
-      <button className={shown ? 'active' : ''} aria-pressed={shown} onClick={() => setShown(true)}>
+      <button
+        className={shown && !changes ? 'active' : ''}
+        aria-pressed={shown && !changes}
+        onClick={() => show(true)}
+      >
         Stories
       </button>
+      {simple && (
+        <button
+          className={changes ? 'active' : ''}
+          aria-pressed={changes}
+          onClick={() =>
+            useSimpleUi
+              .getState()
+              .patch(key, { changes: true, diff: ui?.diff ?? newest ?? files[0] ?? null })
+          }
+        >
+          Changes {files.length}
+        </button>
+      )}
     </div>
   )
 }

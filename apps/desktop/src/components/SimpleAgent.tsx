@@ -1,3 +1,5 @@
+import { latestWrite } from '../lib/activity'
+import type { SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
 import { useStore } from '../store'
@@ -11,14 +13,28 @@ export default function SimpleAgent({
   entries,
   latest,
   working,
+  worktree,
+  openFile,
 }: {
   record?: SessionRecord
   sessionId: string
   entries: SimpleEntry[]
   latest: boolean
   working: boolean
+  worktree: string
+  openFile: (file: SimpleDiff) => void
 }) {
   const session = useStore((s) => s.sessions[sessionId])
+  const nodes = useStore((s) => s.nodes)
+  const edited =
+    latest && record
+      ? latestWrite(
+          record,
+          session,
+          nodes.map((n) => ({ id: n.id, path: n.data.path })),
+          worktree,
+        )
+      : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
   const role = record ? SIMPLE_ROLE_LABEL[recordStage(record)] : 'Agent'
   const provider = record?.metadata.adapter
@@ -46,6 +62,11 @@ export default function SimpleAgent({
             <Markdown text={entry.text} />
           </div>
         ) : null,
+      )}
+      {edited && (
+        <button className="simple-edited" onClick={() => openFile(edited)}>
+          Edited {edited.path}
+        </button>
       )}
       {latest && busy && <p className="simple-working">Working…</p>}
     </article>

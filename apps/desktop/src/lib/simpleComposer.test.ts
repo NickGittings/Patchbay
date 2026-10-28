@@ -189,14 +189,15 @@ test('a hook-confirmed ready prompt is sendable whatever the installed-hooks che
   const session = ready()
   for (const installed of [true, false, 'failed', undefined] as const) {
     const status = composerStatus({ ...base, installed, session, ready: true })
-    expect(status).toEqual({ label: 'Ready', sendable: true })
+    expect(status).toEqual({ label: 'Ready', sendable: true, action: 'send' })
   }
   // A reporting session, ready or not, never asks for hooks.
   const working = ready()
   working.status!.agent!.state = 'working'
   expect(composerStatus({ ...base, installed: false, session: working, ready: false })).toEqual({
     label: 'Agent is working',
-    sendable: false,
+    sendable: true,
+    action: 'queue',
     notice: undefined,
   })
 })
@@ -206,6 +207,7 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   expect(composerStatus({ ...base, installed: false, session: stopped })).toEqual({
     label: 'Chat needs agent status integration',
     sendable: false,
+    action: 'none',
     notice: 'missing',
   })
   expect(composerStatus({ ...base, installed: false, session: undefined }).sendable).toBe(false)
@@ -213,46 +215,100 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   expect(composerStatus({ ...base, installed: 'failed', session: undefined })).toEqual({
     label: 'Chat needs agent status integration',
     sendable: false,
+    action: 'none',
     notice: 'failed',
   })
   expect(composerStatus({ ...base, installed: true, session: stopped })).toEqual({
     label: 'Send to start or resume',
     sendable: true,
+    action: 'send',
   })
   for (const provider of ['codex', undefined] as const)
     expect(composerStatus({ ...base, provider, installed: undefined, session: stopped })).toEqual({
       label: 'Checking agent status integration…',
       sendable: false,
+      action: 'none',
     })
-  // Running without a confirmed prompt: never sendable, and the label names the reason.
+  // Running without a confirmed prompt queues when hooks are installed or reporting.
   const quiet: SessionState = { generation: 1, running: true }
   expect(composerStatus({ ...base, installed: false, session: quiet })).toMatchObject({
     label: 'Chat needs agent status integration',
     sendable: false,
+    action: 'none',
     notice: 'missing',
   })
   expect(composerStatus({ ...base, installed: true, session: quiet })).toMatchObject({
     label: 'Waiting for the agent',
-    sendable: false,
+    sendable: true,
+    action: 'queue',
   })
   const escaped = ready()
   escaped.status!.agent!.authoritative = false
   expect(composerStatus({ ...base, installed: true, session: escaped })).toMatchObject({
     label: 'Not confirmed ready: continue in its terminal',
-    sendable: false,
+    sendable: true,
+    action: 'queue',
   })
   expect(composerStatus({ ...base, installed: false, session: escaped })).toMatchObject({
     label: 'Not confirmed ready: continue in its terminal',
-    sendable: false,
+    sendable: true,
+    action: 'queue',
     notice: undefined,
   })
   expect(
     composerStatus({ ...base, provider: null, installed: undefined, session: stopped }),
-  ).toEqual({ label: 'Chat can’t message this agent', sendable: false, notice: 'unsupported' })
+  ).toEqual({
+    label: 'Chat can’t message this agent',
+    sendable: false,
+    action: 'none',
+    notice: 'unsupported',
+  })
   expect(
     composerStatus({ ...base, connected: false, installed: true, session: ready(), ready: true }),
-  ).toEqual({ label: 'Session service disconnected', sendable: false })
+  ).toEqual({ label: 'Session service disconnected', sendable: false, action: 'none' })
   expect(
     composerStatus({ ...base, pending: true, installed: true, session: ready(), ready: true }),
-  ).toEqual({ label: 'Waiting for ready prompt…', sendable: false })
+  ).toEqual({ label: 'Waiting for ready prompt…', sendable: false, action: 'none' })
+})
+
+test.each(['working', 'needsInput', 'idle'] as const)(
+  'busy and unconfirmed %s queues, unsupported and disconnected never queue',
+  (state) => {
+    const session = ready()
+    session.status!.agent!.state = state
+    session.status!.agent!.authoritative = false
+    const base = {
+      pending: false,
+      connected: true,
+      installed: true as const,
+      provider: 'codex' as const,
+      session,
+      ready: false,
+    }
+    expect(composerStatus(base).action).toBe('queue')
+    expect(composerStatus({ ...base, provider: null }).action).toBe('none')
+    expect(composerStatus({ ...base, connected: false }).action).toBe('none')
+    expect(composerStatus({ ...base, session: { ...session, disconnected: true } }).action).toBe(
+      'none',
+    )
+  },
+)
+
+test('force skips readiness but still rejects changed generations and failed claims', async () => {
+  const p = port()
+  p.session = () => ({ ...ready(), status: undefined })
+  await deliverPrompt(context, 'forced', p, undefined, { force: true })
+  expect(p.write).toHaveBeenCalledExactlyOnceWith('forced')
+  p.current = () => ({ ...context, generation: 2 })
+  await expect(deliverPrompt(context, 'wrong run', p, undefined, { force: true })).rejects.toThrow(
+    'changed',
+  )
+  p.current = () => context
+  p.claim = async () => {
+    throw new Error('authority')
+  }
+  await expect(deliverPrompt(context, 'no claim', p, undefined, { force: true })).rejects.toThrow(
+    'authority',
+  )
+  expect(p.write).toHaveBeenCalledTimes(1)
 })

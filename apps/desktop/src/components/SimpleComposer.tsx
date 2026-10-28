@@ -8,7 +8,8 @@ import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } fro
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
-  deliverPrompt,
+  sendToSession,
+  lastSubmission,
   editedMentions,
   promptReady,
   transmittedText,
@@ -16,12 +17,11 @@ import {
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
-import { sessionResume, terminalAttach, terminalDetach, terminalPrompt } from '../lib/ipc'
+import { sessionResume } from '../lib/ipc'
+import { cancelQueued, flushQueued } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
-import { hasVisibleTerminal } from '../lib/terminals'
 import { openIntegrations, useAgentHooksInstalled, usePresetProviders } from '../lib/agentHooks'
 
-const submitted = new Map<string, { generation: number; atMs: number }>()
 export default function SimpleComposer({
   scopeKey,
   stage,
@@ -72,8 +72,7 @@ export default function SimpleComposer({
     recipientRef.current = recipient?.id
     stageRef.current = stage
   }, [recipient?.id, stage])
-  const last = recipient ? submitted.get(recipient.id) : undefined
-  const lastSubmit = last?.generation === state?.generation ? last?.atMs : undefined
+  const lastSubmit = recipient ? lastSubmission(recipient.id, state?.generation) : undefined
   // Readiness changes only through status events, so no clock subscription is needed.
   const ready = promptReady(state, lastSubmit)
   const running = !!state?.running
@@ -101,8 +100,15 @@ export default function SimpleComposer({
         .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
         .slice(0, 8)
     : []
-  const send = async () => {
-    if (!status.sendable || !s.project) return
+  const forceable =
+    running &&
+    !ready &&
+    s.serviceConnected &&
+    !state?.disconnected &&
+    !state?.interrupted &&
+    state?.status?.agent?.state !== 'needsInput'
+  const send = async (force = false) => {
+    if (!(force ? forceable : status.sendable) || !s.project) return
     const projectId = s.project.id,
       task = s.activeTask,
       draft = ui.draft,
@@ -122,8 +128,31 @@ export default function SimpleComposer({
       }
       return
     }
+    setError('')
+    if (!force && status.action === 'queue' && recipient && state?.generation !== undefined) {
+      const queued = useSimpleUi.getState().worktrees[scopeKey]?.queued
+      if (queued && (queued.sessionId !== recipient.id || queued.generation !== state.generation)) {
+        setError('Cancel the queued message for the earlier agent before queueing another.')
+        return
+      }
+      patch({
+        queued: {
+          sessionId: recipient.id,
+          generation: state.generation,
+          text: [queued?.text, text].filter(Boolean).join('\n\n'),
+          mentions: [...new Set([...(queued?.mentions ?? []), ...mentions.map((m) => m.id)])],
+          stage,
+          atMs: Date.now(),
+        },
+        draft: '',
+        mentions: [],
+        error: undefined,
+      })
+      return
+    }
     setPending(true)
     setError('')
+    patch({ error: undefined })
     let cancelled = false
     const unsubscribe = useStore.subscribe((next, prev) => {
       if (
@@ -193,43 +222,24 @@ export default function SimpleComposer({
         const current = useStore.getState().sessions[sid]
         return { ...captured, generation: current?.generation ?? -1 }
       }
-      // Only a new/resumed process waits for startup; busy running recipients are never queued.
+      // New and resumed processes wait for their startup prompt.
       if (!running)
         await waitForPrompt(captured, {
           current: stillCurrent,
           session: () => useStore.getState().sessions[sid],
           provider: target!.metadata.adapter ?? null,
         })
-      const stamp = submitted.get(sid)
-      const previous = stamp?.generation === generation ? stamp.atMs : undefined
-      await deliverPrompt(
-        captured,
-        text,
-        {
-          current: stillCurrent,
-          session: () => useStore.getState().sessions[sid],
-          claim: () => terminalAttach(sid, true),
-          write: (message) => terminalPrompt(sid, generation, message),
-          onSubmit: (atMs) => {
-            if (atMs === undefined) submitted.delete(sid)
-            else submitted.set(sid, { generation, atMs })
-          },
-          release: async () => {
-            if (!hasVisibleTerminal(sid)) await terminalDetach(sid)
-          },
-        },
-        previous,
-      )
-      logSimple(projectId, task, {
-        kind: 'prompt',
-        stage,
-        sessionId: sid,
+      await sendToSession({
+        projectId,
+        task,
+        sid,
         generation,
-        atMs: submitted.get(sid)?.atMs,
         text,
         mentions: mentions.map((m) => m.id),
+        stage,
+        force,
+        current: stillCurrent,
       })
-      persistReplies(sid, generation, useStore.getState().sessions[sid]?.replies ?? [])
       const latest = useSimpleUi.getState().worktrees[scopeKey]
       if (latest?.draft === draft && JSON.stringify(latest.mentions) === JSON.stringify(mentions))
         patch({ draft: '', mentions: [] })
@@ -240,8 +250,45 @@ export default function SimpleComposer({
       setPending(false)
     }
   }
+  const mention = (id: string) => {
+    const end = caret,
+      start = end - query![1].length - 1,
+      token = `@${id}`
+    const draft = ui.draft.slice(0, start) + token + ui.draft.slice(end)
+    patch({
+      draft,
+      mentions: [
+        ...editedMentions(ui.draft, draft, ui.mentions),
+        { id, token, start, end: start + token.length },
+      ],
+    })
+    if (!useStore.getState().highlighted.includes(id)) useStore.getState().toggleHighlight(id)
+    setCaret(start + token.length)
+    input.current?.focus()
+  }
+  const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
+      {ui.queued && (
+        <div className="simple-queued" role="status">
+          <span>Queued — sends when the agent finishes its turn</span>
+          <button
+            disabled={
+              pending ||
+              !s.serviceConnected ||
+              !queuedSession?.running ||
+              queuedSession.disconnected ||
+              queuedSession.interrupted ||
+              queuedSession.status?.agent?.state === 'needsInput'
+            }
+            title="Types into the agent now, even mid-turn"
+            onClick={() => void flushQueued(scopeKey, true)}
+          >
+            Send now
+          </button>
+          <button onClick={() => cancelQueued(scopeKey)}>Cancel</button>
+        </div>
+      )}
       <div className="simple-mentions">
         {ui.mentions.map((m) => (
           <button
@@ -259,7 +306,7 @@ export default function SimpleComposer({
         ref={input}
         aria-label="Message agent"
         value={ui.draft}
-        placeholder="Message the agent… @component to scope future launches"
+        placeholder="Message the agent… @component to scope · Shift+Enter for a newline"
         onSelect={(e) => {
           setCaret(e.currentTarget.selectionStart)
         }}
@@ -271,7 +318,11 @@ export default function SimpleComposer({
           })
         }}
         onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+          if (candidates.length && !e.shiftKey) {
+            e.preventDefault()
+            mention(candidates[0].id)
+          } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
             e.preventDefault()
             if (status.sendable) void send()
           }
@@ -280,28 +331,7 @@ export default function SimpleComposer({
       {candidates.length > 0 && (
         <div role="listbox" aria-label="Mention component">
           {candidates.map((n) => (
-            <button
-              role="option"
-              aria-selected={false}
-              key={n.id}
-              onClick={() => {
-                const end = caret,
-                  start = end - query![1].length - 1,
-                  token = `@${n.id}`
-                const draft = ui.draft.slice(0, start) + token + ui.draft.slice(end)
-                patch({
-                  draft,
-                  mentions: [
-                    ...editedMentions(ui.draft, draft, ui.mentions),
-                    { id: n.id, token, start, end: start + token.length },
-                  ],
-                })
-                if (!useStore.getState().highlighted.includes(n.id))
-                  useStore.getState().toggleHighlight(n.id)
-                setCaret(start + token.length)
-                input.current?.focus()
-              }}
-            >
+            <button role="option" aria-selected={false} key={n.id} onClick={() => mention(n.id)}>
               {n.data.name}
             </button>
           ))}
@@ -322,8 +352,17 @@ export default function SimpleComposer({
           disabled={!status.sendable || !ui.draft.trim()}
           onClick={() => void send()}
         >
-          Send
+          {status.action === 'queue' ? 'Queue' : !recipient ? 'Start' : 'Send'}
         </button>
+        {running && !ready && (
+          <button
+            disabled={pending || !forceable || !ui.draft.trim()}
+            title="Types into the agent now, even mid-turn"
+            onClick={() => void send(true)}
+          >
+            {state?.status?.agent?.state === 'needsInput' ? 'Answer in terminal' : 'Send anyway'}
+          </button>
+        )}
       </div>
       {drafted && provider && (status.notice === 'missing' || status.notice === 'failed') && (
         <p className="simple-hook-notice">
@@ -335,11 +374,10 @@ export default function SimpleComposer({
       )}
       {drafted && status.notice === 'unsupported' && (
         <p className="simple-hook-notice">
-          Chat can message only Claude and Codex agents, which report a ready prompt. Use View
-          terminal to talk to this one.
+          This agent does not report a ready prompt. Use Send anyway or View terminal.
         </p>
       )}
-      {error && <p role="alert">{error}</p>}
+      {(error || ui.error) && <p role="alert">{error || ui.error}</p>}
     </div>
   )
 }

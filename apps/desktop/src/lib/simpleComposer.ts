@@ -1,4 +1,9 @@
 import type { SessionState } from '../types'
+import { useStore } from '../store'
+import { terminalAttach, terminalDetach, terminalPrompt } from './ipc'
+import { logSimple } from './simpleActions'
+import { persistReplies } from './simpleReplies'
+import type { SimpleStage } from './simple'
 import type { Mention } from './simpleUi'
 import { sessionReportedHooks, type HooksCheck } from './agentHooks'
 
@@ -50,8 +55,8 @@ export function promptReady(session: SessionState | undefined, submittedMs?: num
 /** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
 export type HooksNotice = 'missing' | 'failed' | 'unsupported'
 /**
- * The composer's status line and whether Send (and Cmd+Enter) may send a nonempty draft; the
- * label always names why it can't. A hook-confirmed ready prompt is sendable whatever the
+ * The composer's primary action and status for a nonempty draft. Busy agents with hooks queue
+ * until their next ready prompt. A hook-confirmed ready prompt is sendable whatever the
  * installed-hooks check says, since a session's login shell may point the provider at another
  * configuration; that check refuses only starting or resuming an agent, which could never report
  * a ready prompt without hooks.
@@ -72,13 +77,19 @@ export function composerStatus({
   session: SessionState | undefined
   /** `promptReady` for the session. */
   ready: boolean
-}): { label: string; sendable: boolean; notice?: HooksNotice } {
-  if (pending) return { label: 'Waiting for ready prompt…', sendable: false }
-  if (!connected) return { label: 'Session service disconnected', sendable: false }
+}): { label: string; sendable: boolean; action: 'send' | 'queue' | 'none'; notice?: HooksNotice } {
+  if (pending) return { label: 'Waiting for ready prompt…', sendable: false, action: 'none' }
+  if (!connected || session?.disconnected || session?.interrupted)
+    return { label: 'Session service disconnected', sendable: false, action: 'none' }
   const running = !!session?.running
-  if (running && ready) return { label: 'Ready', sendable: true }
+  if (running && ready) return { label: 'Ready', sendable: true, action: 'send' }
   if (provider === null)
-    return { label: 'Chat can’t message this agent', sendable: false, notice: 'unsupported' }
+    return {
+      label: 'Chat can’t message this agent',
+      sendable: false,
+      action: 'none',
+      notice: 'unsupported',
+    }
   const agent = session?.status?.agent
   const reporting = sessionReportedHooks(session) || (running && !!agent?.authoritative)
   const notice = reporting
@@ -91,9 +102,9 @@ export function composerStatus({
   const needsHooks = 'Chat needs agent status integration'
   if (!running) {
     if (provider === undefined || installed === undefined)
-      return { label: 'Checking agent status integration…', sendable: false }
-    if (installed !== true) return { label: needsHooks, sendable: false, notice }
-    return { label: 'Send to start or resume', sendable: true }
+      return { label: 'Checking agent status integration…', sendable: false, action: 'none' }
+    if (installed !== true) return { label: needsHooks, sendable: false, action: 'none', notice }
+    return { label: 'Send to start or resume', sendable: true, action: 'send' }
   }
   return {
     label:
@@ -107,7 +118,8 @@ export function composerStatus({
               ? // Esc or an answered prompt: no hook confirms the prompt until typing.
                 'Not confirmed ready: continue in its terminal'
               : 'Waiting for the agent',
-    sendable: false,
+    sendable: !!(reporting || installed === true),
+    action: reporting || installed === true ? 'queue' : 'none',
     notice,
   }
 }
@@ -135,6 +147,7 @@ export async function deliverPrompt(
   text: string,
   port: SendPort,
   submittedMs?: number,
+  { force = false }: { force?: boolean } = {},
 ) {
   if (sending.has(context.recipient))
     throw new Error('A message is already pending for this session')
@@ -148,7 +161,12 @@ export async function deliverPrompt(
       c.generation !== context.generation
     )
       throw new Error('The worktree or recipient changed. Your draft was kept.')
-    if (!promptReady(port.session(), submittedMs))
+    if (
+      force &&
+      (!port.session()?.running || port.session()?.disconnected || port.session()?.interrupted)
+    )
+      throw new Error('The session is unavailable. Your draft was kept.')
+    if (!force && !promptReady(port.session(), submittedMs))
       throw new Error('The agent is not at a ready prompt. Your draft was kept.')
   }
   sending.add(context.recipient)
@@ -167,8 +185,8 @@ export async function deliverPrompt(
       throw e
     }
   } finally {
-    sending.delete(context.recipient)
     if (claimed) await port.release().catch(() => {})
+    sending.delete(context.recipient)
   }
 }
 
@@ -209,4 +227,67 @@ export async function waitForPrompt(
       100,
     )
   }
+}
+
+const submitted = new Map<string, { generation: number; atMs: number }>()
+export function lastSubmission(sid: string, generation: number | undefined) {
+  const stamp = submitted.get(sid)
+  return stamp?.generation === generation ? stamp?.atMs : undefined
+}
+
+/** Shared delivery for the composer and background queues, including chats no longer selected. */
+export async function sendToSession({
+  projectId,
+  task,
+  sid,
+  generation,
+  text,
+  mentions,
+  stage,
+  force = false,
+  current,
+}: {
+  projectId: string
+  task: string | null
+  sid: string
+  generation: number
+  text: string
+  mentions: string[]
+  stage: SimpleStage
+  force?: boolean
+  current?: () => SendContext | undefined
+}) {
+  const captured = { projectId, task, recipient: sid, generation }
+  await deliverPrompt(
+    captured,
+    text,
+    {
+      current:
+        current ??
+        (() => ({ ...captured, generation: useStore.getState().sessions[sid]?.generation ?? -1 })),
+      session: () => useStore.getState().sessions[sid],
+      claim: () => terminalAttach(sid, true),
+      write: (message) => terminalPrompt(sid, generation, message, force),
+      onSubmit: (atMs) => {
+        if (atMs === undefined) submitted.delete(sid)
+        else submitted.set(sid, { generation, atMs })
+      },
+      release: async () => {
+        const { hasVisibleTerminal } = await import('./terminals')
+        if (!hasVisibleTerminal(sid)) await terminalDetach(sid)
+      },
+    },
+    lastSubmission(sid, generation),
+    { force },
+  )
+  logSimple(projectId, task, {
+    kind: 'prompt',
+    stage,
+    sessionId: sid,
+    generation,
+    atMs: lastSubmission(sid, generation),
+    text,
+    mentions,
+  })
+  persistReplies(sid, generation, useStore.getState().sessions[sid]?.replies ?? [])
 }

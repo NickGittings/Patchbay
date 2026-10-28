@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
 import {
   recordStage,
+  sections,
   selectRecipient,
   thread,
   type SimpleAction,
@@ -87,6 +88,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     simple: s.simple,
     auto: s.auto,
     ...data,
+    findings: findings?.findings,
     createdMs: s.tasks.find((t) => t.id === task)?.createdMs,
   }
   const model = thread(snapshot, worktree)
@@ -179,6 +181,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     const blocks = threadRef.current?.querySelectorAll<HTMLElement>('[data-session]')
     const block = [...(blocks ?? [])].filter((el) => el.dataset.session === s.revealed?.sid).at(-1)
     if (block) {
+      const section = block.closest<HTMLDetailsElement>('details.simple-section')
+      if (section) section.open = true
       block.scrollIntoView({ block: 'nearest' })
       useStore.getState().setRevealed(null)
     }
@@ -196,6 +200,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
     const match = exact ?? (suffix.length === 1 ? suffix[0] : undefined)
     useSimpleUi.getState().patch(key, {
+      changes: true,
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
     })
   }
@@ -329,6 +334,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       }
     })
   const items = model.items
+  const grouped = sections(items, model.records)
+  const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   return (
     <div className="simple-chat">
       <header>
@@ -367,95 +374,99 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         }}
       >
         {!items.length && <p className="simple-narration">Describe a feature to start planning.</p>}
-        {items.map((item, index) => {
-          if (item.kind === 'agent') {
-            const latest = !items
-              .slice(index + 1)
-              .some((i) => i.kind === 'agent' && i.sessionId === item.sessionId)
-            return (
-              <SimpleAgent
-                key={item.id}
-                record={item.record}
-                sessionId={item.sessionId}
-                entries={item.entries}
-                latest={latest}
-                working={state.busyAgent?.id === item.sessionId}
-              />
-            )
-          }
-          if (item.kind === 'line')
+        {grouped.map((section, sectionIndex) => {
+          const content = section.items.map((item) => {
+            if (item.kind === 'agent') {
+              const latest = !items
+                .slice(items.indexOf(item) + 1)
+                .some((i) => i.kind === 'agent' && i.sessionId === item.sessionId)
+              return (
+                <SimpleAgent
+                  key={item.id}
+                  record={item.record}
+                  sessionId={item.sessionId}
+                  entries={item.entries}
+                  latest={latest}
+                  working={state.busyAgent?.id === item.sessionId}
+                  worktree={worktree.path}
+                  openFile={(file) =>
+                    useSimpleUi.getState().patch(key, { changes: true, diff: file })
+                  }
+                />
+              )
+            }
+            if (item.kind === 'line')
+              return (
+                <p className="simple-narration" key={item.id}>
+                  {item.text}
+                </p>
+              )
+            if (item.kind === 'plan')
+              return item.stale ? (
+                <details className="simple-earlier-plan" key={item.id}>
+                  <summary>
+                    An earlier project plan exists
+                    {data?.plan.savedMs
+                      ? ` (saved ${new Date(data.plan.savedMs).toLocaleString()})`
+                      : ''}{' '}
+                    · Show
+                  </summary>
+                  <Markdown text={item.text} />
+                </details>
+              ) : (
+                state.step !== 'planning' && (
+                  <article className="simple-result" key={item.id}>
+                    <h3>Plan</h3>
+                    <Markdown text={item.text} />
+                  </article>
+                )
+              )
+            if (item.result === 'review')
+              return (
+                findings?.findings && (
+                  <article className="simple-result" key={item.id}>
+                    <h3>
+                      Review <VerdictBadge findings={findings.findings} running={runningReview} />
+                      <SeverityCounts findings={findings.findings} />
+                    </h3>
+                    <FindingsPanel
+                      loaded={findings}
+                      branch={source?.branch}
+                      status={reviewState(findings.findings, source)}
+                      onOpenFile={(ref) => openFile(ref.path, ref.line)}
+                      canOpen={() => true}
+                    />
+                  </article>
+                )
+              )
+            if (state.step === 'merged') return null
             return (
               <p className="simple-narration" key={item.id}>
-                {item.text}
+                {data?.outcomeError ??
+                  (data?.outcome === 'inProgress'
+                    ? 'Merge in progress…'
+                    : 'Waiting for the merge outcome…')}
               </p>
             )
-          if (item.kind === 'plan')
-            return item.stale ? (
-              <details className="simple-earlier-plan" key={item.id}>
-                <summary>
-                  An earlier project plan exists
-                  {data?.plan.savedMs
-                    ? ` (saved ${new Date(data.plan.savedMs).toLocaleString()})`
-                    : ''}{' '}
-                  · Show
-                </summary>
-                <Markdown text={item.text} />
-              </details>
-            ) : (
-              state.step !== 'planning' && (
-                <article className="simple-result" key={item.id}>
-                  <h3>Plan</h3>
-                  <Markdown text={item.text} />
-                </article>
-              )
-            )
-          if (item.result === 'review')
-            return (
-              findings?.findings && (
-                <article className="simple-result" key={item.id}>
-                  <h3>
-                    Review <VerdictBadge findings={findings.findings} running={runningReview} />
-                    <SeverityCounts findings={findings.findings} />
-                  </h3>
-                  <FindingsPanel
-                    loaded={findings}
-                    branch={source?.branch}
-                    status={reviewState(findings.findings, source)}
-                    onOpenFile={(ref) => openFile(ref.path, ref.line)}
-                    canOpen={() => true}
-                  />
-                </article>
-              )
-            )
-          if (item.result === 'changes')
-            return (
-              <article className="simple-result" key={item.id}>
-                <h3>Changes</h3>
-                <p>
-                  {groups.reduce((sum, g) => sum + g.files.length, 0)} uncommitted files ·{' '}
-                  {groups.length} components
-                </p>
-                {groups.flatMap((g) =>
-                  g.files.map((f) => (
-                    <button
-                      className="simple-file"
-                      key={`${g.id}:${f.path}`}
-                      onClick={() => openFile(f.path)}
-                    >
-                      {f.path}
-                    </button>
-                  )),
-                )}
-              </article>
-            )
-          if (state.step === 'merged') return null
-          return (
-            <p className="simple-narration" key={item.id}>
-              {data?.outcomeError ??
-                (data?.outcome === 'inProgress'
-                  ? 'Merge in progress…'
-                  : 'Waiting for the merge outcome…')}
-            </p>
+          })
+          return sectionIndex === grouped.length - 1 ? (
+            <div key={section.id}>{content}</div>
+          ) : (
+            <details className="simple-section" key={section.id}>
+              <summary>
+                {[
+                  section.title,
+                  section.summary,
+                  new Date(section.atMs).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  }),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </summary>
+              {content}
+            </details>
           )
         })}
         {asking && (
@@ -464,7 +475,12 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
               'The agent needs your input in its terminal.'}
           </p>
         )}
-        {state.prompt && (
+        {launching && (
+          <p className="simple-narration" role="status">
+            Starting {pending === 'build' ? 'build' : pending}…
+          </p>
+        )}
+        {!launching && state.prompt && (
           <div className="simple-step" data-step={state.step}>
             <p>{state.prompt.text}</p>
             {state.prompt.actions.map((b) => (
@@ -474,7 +490,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
             ))}
           </div>
         )}
-        {['built', 'reviewed', 'fixed'].includes(state.step) && (
+        {!launching && ['built', 'reviewed', 'fixed'].includes(state.step) && (
           <button className="simple-options" onClick={() => setDialog('review')}>
             Options…
           </button>

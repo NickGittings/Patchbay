@@ -87,6 +87,29 @@ export function flow(
           text: `No issues. Merge into ${base}?`,
           actions: [button('checkMerge', 'Merge')],
         }
+  const launch = snapshot.simple?.log.findLast(
+    (e) =>
+      e.kind === 'action' &&
+      ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
+      e.sessionId,
+  )
+  if (
+    !autoCurrent &&
+    launch?.kind === 'action' &&
+    !model.records.some((r) => r.id === launch.sessionId)
+  )
+    return {
+      step:
+        launch.action === 'plan'
+          ? 'planning'
+          : launch.action === 'review'
+            ? 'reviewing'
+            : launch.action === 'merge'
+              ? 'merging'
+              : launch.action === 'fix'
+                ? 'fixing'
+                : 'building',
+    }
   if (
     (model.stage === 'merge' &&
       (snapshot.outcome === 'merged' || snapshot.outcome === 'alreadyIntegrated')) ||

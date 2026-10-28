@@ -1,3 +1,4 @@
+import { useStepKeys } from './useStepKeys'
 import PersistedGroup from '../PersistedGroup'
 import { useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
@@ -27,6 +28,7 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
     const next = stepChange(order, file && { componentId, path: file.path }, delta)
     if (next) setSelected(next.path)
   }
+  useStepKeys(step)
   const position = file ? order.findIndex((r) => r.path === file.path) : -1
   return (
     <div className="changes-panel">

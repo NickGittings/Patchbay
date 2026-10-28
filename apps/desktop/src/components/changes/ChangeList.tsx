@@ -70,7 +70,10 @@ export default function ChangeList({
               data-path={f.path}
               className={`change-row kind-${f.kind} ${f.path === selected ? 'active' : ''}`}
               title={`${KIND_LABEL[f.kind]}: ${f.oldPath ? `${f.oldPath} → ` : ''}${f.path}`}
-              onClick={() => onSelect(f.path)}
+              onClick={(e) => {
+                e.currentTarget.focus()
+                onSelect(f.path)
+              }}
               onDoubleClick={() => {
                 if (f.kind !== 'deleted' && projectId)
                   void openInEditor({ path: f.path }, { projectId, task: originTask, worktree })

@@ -41,3 +41,24 @@ test('lists step with all four arrows, diffs only with left and right', () => {
   expect(stepKey(key('ArrowDown', { target: { tagName: 'INPUT' } }), 'list')).toBe(0)
   expect(stepKey(key('j'), 'list')).toBe(0)
 })
+
+test.each([
+  ['ArrowUp', -1],
+  ['ArrowDown', 1],
+  ['ArrowLeft', -1],
+  ['ArrowRight', 1],
+])('body %s steps without taking modified or field keys', (key, delta) => {
+  const event = {
+    key: String(key),
+    target: { tagName: 'BODY' } as unknown as EventTarget,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+  }
+  expect(stepKey(event, 'list')).toBe(delta)
+  for (const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey'])
+    expect(stepKey({ ...event, [modifier]: true }, 'list')).toBe(0)
+  for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT'])
+    expect(stepKey({ ...event, target: { tagName } as unknown as EventTarget }, 'list')).toBe(0)
+})

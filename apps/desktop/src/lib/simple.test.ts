@@ -5,6 +5,8 @@ import {
   relatedSession,
   selectRecipient,
   thread,
+  sections,
+  type TimelineItem,
   restoredSimple,
   type SimpleSnapshot,
 } from './simple'
@@ -234,4 +236,98 @@ test('another chat’s planner run never shows here or takes over the recipient 
   )
   expect(used.foreign.size).toBe(0)
   expect(selectRecipient(used.records, sessions, 'build', undefined, used.foreign)?.id).toBe('p')
+})
+
+test('sections keep plan, build, review and fix in order with artifact and reply summaries', () => {
+  const records = [
+    record('p', '@plan', null),
+    record('b', '@task', 't'),
+    record('r', '@review', 't'),
+    record('f', '@task', 't'),
+  ]
+  const items: TimelineItem[] = [
+    { kind: 'line', id: 'plan-action', atMs: 1, text: 'Planning…', action: 'plan', stage: 'plan' },
+    { kind: 'plan', id: 'plan', atMs: 2, text: '# Add OAuth login\nDetails', stale: false },
+    {
+      kind: 'line',
+      id: 'build-action',
+      atMs: 3,
+      text: 'Building…',
+      action: 'implement',
+      stage: 'build',
+    },
+    {
+      kind: 'agent',
+      id: 'builder',
+      atMs: 4,
+      sessionId: 'b',
+      entries: [
+        {
+          id: 'reply',
+          atMs: 4,
+          kind: 'reply',
+          sessionId: 'b',
+          stage: 'build',
+          generation: 1,
+          sequence: 1,
+          text: 'Added login. Tests pass.',
+        },
+      ],
+    },
+    {
+      kind: 'line',
+      id: 'review-action',
+      atMs: 5,
+      text: 'Reviewing…',
+      action: 'review',
+      stage: 'review',
+    },
+    {
+      kind: 'result',
+      id: 'review',
+      atMs: 6,
+      result: 'review',
+      summary: '0 critical, 1 high, 0 medium, 0 low',
+    },
+    { kind: 'line', id: 'fix-action', atMs: 7, text: 'Fixing…', action: 'fix', stage: 'build' },
+    {
+      kind: 'agent',
+      id: 'fixer',
+      atMs: 8,
+      sessionId: 'f',
+      entries: [
+        {
+          id: 'fixed',
+          atMs: 8,
+          kind: 'reply',
+          sessionId: 'f',
+          stage: 'build',
+          generation: 1,
+          sequence: 1,
+          text: 'Fixed token expiry.',
+        },
+      ],
+    },
+  ]
+  const grouped = sections(items, records)
+  expect(grouped.map((s) => s.stage)).toEqual(['plan', 'build', 'review', 'fix'])
+  expect(grouped.map((s) => s.title)).toEqual(['Planner', 'Builder', 'Reviewer', 'Builder'])
+  expect(grouped.map((s) => s.summary)).toEqual([
+    'Add OAuth login',
+    'Added login…',
+    '0 critical, 1 high, 0 medium, 0 low',
+    'Fixed token expiry',
+  ])
+  expect(grouped[0].items).toContain(items[1])
+  expect(grouped.map((s) => s.atMs)).toEqual([2, 4, 6, 8])
+  expect(sections(items.slice(0, 2), records)[0].items).toEqual(items.slice(0, 2))
+})
+
+test('recovered agents start sections on stage changes and the timeline has no Changes card', () => {
+  const records = [record('b', '@task', 't', 1), record('r', '@review', 't', 2)]
+  const model = thread(snapshot(records), worktree)
+  expect(model.items.some((i) => i.kind === 'result' && (i.result as string) === 'changes')).toBe(
+    false,
+  )
+  expect(sections(model.items, records).map((s) => s.stage)).toEqual(['build', 'review'])
 })

@@ -1,6 +1,7 @@
 import type { AutoRun, AutoStage, PlanText, Review, SessionRecord, SessionState } from '../types'
 import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
 import { sessionTimeMs } from './sessionList'
+import { shortTitle } from './shortTitle'
 
 export const SIMPLE_STAGES = ['plan', 'build', 'review', 'merge'] as const
 export type SimpleStage = (typeof SIMPLE_STAGES)[number]
@@ -206,6 +207,7 @@ export interface SimpleSnapshot {
   acceptedPlan?: PlanText
   proposal?: import('../types').PlannerProposal | null
   review?: Review
+  findings?: import('../types').ReviewFindings | null
   createdMs?: number
 }
 export const recordStage = (record: SessionRecord): SimpleStage =>
@@ -284,9 +286,16 @@ export type TimelineItem =
       sessionId: string
       entries: SimpleEntry[]
     }
-  | { kind: 'line'; id: string; atMs: number; text: string }
+  | {
+      kind: 'line'
+      id: string
+      atMs: number
+      text: string
+      action?: SimpleAction
+      stage?: SimpleStage
+    }
   | { kind: 'plan'; id: string; atMs: number; text: string; stale: boolean }
-  | { kind: 'result'; id: string; atMs: number; result: 'review' | 'changes' | 'merge' }
+  | { kind: 'result'; id: string; atMs: number; result: 'review' | 'merge'; summary?: string }
 
 const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
   ({
@@ -386,11 +395,20 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
           id: `planning:${entry.id}`,
           atMs: entry.atMs - 0.1,
           text: 'Planning…',
+          action: 'plan',
+          stage: 'plan',
         })
       planning.add(run)
     }
     if (entry.kind === 'action') {
-      items.push({ kind: 'line', id: entry.id, atMs: entry.atMs, text: actionText(entry) })
+      items.push({
+        kind: 'line',
+        id: entry.id,
+        atMs: entry.atMs,
+        text: actionText(entry),
+        action: entry.action,
+        stage: entry.stage,
+      })
       continue
     }
     const sid = entry.sessionId ?? 'you'
@@ -430,20 +448,99 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       text: plan.text,
       stale: !currentPlan,
     })
-  for (const result of ['changes', 'review', 'merge'] as const) {
-    const r = records
-      .filter((r) => recordStage(r) === (result === 'changes' ? 'build' : result))
-      .at(-1)
+  for (const result of ['review', 'merge'] as const) {
+    const r = records.filter((r) => recordStage(r) === result).at(-1)
     if (r)
       items.push({
         kind: 'result',
         id: result,
         atMs: snapshot.sessions[r.id]?.status?.agent?.sinceMs ?? stageSessionTime(r) ?? start,
         result,
+        summary:
+          result === 'review' && snapshot.findings?.verdict
+            ? Object.entries(snapshot.findings.verdict.counts)
+                .map(([severity, count]) => `${count} ${severity}`)
+                .join(', ')
+            : undefined,
       })
   }
   items.sort((a, b) => a.atMs - b.atMs)
   return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start }
+}
+
+export interface SimpleSection {
+  id: string
+  stage: SimpleStage | 'fix'
+  title: string
+  summary: string
+  atMs: number
+  items: TimelineItem[]
+}
+
+/** Keep artifacts with their chronological stage; only the newest section stays expanded. */
+export function sections(
+  items: readonly TimelineItem[],
+  records: readonly SessionRecord[],
+): SimpleSection[] {
+  const result: SimpleSection[] = []
+  for (const item of items) {
+    const current = result.at(-1)
+    const action =
+      item.kind === 'line' &&
+      item.action &&
+      ['plan', 'implement', 'fix', 'review', 'merge'].includes(item.action)
+    const record =
+      item.kind === 'agent'
+        ? (item.record ?? records.find((r) => r.id === item.sessionId))
+        : undefined
+    const stage =
+      action && item.kind === 'line'
+        ? item.action === 'fix'
+          ? 'fix'
+          : (item.stage ?? 'plan')
+        : record
+          ? recordStage(record)
+          : item.kind === 'agent'
+            ? item.entries[0]?.stage
+            : undefined
+    const sameStage = current?.stage === stage || (current?.stage === 'fix' && stage === 'build')
+    // Several review lanes share one step. Explicit repeated actions still begin a new attempt,
+    // except when an immediately preceding launch line has no agent or artifact yet.
+    const launchOnly = current?.items.every((i) => i.kind === 'line')
+    if (!current || (action && !(sameStage && launchOnly)) || (stage && !sameStage)) {
+      const nextStage = stage ?? (item.kind === 'result' ? item.result : 'plan')
+      result.push({
+        id: item.id,
+        stage: nextStage,
+        title: SIMPLE_ROLE_LABEL[nextStage === 'fix' ? 'build' : nextStage],
+        summary: '',
+        atMs: item.atMs,
+        items: [item],
+      })
+    } else current.items.push(item)
+  }
+  for (const section of result) {
+    const plan = section.items.find((i) => i.kind === 'plan')
+    const review = section.items.findLast((i) => i.kind === 'result' && i.result === 'review')
+    const reply = section.items
+      .flatMap((i) => (i.kind === 'agent' ? i.entries : []))
+      .findLast((e) => e.kind === 'reply')
+    section.summary =
+      section.stage === 'plan' && plan?.kind === 'plan'
+        ? shortTitle(
+            plan.text
+              .split('\n')
+              .find((line) => line.trim())
+              ?.replace(/^#+\s*/, '') ?? '',
+          )
+        : section.stage === 'review' && review?.kind === 'result' && review.summary
+          ? review.summary
+          : reply?.kind === 'reply'
+            ? shortTitle(reply.text)
+            : ''
+    section.atMs = section.items.at(-1)?.atMs ?? section.atMs
+  }
+  return result
 }
 
 /** Input waits take priority; otherwise Send and the drawer follow the current role. */

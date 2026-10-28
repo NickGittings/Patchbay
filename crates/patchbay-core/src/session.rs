@@ -22,8 +22,8 @@ pub use briefing::with_pending_briefing;
 
 // Snapshots and live events retain final assistant replies as well as tool activity.
 // Protocol 10 added activity and generation-bound prompt delivery; 12 names each live reply's
-// predecessor.
-pub const PROTOCOL: u32 = 12;
+// predecessor. Protocol 13 adds explicit forced prompt delivery.
+pub const PROTOCOL: u32 = 13;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -301,6 +301,8 @@ pub enum Request {
         viewer: String,
         generation: u64,
         text: String,
+        #[serde(default)]
+        force: bool,
     },
     Resize {
         id: String,
@@ -1543,10 +1545,9 @@ impl Service {
                 viewer,
                 generation,
                 text,
+                force,
             } => {
-                // Paste and submit in one request, each gated on hook-confirmed readiness, so no
-                // write can answer a permission dialog. Quiet output alone can't tell a ready
-                // prompt from a dialog, so sessions without status hooks are refused.
+                // Force bypasses readiness only; authority and generation gate both writes.
                 let check = || -> Result<()> {
                     anyhow::ensure!(
                         self.owns(client, &id, &viewer),
@@ -1561,7 +1562,7 @@ impl Service {
                         "The session generation changed"
                     );
                     anyhow::ensure!(
-                        prompt_ready(&snapshot.status),
+                        force || prompt_ready(&snapshot.status),
                         "The agent is not at a ready prompt"
                     );
                     Ok(())
@@ -4648,7 +4649,7 @@ mod tests {
         let id = service.start("start".into(), metadata, spec).unwrap();
         let generation = service.snapshot(&id).unwrap().generation;
         service.claim("client", id.clone(), "main".into(), true);
-        let prompt = |generation, viewer: &str| {
+        let prompt = |generation, viewer: &str, force| {
             service
                 .handle(
                     "client",
@@ -4657,16 +4658,36 @@ mod tests {
                         viewer: viewer.into(),
                         generation,
                         text: "hello".into(),
+                        force,
                     },
                 )
                 .unwrap_err()
                 .to_string()
         };
-        assert!(prompt(generation, "other").contains("authority"));
-        assert!(prompt(generation + 1, "main").contains("generation"));
+        assert!(prompt(generation, "other", false).contains("authority"));
+        assert!(prompt(generation + 1, "main", false).contains("generation"));
         // Without status hooks, quiet output never counts as ready.
-        assert!(prompt(generation, "main").contains("ready prompt"));
+        assert!(prompt(generation, "main", false).contains("ready prompt"));
         assert!(!String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello"));
+        assert!(prompt(generation, "other", true).contains("authority"));
+        assert!(prompt(generation + 1, "main", true).contains("generation"));
+        service
+            .handle(
+                "client",
+                Request::Prompt {
+                    id: id.clone(),
+                    viewer: "main".into(),
+                    generation,
+                    text: "hello".into(),
+                    force: true,
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello") {
+            assert!(Instant::now() < deadline, "forced prompt was not pasted");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         service.pty.stop_generation(&id, generation).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
