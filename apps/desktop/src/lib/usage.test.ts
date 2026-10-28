@@ -59,7 +59,7 @@ function usage(percent: number, reset = now + 300_000): Usage {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useUsage.setState({ usage: null, error: null, refreshing: false })
+  useUsage.setState({ usage: null, error: null })
   useStore.setState({
     notifications: { ...DEFAULT_NOTIFICATIONS },
     usageSettings: { ...DEFAULT_USAGE },
@@ -72,7 +72,7 @@ afterEach(() => {
 })
 
 test.each([false, true])(
-  'refresh shares a pending read and clears busy on error=%s',
+  'refresh shares a pending read and permits another read after error=%s',
   async (fail) => {
     let resolve!: (value: Usage) => void
     let reject!: (error: Error) => void
@@ -83,21 +83,86 @@ test.each([false, true])(
       }),
     )
     const first = refreshUsage()
-    expect(useUsage.getState().refreshing).toBe(true)
     expect(refreshUsage()).toBe(first)
+    await Promise.resolve()
     expect(usageRead).toHaveBeenCalledTimes(1)
     if (fail) reject(new Error('Read failed'))
     else resolve(usage(50))
     await first
-    expect(useUsage.getState().refreshing).toBe(false)
     expect(useUsage.getState().error).toBe(fail ? 'Error: Read failed' : null)
 
     vi.mocked(usageRead).mockResolvedValueOnce(usage(60))
     await refreshUsage()
     expect(usageRead).toHaveBeenCalledTimes(2)
-    expect(useUsage.getState()).toMatchObject({ refreshing: false, error: null, usage: usage(60) })
+    expect(useUsage.getState()).toMatchObject({ error: null, usage: usage(60) })
   },
 )
+
+test.each([false, true])(
+  'capture mutation supersedes a pending read with error=%s',
+  async (fail) => {
+    let finish!: (value: Usage) => void
+    let reject!: (error: Error) => void
+    let finishFresh!: (value: Usage) => void
+    vi.mocked(usageRead)
+      .mockReturnValueOnce(
+        new Promise<Usage>((yes, no) => {
+          finish = yes
+          reject = no
+        }),
+      )
+      .mockReturnValueOnce(new Promise<Usage>((resolve) => (finishFresh = resolve)))
+    const older = refreshUsage()
+    await Promise.resolve()
+    const installed = usage(50)
+    installed.claudeCapture = { installed: true, chained: null, source: '/settings.json' }
+    useUsage.setState({ usage: installed })
+    const fresh = refreshUsage({ fresh: true })
+    expect(fresh).not.toBe(older)
+    await Promise.resolve()
+    expect(usageRead).toHaveBeenCalledTimes(2)
+    if (fail) reject(new Error('Stale read failed'))
+    else finish(usage(40))
+    await older
+    expect(useUsage.getState()).toMatchObject({ usage: installed, error: null })
+    expect(refreshUsage()).toBe(fresh)
+    finishFresh(installed)
+    await fresh
+    expect(useUsage.getState()).toMatchObject({ usage: installed, error: null })
+  },
+)
+
+test('a stale result arriving after a fresh read cannot overwrite it or release a later read', async () => {
+  let finishOld!: (value: Usage) => void
+  let finishNext!: (value: Usage) => void
+  vi.mocked(usageRead)
+    .mockReturnValueOnce(new Promise<Usage>((resolve) => (finishOld = resolve)))
+    .mockResolvedValueOnce(usage(60))
+    .mockReturnValueOnce(new Promise<Usage>((resolve) => (finishNext = resolve)))
+  const older = refreshUsage()
+  await Promise.resolve()
+  await refreshUsage({ fresh: true })
+  const next = refreshUsage()
+  finishOld(usage(40))
+  await older
+  expect(useUsage.getState()).toMatchObject({ usage: usage(60), error: null })
+  expect(refreshUsage()).toBe(next)
+  finishNext(usage(70))
+  await next
+  expect(useUsage.getState().usage).toEqual(usage(70))
+})
+
+test('synchronous read failures return the last snapshot and allow a retry', async () => {
+  useUsage.setState({ usage: usage(50) })
+  vi.mocked(usageRead).mockImplementationOnce(() => {
+    throw new Error('Read failed synchronously')
+  })
+  await expect(refreshUsage()).resolves.toEqual(usage(50))
+  expect(useUsage.getState().error).toBe('Error: Read failed synchronously')
+  vi.mocked(usageRead).mockResolvedValueOnce(usage(60))
+  await expect(refreshUsage()).resolves.toEqual(usage(60))
+  expect(useUsage.getState().error).toBeNull()
+})
 
 test('levels include exact thresholds and allow independently adjusted percentages', () => {
   expect(usageLevel(window(79.9), DEFAULT_USAGE)).toBe('ok')
@@ -274,6 +339,26 @@ test('poller always toasts once, respects preferences, refreshes on focus, and c
   await vi.advanceTimersByTimeAsync(60_000)
   target.dispatchEvent(new Event('focus'))
   expect(usageRead).toHaveBeenCalledTimes(4)
+})
+
+test('poller checks warnings only when the usage snapshot changes', async () => {
+  vi.stubGlobal('window', new EventTarget())
+  vi.stubGlobal('document', { hasFocus: () => true })
+  vi.mocked(usageRead).mockResolvedValueOnce(usage(50))
+  const getState = vi.spyOn(useStore, 'getState')
+  const stop = followUsage()
+  try {
+    await refreshUsage()
+    expect(getState).toHaveBeenCalledTimes(1)
+    useUsage.setState({ error: 'Read failed' })
+    useUsage.setState({ error: null })
+    expect(getState).toHaveBeenCalledTimes(1)
+    useUsage.setState({ usage: usage(60) })
+    expect(getState).toHaveBeenCalledTimes(2)
+  } finally {
+    stop()
+    getState.mockRestore()
+  }
 })
 
 test('background warnings keep a toast and native delivery rechecks focus and preferences', async () => {

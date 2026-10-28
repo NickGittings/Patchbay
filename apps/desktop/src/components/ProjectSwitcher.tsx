@@ -30,8 +30,8 @@ export default function ProjectSwitcher() {
             >
               <span className="project-name">{entry.name}</span>
               {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}
-              <RunningTag count={running[i]} />
             </button>
+            <RunningTag count={running[i]} />
             <button
               className="panel-row-actions"
               aria-label={`Close ${entry.name}`}

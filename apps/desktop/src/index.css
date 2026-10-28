@@ -2182,6 +2182,7 @@ button.review-name:hover:not(:disabled) {
 .worktree-tag.running .status-dot {
   width: 6px;
   height: 6px;
+  background: var(--running);
 }
 .worktree-tag.attention {
   color: var(--input);

@@ -482,10 +482,10 @@ export default function StackPanel() {
         <NewStackForm />
         {projectId && <StackAgent projectId={projectId} pending={pending} />}
       </div>
-      <StackSuggestions />
       {projectId && pending && (
         <StackReview key={pending.id} pending={pending} projectId={projectId} />
       )}
+      <StackSuggestions />
       {groups.map((group) => (
         <GroupEditor key={group.id} group={group} />
       ))}

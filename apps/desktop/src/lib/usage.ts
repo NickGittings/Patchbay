@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { subscribeWithSelector } from 'zustand/middleware'
 import { useStore } from '../store'
 import type { SessionState, Usage, UsageSettings, UsageWindow } from '../types'
 import { usageRead } from './ipc'
@@ -139,33 +140,37 @@ export function usageMoved(prev: SessionState | undefined, next: SessionState): 
   return before?.state !== 'review' || before.sinceMs !== agent.sinceMs
 }
 
-export const useUsage = create<{
+type UsageState = {
   usage: Usage | null
   error: string | null
-  refreshing: boolean
-}>(() => ({
-  usage: null,
-  error: null,
-  refreshing: false,
-}))
+}
+
+export const useUsage = create(
+  subscribeWithSelector<UsageState>(() => ({
+    usage: null,
+    error: null,
+  })),
+)
 let reading: Promise<Usage | null> | undefined
-/** Share a pending read between the panel, polling and Auto's launch check. */
-export function refreshUsage(): Promise<Usage | null> {
-  if (!reading) useUsage.setState({ refreshing: true })
-  reading ??= usageRead()
+/** Share pending reads, unless a mutation needs a fresh snapshot. Superseded reads cannot
+ * overwrite the newer result or clear its pending promise. */
+export function refreshUsage({ fresh = false } = {}): Promise<Usage | null> {
+  if (reading && !fresh) return reading
+  const pending = Promise.resolve()
+    .then(usageRead)
     .then((usage) => {
-      useUsage.setState({ usage, error: null })
+      if (reading === pending) useUsage.setState({ usage, error: null })
       return usage
     })
     .catch((error) => {
-      useUsage.setState({ error: String(error) })
+      if (reading === pending) useUsage.setState({ error: String(error) })
       return useUsage.getState().usage
     })
     .finally(() => {
-      reading = undefined
-      useUsage.setState({ refreshing: false })
+      if (reading === pending) reading = undefined
     })
-  return reading
+  reading = pending
+  return pending
 }
 
 /** Main-window observer; subscriptions and timers are disposed with App. */
@@ -194,7 +199,7 @@ export function followUsage() {
       })
   }
   const refresh = () => void refreshUsage()
-  const stopUsage = useUsage.subscribe(warn)
+  const stopUsage = useUsage.subscribe((s) => s.usage, warn)
   const stopStore = useStore.subscribe((s, prev) => {
     if (
       s.usageSettings !== prev.usageSettings ||

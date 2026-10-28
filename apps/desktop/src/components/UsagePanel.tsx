@@ -45,7 +45,7 @@ export default function UsagePanel() {
   useClockTick()
   const usage = useUsage((s) => s.usage)
   const error = useUsage((s) => s.error)
-  const refreshing = useUsage((s) => s.refreshing)
+  const [refreshing, setRefreshing] = useState(false)
   const settings = useStore((s) => s.usageSettings)
   const setSettings = useStore((s) => s.setUsageSettings)
   const [busy, setBusy] = useState(false)
@@ -123,7 +123,7 @@ export default function UsagePanel() {
                       useUsage.setState((s) => ({
                         usage: s.usage ? { ...s.usage, claudeCapture: result } : null,
                       }))
-                      await refreshUsage()
+                      await refreshUsage({ fresh: true })
                     } catch (e) {
                       useStore.getState().setMessage(String(e))
                     } finally {
@@ -193,7 +193,17 @@ export default function UsagePanel() {
       </section>
       <section className="rail-actions panel-section" aria-label="Usage actions">
         <div className="section-title">Actions</div>
-        <button onClick={() => void refreshUsage()} disabled={refreshing}>
+        <button
+          onClick={async () => {
+            setRefreshing(true)
+            try {
+              await refreshUsage()
+            } finally {
+              setRefreshing(false)
+            }
+          }}
+          disabled={busy || refreshing}
+        >
           {refreshing ? 'Refreshing usage…' : 'Refresh usage'}
         </button>
       </section>
