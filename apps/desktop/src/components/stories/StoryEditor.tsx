@@ -1,25 +1,32 @@
 import { useState } from 'react'
 import { useStore } from '../../store'
-import type { Story, StoryDraft, StoryStatus } from '../../types'
+import type { Story, StoryDraft, StoryStatus, Task } from '../../types'
 import {
   autoStory,
   planStory,
   newWorktreeForStory,
+  progressLabel,
   refreshStories,
   STORY_STATUSES,
   updateStory,
+  type StoryProgress,
 } from '../../lib/stories'
 import { storyCreate, storyRemove } from '../../lib/ipc'
+import { shortTitle } from '../../lib/shortTitle'
 
 export default function StoryEditor({
   projectId,
   item,
+  progress,
+  worktree,
   draft,
   onClose,
   onSaved,
 }: {
   projectId: string
   item?: Story
+  progress?: StoryProgress
+  worktree?: Task
   draft?: StoryDraft
   onClose: () => void
   onSaved: (item: Story) => void
@@ -36,6 +43,8 @@ export default function StoryEditor({
   // An untouched status follows Plan/Auto and completion updates while the editor stays open.
   const [statusEdit, setStatusEdit] = useState<StoryStatus | null>(null)
   const status = statusEdit ?? item?.status ?? 'backlog'
+  const derived = !!item && progress !== undefined && progress !== item.status
+  const hasChildren = item?.kind !== 'story' && stories.some((s) => s.parent === item?.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -181,8 +190,14 @@ export default function StoryEditor({
               ))}
             </div>
           </div>
+          {item && progress !== undefined && (
+            <div className="row">
+              <span>Progress</span>
+              <span className={`chip story-status ${progress}`}>{progressLabel(progress)}</span>
+            </div>
+          )}
           <label>
-            Status
+            {derived ? 'Saved status' : 'Status'}
             <select value={status} onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}>
               {STORY_STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -192,7 +207,22 @@ export default function StoryEditor({
             </select>
           </label>
           <p className="story-hint">
-            Worktree activity updates the card’s status. Completed work stays Done after cleanup.
+            {derived ? (
+              hasChildren ? (
+                'Following child progress. The saved status applies once there are no children; Done always wins.'
+              ) : worktree && !worktree.missing ? (
+                <>
+                  Following worktree {shortTitle(worktree.title)}. The saved status applies once the
+                  story has no live worktree; Done always wins.
+                </>
+              ) : progress === 'done' ? (
+                'Following the completed Auto run. Completed work stays Done after cleanup.'
+              ) : (
+                'No live worktree is linked. Progress stays in backlog until planning or work begins; Done always wins.'
+              )
+            ) : (
+              'Worktree activity updates the card’s status. Completed work stays Done after cleanup.'
+            )}
           </p>
           <div className="story-editor-actions">
             <button type="submit" disabled={!ready}>

@@ -48,6 +48,11 @@ export function tree(stories: Story[]) {
 }
 
 export type StoryProgress = StoryStatus | 'reviewing' | 'merging'
+
+export function progressLabel(progress: StoryProgress) {
+  return progress === 'reviewing' ? 'review' : progress === 'merging' ? 'merge' : progress
+}
+
 export const PROGRESS: StoryProgress[] = [
   'backlog',
   'planned',

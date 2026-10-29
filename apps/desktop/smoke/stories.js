@@ -102,6 +102,8 @@
         'editor',
         () => query('.story-editor h3')?.textContent === `New ${kind}` && field('Title'),
       )
+      assert(!query('.story-editor .story-status'), 'new draft shows derived progress')
+      assert(field('Status'), 'new draft lost its Status select')
       edit(field('Title'), title)
       if (parent) edit(field(kind === 'feature' ? 'Epic' : 'Feature'), parent)
       if (kind === 'story') {
@@ -124,6 +126,10 @@
     const epic = await create('epic', 'Story smoke epic')
     const feature = await create('feature', 'Story smoke feature', epic.id)
     const story = await create('story', 'Story smoke story', feature.id)
+    await until(
+      'unlinked editor progress',
+      () => query('.story-editor .story-status.backlog') && field('Status')?.value === 'backlog',
+    )
     const chooseCard = (title) =>
       click(
         [...document.querySelectorAll('.story-card')].find((b) => b.textContent.includes(title)),
@@ -252,6 +258,16 @@
           b.textContent.includes(task.title),
       ),
     )
+    chooseCard(story.title)
+    await until(
+      'Building editor progress',
+      () =>
+        query('.story-editor .story-status.building') &&
+        field('Saved status')?.value === 'planned' &&
+        query('.story-editor .story-hint')?.textContent.includes(
+          `Following worktree ${task.title}`,
+        ),
+    )
     const rootRecord = state().sessionRecords.find((r) => r.metadata.task === task.id)
     assert(rootRecord, 'missing implementation session record')
     smoke.store.setState({
@@ -273,11 +289,24 @@
           b.querySelector('.story-status.reviewing')?.textContent === 'review',
       ),
     )
+    await until(
+      'Review editor progress',
+      () => query('.story-editor .story-status.reviewing')?.textContent === 'review',
+    )
+    chooseCard(feature.title)
+    await until(
+      'rolled-up editor progress',
+      () =>
+        query('.story-editor .story-status.reviewing')?.textContent === 'review' &&
+        field('Saved status')?.value === 'backlog' &&
+        query('.story-editor .story-hint')?.textContent.includes('Following child progress'),
+    )
     click(
       [...document.querySelectorAll('.story-card')].find((b) =>
         b.textContent.includes(story.title),
       ),
     )
+    await until('story editor after rollup', () => field('Title')?.value === story.title)
     click(await until('Auto story button', () => button('.story-editor', 'Auto…')))
     const goal = await until('Auto goal prefilled', () => {
       const el = query('.auto-content textarea')
@@ -286,6 +315,15 @@
     assert(
       goal.value.includes(story.title) && goal.value.includes(story.description),
       'Auto lost the story title or description',
+    )
+    edit(field('Saved status'), 'done')
+    click(button('.story-editor', 'Save'))
+    await until(
+      'saved Done overrides worktree progress',
+      () =>
+        query('.story-card.selected .story-status.done') &&
+        query('.story-editor .story-status.done') &&
+        field('Status')?.value === 'done',
     )
     click(button('.story-board-header', 'Map'))
     await until(

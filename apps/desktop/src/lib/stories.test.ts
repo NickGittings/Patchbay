@@ -13,6 +13,8 @@ vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 const {
   tree,
   derivedStatus,
+  progressLabel,
+  PROGRESS,
   rollup,
   storyGoal,
   planStory,
@@ -104,6 +106,16 @@ test('status ignores old Auto runs on reused tasks and preserves saved completio
   expect(derivedStatus({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('building')
   expect(derivedStatus({ ...item, autoRunId: 'old' }, [task], done, 'p')).toBe('done')
   expect(derivedStatus({ ...item, status: 'done' }, [], {}, 'p')).toBe('done')
+})
+test('progress labels match card wording for every stage', () => {
+  expect(PROGRESS.map(progressLabel)).toEqual([
+    'backlog',
+    'planned',
+    'building',
+    'review',
+    'merge',
+    'done',
+  ])
 })
 test('rollup picks the least advanced child and retains a childless parent', () => {
   expect(rollup('planned', [])).toBe('planned')

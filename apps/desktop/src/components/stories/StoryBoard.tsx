@@ -6,7 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
-import { derivedStatus, rollup, tree, type StoryProgress } from '../../lib/stories'
+import { derivedStatus, progressLabel, rollup, tree, type StoryProgress } from '../../lib/stories'
 import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
@@ -162,9 +162,7 @@ export default function StoryBoard() {
                 {item.title}
               </span>
               <span className="story-card-meta">
-                <span className={`chip story-status ${value}`}>
-                  {value === 'reviewing' ? 'review' : value === 'merging' ? 'merge' : value}
-                </span>
+                <span className={`chip story-status ${value}`}>{progressLabel(value)}</span>
                 <span>{item.components.length} components</span>
               </span>
               {worktree && (
@@ -236,6 +234,8 @@ export default function StoryBoard() {
             key={`${projectId}/${item?.id ?? `new-${draft?.kind}-${draft?.parent}`}`}
             projectId={projectId}
             item={item}
+            progress={item ? status(item) : undefined}
+            worktree={tasks.find((t) => t.id === item?.task)}
             draft={draft ?? undefined}
             onClose={() => {
               setSelected(null)
