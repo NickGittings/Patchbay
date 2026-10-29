@@ -1,5 +1,5 @@
-import { latestWrite } from '../lib/activity'
-import type { ChangeRef } from '../lib/changeNav'
+import { useContext } from 'react'
+import { SimpleChangesContext } from './stories/simpleChanges'
 import type { SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
@@ -14,8 +14,6 @@ export default function SimpleAgent({
   entries,
   latest,
   working,
-  worktree,
-  changed,
   openFile,
 }: {
   record?: SessionRecord
@@ -23,23 +21,11 @@ export default function SimpleAgent({
   entries: SimpleEntry[]
   latest: boolean
   working: boolean
-  worktree: string
-  /** The Changes tab's files: an edit links only to a file the tab still lists. */
-  changed: readonly ChangeRef[]
   openFile: (file: SimpleDiff) => void
 }) {
   const session = useStore((s) => s.sessions[sessionId])
-  const nodes = useStore((s) => s.nodes)
-  const edited =
-    latest && record
-      ? latestWrite(
-          record,
-          session,
-          nodes.map((n) => ({ id: n.id, path: n.data.path })),
-          worktree,
-          changed,
-        )
-      : undefined
+  const changes = useContext(SimpleChangesContext)
+  const edited = latest ? changes.bySession.get(sessionId) : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
   const role = record ? SIMPLE_ROLE_LABEL[recordStage(record)] : 'Agent'
   const provider = record?.metadata.adapter

@@ -5,13 +5,14 @@ import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from 
 import {
   recordStage,
   pendingLaunch,
+  LAUNCH_RECORD_GRACE_MS,
   sections,
   selectRecipient,
   thread,
   type SimpleAction,
   type SimpleStage,
 } from '../lib/simple'
-import { flow, LAUNCH_RECORD_GRACE_MS, type FlowAction } from '../lib/simpleFlow'
+import { flow, type FlowAction } from '../lib/simpleFlow'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
@@ -390,8 +391,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                   entries={item.entries}
                   latest={latest}
                   working={state.busyAgent?.id === item.sessionId}
-                  worktree={worktree.path}
-                  changed={changed}
                   openFile={(file) =>
                     useSimpleUi.getState().patch(key, { changes: true, diff: file })
                   }

@@ -7,7 +7,7 @@ import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
 import { derivedStatus, rollup, tree, type StoryProgress } from '../../lib/stories'
-import { shortTitle } from '../../lib/tasks'
+import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
 

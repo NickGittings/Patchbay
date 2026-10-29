@@ -16,7 +16,7 @@ import { autoAttentionItems, recordTask, revealTerminal, sessionOwner } from './
 import { autoRuns } from './autoState'
 import { finished } from './autoSettings'
 import { terminalStatus } from './display'
-import { shortTitle } from './tasks'
+import { shortTitle } from './shortTitle'
 
 const KIND_HEALTH = { finished: 'review', needsInput: 'input', failed: 'fail' } as const
 

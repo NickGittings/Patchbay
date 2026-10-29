@@ -43,25 +43,39 @@ export function editedMentions(
  * Mirrors the service's `prompt_ready`: only a hook-confirmed end of turn. Quiet output can't
  * tell a ready prompt from a permission dialog, so sessions without status hooks never qualify.
  */
-export function promptReady(session: SessionState | undefined, submittedMs?: number) {
+export interface Submission {
+  atMs: number
+  /** A forced send must finish a new turn, not the turn it interrupted. */
+  previousTurnId?: string
+}
+export function promptReady(session: SessionState | undefined, submitted?: number | Submission) {
   if (!session?.running || session.disconnected || session.interrupted) return false
   const agent = session.status?.agent
   return (
     !!agent?.authoritative &&
     ['idle', 'review'].includes(agent.state) &&
-    (submittedMs === undefined || agent.sinceMs > submittedMs)
+    (submitted === undefined ||
+      (agent.sinceMs > (typeof submitted === 'number' ? submitted : submitted.atMs) &&
+        (typeof submitted === 'number' ||
+          !submitted.previousTurnId ||
+          (!!agent.turnId && agent.turnId !== submitted.previousTurnId))))
   )
 }
 /**
- * Mirrors the service's `prompt_forceable`: Send anyway types only into a hook-confirmed turn
- * that is working. A permission dialog may be on screen during `needsInput` or a Codex request's
- * automatic-review grace (`approvalPending`), where the pasted Enter would approve it, and an
- * unconfirmed state (after Esc, or without hooks) can't rule one out.
+ * Mirrors the service's `prompt_forceable`. Claude's asynchronous permission reports cannot
+ * rule out a dialog even while working. Only Codex's blocking hooks can qualify, outside an
+ * approval's automatic-review grace and with a turn identity to track the forced message.
  */
 export function forceable(session: SessionState | undefined) {
   if (!session?.running || session.disconnected || session.interrupted) return false
   const agent = session.status?.agent
-  return !!agent?.authoritative && agent.state === 'working' && !agent.approvalPending
+  return (
+    !!agent?.authoritative &&
+    agent.provider === 'codex' &&
+    !!agent.turnId &&
+    agent.state === 'working' &&
+    !agent.approvalPending
+  )
 }
 /** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
 export type HooksNotice = 'missing' | 'failed' | 'unsupported'
@@ -154,12 +168,20 @@ export interface SendPort {
   onSubmit?: (atMs: number | undefined) => void
 }
 const sending = new Set<string>()
+const deliveryListeners = new Set<() => void>()
+export const isSending = (sid: string) => sending.has(sid)
+export function followDeliveries(listener: () => void) {
+  deliveryListeners.add(listener)
+  return () => {
+    deliveryListeners.delete(listener)
+  }
+}
 /** One send per session, with scope and readiness checked around the claim. */
 export async function deliverPrompt(
   context: SendContext,
   text: string,
   port: SendPort,
-  submittedMs?: number,
+  submittedMs?: number | Submission,
   { force = false }: { force?: boolean } = {},
 ) {
   if (sending.has(context.recipient))
@@ -199,6 +221,10 @@ export async function deliverPrompt(
   } finally {
     if (claimed) await port.release().catch(() => {})
     sending.delete(context.recipient)
+    // Let the caller clear its sent draft before background queues attempt another delivery.
+    setTimeout(() => {
+      for (const listener of deliveryListeners) listener()
+    }, 0)
   }
 }
 
@@ -241,10 +267,10 @@ export async function waitForPrompt(
   }
 }
 
-const submitted = new Map<string, { generation: number; atMs: number }>()
+const submitted = new Map<string, Submission & { generation: number }>()
 export function lastSubmission(sid: string, generation: number | undefined) {
   const stamp = submitted.get(sid)
-  return stamp?.generation === generation ? stamp?.atMs : undefined
+  return stamp?.generation === generation ? stamp : undefined
 }
 
 /** Shared delivery for the composer and background queues, including chats no longer selected. */
@@ -270,6 +296,7 @@ export async function sendToSession({
   current?: () => SendContext | undefined
 }) {
   const captured = { projectId, task, recipient: sid, generation }
+  const previousSubmission = lastSubmission(sid, generation)
   await deliverPrompt(
     captured,
     text,
@@ -281,8 +308,20 @@ export async function sendToSession({
       claim: () => terminalAttach(sid, true),
       write: (message) => terminalPrompt(sid, generation, message, force),
       onSubmit: (atMs) => {
-        if (atMs === undefined) submitted.delete(sid)
-        else submitted.set(sid, { generation, atMs })
+        if (atMs === undefined) {
+          if (previousSubmission) submitted.set(sid, previousSubmission)
+          else submitted.delete(sid)
+        } else {
+          const session = useStore.getState().sessions[sid]
+          submitted.set(sid, {
+            generation,
+            atMs,
+            previousTurnId:
+              force && !promptReady(session, lastSubmission(sid, generation))
+                ? (session?.status?.agent?.turnId ?? undefined)
+                : undefined,
+          })
+        }
       },
       release: async () => {
         const { hasVisibleTerminal } = await import('./terminals')
@@ -297,7 +336,7 @@ export async function sendToSession({
     stage,
     sessionId: sid,
     generation,
-    atMs: lastSubmission(sid, generation),
+    atMs: lastSubmission(sid, generation)?.atMs,
     text,
     mentions,
   })

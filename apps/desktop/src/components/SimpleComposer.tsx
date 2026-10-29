@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
 import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
-import { appendDraft, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
   sendToSession,
@@ -19,7 +19,7 @@ import {
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
 import { sessionResume } from '../lib/ipc'
-import { cancelQueued, flushQueued } from '../lib/simpleQueue'
+import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled, usePresetProviders } from '../lib/agentHooks'
 
@@ -128,24 +128,27 @@ export default function SimpleComposer({
       return
     }
     setError('')
-    if (!force && status.action === 'queue' && recipient && state?.generation !== undefined) {
-      const queued = useSimpleUi.getState().worktrees[scopeKey]?.queued
-      if (queued && (queued.sessionId !== recipient.id || queued.generation !== state.generation)) {
-        setError('Cancel the queued message for the earlier agent before queueing another.')
-        return
-      }
-      patch({
-        queued: {
+    if (
+      recipient &&
+      state?.generation !== undefined &&
+      (status.action === 'queue' || useSimpleUi.getState().worktrees[scopeKey]?.queued)
+    ) {
+      try {
+        enqueuePrompt(scopeKey, {
           sessionId: recipient.id,
           generation: state.generation,
-          text: [queued?.text, text].filter(Boolean).join('\n\n'),
-          ...appendDraft(queued ?? { draft: '', mentions: [] }, { draft, mentions }),
+          text,
+          draft,
+          mentions,
           stage,
           atMs: Date.now(),
-        },
-        draft: '',
-        mentions: [],
-      })
+        })
+      } catch (error) {
+        setError(String(error))
+        return
+      }
+      // Keep the queued message first, including when Send anyway also submits this draft.
+      if (force || ready) await flushQueued(scopeKey, force)
       return
     }
     setPending(true)
@@ -316,7 +319,7 @@ export default function SimpleComposer({
         onKeyDown={(e) => {
           if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
             return
-          if (candidates.length && !e.shiftKey) {
+          if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
             e.preventDefault()
             mention(candidates[0].id)
           } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {

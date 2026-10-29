@@ -219,15 +219,21 @@ export interface SimpleSnapshot {
   createdMs?: number
 }
 
-/** A launch waits for its run, even when an older run still occupies the same session slot. */
-export function pendingLaunch(snapshot: SimpleSnapshot, records: readonly SessionRecord[]) {
+/** Reconciliation has this long to claim a launch before it falls back to the usual actions. */
+export const LAUNCH_RECORD_GRACE_MS = 30_000
+/** A launch waits briefly for its run, even when an older run still occupies the session slot. */
+export function pendingLaunch(
+  snapshot: SimpleSnapshot,
+  records: readonly SessionRecord[],
+  now = Date.now(),
+) {
   const launch = snapshot.simple?.log.findLast(
     (e) =>
       e.kind === 'action' &&
       ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
       e.sessionId,
   )
-  if (launch?.kind !== 'action') return undefined
+  if (launch?.kind !== 'action' || now - launch.atMs >= LAUNCH_RECORD_GRACE_MS) return undefined
   const record = records.find((r) => r.id === launch.sessionId)
   const generation = record && (snapshot.sessions[record.id] ?? record.snapshot)?.generation
   // A later run supersedes this launch. A launch with no confirmed generation names no run.

@@ -1,6 +1,8 @@
 import StoryBoard from './components/stories/StoryBoard'
-import { SimpleChangesContext } from './components/stories/simpleChanges'
-import type { ChangeRef } from './lib/changeNav'
+import {
+  SimpleChangesContext,
+  type SimpleChanges as Changes,
+} from './components/stories/simpleChanges'
 import { newestWrite } from './lib/activity'
 import { relatedSession } from './lib/simple'
 import { storyProgressPoll } from './lib/storyProgress'
@@ -92,7 +94,7 @@ function useRootSync() {
   }, [])
 }
 
-const NO_CHANGES: { files: ChangeRef[]; newest?: ChangeRef } = { files: [] }
+const NO_CHANGES: Changes = { files: [], bySession: new Map() }
 
 /**
  * Chat's Changes tab count and default file. Outside Chat it subscribes to nothing that changes,
@@ -116,12 +118,18 @@ function SimpleChanges({
     if (!nodes || !records || !sessions) return NO_CHANGES
     const components = nodes.map((n) => ({ id: n.id, path: n.data.path }))
     // Only a file the tab lists: a write since committed or reverted has no diff to show.
-    const newest = records
+    const writes = records
       .filter((r) => relatedSession(r, worktree))
-      .map((r) => newestWrite(r, sessions[r.id], components, worktree.path, files))
-      .filter((w) => !!w)
-      .sort((a, b) => b.atMs - a.atMs)[0]?.file
-    return { files, newest }
+      .flatMap((r) => {
+        const write = newestWrite(r, sessions[r.id], components, worktree.path, files)
+        return write ? [{ ...write, sessionId: r.id }] : []
+      })
+      .sort((a, b) => b.atMs - a.atMs)
+    return {
+      files,
+      newest: writes[0]?.file,
+      bySession: new Map(writes.map((w) => [w.sessionId, w.file])),
+    }
   }, [nodes, records, sessions, files, worktree])
   return <SimpleChangesContext value={value}>{children}</SimpleChangesContext>
 }
@@ -149,8 +157,9 @@ function NavigationView() {
     panel: 'App-pane-2',
     defaultSize: 35,
   })
-  // The tab count and diff share this reader, even while the chat is collapsed.
-  const reader = useSimpleData(simple)
+  // Read artifacts only while Chat or Changes is visible.
+  const reading = simple && (!chatPanel.collapsed || !!changes)
+  const reader = useSimpleData(reading)
   const storyBoard = useStore((s) => s.storyBoard)
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
@@ -172,16 +181,16 @@ function NavigationView() {
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
   const dockPanel = useCollapsed('App-pane-4', dock, activeSession)
   return (
-    <PersistedGroup
-      layoutId={simple ? 'App-simple' : 'App-1'}
-      group={group}
-      orientation="horizontal"
-      className="workspace"
-    >
-      <Panel id="App-pane-2" defaultSize="76">
-        <PersistedGroup layoutId="App-2" orientation="vertical">
-          <Panel id="App-pane-3" defaultSize="58" minSize="20">
-            <SimpleChanges simple={simple} reader={reader}>
+    <SimpleChanges simple={reading} reader={reader}>
+      <PersistedGroup
+        layoutId={simple ? 'App-simple' : 'App-1'}
+        group={group}
+        orientation="horizontal"
+        className="workspace"
+      >
+        <Panel id="App-pane-2" defaultSize="76">
+          <PersistedGroup layoutId="App-2" orientation="vertical">
+            <Panel id="App-pane-3" defaultSize="58" minSize="20">
               <div className="simple-canvas">
                 <div
                   className={`navigation-map ${storyBoard || (simple && changes) ? 'story-map-hidden' : ''}`}
@@ -200,23 +209,26 @@ function NavigationView() {
                   <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
                 )}
               </div>
-            </SimpleChanges>
-          </Panel>
-          <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
-          <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
-            <TerminalDock collapsed={dockPanel.collapsed} />
-          </Panel>
-        </PersistedGroup>
-      </Panel>
-      <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
-      <Panel id="App-simple-chat" defaultSize="35" minSize="20" {...chatPanel.props}>
-        {simple && !chatPanel.collapsed && <SimpleChat key={scopeKey} reader={reader} />}
-      </Panel>
-      <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
-      <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>
-        <Inspector />
-      </Panel>
-    </PersistedGroup>
+            </Panel>
+            <Separator
+              className={`separator horizontal ${dock ? '' : 'hidden'}`}
+              disabled={!dock}
+            />
+            <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
+              <TerminalDock collapsed={dockPanel.collapsed} />
+            </Panel>
+          </PersistedGroup>
+        </Panel>
+        <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
+        <Panel id="App-simple-chat" defaultSize="35" minSize="20" {...chatPanel.props}>
+          {simple && !chatPanel.collapsed && <SimpleChat key={scopeKey} reader={reader} />}
+        </Panel>
+        <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
+        <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>
+          <Inspector />
+        </Panel>
+      </PersistedGroup>
+    </SimpleChanges>
   )
 }
 

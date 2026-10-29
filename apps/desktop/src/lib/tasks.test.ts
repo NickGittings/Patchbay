@@ -1,3 +1,4 @@
+import { shortTitle } from './shortTitle'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import type { Task } from '../types'
@@ -27,7 +28,6 @@ const {
   seedNewTask,
   refreshTasks,
   removeTask,
-  shortTitle,
   titleFor,
 } = await import('./tasks')
 const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')

@@ -97,7 +97,10 @@
       return entry && state().sessions[entry.sessionId]?.status?.agent?.state === 'working' && entry
     })
     assert(firstPrompt.mentions.includes('app'), 'consecutive Enter lost mention scope')
-    input(document.querySelector('[aria-label="Message agent"]'), 'Queued fixture follow-up')
+    input(document.querySelector('[aria-label="Message agent"]'), 'Queued fixture follow-up @a')
+    await until('queue mention options', () =>
+      document.querySelector('.simple-composer [role="option"]'),
+    )
     await until('Queue primary action', () => button('Queue') && !button('Queue').disabled)
     let queuedShown = false
     const queueObserver = new MutationObserver(() => {
@@ -109,7 +112,7 @@
     })
     document
       .querySelector('[aria-label="Message agent"]')
-      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))
     await until('Queued row', () => queuedShown)
     queueObserver.disconnect()
     await until('queue delivered to fake agent', async () => {
@@ -118,12 +121,14 @@
         snapshot &&
         atob(snapshot.data)
           .replace(/\x1b\[(?:200|201)~/g, '')
-          .includes('simple-received:Queued fixture follow-up')
+          .includes('simple-received:Queued fixture follow-up @a')
       )
     })
     await until('queue cleared', () => !document.querySelector('.simple-queued'))
     assert(
-      state().simple.log.some((e) => e.kind === 'prompt' && e.text === 'Queued fixture follow-up'),
+      state().simple.log.some(
+        (e) => e.kind === 'prompt' && e.text === 'Queued fixture follow-up @a',
+      ),
       'queued prompt not logged',
     )
     await until(
@@ -143,6 +148,18 @@
       ),
     )
     assert(!document.querySelector('.simple-queued'), 'Send anyway queued instead of sending')
+    input(document.querySelector('[aria-label="Message agent"]'), 'Command shortcut follow-up @')
+    await until('command mention options', () =>
+      document.querySelector('.simple-composer [role="option"]'),
+    )
+    document
+      .querySelector('[aria-label="Message agent"]')
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }))
+    await until('Command+Enter sends through autocomplete', () =>
+      state().simple.log.some(
+        (e) => e.kind === 'prompt' && e.text === 'Command shortcut follow-up @',
+      ),
+    )
     await until('planner reply', () => chatText().includes('I planned the fixture feature'))
     await until('saved plan', () => chatText().includes('Simple fixture plan') && button('Build'))
     inChat()

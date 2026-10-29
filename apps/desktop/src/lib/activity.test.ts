@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import {
   activityFile,
-  latestWrite,
+  newestWrite,
   agentRole,
   componentActivity,
   fileActivity,
@@ -243,10 +243,10 @@ test('files under a .git folder are no component’s work', () => {
   })
 })
 
-test('latestWrite selects the newest write, ignores later reads, and needs hook activity', () => {
-  expect(latestWrite(record(), undefined, components, '/task')).toBeUndefined()
+test('newestWrite selects the newest write, ignores later reads, and needs hook activity', () => {
+  expect(newestWrite(record(), undefined, components, '/task')).toBeUndefined()
   expect(
-    latestWrite(
+    newestWrite(
       record(),
       {
         activity: [
@@ -257,22 +257,22 @@ test('latestWrite selects the newest write, ignores later reads, and needs hook 
       },
       components,
       '/task',
-    ),
+    )?.file,
   ).toEqual({ componentId: 'src', path: 'src/new.ts' })
 })
 
-test('latestWrite can skip writes the change list no longer shows', () => {
+test('newestWrite can skip writes the change list no longer shows', () => {
   const session = {
     activity: [
       { ...activity(1, 'src/listed.ts', 'Write'), atMs: 1 },
       { ...activity(2, 'src/committed.ts', 'Edit'), atMs: 2 },
     ],
   }
-  expect(latestWrite(record(), session, components, '/task')?.path).toBe('src/committed.ts')
+  expect(newestWrite(record(), session, components, '/task')?.file.path).toBe('src/committed.ts')
   expect(
-    latestWrite(record(), session, components, '/task', [
+    newestWrite(record(), session, components, '/task', [
       { componentId: 'src', path: 'src/listed.ts' },
-    ]),
+    ])?.file,
   ).toEqual({ componentId: 'src', path: 'src/listed.ts' })
-  expect(latestWrite(record(), session, components, '/task', [])).toBeUndefined()
+  expect(newestWrite(record(), session, components, '/task', [])).toBeUndefined()
 })

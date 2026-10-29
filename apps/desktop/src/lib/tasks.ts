@@ -1,4 +1,3 @@
-export { shortTitle } from './shortTitle'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {

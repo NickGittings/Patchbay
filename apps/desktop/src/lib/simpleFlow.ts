@@ -33,15 +33,9 @@ export interface FlowSnapshot extends SimpleSnapshot {
   outcome?: MergeOutcome
   base?: string
   conflicts?: string[]
-  /** The time to judge a launch's missing record against; without it one is always pending. */
+  /** The time to judge a launch's missing record against; defaults to the current time. */
   now?: number
 }
-/**
- * How long a logged launch whose run has no record yet still reads as starting. Records
- * reconcile within seconds of a launch; one missing past this was forgotten, and the chat
- * falls back to its usual prompts rather than staying stuck without actions.
- */
-export const LAUNCH_RECORD_GRACE_MS = 30_000
 export interface SimpleFlow {
   step: SimpleStep
   prompt?: StepPrompt
@@ -96,12 +90,8 @@ export function flow(
           text: `No issues. Merge into ${base}?`,
           actions: [button('checkMerge', 'Merge')],
         }
-  const launch = pendingLaunch(snapshot, model.records)
-  if (
-    !autoCurrent &&
-    launch &&
-    (snapshot.now === undefined || snapshot.now - launch.atMs < LAUNCH_RECORD_GRACE_MS)
-  )
+  const launch = pendingLaunch(snapshot, model.records, snapshot.now)
+  if (!autoCurrent && launch)
     return {
       step:
         launch.action === 'plan'

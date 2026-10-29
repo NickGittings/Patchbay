@@ -23,9 +23,9 @@ vi.mock('./simpleReplies', () => ({ persistReplies: vi.fn() }))
 
 import { useStore } from '../store'
 import { terminalPrompt } from './ipc'
-import { cancelQueued, flushQueued, followQueuedPrompts } from './simpleQueue'
+import { cancelQueued, enqueuePrompt, flushQueued, followQueuedPrompts } from './simpleQueue'
 import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
-import { transmittedText } from './simpleComposer'
+import { sendToSession, transmittedText } from './simpleComposer'
 import { logSimple } from './simpleActions'
 
 const key = simpleKey('p', 't')
@@ -36,7 +36,15 @@ const session = (state = 'working', generation = 1): SessionState =>
   ({
     running: true,
     generation,
-    status: { agent: { state, authoritative: true, sinceMs: Date.now() + 1000 } },
+    status: {
+      agent: {
+        state,
+        provider: 'codex',
+        turnId: 'turn',
+        authoritative: true,
+        sinceMs: Date.now() + 1000,
+      },
+    },
   }) as SessionState
 const update = (state: SessionState) => useStore.setState({ sessions: { [sid]: state } })
 const queue = () =>
@@ -99,7 +107,9 @@ test.each(['generation', 'stopped'] as const)(
       queued: undefined,
     })
     expect(useStore.getState().setMessage).toHaveBeenCalledWith(
-      'The agent restarted; your queued message was kept as a draft',
+      reason === 'generation'
+        ? 'The agent restarted; your queued message was kept as a draft'
+        : 'The agent exited; your queued message was kept as a draft',
     )
     expect(terminalPrompt).not.toHaveBeenCalled()
   },
@@ -186,4 +196,96 @@ test('a disconnected service waits and flushes when it reconnects', async () => 
   expect(terminalPrompt).not.toHaveBeenCalled()
   useStore.setState({ serviceConnected: true })
   await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(1))
+})
+
+test('a momentarily missing session keeps its queue and sends after reconciliation', async () => {
+  queue()
+  useStore.setState({ sessions: {} })
+  await flushQueued(key)
+  expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+  expect(useStore.getState().setMessage).not.toHaveBeenCalled()
+  update(session('idle'))
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up', false)
+})
+
+test('Send anyway appends the new draft after the message already queued', async () => {
+  queue()
+  enqueuePrompt(key, {
+    sessionId: sid,
+    generation: 1,
+    text: 'step 2',
+    draft: 'step 2',
+    mentions: [],
+    stage: 'build',
+    atMs: 2,
+  })
+  await flushQueued(key, true)
+  expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up\n\nstep 2', true)
+})
+
+test('a flush during composer delivery leaves its draft alone and follows delivery completion', async () => {
+  update(session('idle'))
+  let finish!: () => void
+  vi.mocked(terminalPrompt).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  useSimpleUi.getState().patch(key, { draft: 'sent draft' })
+  const delivery = sendToSession({
+    projectId: 'p',
+    task: 't',
+    sid,
+    generation: 1,
+    text: 'sent draft',
+    mentions: [],
+    stage: 'build',
+  })
+  await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledOnce())
+  stop = followQueuedPrompts()
+  queue()
+  update(session('review'))
+  await flushQueued(key)
+  expect(useSimpleUi.getState().worktrees[key].draft).toBe('sent draft')
+  expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+  finish()
+  await delivery
+  if (useSimpleUi.getState().worktrees[key].draft === 'sent draft')
+    useSimpleUi.getState().patch(key, { draft: '', mentions: [] })
+  await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
+  expect(useSimpleUi.getState().worktrees[key].draft).toBe('')
+})
+
+test('the interrupted turn Stop does not release a queue after a forced send', async () => {
+  const now = Date.now()
+  await sendToSession({
+    projectId: 'p',
+    task: 't',
+    sid,
+    generation: 1,
+    text: 'forced',
+    mentions: [],
+    stage: 'build',
+    force: true,
+  })
+  stop = followQueuedPrompts()
+  queue()
+  update(session('review'))
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledTimes(1)
+  const next = session('working')
+  next.status!.agent!.turnId = 'next'
+  next.status!.agent!.sinceMs = now + 2000
+  update(next)
+  expect(terminalPrompt).toHaveBeenCalledTimes(1)
+  update({
+    ...next,
+    status: {
+      ...next.status!,
+      agent: { ...next.status!.agent!, state: 'review', sinceMs: now + 3000 },
+    },
+  })
+  await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
 })

@@ -54,14 +54,15 @@ fn prompt_ready(status: &crate::status::SessionStatus) -> bool {
     })
 }
 
-/// Whether a forced prompt ("Send anyway") may be typed: only into a hook-confirmed turn
-/// that is working, never while an approval may be on screen (a Codex permission request
-/// still in its automatic-review grace, or any `needsInput`), since the pasted text and
-/// its Enter would answer the dialog. Agents without an authoritative status never qualify.
+/// Claude can open a permission dialog before its asynchronous hook reaches us. Its last
+/// working report therefore cannot authorize Enter. Codex's blocking permission hook can
+/// qualify, except while its automatic-review grace leaves an approval pending.
 fn prompt_forceable(status: &crate::status::SessionStatus) -> bool {
     status.agent.as_ref().is_some_and(|agent| {
         agent.authoritative
+            && agent.provider == Some(Adapter::Codex)
             && agent.state == crate::status::AgentState::Working
+            && agent.turn_id.is_some()
             && !agent.approval_pending
     })
 }
@@ -4652,15 +4653,21 @@ mod tests {
                 since_ms: 1,
                 message: None,
                 prompt: None,
-                provider: None,
+                provider: Some(Adapter::Codex),
                 conversation_id: None,
-                turn_id: None,
+                turn_id: Some("turn".into()),
                 authoritative,
                 approval_pending,
             }),
             ..SessionStatus::default()
         };
         assert!(prompt_forceable(&status(AgentState::Working, true, false)));
+        // Even a working report may lag behind a newly opened Claude permission dialog.
+        let mut claude = status(AgentState::Working, true, false);
+        claude.agent.as_mut().unwrap().provider = Some(Adapter::Claude);
+        assert!(!prompt_forceable(&claude));
+        claude.agent.as_mut().unwrap().provider = None;
+        assert!(!prompt_forceable(&claude));
         // A Codex permission request in its grace still reads as working.
         assert!(!prompt_forceable(&status(AgentState::Working, true, true)));
         assert!(!prompt_forceable(&status(

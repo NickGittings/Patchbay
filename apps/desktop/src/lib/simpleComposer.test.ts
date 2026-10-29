@@ -15,7 +15,7 @@ const ready = (): SessionState => ({
   generation: 1,
   running: true,
   status: {
-    agent: { state: 'idle', authoritative: true, provider: 'claude', sinceMs: 10 },
+    agent: { state: 'idle', authoritative: true, provider: 'codex', turnId: 'turn', sinceMs: 10 },
     lastOutputMs: 9,
     active: false,
   } as SessionState['status'],
@@ -338,8 +338,11 @@ const withAgent = (
   ...ready(),
   status: { ...ready().status!, agent: { ...ready().status!.agent!, ...agent } },
 })
-test('only a hook-confirmed working turn without a pending approval is forceable', () => {
+test('only a Codex hook-confirmed working turn without a pending approval is forceable', () => {
   expect(forceable(withAgent({ state: 'working' }))).toBe(true)
+  expect(forceable(withAgent({ state: 'working', provider: 'claude' }))).toBe(false)
+  expect(forceable(withAgent({ state: 'working', provider: null }))).toBe(false)
+  expect(forceable(withAgent({ state: 'working', turnId: null }))).toBe(false)
   // A Codex permission request in its grace, or any input wait, may be a dialog Enter approves.
   expect(forceable(withAgent({ state: 'working', approvalPending: true }))).toBe(false)
   expect(forceable(withAgent({ state: 'needsInput' }))).toBe(false)
@@ -383,4 +386,19 @@ test('force skips readiness but still rejects changed generations and failed cla
     'authority',
   )
   expect(p.write).toHaveBeenCalledTimes(1)
+})
+
+test('a forced submission waits for its new turn, even if the interrupted turn stops later', () => {
+  const submitted = { atMs: 100, previousTurnId: 'old' }
+  const stopped = withAgent({ state: 'review', sinceMs: 200, turnId: 'old' })
+  expect(promptReady(stopped, submitted)).toBe(false)
+  expect(promptReady(withAgent({ state: 'working', sinceMs: 300, turnId: 'new' }), submitted)).toBe(
+    false,
+  )
+  expect(promptReady(withAgent({ state: 'review', sinceMs: 400, turnId: 'new' }), submitted)).toBe(
+    true,
+  )
+  expect(promptReady(withAgent({ state: 'review', sinceMs: 400, turnId: null }), submitted)).toBe(
+    false,
+  )
 })

@@ -1,11 +1,37 @@
 import { useStore } from '../store'
-import { forceable, lastSubmission, promptReady, sendToSession } from './simpleComposer'
+import {
+  forceable,
+  followDeliveries,
+  isSending,
+  lastSubmission,
+  promptReady,
+  sendToSession,
+} from './simpleComposer'
 import { appendDraft, EMPTY_SIMPLE_UI, useSimpleUi, type QueuedPrompt } from './simpleUi'
 
 function restore(key: string, queued: QueuedPrompt, error?: string) {
   const ui = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
   useSimpleUi.getState().patch(key, appendDraft(ui, queued))
   if (error) useStore.getState().setMessage(error)
+}
+
+/** Append a draft after any earlier message before either normal or forced delivery. */
+export function enqueuePrompt(key: string, incoming: QueuedPrompt) {
+  const queued = useSimpleUi.getState().worktrees[key]?.queued
+  if (
+    queued &&
+    (queued.sessionId !== incoming.sessionId || queued.generation !== incoming.generation)
+  )
+    throw new Error('Cancel the queued message for the earlier agent before queueing another.')
+  useSimpleUi.getState().patch(key, {
+    queued: {
+      ...incoming,
+      text: [queued?.text, incoming.text].filter(Boolean).join('\n\n'),
+      ...appendDraft(queued ?? { draft: '', mentions: [] }, incoming),
+    },
+    draft: '',
+    mentions: [],
+  })
 }
 
 export function cancelQueued(key: string) {
@@ -21,9 +47,18 @@ export async function flushQueued(key: string, force = false) {
   if (!queued) return
   const state = useStore.getState()
   const session = state.sessions[queued.sessionId]
-  if (!session?.running || session.generation !== queued.generation) {
+  // Reconciliation can temporarily omit a session. Keep its place until it is known again.
+  // A concurrent send also owns the draft until it settles; leave the queue untouched.
+  if (!session || isSending(queued.sessionId)) return
+  if (!session.running || session.generation !== queued.generation) {
     useSimpleUi.getState().patch(key, { queued: undefined })
-    restore(key, queued, 'The agent restarted; your queued message was kept as a draft')
+    restore(
+      key,
+      queued,
+      session.generation !== queued.generation
+        ? 'The agent restarted; your queued message was kept as a draft'
+        : 'The agent exited; your queued message was kept as a draft',
+    )
     return
   }
   if (!state.serviceConnected || session.disconnected || session.interrupted) return
@@ -68,9 +103,11 @@ export function followQueuedPrompts() {
     )
       follow()
   })
+  const stopDeliveries = followDeliveries(follow)
   follow()
   return () => {
     stopSessions()
     stopQueues()
+    stopDeliveries()
   }
 }

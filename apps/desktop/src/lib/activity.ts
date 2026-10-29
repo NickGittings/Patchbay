@@ -124,17 +124,6 @@ export function newestWrite(
   }
   return undefined
 }
-/** The latest write reported by hooks (see `newestWrite`), without its time. */
-export function latestWrite(
-  record: SessionRecord,
-  session: Pick<SessionState, 'activity'> | undefined,
-  components: readonly Pick<Component, 'id' | 'path'>[],
-  worktree: string,
-  listed?: readonly { componentId: string; path: string }[],
-) {
-  return newestWrite(record, session, components, worktree, listed)?.file
-}
-
 /** Which role agent a session is, for the map's chips; `null` for scopes that don't work on files. */
 export type AgentRole = 'plan' | 'build' | 'fix' | 'review' | 'merge'
 export function agentRole(record: SessionRecord): AgentRole | null {

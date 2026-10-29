@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
-import { flow, LAUNCH_RECORD_GRACE_MS, type FlowSnapshot } from './simpleFlow'
+import { flow, type FlowSnapshot } from './simpleFlow'
+import { LAUNCH_RECORD_GRACE_MS, pendingLaunch } from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
@@ -18,6 +19,7 @@ const session = (state: string): SessionState =>
   }) as SessionState
 const snapshot = (scope?: string, state = 'review'): FlowSnapshot => ({
   worktree,
+  now: 40,
   records: scope ? [record(scope)] : [],
   sessions: scope ? { [scope]: session(state) } : {},
   simple: { startedMs: 1, log: [] },
@@ -341,4 +343,18 @@ test('an unconfirmed run cannot borrow the previous run in its slot', () => {
   expect(flow(s)).toMatchObject({ step: 'reviewing' })
   expect(flow(s).prompt).toBeUndefined()
   expect(flow({ ...s, now: 30 + LAUNCH_RECORD_GRACE_MS }).prompt).toBeDefined()
+})
+
+test('an expired unclaimed launch is already settled on the first Chat render', () => {
+  const s = snapshot('@task')
+  s.simple!.log.push({
+    id: 'old',
+    atMs: Date.now() - LAUNCH_RECORD_GRACE_MS - 1,
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    sessionId: 'missing',
+  })
+  expect(pendingLaunch(s, s.records)).toBeUndefined()
+  expect(flow({ ...s, now: undefined }).prompt).toBeDefined()
 })
