@@ -103,7 +103,7 @@ export default function SimpleComposer({
         .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
         .slice(0, 8)
     : []
-  // The service refuses the same: only a hook-confirmed working turn with no approval pending.
+  // The service applies the same provider, turn and approval checks.
   const canForce = running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
@@ -359,7 +359,7 @@ export default function SimpleComposer({
                 title={
                   canForce
                     ? 'Types into the agent now, even mid-turn'
-                    : 'Only an agent its hooks confirm working can be messaged mid-turn'
+                    : 'Only Codex with a confirmed working turn and no pending approval can be messaged mid-turn'
                 }
                 onClick={() => void send(true)}
               >

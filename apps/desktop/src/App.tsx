@@ -115,7 +115,8 @@ function SimpleChanges({
   const sessions = useStore((s) => (simple ? s.sessions : undefined))
   const { files, scope: worktree } = reader
   const value = useMemo(() => {
-    if (!nodes || !records || !sessions) return NO_CHANGES
+    // A hidden Chat keeps its last count without continuing to read or follow sessions.
+    if (!nodes || !records || !sessions) return files.length ? { ...NO_CHANGES, files } : NO_CHANGES
     const components = nodes.map((n) => ({ id: n.id, path: n.data.path }))
     // Only a file the tab lists: a write since committed or reverted has no diff to show.
     const writes = records

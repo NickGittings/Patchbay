@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, type FlowNode } from '../store'
 import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
 import { activeWorktree } from './tasks'
 import { relatedSession } from './simple'
@@ -17,6 +17,8 @@ import type {
 
 interface Artifacts {
   key: string
+  /** Retain the last file-list coordinates while the disk reader is paused. */
+  nodes: FlowNode[]
   plan: PlanText
   acceptedPlan: PlanText
   proposal: PlannerProposal | null
@@ -99,6 +101,7 @@ export function useSimpleData(visible: boolean) {
         if (!disposed) {
           setData({
             key,
+            nodes: state.nodes,
             plan,
             acceptedPlan: acceptedPlan ?? plan,
             proposal,
@@ -184,7 +187,8 @@ export function useSimpleData(visible: boolean) {
     [projectId, task, source?.path, source?.branch, worktree, root],
   )
   const review = current?.review
-  const groups = useMemo(() => changeGroups(nodes ?? [], review), [nodes, review])
+  const listedNodes = nodes ?? current?.nodes
+  const groups = useMemo(() => changeGroups(listedNodes ?? [], review), [listedNodes, review])
   const files = useMemo(() => changeRefs(groups), [groups])
   const findings = useReviewFindings(projectId, source?.branch ?? undefined, visible, revision)
   return {

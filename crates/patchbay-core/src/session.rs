@@ -22,8 +22,9 @@ pub use briefing::with_pending_briefing;
 
 // Snapshots and live events retain final assistant replies as well as tool activity.
 // Protocol 10 added activity and generation-bound prompt delivery; 12 names each live reply's
-// predecessor. Protocol 13 adds explicit forced prompt delivery.
-pub const PROTOCOL: u32 = 13;
+// predecessor. Protocol 13 added explicit forced prompt delivery; 14 requires the
+// provider-specific force checks so a newer client cannot reuse an unsafe older service.
+pub const PROTOCOL: u32 = 14;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
