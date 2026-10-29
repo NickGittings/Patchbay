@@ -367,75 +367,63 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
   )
 }
 
-/** Detection with an agent, for stacks the rules above can't see, and its proposal's review. */
-function StackAgent({ projectId }: { projectId: string }) {
+/**
+ * Detection with an agent, for stacks the rules above can't see. A pending proposal locks a new
+ * run until it is applied or discarded, though a running agent can always be shown.
+ */
+function StackAgent({ projectId, pending }: { projectId: string; pending?: PendingStack }) {
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
-  const pending = useStackProposals((s) => s.pending[projectId])
   const running = useStore((s) => !!s.sessions[stackAgentSession(projectId)]?.running)
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
   const presets = planTerminals(devices)
   const [choice, setChoice] = useState<string>()
   const preset =
     presets.find((t) => t.id === choice) ?? roleTerminal(devices, roles, 'plan') ?? presets[0]
-  if (pending) return <StackReview key={pending.id} pending={pending} projectId={projectId} />
+  const locked = !running && !!pending
   return (
-    <div className="panel-section-head stack-agent">
-      <span className="section-title">Suggestions</span>
-      {presets.length > 1 && (
-        <select
-          aria-label="Stack detection agent"
-          value={preset?.id ?? ''}
-          onChange={(e) => setChoice(e.target.value)}
+    <>
+      <div className="stack-agent">
+        <button
+          disabled={!preset || (!running && (locked || blocked))}
+          title={
+            running
+              ? 'Show the running stack detection agent'
+              : locked
+                ? 'Locked until the proposed stack is applied or discarded'
+                : blocked
+                  ? 'Resolve the map conflict or project recovery first'
+                  : 'An agent reads the project (README, scripts, docker-compose…) and proposes a stack for you to review'
+          }
+          onClick={() => preset && void startStackAgent(projectId, preset)}
         >
-          {presets.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      )}
-      <button
-        className="button-link"
-        disabled={!preset || (blocked && !running)}
-        title={
-          blocked && !running
-            ? 'Resolve the map conflict or project recovery first'
-            : 'An agent reads the project (README, scripts, docker-compose…) and proposes a stack for you to review'
-        }
-        onClick={() => preset && void startStackAgent(projectId, preset)}
-      >
-        {running ? 'Show stack detection' : 'Detect stack with an agent…'}
-      </button>
-    </div>
+          {running ? 'Show stack detection' : 'Detect stack with an agent…'}
+        </button>
+        {presets.length > 1 && (
+          <select
+            aria-label="Stack detection agent"
+            value={preset?.id ?? ''}
+            onChange={(e) => setChoice(e.target.value)}
+          >
+            {presets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {locked && <p className="hint">Apply or discard the proposed stack to detect again.</p>}
+    </>
   )
 }
 
-/**
- * Stacks (`Project.groups`): sets of components whose Development terminals start together,
- * dependencies first when ordered, each waiting until it is ready.
- */
-export default function StackPanel() {
-  const projectId = useStore((s) => s.project?.id)
-  const groups = useStore((s) => s.groups)
-  const nodes = useStore((s) => s.nodes)
-  const report = useStore((s) => s.graphActionReport)
+/** "＋ New stack" and its name form; a new stack starts with the selected components. */
+function NewStackForm() {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   return (
-    <section className="component-groups" aria-label="Stacks">
-      {!groups.length && (
-        <p className="panel-empty">
-          A stack starts its components’ Development terminals together, such as a database, an API
-          and a web app. Mark terminals as Development in the component inspector. New stacks start
-          with the selected components.
-        </p>
-      )}
-      <StackSuggestions />
-      {projectId && <StackAgent projectId={projectId} />}
-      {groups.map((group) => (
-        <GroupEditor key={group.id} group={group} />
-      ))}
+    <>
       <button onClick={() => setCreating(!creating)} aria-expanded={creating}>
         ＋ New stack
       </button>
@@ -445,10 +433,9 @@ export default function StackPanel() {
           onSubmit={(e) => {
             e.preventDefault()
             if (!name.trim()) return
-            const selected = nodes.filter(
-              (n) => n.selected || n.id === useStore.getState().selectedId,
-            )
-            useStore.getState().addGroup(
+            const s = useStore.getState()
+            const selected = s.nodes.filter((n) => n.selected || n.id === s.selectedId)
+            s.addGroup(
               name.trim(),
               selected.map((n) => n.id),
             )
@@ -467,6 +454,41 @@ export default function StackPanel() {
           </button>
         </form>
       )}
+      {creating && <p className="hint">New stacks start with the selected components.</p>}
+    </>
+  )
+}
+
+/**
+ * Stacks (`Project.groups`): sets of components whose Development terminals start together,
+ * dependencies first when ordered, each waiting until it is ready.
+ */
+export default function StackPanel() {
+  const projectId = useStore((s) => s.project?.id)
+  const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
+  const groups = useStore((s) => s.groups)
+  const nodes = useStore((s) => s.nodes)
+  const report = useStore((s) => s.graphActionReport)
+  return (
+    <section className="component-groups" aria-label="Stacks">
+      {!groups.length && (
+        <p className="panel-empty panel-empty-start">
+          A stack starts its components’ Development terminals together, such as a database, an API
+          and a web app. Mark terminals as Development in the component inspector.
+        </p>
+      )}
+      <div className="rail-actions panel-section">
+        <div className="section-title">Actions</div>
+        <NewStackForm />
+        {projectId && <StackAgent projectId={projectId} pending={pending} />}
+      </div>
+      {projectId && pending && (
+        <StackReview key={pending.id} pending={pending} projectId={projectId} />
+      )}
+      <StackSuggestions />
+      {groups.map((group) => (
+        <GroupEditor key={group.id} group={group} />
+      ))}
       {report && (
         <details className="action-results">
           <summary>

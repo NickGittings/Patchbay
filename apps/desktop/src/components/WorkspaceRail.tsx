@@ -261,7 +261,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                   <>
                     <ProjectSwitcher />
                     <MapSaveStatus />
-                    <div className="project-actions panel-section">
+                    <div className="rail-actions panel-section">
                       <div className="section-title">Actions</div>
                       {actions
                         .filter((a) => a.group === 'project' && a.id !== 'save')

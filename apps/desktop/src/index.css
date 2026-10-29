@@ -1998,6 +1998,9 @@ button.review-name:hover:not(:disabled) {
   min-width: 0;
   width: 100%;
 }
+.component-groups form button {
+  flex: none;
+}
 .component-group {
   border-top: 1px solid var(--border);
   padding: 8px 0;
@@ -2182,6 +2185,18 @@ button.review-name:hover:not(:disabled) {
 .worktree-tag.bad {
   color: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+}
+.worktree-tag.running {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--running);
+  border-color: color-mix(in srgb, var(--running) 50%, transparent);
+}
+.worktree-tag.running .status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--running);
 }
 .worktree-tag.attention {
   color: var(--input);
@@ -2936,23 +2951,58 @@ kbd {
   display: flex;
   flex-direction: column;
 }
-.project-actions {
+.rail-actions {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
   margin-top: 12px;
 }
-.project-actions button {
+/* Plain list actions; nested controls (forms, the detection row) keep normal button styling. */
+.rail-actions > button {
   text-align: left;
+  border: 0;
+  background: none;
 }
-.project-list .row {
-  margin-bottom: 6px;
+.rail-actions > button:hover:not(:disabled) {
+  background: var(--hover);
 }
-.project-list .grow {
+.rail-actions .section-title {
+  margin: 0 0 4px;
+}
+.rail-actions .hint {
+  margin: 0 8px 6px;
+  font-size: 11px;
+}
+.project-list .grow,
+.project-list .grow:hover:not(:disabled) {
+  min-width: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.project-name {
+  flex: 1;
   min-width: 0;
   text-overflow: ellipsis;
   overflow: hidden;
+  white-space: nowrap;
+}
+.project-list .worktree-tag {
+  flex: none;
+  white-space: nowrap;
+}
+.project-list .panel-row-actions {
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+.project-list .panel-row-actions:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 .workspace-rail > button {
   display: flex;
@@ -2996,6 +3046,10 @@ kbd {
   text-align: center;
   color: var(--muted);
 }
+.panel-empty.panel-empty-start {
+  padding: 4px 0;
+  text-align: left;
+}
 .panel-actions {
   margin-top: 8px;
 }
@@ -3006,6 +3060,9 @@ kbd {
   min-width: 0;
   padding: 6px;
   border-radius: 6px;
+}
+.project-list .panel-list-row {
+  border: 1px solid transparent;
 }
 .panel-list-row:hover {
   background: var(--panel);
@@ -3018,7 +3075,12 @@ kbd {
   opacity: 1;
 }
 .panel-list-row.active {
-  box-shadow: inset 2px 0 var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.panel-list-row.active .project-name {
+  font-weight: 600;
+  color: var(--accent-text);
 }
 .dialog-body {
   padding: 12px;
@@ -3069,7 +3131,24 @@ kbd {
 }
 
 .stack-card {
-  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 10px 12px;
+  margin: 0 0 10px;
+}
+.stack-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stack-agent button {
+  flex: 1;
+  min-width: 0;
+}
+.stack-agent select {
+  min-width: 0;
+  max-width: 40%;
 }
 .auto-values {
   display: grid;
@@ -3094,11 +3173,6 @@ kbd {
 .terminal-row > summary button {
   margin-left: 6px;
 }
-.project-actions button {
-  border: 0;
-  background: transparent;
-}
-
 .status-dot.health-ok {
   background: var(--ok);
 }
@@ -3220,6 +3294,14 @@ kbd {
 }
 .usage-controls input[type='number'] {
   width: 58px;
+}
+.usage-controls > .usage-check {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+.usage-check input {
+  width: auto;
+  flex: none;
 }
 .workspace-rail .usage-dot {
   background: #d4a448;
