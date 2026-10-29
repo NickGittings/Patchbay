@@ -1,5 +1,6 @@
+import { CHAT_LAYOUT, NAVIGATION_LAYOUT } from '../lib/panelLayout'
 import { simplePanelLayout, withoutHierarchy } from '../lib/simple'
-import { useEffect, useMemo, type RefObject } from 'react'
+import { useLayoutEffect, useMemo, type RefObject } from 'react'
 import {
   Group,
   useGroupRef,
@@ -27,9 +28,9 @@ export default function PersistedGroup({
   const original = panels[layoutId]
   const saved = useMemo(
     () =>
-      layoutId === 'App-1'
+      layoutId === NAVIGATION_LAYOUT
         ? withoutHierarchy(simplePanelLayout(original))
-        : layoutId === 'App-simple'
+        : layoutId === CHAT_LAYOUT
           ? withoutHierarchy(original)
           : original,
     [layoutId, original],
@@ -38,8 +39,9 @@ export default function PersistedGroup({
   const own = useGroupRef()
   const group = groupProp ?? own
   // Another task or project brings its own layout. Apply it in place: remounting the group would
-  // remount the canvas and reset the dock and inspector.
-  useEffect(() => {
+  // remount the canvas and reset the dock and inspector. Restore before the parent handles a
+  // reveal, so a saved hidden layout cannot overwrite the newly opened live panel.
+  useLayoutEffect(() => {
     const handle = group.current
     if (!handle || !valid || !saved) return
     const current = handle.getLayout()

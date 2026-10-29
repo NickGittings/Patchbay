@@ -28,9 +28,13 @@
 }
 .simple-chat > header {
   display: flex;
+  align-items: center;
   gap: 12px;
   padding: 12px;
   border-bottom: 1px solid var(--border);
+}
+.simple-hide-chat {
+  margin-left: auto;
 }
 .simple-thread {
   overflow: auto;

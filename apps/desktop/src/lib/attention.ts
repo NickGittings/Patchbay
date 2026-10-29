@@ -319,6 +319,7 @@ export function revealTerminal(
         relatedSession(record, { projectId: s.project.id, task, path, branch: worktree?.branch })
       ) {
         if (task !== s.activeTask) s.setActiveTask(task, true)
+        s.revealChat({ projectId: s.project.id, task })
         s.setActiveSession(item.sid)
         // A planner launched outside Chat has no conversation block; its terminal is still
         // accessible in the chat drawer without changing the conversation's ownership.

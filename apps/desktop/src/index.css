@@ -410,9 +410,12 @@ input[type='radio'] {
 .separator[data-separator='active'] {
   background: var(--accent);
 }
-/* Beside a collapsed panel (Navigation's Inspector and dock). */
+/* Keep hidden handles at their panel boundary: resize ordering uses their DOM offsets. */
 .separator.hidden {
-  display: none;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .view-tabs {

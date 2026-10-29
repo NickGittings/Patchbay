@@ -320,3 +320,48 @@ test('usage thresholds persist without projects and never dirty the map', () => 
   useStore.getState().closeProject('p')
   expect(workspaceDocument().settings?.usage).toEqual(usage)
 })
+
+test.each(['navigation', 'plan', 'implementation', 'review'] as const)(
+  'entering Chat from %s requests a reveal without rewriting saved layouts',
+  (view) => {
+    const s = useStore.getState()
+    s.setSimpleMode(false)
+    s.setView(view)
+    useStore.setState({
+      panels: {
+        'App-simple': { 'App-pane-2': 76, 'App-simple-chat': 0, 'App-pane-5': 24 },
+        'App-simple-open': { 'App-simple-chat': 42 },
+        'App-1': { 'App-pane-2': 76, 'App-simple-chat': 0, 'App-pane-5': 24 },
+      },
+    })
+    const panels = useStore.getState().panels
+    s.setSimpleMode(true)
+    expect(useStore.getState().panels).toBe(panels)
+    expect(useStore.getState()).toMatchObject({
+      simpleMode: true,
+      chatReveal: { projectId: 'p', task: null },
+      view,
+      panels: {
+        'App-simple': { 'App-pane-2': 76, 'App-simple-chat': 0, 'App-pane-5': 24 },
+        'App-1': { 'App-pane-2': 76, 'App-simple-chat': 0, 'App-pane-5': 24 },
+      },
+    })
+  },
+)
+
+test('setting Chat on again never requests another reveal', () => {
+  const s = useStore.getState()
+  s.setSimpleMode(true)
+  s.clearChatReveal()
+  s.setSimpleMode(true)
+  expect(useStore.getState().chatReveal).toBeNull()
+})
+
+test('repeated View requests each supply a fresh reveal token', () => {
+  const s = useStore.getState()
+  s.revealChat({ projectId: 'p', task: null })
+  const first = useStore.getState().chatReveal
+  s.revealChat({ projectId: 'p', task: null })
+  expect(useStore.getState().chatReveal).toEqual({ projectId: 'p', task: null })
+  expect(useStore.getState().chatReveal).not.toBe(first)
+})

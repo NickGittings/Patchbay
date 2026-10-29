@@ -37,6 +37,9 @@ const SCRIPTS = {
     ),
     run: ['scripts/hooks-home.mjs'],
   },
+  'chat-controls': smoke('chat-controls.js', {
+    PATCHBAY_SMOKE_ROOT_2: defaultFixture,
+  }),
   popout: smoke('popout.js'),
   bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
   autosave: smoke(

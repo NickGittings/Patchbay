@@ -51,7 +51,13 @@ import TerminalPane from './TerminalPane'
 import './simple.css'
 
 const pendingActions = new Set<string>()
-export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSimpleData> }) {
+export default function SimpleChat({
+  reader,
+  onHide,
+}: {
+  reader: ReturnType<typeof useSimpleData>
+  onHide: () => void
+}) {
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -345,6 +351,14 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
         <button onClick={() => useStore.getState().showAutoPanel()}>Auto</button>
+        <button
+          className="inspector-close simple-hide-chat"
+          aria-label="Hide chat"
+          title="Hide chat"
+          onClick={onHide}
+        >
+          ×
+        </button>
       </header>
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
