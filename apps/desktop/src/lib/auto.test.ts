@@ -313,10 +313,10 @@ function load() {
 function setRun(patch: Partial<AutoRun> = {}) {
   useStore.getState().patchTask('p', 't', { auto: run(patch) })
 }
-async function withFollower(check: (dispose: () => void) => Promise<void>) {
+async function withFollower(check: () => Promise<void>) {
   const dispose = followAuto()
   try {
-    await check(dispose)
+    await check()
   } finally {
     dispose()
   }
@@ -1091,9 +1091,7 @@ test.each(['start', 'resume'] as const)(
 test('skipping an adopted agent and stopping a manually relaunched generation leave it running', async () => {
   load()
   manualAgent()
-  useStore
-    .getState()
-    .patchTask('p', 't', { auto: run({ status: 'paused', sessionId: 's', sessionOwned: false }) })
+  setRun({ status: 'paused', sessionId: 's', sessionOwned: false })
   await skipStage('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   setRun({ sessionId: 's', sessionOwned: true, sessionStartedMs: 900 })
@@ -1262,9 +1260,7 @@ test.each(['running', 'paused', 'waitingOnYou'] as const)(
     useStore
       .getState()
       .patchTask('p', 'restored', { auto: run({ stage: 'plan', sessionId: 's', status }) })
-    useStore
-      .getState()
-      .patchTask('p', 't', { auto: run({ runId: 'second', stage: 'plan', status: 'paused' }) })
+    setRun({ runId: 'second', stage: 'plan', status: 'paused' })
     useStore.setState({ sessionRecords: [plannerRecord()] })
     agent('working', 1000)
     await resumeAuto('p', 't')
@@ -2787,17 +2783,22 @@ const reviewer = (lane: string | null, finished: boolean, error: string | null =
   verdict: null,
   error,
 })
-const pausedRound = (laneStartedMs?: number) =>
-  run({
-    status: 'paused',
-    effort: 'light',
-    sessionId: 's',
-    sessionOwned: true,
-    sessionStartedMs: 1000,
-    turnSince: 1000,
-    launchAtMs: 1000,
-    laneSessions: [{ sessionId: 'lane', startedMs: laneStartedMs ?? 1000 }],
-  })
+const pausedRound = (laneStartedMs?: number): Partial<AutoRun> => ({
+  status: 'paused',
+  effort: 'light',
+  sessionId: 's',
+  sessionOwned: true,
+  sessionStartedMs: 1000,
+  turnSince: 1000,
+  launchAtMs: 1000,
+  laneSessions: [{ sessionId: 'lane', startedMs: laneStartedMs ?? 1000 }],
+})
+const roundFindings = (claude: boolean, codex: boolean): ReviewFindings => ({
+  ...findings(),
+  reviewedHead: claude && codex ? 'abc' : null,
+  verdict: claude && codex ? findings().verdict : null,
+  reviewers: [reviewer('claude', claude), reviewer('codex', codex)],
+})
 
 test.each(['stopped', 'crashed', 'forgotten'] as const)(
   'Resume reviews again when a reviewer %s before writing, stopping the round it still owns',
@@ -2809,12 +2810,7 @@ test.each(['stopped', 'crashed', 'forgotten'] as const)(
     loadReviewRound({
       sessions,
       auto: pausedRound(),
-      findings: {
-        ...findings(),
-        reviewedHead: null,
-        verdict: null,
-        reviewers: [reviewer('claude', false), reviewer('codex', true)],
-      },
+      findings: roundFindings(false, true),
     })
     await resumeAuto('p', 't')
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -2833,12 +2829,7 @@ test('Resume keeps tracking live reviewers when one that exited had already writ
   loadReviewRound({
     sessions: { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') },
     auto: pausedRound(),
-    findings: {
-      ...findings(),
-      reviewedHead: null,
-      verdict: null,
-      reviewers: [reviewer('claude', false), reviewer('codex', true)],
-    },
+    findings: roundFindings(false, true),
   })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -2998,12 +2989,7 @@ test('a lane that takes the lead without a start time stays owned through its la
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', requestId: 'req-lane', lane: 'claude' }],
     },
-    findings: {
-      ...findings(),
-      reviewedHead: null,
-      verdict: null,
-      reviewers: [reviewer('claude', false), reviewer('codex', true)],
-    },
+    findings: roundFindings(false, true),
   })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')).toMatchObject({
@@ -3029,12 +3015,7 @@ test('a reviewer forgotten after writing its findings does not break the round o
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
     },
-    findings: {
-      ...findings(),
-      reviewedHead: null,
-      verdict: null,
-      reviewers: [reviewer('claude', false), reviewer('codex', true)],
-    },
+    findings: roundFindings(false, true),
   })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -3163,7 +3144,7 @@ test('a review started by someone else during the run pauses at completion inste
 test('Resume waits for the session service and never forgets a known start time', async () => {
   load()
   useStore.setState({ serviceConnected: false, sessions: {} })
-  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
+  setRun(pausedRound())
   await expect(resumeAuto('p', 't')).rejects.toThrow('Wait for the session service')
   // Connected, but this window hasn't hydrated the sessions yet: records alone vouch for them.
   const record = (id: string) => reviewRecord(id, null, null as unknown as SessionState)
@@ -3193,28 +3174,21 @@ test.each([
   })
 })
 
-const roundFindings = (claude: boolean, codex: boolean): ReviewFindings => ({
-  ...findings(),
-  reviewedHead: claude && codex ? 'abc' : null,
-  verdict: claude && codex ? findings().verdict : null,
-  reviewers: [reviewer('claude', claude), reviewer('codex', codex)],
+const inputWaitRound = (): Partial<AutoRun> => ({
+  status: 'waitingOnYou',
+  waitingFor: 'agentInput',
+  inputSessionId: 's',
+  effort: 'light',
+  sessionId: 's',
+  sessionOwned: true,
+  sessionStartedMs: 1000,
+  sessionLane: 'claude',
+  reviewRound: 'round',
+  turnSince: 1000,
+  launchAtMs: 1000,
+  observedWorking: true,
+  laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'codex' }],
 })
-const inputWaitRound = () =>
-  run({
-    status: 'waitingOnYou',
-    waitingFor: 'agentInput',
-    inputSessionId: 's',
-    effort: 'light',
-    sessionId: 's',
-    sessionOwned: true,
-    sessionStartedMs: 1000,
-    sessionLane: 'claude',
-    reviewRound: 'round',
-    turnSince: 1000,
-    launchAtMs: 1000,
-    observedWorking: true,
-    laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'codex' }],
-  })
 
 test('a reviewer that exits after writing during an input wait is settled, and the round completes', async () => {
   vi.useFakeTimers()
@@ -3224,7 +3198,7 @@ test('a reviewer that exits after writing during an input wait is settled, and t
   const exited = { ...reviewSession('working', 1100), running: false }
   useStore.setState({ sessions: { s: reviewSession('needsInput', 1200), lane: exited } })
   vi.mocked(ipc.reviewRead).mockResolvedValue(roundFindings(false, true))
-  useStore.getState().patchTask('p', 't', { auto: inputWaitRound() })
+  setRun(inputWaitRound())
   await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
@@ -3252,13 +3226,11 @@ test('Pause during the findings check of a failed reviewer is kept', async () =>
   useStore.setState({ sessions: { s: reviewSession('review', 1300), lane: exited } })
   let answer!: (findings: ReviewFindings) => void
   vi.mocked(ipc.reviewRead).mockReturnValue(new Promise((resolve) => (answer = resolve)))
-  useStore.getState().patchTask('p', 't', {
-    auto: {
-      ...inputWaitRound(),
-      status: 'running',
-      waitingFor: undefined,
-      inputSessionId: undefined,
-    },
+  setRun({
+    ...inputWaitRound(),
+    status: 'running',
+    waitingFor: undefined,
+    inputSessionId: undefined,
   })
   await withFollower(async () => {
     await flush()
@@ -3503,7 +3475,8 @@ test('foreground runs pause as inactive and a user Pause replaces that reason', 
   load()
   setRun()
   useStore.getState().setActiveTask(null, true)
-  await withFollower(async (dispose) => {
+  const dispose = followAuto()
+  try {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
@@ -3516,7 +3489,9 @@ test('foreground runs pause as inactive and a user Pause replaces that reason', 
     dispose()
     await resumeAuto('p', 't')
     expect(autoRun('p', 't')).toMatchObject({ pauseKind: undefined, pausedMs: undefined })
-  })
+  } finally {
+    dispose()
+  }
 })
 
 test('service disconnection waits without pausing and reconnect continues driving', async () => {
