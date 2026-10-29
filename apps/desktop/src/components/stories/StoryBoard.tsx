@@ -1,4 +1,4 @@
-import { useContext, useState } from 'react'
+import { useContext, useMemo, useState } from 'react'
 import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
 import { SimpleChangesContext } from './simpleChanges'
 import type { ChangeRef } from '../../lib/changeNav'
@@ -6,7 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
-import { derivedStatus, progressLabel, rollup, tree, type StoryProgress } from '../../lib/stories'
+import { progressLabel, storyStatuses, tree } from '../../lib/stories'
 import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
@@ -93,16 +93,17 @@ export default function StoryBoard() {
           .filter((f) => !selectedFeature || f.item.id === selectedFeature)
           .flatMap((f) => f.stories)
           .concat(!selectedFeature && !selectedEpic ? hierarchy.unassigned : [])
-  const runs: Record<string, AutoRun | null> = Object.fromEntries(
-    Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
+  const runs = useMemo(() => {
+    const runs: Record<string, AutoRun | null> = Object.fromEntries(
+      Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
+    )
+    if (activeTask) runs[activeTask] = auto
+    return runs
+  }, [taskWorkspaces, activeTask, auto])
+  const statuses = useMemo(
+    () => storyStatuses(stories, tasks, runs, projectId ?? '', sessionRecords),
+    [stories, tasks, runs, projectId, sessionRecords],
   )
-  if (activeTask) runs[activeTask] = auto
-  const status = (item: Story): StoryProgress => {
-    const own = derivedStatus(item, tasks, runs, projectId ?? '', sessionRecords)
-    return item.status === 'done' || item.kind === 'story'
-      ? own
-      : rollup(own, stories.filter((s) => s.parent === item.id).map(status))
-  }
   const add = (kind: StoryKind) => {
     setSelected(null)
     setDraft({
@@ -146,7 +147,7 @@ export default function StoryBoard() {
       <div className="story-cards">
         {items.map((item) => {
           const worktree = tasks.find((t) => t.id === item.task)
-          const value = status(item)
+          const value = statuses.get(item.id)!.value
           // The worktree's Auto run: this item's own, or whatever still runs there.
           const run = worktree && runs[worktree.id]
           const stage = run && (run.runId === item.autoRunId || unfinished(run.status)) && run
@@ -234,8 +235,7 @@ export default function StoryBoard() {
             key={`${projectId}/${item?.id ?? `new-${draft?.kind}-${draft?.parent}`}`}
             projectId={projectId}
             item={item}
-            progress={item ? status(item) : undefined}
-            worktree={tasks.find((t) => t.id === item?.task)}
+            progress={item ? statuses.get(item.id) : undefined}
             draft={draft ?? undefined}
             onClose={() => {
               setSelected(null)

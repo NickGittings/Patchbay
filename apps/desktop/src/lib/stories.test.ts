@@ -12,7 +12,8 @@ vi.mock('./ipc', () => ({
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 const {
   tree,
-  derivedStatus,
+  storyStatuses,
+  reopenStoryPatch,
   progressLabel,
   PROGRESS,
   rollup,
@@ -45,6 +46,13 @@ const story = (
   status: 'backlog',
   createdMs: 1,
 })
+const statusOf = (
+  item: Story,
+  tasks: Task[],
+  runs: Parameters<typeof storyStatuses>[2],
+  projectId: string,
+  records: Parameters<typeof storyStatuses>[4] = [],
+) => storyStatuses([item], tasks, runs, projectId, records).get(item.id)!.value
 const task: Task = {
   id: 'task',
   title: 'Task',
@@ -97,15 +105,15 @@ test('tree orders each hierarchy level and keeps orphan stories under Unassigned
 })
 test('status ignores old Auto runs on reused tasks and preserves saved completion after cleanup', () => {
   const item = { ...story('s'), task: 'task' }
-  expect(derivedStatus(story('s'), [], {}, 'p')).toBe('backlog')
-  expect(derivedStatus({ ...item, status: 'planned' }, [], {}, 'p')).toBe('planned')
-  expect(derivedStatus(item, [task], {}, 'p')).toBe('building')
-  expect(derivedStatus(item, [{ ...task, missing: true }], {}, 'p')).toBe('backlog')
+  expect(statusOf(story('s'), [], {}, 'p')).toBe('backlog')
+  expect(statusOf({ ...item, status: 'planned' }, [], {}, 'p')).toBe('planned')
+  expect(statusOf(item, [task], {}, 'p')).toBe('building')
+  expect(statusOf(item, [{ ...task, missing: true }], {}, 'p')).toBe('backlog')
   const done = { task: { runId: 'old', status: 'done' as const } }
-  expect(derivedStatus(item, [task], done, 'p')).toBe('building')
-  expect(derivedStatus({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('building')
-  expect(derivedStatus({ ...item, autoRunId: 'old' }, [task], done, 'p')).toBe('done')
-  expect(derivedStatus({ ...item, status: 'done' }, [], {}, 'p')).toBe('done')
+  expect(statusOf(item, [task], done, 'p')).toBe('building')
+  expect(statusOf({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('building')
+  expect(statusOf({ ...item, autoRunId: 'old' }, [task], done, 'p')).toBe('done')
+  expect(statusOf({ ...item, status: 'done' }, [], {}, 'p')).toBe('done')
 })
 test('progress labels match card wording for every stage', () => {
   expect(PROGRESS.map(progressLabel)).toEqual([
@@ -116,6 +124,82 @@ test('progress labels match card wording for every stage', () => {
     'merge',
     'done',
   ])
+})
+test('parents follow children despite their own worktree or Auto, except explicit Done', () => {
+  const epic = story('e', 'epic')
+  const feature = { ...story('f', 'feature', 'e'), task: task.id, autoRunId: 'run' }
+  for (const status of ['backlog', 'planned', 'building', 'done'] as const) {
+    const child = { ...story('s', 'story', 'f'), status }
+    for (const runs of [{}, { task: { runId: 'run', status: 'done' as const } }]) {
+      const resolved = storyStatuses([epic, feature, child], [task], runs, 'p')
+      expect(resolved.size).toBe(3)
+      expect(resolved.get('f')).toEqual({ value: status, source: 'children' })
+      expect(resolved.get('e')).toEqual({ value: status, source: 'children' })
+      expect(
+        storyStatuses([epic, { ...feature, status: 'done' }, child], [task], runs, 'p').get('f'),
+      ).toEqual({ value: 'done', source: 'saved' })
+    }
+  }
+  expect(storyStatuses([{ ...feature, parent: null }], [task], {}, 'p').get('f')).toEqual({
+    value: 'building',
+    source: 'worktree',
+    worktree: task,
+  })
+  expect(
+    storyStatuses([{ ...story('empty', 'epic'), status: 'building' }], [], {}, 'p').get('empty'),
+  ).toEqual({ value: 'building', source: 'saved' })
+})
+test('saved Building agrees with the editor, including missing worktrees and Reopen', () => {
+  const item = { ...story('s'), task: task.id, status: 'building' as const }
+  expect(statusOf(item, [], {}, 'p')).toBe('building')
+  expect(statusOf(item, [{ ...task, missing: true }], {}, 'p')).toBe('building')
+})
+test('Reopen requests an atomic backend reset and refresh skips the released Auto identity', async () => {
+  const completed = {
+    ...story('s'),
+    task: 'task',
+    autoRunId: 'run',
+    status: 'done' as const,
+    previousStatus: 'planned' as const,
+  }
+  useStore.setState({
+    stories: [completed],
+    activeTask: 'task',
+    auto: run({ status: 'done', runId: 'run' }),
+  })
+  const saved = { ...completed, status: 'planned' as const, autoRunId: null, taskHead: 'new' }
+  vi.mocked(ipc.storyUpdate).mockResolvedValueOnce(saved)
+  const reopened = await updateStory('p', completed.id, reopenStoryPatch(completed))
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', { reopen: true, autoRunId: '' })
+  vi.mocked(ipc.storyList).mockResolvedValueOnce([reopened])
+  await refreshStories('p')
+  expect(ipc.storyCompleteAuto).not.toHaveBeenCalled()
+  expect(statusOf(useStore.getState().stories[0], [], { task: run({ status: 'done' }) }, 'p')).toBe(
+    'planned',
+  )
+})
+test('Reopen preserves the matching unfinished Auto run, including in a background worktree', async () => {
+  const completed = { ...story('s'), task: 'task', autoRunId: 'run', status: 'done' as const }
+  for (const status of ['running', 'paused', 'waitingOnYou'] as const) {
+    expect(reopenStoryPatch(completed, run({ status }))).toEqual({ reopen: true })
+  }
+  expect(reopenStoryPatch(completed, run({ status: 'done' }))).toEqual({
+    reopen: true,
+    autoRunId: '',
+  })
+  expect(reopenStoryPatch(completed, run({ runId: 'other' }))).toEqual({
+    reopen: true,
+    autoRunId: '',
+  })
+  const reopened = { ...completed, status: 'planned' as const }
+  useStore.setState({ stories: [completed] })
+  useStore.getState().patchTask('p', 'task', { auto: run() })
+  vi.mocked(ipc.storyUpdate).mockResolvedValueOnce(reopened)
+  await updateStory('p', completed.id, reopenStoryPatch(completed, run()))
+  vi.mocked(ipc.storyCompleteAuto).mockResolvedValueOnce([{ ...reopened, status: 'done' }])
+  await completeAutoStories('p', 'task', 'run')
+  expect(ipc.storyCompleteAuto).toHaveBeenCalledWith('p', 'task', 'run')
+  expect(useStore.getState().stories[0].status).toBe('done')
 })
 test('rollup picks the least advanced child and retains a childless parent', () => {
   expect(rollup('planned', [])).toBe('planned')
@@ -288,7 +372,7 @@ test('completion persists only the linked Auto run and stays Done when its workt
   vi.mocked(ipc.storyCompleteAuto).mockResolvedValueOnce([{ ...linked, status: 'done' }])
   await completeAutoStories('p', 'task', 'new')
   expect(ipc.storyCompleteAuto).toHaveBeenCalledWith('p', 'task', 'new')
-  expect(derivedStatus(useStore.getState().stories[0], [], {}, 'p')).toBe('done')
+  expect(statusOf(useStore.getState().stories[0], [], {}, 'p')).toBe('done')
 })
 
 test('latest review, merge or root record determines a live story stage', async () => {
@@ -310,19 +394,19 @@ test('latest review, merge or root record determines a live story stage', async 
     ...record('@review', 20),
     metadata: { ...record('@review', 20).metadata, projectId: 'other' },
   }
-  expect(
-    derivedStatus({ ...story('s'), task: task.id }, [t], {}, 'p', [unrelated, ...records]),
-  ).toBe('merging')
-  expect(derivedStatus({ ...story('s'), task: task.id }, [t], {}, 'p', records)).toBe('merging')
+  expect(statusOf({ ...story('s'), task: task.id }, [t], {}, 'p', [unrelated, ...records])).toBe(
+    'merging',
+  )
+  expect(statusOf({ ...story('s'), task: task.id }, [t], {}, 'p', records)).toBe('merging')
   for (const [stage, expected] of [
     ['review', 'reviewing'],
     ['mergeGate', 'merging'],
     ['merge', 'merging'],
     ['fix', 'building'],
   ] as const)
-    expect(
-      derivedStatus({ ...story('s'), task: task.id }, [t], { task: run({ stage }) }, 'p'),
-    ).toBe(expected)
+    expect(statusOf({ ...story('s'), task: task.id }, [t], { task: run({ stage }) }, 'p')).toBe(
+      expected,
+    )
   expect(rollup('done', ['reviewing', 'merging', 'done'])).toBe('reviewing')
 })
 test('worktree creation for a story scopes descendants and links in its follow-up', async () => {

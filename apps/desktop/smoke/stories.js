@@ -138,6 +138,96 @@
       click(await until('Confirm story deletion', () => button('.story-delete', 'Delete')))
       await until('story removed', () => !state().stories.some((s) => s.id === item.id))
     }
+    const saveSelected = async () => {
+      const before = state().stories
+      click(button('.story-editor', 'Save'))
+      await until(
+        'story save complete',
+        () => state().stories !== before && !button('.story-editor', 'Save')?.disabled,
+      )
+    }
+    const { storyCreate, storyRemove, storyCompleteAuto, storyList } =
+      await import('/src/lib/ipc.ts')
+    const { updateStory, refreshStories, completeAutoStories } = await import('/src/lib/stories.ts')
+    const savedStory = () => state().stories.find((s) => s.id === story.id)
+    // A saved intermediate status agrees on the card and in the editor.
+    edit(field('Status'), 'building')
+    click(button('.story-editor', 'Save'))
+    await until(
+      'saved building remains editable',
+      () =>
+        savedStory().status === 'building' &&
+        field('Status')?.value === 'building' &&
+        query('.story-card.selected .story-status.building'),
+    )
+    edit(field('Status'), 'done')
+    await saveSelected()
+    click(await until('Reopen saved Building', () => button('.story-editor', 'Reopen')))
+    await until(
+      'Reopen restores Building consistently',
+      () =>
+        savedStory().status === 'building' &&
+        field('Status')?.value === 'building' &&
+        query('.story-card.selected .story-status.building'),
+    )
+    edit(field('Status'), 'backlog')
+    click(button('.story-editor', 'Save'))
+    await until('saved building cleared', () => savedStory().status === 'backlog')
+    edit(field('Status'), 'planned')
+    click(button('.story-editor', 'Save'))
+    await until('planned saved', () => savedStory().status === 'planned')
+    edit(field('Status'), 'done')
+    click(button('.story-editor', 'Save'))
+    await until('manual completion saved', () => savedStory().status === 'done')
+    click(query('[aria-label="Close story editor"]'))
+    chooseCard(story.title)
+    click(await until('Reopen after reopening editor', () => button('.story-editor', 'Reopen')))
+    await until(
+      'Reopen restores planned',
+      () => savedStory().status === 'planned' && field('Status')?.value === 'planned',
+    )
+    // An unsaved choice remains visible and survives a temporary child rollup.
+    const statusEpic = await create('epic', 'Status regression epic')
+    edit(field('Status'), 'done')
+    const statusFeature = await storyCreate(projectId, {
+      kind: 'feature',
+      title: 'Status regression feature',
+      parent: statusEpic.id,
+    })
+    await refreshStories(projectId)
+    await until(
+      'children take over status',
+      () => !field('Status') && query('.story-editor .story-status.backlog'),
+    )
+    assert(
+      query('.story-status-draft')?.textContent.includes('Unsaved status: done'),
+      'child rollup silently discarded the unsaved status',
+    )
+    await saveSelected()
+    assert(
+      state().stories.find((s) => s.id === statusEpic.id).status === 'backlog',
+      'Save wrote a hidden dropdown choice after children took over',
+    )
+    await updateStory(projectId, statusFeature.id, { parent: epic.id })
+    await until('child rollup ends without losing choice', () => field('Status')?.value === 'done')
+    await updateStory(projectId, statusFeature.id, { parent: statusEpic.id })
+    await updateStory(projectId, statusFeature.id, { status: 'done' })
+    await until(
+      'done children allow explicit completion',
+      () => query('.story-editor .story-status.done') && button('.story-editor', 'Mark done'),
+    )
+    click(button('.story-editor', 'Mark done'))
+    await until(
+      'parent explicitly completed',
+      () => state().stories.find((s) => s.id === statusEpic.id).status === 'done',
+    )
+    await storyRemove(projectId, statusFeature.id, true)
+    await refreshStories(projectId)
+    await until(
+      'parent completion survives child cleanup',
+      () => query('.story-editor .story-status.done') && button('.story-editor', 'Reopen'),
+    )
+    await removeSelected(statusEpic)
     const temporaryFeature = await create('feature', 'Temporary feature', epic.id)
     await removeSelected(temporaryFeature)
     const unassigned = await create('story', 'Unassigned regression')
@@ -224,6 +314,74 @@
       components: [component.id],
     })
     state().setNewTask(null)
+    // A temporary worktree link retains a pending choice without saving it.
+    chooseCard(unassigned.title)
+    await until('unassigned editor before worktree linkage', () => field('Status'))
+    edit(field('Status'), 'done')
+    await updateStory(projectId, unassigned.id, { task: task.id })
+    await until(
+      'worktree takes over status',
+      () => !field('Status') && query('.story-editor .story-status.building'),
+    )
+    await saveSelected()
+    assert(
+      state().stories.find((s) => s.id === unassigned.id).status === 'backlog',
+      'Save wrote a hidden dropdown choice after worktree linkage',
+    )
+    await updateStory(projectId, unassigned.id, { task: '' })
+    await until('worktree removal restores choice', () => field('Status')?.value === 'done')
+    edit(field('Status'), 'backlog')
+    await saveSelected()
+    // Persisted Auto completion can be reopened without the old run completing it again.
+    await updateStory(projectId, unassigned.id, {
+      task: task.id,
+      autoRunId: 'smoke-completed-run',
+      status: 'planned',
+    })
+    await completeAutoStories(projectId, task.id, 'smoke-completed-run')
+    click(await until('Reopen completed Auto story', () => button('.story-editor', 'Reopen')))
+    await until('Auto identity cleared on Reopen', () => {
+      const item = state().stories.find((s) => s.id === unassigned.id)
+      return item.status === 'planned' && !item.autoRunId
+    })
+    await refreshStories(projectId)
+    // Call IPC directly so the frontend identity guard cannot make this pass vacuously.
+    const staleCompletion = await storyCompleteAuto(projectId, task.id, 'smoke-completed-run')
+    assert(!staleCompletion.length, 'backend accepted an old Auto completion after Reopen')
+    assert(
+      (await storyList(projectId)).find((s) => s.id === unassigned.id).status === 'planned',
+      'old Auto run completed the reopened story again',
+    )
+    // An unfinished run in a background worktree must survive manual Done -> Reopen.
+    const pendingRun = {
+      runId: 'smoke-unfinished-run',
+      status: 'paused',
+      stage: 'build',
+      goal: 'Finish the story',
+      effort: 'standard',
+      device: fake.id,
+      round: 0,
+      log: [],
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    }
+    state().setActiveTask(null)
+    state().patchTask(projectId, task.id, { auto: pendingRun })
+    await updateStory(projectId, unassigned.id, { autoRunId: pendingRun.runId })
+    click(await until('Mark done with unfinished Auto', () => button('.story-editor', 'Mark done')))
+    click(await until('Reopen with unfinished Auto', () => button('.story-editor', 'Reopen')))
+    await until('unfinished Auto link preserved', () => {
+      const item = state().stories.find((s) => s.id === unassigned.id)
+      return item.status === 'planned' && item.autoRunId === pendingRun.runId
+    })
+    await completeAutoStories(projectId, task.id, pendingRun.runId)
+    assert(
+      state().stories.find((s) => s.id === unassigned.id).status === 'done',
+      'unfinished Auto run could not complete the reopened story',
+    )
+    state().patchTask(projectId, task.id, { auto: null })
+    state().setActiveTask(task.id)
+    chooseCard(story.title)
+
     await until(
       'story linked at worktree creation',
       () => state().stories.find((s) => s.id === story.id)?.task === task.id,
@@ -262,7 +420,6 @@
       () =>
         query('.story-editor .story-status.building') &&
         !field('Status') &&
-        !field('Saved status') &&
         query('.story-editor .story-hint')?.textContent.includes(
           `Following worktree ${task.title}`,
         ),
@@ -298,7 +455,6 @@
       () =>
         query('.story-editor .story-status.reviewing')?.textContent === 'review' &&
         !field('Status') &&
-        !field('Saved status') &&
         query('.story-editor .story-hint')?.textContent.includes('Following child progress'),
     )
     click(
@@ -333,13 +489,99 @@
         query('.story-editor .story-status.reviewing') &&
         button('.story-editor', 'Mark done'),
     )
+    // Exercise the real merge poll on a separate worktree, including repeated old outcomes.
+    const mergeTask = await smoke.taskCreate({
+      title: 'Story reopen merge',
+      branch: 'story-reopen-merge',
+      components: [],
+    })
+    await smoke.refreshTasks()
+    const mergeStory = await storyCreate(projectId, {
+      kind: 'story',
+      title: 'Merged reopen regression',
+    })
+    await refreshStories(projectId)
+    await updateStory(projectId, mergeStory.id, { task: mergeTask.id, status: 'planned' })
+    const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'"
+    state().setActiveTask(mergeTask.id)
+    await smoke.startTerminal('@task', 'shell', mergeTask.id, projectId)
+    const mergeSid = smoke.sessionId('@task', 'shell', mergeTask.id)
+    await smoke.terminalWrite(
+      mergeSid,
+      `git -C ${quote(mergeTask.worktree)} -c user.name=Smoke -c user.email=smoke@example.com -c commit.gpgsign=false commit --allow-empty -qm 'Story work' && ` +
+        `git -C ${quote(opened.project.root)} -c merge.gpgsign=false merge --ff-only ${quote(mergeTask.branch)} && ` +
+        'printf "\\nstory-merge-ready\\n"\r',
+    )
+    await until('real story merge', () =>
+      smoke.terminalText(mergeSid).text.includes('\nstory-merge-ready\n'),
+    )
+    const destination = (await smoke.gitWorktrees(projectId)).find(
+      (w) => w.path === opened.project.root,
+    )
+    await smoke.reconcileSessions()
+    const mergeRecord = state().sessionRecords.find((r) => r.id === mergeSid)
+    assert(mergeRecord, 'missing merge fixture session')
+    smoke.store.setState({
+      sessionRecords: [
+        ...state().sessionRecords,
+        {
+          ...mergeRecord,
+          id: 'story-reopen-merge-record',
+          metadata: { ...mergeRecord.metadata, componentId: '@merge' },
+          spec: { ...mergeRecord.spec, cwd: destination.path, merge_source: mergeTask.worktree },
+        },
+      ],
+    })
+    const { storyProgressPoll } = await import('/src/lib/storyProgress.ts')
+    const progressPoll = storyProgressPoll(projectId)
+    try {
+      await progressPoll.poll()
+      await until(
+        'merged story saved Done',
+        () => state().stories.find((s) => s.id === mergeStory.id).status === 'done',
+      )
+      // Clear the board filters so the new unassigned story is selectable.
+      click(button('.story-column', 'All epics'))
+      click(
+        await until('merged story card', () =>
+          [...document.querySelectorAll('.story-card')].find((b) =>
+            b.textContent.includes(mergeStory.title),
+          ),
+        ),
+      )
+      click(await until('Reopen merged story', () => button('.story-editor', 'Reopen')))
+      await until(
+        'merged story reopened',
+        () => state().stories.find((s) => s.id === mergeStory.id).status === 'planned',
+      )
+      for (let i = 0; i < 2; i++) {
+        smoke.store.setState({ gitChanges: {} })
+        await progressPoll.poll()
+        const outcome = await smoke.mergeOutcome(state().toProject(), {
+          source: mergeTask.worktree,
+          sourceBranch: mergeTask.branch,
+          destination: destination.path,
+          destinationBranch: destination.branch,
+        })
+        assert(
+          ['merged', 'alreadyIntegrated'].includes(outcome),
+          'fixture branch is not integrated',
+        )
+        assert(
+          (await storyList(projectId)).find((s) => s.id === mergeStory.id).status === 'planned',
+          'merge poll completed the reopened story again',
+        )
+      }
+    } finally {
+      progressPoll.dispose()
+    }
     click(button('.story-board-header', 'Map'))
     await until(
       'map returned',
       () => !state().storyBoard && query('.navigation-map:not(.story-map-hidden) .canvas'),
     )
     await smoke.report(
-      'PASS stories: hierarchy creation, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, Auto goal, map visibility and toggle',
+      'PASS stories: hierarchy creation, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, saved status editing, Reopen, retained status choices, child completion, running Auto linkage, stale Auto rejection, merged-branch Reopen, Auto goal, map visibility and toggle',
     )
   } catch (e) {
     await smoke.report(`FAIL stories: ${e?.message ?? e} ${e?.stack ?? ''}`)

@@ -85,37 +85,94 @@ export function worktreeStage(
       : 'building'
 }
 
+export type ResolvedStoryStatus = {
+  value: StoryProgress
+} & ({ source: 'saved' | 'auto' | 'children' } | { source: 'worktree'; worktree: Task })
+
+type StoryRuns = Record<
+  string,
+  (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
+>
+
 /** A worktree's live state takes precedence over a saved intermediate status. */
-export function derivedStatus(
+function ownStatus(
   story: Story,
   tasks: Task[],
-  autoRuns: Record<
-    string,
-    (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
-  >,
+  runs: StoryRuns,
   projectId: string,
-  records: readonly SessionRecord[] = [],
-): StoryProgress {
-  if (story.status === 'done') return 'done'
+  records: readonly SessionRecord[],
+): ResolvedStoryStatus {
+  if (story.status === 'done') return { value: 'done', source: 'saved' }
   const task = story.task && tasks.find((t) => t.id === story.task)
   if (
     story.task &&
     story.autoRunId &&
-    autoRuns[story.task]?.runId === story.autoRunId &&
-    autoRuns[story.task]?.status === 'done'
+    runs[story.task]?.runId === story.autoRunId &&
+    runs[story.task]?.status === 'done'
   )
-    return 'done'
+    return { value: 'done', source: 'auto' }
   if (task && !task.missing) {
-    const run = autoRuns[task.id]
-    if (run && unfinished(run.status))
-      return run.stage === 'review'
-        ? 'reviewing'
-        : run.stage === 'mergeGate' || run.stage === 'merge'
-          ? 'merging'
-          : 'building'
-    return worktreeStage(task, projectId, records)
+    const run = runs[task.id]
+    const value =
+      run && unfinished(run.status)
+        ? run.stage === 'review'
+          ? 'reviewing'
+          : run.stage === 'mergeGate' || run.stage === 'merge'
+            ? 'merging'
+            : 'building'
+        : worktreeStage(task, projectId, records)
+    return { value, source: 'worktree', worktree: task }
   }
-  return story.status === 'planned' ? 'planned' : 'backlog'
+  return { value: story.status, source: 'saved' }
+}
+
+/** Resolve each item once, sharing both progress and its source with cards and editors. */
+export function storyStatuses(
+  stories: Story[],
+  tasks: Task[],
+  runs: StoryRuns,
+  projectId: string,
+  records: readonly SessionRecord[] = [],
+): Map<string, ResolvedStoryStatus> {
+  const statuses = new Map<string, ResolvedStoryStatus>()
+  const children = new Map<string, Story[]>()
+  for (const story of stories) {
+    if (!story.parent) continue
+    const siblings = children.get(story.parent) ?? []
+    siblings.push(story)
+    children.set(story.parent, siblings)
+  }
+  const resolve = (story: Story): ResolvedStoryStatus => {
+    const cached = statuses.get(story.id)
+    if (cached) return cached
+    const own = ownStatus(story, tasks, runs, projectId, records)
+    const childItems = story.kind === 'story' ? [] : (children.get(story.id) ?? [])
+    const status =
+      story.status !== 'done' && childItems.length
+        ? {
+            value: rollup(
+              own.value,
+              childItems.map((s) => resolve(s).value),
+            ),
+            source: 'children' as const,
+          }
+        : own
+    statuses.set(story.id, status)
+    return status
+  }
+  for (const story of stories) resolve(story)
+  return statuses
+}
+
+/**
+ * Acknowledge old completion while preserving an unfinished run's ability to finish.
+ * The backend also drops a run whose merged work completed the story.
+ */
+export function reopenStoryPatch(story: Story, run?: StoryRuns[string]): StoryPatch {
+  return {
+    reopen: true,
+    ...(run && run.runId === story.autoRunId && unfinished(run.status) ? {} : { autoRunId: '' }),
+  }
 }
 
 export const STORY_STATUSES: StoryStatus[] = ['backlog', 'planned', 'building', 'done']

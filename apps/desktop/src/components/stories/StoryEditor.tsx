@@ -1,15 +1,17 @@
 import { useState } from 'react'
-import { useStore } from '../../store'
-import type { Story, StoryDraft, StoryStatus, Task } from '../../types'
+import { projectStateOf, useStore } from '../../store'
+import { autoWorkspace } from '../../lib/autoState'
+import type { Story, StoryDraft, StoryStatus, StoryPatch } from '../../types'
 import {
   autoStory,
   planStory,
   newWorktreeForStory,
   progressLabel,
   refreshStories,
+  reopenStoryPatch,
   STORY_STATUSES,
   updateStory,
-  type StoryProgress,
+  type ResolvedStoryStatus,
 } from '../../lib/stories'
 import { storyCreate, storyRemove } from '../../lib/ipc'
 import { shortTitle } from '../../lib/shortTitle'
@@ -18,15 +20,13 @@ export default function StoryEditor({
   projectId,
   item,
   progress,
-  worktree,
   draft,
   onClose,
   onSaved,
 }: {
   projectId: string
   item?: Story
-  progress?: StoryProgress
-  worktree?: Task
+  progress?: ResolvedStoryStatus
   draft?: StoryDraft
   onClose: () => void
   onSaved: (item: Story) => void
@@ -43,9 +43,7 @@ export default function StoryEditor({
   // An untouched status follows Plan/Auto and completion updates while the editor stays open.
   const [statusEdit, setStatusEdit] = useState<StoryStatus | null>(null)
   const status = statusEdit ?? item?.status ?? 'backlog'
-  const hasChildren = item?.kind !== 'story' && stories.some((s) => s.parent === item?.id)
-  const automatic =
-    !!item && (hasChildren || (worktree && !worktree.missing) || progress === 'done')
+  const automatic = !!progress && (progress.source !== 'saved' || progress.value === 'done')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -53,8 +51,8 @@ export default function StoryEditor({
   const parents = stories.filter((s) => s.kind === (kind === 'feature' ? 'epic' : 'feature'))
   const validParent = parents.some((s) => s.id === parent) ? parent : ''
   const ready = !!title.trim() && (kind !== 'feature' || !!validParent)
-  const save = async (statusOverride?: StoryStatus) => {
-    const nextStatus = statusOverride ?? statusEdit
+  const save = async (statusPatch: StoryPatch = {}) => {
+    const nextStatus = automatic ? null : statusEdit
     const fields = {
       title,
       description,
@@ -66,13 +64,14 @@ export default function StoryEditor({
       ? await updateStory(projectId, item.id, {
           ...fields,
           ...(nextStatus == null ? {} : { status: nextStatus }),
+          ...statusPatch,
         })
       : await storyCreate(projectId, { ...fields, kind, parent: validParent || null })
     if (!item) {
       if (status !== 'backlog') await updateStory(projectId, saved.id, { status })
       await refreshStories(projectId)
     }
-    setStatusEdit(null)
+    if (!automatic || statusPatch.status !== undefined || statusPatch.reopen) setStatusEdit(null)
     onSaved(saved)
     return saved
   }
@@ -88,7 +87,11 @@ export default function StoryEditor({
         return
       }
       const saved = await save(
-        action === 'done' ? 'done' : action === 'reopen' ? 'backlog' : undefined,
+        action === 'done'
+          ? { status: 'done' }
+          : action === 'reopen' && item
+            ? reopenStoryPatch(item, autoWorkspace(projectStateOf(projectId), item.task)?.auto)
+            : undefined,
       )
       if (action === 'plan') await planStory(projectId, saved)
       if (action === 'auto') autoStory(projectId, saved)
@@ -197,24 +200,23 @@ export default function StoryEditor({
           {automatic && progress !== undefined ? (
             <div className="row">
               <span>Status</span>
-              <span className={`chip story-status ${progress}`}>{progressLabel(progress)}</span>
-              {progress !== 'done' ? (
+              <span className={`chip story-status ${progress.value}`}>
+                {progressLabel(progress.value)}
+              </span>
+              {progress.source === 'children' || progress.value !== 'done' ? (
                 <button type="button" disabled={!ready} onClick={() => void act('done')}>
                   Mark done
                 </button>
-              ) : item?.status === 'done' ? (
+              ) : (
                 <button type="button" disabled={!ready} onClick={() => void act('reopen')}>
                   Reopen
                 </button>
-              ) : null}
+              )}
             </div>
           ) : (
             <label>
               Status
-              <select
-                value={statusEdit ?? progress ?? status}
-                onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}
-              >
+              <select value={status} onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}>
                 {STORY_STATUSES.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -223,17 +225,25 @@ export default function StoryEditor({
               </select>
             </label>
           )}
+          {automatic && statusEdit !== null && (
+            <p className="story-status-draft">
+              Unsaved status: {statusEdit}. You can save it when automatic progress ends.{' '}
+              <button type="button" onClick={() => setStatusEdit(null)}>
+                Discard status choice
+              </button>
+            </p>
+          )}
           <p className="story-hint">
-            {item?.status === 'done' ? (
+            {progress?.source === 'saved' && progress.value === 'done' ? (
               'Completed work stays Done after cleanup.'
-            ) : hasChildren ? (
+            ) : progress?.source === 'children' ? (
               'Following child progress. You can mark this item done at any time.'
-            ) : worktree && !worktree.missing ? (
+            ) : progress?.source === 'worktree' ? (
               <>
-                Following worktree {shortTitle(worktree.title)}. You can mark this item done at any
-                time.
+                Following worktree {shortTitle(progress.worktree.title)}. You can mark this item
+                done at any time.
               </>
-            ) : progress === 'done' ? (
+            ) : progress?.source === 'auto' ? (
               'The linked Auto run completed this story.'
             ) : (
               'Worktree activity updates the card’s status. Completed work stays Done after cleanup.'

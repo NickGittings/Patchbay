@@ -993,11 +993,15 @@ export interface Story {
   acceptance: string[]
   components: string[]
   task: string | null
-  /** HEAD when this worktree was linked; old merges do not complete new work. */
+  /** HEAD when this worktree was linked or reopened; old merges do not complete new work. */
   taskHead?: string | null
   /** Only this Auto run may complete the story. */
   autoRunId?: string | null
   status: StoryStatus
+  /** Saved status before completion, restored by Reopen. */
+  previousStatus?: StoryStatus | null
+  /** Integrated HEAD that completed the story; Reopen makes it the merge baseline. */
+  completedHead?: string | null
   createdMs: number
   order: number
 }
@@ -1012,4 +1016,4 @@ export interface StoryDraft {
 /** Use an empty string to clear a parent or task link. */
 export type StoryPatch = Partial<
   Pick<Story, 'title' | 'description' | 'acceptance' | 'components' | 'status' | 'order'>
-> & { parent?: string; task?: string; autoRunId?: string }
+> & { parent?: string; task?: string; autoRunId?: string; reopen?: boolean }

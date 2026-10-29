@@ -47,8 +47,36 @@ pub struct Story {
     #[serde(default)]
     pub auto_run_id: Option<String>,
     pub status: StoryStatus,
+    /// Saved status to restore when completion is explicitly reopened.
+    #[serde(default)]
+    pub previous_status: Option<StoryStatus>,
+    /// Integrated HEAD that completed the story (a merge or its Auto run), which Reopen
+    /// acknowledges. Absent for a manual completion, so later merges still count.
+    #[serde(default)]
+    pub completed_head: Option<String>,
     pub created_ms: u64,
     pub order: u32,
+}
+
+impl Story {
+    fn set_status(&mut self, status: StoryStatus) {
+        if self.status == status {
+            return;
+        }
+        self.previous_status = (status == StoryStatus::Done).then_some(self.status);
+        self.completed_head = None;
+        self.status = status;
+    }
+
+    /// Before `previous_status` was saved, linked work had at least been planned.
+    fn reopened_status(&self) -> StoryStatus {
+        self.previous_status
+            .unwrap_or(if self.task.is_some() || self.auto_run_id.is_some() {
+                StoryStatus::Planned
+            } else {
+                StoryStatus::Backlog
+            })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +106,9 @@ pub struct StoryPatch {
     pub task: Option<String>,
     pub auto_run_id: Option<String>,
     pub status: Option<StoryStatus>,
+    /// Restore the saved status and start a new merge baseline without unlinking work.
+    #[serde(default)]
+    pub reopen: bool,
     pub order: Option<u32>,
 }
 
@@ -178,6 +209,8 @@ pub fn create(root: &Path, draft: StoryDraft) -> Result<Story> {
             task_head: None,
             auto_run_id: None,
             status: StoryStatus::Backlog,
+            previous_status: None,
+            completed_head: None,
             created_ms,
             order: stories
                 .iter()
@@ -229,12 +262,23 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
             };
             item.task = (!v.is_empty()).then_some(v);
             item.auto_run_id = None;
+            item.completed_head = None;
         }
         if let Some(v) = patch.auto_run_id {
             item.auto_run_id = (!v.is_empty()).then_some(v);
         }
         if let Some(v) = patch.status {
-            item.status = v;
+            item.set_status(v);
+        }
+        if patch.reopen && item.status == StoryStatus::Done {
+            // Integrated work that completed the story can't complete it again: its HEAD
+            // becomes the merge baseline and its Auto run is done with it. A manual
+            // completion keeps both, so merging the work still completes the story.
+            if let Some(head) = item.completed_head.take() {
+                item.task_head = Some(head);
+                item.auto_run_id = None;
+            }
+            item.set_status(item.reopened_status());
         }
         if let Some(v) = patch.order {
             item.order = v;
@@ -265,7 +309,8 @@ pub fn complete_merge(root: &Path, source: &Path) -> Result<()> {
                 .as_ref()
                 .is_some_and(|baseline| baseline != &head)
             {
-                story.status = StoryStatus::Done;
+                story.set_status(StoryStatus::Done);
+                story.completed_head = Some(head.clone());
             }
         }
         Ok(())
@@ -276,13 +321,19 @@ pub fn complete_merge(root: &Path, source: &Path) -> Result<()> {
 /// # Errors
 /// Fails if the board cannot be read or saved.
 pub fn complete_auto(root: &Path, task: &str, run_id: &str) -> Result<Vec<Story>> {
+    // The run merged its work, so its HEAD is the integrated one. A removed worktree
+    // leaves none, and with it nothing a later merge poll could complete again.
+    let head = tasks::stored(root, task)
+        .ok()
+        .and_then(|t| git::run(git::git(Path::new(&t.worktree)).args(["rev-parse", "HEAD"])).ok());
     modify(root, |stories| {
         let mut completed = vec![];
         for story in stories
             .iter_mut()
             .filter(|s| s.task.as_deref() == Some(task) && s.auto_run_id.as_deref() == Some(run_id))
         {
-            story.status = StoryStatus::Done;
+            story.set_status(StoryStatus::Done);
+            story.completed_head.clone_from(&head);
             completed.push(story.clone());
         }
         Ok(completed)
@@ -413,6 +464,60 @@ mod tests {
             acceptance: vec!["Works".into()],
             components: vec!["api".into()],
         }
+    }
+    #[test]
+    fn completion_preserves_saved_status_across_edits_and_reload() {
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&root)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let item = create(&root, draft(StoryKind::Story, None, "Story")).unwrap();
+        for status in [
+            StoryStatus::Planned,
+            StoryStatus::Building,
+            StoryStatus::Backlog,
+        ] {
+            for next in [status, StoryStatus::Done, StoryStatus::Done] {
+                update(
+                    &root,
+                    &item.id,
+                    StoryPatch {
+                        status: Some(next),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            let saved = load(&root).unwrap().remove(0);
+            assert_eq!(saved.previous_status, Some(status));
+            let reopened = update(
+                &root,
+                &item.id,
+                StoryPatch {
+                    reopen: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(reopened.status, status);
+            assert_eq!(reopened.previous_status, None);
+        }
+        let mut legacy = serde_json::to_value(&item).unwrap();
+        legacy.as_object_mut().unwrap().remove("previousStatus");
+        legacy.as_object_mut().unwrap().remove("completedHead");
+        let mut legacy = serde_json::from_value::<Story>(legacy).unwrap();
+        assert_eq!(legacy.previous_status, None);
+        assert_eq!(legacy.reopened_status(), StoryStatus::Backlog);
+        legacy.task = Some("task".into());
+        assert_eq!(legacy.reopened_status(), StoryStatus::Planned);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn round_trip_parent_rules_cascade_and_briefing() {
@@ -621,6 +726,36 @@ mod tests {
         git(&root, &["merge", "--ff-only", "story"]);
         complete_merge(&root, &worktree).unwrap();
         assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Done);
+        assert_eq!(
+            load(&root).unwrap()[0].previous_status,
+            Some(StoryStatus::Planned)
+        );
+        // The poll invokes the backend again for an already integrated branch.
+        // Reopen preserves the task but acknowledges its old HEAD atomically.
+        let reopened = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                reopen: true,
+                auto_run_id: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(reopened.status, StoryStatus::Planned);
+        assert_eq!(reopened.task.as_deref(), Some(task.id.as_str()));
+        for _ in 0..2 {
+            complete_merge(&root, &worktree).unwrap();
+            assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Planned);
+        }
+        assert!(complete_auto(&root, &task.id, "new").unwrap().is_empty());
+        git(
+            &worktree,
+            &["commit", "--allow-empty", "-qm", "reopened work"],
+        );
+        git(&root, &["merge", "--ff-only", "story"]);
+        complete_merge(&root, &worktree).unwrap();
+        assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Done);
         // Relinking this checkout captures a new baseline and clears the old Auto identity.
         update(
             &root,
@@ -645,12 +780,92 @@ mod tests {
         )
         .unwrap();
         assert!(complete_auto(&root, &task.id, "new").unwrap().is_empty());
+        // Manual completion then Reopen must not detach an unfinished Auto run.
+        update(
+            &root,
+            &item.id,
+            StoryPatch {
+                status: Some(StoryStatus::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let reopened = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                reopen: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(reopened.auto_run_id.as_deref(), Some("next"));
+        assert_eq!(reopened.status, StoryStatus::Planned);
+        // That manual completion acknowledged nothing, so merging new work still completes it.
+        git(
+            &worktree,
+            &["commit", "--allow-empty", "-qm", "manual work"],
+        );
+        let reopen = || {
+            update(
+                &root,
+                &item.id,
+                StoryPatch {
+                    reopen: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        update(
+            &root,
+            &item.id,
+            StoryPatch {
+                status: Some(StoryStatus::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(reopen().status, StoryStatus::Planned);
+        git(&root, &["merge", "--ff-only", "story"]);
+        complete_merge(&root, &worktree).unwrap();
+        assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Done);
+        // Reopening a merge its Auto run made also ends that run's claim, in the backend.
+        let reopened = reopen();
+        assert_eq!(reopened.status, StoryStatus::Planned);
+        assert_eq!(reopened.auto_run_id, None);
+        assert!(complete_auto(&root, &task.id, "next").unwrap().is_empty());
+        complete_merge(&root, &worktree).unwrap();
+        assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Planned);
+        update(
+            &root,
+            &item.id,
+            StoryPatch {
+                auto_run_id: Some("next".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(
             complete_auto(&root, &task.id, "next").unwrap()[0].status,
             StoryStatus::Done
         );
         git(&root, &["worktree", "remove", worktree.to_str().unwrap()]);
         assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Done);
+        let completed = load(&root).unwrap().remove(0);
+        assert_eq!(completed.previous_status, Some(StoryStatus::Planned));
+        update(
+            &root,
+            &item.id,
+            StoryPatch {
+                reopen: true,
+                auto_run_id: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(complete_auto(&root, &task.id, "next").unwrap().is_empty());
+        assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Planned);
         remove(&root, &item.id, true).unwrap();
         assert!(planner_section(&root, Some(&item.id)).unwrap().is_none());
         assert!(planner_section(&root, None).unwrap().is_none());
