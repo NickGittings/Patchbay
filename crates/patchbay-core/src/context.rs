@@ -2106,6 +2106,45 @@ mod tests {
     }
 
     #[test]
+    fn native_codex_review_preserves_the_documented_compaction_override() {
+        for shell in [Shell::Unix, Shell::Windows] {
+            let preset = "codex -c model_auto_compact_token_limit=120000";
+            assert_eq!(review_style_in(preset, shell), ReviewStyle::Codex);
+            let command = codex_review_command(
+                preset,
+                "main",
+                Path::new("report.md"),
+                &review_briefing(),
+                shell,
+                &mut BTreeMap::new(),
+            );
+            assert!(command.starts_with(preset), "{command}");
+            let tokens = command_tokens(&command, shell).unwrap();
+            assert_eq!(
+                tokens
+                    .windows(2)
+                    .filter(|w| w == &["-c", "model_auto_compact_token_limit=120000"])
+                    .count(),
+                1,
+                "{command}"
+            );
+            assert!(tokens.windows(8).any(|w| w
+                == [
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "review",
+                    "--base",
+                    "main",
+                    "-o",
+                    "report.md"
+                ]));
+            assert!(command.contains("developer_instructions="));
+            assert!(command.contains(review_briefing().text));
+        }
+    }
+
+    #[test]
     fn native_codex_large_briefings_use_an_inert_file_pointer() {
         for shell in [Shell::Unix, Shell::Windows] {
             let mut env = BTreeMap::new();
@@ -2415,6 +2454,48 @@ mod tests {
             );
             assert_eq!(command.matches("--settings").count(), 1, "{command}");
             assert!(command.contains("--append-system-prompt-file"));
+        }
+    }
+
+    #[test]
+    fn claude_compaction_presets_keep_their_arguments_and_receive_the_briefing() {
+        let json = r#"{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"60"}}"#;
+        for (shell, preset, expected) in [
+            (
+                Shell::Unix,
+                "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=60 claude",
+                vec!["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=60", "claude"],
+            ),
+            (
+                Shell::Unix,
+                r#"claude --settings '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"60"}}'"#,
+                vec!["claude", "--settings", json],
+            ),
+            (
+                Shell::Windows,
+                r#"claude --settings "C:\agent-presets\compact-60.json""#,
+                vec!["claude", "--settings", r"C:\agent-presets\compact-60.json"],
+            ),
+        ] {
+            assert_eq!(command_tokens(preset, shell).unwrap(), expected);
+            let mut command = preset.to_owned();
+            assert!(
+                brief_agent(
+                    &mut command,
+                    &review_briefing(),
+                    shell,
+                    &mut BTreeMap::new(),
+                )
+                .is_none(),
+                "{command}"
+            );
+            assert!(command.starts_with(preset), "{command}");
+            let tokens = command_tokens(&command, shell).unwrap();
+            assert_eq!(&tokens[..expected.len()], expected);
+            assert_eq!(
+                &tokens[expected.len()..],
+                ["--append-system-prompt-file", "review-brief.md"]
+            );
         }
     }
 
