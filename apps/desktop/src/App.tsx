@@ -1,8 +1,7 @@
 import StoryBoard from './components/stories/StoryBoard'
 import { SimpleChangesContext } from './components/stories/simpleChanges'
-import { changeGroups } from './lib/changeGroups'
-import { changeRefs } from './lib/changeNav'
-import { latestWrite, writeActivity } from './lib/activity'
+import type { ChangeRef } from './lib/changeNav'
+import { newestWrite } from './lib/activity'
 import { relatedSession } from './lib/simple'
 import { storyProgressPoll } from './lib/storyProgress'
 import WorkspaceRail from './components/WorkspaceRail'
@@ -25,7 +24,7 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { useCollapsed } from './lib/useCollapsed'
 import { listen } from '@tauri-apps/api/event'
 import { Panel, Separator, useGroupRef } from 'react-resizable-panels'
@@ -47,7 +46,7 @@ import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followAuto } from './lib/auto'
 import { followQueuedPrompts } from './lib/simpleQueue'
-import { activeWorktree, followActiveTask, refreshTasks } from './lib/tasks'
+import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
 import { projectOf, useStore } from './store'
 
@@ -93,6 +92,40 @@ function useRootSync() {
   }, [])
 }
 
+const NO_CHANGES: { files: ChangeRef[]; newest?: ChangeRef } = { files: [] }
+
+/**
+ * Chat's Changes tab count and default file. Outside Chat it subscribes to nothing that changes,
+ * so the canvas around it never re-renders for sessions or edits; it stays mounted either way, so
+ * toggling Chat never remounts the canvas.
+ */
+function SimpleChanges({
+  simple,
+  reader,
+  children,
+}: {
+  simple: boolean
+  reader: ReturnType<typeof useSimpleData>
+  children: ReactNode
+}) {
+  const nodes = useStore((s) => (simple ? s.nodes : undefined))
+  const records = useStore((s) => (simple ? s.sessionRecords : undefined))
+  const sessions = useStore((s) => (simple ? s.sessions : undefined))
+  const { files, scope: worktree } = reader
+  const value = useMemo(() => {
+    if (!nodes || !records || !sessions) return NO_CHANGES
+    const components = nodes.map((n) => ({ id: n.id, path: n.data.path }))
+    // Only a file the tab lists: a write since committed or reverted has no diff to show.
+    const newest = records
+      .filter((r) => relatedSession(r, worktree))
+      .map((r) => newestWrite(r, sessions[r.id], components, worktree.path, files))
+      .filter((w) => !!w)
+      .sort((a, b) => b.atMs - a.atMs)[0]?.file
+    return { files, newest }
+  }, [nodes, records, sessions, files, worktree])
+  return <SimpleChangesContext value={value}>{children}</SimpleChangesContext>
+}
+
 /**
  * The canvas, with the Inspector while something is selected (or it is opened) and the
  * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put
@@ -104,12 +137,6 @@ function NavigationView() {
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
   const changes = useSimpleUi((s) => s.worktrees[scopeKey]?.changes)
-  const nodes = useStore((s) => s.nodes)
-  const records = useStore((s) => s.sessionRecords)
-  const sessions = useStore((s) => s.sessions)
-  const project = useStore((s) => s.project)
-  const task = useStore((s) => s.activeTask)
-  const activePath = useStore(activeWorktree)
   useMapActivityFeedback()
   useEffect(
     () => () => {
@@ -124,28 +151,6 @@ function NavigationView() {
   })
   // The tab count and diff share this reader, even while the chat is collapsed.
   const reader = useSimpleData(simple)
-  const files = changeRefs(changeGroups(nodes, reader.data?.review))
-  const worktree = {
-    projectId: project?.id ?? '',
-    task,
-    path: reader.source?.path ?? activePath ?? project?.root ?? '',
-  }
-  const newest = records
-    .filter((r) => relatedSession(r, worktree))
-    .map((r) => ({
-      file: latestWrite(
-        r,
-        sessions[r.id],
-        nodes.map((n) => ({ id: n.id, path: n.data.path })),
-        worktree.path,
-      ),
-      atMs: Math.max(
-        0,
-        ...(sessions[r.id]?.activity ?? []).filter(writeActivity).map((a) => a.atMs),
-      ),
-    }))
-    .sort((a, b) => b.atMs - a.atMs)
-    .find((a) => a.file)?.file
   const storyBoard = useStore((s) => s.storyBoard)
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
@@ -176,7 +181,7 @@ function NavigationView() {
       <Panel id="App-pane-2" defaultSize="76">
         <PersistedGroup layoutId="App-2" orientation="vertical">
           <Panel id="App-pane-3" defaultSize="58" minSize="20">
-            <SimpleChangesContext value={{ files, newest }}>
+            <SimpleChanges simple={simple} reader={reader}>
               <div className="simple-canvas">
                 <div
                   className={`navigation-map ${storyBoard || (simple && changes) ? 'story-map-hidden' : ''}`}
@@ -195,7 +200,7 @@ function NavigationView() {
                   <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
                 )}
               </div>
-            </SimpleChangesContext>
+            </SimpleChanges>
           </Panel>
           <Separator className={`separator horizontal ${dock ? '' : 'hidden'}`} disabled={!dock} />
           <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>

@@ -1,6 +1,6 @@
 import { useStepKeys } from './useStepKeys'
 import PersistedGroup from '../PersistedGroup'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { stepChange } from '../../lib/changeNav'
 import { latestChange, lineTotals } from '../../lib/review'
@@ -28,10 +28,11 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
     const next = stepChange(order, file && { componentId, path: file.path }, delta)
     if (next) setSelected(next.path)
   }
-  useStepKeys(step)
+  const panel = useRef<HTMLDivElement>(null)
+  useStepKeys(step, [panel])
   const position = file ? order.findIndex((r) => r.path === file.path) : -1
   return (
-    <div className="changes-panel">
+    <div className="changes-panel" ref={panel}>
       <div className="changes-header">
         <span className="panel-title">
           Changes{files && files.length > 0 && <span className="git-badge">±{files.length}</span>}

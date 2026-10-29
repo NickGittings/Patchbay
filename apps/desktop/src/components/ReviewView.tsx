@@ -2,7 +2,7 @@ import { useStepKeys } from './changes/useStepKeys'
 import { changeGroups } from '../lib/changeGroups'
 import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import PersistedGroup from './PersistedGroup'
-import { useEffect, useState, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR, plural } from '../lib/display'
 import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
@@ -218,7 +218,10 @@ export default function ReviewView() {
     setSelected(next)
     if (pane === 'findings') setPane('diff')
   }
-  useStepKeys(step)
+  // Findings text keeps its arrow keys for scrolling: only the list and a diff step files.
+  const listPane = useRef<HTMLDivElement>(null)
+  const diffPane = useRef<HTMLDivElement>(null)
+  useStepKeys(step, [listPane, diffPane])
   const nav = { position: changePosition(order, current), total: order.length, step }
 
   // Reviewers name paths relative to their worktree, which is usually the project root too.
@@ -277,7 +280,7 @@ export default function ReviewView() {
         <Panel id="ReviewView-changes" defaultSize="65" minSize="25">
           <PersistedGroup layoutId="ReviewView-1" orientation="horizontal">
             <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
-              <div className="review-list">
+              <div className="review-list" ref={listPane}>
                 <div className="review-header">
                   <div className="review-title-row">
                     {!other && reviewTask && <strong>{reviewTask.title}</strong>}
@@ -471,27 +474,37 @@ export default function ReviewView() {
             </Panel>
             <Separator className="separator" />
             <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
-              {pane === 'findings' ? (
-                <FindingsPanel
-                  loaded={findings}
-                  status={status}
-                  branch={source?.branch}
-                  onOpenFile={openRef}
-                  canOpen={(path) => !!changedFile(path)}
-                  actions={
-                    reviewRecord && (
-                      <FixFindingsButton
-                        record={reviewRecord}
-                        hasFindings={!!findings?.findings?.text.trim()}
-                      />
-                    )
-                  }
-                />
-              ) : current && pane === 'fromFindings' ? (
-                <div className="review-diff-pane">
-                  <div className="review-diff-back">
-                    <button onClick={() => setPane('findings')}>← Findings</button>
+              <div ref={pane === 'findings' ? undefined : diffPane} className="review-pane">
+                {pane === 'findings' ? (
+                  <FindingsPanel
+                    loaded={findings}
+                    status={status}
+                    branch={source?.branch}
+                    onOpenFile={openRef}
+                    canOpen={(path) => !!changedFile(path)}
+                    actions={
+                      reviewRecord && (
+                        <FixFindingsButton
+                          record={reviewRecord}
+                          hasFindings={!!findings?.findings?.text.trim()}
+                        />
+                      )
+                    }
+                  />
+                ) : current && pane === 'fromFindings' ? (
+                  <div className="review-diff-pane">
+                    <div className="review-diff-back">
+                      <button onClick={() => setPane('findings')}>← Findings</button>
+                    </div>
+                    <DiffView
+                      componentId={current.componentId}
+                      file={currentFile}
+                      revision={review}
+                      worktree={target}
+                      nav={nav}
+                    />
                   </div>
+                ) : current ? (
                   <DiffView
                     componentId={current.componentId}
                     file={currentFile}
@@ -499,26 +512,18 @@ export default function ReviewView() {
                     worktree={target}
                     nav={nav}
                   />
-                </div>
-              ) : current ? (
-                <DiffView
-                  componentId={current.componentId}
-                  file={currentFile}
-                  revision={review}
-                  worktree={target}
-                  nav={nav}
-                />
-              ) : (
-                <div className="diff-view">
-                  <div className="review-empty" role={error ? 'alert' : 'status'}>
-                    {error
-                      ? `Could not load changes: ${error}`
-                      : !review
-                        ? 'Loading changes…'
-                        : 'No uncommitted changes.'}
+                ) : (
+                  <div className="diff-view">
+                    <div className="review-empty" role={error ? 'alert' : 'status'}>
+                      {error
+                        ? `Could not load changes: ${error}`
+                        : !review
+                          ? 'Loading changes…'
+                          : 'No uncommitted changes.'}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </Panel>
           </PersistedGroup>
         </Panel>

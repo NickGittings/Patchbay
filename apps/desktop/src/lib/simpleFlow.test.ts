@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { flow, type FlowSnapshot } from './simpleFlow'
+import { flow, LAUNCH_RECORD_GRACE_MS, type FlowSnapshot } from './simpleFlow'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
@@ -82,6 +82,7 @@ test('build, review, fix and merge prompts follow the latest turn and artifacts'
     action: 'fix',
     stage: 'build',
     sessionId: '@task',
+    generation: 1,
   })
   expect(flow(fix)).toMatchObject({ step: 'fixed', prompt: { text: 'Fixes done.' } })
   expect(flow({ ...fix, sessions: { '@task': session('working') } }).step).toBe('fixing')
@@ -265,8 +266,26 @@ test.each(['implement', 'fix', 'review', 'merge'] as const)(
     )
     expect(result.prompt).toBeUndefined()
     expect(result.step).not.toBe('fixed')
+    expect(flow({ ...s, now: 30 + LAUNCH_RECORD_GRACE_MS - 1 }).prompt).toBeUndefined()
   },
 )
+
+test('a launch whose record never appears gives way to the usual prompts after a grace', () => {
+  const s = snapshot('@review')
+  s.records = [...s.records, record('@task')]
+  s.sessions['@task'] = session('review')
+  s.findings = findings(false)
+  s.simple!.log.push({
+    id: 'launch',
+    atMs: 30,
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    sessionId: 'forgotten',
+  })
+  const result = flow({ ...s, now: 30 + LAUNCH_RECORD_GRACE_MS })
+  expect(result.prompt?.actions.length).toBeGreaterThan(0)
+})
 
 test('a fresh merge launch does not reuse a previous merged outcome before reconciliation', () => {
   const s = snapshot('@merge')
@@ -281,4 +300,45 @@ test('a fresh merge launch does not reuse a previous merged outcome before recon
   })
   expect(flow(s)).toMatchObject({ step: 'merging' })
   expect(flow(s).prompt).toBeUndefined()
+})
+
+test.each(['review', 'merge'] as const)(
+  'a %s rerun waits for its generation in the reused slot',
+  (stage) => {
+    const s = snapshot(`@${stage}`)
+    s.outcome = 'merged'
+    s.findings = findings(false)
+    s.simple!.log.push({
+      id: 'rerun',
+      atMs: 30,
+      kind: 'action',
+      action: stage,
+      stage,
+      sessionId: `@${stage}`,
+      generation: 2,
+    })
+    expect(flow(s)).toMatchObject({ step: stage === 'review' ? 'reviewing' : 'merging' })
+    expect(flow(s).prompt).toBeUndefined()
+    expect(flow({ ...s, now: 30 + LAUNCH_RECORD_GRACE_MS - 1 }).prompt).toBeUndefined()
+    s.sessions[`@${stage}`].generation = 2
+    s.sessions[`@${stage}`].status!.agent!.sinceMs = 40
+    s.outcome = undefined
+    expect(flow(s).prompt).toBeDefined()
+  },
+)
+
+test('an unconfirmed run cannot borrow the previous run in its slot', () => {
+  const s = snapshot('@review')
+  s.findings = findings(false)
+  s.simple!.log.push({
+    id: 'unknown',
+    atMs: 30,
+    kind: 'action',
+    action: 'review',
+    stage: 'review',
+    sessionId: '@review',
+  })
+  expect(flow(s)).toMatchObject({ step: 'reviewing' })
+  expect(flow(s).prompt).toBeUndefined()
+  expect(flow({ ...s, now: 30 + LAUNCH_RECORD_GRACE_MS }).prompt).toBeDefined()
 })

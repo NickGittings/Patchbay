@@ -4,7 +4,12 @@ import type { SessionState } from '../types'
 vi.mock('../store', async () => {
   const { create } = await import('zustand')
   return {
-    useStore: create(() => ({ sessions: {}, serviceConnected: true, workspaceSettings: {} })),
+    useStore: create(() => ({
+      sessions: {},
+      serviceConnected: true,
+      workspaceSettings: {},
+      setMessage: vi.fn(),
+    })),
   }
 })
 vi.mock('./ipc', () => ({
@@ -19,7 +24,8 @@ vi.mock('./simpleReplies', () => ({ persistReplies: vi.fn() }))
 import { useStore } from '../store'
 import { terminalPrompt } from './ipc'
 import { cancelQueued, flushQueued, followQueuedPrompts } from './simpleQueue'
-import { simpleKey, useSimpleUi } from './simpleUi'
+import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
+import { transmittedText } from './simpleComposer'
 import { logSimple } from './simpleActions'
 
 const key = simpleKey('p', 't')
@@ -38,8 +44,9 @@ const queue = () =>
     queued: {
       sessionId: sid,
       generation: 1,
-      text: 'follow up',
-      mentions: ['app'],
+      text: 'follow  up',
+      draft: 'follow @app up',
+      mentions: [{ id: 'app', token: '@app', start: 7, end: 11 }],
       stage: 'build',
       atMs: 1,
     },
@@ -66,13 +73,13 @@ test('waits during work and permission dialogs, then flushes once on ready even 
   useStore.setState({ activeTask: 'other' })
   update(session('idle'))
   await vi.waitFor(() =>
-    expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow up', false),
+    expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up', false),
   )
   await vi.waitFor(() =>
     expect(logSimple).toHaveBeenCalledWith(
       'p',
       't',
-      expect.objectContaining({ kind: 'prompt', text: 'follow up', mentions: ['app'] }),
+      expect.objectContaining({ kind: 'prompt', text: 'follow  up', mentions: ['app'] }),
     ),
   )
   update(session('review'))
@@ -88,10 +95,12 @@ test.each(['generation', 'stopped'] as const)(
     queue()
     update(reason === 'generation' ? session('idle', 2) : { ...session(), running: false })
     expect(useSimpleUi.getState().worktrees[key]).toMatchObject({
-      draft: 'new draft\n\nfollow up',
+      draft: 'new draft\n\nfollow @app up',
       queued: undefined,
-      error: 'The agent restarted; your queued message was kept as a draft',
     })
+    expect(useStore.getState().setMessage).toHaveBeenCalledWith(
+      'The agent restarted; your queued message was kept as a draft',
+    )
     expect(terminalPrompt).not.toHaveBeenCalled()
   },
 )
@@ -102,9 +111,12 @@ test('a failed or uncertain write returns the draft and is never retried', async
   queue()
   update(session('idle'))
   await vi.waitFor(() =>
-    expect(useSimpleUi.getState().worktrees[key].error).toContain('uncertain write'),
+    expect(useStore.getState().setMessage).toHaveBeenCalledWith('Error: uncertain write'),
   )
-  expect(useSimpleUi.getState().worktrees[key].draft).toBe('follow up')
+  expect(useSimpleUi.getState().worktrees[key].draft).toBe('follow @app up')
+  expect(useSimpleUi.getState().worktrees[key].mentions).toEqual([
+    { id: 'app', token: '@app', start: 7, end: 11 },
+  ])
   update(session('review'))
   expect(terminalPrompt).toHaveBeenCalledTimes(1)
 })
@@ -113,14 +125,57 @@ test('cancel appends to an existing draft; force refuses dialogs and sends mid-t
   queue()
   useSimpleUi.getState().patch(key, { draft: 'draft' })
   cancelQueued(key)
-  expect(useSimpleUi.getState().worktrees[key].draft).toBe('draft\n\nfollow up')
+  expect(useSimpleUi.getState().worktrees[key].draft).toBe('draft\n\nfollow @app up')
+  expect(useSimpleUi.getState().worktrees[key].mentions).toEqual([
+    { id: 'app', token: '@app', start: 14, end: 18 },
+  ])
   queue()
   update(session('needsInput'))
   await flushQueued(key, true)
   expect(terminalPrompt).not.toHaveBeenCalled()
+  // A Codex approval in its grace reads as working, and an Esc leaves the turn unconfirmed.
+  for (const agent of [{ approvalPending: true }, { authoritative: false }]) {
+    const pending = session('working')
+    Object.assign(pending.status!.agent!, agent)
+    update(pending)
+    await flushQueued(key, true)
+    expect(terminalPrompt).not.toHaveBeenCalled()
+  }
   update(session('working'))
   await flushQueued(key, true)
-  expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow up', true)
+  expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up', true)
+})
+
+test('restoring a combined queue retains scope tokens in both drafts and can send them again', () => {
+  queue()
+  const queued = useSimpleUi.getState().worktrees[key].queued!
+  const combined = appendDraft(queued, {
+    draft: '@lib again',
+    mentions: [{ id: 'lib', token: '@lib', start: 0, end: 4 }],
+  })
+  useSimpleUi.getState().patch(key, {
+    draft: '@root draft',
+    mentions: [{ id: 'root', token: '@root', start: 0, end: 5 }],
+    queued: { ...queued, ...combined },
+  })
+  cancelQueued(key)
+  const restored = useSimpleUi.getState().worktrees[key]
+  expect(restored.draft).toBe('@root draft\n\nfollow @app up\n\n@lib again')
+  expect(restored.mentions.map((m) => m.id)).toEqual(['root', 'app', 'lib'])
+  for (const m of restored.mentions) expect(restored.draft.slice(m.start, m.end)).toBe(m.token)
+  expect(transmittedText(restored.draft, restored.mentions)).toBe(' draft\n\nfollow  up\n\n again')
+})
+
+test('a refused queued delivery reports the draft retention message once', async () => {
+  vi.mocked(terminalPrompt).mockRejectedValue(
+    new Error('The agent is not at a ready prompt. Your draft was kept.'),
+  )
+  queue()
+  update(session('idle'))
+  await flushQueued(key)
+  expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
+    'Error: The agent is not at a ready prompt. Your draft was kept.',
+  )
 })
 
 test('a disconnected service waits and flushes when it reconnects', async () => {

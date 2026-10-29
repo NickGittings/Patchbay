@@ -291,7 +291,7 @@ export default function Canvas() {
           color="var(--border-strong)"
         />
         {boardToggle && (
-          <Panel position="top-left">
+          <Panel position="top-left" className="view-tabs-panel">
             <StoryViewTabs />
           </Panel>
         )}

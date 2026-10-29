@@ -54,6 +54,18 @@ fn prompt_ready(status: &crate::status::SessionStatus) -> bool {
     })
 }
 
+/// Whether a forced prompt ("Send anyway") may be typed: only into a hook-confirmed turn
+/// that is working, never while an approval may be on screen (a Codex permission request
+/// still in its automatic-review grace, or any `needsInput`), since the pasted text and
+/// its Enter would answer the dialog. Agents without an authoritative status never qualify.
+fn prompt_forceable(status: &crate::status::SessionStatus) -> bool {
+    status.agent.as_ref().is_some_and(|agent| {
+        agent.authoritative
+            && agent.state == crate::status::AgentState::Working
+            && !agent.approval_pending
+    })
+}
+
 /// A bracketed paste. ESC is dropped from the text, so it can't end the paste early.
 fn paste(text: &str) -> String {
     format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', ""))
@@ -1547,7 +1559,8 @@ impl Service {
                 text,
                 force,
             } => {
-                // Force bypasses readiness only; authority and generation gate both writes.
+                // Force accepts a confirmed working turn as well as a ready prompt; authority,
+                // generation and the absence of a pending approval gate both writes.
                 let check = || -> Result<()> {
                     anyhow::ensure!(
                         self.owns(client, &id, &viewer),
@@ -1561,10 +1574,17 @@ impl Service {
                         snapshot.running && snapshot.generation == generation,
                         "The session generation changed"
                     );
-                    anyhow::ensure!(
-                        force || prompt_ready(&snapshot.status),
-                        "The agent is not at a ready prompt"
-                    );
+                    if force {
+                        anyhow::ensure!(
+                            prompt_ready(&snapshot.status) || prompt_forceable(&snapshot.status),
+                            "The agent is not confirmed working, or is waiting for an answer"
+                        );
+                    } else {
+                        anyhow::ensure!(
+                            prompt_ready(&snapshot.status),
+                            "The agent is not at a ready prompt"
+                        );
+                    }
                     Ok(())
                 };
                 check()?;
@@ -4580,6 +4600,7 @@ mod tests {
             conversation_id: Some("after-clear".into()),
             turn_id: None,
             authoritative: true,
+            approval_pending: false,
         });
         assert_eq!(
             restart_conversation(Adapter::Claude, &snapshot).as_deref(),
@@ -4606,6 +4627,7 @@ mod tests {
                 conversation_id: None,
                 turn_id: None,
                 authoritative,
+                approval_pending: false,
             }),
             ..SessionStatus::default()
         };
@@ -4617,6 +4639,51 @@ mod tests {
         assert!(!prompt_ready(&status(AgentState::Idle, false)));
         assert!(!prompt_ready(&SessionStatus {
             last_output_ms: Some(1),
+            ..SessionStatus::default()
+        }));
+    }
+
+    #[test]
+    fn forced_prompts_need_a_confirmed_turn_without_a_pending_approval() {
+        use crate::status::{AgentReport, AgentState, SessionStatus};
+        let status = |state, authoritative, approval_pending| SessionStatus {
+            agent: Some(AgentReport {
+                state,
+                since_ms: 1,
+                message: None,
+                prompt: None,
+                provider: None,
+                conversation_id: None,
+                turn_id: None,
+                authoritative,
+                approval_pending,
+            }),
+            ..SessionStatus::default()
+        };
+        assert!(prompt_forceable(&status(AgentState::Working, true, false)));
+        // A Codex permission request in its grace still reads as working.
+        assert!(!prompt_forceable(&status(AgentState::Working, true, true)));
+        assert!(!prompt_forceable(&status(
+            AgentState::NeedsInput,
+            true,
+            false
+        )));
+        // Unconfirmed work (after Esc, or a legacy status file) may hide a dialog.
+        assert!(!prompt_forceable(&status(
+            AgentState::Working,
+            false,
+            false
+        )));
+        assert!(!prompt_forceable(&status(
+            AgentState::NeedsInput,
+            false,
+            false
+        )));
+        // Ready prompts are already sendable; force adds nothing there.
+        assert!(!prompt_forceable(&status(AgentState::Idle, true, false)));
+        assert!(!prompt_forceable(&SessionStatus {
+            last_output_ms: Some(1),
+            active: true,
             ..SessionStatus::default()
         }));
     }
@@ -4671,23 +4738,10 @@ mod tests {
         assert!(!String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello"));
         assert!(prompt(generation, "other", true).contains("authority"));
         assert!(prompt(generation + 1, "main", true).contains("generation"));
-        service
-            .handle(
-                "client",
-                Request::Prompt {
-                    id: id.clone(),
-                    viewer: "main".into(),
-                    generation,
-                    text: "hello".into(),
-                    force: true,
-                },
-            )
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello") {
-            assert!(Instant::now() < deadline, "forced prompt was not pasted");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // Force never reaches an agent without hook-confirmed work: its quiet screen
+        // may be a permission dialog that the pasted Enter would approve.
+        assert!(prompt(generation, "main", true).contains("not confirmed working"));
+        assert!(!String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello"));
         service.pty.stop_generation(&id, generation).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }

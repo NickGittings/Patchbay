@@ -6,6 +6,7 @@ import {
   selectRecipient,
   thread,
   sections,
+  verdictSummary,
   type TimelineItem,
   restoredSimple,
   type SimpleSnapshot,
@@ -287,7 +288,7 @@ test('sections keep plan, build, review and fix in order with artifact and reply
       id: 'review',
       atMs: 6,
       result: 'review',
-      summary: '0 critical, 1 high, 0 medium, 0 low',
+      summary: '1 high',
     },
     { kind: 'line', id: 'fix-action', atMs: 7, text: 'Fixing…', action: 'fix', stage: 'build' },
     {
@@ -315,7 +316,7 @@ test('sections keep plan, build, review and fix in order with artifact and reply
   expect(grouped.map((s) => s.summary)).toEqual([
     'Add OAuth login',
     'Added login…',
-    '0 critical, 1 high, 0 medium, 0 low',
+    '1 high',
     'Fixed token expiry',
   ])
   expect(grouped[0].items).toContain(items[1])
@@ -330,4 +331,13 @@ test('recovered agents start sections on stage changes and the timeline has no C
     false,
   )
   expect(sections(model.items, records).map((s) => s.stage)).toEqual(['build', 'review'])
+})
+
+test('a review summary leaves out zero counts and calls a clean review clean', () => {
+  const counts = { critical: 0, high: 1, medium: 0, low: 2 }
+  expect(verdictSummary({ clean: false, counts })).toBe('1 high, 2 low')
+  const none = { critical: 0, high: 0, medium: 0, low: 0 }
+  expect(verdictSummary({ clean: true, counts: none })).toBe('clean')
+  // Issues reported without a counted finding still don't read as clean.
+  expect(verdictSummary({ clean: false, counts: none })).toBe('issues')
 })

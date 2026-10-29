@@ -2,6 +2,7 @@ import type { MergeOutcome, ReviewFindings, SessionRecord } from '../types'
 import { reviewerBusy } from './review'
 import {
   recordStage,
+  pendingLaunch,
   selectRecipient,
   thread,
   type SimpleSnapshot,
@@ -32,7 +33,15 @@ export interface FlowSnapshot extends SimpleSnapshot {
   outcome?: MergeOutcome
   base?: string
   conflicts?: string[]
+  /** The time to judge a launch's missing record against; without it one is always pending. */
+  now?: number
 }
+/**
+ * How long a logged launch whose run has no record yet still reads as starting. Records
+ * reconcile within seconds of a launch; one missing past this was forgotten, and the chat
+ * falls back to its usual prompts rather than staying stuck without actions.
+ */
+export const LAUNCH_RECORD_GRACE_MS = 30_000
 export interface SimpleFlow {
   step: SimpleStep
   prompt?: StepPrompt
@@ -87,16 +96,11 @@ export function flow(
           text: `No issues. Merge into ${base}?`,
           actions: [button('checkMerge', 'Merge')],
         }
-  const launch = snapshot.simple?.log.findLast(
-    (e) =>
-      e.kind === 'action' &&
-      ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
-      e.sessionId,
-  )
+  const launch = pendingLaunch(snapshot, model.records)
   if (
     !autoCurrent &&
-    launch?.kind === 'action' &&
-    !model.records.some((r) => r.id === launch.sessionId)
+    launch &&
+    (snapshot.now === undefined || snapshot.now - launch.atMs < LAUNCH_RECORD_GRACE_MS)
   )
     return {
       step:
@@ -267,9 +271,8 @@ function awaitingTurn(
     (e) =>
       e.sessionId === agent.id &&
       e.kind !== 'reply' &&
-      (e.generation === undefined
-        ? e.atMs >= (session.startedMs ?? 0)
-        : e.generation === session.generation),
+      e.generation !== undefined &&
+      e.generation === session.generation,
   )
   if (!latest) return false
   const state = session.status?.agent

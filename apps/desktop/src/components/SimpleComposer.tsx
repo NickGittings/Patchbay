@@ -5,12 +5,13 @@ import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
 import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
-import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { appendDraft, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
   sendToSession,
   lastSubmission,
   editedMentions,
+  forceable,
   promptReady,
   transmittedText,
   waitForPrompt,
@@ -94,21 +95,19 @@ export default function SimpleComposer({
     ready,
   })
   const drafted = !pending && !!ui.draft.trim()
-  const query = ui.draft.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/)
+  const query = ui.mentions.some((m) => caret > m.start && caret <= m.end)
+    ? null
+    : ui.draft.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/)
   const candidates = query
     ? s.nodes
         .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
         .slice(0, 8)
     : []
-  const forceable =
-    running &&
-    !ready &&
-    s.serviceConnected &&
-    !state?.disconnected &&
-    !state?.interrupted &&
-    state?.status?.agent?.state !== 'needsInput'
+  // The service refuses the same: only a hook-confirmed working turn with no approval pending.
+  const canForce = running && !ready && s.serviceConnected && forceable(state)
+  const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
-    if (!(force ? forceable : status.sendable) || !s.project) return
+    if (!(force ? canForce : status.sendable) || !s.project) return
     const projectId = s.project.id,
       task = s.activeTask,
       draft = ui.draft,
@@ -140,19 +139,17 @@ export default function SimpleComposer({
           sessionId: recipient.id,
           generation: state.generation,
           text: [queued?.text, text].filter(Boolean).join('\n\n'),
-          mentions: [...new Set([...(queued?.mentions ?? []), ...mentions.map((m) => m.id)])],
+          ...appendDraft(queued ?? { draft: '', mentions: [] }, { draft, mentions }),
           stage,
           atMs: Date.now(),
         },
         draft: '',
         mentions: [],
-        error: undefined,
       })
       return
     }
     setPending(true)
     setError('')
-    patch({ error: undefined })
     let cancelled = false
     const unsubscribe = useStore.subscribe((next, prev) => {
       if (
@@ -271,16 +268,15 @@ export default function SimpleComposer({
     <div className="simple-composer">
       {ui.queued && (
         <div className="simple-queued" role="status">
-          <span>Queued — sends when the agent finishes its turn</span>
+          <span>
+            {queuedSession?.status?.agent?.state === 'needsInput'
+              ? 'Queued — sends once you answer in the terminal and the agent finishes its turn'
+              : queuedSession?.status?.agent?.authoritative
+                ? 'Queued — sends when the agent finishes its turn'
+                : 'Queued — the agent isn’t confirmed working, so this may not send; continue in its terminal or cancel'}
+          </span>
           <button
-            disabled={
-              pending ||
-              !s.serviceConnected ||
-              !queuedSession?.running ||
-              queuedSession.disconnected ||
-              queuedSession.interrupted ||
-              queuedSession.status?.agent?.state === 'needsInput'
-            }
+            disabled={pending || !s.serviceConnected || !forceable(queuedSession)}
             title="Types into the agent now, even mid-turn"
             onClick={() => void flushQueued(scopeKey, true)}
           >
@@ -318,7 +314,8 @@ export default function SimpleComposer({
           })
         }}
         onKeyDown={(e) => {
-          if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+          if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
+            return
           if (candidates.length && !e.shiftKey) {
             e.preventDefault()
             mention(candidates[0].id)
@@ -347,6 +344,25 @@ export default function SimpleComposer({
           {open ? 'Hide' : 'View'} {shown ? SIMPLE_ROLE_LABEL[recordStage(shown)] : 'agent'}{' '}
           terminal
         </button>
+        {asking
+          ? recipient &&
+            !(open && shown?.id === recipient.id) && (
+              <button onClick={() => openTerminal(recipient)}>Answer in terminal</button>
+            )
+          : running &&
+            !ready && (
+              <button
+                disabled={pending || !canForce || !ui.draft.trim()}
+                title={
+                  canForce
+                    ? 'Types into the agent now, even mid-turn'
+                    : 'Only an agent its hooks confirm working can be messaged mid-turn'
+                }
+                onClick={() => void send(true)}
+              >
+                Send anyway
+              </button>
+            )}
         <button
           className="primary"
           disabled={!status.sendable || !ui.draft.trim()}
@@ -354,15 +370,6 @@ export default function SimpleComposer({
         >
           {status.action === 'queue' ? 'Queue' : !recipient ? 'Start' : 'Send'}
         </button>
-        {running && !ready && (
-          <button
-            disabled={pending || !forceable || !ui.draft.trim()}
-            title="Types into the agent now, even mid-turn"
-            onClick={() => void send(true)}
-          >
-            {state?.status?.agent?.state === 'needsInput' ? 'Answer in terminal' : 'Send anyway'}
-          </button>
-        )}
       </div>
       {drafted && provider && (status.notice === 'missing' || status.notice === 'failed') && (
         <p className="simple-hook-notice">
@@ -374,10 +381,10 @@ export default function SimpleComposer({
       )}
       {drafted && status.notice === 'unsupported' && (
         <p className="simple-hook-notice">
-          This agent does not report a ready prompt. Use Send anyway or View terminal.
+          This agent does not report a ready prompt. Continue in its terminal.
         </p>
       )}
-      {(error || ui.error) && <p role="alert">{error || ui.error}</p>}
+      {error && <p role="alert">{error}</p>}
     </div>
   )
 }

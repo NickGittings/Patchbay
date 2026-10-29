@@ -491,6 +491,8 @@ export interface AgentReport {
   conversationId?: string | null
   turnId?: string | null
   authoritative?: boolean
+  /** A Codex permission request in its automatic-review grace: `working`, but maybe asking. */
+  approvalPending?: boolean
 }
 
 /** `status::SessionStatus`: what a running session is doing. */

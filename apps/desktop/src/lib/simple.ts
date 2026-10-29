@@ -1,4 +1,12 @@
-import type { AutoRun, AutoStage, PlanText, Review, SessionRecord, SessionState } from '../types'
+import type {
+  AutoRun,
+  AutoStage,
+  PlanText,
+  Review,
+  SessionRecord,
+  SessionState,
+  Verdict,
+} from '../types'
 import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
 import { sessionTimeMs } from './sessionList'
 import { shortTitle } from './shortTitle'
@@ -209,6 +217,26 @@ export interface SimpleSnapshot {
   review?: Review
   findings?: import('../types').ReviewFindings | null
   createdMs?: number
+}
+
+/** A launch waits for its run, even when an older run still occupies the same session slot. */
+export function pendingLaunch(snapshot: SimpleSnapshot, records: readonly SessionRecord[]) {
+  const launch = snapshot.simple?.log.findLast(
+    (e) =>
+      e.kind === 'action' &&
+      ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
+      e.sessionId,
+  )
+  if (launch?.kind !== 'action') return undefined
+  const record = records.find((r) => r.id === launch.sessionId)
+  const generation = record && (snapshot.sessions[record.id] ?? record.snapshot)?.generation
+  // A later run supersedes this launch. A launch with no confirmed generation names no run.
+  return !record ||
+    launch.generation === undefined ||
+    generation === undefined ||
+    generation < launch.generation
+    ? launch
+    : undefined
 }
 export const recordStage = (record: SessionRecord): SimpleStage =>
   record.metadata.componentId === PLAN_SCOPE
@@ -458,14 +486,20 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
         result,
         summary:
           result === 'review' && snapshot.findings?.verdict
-            ? Object.entries(snapshot.findings.verdict.counts)
-                .map(([severity, count]) => `${count} ${severity}`)
-                .join(', ')
+            ? verdictSummary(snapshot.findings.verdict)
             : undefined,
       })
   }
   items.sort((a, b) => a.atMs - b.atMs)
   return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start }
+}
+
+/** A review's counts without the zeros, e.g. `1 high, 2 low`; `clean` when nothing was found. */
+export function verdictSummary(verdict: Verdict) {
+  const found = Object.entries(verdict.counts)
+    .filter(([, count]) => count > 0)
+    .map(([severity, count]) => `${count} ${severity}`)
+  return found.length ? found.join(', ') : verdict.clean ? 'clean' : 'issues'
 }
 
 export interface SimpleSection {

@@ -15,7 +15,8 @@ export interface QueuedPrompt {
   sessionId: string
   generation: number
   text: string
-  mentions: string[]
+  draft: string
+  mentions: Mention[]
   stage: import('./simple').SimpleStage
   atMs: number
 }
@@ -25,10 +26,25 @@ export interface SimpleUi {
   diff: SimpleDiff | null
   changes: boolean
   queued?: QueuedPrompt
-  error?: string
   terminal: 'closed' | 'user' | 'input'
   terminalSession?: { id: string; generation?: number; pinned?: boolean }
   inputRequest?: string
+}
+
+/** Append a draft without losing the identity or positions of its selected scope tokens. */
+export function appendDraft(
+  first: Pick<SimpleUi, 'draft' | 'mentions'>,
+  second: Pick<SimpleUi, 'draft' | 'mentions'>,
+) {
+  const separator = first.draft && second.draft ? '\n\n' : ''
+  const offset = first.draft.length + separator.length
+  return {
+    draft: first.draft + separator + second.draft,
+    mentions: [
+      ...first.mentions,
+      ...second.mentions.map((m) => ({ ...m, start: m.start + offset, end: m.end + offset })),
+    ],
+  }
 }
 
 /**

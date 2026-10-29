@@ -1,6 +1,7 @@
 import { useContext, useState } from 'react'
 import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
 import { SimpleChangesContext } from './simpleChanges'
+import type { ChangeRef } from '../../lib/changeNav'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
@@ -18,6 +19,8 @@ export function StoryViewTabs() {
   const ui = useSimpleUi((s) => s.worktrees[key])
   const changes = simple && !!ui?.changes
   const { files, newest } = useContext(SimpleChangesContext)
+  const listed = (diff: ChangeRef | null | undefined) =>
+    !!diff && files.some((f) => f.componentId === diff.componentId && f.path === diff.path)
   const show = (stories: boolean) => {
     useSimpleUi.getState().patch(key, { changes: false })
     setShown(stories)
@@ -43,9 +46,11 @@ export function StoryViewTabs() {
           className={changes ? 'active' : ''}
           aria-pressed={changes}
           onClick={() =>
-            useSimpleUi
-              .getState()
-              .patch(key, { changes: true, diff: ui?.diff ?? newest ?? files[0] ?? null })
+            useSimpleUi.getState().patch(key, {
+              changes: true,
+              // A selection the list no longer shows gives way to the newest listed write.
+              diff: (listed(ui?.diff) ? ui?.diff : undefined) ?? newest ?? files[0] ?? null,
+            })
           }
         >
           Changes {files.length}
@@ -196,7 +201,7 @@ export default function StoryBoard() {
   )
   return (
     <div className="story-board" aria-label="Story board">
-      <header className="story-board-header">
+      <header className="story-board-header view-tabs-header">
         <StoryViewTabs />
       </header>
       <div className="story-board-body">

@@ -260,3 +260,19 @@ test('latestWrite selects the newest write, ignores later reads, and needs hook 
     ),
   ).toEqual({ componentId: 'src', path: 'src/new.ts' })
 })
+
+test('latestWrite can skip writes the change list no longer shows', () => {
+  const session = {
+    activity: [
+      { ...activity(1, 'src/listed.ts', 'Write'), atMs: 1 },
+      { ...activity(2, 'src/committed.ts', 'Edit'), atMs: 2 },
+    ],
+  }
+  expect(latestWrite(record(), session, components, '/task')?.path).toBe('src/committed.ts')
+  expect(
+    latestWrite(record(), session, components, '/task', [
+      { componentId: 'src', path: 'src/listed.ts' },
+    ]),
+  ).toEqual({ componentId: 'src', path: 'src/listed.ts' })
+  expect(latestWrite(record(), session, components, '/task', [])).toBeUndefined()
+})

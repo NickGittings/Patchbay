@@ -166,6 +166,14 @@
       state().selectEdge('ab')
       state().setView(full)
       await until(`${full} without Navigation`, () => !query('.navigation-shell'))
+      if (full === 'review') {
+        document.activeElement?.blur()
+        for (const key of ['ArrowLeft', 'ArrowRight']) {
+          const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+          document.body.dispatchEvent(event)
+          assert(!event.defaultPrevented, 'Review captured an arrow before any click')
+        }
+      }
       const confirm = window.confirm
       let prompts = 0
       window.confirm = () => {

@@ -89,6 +89,10 @@ pub struct AgentReport {
     pub turn_id: Option<String>,
     #[serde(default)]
     pub authoritative: bool,
+    /// A Codex permission request still within its automatic-review grace: the
+    /// state reads `working`, but an approval dialog may be on screen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approval_pending: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,6 +662,7 @@ impl Tracker {
             conversation_id: Some(event.conversation),
             turn_id: turn,
             authoritative: true,
+            approval_pending: false,
         });
         self.heard_ms = now;
     }
@@ -840,6 +845,7 @@ impl Tracker {
             conversation_id: None,
             turn_id: None,
             authoritative: false,
+            approval_pending: false,
         });
     }
 
@@ -905,7 +911,9 @@ impl Tracker {
         let stale = self.quiet_ms(now) > STALE_WORKING_MS;
         let last_heard = self.last_heard();
         self.confirm_approval(now);
+        let approval_pending = self.approval_pending.is_some();
         self.status.agent = self.report.clone().map(|mut r| {
+            r.approval_pending = approval_pending;
             if r.state == AgentState::Working && stale && !r.authoritative {
                 r.state = AgentState::Idle;
                 r.since_ms = last_heard;
@@ -1598,15 +1606,14 @@ mod tests {
         tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
         tracker.on_hook(hook("PermissionRequest", Some("turn"), 2), 200);
         tracker.on_output(b"Allow Bash?", 500);
+        let grace = tracker.status(500 + APPROVAL_QUIET_MS - 1).agent.unwrap();
+        // Working during the grace, but flagged so a forced prompt can't answer it.
         assert_eq!(
-            tracker
-                .status(500 + APPROVAL_QUIET_MS - 1)
-                .agent
-                .unwrap()
-                .state,
-            AgentState::Working
+            (grace.state, grace.approval_pending),
+            (AgentState::Working, true)
         );
         let agent = tracker.status(500 + APPROVAL_QUIET_MS).agent.unwrap();
+        assert!(!agent.approval_pending);
         // A window seen during the grace never saw the prompt, so it asks from now.
         assert_eq!(
             (agent.state, agent.since_ms),

@@ -3,6 +3,7 @@ import {
   composerStatus,
   deliverPrompt,
   editedMentions,
+  forceable,
   promptReady,
   transmittedText,
   waitForPrompt,
@@ -229,7 +230,7 @@ test('installed hooks refuse only starting or resuming, and the label says why S
       sendable: false,
       action: 'none',
     })
-  // Running without a confirmed prompt queues when hooks are installed or reporting.
+  // Running without a hook-confirmed turn never queues: nothing would report its end.
   const quiet: SessionState = { generation: 1, running: true }
   expect(composerStatus({ ...base, installed: false, session: quiet })).toMatchObject({
     label: 'Chat needs agent status integration',
@@ -239,20 +240,20 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   })
   expect(composerStatus({ ...base, installed: true, session: quiet })).toMatchObject({
     label: 'Waiting for the agent',
-    sendable: true,
-    action: 'queue',
+    sendable: false,
+    action: 'none',
   })
   const escaped = ready()
   escaped.status!.agent!.authoritative = false
   expect(composerStatus({ ...base, installed: true, session: escaped })).toMatchObject({
     label: 'Not confirmed ready: continue in its terminal',
-    sendable: true,
-    action: 'queue',
+    sendable: false,
+    action: 'none',
   })
   expect(composerStatus({ ...base, installed: false, session: escaped })).toMatchObject({
     label: 'Not confirmed ready: continue in its terminal',
-    sendable: true,
-    action: 'queue',
+    sendable: false,
+    action: 'none',
     notice: undefined,
   })
   expect(
@@ -271,12 +272,49 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   ).toEqual({ label: 'Waiting for ready prompt…', sendable: false, action: 'none' })
 })
 
+test('a session interrupted by a restarted service can resume once the service reconnects', () => {
+  const base = {
+    pending: false,
+    provider: 'codex' as const,
+    installed: true as const,
+    ready: false,
+  }
+  const stopped = { ...ready(), running: false, disconnected: true, interrupted: true }
+  expect(composerStatus({ ...base, connected: false, session: stopped }).sendable).toBe(false)
+  expect(composerStatus({ ...base, connected: true, session: stopped })).toEqual({
+    label: 'Send to start or resume',
+    sendable: true,
+    action: 'send',
+  })
+  expect(
+    composerStatus({ ...base, connected: true, session: { ...stopped, running: true } }).sendable,
+  ).toBe(false)
+})
+
 test.each(['working', 'needsInput', 'idle'] as const)(
-  'busy and unconfirmed %s queues, unsupported and disconnected never queue',
+  'unconfirmed %s never queues: no hook would report the end of its turn',
   (state) => {
     const session = ready()
     session.status!.agent!.state = state
     session.status!.agent!.authoritative = false
+    expect(
+      composerStatus({
+        pending: false,
+        connected: true,
+        installed: true,
+        provider: 'codex',
+        session,
+        ready: false,
+      }),
+    ).toMatchObject({ sendable: false, action: 'none' })
+  },
+)
+
+test.each(['working', 'needsInput'] as const)(
+  'confirmed %s queues, unsupported and disconnected never queue',
+  (state) => {
+    const session = ready()
+    session.status!.agent!.state = state
     const base = {
       pending: false,
       connected: true,
@@ -294,9 +332,43 @@ test.each(['working', 'needsInput', 'idle'] as const)(
   },
 )
 
+const withAgent = (
+  agent: Partial<NonNullable<NonNullable<SessionState['status']>['agent']>>,
+): SessionState => ({
+  ...ready(),
+  status: { ...ready().status!, agent: { ...ready().status!.agent!, ...agent } },
+})
+test('only a hook-confirmed working turn without a pending approval is forceable', () => {
+  expect(forceable(withAgent({ state: 'working' }))).toBe(true)
+  // A Codex permission request in its grace, or any input wait, may be a dialog Enter approves.
+  expect(forceable(withAgent({ state: 'working', approvalPending: true }))).toBe(false)
+  expect(forceable(withAgent({ state: 'needsInput' }))).toBe(false)
+  // Esc or a legacy status file leaves the state unconfirmed; no hooks means no status at all.
+  expect(forceable(withAgent({ state: 'working', authoritative: false }))).toBe(false)
+  expect(forceable({ ...ready(), status: undefined })).toBe(false)
+  expect(forceable({ ...withAgent({ state: 'working' }), running: false })).toBe(false)
+  expect(forceable({ ...withAgent({ state: 'working' }), disconnected: true })).toBe(false)
+  expect(forceable(ready())).toBe(false)
+})
+test('force refuses agents that may show a dialog, before claiming', async () => {
+  for (const session of [
+    { ...ready(), status: undefined },
+    withAgent({ state: 'needsInput' }),
+    withAgent({ state: 'working', approvalPending: true }),
+    withAgent({ state: 'working', authoritative: false }),
+  ]) {
+    const p = port()
+    p.session = () => session
+    await expect(deliverPrompt(context, 'x', p, undefined, { force: true })).rejects.toThrow(
+      'not confirmed working',
+    )
+    expect(p.claim).not.toHaveBeenCalled()
+    expect(p.write).not.toHaveBeenCalled()
+  }
+})
 test('force skips readiness but still rejects changed generations and failed claims', async () => {
   const p = port()
-  p.session = () => ({ ...ready(), status: undefined })
+  p.session = () => withAgent({ state: 'working' })
   await deliverPrompt(context, 'forced', p, undefined, { force: true })
   expect(p.write).toHaveBeenCalledExactlyOnceWith('forced')
   p.current = () => ({ ...context, generation: 2 })

@@ -4,17 +4,18 @@ import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
 import {
   recordStage,
+  pendingLaunch,
   sections,
   selectRecipient,
   thread,
   type SimpleAction,
   type SimpleStage,
 } from '../lib/simple'
-import { flow, type FlowAction } from '../lib/simpleFlow'
+import { flow, LAUNCH_RECORD_GRACE_MS, type FlowAction } from '../lib/simpleFlow'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
-import { changeGroups } from '../lib/changeGroups'
+import { useExpiredDeadline } from '../lib/clock'
 import { inputDrawer, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { terminalStatus } from '../lib/display'
 import { implementPlannerPlan } from '../lib/planHandoff'
@@ -55,7 +56,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       project: s.project,
       activeTask: s.activeTask,
       tasks: s.tasks,
-      nodes: s.nodes,
       sessionRecords: s.sessionRecords,
       sessions: s.sessions,
       simple: s.simple,
@@ -65,7 +65,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       revealed: s.revealed,
     })),
   )
-  const { data, source, error, findings } = reader
+  const { data, source, scope: worktree, files: changed, error, findings } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const [pending, setPending] = useState('')
@@ -76,12 +76,6 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
   const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
-  const worktree = {
-    projectId,
-    task,
-    path: source?.path ?? s.tasks.find((t) => t.id === task)?.worktree ?? s.project?.root ?? '',
-    branch: source?.branch,
-  }
   const snapshot = {
     records: s.sessionRecords,
     sessions: s.sessions,
@@ -92,6 +86,8 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     createdMs: s.tasks.find((t) => t.id === task)?.createdMs,
   }
   const model = thread(snapshot, worktree)
+  const launch = pendingLaunch(snapshot, model.records)
+  const now = useExpiredDeadline(launch ? launch.atMs + LAUNCH_RECORD_GRACE_MS : undefined)
   const target = data?.worktrees.find(
     (w) => w.path === (source && defaultMergeDestination(source, data.worktrees)),
   )
@@ -119,6 +115,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
       findings: findings?.findings,
       base: base ?? undefined,
       conflicts: check?.key === checkKey ? check.paths : undefined,
+      now,
     },
     model,
     recipient,
@@ -188,14 +185,15 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
     }
   }, [s.revealed, key, contentKey])
   if (!s.project) return null
-  const groups = changeGroups(s.nodes, data?.review)
+  // Review's own dialog, beside the step's actions once there is work to review.
+  const options = ['built', 'reviewed', 'fixed'].includes(state.step)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const planner =
     model.records
       .filter((r) => r.metadata.componentId === PLAN_SCOPE && !model.foreign.has(r.id))
       .at(-1)?.metadata.terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan')?.id
   const openFile = (path: string, line?: number) => {
-    const files = groups.flatMap((g) => g.files.map((f) => ({ componentId: g.id, path: f.path })))
+    const files = changed
     const exact = files.find((f) => f.path === path)
     const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
     const match = exact ?? (suffix.length === 1 ? suffix[0] : undefined)
@@ -333,7 +331,11 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
         logSimple(projectId, task, { kind: 'action', action: 'mergeApproval', stage: 'merge' })
       }
     })
-  const items = model.items
+  // Until this launch's run reconciles (or its grace expires), an old slot's result is history.
+  const items =
+    launch && now === undefined
+      ? model.items.filter((i) => i.kind !== 'result' || i.result !== launch.stage)
+      : model.items
   const grouped = sections(items, model.records)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   return (
@@ -389,6 +391,7 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
                   latest={latest}
                   working={state.busyAgent?.id === item.sessionId}
                   worktree={worktree.path}
+                  changed={changed}
                   openFile={(file) =>
                     useSimpleUi.getState().patch(key, { changes: true, diff: file })
                   }
@@ -480,20 +483,22 @@ export default function SimpleChat({ reader }: { reader: ReturnType<typeof useSi
             Starting {pending === 'build' ? 'build' : pending}…
           </p>
         )}
-        {!launching && state.prompt && (
+        {!launching && (state.prompt || options) && (
           <div className="simple-step" data-step={state.step}>
-            <p>{state.prompt.text}</p>
-            {state.prompt.actions.map((b) => (
-              <button disabled={!!pending} key={b.action} onClick={() => act(b.action)}>
-                {b.label}
-              </button>
-            ))}
+            {state.prompt && <p>{state.prompt.text}</p>}
+            <div className="simple-step-actions">
+              {state.prompt?.actions.map((b) => (
+                <button disabled={!!pending} key={b.action} onClick={() => act(b.action)}>
+                  {b.label}
+                </button>
+              ))}
+              {options && (
+                <button className="simple-options" onClick={() => setDialog('review')}>
+                  Options…
+                </button>
+              )}
+            </div>
           </div>
-        )}
-        {!launching && ['built', 'reviewed', 'fixed'].includes(state.step) && (
-          <button className="simple-options" onClick={() => setDialog('review')}>
-            Options…
-          </button>
         )}
         {failure && <p role="alert">{failure}</p>}
       </div>

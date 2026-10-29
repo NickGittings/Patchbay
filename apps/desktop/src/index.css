@@ -424,8 +424,22 @@ input[type='radio'] {
   border: 1px solid var(--border);
   border-radius: 9px;
 }
+/* Map, Stories and Chat's Changes put these tabs at one spot: the map's panel sits as far in as
+   the other two headers pad, and both headers are the same height. */
+.react-flow__panel.view-tabs-panel {
+  margin: 12px;
+}
+.view-tabs-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
 .view-tabs button {
   color: var(--muted);
+  white-space: nowrap;
   background: none;
   border: none;
 }
@@ -2218,6 +2232,25 @@ button.review-name:hover:not(:disabled) {
 .change-file-row {
   display: flex;
   align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+}
+/* The row's open and reveal buttons share its hover and selection highlight. */
+.change-file-row:has(> .change-row:hover:not(:disabled)) {
+  background: var(--panel-2);
+}
+.change-file-row:has(> .change-row.active),
+.change-file-row:has(> .change-row.active:hover:not(:disabled)) {
+  background: var(--accent-soft);
+}
+.change-file-row > .change-row.active,
+.change-file-row > .change-row:hover:not(:disabled),
+.change-file-row > .change-row.active:hover:not(:disabled) {
+  background: transparent;
+}
+.change-file-action,
+.change-file-action:hover:not(:disabled) {
+  border-color: transparent;
 }
 .file-tree-row > .file-tree-entry,
 .change-file-row > .change-row {
@@ -2655,6 +2688,10 @@ kbd {
 .review-findings-button.on:hover:not(:disabled) {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* Marks the diff side for arrow-key stepping without adding a layout box. */
+.review-pane {
+  display: contents;
 }
 .review-diff-pane {
   display: flex;

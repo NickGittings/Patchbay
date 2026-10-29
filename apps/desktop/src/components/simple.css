@@ -93,8 +93,17 @@
   margin: 16px 0;
   padding: 12px 0;
 }
-.simple-step button {
-  margin-right: 8px;
+.simple-step > p {
+  margin: 0 0 8px;
+}
+.simple-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.simple-step-actions button {
+  white-space: nowrap;
 }
 .simple-terminal-drawer {
   /* The pane's terminal area is `flex: 1` around an absolute host, so it needs a flex parent. */
@@ -130,13 +139,20 @@
 }
 .simple-composer-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   margin-top: 8px;
 }
 .simple-composer-controls > span {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   color: var(--muted);
+}
+/* Labels never wrap inside a button, so every button in the row keeps one height. */
+.simple-composer-controls button,
+.simple-queued button {
+  white-space: nowrap;
 }
 .simple-mentions {
   display: flex;
@@ -149,13 +165,6 @@
   flex-direction: column;
   min-height: 0;
 }
-.simple-diff > header {
-  display: flex;
-  padding: 8px;
-  gap: 12px;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-}
 .simple-diff-body {
   flex: 1;
   display: flex;
@@ -164,7 +173,6 @@
 .simple-diff-body aside {
   width: 30%;
   box-sizing: border-box;
-  padding: 0 10px;
   min-width: 160px;
   overflow: auto;
   border-right: 1px solid var(--border);
@@ -216,15 +224,19 @@
   display: none;
 }
 
+/* Headings start where the rows' kind pills do (2px accent bar + 18px padding). */
 .simple-diff-body aside h3 {
-  padding: 0 8px;
+  margin: 0;
+  padding: 10px 12px 4px 20px;
   font-size: 12px;
-}
-.simple-diff > header > span {
-  min-width: 0;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.simple-diff-body aside .change-list {
+  height: auto;
+  overflow: visible;
 }
 .simple-section {
   margin: 8px 0;
@@ -237,19 +249,39 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.simple-edited {
+/* A link to the diff, not a control that might be disabled. */
+.simple-edited,
+.simple-edited:hover:not(:disabled) {
   display: block;
-  color: var(--muted);
   max-width: 100%;
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin: 8px 0;
+}
+.simple-edited:hover:not(:disabled) {
+  text-decoration: underline;
 }
 .simple-queued {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
   color: var(--muted);
+}
+.simple-queued > span {
+  flex: 1 1 160px;
+  min-width: 0;
 }

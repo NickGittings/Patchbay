@@ -52,11 +52,23 @@ export function promptReady(session: SessionState | undefined, submittedMs?: num
     (submittedMs === undefined || agent.sinceMs > submittedMs)
   )
 }
+/**
+ * Mirrors the service's `prompt_forceable`: Send anyway types only into a hook-confirmed turn
+ * that is working. A permission dialog may be on screen during `needsInput` or a Codex request's
+ * automatic-review grace (`approvalPending`), where the pasted Enter would approve it, and an
+ * unconfirmed state (after Esc, or without hooks) can't rule one out.
+ */
+export function forceable(session: SessionState | undefined) {
+  if (!session?.running || session.disconnected || session.interrupted) return false
+  const agent = session.status?.agent
+  return !!agent?.authoritative && agent.state === 'working' && !agent.approvalPending
+}
 /** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
 export type HooksNotice = 'missing' | 'failed' | 'unsupported'
 /**
- * The composer's primary action and status for a nonempty draft. Busy agents with hooks queue
- * until their next ready prompt. A hook-confirmed ready prompt is sendable whatever the
+ * The composer's primary action and status for a nonempty draft. Agents whose hooks confirm the
+ * turn (working, asking for input, or a submission not yet acknowledged) queue until their next
+ * ready prompt; an unconfirmed state, such as after Esc, may never report one, so it doesn't. A hook-confirmed ready prompt is sendable whatever the
  * installed-hooks check says, since a session's login shell may point the provider at another
  * configuration; that check refuses only starting or resuming an agent, which could never report
  * a ready prompt without hooks.
@@ -79,7 +91,7 @@ export function composerStatus({
   ready: boolean
 }): { label: string; sendable: boolean; action: 'send' | 'queue' | 'none'; notice?: HooksNotice } {
   if (pending) return { label: 'Waiting for ready prompt…', sendable: false, action: 'none' }
-  if (!connected || session?.disconnected || session?.interrupted)
+  if (!connected || (session?.running && (session.disconnected || session.interrupted)))
     return { label: 'Session service disconnected', sendable: false, action: 'none' }
   const running = !!session?.running
   if (running && ready) return { label: 'Ready', sendable: true, action: 'send' }
@@ -106,20 +118,21 @@ export function composerStatus({
     if (installed !== true) return { label: needsHooks, sendable: false, action: 'none', notice }
     return { label: 'Send to start or resume', sendable: true, action: 'send' }
   }
+  // Only a hook-confirmed turn reports its end; Esc or an answered prompt leaves no hook to wait on.
+  const queueable = !!agent?.authoritative && agent.state !== 'ended'
   return {
     label:
       agent?.state === 'needsInput'
         ? 'Answer in terminal'
-        : agent?.authoritative
+        : queueable
           ? 'Agent is working'
           : !reporting && installed === false
             ? needsHooks
             : agent
-              ? // Esc or an answered prompt: no hook confirms the prompt until typing.
-                'Not confirmed ready: continue in its terminal'
+              ? 'Not confirmed ready: continue in its terminal'
               : 'Waiting for the agent',
-    sendable: !!(reporting || installed === true),
-    action: reporting || installed === true ? 'queue' : 'none',
+    sendable: queueable,
+    action: queueable ? 'queue' : 'none',
     notice,
   }
 }
@@ -161,11 +174,10 @@ export async function deliverPrompt(
       c.generation !== context.generation
     )
       throw new Error('The worktree or recipient changed. Your draft was kept.')
-    if (
-      force &&
-      (!port.session()?.running || port.session()?.disconnected || port.session()?.interrupted)
-    )
-      throw new Error('The session is unavailable. Your draft was kept.')
+    if (force && !forceable(port.session()) && !promptReady(port.session(), submittedMs))
+      throw new Error(
+        'The agent is not confirmed working, or is waiting for an answer. Your draft was kept.',
+      )
     if (!force && !promptReady(port.session(), submittedMs))
       throw new Error('The agent is not at a ready prompt. Your draft was kept.')
   }

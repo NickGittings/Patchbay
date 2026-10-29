@@ -64,7 +64,7 @@
       'Full Navigation is pressed in Chat',
     )
     const composer = document.querySelector('[aria-label="Message agent"]')
-    for (const options of [{ shiftKey: true }, { isComposing: true }]) {
+    for (const options of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
       const enter = new KeyboardEvent('keydown', {
         key: 'Enter',
         bubbles: true,
@@ -74,24 +74,29 @@
       composer.dispatchEvent(enter)
       assert(!enter.defaultPrevented, 'newline or IME Enter was captured by Send')
     }
-    input(composer, '@a')
+    input(composer, 'Plan the fixture feature @a')
     await until('mention options', () => document.querySelector('.simple-composer [role="option"]'))
     composer.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     )
-    await until('Enter selects mention', () => composer.value === '@app')
+    await until('Enter selects mention', () => composer.value === 'Plan the fixture feature @app')
     assert(!state().simple?.log.some((e) => e.kind === 'prompt'), 'mention Enter sent a prompt')
-    input(document.querySelector('[aria-label="Message agent"]'), 'Plan the fixture feature')
-    click(
-      await until('Send ready', () => {
-        const b = button('Start') ?? button('Send')
-        return b && !b.disabled && b
-      }),
+    await until(
+      'completed mention closes autocomplete',
+      () => !document.querySelector('.simple-composer [role="option"]'),
+    )
+    await until('Send ready', () => {
+      const b = button('Start') ?? button('Send')
+      return b && !b.disabled
+    })
+    composer.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     )
     const firstPrompt = await until('planner working', () => {
       const entry = state().simple?.log.find((e) => e.kind === 'prompt')
       return entry && state().sessions[entry.sessionId]?.status?.agent?.state === 'working' && entry
     })
+    assert(firstPrompt.mentions.includes('app'), 'consecutive Enter lost mention scope')
     input(document.querySelector('[aria-label="Message agent"]'), 'Queued fixture follow-up')
     await until('Queue primary action', () => button('Queue') && !button('Queue').disabled)
     let queuedShown = false
@@ -196,6 +201,19 @@
     const key = (key, target = document.activeElement ?? document.body) =>
       target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
     document.activeElement?.blur()
+    const beforeClick = selectedPath()
+    const untouched = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.body.dispatchEvent(untouched)
+    await sleep(100)
+    assert(
+      !untouched.defaultPrevented && selectedPath() === beforeClick,
+      'body arrow stepped a file before any click',
+    )
+    pane.querySelector('aside h3').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     key('ArrowLeft')
     await until('body arrow moves selection', () => selectedPath() === 'src/app.txt')
     click(pane.querySelector('.change-row[data-path="src/another.txt"]'))
@@ -339,7 +357,9 @@
       document.querySelector('[aria-label="Message agent"]'),
       'Do not answer the permission dialog',
     )
-    await until('force disabled during input wait', () => button('Answer in terminal')?.disabled)
+    // The drawer already shows the asking terminal, and nothing may type into its dialog.
+    await until('force unavailable during input wait', () => !button('Send anyway'))
+    assert(!button('Answer in terminal'), 'Answer in terminal shown beside an open drawer')
     assert(button('Queue') && !button('Queue').disabled, 'input wait cannot queue a follow-up')
     input(document.querySelector('[aria-label="Message agent"]'), '')
     const drawer = document.querySelector('.simple-terminal-drawer .xterm')

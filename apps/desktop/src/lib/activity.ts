@@ -98,17 +98,41 @@ export function activityFile(
     return { componentId: '@project', path: relativeTo(file, roots.worktree) }
   return undefined
 }
-/** The latest write reported by hooks, resolved in the worktree's change-list coordinates. */
+/**
+ * The newest write reported by hooks, resolved in the worktree's change-list coordinates, with its
+ * time. With `listed`, only a file still in that change list counts: a write since committed or
+ * reverted, or outside the change list, never names a file the list can't show.
+ */
+export function newestWrite(
+  record: SessionRecord,
+  session: Pick<SessionState, 'activity'> | undefined,
+  components: readonly Pick<Component, 'id' | 'path'>[],
+  worktree: string,
+  listed?: readonly { componentId: string; path: string }[],
+) {
+  const writes = session?.activity
+    ?.filter(writeActivity)
+    .toSorted((a, b) => b.atMs - a.atMs || b.sequence - a.sequence)
+  if (!writes?.length) return undefined
+  const roots = activityRoots(components, worktree)
+  for (const activity of writes) {
+    const file = activityFile(activity, record, roots, worktree)
+    if (!file) continue
+    if (listed && !listed.some((l) => l.componentId === file.componentId && l.path === file.path))
+      continue
+    return { file, atMs: activity.atMs }
+  }
+  return undefined
+}
+/** The latest write reported by hooks (see `newestWrite`), without its time. */
 export function latestWrite(
   record: SessionRecord,
   session: Pick<SessionState, 'activity'> | undefined,
   components: readonly Pick<Component, 'id' | 'path'>[],
   worktree: string,
+  listed?: readonly { componentId: string; path: string }[],
 ) {
-  const activity = session?.activity
-    ?.filter(writeActivity)
-    .toSorted((a, b) => b.atMs - a.atMs || b.sequence - a.sequence)[0]
-  return activity ? activityFile(activity, record, components, worktree) : undefined
+  return newestWrite(record, session, components, worktree, listed)?.file
 }
 
 /** Which role agent a session is, for the map's chips; `null` for scopes that don't work on files. */

@@ -1,4 +1,5 @@
 import { latestWrite } from '../lib/activity'
+import type { ChangeRef } from '../lib/changeNav'
 import type { SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
@@ -14,6 +15,7 @@ export default function SimpleAgent({
   latest,
   working,
   worktree,
+  changed,
   openFile,
 }: {
   record?: SessionRecord
@@ -22,6 +24,8 @@ export default function SimpleAgent({
   latest: boolean
   working: boolean
   worktree: string
+  /** The Changes tab's files: an edit links only to a file the tab still lists. */
+  changed: readonly ChangeRef[]
   openFile: (file: SimpleDiff) => void
 }) {
   const session = useStore((s) => s.sessions[sessionId])
@@ -33,6 +37,7 @@ export default function SimpleAgent({
           session,
           nodes.map((n) => ({ id: n.id, path: n.data.path })),
           worktree,
+          changed,
         )
       : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')

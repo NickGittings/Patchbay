@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
 import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
 import { activeWorktree } from './tasks'
 import { relatedSession } from './simple'
+import { changeGroups } from './changeGroups'
+import { changeRefs } from './changeNav'
 import { useReviewFindings } from './useReviewFindings'
 import type {
   MergeOutcome,
@@ -27,6 +29,8 @@ interface Artifacts {
 /** Disk-backed reader. Late replies never cross project/worktree boundaries. */
 export function useSimpleData(visible: boolean) {
   const projectId = useStore((s) => s.project?.id)
+  const root = useStore((s) => s.project?.root)
+  const nodes = useStore((s) => (visible ? s.nodes : undefined))
   const task = useStore((s) => s.activeTask)
   const worktree = useStore(activeWorktree)
   const revision = useStore((s) => s.gitChanges)
@@ -169,9 +173,27 @@ export function useSimpleData(visible: boolean) {
     }
   }, [visible, projectId, task, worktree, key])
   const current = data?.key === key ? data : undefined
-  const source = current?.worktrees.find(
-    (w) => w.path === (worktree ?? useStore.getState().project?.root),
+  const source = current?.worktrees.find((w) => w.path === (worktree ?? root))
+  const scope = useMemo(
+    () => ({
+      projectId: projectId ?? '',
+      task,
+      path: source?.path ?? worktree ?? root ?? '',
+      branch: source?.branch,
+    }),
+    [projectId, task, source?.path, source?.branch, worktree, root],
   )
+  const review = current?.review
+  const groups = useMemo(() => changeGroups(nodes ?? [], review), [nodes, review])
+  const files = useMemo(() => changeRefs(groups), [groups])
   const findings = useReviewFindings(projectId, source?.branch ?? undefined, visible, revision)
-  return { data: current, source, findings, error: error?.key === key ? error.text : '' }
+  return {
+    data: current,
+    source,
+    scope,
+    groups,
+    files,
+    findings,
+    error: error?.key === key ? error.text : '',
+  }
 }

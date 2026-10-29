@@ -1,13 +1,11 @@
 import { useStore } from '../store'
-import { lastSubmission, promptReady, sendToSession } from './simpleComposer'
-import { EMPTY_SIMPLE_UI, useSimpleUi, type QueuedPrompt } from './simpleUi'
+import { forceable, lastSubmission, promptReady, sendToSession } from './simpleComposer'
+import { appendDraft, EMPTY_SIMPLE_UI, useSimpleUi, type QueuedPrompt } from './simpleUi'
 
 function restore(key: string, queued: QueuedPrompt, error?: string) {
   const ui = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
-  useSimpleUi.getState().patch(key, {
-    draft: [ui.draft, queued.text].filter(Boolean).join('\n\n'),
-    error,
-  })
+  useSimpleUi.getState().patch(key, appendDraft(ui, queued))
+  if (error) useStore.getState().setMessage(error)
 }
 
 export function cancelQueued(key: string) {
@@ -30,17 +28,23 @@ export async function flushQueued(key: string, force = false) {
   }
   if (!state.serviceConnected || session.disconnected || session.interrupted) return
   if (
-    force
-      ? session.status?.agent?.state === 'needsInput'
-      : !promptReady(session, lastSubmission(queued.sessionId, queued.generation))
+    !promptReady(session, lastSubmission(queued.sessionId, queued.generation)) &&
+    !(force && forceable(session))
   )
     return
-  useSimpleUi.getState().patch(key, { queued: undefined, error: undefined })
+  useSimpleUi.getState().patch(key, { queued: undefined })
   const [projectId, task] = JSON.parse(key) as [string, string | null]
   try {
-    await sendToSession({ projectId, task, sid: queued.sessionId, ...queued, force })
+    await sendToSession({
+      projectId,
+      task,
+      sid: queued.sessionId,
+      ...queued,
+      mentions: [...new Set(queued.mentions.map((m) => m.id))],
+      force,
+    })
   } catch (error) {
-    restore(key, queued, `${String(error)}. Your queued message was kept as a draft.`)
+    restore(key, queued, String(error))
   }
 }
 
