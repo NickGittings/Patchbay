@@ -1133,18 +1133,27 @@ test('an Auto run alerts once per pause, links to its panel and drops out when r
   expect(mock.state.notificationToast?.message).toContain('Auto mode failed')
 })
 
-test('Auto pauses respect preferences, skip input waits and restored states', async () => {
-  setAuto(autoRun({ status: 'failed' }))
-  stop = followNotifications()
-  // Already failed when the follower started.
-  setAuto(autoRun({ status: 'failed', reason: 'Still failed' }))
-  // Its agent's own input request alerts instead.
-  setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
-  update({ notifications: { ...DEFAULT_NOTIFICATIONS, needsInput: false } })
-  setAuto(autoRun({ status: 'waitingOnYou', stage: 'fix', waitingFor: 'fixBudget' }))
-  await vi.advanceTimersByTimeAsync(750)
-  expect(mock.toast).not.toHaveBeenCalled()
-})
+test.each([true, false])(
+  'Auto pauses skip input waits and restored states, and launch failures follow the failed preference (%s)',
+  async (failed) => {
+    setAuto(autoRun({ status: 'failed' }))
+    stop = followNotifications()
+    // Already failed when the follower started.
+    setAuto(autoRun({ status: 'failed', reason: 'Still failed' }))
+    // Its agent's own input request alerts instead.
+    setAuto(autoRun({ status: 'waitingOnYou', waitingFor: 'agentInput' }))
+    update({ notifications: { ...DEFAULT_NOTIFICATIONS, needsInput: false } })
+    setAuto(autoRun({ status: 'waitingOnYou', stage: 'fix', waitingFor: 'fixBudget' }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).not.toHaveBeenCalled()
+
+    update({ notifications: { ...DEFAULT_NOTIFICATIONS, failed, needsInput: !failed } })
+    setAuto(autoRun())
+    setAuto(autoRun({ status: 'failed', stage: 'implement', reason: 'Launch was not confirmed' }))
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mock.toast).toHaveBeenCalledTimes(failed ? 1 : 0)
+  },
+)
 
 function setTaskAuto(run: AutoRun, tasks: { id: string; title: string }[] = []) {
   const other = mock.state.projects.other!
@@ -1255,29 +1264,23 @@ test('a revoked grant is asked for again after a failed send', async () => {
   expect(mock.request).toHaveBeenCalledTimes(2)
 })
 
-test.each(['needsUser'] as const)(
-  'a background Auto %s pause alerts once and Resume removes its link',
-  async (pauseKind) => {
-    setAuto(autoRun())
-    stop = followNotifications()
-    setAuto(autoRun({ status: 'paused', pauseKind, reason: 'Resume to continue' }))
+test('a needsUser pause alerts once from running or a deliberate pause; Resume removes its link', async () => {
+  setAuto(autoRun())
+  stop = followNotifications()
+  for (const initial of [autoRun(), autoRun({ status: 'paused', pauseKind: 'user' })]) {
+    setAuto(initial)
+    const paused = autoRun({ status: 'paused', pauseKind: 'needsUser', reason: 'Launch refused' })
+    setAuto(paused)
     await vi.advanceTimersByTimeAsync(750)
     expect(mock.toast).toHaveBeenCalledOnce()
     expect(mock.state.notificationToast?.sessions[0].auto).toBeDefined()
-    setAuto(autoRun({ status: 'paused', pauseKind, reason: 'Resume to continue' }))
+    setAuto(paused)
     await vi.advanceTimersByTimeAsync(750)
     expect(mock.toast).toHaveBeenCalledOnce()
     setAuto(autoRun())
     expect(mock.state.notificationToast).toBeNull()
-  },
-)
-
-test('changing a deliberate pause to a needsUser pause alerts', async () => {
-  setAuto(autoRun({ status: 'paused', pauseKind: 'user' }))
-  stop = followNotifications()
-  setAuto(autoRun({ status: 'paused', pauseKind: 'needsUser', reason: 'Launch refused' }))
-  await vi.advanceTimersByTimeAsync(750)
-  expect(mock.toast).toHaveBeenCalledOnce()
+    mock.toast.mockClear()
+  }
 })
 
 test.each(['inactive', 'interrupted', 'restored', 'user'] as const)(
@@ -1289,17 +1292,5 @@ test.each(['inactive', 'interrupted', 'restored', 'user'] as const)(
     await vi.advanceTimersByTimeAsync(750)
     expect(mock.toast).not.toHaveBeenCalled()
     expect(mock.send).not.toHaveBeenCalled()
-  },
-)
-
-test.each([true, false])(
-  'Auto launch failures respect the failed preference (%s)',
-  async (failed) => {
-    update({ notifications: { ...DEFAULT_NOTIFICATIONS, failed, needsInput: !failed } })
-    setAuto(autoRun())
-    stop = followNotifications()
-    setAuto(autoRun({ status: 'failed', stage: 'implement', reason: 'Launch was not confirmed' }))
-    await vi.advanceTimersByTimeAsync(750)
-    expect(mock.toast).toHaveBeenCalledTimes(failed ? 1 : 0)
   },
 )

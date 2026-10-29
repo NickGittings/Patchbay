@@ -310,6 +310,17 @@ function load() {
   vi.mocked(ipc.reviewRead).mockResolvedValue(null)
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
 }
+function setRun(patch: Partial<AutoRun> = {}) {
+  useStore.getState().patchTask('p', 't', { auto: run(patch) })
+}
+async function withFollower(check: (dispose: () => void) => Promise<void>) {
+  const dispose = followAuto()
+  try {
+    await check(dispose)
+  } finally {
+    dispose()
+  }
+}
 const flush = async () => {
   for (let i = 0; i < 50; i++) await Promise.resolve()
 }
@@ -339,8 +350,7 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     agent('working', 1001)
     return 's'
   })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'Goal',
       effort: 'light',
@@ -366,9 +376,7 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     mergeNow('p', 't')
     await flush()
     expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
-  } finally {
-    stop()
-  }
+  })
 })
 test('parallel reviewers share a round; the run waits for all, then stops the others', async () => {
   vi.useFakeTimers()
@@ -401,8 +409,7 @@ test('parallel reviewers share a round; the run waits for all, then stops the ot
     set(reviewer('working', 1001), reviewer('working', 1001))
     return request.lane === 'claude' ? 'lane' : 's'
   })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'Goal',
       effort: 'light',
@@ -437,9 +444,7 @@ test('parallel reviewers share a round; the run waits for all, then stops the ot
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', laneSessions: undefined })
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
     expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
-  } finally {
-    stop()
-  }
+  })
 })
 
 function reviewSession(
@@ -462,20 +467,17 @@ test.each(['working', 'review'] as const)(
     vi.useFakeTimers()
     vi.setSystemTime(2000)
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        sessionId: 's',
-        sessionStartedMs: 1000,
-        turnSince: 1000,
-        launchAtMs: 1000,
-        laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-      }),
+    setRun({
+      sessionId: 's',
+      sessionStartedMs: 1000,
+      turnSince: 1000,
+      launchAtMs: 1000,
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
     })
     useStore.setState({
       sessions: { s: reviewSession(primary), lane: reviewSession('needsInput') },
     })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         status: 'waitingOnYou',
@@ -494,9 +496,7 @@ test.each(['working', 'review'] as const)(
       })
       await flush()
       expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -513,22 +513,17 @@ test.each(['crashed', 'ended', 'stopped', 'relaunched', 'forgotten'] as const)(
       serviceConnected: true,
       sessions: { s: reviewSession('review'), ...(failure === 'forgotten' ? {} : { lane }) },
     })
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        sessionId: 's',
-        turnSince: 1000,
-        laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-      }),
+    setRun({
+      sessionId: 's',
+      turnSince: 1000,
+      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
     })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.status).toBe('paused')
       expect(autoRun('p', 't')?.reason).toContain('Reviewer lane')
       expect(autoRun('p', 't')?.reason).not.toContain('verdict')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -553,9 +548,8 @@ test.each(['review', 'implement'] as const)(
       ] as SessionRecord[],
     })
     vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-    useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-    const dispose = followAuto()
-    try {
+    setRun({ sessionId: 's', turnSince: 1000 })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         stage,
@@ -571,9 +565,7 @@ test.each(['review', 'implement'] as const)(
       })
       await flush()
       expect(autoRun('p', 't')?.stage).toBe(stage === 'review' ? 'mergeGate' : 'review')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -589,41 +581,34 @@ test('Resume keeps the original primary while a second reviewer needs input', as
       spec: { cwd: tree.path },
     })) as SessionRecord[],
   })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'paused',
-      sessionId: 's',
-      turnSince: 1000,
-      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-    }),
+  setRun({
+    status: 'paused',
+    sessionId: 's',
+    turnSince: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')).toMatchObject({ sessionId: 's', stage: 'review' })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'waitingOnYou',
       sessionId: 's',
       inputSessionId: 'lane',
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Resume keeps completed reviewers while checking changed work', async () => {
   load()
   useStore.setState({ sessions: { s: reviewSession('review'), lane: reviewSession('review') } })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'paused',
-      effort: 'light',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-    }),
+  setRun({
+    status: 'paused',
+    effort: 'light',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')).toMatchObject({
@@ -648,8 +633,7 @@ test.each(['stop', 'skip', 'finish'] as const)(
       return request.lane === 'claude' ? 'lane' : 's'
     })
     vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ startedMs: 1000, running: true } as never)
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await startAuto('p', 't', {
         ...run(),
         effort: 'light',
@@ -671,9 +655,7 @@ test.each(['stop', 'skip', 'finish'] as const)(
       }
       await flush()
       expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -681,9 +663,8 @@ test('needs input resumes only on authoritative work; interruption pauses', asyn
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-  const stop = followAuto()
-  try {
+  setRun({ sessionId: 's', turnSince: 1000 })
+  await withFollower(async () => {
     agent('needsInput', 1100)
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', waitingFor: 'agentInput' })
@@ -699,17 +680,14 @@ test('needs input resumes only on authoritative work; interruption pauses', asyn
     agent('idle', 1400)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
-  } finally {
-    stop()
-  }
+  })
 })
 test('inactive worktrees pause and manual changes are picked up on resume', async () => {
   vi.useFakeTimers()
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ effort: 'light' }) })
+  setRun({ effort: 'light' })
   useStore.getState().setActiveTask(null, true)
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
     expect(useStore.getState().auto).toBeNull()
@@ -719,15 +697,11 @@ test('inactive worktrees pause and manual changes are picked up on resume', asyn
     useStore.getState().setActiveTask('t')
     await resumeAuto('p', 't')
     expect(autoRun('p', 't')?.stage).toBe('fix')
-  } finally {
-    stop()
-  }
+  })
 })
 test('skipping review still requires explicit merge approval', () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ status: 'paused', merge: { mode: 'auto', destinationBranch: 'main' } }),
-  })
+  setRun({ status: 'paused', merge: { mode: 'auto', destinationBranch: 'main' } })
   skipStage('p', 't')
   expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
 })
@@ -751,8 +725,7 @@ test.each([false, true])(
       sessionId: 'implementation',
       requestId: 'r',
     })
-    const stop = followAuto()
-    try {
+    await withFollower(async () => {
       await startAuto('p', 't', {
         goal: 'Implement the description',
         effort: 'standard',
@@ -788,9 +761,7 @@ test.each([false, true])(
         simpleMode ? 'stay' : 'follow',
         { projectId: 'p', task: 't' },
       )
-    } finally {
-      stop()
-    }
+    })
   },
 )
 
@@ -819,8 +790,7 @@ test('validation uses the pinned worktree and keeps failed results when the user
     useStore.getState().setActiveTask(null, true)
     return report
   })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'Goal',
       effort: 'standard',
@@ -843,9 +813,7 @@ test('validation uses the pinned worktree and keeps failed results when the user
     expect(autoRun('p', 't')?.validationFindings).toContain('[high] Validation failed')
     expect(useStore.getState().taskWorkspaces.t.graphActionReport).toEqual(report)
     expect(jobs.startReviewAgent).not.toHaveBeenCalled()
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('snapshot includes component agents below the worktree root and ignores exited working reports', async () => {
@@ -889,20 +857,16 @@ test('snapshot includes component agents below the worktree root and ignores exi
 test('skipping a paused active step stops its tracked agent before the next handoff', async () => {
   load()
   agent('working', 1000)
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ status: 'paused', stage: 'fix', sessionId: 's', sessionOwned: true }),
-  })
+  setRun({ status: 'paused', stage: 'fix', sessionId: 's', sessionOwned: true })
   // Without the launch's start time it isn't provably Auto's, so it keeps running.
   await skipStage('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'paused',
-      stage: 'fix',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-    }),
+  setRun({
+    status: 'paused',
+    stage: 'fix',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
   })
   await skipStage('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -917,9 +881,8 @@ test('provider startup idle waits for working, and unconfirmed interruption then
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-  const stop = followAuto()
-  try {
+  setRun({ sessionId: 's', turnSince: 1000 })
+  await withFollower(async () => {
     agent('idle', 1100)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('running')
@@ -928,44 +891,36 @@ test('provider startup idle waits for working, and unconfirmed interruption then
     agent('idle', 1300, false)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('denying an agent prompt pauses even when no provider hook confirms the denial', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-  const stop = followAuto()
-  try {
+  setRun({ sessionId: 's', turnSince: 1000 })
+  await withFollower(async () => {
     agent('needsInput', 1100)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
     agent('idle', 1200, false)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('service-side forgetting pauses the run instead of waiting forever for a removed session', async () => {
   vi.useFakeTimers()
   load()
   useStore.setState({ serviceConnected: true, sessionRecords: [], sessions: {} })
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 'forgotten' }) })
-  const stop = followAuto()
-  try {
+  setRun({ sessionId: 'forgotten' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
       reason: 'The tracked session was forgotten',
     })
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('validation findings name failed terminals, not whole reports', () => {
@@ -997,14 +952,11 @@ test('starting at Merge on an unreviewed branch waits for approval', async () =>
     stage: 'merge',
   })
   expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
     expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('the project-wide planner belongs to a run only while it plans or tracks it', async () => {
@@ -1051,7 +1003,7 @@ test('the project folder resolves to the current worktree and reviews against th
 
 test('stopping Auto cancels only a validation it started', () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate', status: 'paused' }) })
+  setRun({ stage: 'validate', status: 'paused' })
   stopAuto('p', 't')
   expect(ipc.graphValidationCancel).not.toHaveBeenCalled()
   expect(autoRun('p', 't')?.status).toBe('stopped')
@@ -1080,20 +1032,15 @@ test('findings against a different base cannot authorize automatic merging', asy
 
 test('skipping a stale review clears the old head and permits an approved merge', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ status: 'paused', reviewedHead: 'before-fix' }),
-  })
+  setRun({ status: 'paused', reviewedHead: 'before-fix' })
   await skipStage('p', 't')
   expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', reviewedHead: undefined })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     mergeNow('p', 't')
     await flush()
     expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
     expect(autoRun('p', 't')?.status).toBe('running')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 function manualAgent() {
@@ -1125,22 +1072,19 @@ test.each(['start', 'resume'] as const)(
         merge: { mode: 'ask', destinationBranch: 'main' },
       })
     else {
-      useStore.getState().patchTask('p', 't', { auto: run({ effort: 'light', status: 'paused' }) })
+      setRun({ effort: 'light', status: 'paused' })
       await resumeAuto('p', 't')
     }
     expect(autoRun('p', 't')?.sessionId).toBe('s')
     stopAuto('p', 't')
     expect(ipc.terminalStop).not.toHaveBeenCalled()
     await resumeAuto('p', 't')
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       agent('review', 1200)
       await flush()
       expect(jobs.startReviewAgent).toHaveBeenCalledTimes(1)
       expect(ipc.terminalStop).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -1152,9 +1096,7 @@ test('skipping an adopted agent and stopping a manually relaunched generation le
     .patchTask('p', 't', { auto: run({ status: 'paused', sessionId: 's', sessionOwned: false }) })
   await skipStage('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ sessionId: 's', sessionOwned: true, sessionStartedMs: 900 }),
-  })
+  setRun({ sessionId: 's', sessionOwned: true, sessionStartedMs: 900 })
   stopAuto('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
 })
@@ -1162,9 +1104,7 @@ test('skipping an adopted agent and stopping a manually relaunched generation le
 test('resuming preserves ownership only for the same Auto-launched generation', async () => {
   load()
   manualAgent()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ status: 'paused', sessionId: 's', sessionOwned: true, sessionStartedMs: 1000 }),
-  })
+  setRun({ status: 'paused', sessionId: 's', sessionOwned: true, sessionStartedMs: 1000 })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')?.sessionOwned).toBe(true)
   stopAuto('p', 't')
@@ -1176,11 +1116,8 @@ test('terminal output cannot cause repeated Git snapshots while findings are pen
   vi.setSystemTime(1000)
   load()
   agent('review', 1100)
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ sessionId: 's', sessionOwned: true, turnSince: 1000, launchAtMs: 1000 }),
-  })
-  const dispose = followAuto()
-  try {
+  setRun({ sessionId: 's', sessionOwned: true, turnSince: 1000, launchAtMs: 1000 })
+  await withFollower(async () => {
     await flush()
     const snapshots = vi.mocked(ipc.gitWorktrees).mock.calls.length
     expect(snapshots).toBe(1)
@@ -1195,9 +1132,7 @@ test('terminal output cannot cause repeated Git snapshots while findings are pen
     await vi.advanceTimersByTimeAsync(5000)
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('all changed components are sent in one validation request', async () => {
@@ -1218,8 +1153,7 @@ test('all changed components are sent in one validation request', async () => {
     plan: { stages: [], skipped: [], sessions: [] },
     results: [],
   } as unknown as import('../types').ActionReport)
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'Goal',
       effort: 'standard',
@@ -1233,9 +1167,7 @@ test('all changed components are sent in one validation request', async () => {
       { kind: 'validateChanged', componentIds: [a, b] },
       't',
     )
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a new goal plans before implementing an unrelated saved plan or proposal', async () => {
@@ -1300,9 +1232,8 @@ test('needsInput can go directly to review without an observed working tick', as
   vi.setSystemTime(1000)
   load()
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
-  const stop = followAuto()
-  try {
+  setRun({ sessionId: 's', turnSince: 1000 })
+  await withFollower(async () => {
     agent('needsInput', 1100)
     await flush()
     expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
@@ -1313,9 +1244,7 @@ test('needsInput can go directly to review without an observed working tick', as
     await flush()
     await vi.advanceTimersByTimeAsync(5000)
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
-  } finally {
-    stop()
-  }
+  })
 })
 
 function plannerRecord() {
@@ -1362,8 +1291,7 @@ test('Auto stops a planner it took over before handing off the completed plan', 
   const { implementPlannerPlan } = await import('./planHandoff')
   vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: 'implementation', requestId: 'r' })
   agent('review', 1200)
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     await vi.advanceTimersByTimeAsync(5000)
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -1371,9 +1299,7 @@ test('Auto stops a planner it took over before handing off the completed plan', 
     expect(vi.mocked(ipc.terminalStop).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(implementPlannerPlan).mock.invocationCallOrder[0],
     )
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('idle agent processes without a provider report do not count as working forever', async () => {
@@ -1427,9 +1353,8 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
         },
       ] as SessionRecord[],
     })
-    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
-    const dispose = followAuto()
-    try {
+    setRun({ stage })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         stage,
@@ -1440,9 +1365,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
       })
       expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid)
       expect(ipc.terminalStop).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -1453,9 +1376,8 @@ test('review launches survive a missing launch snapshot, owned only through thei
   vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
     useStore.setState({ sessions: { reviewer: { running: true } } })
   })
-  useStore.getState().patchTask('p', 't', { auto: run() })
-  const dispose = followAuto()
-  try {
+  setRun()
+  await withFollower(async () => {
     await flush()
     // Owned through its launch request, which no session record lists here.
     expect(autoRun('p', 't')).toMatchObject({
@@ -1477,24 +1399,19 @@ test('review launches survive a missing launch snapshot, owned only through thei
     await flush()
     expect(autoRun('p', 't')?.stage).toBe('mergeGate')
     expect(ipc.terminalStop).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Auto refuses an unconfirmed launch without recording a phantom session', async () => {
   load()
   vi.mocked(awaitSessions.reconcileFreshSessions).mockResolvedValue(undefined)
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'merge' }) })
-  const stop = followAuto()
-  try {
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'failed', pauseKind: undefined })
     expect(autoRun('p', 't')?.sessionId).toBeUndefined()
     expect(autoRun('p', 't')?.reason).toContain('launch was not confirmed')
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('shared planner is reserved while a launch is pending without session records', async () => {
@@ -1508,7 +1425,7 @@ test('shared planner is reserved while a launch is pending without session recor
         finish = () => resolve(undefined)
       }),
   )
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan' }) })
+  setRun({ stage: 'plan' })
   const stop = followAuto()
   try {
     await flush()
@@ -1542,11 +1459,8 @@ test('an unfinished merge keeps its agent for the user to answer', async () => {
   load()
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('inProgress')
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'merge', sessionId: 's', sessionOwned: true, turnSince: 1000 }),
-  })
-  const stop = followAuto()
-  try {
+  setRun({ stage: 'merge', sessionId: 's', sessionOwned: true, turnSince: 1000 })
+  await withFollower(async () => {
     agent('review', 1100)
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
@@ -1555,9 +1469,7 @@ test('an unfinished merge keeps its agent for the user to answer', async () => {
       sessionId: 's',
     })
     expect(ipc.terminalStop).not.toHaveBeenCalled()
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('blocking findings never authorize an automatic merge from a chosen stage', async () => {
@@ -1592,29 +1504,22 @@ test('validation clears its action state and pauses when the backend refuses it'
   vi.mocked(ipc.graphActionRun).mockRejectedValue(
     new Error('Another graph action is still running'),
   )
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate' }) })
-  const stop = followAuto()
-  try {
+  setRun({ stage: 'validate' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'validate', status: 'paused' })
     expect(autoRun('p', 't')?.reason).toContain('Another graph action is still running')
     expect(useStore.getState().graphAction).toBeNull()
     expect(useStore.getState().graphActionBusy).toBe(false)
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('skipping a fix whose budget ran out goes to the merge gate', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'fix', status: 'waitingOnYou', waitingFor: 'fixBudget', round: 1 }),
-  })
+  setRun({ stage: 'fix', status: 'waitingOnYou', waitingFor: 'fixBudget', round: 1 })
   await skipStage('p', 't')
   expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'fix', status: 'paused', sessionId: 'gone' }),
-  })
+  setRun({ stage: 'fix', status: 'paused', sessionId: 'gone' })
   await skipStage('p', 't')
   expect(autoRun('p', 't')?.stage).toBe('review')
 })
@@ -1646,8 +1551,7 @@ test('a planner that ends its turn without a new plan pauses instead of handing 
   vi.mocked(startTerminal).mockImplementation(async () => {
     useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
   })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'A new goal',
       effort: 'standard',
@@ -1682,9 +1586,7 @@ test('a planner that ends its turn without a new plan pauses instead of handing 
       status: 'paused',
       reason: 'Planner finished without saving a new plan',
     })
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('a new run on a branch whose earlier work is merged plans; a resumed one is done', () => {
@@ -1763,17 +1665,14 @@ test('another agent busy at the same stage is waited for, not tracked instead', 
     sessionRecords: [root('s', 'review', 1500), root('manual', 'working', 1400)] as never,
   })
   agent('review', 1500)
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      stage: 'implement',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-      turnSince: 1100,
-    }),
+  setRun({
+    stage: 'implement',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1100,
   })
-  const stop = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       stage: 'implement',
@@ -1782,16 +1681,12 @@ test('another agent busy at the same stage is waited for, not tracked instead', 
       reason: 'Waiting for another agent in this worktree to finish',
     })
     expect(ipc.terminalStop).not.toHaveBeenCalled()
-  } finally {
-    stop()
-  }
+  })
 })
 
 test('skipping validation drops its failures', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ status: 'paused', stage: 'validate', validationFindings: '[high] failed' }),
-  })
+  setRun({ status: 'paused', stage: 'validate', validationFindings: '[high] failed' })
   await skipStage('p', 't')
   expect(autoRun('p', 't')).toMatchObject({ stage: 'review', validationFindings: undefined })
 })
@@ -1807,9 +1702,8 @@ test.each(['start', 'resume'] as const)(
           finish = resolve
         }),
     )
-    useStore.getState().patchTask('p', 't', { auto: run() })
-    const dispose = followAuto()
-    try {
+    setRun()
+    await withFollower(async () => {
       await flush()
       expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
       stopAuto('p', 't')
@@ -1822,9 +1716,7 @@ test.each(['start', 'resume'] as const)(
       await flush()
       expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       expect(autoRun('p', 't')?.status).toBe('stopped')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -1832,7 +1724,7 @@ test.each(['stop', 'pause'] as const)(
   '%s cancels Resume while its Git snapshot is pending',
   async (how) => {
     load()
-    useStore.getState().patchTask('p', 't', { auto: run({ status: 'paused' }) })
+    setRun({ status: 'paused' })
     let finish!: (trees: Worktree[]) => void
     vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
       () =>
@@ -1848,13 +1740,10 @@ test.each(['stop', 'pause'] as const)(
     finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
     await pending
     expect(autoRun('p', 't')).toBe(stopped)
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(jobs.startReviewAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -1862,21 +1751,16 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
   'Merge now finishes a branch already %s by hand',
   async (outcome) => {
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' }),
-    })
+    setRun({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' })
     // The manual merge can change HEAD and delete the preset, too.
     useStore.setState({ devices: [] })
     vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       mergeNow('p', 't')
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -1896,10 +1780,9 @@ test('terminal output and unrelated store changes do not poll Auto; its timer st
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', turnSince: 1000 }) })
+  setRun({ sessionId: 's', turnSince: 1000 })
   agent('review', 1100)
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(ipc.gitReview).toHaveBeenCalledOnce()
     // No saved verdict yet: a repeated completion would otherwise poll again after 5s.
@@ -1921,9 +1804,7 @@ test('terminal output and unrelated store changes do not poll Auto; its timer st
     agent('working', 13000)
     await flush()
     expect(autoRun('p', 't')?.observedWorking).toBe(true)
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([undefined, 'validate', 'mergeGate', 'review'] as const)(
@@ -1948,7 +1829,7 @@ test.each([undefined, 'validate', 'mergeGate', 'review'] as const)(
 
 test('Pause cancels Resume while its integration check is pending', async () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ status: 'paused', effort: 'light' }) })
+  setRun({ status: 'paused', effort: 'light' })
   let finish!: (hooks: Awaited<ReturnType<typeof ipc.agentHooksCheck>>) => void
   vi.mocked(ipc.agentHooksCheck).mockImplementationOnce(
     () =>
@@ -1971,21 +1852,16 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
   async (outcome) => {
     vi.useFakeTimers()
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' }),
-    })
+    setRun({ stage: 'mergeGate', status: 'waitingOnYou', reviewedHead: 'old-head' })
     useStore.setState({ devices: [] })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
       vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2007,11 +1883,8 @@ test.each(['live', 'record'] as const)(
     }
     useStore.setState({ sessionRecords: [record] as never })
     agent('review', 1500)
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'implement', sessionId: 's', turnSince: 1100 }),
-    })
-    const dispose = followAuto()
-    try {
+    setRun({ stage: 'implement', sessionId: 's', turnSince: 1100 })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.reason).toContain('Waiting for another agent')
       const finished = {
@@ -2026,9 +1899,7 @@ test.each(['live', 'record'] as const)(
       else useStore.setState({ sessionRecords: [{ ...record, snapshot: finished }] as never })
       await flush()
       expect(autoRun('p', 't')?.stage).not.toBe('implement')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2037,9 +1908,7 @@ test('a session update received during a Git snapshot is retried as soon as it f
   vi.setSystemTime(2000)
   load()
   agent('review', 1500)
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ sessionId: 's', turnSince: 1100 }),
-  })
+  setRun({ sessionId: 's', turnSince: 1100 })
   let finish!: (trees: Worktree[]) => void
   vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
     () =>
@@ -2047,17 +1916,14 @@ test('a session update received during a Git snapshot is retried as soon as it f
         finish = resolve
       }),
   )
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     agent('working', 2100)
     await flush()
     finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ observedWorking: true, turnSince: 2100 })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['review', 'fix'] as const)(
@@ -2087,9 +1953,8 @@ test.each(['review', 'fix'] as const)(
         pending().then((sessionId) => ({ sessionId, requestId: undefined })),
       )
     else vi.mocked(jobs.startReviewAgent).mockImplementation(pending)
-    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
-    const dispose = followAuto()
-    try {
+    setRun({ stage })
+    await withFollower(async () => {
       await flush()
       expect(launch).toHaveBeenCalledOnce()
       pauseAuto('p', 't')
@@ -2124,9 +1989,7 @@ test.each(['review', 'fix'] as const)(
       await resumeAuto('p', 't')
       expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
       expect(launch).toHaveBeenCalledOnce()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2134,11 +1997,8 @@ test('merge-gate polls are throttled and read only the outcome after resolving w
   vi.useFakeTimers()
   vi.setSystemTime(1000)
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'mergeGate', status: 'waitingOnYou' }),
-  })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou' })
+  await withFollower(async () => {
     await flush()
     expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
     expect(ipc.mergeOutcome).toHaveBeenCalledOnce()
@@ -2158,17 +2018,13 @@ test('merge-gate polls are throttled and read only the outcome after resolving w
     expect(ipc.reviewRead).not.toHaveBeenCalled()
     expect(ipc.planRead).not.toHaveBeenCalled()
     expect(ipc.proposalRead).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Resume can infer the stage while a merge-gate poll is pending', async () => {
   load()
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'mergeGate', status: 'waitingOnYou' }),
-  })
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou' })
   let finish!: (trees: Worktree[]) => void
   vi.mocked(ipc.gitWorktrees).mockImplementationOnce(
     () =>
@@ -2176,17 +2032,14 @@ test('Resume can infer the stage while a merge-gate poll is pending', async () =
         finish = resolve
       }),
   )
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     await expect(resumeAuto('p', 't')).resolves.toBeUndefined()
     expect(autoRun('p', 't')?.runId).not.toBe('run')
     finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
     await flush()
     expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['worktrees', 'outcome'] as const)(
@@ -2194,14 +2047,11 @@ test.each(['worktrees', 'outcome'] as const)(
   async (failure) => {
     vi.useFakeTimers()
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Approval required' }),
-    })
+    setRun({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Approval required' })
     if (failure === 'worktrees')
       vi.mocked(ipc.gitWorktrees).mockRejectedValueOnce(new Error('Branch switched'))
     else vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('Git lock'))
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         status: 'waitingOnYou',
@@ -2215,9 +2065,7 @@ test.each(['worktrees', 'outcome'] as const)(
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2227,15 +2075,13 @@ test.each(['skip', 'resume', 'completion'] as const)(
     vi.useFakeTimers()
     vi.setSystemTime(1000)
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        stage: 'fix',
-        status: transition === 'completion' ? 'running' : 'paused',
-        effort: 'light',
-        validationFindings: '[high] Previous validation failed',
-        sessionId: transition === 'completion' ? 's' : undefined,
-        turnSince: 1000,
-      }),
+    setRun({
+      stage: 'fix',
+      status: transition === 'completion' ? 'running' : 'paused',
+      effort: 'light',
+      validationFindings: '[high] Previous validation failed',
+      sessionId: transition === 'completion' ? 's' : undefined,
+      turnSince: 1000,
     })
     if (transition === 'skip') await skipStage('p', 't')
     else if (transition === 'resume') await resumeAuto('p', 't')
@@ -2245,12 +2091,9 @@ test.each(['skip', 'resume', 'completion'] as const)(
         agent('working', 1200)
         return 's'
       })
-      const dispose = followAuto()
-      try {
+      await withFollower(async () => {
         await flush()
-      } finally {
-        dispose()
-      }
+      })
     }
     const current = autoRun('p', 't')!
     if (transition === 'completion') {
@@ -2278,12 +2121,9 @@ test.each(['skip', 'resume', 'completion'] as const)(
 test('approval polling refreshes its request after a changed destination worktree', async () => {
   vi.useFakeTimers()
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' }),
-  })
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' })
   const destination = { ...tree, path: '/p', branch: 'main', current: true }
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
     vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('destination changed'))
@@ -2301,20 +2141,15 @@ test('approval polling refreshes its request after a changed destination worktre
     expect(ipc.gitWorktrees).toHaveBeenCalledTimes(3)
     expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
     expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test("approval polling never judges another branch checked out in the run's worktree", async () => {
   vi.useFakeTimers()
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' }),
-  })
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' })
   const destination = { ...tree, path: '/p', branch: 'main', current: true }
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     // The user checks out another branch, which is already merged, in the run's worktree.
     vi.mocked(ipc.mergeOutcome).mockRejectedValueOnce(new Error('The merge branches changed'))
@@ -2335,36 +2170,28 @@ test("approval polling never judges another branch checked out in the run's work
     vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, destination])
     await vi.advanceTimersByTimeAsync(5000)
     expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a running run pauses when its worktree has another branch checked out', async () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'review', branch: 'other' }) })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'review', branch: 'other' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'review' })
     expect(autoRun('p', 't')?.reason).toContain("this run's other")
     expect(jobs.startReviewAgent).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test("a recovered approval poll clears its error and keeps the wait's reason", async () => {
   vi.useFakeTimers()
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Stage skipped by you' }),
-  })
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou', reason: 'Stage skipped by you' })
   vi.mocked(ipc.mergeOutcome)
     .mockRejectedValueOnce(new Error('Temporary Git lock'))
     .mockRejectedValueOnce(new Error('Another Git lock'))
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       reason: 'Stage skipped by you',
@@ -2378,9 +2205,7 @@ test("a recovered approval poll clears its error and keeps the wait's reason", a
       reason: 'Stage skipped by you',
       gateError: undefined,
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['stopped', 'exited', 'idle'] as const)(
@@ -2388,15 +2213,13 @@ test.each(['stopped', 'exited', 'idle'] as const)(
   async (end) => {
     load()
     agent(end === 'idle' ? 'idle' : 'working', 1100)
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        stage: 'merge',
-        sessionId: 's',
-        sessionOwned: true,
-        turnSince: 1000,
-        observedWorking: true,
-        sessionStartedMs: 1000,
-      }),
+    setRun({
+      stage: 'merge',
+      sessionId: 's',
+      sessionOwned: true,
+      turnSince: 1000,
+      observedWorking: true,
+      sessionStartedMs: 1000,
     })
     const s = useStore.getState().sessions.s
     useStore.setState({
@@ -2410,29 +2233,24 @@ test.each(['stopped', 'exited', 'idle'] as const)(
       },
     })
     vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       // An owned agent idle at its prompt is stopped with the run; an ended one needs no stop.
       if (end === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       else expect(ipc.terminalStop).not.toHaveBeenCalled()
       vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
-      useStore.getState().patchTask('p', 't', {
-        auto: run({
-          stage: 'merge',
-          runId: 'again',
-          sessionId: 's',
-          turnSince: 1000,
-          observedWorking: true,
-          sessionStartedMs: 1000,
-        }),
+      setRun({
+        stage: 'merge',
+        runId: 'again',
+        sessionId: 's',
+        turnSince: 1000,
+        observedWorking: true,
+        sessionStartedMs: 1000,
       })
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2441,16 +2259,14 @@ test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
   async (state) => {
     load()
     agent('review', 1100)
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        stage: 'merge',
-        status: 'waitingOnYou',
-        waitingFor: 'agentInput',
-        sessionId: 's',
-        sessionOwned: true,
-        sessionStartedMs: 1000,
-        turnSince: 1100,
-      }),
+    setRun({
+      stage: 'merge',
+      status: 'waitingOnYou',
+      waitingFor: 'agentInput',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      turnSince: 1100,
     })
     if (state === 'forgotten') useStore.setState({ sessions: {}, serviceConnected: true })
     else if (state === 'idle') agent('idle', 1200)
@@ -2465,8 +2281,7 @@ test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
         },
       })
     vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(ipc.gitReview).not.toHaveBeenCalled()
@@ -2474,9 +2289,7 @@ test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
       // Only an agent still at its prompt is left to stop; a finished run offers no Stop.
       if (state === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       else expect(ipc.terminalStop).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2485,28 +2298,23 @@ test.each(['notMerged', 'inProgress', 'dirty', 'error'] as const)(
   async (outcome) => {
     load()
     agent('idle', 1200)
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        stage: 'merge',
-        status: 'waitingOnYou',
-        waitingFor: 'agentInput',
-        sessionId: 's',
-        turnSince: 1100,
-      }),
+    setRun({
+      stage: 'merge',
+      status: 'waitingOnYou',
+      waitingFor: 'agentInput',
+      sessionId: 's',
+      turnSince: 1100,
     })
     if (outcome === 'error')
       vi.mocked(ipc.mergeOutcome).mockRejectedValue(new Error('Missing tree'))
     else vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
       expect(autoRun('p', 't')?.reason).toContain(
         outcome === 'error' ? 'Missing tree' : 'Agent stopped while waiting for input',
       )
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2518,11 +2326,8 @@ test.each([true, false])(
     load()
     vi.mocked(ipc.mergeOutcome).mockResolvedValue('inProgress')
     agent('review', 1100)
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'merge', sessionId: 's', turnSince: 1000 }),
-    })
-    const dispose = followAuto()
-    try {
+    setRun({ stage: 'merge', sessionId: 's', turnSince: 1000 })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         status: 'waitingOnYou',
@@ -2540,9 +2345,7 @@ test.each([true, false])(
       agent('review', 1300)
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2567,9 +2370,7 @@ test.each(['failed', 'paused'] as const)(
   'skipping a %s fix launch does not accept findings',
   async (status) => {
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'fix', status, round: 0, reason: 'Launch failed' }),
-    })
+    setRun({ stage: 'fix', status, round: 0, reason: 'Launch failed' })
     await skipStage('p', 't')
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'running' })
   },
@@ -2592,11 +2393,8 @@ test.each(['working', 'review', 'needsInput'] as const)(
     }
     useStore.setState({ serviceConnected: true, sessionRecords: [record] as never, sessions: {} })
     vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ sessionId: 's', sessionStartedMs: 1000, turnSince: 1100 }),
-    })
-    const dispose = followAuto()
-    try {
+    setRun({ sessionId: 's', sessionStartedMs: 1000, turnSince: 1100 })
+    await withFollower(async () => {
       await flush()
       if (state === 'working')
         expect(autoRun('p', 't')).toMatchObject({ status: 'running', observedWorking: true })
@@ -2607,9 +2405,7 @@ test.each(['working', 'review', 'needsInput'] as const)(
           status: 'waitingOnYou',
           waitingFor: 'agentInput',
         })
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2620,17 +2416,14 @@ test('record-only sessions still pause when their generation changes', async () 
       { ...plannerRecord(), id: 's', snapshot: { running: true, startedMs: 2000 } },
     ] as never,
   })
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', sessionStartedMs: 1000 }) })
-  const dispose = followAuto()
-  try {
+  setRun({ sessionId: 's', sessionStartedMs: 1000 })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
       reason: 'The tracked session was stopped or relaunched by hand',
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Auto pauses legacy mixed-format findings instead of merging them', async () => {
@@ -2640,8 +2433,7 @@ test('Auto pauses legacy mixed-format findings instead of merging them', async (
     text: 'Verdict: issues\n- [low] Minor\n- **src/db.rs:42** [high] Data loss',
     verdict: null,
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await startAuto('p', 't', {
       goal: 'Goal',
       effort: 'standard',
@@ -2651,9 +2443,7 @@ test('Auto pauses legacy mixed-format findings instead of merging them', async (
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'paused' })
     expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['mergeGate', 'merge'] as const)(
@@ -2661,17 +2451,12 @@ test.each(['mergeGate', 'merge'] as const)(
   async (stage) => {
     load()
     vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), verdict: null })
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage, reviewedHead: 'abc', merge: { mode: 'auto', destinationBranch: 'main' } }),
-    })
-    const dispose = followAuto()
-    try {
+    setRun({ stage, reviewedHead: 'abc', merge: { mode: 'auto', destinationBranch: 'main' } })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2681,15 +2466,12 @@ test('a record without a snapshot waits for hydration instead of reporting a rel
     serviceConnected: true,
     sessionRecords: [{ ...plannerRecord(), id: 's', snapshot: null }] as never,
   })
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's', sessionStartedMs: 1000 }) })
-  const dispose = followAuto()
-  try {
+  setRun({ sessionId: 's', sessionStartedMs: 1000 })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
     expect(jobs.startReviewAgent).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['refused', 'empty', 'unconfirmed'] as const)(
@@ -2714,9 +2496,8 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
         sessionId: failure === 'empty' ? '' : 'unknown-session',
         requestId: undefined,
       })
-    useStore.getState().patchTask('p', 't', { auto: run({ stage: 'fix' }) })
-    const dispose = followAuto()
-    try {
+    setRun({ stage: 'fix' })
+    await withFollower(async () => {
       await flush()
       expect(fixReviewFindings).toHaveBeenCalledOnce()
       // An unconfirmed launch may have started an agent, so it counts against the budget.
@@ -2729,9 +2510,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       await skipStage('p', 't')
       expect(autoRun('p', 't')?.stage).toBe('review')
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2747,9 +2526,8 @@ test('Start proceeds after Stop while a stale drive still waits, which then leav
     agent('working', Date.now())
     return 's'
   })
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'review', effort: 'light' }) })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'review', effort: 'light' })
+  await withFollower(async () => {
     await flush()
     expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
     stopAuto('p', 't')
@@ -2767,9 +2545,7 @@ test('Start proceeds after Stop while a stale drive still waits, which then leav
     // Only the new run's own drive launches its reviewer.
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')?.sessionId).toBe('s')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a finished fix re-runs failed validation even when the effort skips validation', async () => {
@@ -2795,20 +2571,17 @@ test('a finished fix re-runs failed validation even when the effort skips valida
   }
   vi.mocked(ipc.graphActionRun).mockResolvedValue(report as never)
   // A Light run started at Validate, whose failures sent a clean review to Fix.
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      stage: 'fix',
-      effort: 'light',
-      round: 0,
-      validationFindings: '[high] Validation failed: check failed (exit 1)',
-      sessionId: 's',
-      turnSince: 1000,
-    }),
+  setRun({
+    stage: 'fix',
+    effort: 'light',
+    round: 0,
+    validationFindings: '[high] Validation failed: check failed (exit 1)',
+    sessionId: 's',
+    turnSince: 1000,
   })
   agent('review', 1100)
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     await flush()
     expect(ipc.graphActionRun).toHaveBeenCalledOnce()
@@ -2821,9 +2594,7 @@ test('a finished fix re-runs failed validation even when the effort skips valida
     expect(
       mergeableHead(snapshot({ freshness: 'current', findings: findings() }), current),
     ).toBeUndefined()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['review', 'merge'] as const)(
@@ -2845,17 +2616,14 @@ test.each(['review', 'merge'] as const)(
         },
       ] as SessionRecord[],
     })
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        stage: 'implement',
-        sessionId: 's',
-        turnSince: 1000,
-        sessionOwned: true,
-        sessionStartedMs: 1000,
-      }),
+    setRun({
+      stage: 'implement',
+      sessionId: 's',
+      turnSince: 1000,
+      sessionOwned: true,
+      sessionStartedMs: 1000,
     })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         stage,
@@ -2868,9 +2636,7 @@ test.each(['review', 'merge'] as const)(
       expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
       expect(jobs.startReviewAgents).not.toHaveBeenCalled()
       expect(jobs.startMergeAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2881,26 +2647,21 @@ test.each([false, true])('Resume preserves idle reviewers (multiple: %s)', async
     useStore.setState({
       sessions: { ...useStore.getState().sessions, lane: reviewSession('idle', 1400) },
     })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'paused',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-      turnSince: 1000,
-      laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
-    }),
+  setRun({
+    status: 'paused',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1000,
+    laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
   })
   await resumeAuto('p', 't')
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(ipc.terminalStop).not.toHaveBeenCalled()
     expect(jobs.startReviewAgents).not.toHaveBeenCalled()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', sessionId: 's' })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a partially failed round pauses immediately and keeps the successful reviewer tracked', async () => {
@@ -2911,9 +2672,8 @@ test('a partially failed round pauses immediately and keeps the successful revie
     round: 'round',
     errors: ['Claude: launch unconfirmed'],
   })
-  useStore.getState().patchTask('p', 't', { auto: run() })
-  const dispose = followAuto()
-  try {
+  setRun()
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
@@ -2924,9 +2684,7 @@ test('a partially failed round pauses immediately and keeps the successful revie
     expect(ipc.terminalStop).not.toHaveBeenCalled()
     stopAuto('p', 't')
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([false, true])(
@@ -2939,16 +2697,13 @@ test.each([false, true])(
     }
     useStore.setState({ sessions })
     vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        sessionId: 's',
-        turnSince: 1000,
-        launchAtMs: 1000,
-        laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
-      }),
+    setRun({
+      sessionId: 's',
+      turnSince: 1000,
+      launchAtMs: 1000,
+      laneSessions: multiple ? [{ sessionId: 'lane', startedMs: 1000 }] : undefined,
     })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       useStore.setState({
         sessions: {
@@ -2967,9 +2722,7 @@ test.each([false, true])(
       })
       await flush()
       expect(autoRun('p', 't')?.stage).toBe('mergeGate')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -2978,15 +2731,13 @@ test('Resume re-infers the stage once every tracked reviewer has stopped', async
   useStore.setState({
     sessions: { s: { running: false, startedMs: 1000 }, lane: { running: false, startedMs: 1000 } },
   })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'paused',
-      effort: 'light',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-    }),
+  setRun({
+    status: 'paused',
+    effort: 'light',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')).toMatchObject({
@@ -3012,6 +2763,24 @@ const reviewRecord = (id: string, lane: string | null, snapshot: SessionState, r
     },
     spec: { cwd: tree.path },
   }) as unknown as SessionRecord
+function loadReviewRound({
+  sessions,
+  auto,
+  findings: report = null,
+  records = Object.entries(sessions).map(([id, snapshot]) =>
+    reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
+  ),
+}: {
+  sessions: Record<string, SessionState>
+  auto: Partial<AutoRun>
+  findings?: ReviewFindings | null
+  records?: SessionRecord[]
+}) {
+  load()
+  useStore.setState({ sessions, sessionRecords: records })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(report)
+  setRun(auto)
+}
 const reviewer = (lane: string | null, finished: boolean, error: string | null = null) => ({
   lane,
   finished,
@@ -3033,25 +2802,20 @@ const pausedRound = (laneStartedMs?: number) =>
 test.each(['stopped', 'crashed', 'forgotten'] as const)(
   'Resume reviews again when a reviewer %s before writing, stopping the round it still owns',
   async (failure) => {
-    load()
     const lane = reviewSession('working')
     if (failure === 'stopped') lane.status!.stopped = true
     if (failure === 'crashed') lane.running = false
     const sessions = { s: reviewSession('review'), ...(failure === 'forgotten' ? {} : { lane }) }
-    useStore.setState({
-      serviceConnected: true,
+    loadReviewRound({
       sessions,
-      sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
-        reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
-      ),
+      auto: pausedRound(),
+      findings: {
+        ...findings(),
+        reviewedHead: null,
+        verdict: null,
+        reviewers: [reviewer('claude', false), reviewer('codex', true)],
+      },
     })
-    vi.mocked(ipc.reviewRead).mockResolvedValue({
-      ...findings(),
-      reviewedHead: null,
-      verdict: null,
-      reviewers: [reviewer('claude', false), reviewer('codex', true)],
-    })
-    useStore.getState().patchTask('p', 't', { auto: pausedRound() })
     await resumeAuto('p', 't')
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
     expect(ipc.terminalStop).not.toHaveBeenCalledWith('lane')
@@ -3066,23 +2830,16 @@ test.each(['stopped', 'crashed', 'forgotten'] as const)(
 )
 
 test('Resume keeps tracking live reviewers when one that exited had already written', async () => {
-  load()
-  const sessions = { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') }
-  useStore.setState({
-    serviceConnected: true,
-    sessions,
-    sessionRecords: [
-      reviewRecord('s', 'codex', sessions.s),
-      reviewRecord('lane', 'claude', sessions.lane),
-    ],
+  loadReviewRound({
+    sessions: { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') },
+    auto: pausedRound(),
+    findings: {
+      ...findings(),
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false), reviewer('codex', true)],
+    },
   })
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer('claude', false), reviewer('codex', true)],
-  })
-  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   // The live reviewer leads, keeping the ownership it had as a lane.
@@ -3100,38 +2857,29 @@ test('Resume keeps tracking live reviewers when one that exited had already writ
 test('a reviewer whose launch was never confirmed pauses with what to do, and Resume reviews again', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(2000)
-  load()
-  const sessions = { s: reviewSession('review', 1500) }
-  useStore.setState({
-    serviceConnected: true,
-    sessions,
-    sessionRecords: [reviewRecord('s', 'codex', sessions.s)],
-  })
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer('claude', false, 'Reply lost'), reviewer('codex', true)],
-  })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+  loadReviewRound({
+    sessions: { s: reviewSession('review', 1500) },
+    auto: {
       sessionId: 's',
       sessionOwned: true,
       sessionStartedMs: 1000,
       turnSince: 1000,
       launchAtMs: 1000,
-    }),
+    },
+    findings: {
+      ...findings(),
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false, 'Reply lost'), reviewer('codex', true)],
+    },
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
       reason: 'claude may not have started: Reply lost. Resume to review again',
     })
-  } finally {
-    dispose()
-  }
+  })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
   // Standard effort validates the changed work before reviewing it again.
@@ -3144,23 +2892,20 @@ test('a reviewer whose launch was never confirmed pauses with what to do, and Re
 
 test('only the reviewer an input wait opened counts as stopped when it goes idle', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      status: 'waitingOnYou',
-      waitingFor: 'agentInput',
-      inputSessionId: 'lane',
-      sessionId: 's',
-      turnSince: 1000,
-      launchAtMs: 1000,
-      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-    }),
+  setRun({
+    status: 'waitingOnYou',
+    waitingFor: 'agentInput',
+    inputSessionId: 'lane',
+    sessionId: 's',
+    turnSince: 1000,
+    launchAtMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
   // The primary's provider confirms it idle at its prompt; it was never seen working.
   useStore.setState({
     sessions: { s: reviewSession('idle', 1300), lane: reviewSession('needsInput', 1200) },
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', inputSessionId: 'lane' })
     // Only the lane resumed: the primary still hasn't been seen working.
@@ -3189,9 +2934,7 @@ test('only the reviewer an input wait opened counts as stopped when it goes idle
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
     expect(autoRun('p', 't')?.reason).toContain('stopped while waiting for input')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([true, false])(
@@ -3207,8 +2950,7 @@ test.each([true, false])(
       return request.lane === 'claude' ? 'lane' : 's'
     })
     vi.mocked(ipc.terminalSnapshot).mockRejectedValue(new Error('Service busy'))
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await startAuto('p', 't', { ...run(), effort: 'light', reviewers: ['codex', 'claude'] })
       await flush()
       expect(autoRun('p', 't')?.laneSessions).toMatchObject([
@@ -3237,37 +2979,31 @@ test.each([true, false])(
       expect(awaitSessions.reconcileFreshSessions).toHaveBeenCalledTimes(1)
       if (relaunchedByHand) expect(ipc.terminalStop).not.toHaveBeenCalledWith('lane')
       else expect(ipc.terminalStop).toHaveBeenCalledWith('lane')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
 test('a lane that takes the lead without a start time stays owned through its launch request', async () => {
-  load()
   const sessions = { s: { running: false, startedMs: 1000 }, lane: reviewSession('working') }
   delete (sessions.lane as Partial<SessionState>).startedMs
-  useStore.setState({
-    serviceConnected: true,
+  loadReviewRound({
     sessions,
-    sessionRecords: [
+    records: [
       reviewRecord('s', 'codex', sessions.s),
       reviewRecord('lane', 'claude', sessions.lane, ['req-lane'] as never),
     ],
-  })
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer('claude', false), reviewer('codex', true)],
-  })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+    auto: {
       ...pausedRound(),
       reviewRound: 'round',
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', requestId: 'req-lane', lane: 'claude' }],
-    }),
+    },
+    findings: {
+      ...findings(),
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false), reviewer('codex', true)],
+    },
   })
   await resumeAuto('p', 't')
   expect(autoRun('p', 't')).toMatchObject({
@@ -3285,25 +3021,20 @@ test('a lane that takes the lead without a start time stays owned through its la
 })
 
 test('a reviewer forgotten after writing its findings does not break the round on Resume', async () => {
-  load()
-  useStore.setState({
-    serviceConnected: true,
+  loadReviewRound({
     sessions: { lane: reviewSession('working') },
-    sessionRecords: [reviewRecord('lane', 'claude', reviewSession('working'))],
-  })
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer('claude', false), reviewer('codex', true)],
-  })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+    auto: {
       ...pausedRound(),
       reviewRound: 'round',
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
-    }),
+    },
+    findings: {
+      ...findings(),
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false), reviewer('codex', true)],
+    },
   })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -3311,17 +3042,13 @@ test('a reviewer forgotten after writing its findings does not break the round o
 })
 
 test('Resume never stops a reviewer restarted by hand while it checked hooks', async () => {
-  load()
   const sessions = {
     s: { ...reviewSession('working'), running: false },
     lane: reviewSession('working'),
   }
-  useStore.setState({
-    serviceConnected: true,
+  loadReviewRound({
     sessions,
-    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
-      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
-    ),
+    auto: pausedRound(),
   })
   vi.mocked(ipc.agentHooksCheck).mockImplementation(async () => {
     // The user restarts the lane's tile meanwhile: a new generation.
@@ -3332,7 +3059,6 @@ test('Resume never stops a reviewer restarted by hand while it checked hooks', a
       ReturnType<typeof ipc.agentHooksCheck>
     >
   })
-  useStore.getState().patchTask('p', 't', { auto: pausedRound() })
   // It can't be stopped, so Resume asks to close it rather than review beside it.
   await expect(resumeAuto('p', 't')).rejects.toThrow("Close Review lane, which Auto can't tell")
   expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -3340,30 +3066,22 @@ test('Resume never stops a reviewer restarted by hand while it checked hooks', a
 })
 
 test("a review someone else started while paused supersedes Auto's round on Resume", async () => {
-  load()
-  const sessions = { s: reviewSession('review'), lane: reviewSession('review') }
-  useStore.setState({
-    serviceConnected: true,
-    sessions,
-    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
-      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
-    ),
-  })
-  // The newer, manual round: a single reviewer whose launch error isn't Auto's.
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    round: 'manual',
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer(null, false, 'Reply lost')],
-  })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+  loadReviewRound({
+    sessions: { s: reviewSession('review'), lane: reviewSession('review') },
+    auto: {
       ...pausedRound(),
       reviewRound: 'round',
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
-    }),
+    },
+    // The newer, manual round: a single reviewer whose launch error isn't Auto's.
+    findings: {
+      ...findings(),
+      round: 'manual',
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer(null, false, 'Reply lost')],
+    },
   })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -3373,26 +3091,23 @@ test("a review someone else started while paused supersedes Auto's round on Resu
 })
 
 test('a reviewer that went idle at its prompt pauses, and Resume reviews again instead of re-pausing', async () => {
-  load()
   const sessions = { s: reviewSession('idle', 1300) }
-  useStore.setState({ sessions, sessionRecords: [reviewRecord('s', null, sessions.s)] })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+  loadReviewRound({
+    sessions,
+    records: [reviewRecord('s', null, sessions.s)],
+    auto: {
       sessionId: 's',
       sessionOwned: true,
       sessionStartedMs: 1000,
       turnSince: 1000,
       launchAtMs: 1000,
       observedWorking: true,
-    }),
+    },
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
-  } finally {
-    dispose()
-  }
+  })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
   expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: undefined })
@@ -3400,19 +3115,16 @@ test('a reviewer that went idle at its prompt pauses, and Resume reviews again i
 
 test('a reviewer that idles once its input wait is no longer open still counts as stopped', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      sessionId: 's',
-      turnSince: 1000,
-      launchAtMs: 1000,
-      laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
-    }),
+  setRun({
+    sessionId: 's',
+    turnSince: 1000,
+    launchAtMs: 1000,
+    laneSessions: [{ sessionId: 'lane', startedMs: 1000 }],
   })
   useStore.setState({
     sessions: { s: reviewSession('working', 1100), lane: reviewSession('needsInput', 1200) },
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     // Asking for input is part of a turn, so the lane counts as seen working.
     expect(autoRun('p', 't')).toMatchObject({
@@ -3430,29 +3142,22 @@ test('a reviewer that idles once its input wait is no longer open still counts a
     await flush()
     expect(autoRun('p', 't')?.status).toBe('paused')
     expect(autoRun('p', 't')?.reason).toContain('Resume to review again')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a review started by someone else during the run pauses at completion instead of judging it', async () => {
   load()
   useStore.setState({ sessions: { s: reviewSession('review', 1500) } })
   vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), round: 'manual' })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ sessionId: 's', turnSince: 1000, launchAtMs: 1000, reviewRound: 'round' }),
-  })
-  const dispose = followAuto()
-  try {
+  setRun({ sessionId: 's', turnSince: 1000, launchAtMs: 1000, reviewRound: 'round' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       stage: 'review',
       status: 'paused',
       reason: "A newer review replaced Auto's round; Resume to continue from it",
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Resume waits for the session service and never forgets a known start time', async () => {
@@ -3478,17 +3183,14 @@ test.each([
 ] as const)('a review launch refused because %s', async (_name, error, status) => {
   load()
   vi.mocked(jobs.startReviewAgents).mockRejectedValue(new Error(error))
-  useStore.getState().patchTask('p', 't', { auto: run() })
-  const dispose = followAuto()
-  try {
+  setRun()
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')?.status).toBe(status)
     expect(autoRun('p', 't')?.pauseKind).toBe(status === 'paused' ? 'needsUser' : undefined)
     if (error.includes(TERMINAL_RUNNING))
       expect(autoRun('p', 't')?.reason).toBe('Close the current agent in this slot, then Resume')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 const roundFindings = (claude: boolean, codex: boolean): ReviewFindings => ({
@@ -3523,8 +3225,7 @@ test('a reviewer that exits after writing during an input wait is settled, and t
   useStore.setState({ sessions: { s: reviewSession('needsInput', 1200), lane: exited } })
   vi.mocked(ipc.reviewRead).mockResolvedValue(roundFindings(false, true))
   useStore.getState().patchTask('p', 't', { auto: inputWaitRound() })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'waitingOnYou',
@@ -3541,9 +3242,7 @@ test('a reviewer that exits after writing during an input wait is settled, and t
     await vi.advanceTimersByTimeAsync(5000)
     await flush()
     expect(autoRun('p', 't')?.stage).toBe('mergeGate')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Pause during the findings check of a failed reviewer is kept', async () => {
@@ -3561,8 +3260,7 @@ test('Pause during the findings check of a failed reviewer is kept', async () =>
       inputSessionId: undefined,
     },
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     pauseAuto('p', 't')
     answer(roundFindings(true, true))
@@ -3573,38 +3271,29 @@ test('Pause during the findings check of a failed reviewer is kept', async () =>
       laneSessions: [{ sessionId: 'lane' }],
     })
     expect(ipc.terminalStop).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('Resume of a superseded round stops only what Auto owns and follows the newer review', async () => {
-  load()
   // The newer review relaunched the lane's slot; Auto's own reviewer still runs.
-  const sessions = {
-    s: reviewSession('review'),
-    lane: { ...reviewSession('working', 3000), startedMs: 5000 },
-  }
-  useStore.setState({
-    sessions,
-    sessionRecords: Object.entries(sessions).map(([id, snapshot]) =>
-      reviewRecord(id, id === 's' ? 'codex' : 'claude', snapshot),
-    ),
-  })
-  vi.mocked(ipc.reviewRead).mockResolvedValue({
-    ...findings(),
-    round: 'manual',
-    reviewedHead: null,
-    verdict: null,
-    reviewers: [reviewer('claude', false)],
-  })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
+  loadReviewRound({
+    sessions: {
+      s: reviewSession('review'),
+      lane: { ...reviewSession('working', 3000), startedMs: 5000 },
+    },
+    auto: {
       ...pausedRound(),
       reviewRound: 'round',
       sessionLane: 'codex',
       laneSessions: [{ sessionId: 'lane', startedMs: 1000, lane: 'claude' }],
-    }),
+    },
+    findings: {
+      ...findings(),
+      round: 'manual',
+      reviewedHead: null,
+      verdict: null,
+      reviewers: [reviewer('claude', false)],
+    },
   })
   await resumeAuto('p', 't')
   expect(ipc.terminalStop).toHaveBeenCalledWith('s')
@@ -3737,8 +3426,7 @@ test.each(['reset', 'threshold', 'disable'] as const)(
       })
       return request.lane === 'claude' ? 'lane' : 's'
     })
-    const stop = followAuto()
-    try {
+    await withFollower(async () => {
       await startAuto('p', 't', { ...run(), effort: 'light', reviewers: ['codex', 'claude'] })
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'review' })
@@ -3754,9 +3442,7 @@ test.each(['reset', 'threshold', 'disable'] as const)(
       await flush()
       expect(jobs.startReviewAgents).toHaveBeenCalledTimes(1)
       expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
-    } finally {
-      stop()
-    }
+    })
   },
 )
 
@@ -3785,7 +3471,7 @@ test.each([false, true])(
 
 test('a background run starts a review in an inactive project tab without changing the UI', async () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ background: true }) })
+  setRun({ background: true })
   useStore.getState().loadProject({
     projectId: 'q',
     root: '/q',
@@ -3798,8 +3484,7 @@ test('a background run starts a review in an inactive project tab without changi
     useStore.setState({ sessions: { 'bg-review': { running: true, startedMs: Date.now() } } })
     return 'bg-review'
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(jobs.startReviewAgent).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: 'p' }),
@@ -3811,17 +3496,14 @@ test('a background run starts a review in an inactive project tab without changi
     expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 'bg-review' })
     expect(useStore.getState().project?.id).toBe('q')
     expect(useStore.getState().activeTask).toBeNull()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('foreground runs pause as inactive and a user Pause replaces that reason', async () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run() })
+  setRun()
   useStore.getState().setActiveTask(null, true)
-  const dispose = followAuto()
-  try {
+  await withFollower(async (dispose) => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
@@ -3834,18 +3516,15 @@ test('foreground runs pause as inactive and a user Pause replaces that reason', 
     dispose()
     await resumeAuto('p', 't')
     expect(autoRun('p', 't')).toMatchObject({ pauseKind: undefined, pausedMs: undefined })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('service disconnection waits without pausing and reconnect continues driving', async () => {
   load()
-  useStore.getState().patchTask('p', 't', { auto: run({ sessionId: 's' }) })
+  setRun({ sessionId: 's' })
   agent('working', 2000)
   useStore.setState({ serviceConnected: false })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'running',
@@ -3857,16 +3536,14 @@ test('service disconnection waits without pausing and reconnect continues drivin
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'running', observedWorking: true })
     expect(autoRun('p', 't')?.pauseKind).toBeUndefined()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('background runs wait for a shared planner through its implementation handoff', async () => {
   vi.useFakeTimers()
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan', background: true }) })
+  setRun({ stage: 'plan', background: true })
   useStore.getState().setActiveTask(null, true)
   useStore.getState().patchTask('p', null, {
     auto: run({
@@ -3877,12 +3554,9 @@ test('background runs wait for a shared planner through its implementation hando
     }),
   })
   // A recorded planner owns the project even if a different preset would get another session id.
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'plan', background: true, sessionId: 'owner', planMark: 'old' }),
-  })
+  setRun({ stage: 'plan', background: true, sessionId: 'owner', planMark: 'old' })
   useStore.setState({ sessions: { owner: reviewSession('working', 1500) } })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', null)).toMatchObject({
       status: 'running',
@@ -3897,9 +3571,7 @@ test('background runs wait for a shared planner through its implementation hando
           finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
         }),
     )
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'implement', background: true, planMark: 'old' }),
-    })
+    setRun({ stage: 'implement', background: true, planMark: 'old' })
     await flush()
     expect(implementPlannerPlan).toHaveBeenCalledOnce()
     expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
@@ -3927,32 +3599,25 @@ test('background runs wait for a shared planner through its implementation hando
       expect.anything(),
     )
     expect(autoRun('p', null)?.status).toBe('running')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['agentInput', undefined] as const)(
   'a disconnect preserves a user wait instead of making it resumable (%s)',
   async (waitingFor) => {
     load()
-    useStore.getState().patchTask('p', 't', {
-      auto: run({
-        status: 'waitingOnYou',
-        stage: waitingFor ? 'review' : 'mergeGate',
-        waitingFor,
-        sessionId: waitingFor ? 's' : undefined,
-      }),
+    setRun({
+      status: 'waitingOnYou',
+      stage: waitingFor ? 'review' : 'mergeGate',
+      waitingFor,
+      sessionId: waitingFor ? 's' : undefined,
     })
     useStore.setState({ serviceConnected: false })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
       expect(autoRun('p', 't')?.pauseKind).toBeUndefined()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -3970,9 +3635,8 @@ test('a partial launch failure cannot replace a user pause made while reviewers 
           })
       }),
   )
-  useStore.getState().patchTask('p', 't', { auto: run() })
-  const dispose = followAuto()
-  try {
+  setRun()
+  await withFollower(async () => {
     await flush()
     expect(jobs.startReviewAgents).toHaveBeenCalledOnce()
     pauseAuto('p', 't')
@@ -3985,9 +3649,7 @@ test('a partial launch failure cannot replace a user pause made while reviewers 
       reason: 'Paused by you',
       sessionId: 's',
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([false, true])(
@@ -4012,26 +3674,21 @@ test.each([false, true])(
       stage: 'plan',
     })
     expect(autoRun('p', 't')?.sessionId).toBeUndefined()
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         status: 'running',
         reason: 'Waiting for the planner',
       })
       expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
 test('a handoff keeps priority over a waiting planner when controller reservations are rebuilt', async () => {
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'implement', background: true, planMark: 'accepted' }),
-  })
+  setRun({ stage: 'implement', background: true, planMark: 'accepted' })
   useStore.getState().setActiveTask(null, true)
   useStore.getState().patchTask('p', null, {
     auto: run({
@@ -4072,14 +3729,10 @@ test.each(['preset', 'destination', 'base', 'branch'] as const)(
   async (problem) => {
     load()
     const stage = problem === 'destination' ? 'merge' : 'review'
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage, merge: { mode: 'auto', destinationBranch: 'main' } }),
-    })
+    setRun({ stage, merge: { mode: 'auto', destinationBranch: 'main' } })
     if (problem === 'preset') useStore.setState({ devices: [] })
     if (problem === 'destination')
-      useStore.getState().patchTask('p', 't', {
-        auto: run({ stage, merge: { mode: 'auto', destinationBranch: 'missing' } }),
-      })
+      setRun({ stage, merge: { mode: 'auto', destinationBranch: 'missing' } })
     if (problem === 'base') {
       vi.mocked(ipc.gitBranches).mockResolvedValue(['feature'])
       vi.mocked(ipc.gitWorktrees).mockResolvedValue([{ ...tree, current: true }])
@@ -4088,15 +3741,12 @@ test.each(['preset', 'destination', 'base', 'branch'] as const)(
         .setTasks(useStore.getState().tasks.map((t) => ({ ...t, base: 'feature' })))
     }
     if (problem === 'branch') vi.mocked(ipc.gitWorktrees).mockResolvedValue([])
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
       const { autoAttentionItems } = await import('./attention')
       expect(autoAttentionItems(useStore.getState()).map((item) => item.task)).toContain('t')
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -4109,9 +3759,8 @@ test('an inactive run without a planner releases its reservation to a background
       finish = resolve
     }),
   )
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan', planMark: 'initial' }) })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'plan', planMark: 'initial' })
+  await withFollower(async () => {
     await flush()
     useStore.getState().setActiveTask(null, true)
     useStore.getState().patchTask('p', null, {
@@ -4133,31 +3782,24 @@ test('an inactive run without a planner releases its reservation to a background
     expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'inactive' })
     expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
     expect(autoRun('p', null)?.status).toBe('running')
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('a paused implementation handoff preserves its plan while blocked runs wait', async () => {
   load()
-  useStore.getState().patchTask('p', 't', {
-    auto: run({ stage: 'implement', planMark: 'ready', status: 'paused', pauseKind: 'inactive' }),
-  })
+  setRun({ stage: 'implement', planMark: 'ready', status: 'paused', pauseKind: 'inactive' })
   useStore.getState().setActiveTask(null, true)
   useStore.getState().patchTask('p', null, {
     auto: run({ runId: 'next', stage: 'plan', background: true }),
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', null)).toMatchObject({
       status: 'running',
       reason: 'Waiting for the planner',
     })
     expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([false, true])(
@@ -4193,9 +3835,8 @@ test('disconnect during a snapshot waits for reconciliation before launching', a
       finish = resolve
     }),
   )
-  useStore.getState().patchTask('p', 't', { auto: run() })
-  const dispose = followAuto()
-  try {
+  setRun()
+  await withFollower(async () => {
     await flush()
     useStore.setState({ serviceConnected: false })
     finish([tree, { ...tree, path: '/p', branch: 'main', current: true }])
@@ -4210,9 +3851,7 @@ test('disconnect during a snapshot waits for reconciliation before launching', a
     await flush()
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({ status: 'running', sessionId: 's' })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['implement', 'fix'] as const)(
@@ -4228,17 +3867,14 @@ test.each(['implement', 'fix'] as const)(
       useStore.setState({ serviceConnected: false })
       throw new Error('Connection lost while confirming the launch')
     })
-    useStore.getState().patchTask('p', 't', { auto: run({ stage }) })
-    const dispose = followAuto()
-    try {
+    setRun({ stage })
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'failed', pauseKind: undefined })
       useStore.setState({ serviceConnected: true })
       await flush()
       expect(launch).toHaveBeenCalledOnce()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -4250,15 +3886,12 @@ test.each([true, false])(
       useStore.setState({ serviceConnected: connected })
       throw new Error('Temporary Git or IPC failure')
     })
-    useStore.getState().patchTask('p', 't', { auto: run() })
-    const dispose = followAuto()
-    try {
+    setRun()
+    await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'interrupted' })
       expect(jobs.startReviewAgent).not.toHaveBeenCalled()
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -4266,23 +3899,20 @@ test('disconnect after stopping a completed planner preserves its implementation
   load()
   agent('review', 1500)
   vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Finished plan', cut: false })
-  useStore.getState().patchTask('p', 't', {
-    auto: run({
-      stage: 'plan',
-      sessionId: 's',
-      sessionOwned: true,
-      sessionStartedMs: 1000,
-      turnSince: 1100,
-      planMark: 'old',
-      plannerTurn: true,
-    }),
+  setRun({
+    stage: 'plan',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1100,
+    planMark: 'old',
+    plannerTurn: true,
   })
   vi.mocked(ipc.terminalStop).mockImplementation(async () => {
     useStore.setState({ serviceConnected: false, sessions: {} })
   })
   const { implementPlannerPlan } = await import('./planHandoff')
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       stage: 'implement',
@@ -4303,9 +3933,7 @@ test('disconnect after stopping a completed planner preserves its implementation
       sessionId: 'implementation',
       plannerTurn: false,
     })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test('validation finished during a disconnect is saved and never reruns after reconnect', async () => {
@@ -4330,9 +3958,8 @@ test('validation finished during a disconnect is saved and never reruns after re
     useStore.setState({ serviceConnected: false })
     return report
   })
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'validate' }) })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'validate' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'running',
@@ -4349,9 +3976,7 @@ test('validation finished during a disconnect is saved and never reruns after re
     await flush()
     expect(ipc.graphActionRun).toHaveBeenCalledOnce()
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)(
@@ -4359,9 +3984,7 @@ test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)
   async (pauseKind) => {
     load()
     vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-    useStore.getState().patchTask('p', 't', {
-      auto: run({ stage: 'plan', status: 'paused', pauseKind, planMark: 'legacy-initial-mark' }),
-    })
+    setRun({ stage: 'plan', status: 'paused', pauseKind, planMark: 'legacy-initial-mark' })
     useStore.getState().setActiveTask(null, true)
     await startAuto('p', null, {
       ...run({ stage: 'plan' }),
@@ -4377,14 +4000,11 @@ test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)
       })
       return 'request'
     })
-    const dispose = followAuto()
-    try {
+    await withFollower(async () => {
       await flush()
       expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
       expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -4430,8 +4050,7 @@ test('restoring and resuming a handoff keeps its turn ahead of a later run, whic
     })
     return 'request'
   })
-  const dispose = followAuto()
-  try {
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', null)).toMatchObject({
       status: 'running',
@@ -4447,9 +4066,7 @@ test('restoring and resuming a handoff keeps its turn ahead of a later run, whic
     await flush()
     expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
     expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
-  } finally {
-    dispose()
-  }
+  })
 })
 
 test.each([
@@ -4470,14 +4087,11 @@ test.each([
       agent('working', 2000)
       return { sessionId: 's', requestId: 'request' }
     })
-    useStore.getState().patchTask('p', 't', { auto: run({ stage: 'fix', background }) })
-    const dispose = followAuto()
-    try {
+    setRun({ stage: 'fix', background })
+    await withFollower(async () => {
       await flush()
       expect(vi.mocked(fixReviewFindings).mock.calls[0][3]).toBe(presentation)
-    } finally {
-      dispose()
-    }
+    })
   },
 )
 
@@ -4485,9 +4099,8 @@ test('a refused planner launch acquires no turn or plan fingerprint', async () =
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
   vi.mocked(awaitSessions.startTerminal).mockRejectedValue(new Error(TERMINAL_RUNNING))
-  useStore.getState().patchTask('p', 't', { auto: run({ stage: 'plan' }) })
-  const dispose = followAuto()
-  try {
+  setRun({ stage: 'plan' })
+  await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({
       status: 'paused',
@@ -4495,7 +4108,5 @@ test('a refused planner launch acquires no turn or plan fingerprint', async () =
       plannerTurn: false,
       planMark: undefined,
     })
-  } finally {
-    dispose()
-  }
+  })
 })
