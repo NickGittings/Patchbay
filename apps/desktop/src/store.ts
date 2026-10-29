@@ -69,6 +69,8 @@ export type UtilityPanel =
   'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions' | 'usage'
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
+/** The project and worktree whose Chat a reveal request is for. */
+export type ChatReveal = { projectId: string; task: string | null }
 
 /** A button on the app message (`setMessage`). */
 export interface MessageAction {
@@ -367,6 +369,13 @@ interface State {
    */
   revealed: { componentId: string; sid: string } | null
   setRevealed: (revealed: { componentId: string; sid: string } | null) => void
+  /**
+   * One-shot request to show a hidden Chat, for the worktree it names only, consumed (cleared) by
+   * Navigation once the chat opens. UI only.
+   */
+  chatReveal: ChatReveal | null
+  revealChat: (target: ChatReveal) => void
+  clearChatReveal: () => void
   setSimpleMode: (enabled: boolean) => void
   setView: (view: View) => void
   setStoryBoard: (show: boolean) => void
@@ -1018,11 +1027,18 @@ const createState: StateCreator<State> = (set, get) => ({
       dirty: true,
     })),
 
+  chatReveal: null,
+  // A fresh object each time, so a repeated request is still a new one.
+  revealChat: (target) => set({ chatReveal: { ...target } }),
+  clearChatReveal: () => set({ chatReveal: null }),
   // Highlights are the active task's saved scope, so switching views never changes them.
   setSimpleMode: (simpleMode) =>
     set((s) => ({
       simpleMode,
       simple: simpleMode ? (s.simple ?? { startedMs: Date.now(), log: [] }) : s.simple,
+      ...(simpleMode && !s.simpleMode && s.project
+        ? { chatReveal: { projectId: s.project.id, task: s.activeTask } }
+        : {}),
     })),
   // Chat mode keeps its last Full view; the board takes the place of its map.
   setStoryBoard: (storyBoard) =>

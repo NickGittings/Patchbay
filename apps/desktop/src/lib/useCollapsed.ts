@@ -6,35 +6,46 @@ import {
   type PanelSize,
 } from 'react-resizable-panels'
 import { useStore } from '../store'
+import { PANEL_OPEN_SIZES, collapsedInto, expandedFrom } from './panelLayout'
 
-/** Where Navigation's collapsible panels remember their open sizes, in the project's `panels`. */
-const OPEN_SIZES = 'App-open'
-
-/** Collapse a panel into a specific sibling without changing the other panels' sizes. */
-export function collapsedInto(layout: Record<string, number>, id: string, fill: string) {
-  if (!Object.hasOwn(layout, id) || !Object.hasOwn(layout, fill)) return undefined
-  return { ...layout, [id]: 0, [fill]: layout[fill] + layout[id] }
+/** Whether the panel is collapsed, or undefined while its group has no layout to tell. */
+function collapsedNow(p: PanelImperativeHandle) {
+  try {
+    return p.isCollapsed()
+  } catch {
+    return undefined
+  }
 }
 
-/** Open a panel using only the space available in a specific sibling. */
-export function expandedFrom(
-  layout: Record<string, number>,
+/**
+ * Remember the open width before collapsing, optionally giving it to a specific sibling. Returns
+ * whether the panel is collapsed afterwards.
+ */
+export function closePanel(
+  p: PanelImperativeHandle,
   id: string,
-  fill: string,
-  size: number,
+  openSizes: string,
+  group?: GroupImperativeHandle | null,
+  fill?: string,
 ) {
-  if (!Object.hasOwn(layout, id) || !Object.hasOwn(layout, fill)) return undefined
-  const delta = Math.min(Math.max(size - layout[id], 0), layout[fill])
-  return { ...layout, [id]: layout[id] + delta, [fill]: layout[fill] - delta }
+  if (p.isCollapsed()) return true
+  const size = p.getSize().asPercentage
+  const s = useStore.getState()
+  if (size > 0) s.setPanelLayout(openSizes, { ...s.panels[openSizes], [id]: size })
+  const next = group && fill !== undefined && collapsedInto(group.getLayout(), id, fill)
+  if (next) group.setLayout(next)
+  else p.collapse()
+  return p.isCollapsed()
 }
 
-function openPanel(
+export function openPanel(
   p: PanelImperativeHandle,
   id: string,
   openSizes: string,
   group?: GroupImperativeHandle | null,
   fill?: string,
   defaultSize?: number,
+  minSize = 0,
 ) {
   const remembered = useStore.getState().panels[openSizes]?.[id]
   const size = remembered || defaultSize
@@ -42,13 +53,30 @@ function openPanel(
     group &&
     fill !== undefined &&
     size !== undefined &&
-    expandedFrom(group.getLayout(), id, fill, size)
+    expandedFrom(group.getLayout(), id, fill, size, minSize)
   if (next) {
     group.setLayout(next)
     return
   }
   p.expand()
-  if (remembered) p.resize(`${remembered}%`)
+  if (size) p.resize(`${Math.max(size, minSize)}%`)
+}
+
+interface Visibility {
+  shown: boolean
+  reveal: unknown
+}
+
+/** A restored or user-collapsed panel stays shut until explicitly shown or revealed. */
+export function shouldOpenPanel(
+  current: Visibility,
+  previous: Visibility | undefined,
+  keepCollapsed: boolean,
+) {
+  return (
+    current.shown &&
+    (!keepCollapsed || (current.reveal != null && !Object.is(current.reveal, previous?.reveal)))
+  )
 }
 
 /**
@@ -61,43 +89,88 @@ export function useCollapsed(
   shown: boolean,
   reveal?: unknown,
   onDragShut?: () => void,
-  openSizes = OPEN_SIZES,
-  fill?: { group: RefObject<GroupImperativeHandle | null>; panel: string; defaultSize: number },
+  openSizes = PANEL_OPEN_SIZES,
+  fill?: {
+    group: RefObject<GroupImperativeHandle | null>
+    panel: string
+    defaultSize: number
+    minSize?: number
+  },
+  { keepCollapsed = false, onReveal }: { keepCollapsed?: boolean; onReveal?: () => void } = {},
 ) {
   const panelRef = usePanelRef()
-  const shownRef = useRef(shown)
+  const visibilityRef = useRef<Visibility | undefined>(undefined)
+  // Set while a request could not be handled yet, so the next measurement retries it.
+  const retryRef = useRef(false)
+  const measuredRef = useRef(false)
   const [collapsed, setCollapsed] = useState(true)
-  const [measured, setMeasured] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const fillGroup = fill?.group
   const fillPanel = fill?.panel
   const defaultSize = fill?.defaultSize
+  const minSize = fill?.minSize
   useLayoutEffect(() => {
-    shownRef.current = shown
     const p = panelRef.current
     if (!p) return
-    if (shown && p.isCollapsed())
-      openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize)
-    else if (!shown && !p.isCollapsed()) {
-      const size = p.getSize().asPercentage
-      const s = useStore.getState()
-      if (size > 0) s.setPanelLayout(openSizes, { ...s.panels[openSizes], [id]: size })
-      const group = fillGroup?.current
-      const next =
-        group && fillPanel !== undefined && collapsedInto(group.getLayout(), id, fillPanel)
-      if (next) group.setLayout(next)
-      else p.collapse()
+    // Before its group has a layout the panel can't say; its first measurement retries.
+    if (collapsedNow(p) === undefined) {
+      retryRef.current = true
+      return
     }
-  }, [panelRef, id, shown, reveal, openSizes, measured, fillGroup, fillPanel, defaultSize])
+    retryRef.current = false
+    const previous = visibilityRef.current
+    if (shouldOpenPanel({ shown, reveal }, previous, keepCollapsed)) {
+      if (p.isCollapsed())
+        openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+      // Unmeasured, the handle may still describe the default rather than the restored layout, so
+      // the request is kept until a measurement confirms the panel open.
+      if (!measuredRef.current || p.isCollapsed()) {
+        retryRef.current = true
+        visibilityRef.current = { shown, reveal: previous?.reveal }
+        return
+      }
+      onReveal?.()
+    } else if (!shown) {
+      closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+      // A hidden panel has nothing to reveal: drop the request rather than replay it later.
+      if (reveal != null) onReveal?.()
+    }
+    visibilityRef.current = { shown, reveal }
+  }, [
+    panelRef,
+    id,
+    shown,
+    reveal,
+    openSizes,
+    attempt,
+    fillGroup,
+    fillPanel,
+    defaultSize,
+    keepCollapsed,
+    minSize,
+    onReveal,
+  ])
   const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
-    // A restored zero-size panel can report its first size after the mount layout effect.
-    // Retry once then, without reopening panels the user subsequently drags shut.
-    setMeasured(true)
+    // A restored zero-size panel can report its first size after the mount layout effect, and an
+    // open can be refused until the group has room. Retry then, without reopening panels the user
+    // subsequently drags shut.
+    if (!measuredRef.current || retryRef.current) {
+      measuredRef.current = true
+      retryRef.current = false
+      setAttempt((n) => n + 1)
+    }
     setCollapsed(size.asPercentage === 0)
-    if (size.asPercentage === 0 && prev?.asPercentage && shownRef.current) onDragShut?.()
+    if (size.asPercentage === 0 && prev?.asPercentage && visibilityRef.current?.shown)
+      onDragShut?.()
   }
   const expand = () => {
     const p = panelRef.current
-    if (p) openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize)
+    if (p) openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
   }
-  return { props: { panelRef, onResize, collapsible: true }, collapsed, expand }
+  /** Returns whether the panel is collapsed afterwards. */
+  const collapse = () => {
+    const p = panelRef.current
+    return !!p && closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+  }
+  return { props: { panelRef, onResize, collapsible: true }, collapsed, expand, collapse }
 }

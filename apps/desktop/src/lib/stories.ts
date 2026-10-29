@@ -259,6 +259,8 @@ export async function planStory(projectId: string, story: Story) {
   s.clearHighlights()
   for (const id of new Set(items.flatMap((s) => s.components))) s.toggleHighlight(id)
   if (!s.simpleMode) s.setView('plan')
+  // Chat follows the planner, so a hidden chat opens rather than starting it out of sight.
+  else s.revealChat({ projectId, task })
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
   const requestId = await startTerminal(PLAN_SCOPE, device.id, null, projectId, {

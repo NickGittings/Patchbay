@@ -10,6 +10,7 @@ import type {
 import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
 import { sessionTimeMs } from './sessionList'
 import { shortTitle } from './shortTitle'
+import { CANVAS_PANEL, CHAT_PANEL, HIERARCHY_PANEL } from './panelLayout'
 
 export const SIMPLE_STAGES = ['plan', 'build', 'review', 'merge'] as const
 export type SimpleStage = (typeof SIMPLE_STAGES)[number]
@@ -614,14 +615,12 @@ export function selectRecipient(
 
 /** Add the collapsed chat slot to pre-Simple Navigation layouts without changing their sizes. */
 export function simplePanelLayout(layout: Record<string, number> | undefined) {
-  return layout && !Object.hasOwn(layout, 'App-simple-chat')
-    ? { ...layout, 'App-simple-chat': 0 }
-    : layout
+  return layout && !Object.hasOwn(layout, CHAT_PANEL) ? { ...layout, [CHAT_PANEL]: 0 } : layout
 }
 
 /** Navigation layouts from before the Hierarchy panel went: the canvas takes its width. */
 export function withoutHierarchy(layout: Record<string, number> | undefined) {
-  if (!layout || !Object.hasOwn(layout, 'App-pane-1')) return layout
-  const { 'App-pane-1': hierarchy, ...rest } = layout
-  return { ...rest, 'App-pane-2': (rest['App-pane-2'] ?? 0) + hierarchy }
+  if (!layout || !Object.hasOwn(layout, HIERARCHY_PANEL)) return layout
+  const { [HIERARCHY_PANEL]: hierarchy, ...rest } = layout
+  return { ...rest, [CANVAS_PANEL]: (rest[CANVAS_PANEL] ?? 0) + hierarchy }
 }

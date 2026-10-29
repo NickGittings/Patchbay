@@ -71,7 +71,53 @@ import { gitWorktrees, taskCreate, mergeOutcome } from './ipc'
 import { attentionItems, revealTerminal } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
+import { CHAT_LAYOUT, CHAT_PANEL } from './panelLayout'
+
+/** Polls `check` until it holds, for the pointer-driven panel helpers below. */
+async function waitFor(label: string, check: () => boolean, timeout = 25000) {
+  const deadline = Date.now() + timeout
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+/** Navigation's Chat panel: its saved width, its resize handle and a drag of that handle. */
+const chatPanel = {
+  width: () => useStore.getState().panels[CHAT_LAYOUT]?.[CHAT_PANEL],
+  separator: () => document.getElementById(CHAT_PANEL)?.previousElementSibling as HTMLElement,
+  /** Drags the handle `delta` pixels with pointer events, until the panel's width changes. */
+  drag: async (delta: number) => {
+    const handle = chatPanel.separator()
+    const bounds = handle.getBoundingClientRect()
+    const panel = document.getElementById(CHAT_PANEL)!
+    const before = panel.getBoundingClientRect().width
+    const pointer = (type: string, x: number, buttons: number) =>
+      handle.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          clientX: x,
+          clientY: bounds.top + bounds.height / 2,
+          pointerId: 1,
+          pointerType: 'mouse',
+          button: 0,
+          buttons,
+        }),
+      )
+    pointer('pointermove', bounds.left + 2, 0)
+    await waitFor('chat separator hover', () => handle.dataset.separator === 'hover')
+    pointer('pointerdown', bounds.left + 2, 1)
+    await waitFor('chat separator active', () => handle.dataset.separator === 'active')
+    pointer('pointermove', bounds.left + 2 + delta, 1)
+    pointer('pointerup', bounds.left + 2 + delta, 0)
+    await waitFor('chat resized', () => {
+      const after = panel.getBoundingClientRect().width
+      return delta < 0 ? after > before : after < before
+    })
+  },
+}
 const hooks = {
+  chatPanel,
   refreshUsage,
   usage: useUsage,
   usageRead,

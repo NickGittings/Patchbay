@@ -4,6 +4,8 @@
   const until = async (label, check, timeout = 25000) => {
     const deadline = Date.now() + timeout
     for (;;) {
+      // Let React commit store and panel updates before reading the next UI state.
+      await sleep(16)
       const value = await check()
       if (value) return value
       if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`)
@@ -55,6 +57,10 @@
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
     await until('chat', () => document.querySelector('.simple-chat'))
+    // Chat's resize handle must receive pointer hits even while Inspector is hidden.
+    const { width: chatWidth, drag: dragChat } = smoke.chatPanel
+    await until('chat width saved', () => chatWidth() > 0)
+    const rootChatWidth = chatWidth()
     assert(!document.querySelector('.simple-stage-tabs'), 'stage tabs remain')
     assert(!document.querySelector('.simple-terminal-drawer'), 'terminal starts open')
     assert(
@@ -168,10 +174,24 @@
       state().simple.log.some((e) => e.kind === 'reply' && e.sessionId === planner),
       'reply not persisted',
     )
+    click(document.querySelector('[aria-label="Hide chat"]'))
+    await until('chat hidden before planner reveal', () => !document.querySelector('.simple-chat'))
+    for (let request = 0; request < 2; request++) {
+      smoke.revealTerminal({ sid: planner, componentId: '@plan' })
+      await until('planner reveal restores chat', () => document.querySelector('.simple-chat'))
+      if (request === 0) {
+        click(document.querySelector('[aria-label="Hide chat"]'))
+        await until(
+          'chat hidden before repeated reveal',
+          () => !document.querySelector('.simple-chat'),
+        )
+      }
+    }
     click(button('View Planner terminal'))
     await until('planner drawer', () =>
       document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
     )
+    await smoke.report('INFO simple: planner input and repeated reveals passed')
     click(button('Build'))
     const dialog = await until('new worktree offered', () =>
       document.querySelector('form[aria-label="New task"]'),
@@ -187,6 +207,12 @@
     inChat()
     const task = state().activeTask
     assert(task, 'Build did not create a worktree')
+    await dragChat(-70)
+    const taskChatWidth = chatWidth()
+    state().setActiveTask(null, true)
+    await until('root chat width restored', () => Math.abs(chatWidth() - rootChatWidth) < 0.1)
+    state().setActiveTask(task)
+    await until('worktree chat width restored', () => Math.abs(chatWidth() - taskChatWidth) < 0.1)
     assert(
       state().simple.log.some((e) => e.kind === 'prompt' && e.sessionId === planner),
       'conversation not carried into worktree',
@@ -201,6 +227,30 @@
     await until('drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     assert(document.querySelector('details.simple-section:not([open])'), 'earlier plan is expanded')
     const builder = state().simple.log.findLast((e) => e.action === 'implement').sessionId
+    // A worktree with no stored layout must still reveal into the panel currently on screen.
+    state().setActiveTask(null, true)
+    await until('root chat before cross-worktree reveal', () =>
+      document.querySelector('.simple-chat'),
+    )
+    click(document.querySelector('[aria-label="Hide chat"]'))
+    await until(
+      'root Chat hidden before cross-worktree reveal',
+      () => !document.querySelector('.simple-chat'),
+    )
+    const workspace = state().taskWorkspaces[task]
+    smoke.store.setState({
+      taskWorkspaces: {
+        ...state().taskWorkspaces,
+        [task]: { ...workspace, panels: {} },
+      },
+    })
+    smoke.revealTerminal({ sid: builder, componentId: '@task' })
+    await until(
+      'unsaved worktree Chat revealed',
+      () => state().activeTask === task && document.querySelector('.simple-chat'),
+    )
+    assert(chatWidth() >= 20, 'revealed Chat is below its minimum')
+    await smoke.report('INFO simple: worktree widths and unsaved-layout reveal passed')
     await smoke.terminalWrite(builder, 'smoke-changes\n')
     await until('three changed files', () => button('Changes 3'))
     click(
@@ -295,6 +345,7 @@
       subtree: true,
       characterData: true,
     })
+    await smoke.report('INFO simple: changes and review passed')
     click(button('Fix'))
     await until('fix done', () => chatText().includes('Fixes done.'))
     monitor.disconnect()
@@ -322,6 +373,11 @@
       )
       await smoke.terminalWrite(planner, `smoke-exit-${exitCode}\n`)
       await until('external planner exited', () => !state().sessions[planner]?.running)
+      click(document.querySelector('[aria-label="Hide chat"]'))
+      await until(
+        'chat hidden before external reveal',
+        () => !document.querySelector('.simple-chat'),
+      )
       smoke.revealTerminal({ sid: planner, componentId: '@plan' })
       await until('external planner drawer', () =>
         document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
@@ -407,7 +463,7 @@
       chatText().includes('I planned the fixture feature'),
     )
     await smoke.report(
-      'PASS simple: Enter queues and delivers, Changes tab/Map, collapsed history, no Fix flash, one conversation, plan/build/review/fix/merge, drawer input waits and persisted log',
+      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, no Fix flash, one conversation, plan/build/review/fix/merge, drawer input waits and persisted log',
     )
   } catch (e) {
     await smoke.report(

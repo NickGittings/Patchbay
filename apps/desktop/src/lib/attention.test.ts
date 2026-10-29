@@ -1,17 +1,28 @@
 import { expect, test, vi } from 'vitest'
-import type { SessionState, TerminalSpec } from '../types'
+import type { SessionRecord, SessionState, TerminalSpec } from '../types'
 import { PLAN_SCOPE, sessionId, setProjectIdentity } from '../types'
 import { mostUrgent } from './display'
 
 const revealState = vi.hoisted(() => ({
-  project: { id: 'p-1' },
+  project: { id: 'p-1', root: '/project' },
+  simpleMode: false,
+  simple: null,
+  activeTask: null,
+  tasks: [],
+  taskWorkspaces: {},
+  sessions: {} as Record<string, SessionState>,
+  sessionRecords: [] as SessionRecord[],
+  panels: {} as Record<string, Record<string, number>>,
+  setPanelLayout: vi.fn(),
+  revealChat: vi.fn(),
+  setRevealed: vi.fn(),
   setActiveSession: vi.fn(),
   setView: vi.fn(),
   setActiveTask: vi.fn(),
   select: vi.fn(),
 }))
 vi.mock('../store', () => ({ useStore: { getState: () => revealState } }))
-const { attentionCounts, attentionItems, componentTerminals, worktreeAttention } =
+const { attentionCounts, attentionItems, componentTerminals, worktreeAttention, revealTerminal } =
   await import('./attention')
 
 setProjectIdentity('p-1')
@@ -265,5 +276,38 @@ test.each(['needsUser', 'inactive', 'interrupted', 'restored', 'user', undefined
           status: expect.objectContaining({ attention: 4, detail: 'Resume to continue' }),
         }),
       ])
+  },
+)
+
+test.each(['@plan', '@task'])(
+  'revealing %s in Chat restores the hidden panel even for the already active session',
+  (componentId) => {
+    const record = {
+      id: 'hidden-session',
+      metadata: { projectId: 'p-1', componentId, terminalId: 'agent', kind: 'agent' },
+      spec: { command: 'codex', cwd: '/project' },
+    } as SessionRecord
+    Object.assign(revealState, {
+      simpleMode: true,
+      activeSession: record.id,
+      sessionRecords: [record],
+      panels: {
+        'App-simple': { 'App-pane-2': 76, 'App-simple-chat': 0, 'App-pane-5': 24 },
+        'App-simple-open': { 'App-simple-chat': 42 },
+      },
+    })
+    try {
+      vi.clearAllMocks()
+      revealTerminal({ componentId, sid: record.id })
+      revealTerminal({ componentId, sid: record.id })
+      expect(revealState.revealChat).toHaveBeenCalledTimes(2)
+      expect(revealState.revealChat).toHaveBeenLastCalledWith({ projectId: 'p-1', task: null })
+      expect(revealState.setPanelLayout).not.toHaveBeenCalled()
+      expect(revealState.setActiveSession).toHaveBeenLastCalledWith(record.id)
+    } finally {
+      revealState.simpleMode = false
+      revealState.sessionRecords = []
+      revealState.panels = {}
+    }
   },
 )

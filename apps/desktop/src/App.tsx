@@ -26,8 +26,18 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useCollapsed } from './lib/useCollapsed'
+import {
+  CHAT_LAYOUT,
+  CHAT_OPEN_SIZES,
+  CHAT_PANEL,
+  CANVAS_PANEL,
+  INSPECTOR_PANEL,
+  CHAT_DEFAULT_SIZE,
+  CHAT_MIN_SIZE,
+  NAVIGATION_LAYOUT,
+} from './lib/panelLayout'
 import { listen } from '@tauri-apps/api/event'
 import { Panel, Separator, useGroupRef } from 'react-resizable-panels'
 import Canvas from './components/Canvas'
@@ -153,11 +163,32 @@ function NavigationView() {
     },
     [scopeKey],
   )
-  const chatPanel = useCollapsed('App-simple-chat', simple, simple, undefined, 'App-simple-open', {
-    group,
-    panel: 'App-pane-2',
-    defaultSize: 35,
-  })
+  const chatReveal = useStore((s) =>
+    s.chatReveal?.projectId === s.project?.id && s.chatReveal?.task === s.activeTask
+      ? s.chatReveal
+      : null,
+  )
+  const clearChatReveal = useStore((s) => s.clearChatReveal)
+  const chatPanel = useCollapsed(
+    CHAT_PANEL,
+    simple,
+    chatReveal,
+    undefined,
+    CHAT_OPEN_SIZES,
+    { group, panel: CANVAS_PANEL, defaultSize: CHAT_DEFAULT_SIZE, minSize: CHAT_MIN_SIZE },
+    { keepCollapsed: true, onReveal: clearChatReveal },
+  )
+  const showChatRef = useRef<HTMLButtonElement>(null)
+  // Show chat renders only once the panel reports itself collapsed; focus it then.
+  const focusShowChat = useRef(false)
+  const hideChat = () => {
+    focusShowChat.current = chatPanel.collapse()
+  }
+  useEffect(() => {
+    // Any change of state resolves the request, so a hide that never collapsed can't focus later.
+    if (chatPanel.collapsed && focusShowChat.current) showChatRef.current?.focus()
+    focusShowChat.current = false
+  }, [chatPanel.collapsed])
   // Read artifacts only while Chat or Changes is visible.
   const reading = simple && (!chatPanel.collapsed || !!changes)
   const reader = useSimpleData(reading)
@@ -168,14 +199,14 @@ function NavigationView() {
   const activeSession = useStore((s) => s.activeSession)
   // Dragged shut: close it, so the canvas's Inspector button comes back.
   const inspectorPanel = useCollapsed(
-    'App-pane-5',
+    INSPECTOR_PANEL,
     inspector,
     undefined,
     closeInspector,
     undefined,
     {
       group,
-      panel: 'App-pane-2',
+      panel: CANVAS_PANEL,
       defaultSize: 24,
     },
   )
@@ -184,12 +215,12 @@ function NavigationView() {
   return (
     <SimpleChanges simple={reading} reader={reader}>
       <PersistedGroup
-        layoutId={simple ? 'App-simple' : 'App-1'}
+        layoutId={simple ? CHAT_LAYOUT : NAVIGATION_LAYOUT}
         group={group}
         orientation="horizontal"
         className="workspace"
       >
-        <Panel id="App-pane-2" defaultSize="76">
+        <Panel id={CANVAS_PANEL} defaultSize="76">
           <PersistedGroup layoutId="App-2" orientation="vertical">
             <Panel id="App-pane-3" defaultSize="58" minSize="20">
               <div className="simple-canvas">
@@ -202,7 +233,7 @@ function NavigationView() {
                 </div>
                 {storyBoard && !(simple && changes) && <StoryBoard />}
                 {simple && chatPanel.collapsed && (
-                  <button className="simple-show-chat" onClick={chatPanel.expand}>
+                  <button ref={showChatRef} className="simple-show-chat" onClick={chatPanel.expand}>
                     Show chat
                   </button>
                 )}
@@ -221,11 +252,18 @@ function NavigationView() {
           </PersistedGroup>
         </Panel>
         <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
-        <Panel id="App-simple-chat" defaultSize="35" minSize="20" {...chatPanel.props}>
-          {simple && !chatPanel.collapsed && <SimpleChat key={scopeKey} reader={reader} />}
+        <Panel
+          id={CHAT_PANEL}
+          defaultSize={`${CHAT_DEFAULT_SIZE}%`}
+          minSize={`${CHAT_MIN_SIZE}%`}
+          {...chatPanel.props}
+        >
+          {simple && !chatPanel.collapsed && (
+            <SimpleChat key={scopeKey} reader={reader} onHide={hideChat} />
+          )}
         </Panel>
         <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
-        <Panel id="App-pane-5" defaultSize="24" minSize="16" {...inspectorPanel.props}>
+        <Panel id={INSPECTOR_PANEL} defaultSize="24" minSize="16" {...inspectorPanel.props}>
           <Inspector />
         </Panel>
       </PersistedGroup>

@@ -427,11 +427,14 @@ test('planning a story in Chat retains the board, view and mode and logs the sto
   planner()
   useStore.getState().setSimpleMode(true)
   useStore.getState().setStoryBoard(true)
+  // A chat the user hid opens for the new planner.
+  useStore.getState().clearChatReveal()
   await planStory('p', story('Feature name'))
   expect(useStore.getState()).toMatchObject({
     simpleMode: true,
     view: 'navigation',
     storyBoard: true,
+    chatReveal: { projectId: 'p', task: null },
   })
   expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
     kind: 'action',
