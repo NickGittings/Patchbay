@@ -48,7 +48,8 @@ def work():
     report('UserPromptSubmit')
     report('PreToolUse', tool='Edit', target='src/app.txt', fileTarget=True)
     component = os.environ.get('PATCHBAY_COMPONENT')
-    time.sleep(4 if component == 'plan' else 1.5)
+    # Long enough for the background window's throttled timers to reach the Queue check mid-turn.
+    time.sleep(8 if component == 'plan' else 1.5)
     if component == 'plan':
         pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Simple fixture plan\n\nUpdate the app.\n')
         reply = 'I planned the **fixture feature**. The plan is ready.'
