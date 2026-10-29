@@ -1030,12 +1030,29 @@ impl Saved {
         }
     }
 
-    /// Read up to `limit` bytes of the findings, stamping the open file again so the
-    /// text and its stamp can't come from different writes.
-    fn read(mut self, limit: usize) -> Self {
-        let found = (|| {
+    /// Open and stamp the same file that will be read, before assigning its budget.
+    fn open(&mut self) -> Option<std::fs::File> {
+        let opened = (|| {
             let handle = std::fs::File::open(&self.file).ok()?;
-            let stamp = FindingsStamp::of(&handle.metadata().ok()?)?;
+            let metadata = handle.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            Some((handle, FindingsStamp::of(&metadata)?))
+        })();
+        self.stamp = opened.as_ref().map(|(_, stamp)| stamp.clone());
+        self.modified_ms = self
+            .stamp
+            .as_ref()
+            .map_or(0, |s| crate::status::unix_ms(s.modified));
+        opened.map(|(handle, _)| handle)
+    }
+
+    /// Read the already-open file up to its assigned share.
+    fn read(mut self, handle: Option<std::fs::File>, limit: usize) -> Self {
+        let found = (|| {
+            let handle = handle?;
+            let stamp = self.stamp.clone()?;
             let native = if Some(&stamp) == self.started.previous_findings.as_ref() {
                 // No previous sidecar means legacy Patchbay findings, not output
                 // from the current (possibly Codex) attempt.
@@ -1047,7 +1064,13 @@ impl Saved {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .get_mut(&self.file)
-                .filter(|c| c.stamp == stamp && c.native == native && c.limit == limit)
+                .filter(|c| {
+                    c.stamp == stamp
+                        && c.native == native
+                        && (c.limit == limit
+                            || (!c.report.truncated
+                                && stamp.len <= u64::try_from(limit).unwrap_or(u64::MAX)))
+                })
                 .map(|c| {
                     c.used = Instant::now();
                     c.report.clone()
@@ -1087,6 +1110,9 @@ impl Saved {
             self.stamp = Some(stamp);
         } else {
             self.modified_ms = 0;
+            self.text.clear();
+            self.verdict = None;
+            self.truncated = false;
             self.stamp = None;
         }
         self
@@ -1171,6 +1197,57 @@ impl Lanes {
     }
 }
 
+/// Split `limit` bytes between reports of stamped sizes `lens`, smallest first: a
+/// report that fits its fair share keeps its size and leaves the rest to larger ones,
+/// which then share what remains equally (the previous even split when none is
+/// small). Missing, unreadable and empty files get nothing.
+fn shares(lens: &[usize], limit: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..lens.len()).collect();
+    order.sort_by_key(|&i| lens[i]);
+    let mut shares = vec![0; lens.len()];
+    let mut remaining = limit;
+    for (k, &i) in order.iter().enumerate() {
+        let fair = remaining / (order.len() - k);
+        let len = lens[i];
+        if len >= fair {
+            for &j in &order[k..] {
+                shares[j] = fair;
+            }
+            break;
+        }
+        shares[i] = len;
+        remaining -= len;
+    }
+    shares
+}
+
+/// Open every report before splitting the budget, and read those same handles.
+/// Earlier path stamps select the round only; writers may have replaced empty or
+/// missing files since then. Failed opens must not reserve bytes for unreadable text.
+fn read_reports(lanes: Vec<Saved>, limit: usize) -> Vec<Saved> {
+    let opened: Vec<_> = lanes
+        .into_iter()
+        .map(|mut saved| {
+            let handle = saved.open();
+            (saved, handle)
+        })
+        .collect();
+    let lens: Vec<_> = opened
+        .iter()
+        .map(|(saved, _)| {
+            saved
+                .stamp
+                .as_ref()
+                .map_or(0, |stamp| usize::try_from(stamp.len).unwrap_or(usize::MAX))
+        })
+        .collect();
+    opened
+        .into_iter()
+        .zip(shares(&lens, limit))
+        .map(|((saved, handle), share)| saved.read(handle, share))
+        .collect()
+}
+
 /// `branch`'s reviewers, with up to `limit` bytes of findings between those shown.
 /// Empty when no reviewer has a findings file or an uncertain launch to report. Every
 /// file is stamped first; only the findings shown are read.
@@ -1179,10 +1256,7 @@ fn saved(root: &Path, branch: &str, limit: usize) -> Lanes {
     let Some((_, latest)) = rounds.pop() else {
         return Lanes::default();
     };
-    let read = |lanes: Vec<Saved>| {
-        let each = limit / lanes.len().max(1);
-        lanes.into_iter().map(|s| s.read(each)).collect::<Vec<_>>()
-    };
+    let read = |lanes| read_reports(lanes, limit);
     let round: Vec<Saved> = latest
         .into_iter()
         .map(|(file, started)| Saved::stamped(file, started, false))
@@ -1327,9 +1401,10 @@ fn current_branch(cwd: &Path) -> Option<String> {
     git::run(git::git(cwd).args(["symbolic-ref", "--quiet", "--short", "HEAD"])).ok()
 }
 
-/// How much of the findings a fix agent's briefing inlines. Claude reads the
-/// briefing from a file and Codex falls back to pointing at it, so this may
-/// exceed what the Review panel shows.
+/// How much of the findings a fix agent's briefing inlines, split between reviewers
+/// by [`shares`]. Changing it changes the briefing of fix sessions whose findings it
+/// cuts, and with it their Restart fingerprint. Claude reads the briefing from a file
+/// and Codex falls back to pointing at it, so this may exceed what the Review panel shows.
 pub const HANDOFF_LIMIT: usize = 4 * crate::plans::PLAN_LIMIT;
 
 /// A review session's own record: the folder it ran in (its worktree's top) and
@@ -1527,8 +1602,11 @@ pub fn merge_handoff(root: &Path, branch: &str, head: &str) -> Option<context::C
 }
 
 fn findings_body(all: &[Saved], branch: &str, for_fix: bool) -> Option<String> {
-    let each = HANDOFF_LIMIT / all.len().max(1);
-    let lanes: Vec<_> = all.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    // Keep a cut report's file reference even when the prefix has no visible text.
+    let lanes: Vec<_> = all
+        .iter()
+        .filter(|s| s.truncated || !s.text.trim().is_empty())
+        .collect();
     let first = lanes.first()?;
     // Only facts fixed by the findings themselves, so the briefing (and with it Restart's
     // fingerprint, which a Codex command carries inline) stays the same while the fix works.
@@ -1544,10 +1622,11 @@ fn findings_body(all: &[Saved], branch: &str, for_fix: bool) -> Option<String> {
         }
     };
     let findings = |s: &Saved| {
+        // Native normalization and UTF-8 boundaries make offsets into the original
+        // file unreliable. Ask for the whole report instead.
         let cut = if s.truncated {
             format!(
-                "\n\n[The findings continue past {} KiB in {}; read it only, and ask the user if you can't.]",
-                each / 1024,
+                "\n\n[The findings are truncated; read the complete report from the beginning in {}; read it only, and ask the user if you can't.]",
                 s.file.display()
             )
         } else {
@@ -2625,19 +2704,294 @@ mod tests {
         assert!(fix_body(&f).contains("a newer review hasn't written findings yet"));
     }
 
+    /// The note a fix briefing ends a cut report with.
+    fn cut_note(path: &Path) -> String {
+        format!(
+            "\n\n[The findings are truncated; read the complete report from the beginning in {}; read it only, and ask the user if you can't.]",
+            path.display()
+        )
+    }
+
     #[test]
-    fn handoff_inlines_past_the_panel_limit_and_names_the_file_when_cut() {
+    fn handoff_inlines_up_to_its_limit_and_names_the_file_when_cut() {
         let f = Fixture::new();
         f.prepare("claude").unwrap();
-        f.save(&"x".repeat(crate::plans::PLAN_LIMIT + 1), true);
+        let prefix = "x".repeat(HANDOFF_LIMIT);
+        f.save(&prefix, true);
         let body = fix_body(&f);
-        assert!(body.contains(&"x".repeat(crate::plans::PLAN_LIMIT + 1)));
-        assert!(!body.contains("continue past"));
-        f.save(&"x".repeat(HANDOFF_LIMIT + 1), true);
+        assert!(body.contains(&prefix));
+        assert!(!body.contains("read the complete report from the beginning"));
+
+        let full = format!("{prefix}y");
+        f.save(&full, true);
         let body = fix_body(&f);
-        assert!(body.contains("continue past 256 KiB"));
         let path = file(&f.dir, &f.request.branch).unwrap();
-        assert!(body.contains(&path.display().to_string()));
+        assert!(body.ends_with(&format!("{prefix}{}", cut_note(&path))));
+        assert_eq!(fs::read_to_string(path).unwrap(), full);
+    }
+
+    #[test]
+    fn handoff_cuts_at_a_character_boundary() {
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        let prefix = "x".repeat(HANDOFF_LIMIT - 1);
+        f.save(&format!("{prefix}é"), true);
+        let body = fix_body(&f);
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        assert!(body.ends_with(&format!("{prefix}{}", cut_note(&path))));
+        assert!(!body.contains('é'));
+        assert!(!body.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn cut_fix_briefings_reread_the_whole_report_and_keep_new_restart_context() {
+        use context::{Fix, root_handoff};
+        let f = Fixture::new();
+        f.prepare("claude").unwrap();
+        let text = "x".repeat(HANDOFF_LIMIT + 1);
+        f.save(&text, true);
+        let path = file(&f.dir, &f.request.branch).unwrap();
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        // Pin a cut report's briefing byte for byte, its note included, since Codex
+        // carries it inline and Restart compares it.
+        let pinned = format!(
+            "Branch: {}\nBase: {}\nReviewed: HEAD {}, as it was when the review started\nFindings file: {}\n\nCommits since that HEAD and uncommitted changes (`git status`) may already address some findings.\n\n{}\n\n[The findings are truncated; read the complete report from the beginning in {}; read it only, and ask the user if you can't.]",
+            f.request.branch,
+            started.base,
+            &started.head[..7],
+            path.display(),
+            &text[..HANDOFF_LIMIT],
+            path.display()
+        );
+        assert_eq!(fix_body(&f), pinned);
+        let again = Fix::Again(Some(session(&f.dir, Some(&f.request.branch))));
+        let (_, sections) = root_handoff(&f.project, None, &[], None, Some(&again)).unwrap();
+        assert_eq!(sections[0].body, pinned);
+    }
+
+    #[test]
+    fn shares_give_small_reports_their_size_and_split_the_rest_evenly() {
+        assert_eq!(shares(&[], 100), Vec::<usize>::new());
+        assert_eq!(shares(&[500, 500, 500], 1000), [333, 333, 333]);
+        assert_eq!(shares(&[1000, 0, 100, 1000], 1000), [450, 0, 100, 450]);
+        assert_eq!(shares(&[10, 20], 1000), [10, 20]);
+        assert_eq!(shares(&[0, 0], 1000), [0, 0]);
+        for lens in [
+            &[3, 7, 999, 2][..],
+            &[1, 1000, 1000],
+            &[0, 5000],
+            &[333, 334, 335],
+        ] {
+            assert!(shares(lens, 1000).iter().sum::<usize>() <= 1000);
+        }
+    }
+
+    #[test]
+    fn three_reviewers_keep_reports_that_fit_the_budget() {
+        let f = Fixture::new();
+        let reports = ["a", "b", "c"].map(|lane| prepare_lane(&f, lane, "r1"));
+        for (i, (_, path)) in reports.iter().enumerate() {
+            save_at(
+                path,
+                &format!("Finding {i}\n{}", "x".repeat(25 * 1024)),
+                true,
+            );
+        }
+        let body = fix_body(&f);
+        for i in 0..reports.len() {
+            assert!(body.contains(&format!("Finding {i}\n{}", "x".repeat(25 * 1024))));
+        }
+        assert!(!body.contains("read the complete report from the beginning"));
+        cleanup(reports.map(|(job, _)| job));
+    }
+
+    #[test]
+    fn empty_reviewers_leave_the_budget_for_written_findings() {
+        for empty in [None, Some(""), Some(" \n\t")] {
+            let f = Fixture::new();
+            let (a, path) = prepare_lane(&f, "a", "r1");
+            let (b, empty_path) = prepare_lane(&f, "b", "r1");
+            let header = "Verdict: issues\n[high] Finding\n";
+            // A whitespace-only report still holds its own few bytes.
+            let held = empty.map_or(0, str::len);
+            let text = format!(
+                "{header}{}",
+                "x".repeat(HANDOFF_LIMIT - held - header.len())
+            );
+            save_at(&path, &text, true);
+            if let Some(empty) = empty {
+                save_at(&empty_path, empty, true);
+            }
+            let body = fix_body(&f);
+            assert!(body.contains(&text));
+            assert!(!body.contains("read the complete report from the beginning"));
+            let panel = read(&f.dir, &f.request.branch).unwrap();
+            assert_eq!(panel.reviewers.len(), 2);
+            assert!(panel.reviewers[0].verdict.is_some());
+            assert!(panel.reviewers[1].verdict.is_none());
+            assert!(panel.text.contains(&format!(
+                "{header}{}",
+                "x".repeat(crate::plans::PLAN_LIMIT - held - header.len())
+            )));
+            assert!(
+                panel.verdict.is_none(),
+                "the empty reviewer still blocks completion"
+            );
+            cleanup([a, b]);
+        }
+    }
+
+    #[test]
+    fn unequal_reviewers_give_a_small_report_its_size_and_the_rest_to_a_large_one() {
+        let f = Fixture::new();
+        let (missing, _) = prepare_lane(&f, "a", "r1");
+        let (small, small_path) = prepare_lane(&f, "b", "r1");
+        let (large, large_path) = prepare_lane(&f, "c", "r1");
+        let short = format!("Small\n{}", "s".repeat(1024));
+        save_at(&small_path, &short, true);
+        save_at(&large_path, &"l".repeat(HANDOFF_LIMIT), true);
+        let body = fix_body(&f);
+        assert!(body.contains(&short));
+        let share = HANDOFF_LIMIT - short.len();
+        assert!(body.contains(&format!("{}{}", "l".repeat(share), cut_note(&large_path))));
+        assert!(!body.contains(&"l".repeat(share + 1)));
+        assert_eq!(
+            body.matches("read the complete report from the beginning")
+                .count(),
+            1
+        );
+        cleanup([missing, small, large]);
+    }
+
+    #[test]
+    fn reports_written_after_their_path_stamps_get_a_share_and_verdict() {
+        for previous in [None, Some("")] {
+            let f = Fixture::new();
+            let (a, path) = prepare_lane(&f, "a", "r1");
+            let (b, late_path) = prepare_lane(&f, "b", "r1");
+            save_at(&path, &"a".repeat(HANDOFF_LIMIT + 1), true);
+            if let Some(previous) = previous {
+                save_at(&late_path, previous, true);
+            }
+            let started = |p: &Path| -> Started {
+                serde_json::from_slice(&fs::read(p.with_extension("json")).unwrap()).unwrap()
+            };
+            let lanes = [&path, &late_path].map(|p| Saved::stamped(p.clone(), started(p), false));
+            let text = "Verdict: issues\n[high] Late finding\n";
+            save_at(&late_path, text, true);
+            // Exercise the same open, allocation and read path as panel and handoff.
+            let reports = read_reports(lanes.into(), HANDOFF_LIMIT);
+            assert!(reports.iter().map(|s| s.text.len()).sum::<usize>() <= HANDOFF_LIMIT);
+            assert_eq!(reports[1].text, text);
+            assert!(reports[1].fresh());
+            assert_eq!(reports[1].verdict.as_ref().unwrap().counts.high, 1);
+            let body = findings_body(&reports, &f.request.branch, true).unwrap();
+            assert!(body.contains(text.trim()));
+            cleanup([a, b]);
+        }
+    }
+
+    #[test]
+    fn unreadable_reports_leave_the_budget_for_readable_findings() {
+        let f = Fixture::new();
+        let (a, path) = prepare_lane(&f, "a", "r1");
+        let (b, unreadable) = prepare_lane(&f, "b", "r1");
+        let text = "x".repeat(HANDOFF_LIMIT);
+        save_at(&path, &text, true);
+        // Directories can be statted (and opened on Unix), but cannot supply reports.
+        fs::create_dir(&unreadable).unwrap();
+        assert!(FindingsStamp::read(&unreadable).is_some());
+        let body = fix_body(&f);
+        assert!(body.ends_with(&text));
+        assert!(!body.contains("read the complete report from the beginning"));
+        fs::remove_dir(unreadable).unwrap();
+        cleanup([a, b]);
+    }
+
+    #[test]
+    fn complete_report_cache_survives_budget_changes_from_another_reviewer() {
+        let f = Fixture::new();
+        let (a, path) = prepare_lane(&f, "a", "r1");
+        let (b, growing) = prepare_lane(&f, "b", "r1");
+        let each = HANDOFF_LIMIT / 2;
+        save_at(&path, &"a".repeat(each), true);
+        save_at(&growing, &"b".repeat(each), true);
+        // Cache a complete report read with the old, larger budget.
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        let mut saved = Saved::stamped(path.clone(), started, false);
+        let handle = saved.open();
+        let saved = saved.read(handle, HANDOFF_LIMIT);
+        assert!(!saved.truncated);
+        save_at(&growing, &"b".repeat(each + 1), true);
+        let body = fix_body(&f);
+        assert!(body.contains(&"a".repeat(each)));
+        assert_eq!(
+            REPORTS.lock().unwrap_or_else(PoisonError::into_inner)[&path].limit,
+            HANDOFF_LIMIT,
+            "the complete cache entry was reused rather than replaced at the new limit"
+        );
+        cleanup([a, b]);
+    }
+
+    #[test]
+    fn truncated_report_cache_is_reread_when_its_share_changes() {
+        let f = Fixture::new();
+        let (a, path) = prepare_lane(&f, "a", "r1");
+        let (b, growing) = prepare_lane(&f, "b", "r1");
+        save_at(&path, &"a".repeat(HANDOFF_LIMIT + 1), true);
+        let body = fix_body(&f);
+        assert!(body.contains(&"a".repeat(HANDOFF_LIMIT)));
+        save_at(&growing, &"b".repeat(HANDOFF_LIMIT), true);
+        let body = fix_body(&f);
+        assert!(!body.contains(&"a".repeat(HANDOFF_LIMIT / 2 + 1)));
+        assert!(body.contains(&"a".repeat(HANDOFF_LIMIT / 2)));
+        cleanup([a, b]);
+    }
+
+    #[test]
+    fn a_failed_read_leaves_no_text_or_verdict() {
+        let f = Fixture::new();
+        let (a, path) = prepare_lane(&f, "a", "r1");
+        save_at(&path, "Verdict: issues\n[high] Finding\n", true);
+        let started: Started =
+            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
+        let saved = read_reports(
+            vec![Saved::stamped(path.clone(), started, false)],
+            HANDOFF_LIMIT,
+        )
+        .pop()
+        .unwrap();
+        assert!(saved.verdict.is_some() && !saved.text.is_empty());
+        fs::remove_file(&path).unwrap();
+        let saved = read_reports(vec![saved], HANDOFF_LIMIT).pop().unwrap();
+        assert!(saved.text.is_empty() && !saved.truncated);
+        assert!(saved.verdict.is_none() && saved.stamp.is_none());
+        cleanup([a]);
+    }
+
+    #[test]
+    fn multi_reviewer_cuts_point_to_each_complete_report() {
+        let f = Fixture::new();
+        let reports = ["a", "b", "c"].map(|lane| prepare_lane(&f, lane, "r1"));
+        let each = HANDOFF_LIMIT / reports.len();
+        for (i, (_, path)) in reports.iter().enumerate() {
+            let text = char::from(b'a' + u8::try_from(i).unwrap()).to_string();
+            save_at(path, &text.repeat(each + 1), true);
+        }
+        let body = fix_body(&f);
+        assert_eq!(
+            body.matches("read the complete report from the beginning")
+                .count(),
+            3
+        );
+        for (i, (_, path)) in reports.iter().enumerate() {
+            let text = char::from(b'a' + u8::try_from(i).unwrap()).to_string();
+            assert!(body.contains(&format!("{}{}", text.repeat(each), cut_note(path))));
+            assert!(!body.contains(&text.repeat(each + 1)));
+        }
+        cleanup(reports.map(|(job, _)| job));
     }
 
     #[test]
