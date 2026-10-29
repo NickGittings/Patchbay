@@ -126,10 +126,8 @@
     const epic = await create('epic', 'Story smoke epic')
     const feature = await create('feature', 'Story smoke feature', epic.id)
     const story = await create('story', 'Story smoke story', feature.id)
-    await until(
-      'unlinked editor progress',
-      () => query('.story-editor .story-status.backlog') && field('Status')?.value === 'backlog',
-    )
+    await until('unlinked editor status', () => field('Status')?.value === 'backlog')
+    assert(!query('.story-editor .story-status'), 'unlinked story shows a second status')
     const chooseCard = (title) =>
       click(
         [...document.querySelectorAll('.story-card')].find((b) => b.textContent.includes(title)),
@@ -263,7 +261,8 @@
       'Building editor progress',
       () =>
         query('.story-editor .story-status.building') &&
-        field('Saved status')?.value === 'planned' &&
+        !field('Status') &&
+        !field('Saved status') &&
         query('.story-editor .story-hint')?.textContent.includes(
           `Following worktree ${task.title}`,
         ),
@@ -298,7 +297,8 @@
       'rolled-up editor progress',
       () =>
         query('.story-editor .story-status.reviewing')?.textContent === 'review' &&
-        field('Saved status')?.value === 'backlog' &&
+        !field('Status') &&
+        !field('Saved status') &&
         query('.story-editor .story-hint')?.textContent.includes('Following child progress'),
     )
     click(
@@ -316,14 +316,22 @@
       goal.value.includes(story.title) && goal.value.includes(story.description),
       'Auto lost the story title or description',
     )
-    edit(field('Saved status'), 'done')
-    click(button('.story-editor', 'Save'))
+    click(button('.story-editor', 'Mark done'))
     await until(
       'saved Done overrides worktree progress',
       () =>
         query('.story-card.selected .story-status.done') &&
         query('.story-editor .story-status.done') &&
-        field('Status')?.value === 'done',
+        !field('Status') &&
+        button('.story-editor', 'Reopen'),
+    )
+    click(button('.story-editor', 'Reopen'))
+    await until(
+      'reopening resumes worktree status',
+      () =>
+        query('.story-card.selected .story-status.reviewing') &&
+        query('.story-editor .story-status.reviewing') &&
+        button('.story-editor', 'Mark done'),
     )
     click(button('.story-board-header', 'Map'))
     await until(

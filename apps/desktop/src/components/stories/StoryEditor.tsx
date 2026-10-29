@@ -43,8 +43,9 @@ export default function StoryEditor({
   // An untouched status follows Plan/Auto and completion updates while the editor stays open.
   const [statusEdit, setStatusEdit] = useState<StoryStatus | null>(null)
   const status = statusEdit ?? item?.status ?? 'backlog'
-  const derived = !!item && progress !== undefined && progress !== item.status
   const hasChildren = item?.kind !== 'story' && stories.some((s) => s.parent === item?.id)
+  const automatic =
+    !!item && (hasChildren || (worktree && !worktree.missing) || progress === 'done')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -52,7 +53,8 @@ export default function StoryEditor({
   const parents = stories.filter((s) => s.kind === (kind === 'feature' ? 'epic' : 'feature'))
   const validParent = parents.some((s) => s.id === parent) ? parent : ''
   const ready = !!title.trim() && (kind !== 'feature' || !!validParent)
-  const save = async () => {
+  const save = async (statusOverride?: StoryStatus) => {
+    const nextStatus = statusOverride ?? statusEdit
     const fields = {
       title,
       description,
@@ -63,7 +65,7 @@ export default function StoryEditor({
     const saved = item
       ? await updateStory(projectId, item.id, {
           ...fields,
-          ...(statusEdit === null ? {} : { status: statusEdit }),
+          ...(nextStatus == null ? {} : { status: nextStatus }),
         })
       : await storyCreate(projectId, { ...fields, kind, parent: validParent || null })
     if (!item) {
@@ -74,7 +76,7 @@ export default function StoryEditor({
     onSaved(saved)
     return saved
   }
-  const act = async (action?: 'plan' | 'auto' | 'delete' | 'worktree') => {
+  const act = async (action?: 'plan' | 'auto' | 'delete' | 'worktree' | 'done' | 'reopen') => {
     if (busy) return
     setBusy(true)
     setError('')
@@ -85,7 +87,9 @@ export default function StoryEditor({
         onClose()
         return
       }
-      const saved = await save()
+      const saved = await save(
+        action === 'done' ? 'done' : action === 'reopen' ? 'backlog' : undefined,
+      )
       if (action === 'plan') await planStory(projectId, saved)
       if (action === 'auto') autoStory(projectId, saved)
       if (action === 'worktree') newWorktreeForStory(projectId, saved)
@@ -190,36 +194,47 @@ export default function StoryEditor({
               ))}
             </div>
           </div>
-          {item && progress !== undefined && (
+          {automatic && progress !== undefined ? (
             <div className="row">
-              <span>Progress</span>
+              <span>Status</span>
               <span className={`chip story-status ${progress}`}>{progressLabel(progress)}</span>
+              {progress !== 'done' ? (
+                <button type="button" disabled={!ready} onClick={() => void act('done')}>
+                  Mark done
+                </button>
+              ) : item?.status === 'done' ? (
+                <button type="button" disabled={!ready} onClick={() => void act('reopen')}>
+                  Reopen
+                </button>
+              ) : null}
             </div>
+          ) : (
+            <label>
+              Status
+              <select
+                value={statusEdit ?? progress ?? status}
+                onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}
+              >
+                {STORY_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
-          <label>
-            {derived ? 'Saved status' : 'Status'}
-            <select value={status} onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}>
-              {STORY_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
           <p className="story-hint">
-            {derived ? (
-              hasChildren ? (
-                'Following child progress. The saved status applies once there are no children; Done always wins.'
-              ) : worktree && !worktree.missing ? (
-                <>
-                  Following worktree {shortTitle(worktree.title)}. The saved status applies once the
-                  story has no live worktree; Done always wins.
-                </>
-              ) : progress === 'done' ? (
-                'Following the completed Auto run. Completed work stays Done after cleanup.'
-              ) : (
-                'No live worktree is linked. Progress stays in backlog until planning or work begins; Done always wins.'
-              )
+            {item?.status === 'done' ? (
+              'Completed work stays Done after cleanup.'
+            ) : hasChildren ? (
+              'Following child progress. You can mark this item done at any time.'
+            ) : worktree && !worktree.missing ? (
+              <>
+                Following worktree {shortTitle(worktree.title)}. You can mark this item done at any
+                time.
+              </>
+            ) : progress === 'done' ? (
+              'The linked Auto run completed this story.'
             ) : (
               'Worktree activity updates the card’s status. Completed work stays Done after cleanup.'
             )}
