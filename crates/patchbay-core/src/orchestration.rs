@@ -1737,7 +1737,7 @@ mod tests {
             let id = crate::model::task_session_id("p", l.scope, &l.terminal.id, l.task.as_deref());
             let metadata = serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"p", "projectRoot":f.root, "componentId":l.scope, "terminalId":l.terminal.id, "task":l.task, "name":"fake", "kind":"agent"})).unwrap();
             if let Some(file) = context::owned_briefing(&l.spec) { context::remove_owned_briefing_file(&file); }
-            record = Some(Record { id, metadata, spec:l.spec, snapshot:None, history:vec![], launch_command:String::new(), restart_context:None, interrupted:false, request_ids:vec![l.request_id] });
+            record = Some(Record { id, metadata, spec:l.spec, snapshot:None, history:vec![], launch_command:String::new(), restart_context:None, briefing_backup:None, interrupted:false, request_ids:vec![l.request_id] });
             Err(anyhow!("lost reply"))
         }).unwrap();
         let request = r.jobs[0].request_id.clone();
