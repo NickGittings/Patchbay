@@ -1,3 +1,6 @@
+import { useSimpleUi, simpleKey } from './simpleUi'
+import { startTaskAgent } from './implement'
+import { providerAuthCheck, providerLoginWrite, onProviderLoginEvent } from './ipc'
 import {
   createProviderRun,
   providerRuns,
@@ -128,6 +131,12 @@ const chatPanel = {
   },
 }
 const hooks = {
+  simpleUi: useSimpleUi,
+  simpleKey,
+  startTaskAgent,
+  providerAuthCheck,
+  providerLoginWrite,
+  onProviderLoginEvent,
   createProviderRun,
   providerRuns,
   driveProviderRuns,

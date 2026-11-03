@@ -1,3 +1,8 @@
+vi.mock('./providerAuth', () => ({
+  requireProviderAuth: vi.fn(async () => {}),
+  requireDeviceAuth: vi.fn(async () => {}),
+  ProviderSetupRequired: class extends Error {},
+}))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
 import { REVIEW_SCOPE, TASK_ROOT_SCOPE, type DeviceManifest, type SessionRecord } from '../types'
@@ -247,4 +252,14 @@ test('a failed background fix removes only its own terminal without switching th
   })
   expect(state.setActiveTask).not.toHaveBeenCalled()
   expect(patchTask).not.toHaveBeenCalled()
+})
+
+test('provider setup keeps the current worktree and creates no fix terminal', async () => {
+  const { requireDeviceAuth } = await import('./providerAuth')
+  vi.mocked(requireDeviceAuth).mockRejectedValueOnce(new Error('Provider setup required'))
+  await expect(fixReviewFindings(record)).rejects.toThrow('Provider setup required')
+  expect(state.activeTask).toBeNull()
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+  expect(state.addRootTerminal).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
 })

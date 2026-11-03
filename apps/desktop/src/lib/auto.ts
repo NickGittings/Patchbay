@@ -1,3 +1,4 @@
+import { requireDeviceAuth, ProviderSetupRequired } from './providerAuth'
 import {
   createProviderRun,
   controlProviderRun,
@@ -674,6 +675,10 @@ export async function startAuto(projectId: string, task: string | null, settings
       throw new Error('This worktree already has an Auto run')
     if (!validOverrides(settings.overrides ?? {}))
       throw new Error('Invalid Advanced effort settings')
+    for (const id of runAgents(settings)) {
+      const device = agentDevices(useStore.getState().devices).find((d) => d.id === id)
+      if (device) await requireDeviceAuth(device, projectId, task)
+    }
     await Promise.all(runAgents(settings).map(checkAutoHooks))
     const run: AutoRun = {
       ...settings,
@@ -740,6 +745,10 @@ export function pauseAuto(
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run) return
+  for (const id of runAgents(run)) {
+    const device = agentDevices(useStore.getState().devices).find((d) => d.id === id)
+    if (device) await requireDeviceAuth(device, projectId, task)
+  }
   // Resume changes the run id, so let a pending launch attach its session first.
   if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
@@ -1926,7 +1935,8 @@ async function drive(projectId: string, task: string | null) {
       if (
         e instanceof BranchMoved ||
         e instanceof AutoConfigurationError ||
-        e instanceof AutoHooksRequired
+        e instanceof AutoHooksRequired ||
+        e instanceof ProviderSetupRequired
       )
         pause(e.message)
       // A session someone else started in the slot, perhaps one whose launch reply was lost.

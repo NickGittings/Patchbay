@@ -25,7 +25,13 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const state = () => smoke.store.getState()
-  const dialog = () => document.querySelector('form[aria-label="Start merge agent"]')
+  // Worktree views stay mounted; assertions and clicks belong to the visible one.
+  const visible = (selector) =>
+    [...document.querySelectorAll(selector)].find((el) => {
+      const box = el.getBoundingClientRect()
+      return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden'
+    })
+  const dialog = () => visible('form[aria-label="Start merge agent"]')
   const submit = () =>
     dialog().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   const text = (sid) => smoke.terminalText(sid).text
@@ -50,7 +56,7 @@
       category: 'agent',
       source: 'builtin',
       adapter: 'codex',
-      command: `python3 '${parent}/fix.py'`,
+      command: `'${parent}/fix-cli/codex'`,
     })
     devices.push({
       id: 'review-smoke',
@@ -59,7 +65,7 @@
       category: 'agent',
       source: 'builtin',
       adapter: 'codex',
-      command: `python3 '${parent}/review.py'`,
+      command: `'${parent}/review-cli/codex'`,
     })
     state().setDevices([])
     await until('session service', () => state().serviceConnected)
@@ -70,8 +76,8 @@
     await smoke.refreshTasks()
     await until('feature task registered', () => state().tasks.some((t) => t.id === task.id))
     state().setView('review')
-    await until('Review mounted', () => document.querySelector('.review-refresh'))
-    assert(!document.querySelector('.review-banner'), 'open worktree has a review banner')
+    await until('Review mounted', () => visible('.review-refresh'))
+    assert(!visible('.review-banner'), 'open worktree has a review banner')
     // Keep the diff request pending, then fail it, so both states are visible in the main pane.
     const originalFetch = window.fetch
     const reviewUrl = window.__TAURI_INTERNALS__.convertFileSrc('git_review', 'ipc')
@@ -103,31 +109,31 @@
     } finally {
       window.fetch = originalFetch
     }
-    click(document.querySelector('.review-refresh'))
+    click(visible('.review-refresh'))
     await until('clean source review', () =>
       document
         .querySelector('.diff-view .review-empty')
         ?.textContent.includes('No uncommitted changes.'),
     )
-    click(document.querySelector('.review-findings-button'))
+    click(visible('.review-findings-button'))
     const emptyFindings = await until('unreviewed branch named in findings', () => {
-      const empty = document.querySelector('.findings-panel .review-empty')
+      const empty = visible('.findings-panel .review-empty')
       return empty?.querySelector('code')?.textContent === 'feature' && empty
     })
     assert(
       !emptyFindings.textContent.includes('in Review'),
       'findings tell users already in Review to navigate to Review',
     )
-    click(document.querySelector('.review-findings-button'))
+    click(visible('.review-findings-button'))
     const banner = await until('worktree explanation', () => {
-      const el = document.querySelector('.review-banner')
+      const el = visible('.review-banner')
       return el?.textContent.includes('Feature fixes') && el
     })
     assert(banner.textContent.includes(`${parent}/feature`), 'review omitted worktree path')
     assert(banner.querySelector('code')?.textContent === 'feature', 'review omitted branch')
     // The merge dialog lists Review's worktrees as destinations; opens it while closed.
     const destinations = () => {
-      if (!dialog()) click(document.querySelector('.review-merge-button'))
+      if (!dialog()) click(visible('.review-merge-button'))
       return [
         ...(dialog()?.querySelectorAll('select[aria-label="Destination worktree"] option') ?? []),
       ].map((o) => o.textContent)
@@ -136,7 +142,7 @@
       until('merge dialog', () => {
         if (dialog()) return dialog()
         // A worktree switch can still be committing its new dialog scope on the first click.
-        click(document.querySelector('.review-merge-button'))
+        click(visible('.review-merge-button'))
         return null
       })
     let form = await openDialog()
@@ -155,9 +161,9 @@
     )
     // Review runs alongside ordinary terminals, and findings survive view/session recovery.
     click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
-    click(document.querySelector('.review-agent-button'))
+    click(visible('.review-agent-button'))
     let reviewForm = await until('review dialog', () =>
-      document.querySelector('form[aria-label="Start review agent"]'),
+      visible('form[aria-label="Start review agent"]'),
     )
     assert(
       reviewForm.querySelector('select[aria-label="Base branch"]').value === 'main',
@@ -176,7 +182,7 @@
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     const reviewSid = await until('review session panel', () => {
-      const el = document.querySelector('[aria-label="Review agent terminal"]')
+      const el = visible('[aria-label="Review agent terminal"]')
       return el?.dataset.session
     })
     await until('review findings written without modifying the worktree', () =>
@@ -203,15 +209,15 @@
       )
     assert(fixButton()?.disabled, 'partial findings enabled the fix handoff during review')
     await until('Reviewed status', () =>
-      document.querySelector('.review-status')?.textContent.startsWith('Reviewed'),
+      visible('.review-status')?.textContent.startsWith('Reviewed'),
     )
-    click(document.querySelector('.review-findings-button'))
+    click(visible('.review-findings-button'))
     await until('Review shows findings in place of the diff', () =>
       [...document.querySelectorAll('.review-view .findings-panel')]
         .find((el) => !el.closest('.review-merge-terminal'))
         ?.textContent.includes('Smoke review finding'),
     )
-    click(document.querySelector('.review-findings-button'))
+    click(visible('.review-findings-button'))
     await until(
       'Review findings pane closes',
       () =>
@@ -219,9 +225,9 @@
           (el) => !el.closest('.review-merge-terminal'),
         ),
     )
-    click(document.querySelector('.review-agent-button'))
+    click(visible('.review-agent-button'))
     reviewForm = await until('running review guard', () =>
-      document.querySelector('form[aria-label="Start review agent"]'),
+      visible('form[aria-label="Start review agent"]'),
     )
     assert(
       reviewForm.querySelector('button[type="submit"]').disabled,
@@ -252,7 +258,7 @@
     )
     await until(
       'fix enabled without showing Findings',
-      () => !document.querySelector('.review-merge-terminal .findings-panel'),
+      () => !visible('.review-merge-terminal .findings-panel'),
     )
     click(
       await until('fix handoff enabled', () => fixButton() && !fixButton().disabled && fixButton()),
@@ -282,7 +288,7 @@
     )
     state().setActiveTask(null)
     state().setView('review')
-    await until('Review returns after fix launch', () => document.querySelector('.review-refresh'))
+    await until('Review returns after fix launch', () => visible('.review-refresh'))
     click(
       await until('review panel Hide button', () =>
         [...document.querySelectorAll('.review-merge-terminal button')].find(
@@ -290,12 +296,12 @@
         ),
       ),
     )
-    await until('review panel hidden', () => !document.querySelector('.review-merge-terminal'))
+    await until('review panel hidden', () => !visible('.review-merge-terminal'))
     state().setView('navigation')
-    await until('left hidden review', () => !document.querySelector('.review-view'))
+    await until('left hidden review', () => !visible('.review-view'))
     state().setView('review')
-    await until('Review restored', () => document.querySelector('.review-refresh'))
-    assert(!document.querySelector('.review-merge-terminal'), 'hidden review reopened on remount')
+    await until('Review restored', () => visible('.review-refresh'))
+    assert(!visible('.review-merge-terminal'), 'hidden review reopened on remount')
     click(
       [...document.querySelectorAll('.review-view button')].find(
         (b) => b.textContent === 'Show agents',
@@ -303,7 +309,7 @@
     )
     await until(
       'review recovered from record',
-      () => document.querySelector('.review-merge-terminal')?.dataset.session === reviewSid,
+      () => visible('.review-merge-terminal')?.dataset.session === reviewSid,
     )
     assert(!state().dockKept.includes(reviewSid), 'review entered the dock')
     assert(
@@ -326,7 +332,7 @@
     window.dispatchEvent(new Event('focus'))
     await until(
       'Changed since review status',
-      () => document.querySelector('.review-status')?.textContent === 'Changed since review',
+      () => visible('.review-status')?.textContent === 'Changed since review',
     )
     form = await openDialog()
     await until('merge dialog shows stale review', () =>
@@ -357,22 +363,19 @@
     choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
     submit()
     submit() // Repeated submit must produce a single launch.
-    await until('merge terminal', () =>
-      document.querySelector('[aria-label="Merge agent terminal"]'),
-    )
+    await until('merge terminal', () => visible('[aria-label="Merge agent terminal"]'))
     assert(
       document
         .querySelector('select[aria-label="Agent session"]')
         .selectedOptions[0].textContent.includes(`${parent}/integration`),
       'merge session label omitted its destination',
     )
-    let sid = document.querySelector('.review-merge-terminal').dataset.session
-    const mergeHeight = () =>
-      document.querySelector('.review-merge-terminal')?.getBoundingClientRect().height ?? 0
+    let sid = visible('.review-merge-terminal').dataset.session
+    const mergeHeight = () => visible('.review-merge-terminal')?.getBoundingClientRect().height ?? 0
     await until('usable merge panel on first launch', () => mergeHeight() > 100)
     const openHeight = mergeHeight()
     assert(
-      !document.querySelector('.review-merge-terminal .terminal-overlay button'),
+      !visible('.review-merge-terminal .terminal-overlay button'),
       'merge pane offered generic Start',
     )
     click(
@@ -382,17 +385,17 @@
         ),
       ),
     )
-    await until('merge panel collapsed', () => !document.querySelector('.review-merge-terminal'))
+    await until('merge panel collapsed', () => !visible('.review-merge-terminal'))
     await until(
       'collapsed merge size saved',
       () => state().panels['ReviewView-merge']['ReviewView-merge-terminal'] === 0,
     )
     // Hide survives view changes, and an explicit reveal works even when already active.
     state().setView('navigation')
-    await until('left hidden Review', () => !document.querySelector('.review-view'))
+    await until('left hidden Review', () => !visible('.review-view'))
     state().setView('review')
-    await until('hidden Review restored', () => document.querySelector('.review-view'))
-    assert(!document.querySelector('.review-merge-terminal'), 'hidden merge reopened on remount')
+    await until('hidden Review restored', () => visible('.review-view'))
+    assert(!visible('.review-merge-terminal'), 'hidden merge reopened on remount')
     click(
       [...document.querySelectorAll('.review-view button')].find(
         (b) => b.textContent === 'Show agents',
@@ -409,7 +412,7 @@
         ),
       ),
     )
-    await until('merge hidden again', () => !document.querySelector('.review-merge-terminal'))
+    await until('merge hidden again', () => !visible('.review-merge-terminal'))
     const priorSession = state().sessions[sid]
     state().setSession(sid, {
       ...priorSession,
@@ -468,11 +471,11 @@
     )
     click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     state().setView('navigation')
-    await until('left Review', () => !document.querySelector('.review-view'))
+    await until('left Review', () => !visible('.review-view'))
     state().setView('review')
     await until(
       'recovered merge terminal',
-      () => document.querySelector('.review-merge-terminal')?.dataset.session === sid,
+      () => visible('.review-merge-terminal')?.dataset.session === sid,
     )
     click(
       [...document.querySelectorAll('.review-merge-terminal button')].find((b) =>
@@ -481,9 +484,7 @@
     )
     await until('merge stopped', () => state().sessions[sid]?.running === false)
     state().setView('navigation')
-    await until('Navigation mounted after stopping merge', () =>
-      document.querySelector('.terminal-dock'),
-    )
+    await until('Navigation mounted after stopping merge', () => visible('.canvas'))
     assert(
       ![...document.querySelectorAll('.terminal-dock .tab')].some((tab) =>
         tab.textContent.includes('Merge'),
@@ -494,7 +495,7 @@
     assert(!state().dockKept.includes(sid), 'stopped merge was retained in the dock')
     state().setView('review')
     await until('Review restored after Navigation', () =>
-      document.querySelector('.review-banner')?.textContent.includes('Feature fixes'),
+      visible('.review-banner')?.textContent.includes('Feature fixes'),
     )
     await smoke.terminalWrite(
       shell,
@@ -520,7 +521,7 @@
     await until('stopped destination available again', () => {
       // A branch refresh may close the old source scope while this dialog is opening.
       if (!dialog()) {
-        click(document.querySelector('.review-merge-button'))
+        click(visible('.review-merge-button'))
         return false
       }
       form = dialog()
@@ -544,10 +545,10 @@
     choose(form.querySelector('select[aria-label="Destination worktree"]'), opened.project.root)
     submit()
     await until('conflict destination terminal', () => {
-      const el = document.querySelector('.review-merge-terminal')
+      const el = visible('.review-merge-terminal')
       return el?.dataset.session !== sid && el
     })
-    sid = document.querySelector('.review-merge-terminal').dataset.session
+    sid = visible('.review-merge-terminal').dataset.session
     await until('conflict merge verified', () =>
       text(sid).includes(`merge-verified:${opened.project.root}`),
     )
@@ -556,8 +557,7 @@
       'conflicting destination was not resolved',
     )
     assert(
-      document.querySelector('.review-merge-terminal .terminal-area').getBoundingClientRect()
-        .height > 60,
+      visible('.review-merge-terminal .terminal-area').getBoundingClientRect().height > 60,
       'merge terminal has no usable height',
     )
     click(
@@ -573,15 +573,12 @@
         ),
       ),
     )
-    await until('finished merge hidden', () => !document.querySelector('.review-merge-terminal'))
+    await until('finished merge hidden', () => !visible('.review-merge-terminal'))
     state().setView('navigation')
-    await until('left finished merge Review', () => !document.querySelector('.review-view'))
+    await until('left finished merge Review', () => !visible('.review-view'))
     state().setView('review')
-    await until('finished merge Review remounted', () => document.querySelector('.review-view'))
-    assert(
-      !document.querySelector('.review-merge-terminal'),
-      'finished hidden merge reopened on remount',
-    )
+    await until('finished merge Review remounted', () => visible('.review-view'))
+    assert(!visible('.review-merge-terminal'), 'finished hidden merge reopened on remount')
     smoke.selectPanel('sessions')
     // Only once it has ended: a running row has neither Show in Review nor (without an
     // adapter) a menu.
@@ -608,9 +605,7 @@
     click(reviewMerge)
     await until(
       'Sessions reveals finished merge despite unchanged active session',
-      () =>
-        document.querySelector('.review-merge-terminal')?.dataset.session === sid &&
-        mergeHeight() > 100,
+      () => visible('.review-merge-terminal')?.dataset.session === sid && mergeHeight() > 100,
     )
     assert(!state().dockKept.includes(sid), 'finished merge was retained in the dock')
     await smoke.terminalStop(shell)
@@ -618,6 +613,8 @@
       'PASS merge: review findings/read-only fixture/staleness/recovery and Fix in Build handoff, dirty destination errors, defaults, clean/conflict merges, duplicate prevention, panel sizing/Hide persistence, Sessions/Attention reveal, branch polling/focus refresh, Navigation exclusion, Review terminal recovery and Stop',
     )
   } catch (e) {
-    await smoke.report(`FAIL merge: ${e?.message ?? e} ${e?.stack ?? ''}`)
+    await smoke.report(
+      `FAIL merge: ${e?.message ?? e} ${e?.stack ?? ''}; findings: ${visible('.findings-panel')?.textContent}`,
+    )
   }
 })()

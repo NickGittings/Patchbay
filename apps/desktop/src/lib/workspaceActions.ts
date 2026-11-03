@@ -105,7 +105,7 @@ export function useWorkspaceActions(): WorkspaceAction[] {
     },
     {
       id: 'integrations',
-      title: 'Agent status integration',
+      title: 'Agent providers',
       group: 'settings',
       enabled: true,
       run: setting('integrations'),

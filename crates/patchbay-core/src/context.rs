@@ -2010,6 +2010,13 @@ pub fn extra_session_spec(
 pub(crate) fn launch_words(command: &str) -> Option<Vec<String>> {
     command_tokens(command, Shell::current())
 }
+/// Original shell spelling of each parsed word, for preserving configuration expansion.
+pub(crate) fn launch_raw_words(command: &str) -> Option<Vec<String>> {
+    match Shell::current() {
+        Shell::Unix => sh_tokens(command, true),
+        Shell::Windows => cmd_tokens(command, true),
+    }
+}
 /// The actual executable's token index and original byte range, after env/assignments.
 pub(crate) fn launch_program(command: &str) -> Option<(usize, std::ops::Range<usize>)> {
     launch_program_in(command, Shell::current())

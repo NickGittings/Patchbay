@@ -1,3 +1,4 @@
+import { requireDeviceAuth } from './providerAuth'
 import { createProviderRun, providerRuns, startProviderJob } from './orchestration'
 import { roleDevices } from './agentRoles'
 import { updateStory } from './stories'
@@ -48,6 +49,14 @@ async function handoffPlannerPlan(
     if (!state) throw new Error('Open the project first')
     return state
   }
+  const authWorkers = workerIds
+    ? agentDevices(initial.devices).filter((d) => workerIds.includes(d.id))
+    : auto
+      ? []
+      : roleDevices(initial.devices, state.agentRoles, 'worker')
+  for (const provider of [device, ...authWorkers])
+    await requireDeviceAuth(provider, projectId, task)
+  current()
   await savePlanDraft(projectId, null)
   const proposal = await proposalRead(projectId)
   current()
@@ -72,7 +81,7 @@ async function handoffPlannerPlan(
   const plan = await planRead(projectId, task ?? undefined)
   if (!plan.text.trim())
     throw new Error(
-      'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Settings → Agent status integration.',
+      'No plan received yet. Ask the planner to finish its plan. Claude’s native plans require the Claude integration in Settings → Agent providers.',
     )
   // Accepting a plan ends its planner, including one Auto took over manually.
   const sid = plannerSessionId(plannerId, projectId)

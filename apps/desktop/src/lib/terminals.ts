@@ -19,7 +19,7 @@ interface Entry {
 const registry = new Map<string, Entry>()
 
 /** xterm takes resolved colors rather than CSS variable references. */
-function terminalTheme(): ITheme {
+export function terminalTheme(): ITheme {
   const styles = getComputedStyle(document.documentElement)
   const color = (variable: string) => styles.getPropertyValue(variable).trim()
   return {

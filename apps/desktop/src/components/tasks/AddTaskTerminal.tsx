@@ -77,12 +77,20 @@ function AddTaskTerminalDialog({ close }: { close: () => void }) {
   // A saved terminal of another component isn't offered once the target changes.
   const chosen = options.find((o) => o.key === picked) ?? options[0]
   const agent = chosen?.choice.kind === 'device' && chosen.choice.device?.kind === 'agent'
-  const submit = () => {
-    if (!chosen) return
-    close()
-    void addTaskTerminal(target, chosen.choice).catch((e) =>
-      useStore.getState().setMessage(String(e)),
-    )
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async () => {
+    if (!chosen || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await addTaskTerminal(target, chosen.choice)
+      close()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
   }
   return (
     <div className="extension-overlay centered" onClick={close}>
@@ -97,9 +105,10 @@ function AddTaskTerminalDialog({ close }: { close: () => void }) {
         }}
         onSubmit={(e) => {
           e.preventDefault()
-          submit()
+          void submit()
         }}
       >
+        {error && <p role="alert">{error}</p>}
         <h2>Add terminal</h2>
         <label>
           Where
@@ -141,7 +150,7 @@ function AddTaskTerminalDialog({ close }: { close: () => void }) {
           <button type="button" onClick={close}>
             Cancel
           </button>
-          <button type="submit" className="primary" disabled={!chosen}>
+          <button type="submit" className="primary" disabled={busy || !chosen}>
             {agent ? 'Start agent' : 'Add terminal'}
           </button>
         </div>

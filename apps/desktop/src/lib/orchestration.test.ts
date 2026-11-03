@@ -1,3 +1,8 @@
+vi.mock('./providerAuth', () => ({
+  requireProviderAuth: vi.fn(async () => {}),
+  requireDeviceAuth: vi.fn(async () => {}),
+  ProviderSetupRequired: class extends Error {},
+}))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { taskWorkspace, useStore } from '../store'

@@ -5,11 +5,13 @@ export default function Dialog({
   subtitle,
   onClose,
   children,
+  className = '',
 }: {
   title: string
   subtitle?: string
   onClose: () => void
   children: ReactNode
+  className?: string
 }) {
   const heading = useId()
   const card = useRef<HTMLDivElement>(null)
@@ -19,7 +21,7 @@ export default function Dialog({
     return () => previous?.focus()
   }, [])
   return (
-    <div className="extension-overlay" onClick={onClose}>
+    <div className={`extension-overlay ${className}`} onClick={onClose}>
       <div
         ref={card}
         tabIndex={-1}

@@ -1,3 +1,8 @@
+vi.mock('./providerAuth', () => ({
+  requireProviderAuth: vi.fn(async () => {}),
+  requireDeviceAuth: vi.fn(async () => {}),
+  ProviderSetupRequired: class extends Error {},
+}))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
@@ -1289,3 +1294,12 @@ test.each(['start', 'restart'] as const)(
     expect(useStore.getState().planStartedWith[sid]).toBe('web')
   },
 )
+
+test('a signed-out restart keeps the existing process and does not save launch drafts', async () => {
+  const { requireProviderAuth } = await import('./providerAuth')
+  vi.mocked(requireProviderAuth).mockRejectedValueOnce(new Error('Provider setup required'))
+  await restartTerminal('web', 'dev', null)
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(ipc.terminalStart).not.toHaveBeenCalled()
+  expect(savePlanDraft).not.toHaveBeenCalled()
+})

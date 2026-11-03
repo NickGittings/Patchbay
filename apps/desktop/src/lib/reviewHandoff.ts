@@ -1,3 +1,4 @@
+import { requireDeviceAuth } from './providerAuth'
 import { projectStateOf, useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type AutoBrief, type SessionRecord } from '../types'
 import { reviewFixTask } from './ipc'
@@ -44,6 +45,7 @@ export async function fixReviewFindings(
       'fix',
       agents.find((d) => d.adapter === record.metadata.adapter),
     )
+  await requireDeviceAuth(device, projectId, task)
   const previous = s.activeTask
   // Exact: a `null` here means no task holds the project folder, so nothing to redirect to.
   if (!target && previous !== task) s.setActiveTask(task, true)

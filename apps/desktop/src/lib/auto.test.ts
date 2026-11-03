@@ -1,3 +1,8 @@
+vi.mock('./providerAuth', () => ({
+  requireProviderAuth: vi.fn(async () => {}),
+  requireDeviceAuth: vi.fn(async () => {}),
+  ProviderSetupRequired: class extends Error {},
+}))
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {

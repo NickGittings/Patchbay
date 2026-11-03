@@ -88,6 +88,10 @@ input()  # controller must stop this session before handing off
 PYTHON
 cat > "$dir/codex" <<SH
 #!/bin/sh
+if [ "\${1:-}" = login ] && [ "\${2:-}" = status ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
 exec python3 '$dir/agent.py' "\$@"
 SH
 chmod +x "$dir/codex"

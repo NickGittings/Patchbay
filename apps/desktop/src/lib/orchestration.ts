@@ -1,3 +1,4 @@
+import { requireProviderAuth, ProviderSetupRequired } from './providerAuth'
 import { invoke } from '@tauri-apps/api/core'
 import { projectOf, projectStateOf, useStore } from '../store'
 import type { DeviceManifest, Project, TerminalSpec } from '../types'
@@ -62,8 +63,25 @@ export const providerRuns = (projectId: string) =>
   invoke<ProviderRun[]>('provider_runs', { projectId })
 export const controlProviderRun = (projectId: string, id: string, control: ProviderControl) =>
   invoke<ProviderRun>('provider_run_control', { projectId, id, control })
-export const startProviderJob = (project: Project, id: string, job: string) =>
-  invoke<ProviderRun>('provider_job_start', { projectId: project.projectId, project, id, job })
+export const startProviderJob = async (project: Project, id: string, job: string) => {
+  const run = (await providerRuns(project.projectId!)).find((r) => r.id === id)
+  const target = [run?.coordinator, ...(run?.jobs ?? [])].find((j) => j?.id === job)
+  if (target) {
+    try {
+      await requireProviderAuth({ terminal: target.terminal, project, task: run?.task })
+    } catch (e) {
+      if (e instanceof ProviderSetupRequired)
+        await controlProviderRun(project.projectId!, id, { kind: 'pause' })
+      throw e
+    }
+  }
+  return invoke<ProviderRun>('provider_job_start', {
+    projectId: project.projectId,
+    project,
+    id,
+    job,
+  })
+}
 export async function createProviderRun(
   project: Project,
   kind: ProviderRun['kind'],
@@ -74,6 +92,8 @@ export async function createProviderRun(
   coordinator?: DeviceManifest,
   id: string = crypto.randomUUID(),
 ) {
+  for (const device of [...devices, ...(coordinator ? [coordinator] : [])])
+    await requireProviderAuth({ terminal: device, project, task })
   await listenForTerminals()
   return invoke<ProviderRun>('provider_run_create', {
     projectId: project.projectId,

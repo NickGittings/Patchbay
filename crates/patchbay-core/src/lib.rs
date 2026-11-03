@@ -21,6 +21,7 @@ pub mod plans;
 pub mod policy;
 pub mod profiles;
 pub mod proposals;
+pub mod provider_auth;
 pub mod pty;
 pub mod reviews;
 pub mod status;

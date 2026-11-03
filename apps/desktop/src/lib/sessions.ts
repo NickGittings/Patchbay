@@ -1,3 +1,4 @@
+import { requireProviderAuth } from './providerAuth'
 import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
 import { stopAndWait } from './stopAndWait'
@@ -375,6 +376,21 @@ const reports = (launch: Launch) => !!(launch.kickoff || launch.auto || launch.s
 const cancelled = (launch: Launch): Promise<undefined> =>
   reports(launch) ? Promise.reject(new LaunchCancelled()) : Promise.resolve(undefined)
 
+async function checkLaunchAuth(launch: Launch) {
+  const { componentId, terminalId, project, sid } = launch
+  const terminal =
+    launch.rootTerminal ??
+    launch.runtime?.terminal ??
+    (componentId === PLAN_SCOPE
+      ? planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
+      : componentId === MAP_SCOPE
+        ? mapPreset(launch.projectId, sid)
+        : project.components
+            .find((c) => c.id === componentId)
+            ?.terminals.find((t) => t.id === terminalId))
+  if (terminal) await requireProviderAuth({ terminal, project, componentId, task: launch.task })
+}
+
 /** Resolves to the launch's request id once its session started. */
 function launchTerminal(launch: Launch): Promise<string | undefined> {
   const { sid, componentId, terminalId, project, runtime } = launch
@@ -427,6 +443,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         project.components
           .find((c) => c.id === componentId)
           ?.terminals.find((t) => t.id === terminalId)
+      if (!useStore.getState().sessions[sid]?.running) await checkLaunchAuth(launch)
       // A fix agent works from review findings over the whole map, never the plan; one started
       // again asks the backend to brief it from the branch its record keeps.
       const again =
@@ -684,6 +701,7 @@ export function restartTerminal(
   if (existing) return existing
   const request = (async () => {
     try {
+      await checkLaunchAuth(launch)
       await starting.get(launch.sid)
       if (requestedEpoch !== epoch || isClosing(launch)) return
       if (

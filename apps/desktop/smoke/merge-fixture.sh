@@ -90,3 +90,16 @@ assert 'PATCHBAY_REVIEW_FILE' not in os.environ
 print(body, flush=True)
 print('fix-verified:' + str(pathlib.Path.cwd()), flush=True)
 PYTHON
+
+for role in fix review; do
+  mkdir -p "$dir/$role-cli"
+  cat > "$dir/$role-cli/codex" <<SH
+#!/bin/sh
+if [ "\${1:-}" = login ] && [ "\${2:-}" = status ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exec python3 '$dir/$role.py' "\$@"
+SH
+  chmod +x "$dir/$role-cli/codex"
+done
