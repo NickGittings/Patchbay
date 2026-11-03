@@ -60,3 +60,16 @@ test('restored assignments drop malformed entries and keep one preset outside re
     }),
   ).toEqual({ plan: ['claude'], review: ['codex', 'claude'] })
 })
+
+test('scanners and workers restore several presets and default to off', () => {
+  const roles = restoredAgentRoles({
+    scan: ['codex', 'codex', 'claude'],
+    worker: ['claude', 7, 'codex'],
+  })
+  expect(roles).toEqual({ scan: ['codex', 'claude'], worker: ['claude', 'codex'] })
+  expect(roleDevices(devices, roles, 'scan')).toEqual([codex, claude])
+  expect(roleDevices(devices, roles, 'worker')).toEqual([claude, codex])
+  expect(roleDevices(devices, {}, 'scan')).toEqual([])
+  expect(roleDevices(devices, {}, 'worker')).toEqual([])
+  expect(roleDevices(devices, { scan: ['missing'] }, 'scan')).toEqual([])
+})

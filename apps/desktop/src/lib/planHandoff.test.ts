@@ -12,6 +12,11 @@ vi.mock('./ipc', () => ({
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
+vi.mock('./orchestration', () => ({
+  providerRuns: vi.fn(),
+  createProviderRun: vi.fn(),
+  startProviderJob: vi.fn(),
+}))
 const ipc = await import('./ipc')
 const { startTerminal } = await import('./sessions')
 const { implementPlannerPlan } = await import('./planHandoff')
@@ -443,3 +448,54 @@ test('an explicit background proposal updates only the target workspace', async 
   expect(useStore.getState().highlighted).toEqual([])
   expect(useStore.getState().taskWorkspaces.bg.highlighted).toEqual(['web'])
 })
+
+test.each([false, true])(
+  'Auto hands off using its reserved build identity (saved: %s)',
+  async (saved) => {
+    const providers = await import('./orchestration')
+    const building = (id: string) =>
+      ({
+        id,
+        kind: 'implementation',
+        task: null,
+        goal: 'Goal',
+        state: 'running',
+        coordinator: { id: 'coordinator', sessionId: null, requestId: 'request' },
+      }) as unknown as import('./orchestration').ProviderRun
+    vi.mocked(providers.providerRuns).mockResolvedValue([
+      building('unrelated'),
+      ...(saved ? [building('reserved')] : []),
+    ])
+    vi.mocked(providers.createProviderRun).mockResolvedValue(building('reserved'))
+    vi.mocked(providers.startProviderJob).mockResolvedValue({
+      ...building('reserved'),
+      coordinator: { ...building('reserved').coordinator!, sessionId: 'coordinator-session' },
+    })
+    const launched = await implementPlannerPlan(
+      'claude',
+      { goal: 'Goal', fixFloor: null, effortNote: '', commit: true },
+      'claude',
+      'stay',
+      { projectId: 'p', task: null, providerRunId: 'reserved' },
+      ['claude'],
+    )
+    expect(launched.implementationRun).toBe('reserved')
+    expect(providers.startProviderJob).toHaveBeenCalledWith(
+      expect.anything(),
+      'reserved',
+      'coordinator',
+    )
+    if (saved) expect(providers.createProviderRun).not.toHaveBeenCalled()
+    else
+      expect(providers.createProviderRun).toHaveBeenCalledWith(
+        expect.anything(),
+        'implementation',
+        'Goal',
+        [],
+        null,
+        [claude],
+        claude,
+        'reserved',
+      )
+  },
+)

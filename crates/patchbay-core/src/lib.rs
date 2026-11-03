@@ -16,6 +16,7 @@ pub mod maintenance;
 pub mod merges;
 pub mod model;
 pub mod navigation;
+pub mod orchestration;
 pub mod plans;
 pub mod policy;
 pub mod proposals;

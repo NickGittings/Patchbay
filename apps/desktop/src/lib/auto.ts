@@ -1,3 +1,9 @@
+import {
+  createProviderRun,
+  controlProviderRun,
+  driveProviderRuns,
+  providerRuns,
+} from './orchestration'
 import { refreshUsage, usageBlock } from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
@@ -210,6 +216,8 @@ export function nextStep(
     reason,
   })
   switch (run.stage) {
+    case 'scan':
+      return step('plan', 'Scan reports are ready')
     case 'plan':
       return step('implement', 'Plan finished')
     case 'implement':
@@ -295,7 +303,11 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   if (!run) return
   update = pauseDefaults(update)
   const next = { ...run, ...update }
-  if (next.stage !== 'plan' && (next.stage !== 'implement' || next.sessionId))
+  if (
+    next.stage !== 'scan' &&
+    next.stage !== 'plan' &&
+    (next.stage !== 'implement' || next.sessionId)
+  )
     update.plannerTurn = false
   useStore.getState().patchTask(projectId, task, {
     auto: {
@@ -538,7 +550,16 @@ export async function autoSnapshot(
 }
 export type AutoSettings = Pick<
   AutoRun,
-  'goal' | 'effort' | 'overrides' | 'merge' | 'device' | 'agents' | 'reviewers' | 'background'
+  | 'goal'
+  | 'effort'
+  | 'overrides'
+  | 'merge'
+  | 'device'
+  | 'agents'
+  | 'reviewers'
+  | 'scanners'
+  | 'workers'
+  | 'background'
 > & {
   stage?: AutoStage
 }
@@ -549,11 +570,20 @@ export const agentFor = (run: Pick<AutoRun, 'device' | 'agents'>, stage: AgentRo
 export const reviewAgents = (run: Pick<AutoRun, 'device' | 'agents' | 'reviewers'>) =>
   run.reviewers && run.reviewers.length > 1 ? run.reviewers : [agentFor(run, 'review')]
 /** Every preset a run may launch, each once. */
-export const runAgents = (run: Pick<AutoRun, 'device' | 'agents' | 'reviewers'>) => [
-  ...new Set([...AGENT_ROLES.map((stage) => agentFor(run, stage)), ...reviewAgents(run)]),
+export const runAgents = (
+  run: Pick<AutoRun, 'device' | 'agents' | 'reviewers' | 'scanners' | 'workers'>,
+) => [
+  ...new Set([
+    ...AGENT_ROLES.filter((stage) => stage !== 'scan' && stage !== 'worker').map((stage) =>
+      agentFor(run, stage),
+    ),
+    ...reviewAgents(run),
+    ...(run.scanners ?? []),
+    ...(run.workers ?? []),
+  ]),
 ]
-const agentStage = (stage: AutoStage): stage is AgentRole =>
-  (AGENT_ROLES as string[]).includes(stage)
+const agentStage = (stage: AutoStage): stage is Exclude<AgentRole, 'worker'> =>
+  stage !== 'scan' && (AGENT_ROLES as string[]).includes(stage)
 export class AutoHooksRequired extends Error {
   readonly provider: HookProvider
   constructor(provider: HookProvider) {
@@ -652,8 +682,10 @@ export async function startAuto(projectId: string, task: string | null, settings
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
     const decision = inferStage(snapshot, run, true)
-    const stage =
+    let stage =
       settings.stage === 'merge' && !mergeableHead(snapshot, run) ? 'mergeGate' : settings.stage
+    if (!settings.stage && decision.stage === 'plan' && !decision.sessionId && run.scanners?.length)
+      stage = 'scan'
     assertSessionAvailable(projectId, task, decision.sessionId)
     // Merged work's old plan is no goal for a new run.
     if (
@@ -695,7 +727,12 @@ export function pauseAuto(
   reason = 'Paused by you',
   pauseKind: NonNullable<AutoRun['pauseKind']> = 'user',
 ) {
+  const run = autoRun(projectId, task)
   patch(projectId, task, { status: 'paused', reason, pauseKind }, reason)
+  for (const id of [run?.scanRound, run?.implementationRun ?? run?.implementationLaunch].filter(
+    (id): id is string => !!id,
+  ))
+    void controlProviderRun(projectId, id, { kind: 'pause' }).catch(() => {})
 }
 export async function resumeAuto(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
@@ -706,6 +743,32 @@ export async function resumeAuto(projectId: string, task: string | null) {
   // Tracked sessions are judged from the service's records; while it is away, nothing is known.
   if (run.sessionId && !useStore.getState().serviceConnected)
     throw new Error('Wait for the session service to reconnect, then Resume')
+  if (run.stage === 'implement' && run.implementationLaunch && !run.implementationRun) {
+    const build = (await providerRuns(projectId)).find(
+      (r) =>
+        r.kind === 'implementation' &&
+        r.id === run.implementationLaunch &&
+        r.task === task &&
+        r.goal === run.goal &&
+        r.state !== 'stopped',
+    )
+    if (build && autoRun(projectId, task) === run) {
+      patch(projectId, task, { implementationRun: build.id, ...track([]) })
+      return resumeAuto(projectId, task)
+    }
+  }
+  if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
+    const id = run.stage === 'scan' ? run.scanRound : run.implementationRun
+    if (id) {
+      const existing = (await providerRuns(projectId)).find((r) => r.id === id)
+      // A scan ID is saved before creation; a failed write must be retried with that same ID.
+      if (!existing && run.stage !== 'scan') throw new Error('The provider run is missing')
+      if (existing?.state === 'paused') await controlProviderRun(projectId, id, { kind: 'resume' })
+    }
+    if (autoRun(projectId, task) === run)
+      patch(projectId, task, { status: 'running', reason: 'Checking provider results' })
+    return
+  }
   const snapshot = await autoSnapshot(projectId, task, run, true)
   if (peekController(projectId, task)?.phase === 'launching')
     throw new Error('Auto is still starting an agent; Resume once it has started')
@@ -1002,13 +1065,37 @@ export function stopAuto(projectId: string, task: string | null) {
     { runId: crypto.randomUUID(), status: 'stopped', reason: 'Stopped by you' },
     'Auto stopped',
   )
-  if (run) void stopTracked(run)
+  if (run) {
+    void stopTracked(run)
+    for (const id of [run.scanRound, run.implementationRun ?? run.implementationLaunch].filter(
+      (id): id is string => !!id,
+    ))
+      void controlProviderRun(projectId, id, { kind: 'stop' }).catch((e) =>
+        useStore.getState().setMessage(String(e)),
+      )
+  }
   if (peekController(projectId, task)?.validating)
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
 }
 export async function skipStage(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   if (!run || run.status === 'running') return
+  if (run.stage === 'scan') {
+    if (!run.scanRound) throw new Error('Start scanning before continuing with findings')
+    await controlProviderRun(projectId, run.scanRound, { kind: 'continueScan' })
+    patch(projectId, task, {
+      ...track([]),
+      stage: 'plan',
+      status: 'running',
+      reason: 'Continuing with available scan findings',
+    })
+    return
+  }
+  if (run.stage === 'implement' && run.implementationRun) {
+    const build = (await providerRuns(projectId)).find((r) => r.id === run.implementationRun)
+    if (!build || build.state !== 'complete')
+      throw new Error('Every assignment must be integrated before validation or review')
+  }
   if (run.sessionId) {
     await stopTracked(run)
     if (
@@ -1117,7 +1204,9 @@ function plannerOwner(projectId: string) {
     ? autoRuns(state).find(
         ({ run }) =>
           unfinished(run.status) &&
-          (run.stage === 'plan' || (run.stage === 'implement' && !run.sessionId)) &&
+          (run.stage === 'scan' ||
+            run.stage === 'plan' ||
+            (run.stage === 'implement' && !run.sessionId)) &&
           (run.plannerTurn ||
             // Older saved runs can prove ownership through a tracked planner or its handoff.
             (run.plannerTurn === undefined &&
@@ -1171,6 +1260,68 @@ async function drive(projectId: string, task: string | null) {
     // The service may reconnect with the same agents still running. Wait without changing run
     // state, then the serviceConnected subscription drives them again after reconciliation.
     if (!useStore.getState().serviceConnected) return
+    if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
+      if (run.status !== 'running' || !driveable(projectId, task, run)) return
+      if (run.stage === 'scan' && !plannerAvailable(projectId, task)) return
+      const scanExists =
+        run.stage === 'scan' &&
+        run.scanRound &&
+        (await providerRuns(projectId)).some((r) => r.id === run.scanRound)
+      if (!live() || !driveable(projectId, task)) return
+      if (run.stage === 'scan' && !scanExists) {
+        const scanRound = run.scanRound ?? crypto.randomUUID()
+        patch(projectId, task, { plannerTurn: true, scanRound })
+        run = autoRun(projectId, task)!
+        const project = projectOf(projectId)!
+        const state = projectStateOf(projectId)!
+        const scope = autoWorkspace(state, task)?.highlighted ?? []
+        const presets = (run.scanners ?? []).map((id) => {
+          const device = agentDevices(useStore.getState().devices).find((d) => d.id === id)
+          if (!device) throw new AutoConfigurationError(`Scanner ${id} is not installed`)
+          return device
+        })
+        await createProviderRun(
+          project,
+          'scan',
+          run.goal,
+          scope,
+          task,
+          presets,
+          undefined,
+          scanRound,
+        )
+        if (!live()) {
+          const owner = autoRun(projectId, task)
+          await controlProviderRun(projectId, scanRound, {
+            kind: owner?.runId === runId && owner.status === 'paused' ? 'pause' : 'stop',
+          })
+          return
+        }
+      }
+      const id = run.stage === 'scan' ? run.scanRound : run.implementationRun
+      const providerRun = (await driveProviderRuns(projectId)).find((r) => r.id === id)
+      if (!live()) return
+      if (!providerRun) throw new Error('The provider run is missing')
+      if (providerRun.state === 'paused' || providerRun.state === 'stopped') {
+        pause(providerRun.error ?? 'Provider run is paused; inspect its results')
+        return
+      }
+      if (providerRun.state === 'complete') {
+        if (run.stage === 'scan')
+          await controlProviderRun(projectId, providerRun.id, { kind: 'continueScan' })
+        else await controlProviderRun(projectId, providerRun.id, { kind: 'stop' })
+        if (!live()) return
+        patch(
+          projectId,
+          task,
+          { ...track([]), ...nextStep(run), plannerTurn: run.stage === 'scan' },
+          run.stage === 'scan'
+            ? 'Completed scan reports handed to the planner'
+            : 'All worker assignments integrated',
+        )
+      }
+      return
+    }
     // Approval waits still observe Git, including a merge performed outside Auto.
     if (run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !run.sessionId) {
       const previous = controller.gatePoll
@@ -1636,18 +1787,42 @@ async function drive(projectId: string, task: string | null) {
         await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
           kickoff: { kind: 'plan' },
           auto: brief,
+          scanRound: run.scanRound,
         })
         break
       case 'implement':
         // The planner whose plan is accepted is the plan stage's; the implement agent may differ.
         patch(projectId, task, { plannerTurn: true })
         launching = true
-        sid = (
-          await implementPlannerPlan(agentFor(run, 'plan'), brief, deviceId, presentation, {
-            projectId,
-            task,
-          })
-        ).sessionId
+        {
+          const providerRunId = run.workers?.length
+            ? (run.implementationLaunch ?? crypto.randomUUID())
+            : undefined
+          if (providerRunId) patch(projectId, task, { implementationLaunch: providerRunId })
+          const started = await implementPlannerPlan(
+            agentFor(run, 'plan'),
+            brief,
+            deviceId,
+            presentation,
+            {
+              projectId,
+              task,
+              ...(providerRunId ? { providerRunId } : {}),
+            },
+            ...(run.workers ? [run.workers] : []),
+          )
+          sid = started.sessionId
+          if (started.implementationRun) {
+            const owner = autoRun(projectId, task)
+            if (owner?.runId !== runId || owner.status === 'stopped' || owner.status === 'done')
+              await controlProviderRun(projectId, started.implementationRun, { kind: 'stop' })
+            else {
+              patch(projectId, task, { implementationRun: started.implementationRun })
+              if (owner.status === 'paused')
+                await controlProviderRun(projectId, started.implementationRun, { kind: 'pause' })
+            }
+          }
+        }
         break
       case 'review': {
         launching = true

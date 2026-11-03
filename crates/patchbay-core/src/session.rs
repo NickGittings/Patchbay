@@ -24,7 +24,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 10 added activity and generation-bound prompt delivery; 12 names each live reply's
 // predecessor. Protocol 13 added explicit forced prompt delivery; 14 requires the
 // provider-specific force checks so a newer client cannot reuse an unsafe older service.
-pub const PROTOCOL: u32 = 14;
+// Protocol 15 retains scan, coordinator and worker briefings; 16 retrieves planner scan options.
+pub const PROTOCOL: u32 = 16;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -257,10 +258,20 @@ pub struct PreviewScan {
     pub running: bool,
     pub urls: Vec<String>,
 }
+/// Planner startup options retained by the service, without exposing the launch environment.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerScanOptions {
+    pub scan_round: Option<String>,
+    pub brief: Option<crate::context::AutoBrief>,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
     List,
+    PlannerScanOptions {
+        id: String,
+    },
     MaintenanceGuard {
         project_id: String,
         component_ids: Vec<String>,
@@ -1460,6 +1471,22 @@ impl Service {
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::PlannerScanOptions { id } => {
+                let records = self.records.lock().unwrap();
+                let options = records
+                    .get(&id)
+                    .filter(|r| r.metadata.component_id == crate::model::PLAN_SCOPE)
+                    .map(|r| PlannerScanOptions {
+                        scan_round: r.spec.env.get("PATCHBAY_SCAN_ROUND").cloned(),
+                        brief: r
+                            .spec
+                            .env
+                            .get("PATCHBAY_SCAN_BRIEF")
+                            .and_then(|s| serde_json::from_str(s).ok()),
+                    })
+                    .unwrap_or_default();
+                serde_json::to_value(options)?
+            }
             Request::AgentSession { token } => {
                 let found = (!token.is_empty())
                     .then(|| {
@@ -3387,6 +3414,18 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn provider_job_briefings_are_retained() {
+        for scope in [
+            crate::model::SCAN_SCOPE,
+            crate::model::COORDINATOR_SCOPE,
+            crate::model::WORKER_SCOPE,
+        ] {
+            owned_job_briefings_are_retained(scope);
+        }
+    }
+
     #[test]
     fn missing_exclusive_flag_never_removes_git_metadata_grants() {
         let dir = std::env::temp_dir().join("repo/.git");
@@ -4178,6 +4217,64 @@ mod tests {
         }))
         .unwrap();
         (metadata, spec)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planner_scan_options_survive_restart_without_exposing_launch_environment() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (mut metadata, mut spec) = restart_fixture(&dir, "printf quiet");
+        metadata.component_id = crate::model::PLAN_SCOPE.into();
+        spec.env
+            .insert("PATCHBAY_SCAN_ROUND".into(), "round-1".into());
+        spec.env.insert("SECRET".into(), "private".into());
+        spec.env.insert(
+            "PATCHBAY_SCAN_BRIEF".into(),
+            serde_json::json!({
+                "goal": "Retained goal", "fixFloor": null, "effortNote": "Effort", "commit": false
+            })
+            .to_string(),
+        );
+        let id = service.start("launch".into(), metadata, spec).unwrap();
+        wait_for_exit(&service, &id);
+        service.persist().unwrap();
+        let recovered = Service::load(&dir).unwrap();
+        let listed: Vec<Record> =
+            serde_json::from_value(recovered.handle("1", Request::List).unwrap()).unwrap();
+        assert!(listed[0].spec.env.is_empty());
+        let value = recovered
+            .handle("1", Request::PlannerScanOptions { id: id.clone() })
+            .unwrap();
+        assert!(!value.to_string().contains("private"));
+        let options: PlannerScanOptions = serde_json::from_value(value).unwrap();
+        assert_eq!(options.scan_round.as_deref(), Some("round-1"));
+        assert_eq!(options.brief.unwrap().goal, "Retained goal");
+        for component in ["web", "missing"] {
+            let lookup = if component == "missing" {
+                "missing".into()
+            } else {
+                recovered
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get_mut(&id)
+                    .unwrap()
+                    .metadata
+                    .component_id = component.into();
+                id.clone()
+            };
+            let options: PlannerScanOptions = serde_json::from_value(
+                recovered
+                    .handle("1", Request::PlannerScanOptions { id: lookup })
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(options.scan_round.is_none() && options.brief.is_none());
+        }
+        service.pty.reset();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

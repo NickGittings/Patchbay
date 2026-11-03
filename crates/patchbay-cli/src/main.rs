@@ -467,6 +467,31 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
 
 #[derive(Subcommand)]
 enum AgentCmd {
+    /// Submit an explicit investigation report (references, findings, uncertainties, suggestedWork).
+    ScanReport {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Inspect this session's scan round or implementation assignments.
+    Assignments,
+    /// Create assignments from a JSON array (id, instructions, components, dependencies, preset).
+    AssignmentsCreate {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Finish creating assignments; validation waits for every assignment to be integrated.
+    AssignmentsSeal,
+    /// Submit a clean, committed worker result.
+    WorkerResult {
+        #[arg(long)]
+        commit: String,
+        #[arg(long)]
+        summary: String,
+    },
+    /// Integrate a completed assignment into the coordinator's target checkout.
+    AssignmentIntegrate {
+        assignment: String,
+    },
     Context,
     Environment {
         #[command(subcommand)]
@@ -520,6 +545,28 @@ fn agent(command: AgentCmd) -> Result<bool> {
     use patchbay_core::agent_bridge::{self, Action, Response};
     let response = Response::from_result((|| {
         let action = match command {
+            AgentCmd::ScanReport { file } => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::SubmitScan {
+                    report: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::Assignments => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::Inspect,
+            },
+            AgentCmd::AssignmentsCreate { file } => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::CreateAssignments {
+                    assignments: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::AssignmentsSeal => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::SealAssignments,
+            },
+            AgentCmd::WorkerResult { commit, summary } => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::SubmitWorker { commit, summary },
+            },
+            AgentCmd::AssignmentIntegrate { assignment } => Action::ProviderRun {
+                command: patchbay_core::orchestration::Command::Integrate { assignment },
+            },
             AgentCmd::Context => Action::Context {},
             AgentCmd::Status => Action::Status {},
             AgentCmd::Logs { session_id } => Action::Logs { session_id },

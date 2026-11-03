@@ -1,3 +1,5 @@
+import { createProviderRun, providerRuns, startProviderJob } from './orchestration'
+import { roleDevices } from './agentRoles'
 import { updateStory } from './stories'
 import { projectOf, projectStateOf, useStore } from '../store'
 import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
@@ -8,7 +10,7 @@ import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
-export type HandoffTarget = { projectId: string; task: string | null }
+export type HandoffTarget = { projectId: string; task: string | null; providerRunId?: string }
 
 /**
  * Accept the project's plan into the target (default: active) worktree and launch an agent: `deviceId`
@@ -21,6 +23,7 @@ async function handoffPlannerPlan(
   deviceId?: string,
   presentation: 'stay' | 'follow' = 'follow',
   target?: HandoffTarget,
+  workerIds?: string[],
 ) {
   const initial = useStore.getState()
   const projectId = target?.projectId ?? initial.project?.id
@@ -78,11 +81,59 @@ async function handoffPlannerPlan(
   const s = current()
   // A running agent cannot receive a new startup briefing. Keep previous work
   // available and create a fresh session for this accepted plan.
-  const terminalId = useStore.getState().addRootTerminal(device, target)
-  const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-    kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
-    auto,
-  })
+  const workers = workerIds
+    ? workerIds.map((id) => {
+        const found = agentDevices(initial.devices).find((d) => d.id === id)
+        if (!found) throw new Error(`Worker preset ${id} is not installed`)
+        return found
+      })
+    : auto
+      ? []
+      : roleDevices(initial.devices, s.agentRoles, 'worker')
+  let launched: { sessionId: string; requestId?: string; implementationRun?: string }
+  if (workers.length) {
+    const project = projectOf(projectId)
+    if (!project) throw new Error('Open the project first')
+    const work = task === s.activeTask ? s : s.taskWorkspaces[task ?? '']
+    const goal = auto?.goal ?? plan.text
+    const existing = (await providerRuns(projectId)).find(
+      (r) =>
+        r.kind === 'implementation' &&
+        r.task === task &&
+        r.goal === goal &&
+        (target?.providerRunId ? r.id === target.providerRunId : !auto) &&
+        !['stopped', 'complete'].includes(r.state),
+    )
+    const run =
+      existing ??
+      (await createProviderRun(
+        project,
+        'implementation',
+        goal,
+        work?.highlighted ?? [],
+        task,
+        workers,
+        device,
+        target?.providerRunId,
+      ))
+    const started = run.coordinator?.sessionId
+      ? run
+      : await startProviderJob(project, run.id, run.coordinator!.id)
+    if (!started.coordinator?.sessionId)
+      throw new Error(started.error ?? 'Coordinator launch unconfirmed')
+    launched = {
+      sessionId: started.coordinator.sessionId,
+      requestId: started.coordinator.requestId,
+      implementationRun: run.id,
+    }
+  } else {
+    const terminalId = useStore.getState().addRootTerminal(device, target)
+    const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
+      kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
+      auto,
+    })
+    launched = { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }
+  }
   if (story && task) {
     try {
       if (current().stories.find((s) => s.id === story)?.task !== task)
@@ -100,7 +151,7 @@ async function handoffPlannerPlan(
   const after = useStore.getState()
   if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
     after.setView('implementation')
-  return { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }
+  return launched
 }
 
 const handingOff = new Set<string>()
@@ -111,13 +162,14 @@ export async function implementPlannerPlan(
   deviceId?: string,
   presentation: 'stay' | 'follow' = 'follow',
   target?: HandoffTarget,
+  workerIds?: string[],
 ) {
   const projectId = target?.projectId ?? useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (handingOff.has(projectId)) throw new Error('This plan is already being implemented')
   handingOff.add(projectId)
   try {
-    return await handoffPlannerPlan(plannerId, auto, deviceId, presentation, target)
+    return await handoffPlannerPlan(plannerId, auto, deviceId, presentation, target, workerIds)
   } finally {
     handingOff.delete(projectId)
   }

@@ -149,3 +149,10 @@ test('restore gives new and legacy pauses a timestamp and ignores invalid saved 
 test.each([true, false, undefined])('restore preserves planner ownership (%s)', (plannerTurn) => {
   expect(restoredAuto({ ...saved, stage: 'implement', plannerTurn })?.plannerTurn).toBe(plannerTurn)
 })
+
+test('a coordinated launch identity survives restart before its result is confirmed', () => {
+  expect(
+    restoredAuto({ ...saved, stage: 'implement', implementationLaunch: 'reserved' }),
+  ).toMatchObject({ stage: 'implement', status: 'paused', implementationLaunch: 'reserved' })
+  expect(restoredAuto({ ...saved, implementationLaunch: 42 })?.implementationLaunch).toBeUndefined()
+})

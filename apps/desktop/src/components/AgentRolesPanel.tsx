@@ -7,6 +7,8 @@ import { useStore } from '../store'
 import { AGENT_ROLES, SUBAGENT_COUNTS, type AgentRole } from '../types'
 
 const DEFAULTS: Record<AgentRole, string> = {
+  scan: 'Off',
+  worker: 'Off',
   plan: 'the first agent preset',
   implement: 'the planner’s agent',
   review: 'the first agent preset',
@@ -43,6 +45,21 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
     <Dialog title="Agent roles" subtitle="Default agents for this project" onClose={onClose}>
       {AGENT_ROLES.map((role) => {
         if (role === 'review') return reviewers
+        if (role === 'scan' || role === 'worker')
+          return (
+            <div key={role} className="agent-role-field">
+              <span>{ROLE_LABELS[role]}</span>
+              <ReviewerPicker
+                label={ROLE_LABELS[role]}
+                agents={agents}
+                selected={roles[role] ?? []}
+                showMissing
+                dropdown
+                emptyLabel="Off"
+                onChange={(next) => setRoles({ ...roles, [role]: next })}
+              />
+            </div>
+          )
         const id = roles[role]?.[0] ?? ''
         const missing = id && !agents.some((a) => a.id === id)
         return (
@@ -75,6 +92,7 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
                   Subagents
                 </label>
                 <select
+                  disabled={!!roles.worker?.length}
                   id={subagentsId}
                   value={subagents}
                   onChange={(e) => setSubagents(Number(e.target.value))}

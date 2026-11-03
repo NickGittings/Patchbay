@@ -1,0 +1,46 @@
+.provider-runs {
+  max-height: 360px;
+  overflow: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex: none;
+}
+.provider-runs .row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.provider-runs input {
+  min-width: 100px;
+  flex: 1;
+}
+.provider-runs table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.provider-runs td,
+.provider-runs th {
+  padding: 5px;
+  text-align: left;
+  vertical-align: top;
+}
+.provider-runs pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.provider-runs td {
+  overflow-wrap: anywhere;
+  max-width: 320px;
+}
+.plan-scope .provider-runs table,
+.plan-scope .provider-runs tbody,
+.plan-scope .provider-runs tr,
+.plan-scope .provider-runs td {
+  display: block;
+}
+.plan-scope .provider-runs thead {
+  display: none;
+}
+.plan-scope .provider-runs tr {
+  border-top: 1px solid var(--border);
+}

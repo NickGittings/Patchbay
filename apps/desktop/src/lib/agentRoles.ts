@@ -8,6 +8,8 @@ import {
 import { agentDevices, planTerminals } from './plan'
 
 export const ROLE_LABELS: Record<AgentRole, string> = {
+  scan: 'Scan',
+  worker: 'Workers',
   plan: 'Plan',
   implement: 'Implement',
   review: 'Review',
@@ -16,7 +18,7 @@ export const ROLE_LABELS: Record<AgentRole, string> = {
 }
 
 /** Installed presets assigned to `role`, in order; empty when it has none or all are gone. */
-function assigned(devices: DeviceManifest[], roles: AgentRoles, role: AgentRole) {
+export function assigned(devices: DeviceManifest[], roles: AgentRoles, role: AgentRole) {
   const agents = agentDevices(devices)
   return (roles[role] ?? []).flatMap((id) => agents.find((d) => d.id === id) ?? [])
 }
@@ -51,6 +53,7 @@ export function roleDevices(
   role: AgentRole,
 ): DeviceManifest[] {
   const all = assigned(devices, roles, role)
+  if (role === 'scan' || role === 'worker') return all
   return all.length
     ? role === 'review'
       ? all
@@ -83,7 +86,11 @@ function restoredRoles<T>(
 export function restoredAgentRoles(value: unknown): AgentRoles {
   return restoredRoles(value, (ids, role) => {
     const valid = restoredPresetIds(ids)
-    return valid.length ? (role === 'review' ? valid : valid.slice(0, 1)) : undefined
+    return valid.length
+      ? ['review', 'scan', 'worker'].includes(role)
+        ? valid
+        : valid.slice(0, 1)
+      : undefined
   })
 }
 
@@ -101,6 +108,8 @@ export function chatRolePresets(devices: DeviceManifest[], roles: AgentRoles): D
   const plan = roleDevice(devices, roles, 'plan')
   return [
     ...new Set([
+      ...assigned(devices, roles, 'scan'),
+      ...assigned(devices, roles, 'worker'),
       plan,
       roleDevice(devices, roles, 'implement', plan),
       ...roleDevices(devices, roles, 'review'),

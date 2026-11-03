@@ -113,6 +113,7 @@ export function flow(
   if (auto && !['stopped', 'failed', 'done'].includes(auto.status)) {
     const step: SimpleStep = (
       {
+        scan: 'planning',
         plan: 'planning',
         implement: 'building',
         validate: 'building',

@@ -21,6 +21,7 @@ use std::collections::HashMap;
 mod agent_commands;
 mod layout;
 mod native_menu;
+mod orchestration;
 mod service;
 #[cfg(target_os = "macos")]
 mod writing_tools;
@@ -878,6 +879,7 @@ async fn plan_start(
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
     story: Option<String>,
+    scan_round: Option<String>,
 ) -> CmdResult<String> {
     let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
@@ -888,6 +890,18 @@ async fn plan_start(
     // The planner belongs to the project, not a worktree: it always runs in the project folder.
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        // A manual scan handoff has no Auto controller to retain its startup options.
+        // Recover its scan round and goal when that same planner is restarted.
+        let previous = if resume.unwrap_or(false) {
+            let sid = model::task_session_id(&project_id, model::PLAN_SCOPE, &terminal.id, None);
+            bridge.call::<session::PlannerScanOptions>(session::Request::PlannerScanOptions {
+                id: sid,
+            })?
+        } else {
+            session::PlannerScanOptions::default()
+        };
+        let scan_round = scan_round.or(previous.scan_round);
+        let auto = auto.or(previous.brief);
         let story_section = stories::planner_section(&story_root, story.as_deref()).map_err(err)?;
         if story_section.is_some() && auto.is_some() {
             return Err("Stop the Auto run before using its planner for a story".into());
@@ -905,13 +919,27 @@ async fn plan_start(
         } else {
             kickoff
         };
+        let scan_section = scan_round
+            .as_deref()
+            .map(|id| {
+                patchbay_core::orchestration::planner_section(
+                    &story_root,
+                    &project_id,
+                    id,
+                    auto.as_ref().map_or("", |a| a.goal.as_str()),
+                    &component_ids,
+                )
+            })
+            .transpose()
+            .map_err(err)?;
         let sections = briefing_sections(
             &extensions.get(),
             &project,
             &component_ids,
             &roots,
-            story_section
+            scan_section
                 .into_iter()
+                .chain(story_section)
                 .chain(auto.as_ref().map(context::AutoBrief::plan_section)),
             extra_context,
         );
@@ -925,6 +953,15 @@ async fn plan_start(
             kickoff,
         )
         .map_err(err)?;
+        if let Some(round) = scan_round {
+            spec.env.insert("PATCHBAY_SCAN_ROUND".into(), round);
+            if let Some(brief) = auto {
+                spec.env.insert(
+                    "PATCHBAY_SCAN_BRIEF".into(),
+                    serde_json::to_string(&brief).map_err(err)?,
+                );
+            }
+        }
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, None, &mut spec);
         }
@@ -1669,6 +1706,12 @@ async fn review_agent_start(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
+        patchbay_core::orchestration::ensure_integrated(
+            Path::new(&project.root),
+            &project_id,
+            Path::new(&request.worktree),
+        )
+        .map_err(err)?;
         let prepared = patchbay_core::reviews::prepare(
             &project,
             &request,
@@ -2448,6 +2491,10 @@ pub fn run() {
                 git_review,
                 git_worktrees,
                 git_branches,
+                orchestration::provider_runs,
+                orchestration::provider_run_create,
+                orchestration::provider_run_control,
+                orchestration::provider_job_start,
                 plan_context,
                 plan_read,
                 task_root_start,

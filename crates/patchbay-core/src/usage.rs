@@ -782,6 +782,9 @@ pub fn capture_status_line(dir: Option<&Path>) {
 mod tests {
     use super::*;
 
+    // Scanning a session directory evicts cached tails from other directories.
+    static CODEX_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -983,6 +986,7 @@ mod tests {
 
     #[test]
     fn codex_tails_are_cached_until_the_file_changes() {
+        let _guard = CODEX_READ_LOCK.lock().unwrap();
         let fixture = Fixture::new();
         let path = fixture.0.join("2026/10/27/a.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1073,6 +1077,7 @@ mod tests {
 
     #[test]
     fn codex_reads_an_active_session_started_before_eight_newer_sessions() {
+        let _guard = CODEX_READ_LOCK.lock().unwrap();
         let fixture = Fixture::new();
         let write = |rel: &str, percent, timestamp: &str| {
             let path = fixture.0.join(rel);

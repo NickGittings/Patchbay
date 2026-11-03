@@ -1318,7 +1318,12 @@ fn build_job_agent_spec(
     anyhow::ensure!(
         matches!(
             scope,
-            crate::model::MERGE_SCOPE | crate::model::REVIEW_SCOPE | crate::model::MAP_SCOPE
+            crate::model::MERGE_SCOPE
+                | crate::model::REVIEW_SCOPE
+                | crate::model::MAP_SCOPE
+                | crate::model::SCAN_SCOPE
+                | crate::model::COORDINATOR_SCOPE
+                | crate::model::WORKER_SCOPE
         ),
         "Invalid job scope"
     );
@@ -1426,6 +1431,9 @@ fn is_owned_briefing_file(file: &Path) -> bool {
                 s.strip_prefix("merge-")
                     .or_else(|| s.strip_prefix("review-"))
                     .or_else(|| s.strip_prefix("map-"))
+                    .or_else(|| s.strip_prefix("scan-"))
+                    .or_else(|| s.strip_prefix("coordinator-"))
+                    .or_else(|| s.strip_prefix("worker-"))
             })
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
         && file.extension().is_some_and(|s| s == "md")

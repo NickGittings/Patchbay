@@ -17,6 +17,8 @@ export interface AutoDraft {
   destination?: string
   picked: Partial<Record<AgentRole, string>>
   reviewers?: string[]
+  scanners?: string[]
+  workers?: string[]
   stage: AutoStage | ''
 }
 

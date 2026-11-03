@@ -7,6 +7,9 @@ use std::sync::Mutex;
 
 pub const SCHEMA_VERSION: u32 = 4;
 /// Reserved component scope for project-level planner sessions.
+pub const SCAN_SCOPE: &str = "@scan";
+pub const COORDINATOR_SCOPE: &str = "@coordinator";
+pub const WORKER_SCOPE: &str = "@worker";
 pub const PLAN_SCOPE: &str = "@plan";
 /// Root implementation sessions have no planner instructions.
 pub const TASK_ROOT_SCOPE: &str = "@task";
@@ -295,7 +298,14 @@ impl Project {
         if self.components.iter().any(|c| c.id == TASK_ROOT_SCOPE) {
             anyhow::bail!("Component id {TASK_ROOT_SCOPE} is reserved for task root sessions");
         }
-        for scope in [MERGE_SCOPE, REVIEW_SCOPE, MAP_SCOPE] {
+        for scope in [
+            MERGE_SCOPE,
+            REVIEW_SCOPE,
+            MAP_SCOPE,
+            SCAN_SCOPE,
+            COORDINATOR_SCOPE,
+            WORKER_SCOPE,
+        ] {
             if self.components.iter().any(|c| c.id == scope) {
                 anyhow::bail!("Component id {scope} is reserved for job agent sessions");
             }
@@ -537,6 +547,9 @@ mod tests {
             REVIEW_SCOPE,
             MAP_SCOPE,
             PROJECT_SCOPE,
+            SCAN_SCOPE,
+            COORDINATOR_SCOPE,
+            WORKER_SCOPE,
         ] {
             let project: Project = serde_json::from_value(serde_json::json!({
                 "schemaVersion": SCHEMA_VERSION, "name": "p", "root": "/p",
