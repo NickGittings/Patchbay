@@ -1,3 +1,4 @@
+import { watchProviderRuns } from './lib/orchestration'
 import StoryBoard from './components/stories/StoryBoard'
 import {
   SimpleChangesContext,
@@ -272,6 +273,7 @@ function NavigationView() {
 }
 
 function AppWorkspace() {
+  useEffect(() => watchProviderRuns(), [])
   const view = useStore((s) => s.view)
   const simple = useStore((s) => s.simpleMode)
   const projectId = useStore((s) => s.project?.id)

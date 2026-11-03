@@ -1,3 +1,4 @@
+import ProviderRunsPanel from './ProviderRunsPanel'
 import { retainedTerminal, shownTaskTerminals, taskTerminals } from '../lib/taskTerminals'
 import { useStore } from '../store'
 import { parseSessionId } from '../types'
@@ -43,6 +44,7 @@ export default function ImplementationView() {
         <TaskActions />
       </div>
       <ActivityStatus />
+      <ProviderRunsPanel kind="implementation" />
       <div className="implementation-terminals">
         {shown.length ? (
           <TaskTerminals key={`${projectId}/${task}`} entries={shown} />

@@ -71,6 +71,12 @@ export function restoredAuto(value: unknown): AutoRun | null {
     merge: r.merge,
     device: r.device,
     agents: restoredAgents(r.agents),
+    scanners: Array.isArray(r.scanners) ? restoredPresetIds(r.scanners) : undefined,
+    workers: Array.isArray(r.workers) ? restoredPresetIds(r.workers) : undefined,
+    scanRound: typeof r.scanRound === 'string' ? r.scanRound : undefined,
+    implementationRun: typeof r.implementationRun === 'string' ? r.implementationRun : undefined,
+    implementationLaunch:
+      typeof r.implementationLaunch === 'string' ? r.implementationLaunch : undefined,
     reviewers: Array.isArray(r.reviewers) ? restoredPresetIds(r.reviewers) : undefined,
     // Reviewers beside the tracked session keep running in the service too.
     laneSessions: Array.isArray(r.laneSessions)

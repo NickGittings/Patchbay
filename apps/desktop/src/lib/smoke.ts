@@ -1,3 +1,13 @@
+import {
+  createProviderRun,
+  providerRuns,
+  driveProviderRuns,
+  controlProviderRun,
+} from './orchestration'
+import { implementPlannerPlan } from './planHandoff'
+import { graphActionIn } from './actions'
+import { startReviewAgents } from './reviewAgents'
+import { reviewRead } from './ipc'
 import { refreshUsage, useUsage } from './usage'
 import { usageRead, usageStatusLineCheck, usageStatusLineConfigure } from './ipc'
 import { selectPanel, selectRailView, useRail } from './rail'
@@ -117,6 +127,14 @@ const chatPanel = {
   },
 }
 const hooks = {
+  createProviderRun,
+  providerRuns,
+  driveProviderRuns,
+  controlProviderRun,
+  implementPlannerPlan,
+  graphActionIn,
+  startReviewAgents,
+  reviewRead,
   chatPanel,
   refreshUsage,
   usage: useUsage,

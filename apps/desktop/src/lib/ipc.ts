@@ -203,6 +203,7 @@ export const planStart = async (
   kickoff?: Kickoff,
   auto?: AutoBrief,
   story?: string,
+  scanRound?: string,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -212,6 +213,7 @@ export const planStart = async (
     requestId,
     auto,
     story,
+    scanRound,
     kickoff,
     resume,
     extraContext: await extraContext(project, componentIds),

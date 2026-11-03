@@ -182,6 +182,7 @@ interface Launch {
   rootTerminal?: import('../types').TerminalSpec
   runtime?: RuntimeTerminal
   story?: string
+  scanRound?: string
   kickoff?: Kickoff
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
@@ -247,6 +248,7 @@ function captureLaunch(
 
 export interface StartTerminalOptions {
   story?: string
+  scanRound?: string
   kickoff?: Kickoff
   /** Auto's instructions for this launch, in the backend-owned briefing. */
   auto?: AutoBrief
@@ -267,6 +269,7 @@ export function startTerminal(
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId, !!options.auto)
+    launch.scanRound = options.scanRound
     launch.kickoff = options.kickoff
     launch.story = options.story
     launch.auto = options.auto
@@ -376,6 +379,21 @@ const cancelled = (launch: Launch): Promise<undefined> =>
 function launchTerminal(launch: Launch): Promise<string | undefined> {
   const { sid, componentId, terminalId, project, runtime } = launch
   if (isClosing(launch)) return cancelled(launch)
+  if (componentId === PLAN_SCOPE) {
+    const state = projectStateOf(launch.projectId)
+    const owner =
+      state && autoRuns(state).find(({ run }) => unfinished(run.status) && run.plannerTurn)
+    if (
+      owner &&
+      (owner.run.stage === 'scan' ||
+        (owner.run.sessionId !== sid && launch.auto?.goal !== owner.run.goal))
+    )
+      return Promise.reject(
+        new Error(
+          'The project planner is reserved by an Auto run; finish its scans and plan or Stop the run',
+        ),
+      )
+  }
   if (launch.story && (launch.auto || autoBriefOf(launch.projectId, sid)))
     return Promise.reject(new Error('Stop the Auto run before using its planner for a story'))
   const task = launch.task ?? undefined
@@ -480,6 +498,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           kickoff,
           auto,
           launch.story,
+          ...(launch.scanRound ? [launch.scanRound] : []),
         )
       } else {
         await terminalStart(

@@ -9,6 +9,12 @@ import {
   type SessionState,
   type Worktree,
 } from '../types'
+vi.mock('./orchestration', () => ({
+  createProviderRun: vi.fn(),
+  controlProviderRun: vi.fn(),
+  driveProviderRuns: vi.fn(),
+  providerRuns: vi.fn(),
+}))
 vi.mock('./ipc', () => ({
   usageRead: vi.fn().mockResolvedValue(null),
   agentHooksCheck: vi.fn(),
@@ -195,6 +201,20 @@ test("each stage launches its own preset, else the run's single one", () => {
   expect(agentFor(split, 'review')).toBe('claude')
   expect(runAgents(split)).toEqual(['claude', 'codex'])
   expect(runAgents(run())).toEqual(['codex'])
+})
+
+test('hook preflight excludes disabled optional roles and includes actual scanner and worker picks', () => {
+  const settings = run({
+    agents: { scan: 'claude', worker: 'claude' },
+    scanners: [],
+    workers: [],
+  })
+  expect(runAgents(settings)).toEqual(['codex'])
+  expect(runAgents({ ...settings, scanners: ['scanner'], workers: ['worker'] })).toEqual([
+    'codex',
+    'scanner',
+    'worker',
+  ])
 })
 
 test('Light reviews directly; budgets and verdicts are never guessed', () => {
@@ -4083,5 +4103,239 @@ test('a refused planner launch acquires no turn or plan fingerprint', async () =
       plannerTurn: false,
       planMark: undefined,
     })
+  })
+})
+
+test('optional scanners reserve the planner and hand completed reports to one planner', async () => {
+  vi.useFakeTimers()
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  const providers = await import('./orchestration')
+  const sessions = await import('./sessions')
+  let scanning = {
+    id: 'scan',
+    kind: 'scan',
+    state: 'running',
+    jobs: [],
+  } as unknown as import('./orchestration').ProviderRun
+  vi.mocked(providers.createProviderRun).mockImplementation(async (...args) => {
+    scanning = { ...scanning, id: args[7]! }
+    return scanning
+  })
+  vi.mocked(providers.driveProviderRuns).mockImplementation(async () => [scanning])
+  vi.mocked(providers.providerRuns).mockImplementation(async () => [scanning])
+  vi.mocked(providers.controlProviderRun).mockImplementation(async () => scanning)
+  await withFollower(async () => {
+    await startAuto('p', 't', {
+      goal: 'Investigate first',
+      effort: 'standard',
+      device: 'codex',
+      scanners: ['codex'],
+      merge: { mode: 'ask', destinationBranch: 'main' },
+    })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'scan', plannerTurn: true })
+    expect(sessions.startTerminal).not.toHaveBeenCalled()
+    scanning = { ...scanning, state: 'complete' }
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(sessions.startTerminal).toHaveBeenCalledWith(
+      '@plan',
+      'codex',
+      't',
+      'p',
+      expect.objectContaining({ scanRound: scanning.id, kickoff: { kind: 'plan' } }),
+    )
+    expect(autoRun('p', 't')?.plannerTurn).toBe(true)
+  })
+})
+
+test.each([false, true])(
+  'Resume reconciles scan creation after failure (record saved: %s)',
+  async (saved) => {
+    vi.useFakeTimers()
+    load()
+    const providers = await import('./orchestration')
+    let scanning: import('./orchestration').ProviderRun | undefined
+    vi.mocked(providers.providerRuns).mockImplementation(async () => (scanning ? [scanning] : []))
+    vi.mocked(providers.driveProviderRuns).mockImplementation(async () =>
+      scanning ? [scanning] : [],
+    )
+    vi.mocked(providers.controlProviderRun).mockImplementation(async (_projectId, _id, control) => {
+      if (!scanning) throw new Error('The provider run is missing')
+      scanning = { ...scanning, state: control.kind === 'pause' ? 'paused' : 'running' }
+      return scanning
+    })
+    vi.mocked(providers.createProviderRun).mockImplementation(async (...args) => {
+      if (saved || vi.mocked(providers.createProviderRun).mock.calls.length > 1)
+        scanning = {
+          id: args[7]!,
+          kind: 'scan',
+          state: 'running',
+          jobs: [],
+        } as unknown as import('./orchestration').ProviderRun
+      if (vi.mocked(providers.createProviderRun).mock.calls.length === 1)
+        throw new Error('Temporary creation failure')
+      return scanning!
+    })
+    setRun({ stage: 'scan', scanners: ['codex'] })
+    await withFollower(async () => {
+      await flush()
+      const scanRound = autoRun('p', 't')?.scanRound
+      expect(scanRound).toBeTruthy()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'scan' })
+      await resumeAuto('p', 't')
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'running', stage: 'scan', scanRound })
+      expect(scanning).toMatchObject({ id: scanRound, state: 'running' })
+      expect(providers.createProviderRun).toHaveBeenCalledTimes(saved ? 1 : 2)
+      for (const args of vi.mocked(providers.createProviderRun).mock.calls)
+        expect(args[7]).toBe(scanRound)
+    })
+  },
+)
+
+test('a coordinated implementation cannot skip or infer its way past unfinished integration', async () => {
+  vi.useFakeTimers()
+  load()
+  const providers = await import('./orchestration')
+  const building = {
+    id: 'build',
+    state: 'running',
+    kind: 'implementation',
+    jobs: [{ state: 'complete' }],
+  } as unknown as import('./orchestration').ProviderRun
+  vi.mocked(providers.driveProviderRuns).mockResolvedValue([building])
+  vi.mocked(providers.providerRuns).mockResolvedValue([building])
+  setRun({
+    stage: 'implement',
+    implementationRun: 'build',
+    workers: ['codex'],
+    sessionId: 's',
+    status: 'paused',
+  })
+  await expect(skipStage('p', 't')).rejects.toThrow('Every assignment must be integrated')
+  await resumeAuto('p', 't')
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'implement', status: 'running' })
+    expect(ipc.graphActionRun).not.toHaveBeenCalled()
+    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+  })
+})
+
+test.each(['pause', 'stop'] as const)(
+  '%s during scan creation controls the late run',
+  async (action) => {
+    load()
+    const providers = await import('./orchestration')
+    let finish!: () => void
+    let created = false
+    vi.mocked(providers.providerRuns).mockResolvedValue([])
+    vi.mocked(providers.createProviderRun).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            created = true
+            resolve({} as import('./orchestration').ProviderRun)
+          }
+        }),
+    )
+    vi.mocked(providers.controlProviderRun).mockImplementation(async () => {
+      if (!created) throw new Error('The provider run is missing')
+      return {} as import('./orchestration').ProviderRun
+    })
+    setRun({ stage: 'scan', scanners: ['codex'] })
+    await withFollower(async () => {
+      await flush()
+      expect(providers.createProviderRun).toHaveBeenCalledOnce()
+      const id = autoRun('p', 't')!.scanRound
+      if (action === 'pause') pauseAuto('p', 't')
+      else stopAuto('p', 't')
+      await flush()
+      vi.mocked(providers.controlProviderRun).mockClear()
+      finish()
+      await flush()
+      expect(providers.controlProviderRun).toHaveBeenCalledExactlyOnceWith('p', id, {
+        kind: action,
+      })
+      expect(providers.driveProviderRuns).not.toHaveBeenCalled()
+      expect(autoRun('p', 't')?.status).toBe(action === 'pause' ? 'paused' : 'stopped')
+    })
+  },
+)
+
+test.each([undefined, 'current'])(
+  'Resume recovers only the reserved implementation (launch: %s)',
+  async (implementationLaunch) => {
+    load()
+    const providers = await import('./orchestration')
+    const build = (id: string, state: 'complete' | 'paused') =>
+      ({
+        id,
+        state,
+        kind: 'implementation',
+        task: 't',
+        goal: 'Goal',
+        jobs: [],
+      }) as unknown as import('./orchestration').ProviderRun
+    vi.mocked(providers.providerRuns).mockResolvedValue([
+      build('historical', 'complete'),
+      build('unrelated', 'paused'),
+      build('current', 'paused'),
+    ])
+    vi.mocked(ipc.planRead).mockResolvedValue({ text: 'New accepted plan', cut: false })
+    vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+    setRun({ stage: 'implement', status: 'failed', workers: ['codex'], implementationLaunch })
+    await resumeAuto('p', 't')
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'implement',
+      status: 'running',
+    })
+    expect(autoRun('p', 't')?.implementationRun).toBe(implementationLaunch)
+    if (implementationLaunch)
+      expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'current', { kind: 'resume' })
+    else expect(providers.controlProviderRun).not.toHaveBeenCalled()
+  },
+)
+
+test('a failed coordinated launch saves its identity before handoff and recovers it on Resume', async () => {
+  load()
+  const providers = await import('./orchestration')
+  const { implementPlannerPlan } = await import('./planHandoff')
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: 'Plan', cut: false })
+  let building: import('./orchestration').ProviderRun
+  vi.mocked(implementPlannerPlan).mockImplementation(async (...args) => {
+    const id = args[4]!.providerRunId!
+    expect(autoRun('p', 't')?.implementationLaunch).toBe(id)
+    building = {
+      id,
+      kind: 'implementation',
+      task: 't',
+      goal: 'Goal',
+      state: 'paused',
+      jobs: [],
+    } as unknown as import('./orchestration').ProviderRun
+    throw new Error('Coordinator launch unconfirmed')
+  })
+  vi.mocked(providers.providerRuns).mockImplementation(async () => [building])
+  vi.mocked(providers.driveProviderRuns).mockImplementation(async () => [building])
+  vi.mocked(providers.controlProviderRun).mockImplementation(async () => {
+    building = { ...building, state: 'running' }
+    return building
+  })
+  setRun({ stage: 'implement', workers: ['codex'] })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('failed')
+    await resumeAuto('p', 't')
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'implement',
+      status: 'running',
+      implementationRun: building!.id,
+    })
+    expect(implementPlannerPlan).toHaveBeenCalledOnce()
   })
 })

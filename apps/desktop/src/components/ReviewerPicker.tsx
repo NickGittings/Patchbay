@@ -10,6 +10,7 @@ export default function ReviewerPicker({
   showMissing = false,
   dropdown = false,
   emptyLabel = 'Select reviewers',
+  label = 'Review agents',
 }: {
   agents: DeviceManifest[]
   selected: string[]
@@ -18,6 +19,7 @@ export default function ReviewerPicker({
   showMissing?: boolean
   dropdown?: boolean
   emptyLabel?: string
+  label?: string
 }) {
   const choices = agents.map((a) => ({ id: a.id, name: a.name }))
   if (showMissing)
@@ -48,8 +50,8 @@ export default function ReviewerPicker({
       className="reviewer-picker"
       listClassName="reviewer-options"
       label={<span className="reviewer-summary">{summary}</span>}
-      title="Review agents"
-      triggerLabel={`Review agents: ${summary}`}
+      title={label}
+      triggerLabel={`${label}: ${summary}`}
       initialFocus={(list) =>
         list.querySelector<HTMLInputElement>('input:not(:disabled)') ?? undefined
       }

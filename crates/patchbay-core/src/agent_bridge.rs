@@ -53,6 +53,9 @@ pub struct LaunchContext {
 pub enum Role {
     /// A component's or task root's agent.
     Component,
+    Scanner,
+    Coordinator,
+    Worker,
     /// The project's planner (`PLAN_SCOPE`): it saves plans and proposals, and runs nothing.
     Planner,
     /// Map detection (`MAP_SCOPE`): it may only read context and submit what its terminal
@@ -77,6 +80,9 @@ impl Role {
     pub fn of(component_id: &str, terminal_id: &str) -> Self {
         match component_id {
             crate::model::PLAN_SCOPE => Self::Planner,
+            crate::model::SCAN_SCOPE => Self::Scanner,
+            crate::model::COORDINATOR_SCOPE => Self::Coordinator,
+            crate::model::WORKER_SCOPE => Self::Worker,
             crate::model::MAP_SCOPE => Self::Mapper(match terminal_id {
                 crate::link_proposals::MAP_TERMINAL => Proposes::Links,
                 crate::stack_proposals::STACK_TERMINAL => Proposes::Stack,
@@ -90,6 +96,9 @@ impl Role {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Action {
+    ProviderRun {
+        command: crate::orchestration::Command,
+    },
     Context {},
     Status {},
     Logs {

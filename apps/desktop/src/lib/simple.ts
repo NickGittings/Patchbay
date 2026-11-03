@@ -277,7 +277,7 @@ const stageSessionTime = (record: SessionRecord) =>
 
 /** The Simple role an Auto stage belongs to. */
 export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
-  stage === 'plan'
+  stage === 'plan' || stage === 'scan'
     ? 'plan'
     : stage === 'merge' || stage === 'mergeGate' || stage === 'done'
       ? 'merge'

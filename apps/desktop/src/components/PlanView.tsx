@@ -1,3 +1,4 @@
+import ProviderRunsPanel from './ProviderRunsPanel'
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useRef, useState } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
@@ -274,6 +275,7 @@ export default function PlanView() {
       <Panel id="PlanView-pane-2" defaultSize="55" minSize="20">
         <div className="plan-dock">
           <aside className="plan-scope">
+            <ProviderRunsPanel kind="scan" />
             <div className="row plan-scope-header">
               <span className="section-title">Planner scope</span>
               {planStory && (

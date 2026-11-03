@@ -96,7 +96,16 @@ export default function AutoPanel({
             )}
           </div>
           <ol className="auto-stepper" aria-label="Run stages">
-            {(['plan', 'implement', 'validate', 'review', 'merge'] as const).map((stage) => (
+            {(
+              [
+                ...(run.scanners?.length || run.scanRound ? ['scan' as const] : []),
+                'plan',
+                'implement',
+                'validate',
+                'review',
+                'merge',
+              ] as const
+            ).map((stage) => (
               <li
                 key={stage}
                 aria-current={
@@ -166,7 +175,9 @@ export default function AutoPanel({
               <button onClick={() => act('stopAuto', stopAuto)}>Stop</button>
             )}
             {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-              <button onClick={() => act('skipStage', skipStage)}>Skip stage</button>
+              <button onClick={() => act('skipStage', skipStage)}>
+                {run.stage === 'scan' ? 'Continue with available findings' : 'Skip stage'}
+              </button>
             )}
             {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
               <button className="primary" onClick={() => act('mergeApproval', mergeNow)}>

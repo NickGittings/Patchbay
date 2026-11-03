@@ -167,7 +167,15 @@ pub fn run_action(
         let plan = ActionPlan::build(&project, project_id, request, task)?;
         let ids = plan.component_ids();
         let project = access.restrict(project, &ids)?;
+        let store_root = PathBuf::from(&project.root);
         let (project, _, _) = for_task(project, task, &ids, scoped.roots)?;
+        if initiator == "User" && !matches!(plan.request, ActionRequest::StartGroup { .. }) {
+            crate::orchestration::ensure_integrated(
+                &store_root,
+                project_id,
+                Path::new(&project.root),
+            )?;
+        }
         call::<ActionReport>(
             state,
             Request::ActionRun {
@@ -310,7 +318,23 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             ),
         "Map detection can only read context and propose links or a stack"
     );
+    anyhow::ensure!(
+        launch.role != Role::Scanner
+            || matches!(
+                action,
+                Action::Context {} | Action::Status {} | Action::ProviderRun { .. }
+            ),
+        "Scanners may only investigate and submit reports"
+    );
     match action {
+        Action::ProviderRun { command } => {
+            let project = scoped.project()?;
+            Ok(serde_json::to_value(crate::orchestration::command(
+                Path::new(&project.root),
+                launch,
+                command,
+            )?)?)
+        }
         Action::Context {} => {
             let project = scoped.project()?;
             let readable = scoped.access.restrict(project, &[])?;
@@ -509,7 +533,8 @@ impl TryFrom<Action> for ActionRequest {
             Action::ValidateChanged { component_ids } => {
                 Ok(Self::ValidateChanged { component_ids })
             }
-            Action::Context {}
+            Action::ProviderRun { .. }
+            | Action::Context {}
             | Action::Status {}
             | Action::Logs { .. }
             | Action::EnvironmentStop { .. }

@@ -1,5 +1,8 @@
 // Mirrors patchbay-core's serde types.
 
+export const SCAN_SCOPE = '@scan'
+export const COORDINATOR_SCOPE = '@coordinator'
+export const WORKER_SCOPE = '@worker'
 export const PLAN_SCOPE = '@plan'
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
@@ -36,6 +39,9 @@ export type Kickoff =
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 
 export const isReservedScope = (scope: string) =>
+  scope === SCAN_SCOPE ||
+  scope === COORDINATOR_SCOPE ||
+  scope === WORKER_SCOPE ||
   scope === PLAN_SCOPE ||
   scope === TASK_ROOT_SCOPE ||
   scope === MAP_SCOPE ||
@@ -79,8 +85,16 @@ export interface AutoBrief {
   commit: boolean
 }
 /** The jobs an agent preset can be assigned to (per project, workspace layout only). */
-export type AgentRole = 'plan' | 'implement' | 'review' | 'fix' | 'merge'
-export const AGENT_ROLES: AgentRole[] = ['plan', 'implement', 'review', 'fix', 'merge']
+export type AgentRole = 'scan' | 'plan' | 'implement' | 'worker' | 'review' | 'fix' | 'merge'
+export const AGENT_ROLES: AgentRole[] = [
+  'plan',
+  'implement',
+  'review',
+  'fix',
+  'merge',
+  'scan',
+  'worker',
+]
 /** Preset ids per role; only `review` uses more than its first entry. */
 export type AgentRoles = Partial<Record<AgentRole, string[]>>
 export interface EffortSettings {
@@ -89,7 +103,7 @@ export interface EffortSettings {
   validate: boolean
 }
 export type AutoStage =
-  'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
+  'scan' | 'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
 /** The service's refusal of a launch into a session slot whose terminal still runs (`session.rs`). */
 export const TERMINAL_RUNNING = 'Terminal is already running; reconnect instead'
 /**
@@ -123,6 +137,12 @@ export interface AutoRun {
   /** The preset each agent stage launches. */
   agents?: Partial<Record<AgentRole, string>>
   /** Presets that review together when there are several; `agents.review` reviews alone. */
+  scanners?: string[]
+  workers?: string[]
+  scanRound?: string
+  implementationRun?: string
+  /** Provider run identity reserved before accepting and launching a coordinated plan. */
+  implementationLaunch?: string
   reviewers?: string[]
   /** Reviewers launched beside the tracked session (see `AutoLaunch`). */
   laneSessions?: AutoLaunch[]

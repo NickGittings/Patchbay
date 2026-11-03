@@ -18,6 +18,7 @@ import {
   inferStage,
   NoReviewBase,
   reviewBaseMoved,
+  runAgents as autoRunAgents,
   startAuto,
   STAGES,
   STAGE_LABELS,
@@ -87,6 +88,20 @@ export default function AutoDialog({
         : roleDevices(devices, roles, 'review')
     ).map((a) => a.id)
   }, [agents, devices, pickedReviewers, roles])
+  const scanners = useMemo(
+    () =>
+      (draft.scanners ?? roleDevices(devices, roles, 'scan').map((a) => a.id)).filter((id) =>
+        agents.some((a) => a.id === id),
+      ),
+    [draft.scanners, devices, roles, agents],
+  )
+  const workers = useMemo(
+    () =>
+      (draft.workers ?? roleDevices(devices, roles, 'worker').map((a) => a.id)).filter((id) =>
+        agents.some((a) => a.id === id),
+      ),
+    [draft.workers, devices, roles, agents],
+  )
   const runAgents = useMemo(() => {
     const out = {} as Record<AgentRole, string>
     const fallback = { implement: 'plan', fix: 'review' } as Partial<Record<AgentRole, AgentRole>>
@@ -104,8 +119,8 @@ export default function AutoDialog({
   }, [agents, devices, picked, reviewers, roles])
   const device = runAgents.plan
   const distinct = useMemo(
-    () => [...new Set([...Object.values(runAgents), ...reviewers])],
-    [runAgents, reviewers],
+    () => autoRunAgents({ device, agents: runAgents, reviewers, scanners, workers }),
+    [device, runAgents, reviewers, scanners, workers],
   )
   // What the dialog fills in itself while the user hasn't: the inferred goal, withdrawn once a
   // load finds the branch merged, and the current worktree's branch as the destination.
@@ -255,6 +270,8 @@ export default function AutoDialog({
         device,
         agents: runAgents,
         reviewers,
+        scanners,
+        workers,
         merge: { mode, destinationBranch: destination },
       },
       true,
@@ -388,7 +405,24 @@ export default function AutoDialog({
       <fieldset className="auto-agents">
         <legend>Agents</legend>
         {AGENT_ROLES.map((stage) =>
-          stage === 'review' ? (
+          stage === 'scan' || stage === 'worker' ? (
+            <div
+              key={stage}
+              className="auto-reviewers"
+              role="group"
+              aria-label={ROLE_LABELS[stage]}
+            >
+              {ROLE_LABELS[stage]}
+              <ReviewerPicker
+                label={ROLE_LABELS[stage]}
+                agents={agents}
+                selected={stage === 'scan' ? scanners : workers}
+                dropdown
+                emptyLabel="Off"
+                onChange={(ids) => edit(stage === 'scan' ? { scanners: ids } : { workers: ids })}
+              />
+            </div>
+          ) : stage === 'review' ? (
             <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
               {ROLE_LABELS[stage]}
               <ReviewerPicker
@@ -454,6 +488,8 @@ export default function AutoDialog({
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,
+            scanners,
+            workers,
             stage: stage || undefined,
           })
             .then(async () => {
