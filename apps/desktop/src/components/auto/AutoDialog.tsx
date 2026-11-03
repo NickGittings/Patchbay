@@ -1,3 +1,4 @@
+import { PanelDetails } from '../PanelSection'
 import { linkAutoStory } from '../../lib/stories'
 import { logSimple } from '../../lib/simpleActions'
 import { useContext, useEffect, useMemo, useState } from 'react'
@@ -402,53 +403,55 @@ export default function AutoDialog({
           ))}
         </select>
       </label>
-      <fieldset className="auto-agents">
-        <legend>Agents</legend>
-        {AGENT_ROLES.map((stage) =>
-          stage === 'scan' || stage === 'worker' ? (
-            <div
-              key={stage}
-              className="auto-reviewers"
-              role="group"
-              aria-label={ROLE_LABELS[stage]}
-            >
-              {ROLE_LABELS[stage]}
-              <ReviewerPicker
-                label={ROLE_LABELS[stage]}
-                agents={agents}
-                selected={stage === 'scan' ? scanners : workers}
-                dropdown
-                emptyLabel="Off"
-                onChange={(ids) => edit(stage === 'scan' ? { scanners: ids } : { workers: ids })}
-              />
-            </div>
-          ) : stage === 'review' ? (
-            <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
-              {ROLE_LABELS[stage]}
-              <ReviewerPicker
-                agents={agents}
-                selected={reviewers}
-                onChange={(reviewers) => edit({ reviewers })}
-                dropdown
-              />
-            </div>
-          ) : (
-            <label key={stage}>
-              {ROLE_LABELS[stage]}
-              <select
-                value={runAgents[stage]}
-                onChange={(e) => edit({ picked: { ...picked, [stage]: e.target.value } })}
+      <PanelDetails title="Agents">
+        <fieldset className="auto-agents">
+          <legend>Agents</legend>
+          {AGENT_ROLES.map((stage) =>
+            stage === 'scan' || stage === 'worker' ? (
+              <div
+                key={stage}
+                className="auto-reviewers"
+                role="group"
+                aria-label={ROLE_LABELS[stage]}
               >
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ),
-        )}
-      </fieldset>
+                {ROLE_LABELS[stage]}
+                <ReviewerPicker
+                  label={ROLE_LABELS[stage]}
+                  agents={agents}
+                  selected={stage === 'scan' ? scanners : workers}
+                  dropdown
+                  emptyLabel="Off"
+                  onChange={(ids) => edit(stage === 'scan' ? { scanners: ids } : { workers: ids })}
+                />
+              </div>
+            ) : stage === 'review' ? (
+              <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
+                {ROLE_LABELS[stage]}
+                <ReviewerPicker
+                  agents={agents}
+                  selected={reviewers}
+                  onChange={(reviewers) => edit({ reviewers })}
+                  dropdown
+                />
+              </div>
+            ) : (
+              <label key={stage}>
+                {ROLE_LABELS[stage]}
+                <select
+                  value={runAgents[stage]}
+                  onChange={(e) => edit({ picked: { ...picked, [stage]: e.target.value } })}
+                >
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ),
+          )}
+        </fieldset>
+      </PanelDetails>
       {!integration && (
         <p>
           Auto needs authoritative agent status.{' '}

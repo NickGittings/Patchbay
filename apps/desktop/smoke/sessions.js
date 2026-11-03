@@ -211,7 +211,7 @@
     const initialOrder = headingOrder()
     for (const name of [first, second]) {
       const selects = panel().querySelectorAll('.panel-section-head select')
-      assert(selects[0].value === 'all' && selects[1].value === 'latest', 'Incorrect defaults')
+      assert(selects[0].value === 'running' && selects[1].value === 'latest', 'Incorrect defaults')
       assert(
         [...selects].every((select) => select.getAttribute('aria-label').includes('sessions')),
         'Controls lack project labels',
@@ -240,6 +240,8 @@
       !!row(first, 'Live A').querySelector('.session-menu'),
       'Live non-agent session is missing its actions menu',
     )
+    await choose(first, 0, 'all')
+    await until('closed sessions included', () => row(first, 'Done A'))
     const menuTrigger = row(first, 'Done A').querySelector('.session-menu .menu-trigger')
     menuTrigger.focus()
     menuTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))

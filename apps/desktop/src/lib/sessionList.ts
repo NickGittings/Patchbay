@@ -53,7 +53,7 @@ export interface SessionListOptions {
 }
 export type ProjectSessionChoices = Partial<Record<string, SessionListOptions>>
 export const DEFAULT_SESSION_LIST_OPTIONS: Readonly<SessionListOptions> = {
-  filter: 'all',
+  filter: 'running',
   sort: 'latest',
 }
 export interface SessionRow {

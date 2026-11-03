@@ -1,3 +1,4 @@
+import PanelSection, { PanelDetails } from '../PanelSection'
 import Menu, { MenuItem } from '../Menu'
 import RunningTag from '../RunningTag'
 import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
@@ -73,14 +74,16 @@ function WorktreeOverview({
       >
         ＋ New task
       </button>
-      <div className="worktree-list">
-        {!tasks.some((t) => t.current && !t.missing) && (
-          <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
-        )}
-        {tasks.map((task) => (
-          <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
-        ))}
-      </div>
+      <PanelSection title="Worktrees">
+        <div className="worktree-list">
+          {!tasks.some((t) => t.current && !t.missing) && (
+            <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+          )}
+          {tasks.map((task) => (
+            <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
+          ))}
+        </div>
+      </PanelSection>
     </>
   )
 }
@@ -333,42 +336,50 @@ function WorktreeRow({
           {error}
         </p>
       )}
-      {active && (changed.length > 0 || projectFiles > 0) && (
-        <div className="worktree-detail">
-          <span className="section-title">Changed</span>
-          <div className="scope-chips">
-            {changed.map((c) => chip(c.id, `±${c.files}`))}
-            {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
-          </div>
-        </div>
-      )}
-      {active && review && review.affected.length > 0 && (
-        <div className="worktree-detail">
-          <span className="section-title">May affect</span>
-          <div className="scope-chips">
-            {review.affected.map((a) => chip(a.id, `via ${a.via.map(nameOf).join(', ')}`))}
-          </div>
-        </div>
-      )}
-      {active && running.length > 0 && (
-        <div className="worktree-detail">
-          <span className="section-title">Running</span>
-          <div className="scope-chips">
-            {running.map(({ componentId, name, t, sid }) => (
-              <button
-                key={sid}
-                className="chip"
-                onClick={() => {
-                  close()
-                  revealTerminal({ sid, componentId })
-                }}
-              >
-                {name}: {t.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      {active &&
+        (changed.length > 0 ||
+          projectFiles > 0 ||
+          (review?.affected.length ?? 0) > 0 ||
+          running.length > 0) && (
+          <PanelDetails title="Worktree details">
+            {active && (changed.length > 0 || projectFiles > 0) && (
+              <div className="worktree-detail">
+                <span className="section-title">Changed</span>
+                <div className="scope-chips">
+                  {changed.map((c) => chip(c.id, `±${c.files}`))}
+                  {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
+                </div>
+              </div>
+            )}
+            {active && review && review.affected.length > 0 && (
+              <div className="worktree-detail">
+                <span className="section-title">May affect</span>
+                <div className="scope-chips">
+                  {review.affected.map((a) => chip(a.id, `via ${a.via.map(nameOf).join(', ')}`))}
+                </div>
+              </div>
+            )}
+            {active && running.length > 0 && (
+              <div className="worktree-detail">
+                <span className="section-title">Running</span>
+                <div className="scope-chips">
+                  {running.map(({ componentId, name, t, sid }) => (
+                    <button
+                      key={sid}
+                      className="chip"
+                      onClick={() => {
+                        close()
+                        revealTerminal({ sid, componentId })
+                      }}
+                    >
+                      {name}: {t.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </PanelDetails>
+        )}
       {active && task && (
         <details className="worktree-notes-detail">
           <summary>Notes{notes ? `: ${notes.split('\n')[0]}` : ''}</summary>
