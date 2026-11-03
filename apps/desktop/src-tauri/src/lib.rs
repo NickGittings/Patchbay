@@ -1737,6 +1737,53 @@ async fn stack_agent_start(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn validation_agent_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    project: Project,
+    terminal: TerminalSpec,
+    request_id: String,
+    resume: Option<bool>,
+    mut component_ids: Vec<String>,
+) -> CmdResult<String> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    let agent_server = state.agent_commands.lock().unwrap().clone();
+    blocking(move || {
+        // Ordinary starts also restart retained terminals after a desktop reload,
+        // when the webview no longer has the discovery's component selection.
+        if component_ids.is_empty() {
+            let id = model::task_session_id(
+                &project_id,
+                model::MAP_SCOPE,
+                patchbay_core::validation_proposals::VALIDATION_TERMINAL,
+                None,
+            );
+            component_ids =
+                bridge.call(patchbay_core::session::Request::ValidationSelection { id })?;
+        }
+        let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (job, mut spec) = patchbay_core::validation_proposals::prepare(
+            &project,
+            &terminal,
+            &component_ids,
+            &AllowAll,
+        )
+        .map_err(err)?;
+        let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
+        // The preset, so a restart launches the same agent.
+        metadata.lane = Some(terminal.id);
+        agent_commands::inject(agent_server, &project_id, None, &mut spec);
+        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn merge_conflicts(
     window: WebviewWindow,
@@ -2613,6 +2660,9 @@ pub fn run() {
                 agent_commands::proposal_read,
                 agent_commands::map_links_read,
                 agent_commands::map_links_clear,
+                validation_agent_start,
+                agent_commands::validation_proposal_read,
+                agent_commands::validation_proposal_clear,
                 agent_commands::stack_proposal_read,
                 agent_commands::stack_proposal_clear,
                 agent_commands::proposal_apply,

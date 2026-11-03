@@ -370,7 +370,25 @@ export interface ComponentGroup {
   readinessTimeoutSeconds: number
 }
 
+export const VALIDATION_AGENT_TERMINAL = 'validation-discovery'
+export interface ProposedValidationCheck {
+  component: string
+  path: string
+  terminal?: string | null
+  name?: string | null
+  command: string
+  reason: string
+}
+export interface PendingValidation {
+  id: string
+  sessionId: string
+  submittedMs: number
+  componentIds: string[]
+  terminals: ProposedValidationCheck[]
+  missing: { component: string; reason: string }[]
+}
 export type ActionRequest =
+  | { kind: 'validateSelected'; componentIds: string[] }
   | { kind: 'startGroup'; groupId: string }
   | { kind: 'validateAffected'; componentId: string }
   | { kind: 'validateChanged'; componentIds: string[] }

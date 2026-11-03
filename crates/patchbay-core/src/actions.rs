@@ -49,6 +49,10 @@ pub enum ActionRequest {
         #[serde(rename = "componentId")]
         component_id: String,
     },
+    ValidateSelected {
+        #[serde(rename = "componentIds")]
+        component_ids: Vec<String>,
+    },
     ValidateChanged {
         #[serde(rename = "componentIds")]
         component_ids: Vec<String>,
@@ -112,6 +116,20 @@ impl ActionPlan {
                 validation_stages(project, std::slice::from_ref(component_id))?,
                 TerminalAction::Validation,
             ),
+            ActionRequest::ValidateSelected { component_ids } => {
+                ensure!(!component_ids.is_empty(), "Select at least one component");
+                (
+                    vec![
+                        component_ids
+                            .iter()
+                            .cloned()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect(),
+                    ],
+                    TerminalAction::Validation,
+                )
+            }
             ActionRequest::ValidateChanged { component_ids } => (
                 validation_stages(project, component_ids)?,
                 TerminalAction::Validation,
@@ -480,6 +498,9 @@ impl GraphActions {
             }
             ActionRequest::ValidateAffected { component_id } => {
                 (format!("validation:{component_id}"), None, Duration::ZERO)
+            }
+            ActionRequest::ValidateSelected { .. } => {
+                ("validation:selected".into(), None, Duration::ZERO)
             }
             ActionRequest::ValidateChanged { .. } => {
                 ("validation:changed".into(), None, Duration::ZERO)
@@ -1310,6 +1331,50 @@ mod tests {
     }
 
     #[test]
+    fn selected_validation_excludes_dependents_and_deduplicates() {
+        let p = project();
+        let plan = build(
+            &p,
+            ActionRequest::ValidateSelected {
+                component_ids: vec!["api".into(), "api".into()],
+            },
+        )
+        .unwrap();
+        let mut external = p.clone();
+        external
+            .components
+            .iter_mut()
+            .find(|c| c.id == "api")
+            .unwrap()
+            .path = "/tmp/separate-validation-repo".into();
+        let launches = plan.specs(&external).unwrap();
+        assert_eq!(
+            launches[0][0].spec.cwd,
+            std::path::PathBuf::from("/tmp/separate-validation-repo")
+        );
+        assert_eq!(plan.component_ids(), ["api"]);
+        assert_eq!(plan.sessions, [sid("api", "check")]);
+        assert!(
+            build(
+                &p,
+                ActionRequest::ValidateSelected {
+                    component_ids: vec![]
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            build(
+                &p,
+                ActionRequest::ValidateSelected {
+                    component_ids: vec!["missing".into()]
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn changed_components_validate_shared_dependents_once() {
         let p = project();
         let plan = build(
@@ -1709,6 +1774,71 @@ mod tests {
             assert!(worker.join().unwrap().is_err());
             assert!(f.pty.snapshot(&sid("web", "dev")).is_none());
             assert_eq!(f.actions.epoch(), 0);
+        }
+
+        #[test]
+        fn selected_validation_runs_in_monorepo_and_external_repository_folders() {
+            let mut f = Fixture::new();
+            let local = std::path::Path::new(&f.project.root).join("api");
+            let external = std::env::temp_dir()
+                .join(format!("patchbay-external-check-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&local).unwrap();
+            std::fs::create_dir_all(&external).unwrap();
+            std::fs::write(local.join("local-marker"), "").unwrap();
+            std::fs::write(external.join("external-marker"), "").unwrap();
+            f.project.components[1].path = "api".into();
+            f.project.components[1].terminals[1].command = "test -f local-marker".into();
+            f.project.components[0].path = external.display().to_string();
+            f.project.components[0].terminals[1].command = "test -f external-marker".into();
+            let report = f
+                .run(ActionRequest::ValidateSelected {
+                    component_ids: vec!["api".into(), "web".into()],
+                })
+                .unwrap();
+            assert_eq!(report.results.len(), 2);
+            assert!(
+                report
+                    .results
+                    .iter()
+                    .all(|r| matches!(r.outcome, TaskOutcome::Passed))
+            );
+            std::fs::remove_dir_all(external).unwrap();
+        }
+
+        #[test]
+        fn selected_validation_supports_cancellation() {
+            let mut f = Fixture::new();
+            f.project.components[1].terminals[1].command = "sleep 30".into();
+            let project = f.project.clone();
+            let actions = f.actions.clone();
+            let pty = f.pty.clone();
+            let worker = std::thread::spawn(move || {
+                let request = ActionRequest::ValidateSelected {
+                    component_ids: vec!["api".into()],
+                };
+                actions.execute(&project, build(&project, request)?, 0, &Local(pty))
+            });
+            f.wait_running(&sid("api", "check"));
+            assert!(f.actions.cancel_validation());
+            let report = worker.join().unwrap().unwrap();
+            assert_eq!(report.results.len(), 1);
+            assert!(matches!(
+                report.results[0].outcome,
+                TaskOutcome::Cancelled | TaskOutcome::Stopped
+            ));
+        }
+
+        #[test]
+        fn selected_validation_reports_failure_without_running_dependents() {
+            let f = Fixture::new();
+            let report = f
+                .run(ActionRequest::ValidateSelected {
+                    component_ids: vec!["api".into()],
+                })
+                .unwrap();
+            assert_eq!(report.results.len(), 1);
+            assert_eq!(report.results[0].exit_code, Some(3));
+            assert!(f.pty.snapshot(&sid("web", "check")).is_none());
         }
 
         #[test]

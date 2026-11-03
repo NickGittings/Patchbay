@@ -497,6 +497,9 @@ enum AgentCmd {
         #[command(subcommand)]
         command: EnvironmentCmd,
     },
+    ValidateSelected {
+        component_ids: Vec<String>,
+    },
     Validate {
         component_id: String,
     },
@@ -515,6 +518,10 @@ enum AgentCmd {
         file: PathBuf,
     },
     /// Propose the local stack: its terminals and readiness (`-` reads stdin).
+    ProposeValidation {
+        #[arg(long)]
+        file: PathBuf,
+    },
     ProposeStack {
         #[arg(long)]
         file: PathBuf,
@@ -570,6 +577,9 @@ fn agent(command: AgentCmd) -> Result<bool> {
             AgentCmd::Context => Action::Context {},
             AgentCmd::Status => Action::Status {},
             AgentCmd::Logs { session_id } => Action::Logs { session_id },
+            AgentCmd::ValidateSelected { component_ids } => {
+                Action::ValidateSelected { component_ids }
+            }
             AgentCmd::Validate { component_id } => Action::Validate { component_id },
             AgentCmd::Environment {
                 command: EnvironmentCmd::Start { group_id },
@@ -578,6 +588,9 @@ fn agent(command: AgentCmd) -> Result<bool> {
                 command: EnvironmentCmd::Stop { group_id },
             } => Action::EnvironmentStop { group_id },
             AgentCmd::ProposeLinks { file } => Action::ProposeLinks {
+                proposal: read_proposal(&file)?,
+            },
+            AgentCmd::ProposeValidation { file } => Action::ProposeValidation {
                 proposal: read_proposal(&file)?,
             },
             AgentCmd::ProposeStack { file } => Action::ProposeStack {

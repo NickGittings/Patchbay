@@ -24,6 +24,7 @@ import MapMaintenanceReview from './components/MapMaintenanceReview'
 import DependencyDialog from './components/DependencyDialog'
 import { initializeDependencyDetection } from './lib/dependencies'
 import { initializeStackProposals } from './lib/stackAgent'
+import { initializeValidationProposals } from './lib/validationAgent'
 import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
@@ -293,6 +294,7 @@ function AppWorkspace() {
     const stopNotifications = followNotifications()
     const stopUsage = followUsage()
     const stopDependencies = initializeDependencyDetection()
+    const stopValidation = initializeValidationProposals()
     const stopStack = initializeStackProposals()
     return () => {
       stopHost()
@@ -305,6 +307,7 @@ function AppWorkspace() {
       stopUsage()
       stopDependencies()
       stopStack()
+      stopValidation()
     }
   }, [])
   useEffect(() => {
