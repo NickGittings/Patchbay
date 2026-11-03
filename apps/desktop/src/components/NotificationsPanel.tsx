@@ -1,4 +1,4 @@
-import Dialog from './Dialog'
+import SettingsDialog, { SettingsFeedback, SettingsSection } from './SettingsDialog'
 import { useEffect, useState } from 'react'
 import { isPermissionGranted } from '@tauri-apps/plugin-notification'
 import { sendTestNotification } from '../lib/notifications'
@@ -9,6 +9,7 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
   const setNotifications = useStore((s) => s.setNotifications)
   const [permission, setPermission] = useState('Checking…')
   const [testing, setTesting] = useState(false)
+  const [error, setError] = useState('')
   useEffect(() => {
     let disposed = false
     void isPermissionGranted().then(
@@ -24,7 +25,12 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
     }
   }, [])
   return (
-    <Dialog title="Notifications" subtitle="Agent alerts across all projects" onClose={onClose}>
+    <SettingsDialog
+      title="Notifications"
+      subtitle="Agent alerts across all projects"
+      behavior="Changes apply immediately."
+      onClose={onClose}
+    >
       <p>
         <label className="notifications-toggle">
           <input
@@ -35,10 +41,12 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           Enable notifications
         </label>
       </p>
-      <fieldset disabled={!settings.enabled}>
-        <legend title="Turn ends require Agent status integration. Auto notifies when waiting on you or failing. Background alerts use a toast while Patchbay is focused, otherwise native notifications.">
-          Notify about
-        </legend>
+      <fieldset disabled={!settings.enabled} className="settings-section">
+        <legend>Notify about</legend>
+        <p className="hint">
+          Finished-turn alerts require Agent status integration. Background alerts appear as a toast
+          while Patchbay is focused, otherwise as a native notification.
+        </p>
         {(
           [
             ['finished', 'Finished turns'],
@@ -59,37 +67,41 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           </p>
         ))}
       </fieldset>
-      <div className="panel-actions">
-        <span className="worktree-tag" role="status" title="Native notification permission">
-          {permission}
-        </span>
-        <button
-          className="primary"
-          disabled={testing}
-          onClick={async () => {
-            setTesting(true)
-            try {
-              const result = await sendTestNotification()
-              setPermission(
-                result.status === 'granted'
-                  ? 'Granted'
-                  : result.status === 'denied'
-                    ? 'Not granted'
-                    : result.granted
-                      ? `Granted, but sending failed: ${result.error}`
-                      : `Unavailable: ${result.error}`,
-              )
-            } catch (e) {
-              setPermission('Unavailable')
-              useStore.getState().setMessage(String(e))
-            } finally {
-              setTesting(false)
-            }
-          }}
-        >
-          Send test notification
-        </button>
-      </div>
-    </Dialog>
+      <SettingsSection title="Notification delivery">
+        <div className="settings-actions">
+          <span className="settings-feedback" role="status" title="Native notification permission">
+            Native permission: {permission}
+          </span>
+          <button
+            disabled={testing}
+            onClick={async () => {
+              setTesting(true)
+              setError('')
+              try {
+                const result = await sendTestNotification()
+                setPermission(
+                  result.status === 'granted'
+                    ? 'Granted'
+                    : result.status === 'denied'
+                      ? 'Not granted'
+                      : result.granted
+                        ? 'Granted'
+                        : 'Unavailable',
+                )
+                if (result.status === 'failed') setError(result.error)
+              } catch (e) {
+                setPermission('Unavailable')
+                setError(String(e))
+              } finally {
+                setTesting(false)
+              }
+            }}
+          >
+            {testing ? 'Sending…' : 'Send test notification'}
+          </button>
+        </div>
+        {error && <SettingsFeedback error>{error}</SettingsFeedback>}
+      </SettingsSection>
+    </SettingsDialog>
   )
 }

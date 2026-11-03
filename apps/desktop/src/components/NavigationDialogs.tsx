@@ -1,5 +1,6 @@
 import { isMac, titleBarMouseDown } from '../lib/platform'
 import UnifiedSearch from './UnifiedSearch'
+import SettingsDialog, { SettingsFeedback } from './SettingsDialog'
 import { useEffect, useState } from 'react'
 import { editorDiscover, editorPreferences, editorSavePreferences } from '../lib/ipc'
 import { EDITOR_SETTINGS_EVENT } from '../lib/navigation'
@@ -63,88 +64,76 @@ function PreferredEditorDialog() {
     }
   }
   return (
-    <div
-      className="extension-overlay"
-      onClick={() => {
+    <SettingsDialog
+      title="Preferred editor"
+      subtitle="Editor used to open folders and files across projects"
+      behavior="Changes apply when you save."
+      onClose={() => {
         if (!busy) setOpen(false)
       }}
-    >
-      <div
-        className="command-palette editor-settings"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Preferred editor"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !busy) setOpen(false)
-        }}
-      >
-        <h3>Preferred editor</h3>
-        {explanation && <p role="status">{explanation}</p>}
-        {preferences && (
-          <>
-            <label>
-              Editor
-              <select
-                autoFocus
-                value={preferences.editor}
-                onChange={(e) =>
-                  setPreferences({ ...preferences, editor: e.target.value as EditorKind })
-                }
-              >
-                {Object.entries(labels).map(([kind, label]) => (
-                  <option key={kind} value={kind}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {preferences.editor === 'custom' ? (
-              <>
-                <label>
-                  Executable
-                  <input
-                    value={preferences.executable}
-                    placeholder="Absolute executable path or launcher name"
-                    onChange={(e) => setPreferences({ ...preferences, executable: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Argument array (JSON)
-                  <textarea
-                    rows={5}
-                    value={argumentsText}
-                    onChange={(e) => setArgumentsText(e.target.value)}
-                  />
-                </label>
-                <p className="hint">
-                  Use {'{folder}'}, {'{file}'}, {'{line}'}, and {'{column}'} in separate arguments.
-                  A file's folder is its parent. Arguments are passed literally.
-                </p>
-              </>
-            ) : (
-              <p className="hint">
-                {launchers.find((l) => l.editor === preferences.editor)?.executable ??
-                  'Launcher unavailable. Install the editor command-line launcher or choose a custom executable.'}
-              </p>
-            )}
-          </>
-        )}
-        {error && (
-          <p className="file-tree-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="row">
+      footer={
+        <>
           <button disabled={busy} onClick={() => setOpen(false)}>
             Cancel
           </button>
           <button className="primary" disabled={busy || !preferences} onClick={() => void save()}>
-            Save
+            {busy ? 'Saving…' : 'Save'}
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {explanation && <SettingsFeedback>{explanation}</SettingsFeedback>}
+      {!preferences && !error && <SettingsFeedback>Loading editor preferences…</SettingsFeedback>}
+      {preferences && (
+        <>
+          <label className="settings-field">
+            Editor
+            <select
+              value={preferences.editor}
+              onChange={(e) =>
+                setPreferences({ ...preferences, editor: e.target.value as EditorKind })
+              }
+            >
+              {Object.entries(labels).map(([kind, label]) => (
+                <option key={kind} value={kind}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {preferences.editor === 'custom' ? (
+            <>
+              <label className="settings-field">
+                Executable
+                <input
+                  value={preferences.executable}
+                  placeholder="Absolute executable path or launcher name"
+                  onChange={(e) => setPreferences({ ...preferences, executable: e.target.value })}
+                />
+              </label>
+              <label className="settings-field">
+                Argument array (JSON)
+                <textarea
+                  rows={5}
+                  value={argumentsText}
+                  onChange={(e) => setArgumentsText(e.target.value)}
+                />
+              </label>
+              <p className="hint">
+                Use {'{folder}'}, {'{file}'}, {'{line}'}, and {'{column}'} in separate arguments. A
+                file's folder is its parent. Arguments are passed literally.
+              </p>
+            </>
+          ) : (
+            <p className="hint">
+              {launchers.find((l) => l.editor === preferences.editor)?.executable ??
+                'Launcher unavailable. Install the editor command-line launcher or choose a custom executable.'}
+            </p>
+          )}
+        </>
+      )}
+      {error && <SettingsFeedback error>{error}</SettingsFeedback>}
+    </SettingsDialog>
   )
 }
 /** Also mounted in pop-outs for editor settings. */

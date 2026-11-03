@@ -6,11 +6,13 @@ export default function Dialog({
   onClose,
   children,
   className = '',
+  footer,
 }: {
   title: string
   subtitle?: string
   onClose: () => void
   children: ReactNode
+  footer?: ReactNode
   className?: string
 }) {
   const heading = useId()
@@ -70,6 +72,7 @@ export default function Dialog({
           </button>
         </header>
         <div className="dialog-body">{children}</div>
+        {footer && <footer className="settings-footer">{footer}</footer>}
       </div>
     </div>
   )
