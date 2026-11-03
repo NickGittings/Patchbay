@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 dir="${TMPDIR:-/tmp}/patchbay-smoke-auth"
-mkdir -p "$dir/project" "$dir/config/claude" "$dir/config/codex"
-rm -f "$dir/config/claude/signed-in" "$dir/config/codex/signed-in"
+mkdir -p "$dir/project" "$dir/config/claude" "$dir/config/codex" "$dir/config/local"
+rm -f "$dir/config/claude/signed-in" "$dir/config/codex/signed-in" "$dir/config/local/signed-in"
+printf '%s\n' 'model_provider = "ollama"' > "$dir/config/local/config.toml"
 cd "$dir/project"
 git init -q -b main
 git config user.name 'Provider auth smoke'

@@ -124,3 +124,26 @@ test('local-model configurations launch without prompting for provider sign-in',
   ).resolves.toBeUndefined()
   expect(auth.useProviderSetup.getState().pending).toBeNull()
 })
+
+test('signed-out Codex with a local config can explicitly continue on the next click', async () => {
+  vi.mocked(ipc.providerAuthCheck).mockResolvedValue({
+    ...result('signedOut'),
+    canContinue: true,
+  })
+  const launch = vi.fn()
+  const terminal = { command: "env CODEX_HOME='/tmp/local config' codex" }
+  const action = async () => {
+    await auth.requireProviderAuth({ terminal })
+    launch()
+  }
+  await expect(action()).rejects.toThrow(auth.ProviderSetupRequired)
+  const pending = auth.useProviderSetup.getState().pending!
+  expect(pending.result).toMatchObject({ state: 'signedOut', canContinue: true })
+  auth.continueProviderSetup(pending.request)
+  expect(launch).not.toHaveBeenCalled()
+  await action()
+  expect(launch).toHaveBeenCalledOnce()
+  await expect(
+    auth.requireProviderAuth({ terminal: { command: 'codex -p other' } }),
+  ).rejects.toThrow(auth.ProviderSetupRequired)
+})

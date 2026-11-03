@@ -39,6 +39,7 @@ pub struct AuthStatus {
     pub state: AuthState,
     pub message: String,
     pub login_supported: bool,
+    pub can_continue: bool,
 }
 impl AuthStatus {
     fn new(provider: Adapter, state: AuthState, message: &str) -> Self {
@@ -47,6 +48,7 @@ impl AuthStatus {
             state,
             message: message.into(),
             login_supported: true,
+            can_continue: false,
         }
     }
 }
@@ -220,9 +222,20 @@ impl LaunchContext {
                 .is_some_and(|s| s == "fish")
             {
                 let mut exports = String::new();
-                for assignment in &raw[usize::from(uses_env)..index] {
-                    let (key, value) = assignment.split_once('=')?;
-                    exports.push_str(&format!("set -lx {key} {value}; "));
+                for (assignment, original) in words[usize::from(uses_env)..index]
+                    .iter()
+                    .zip(&raw[usize::from(uses_env)..index])
+                {
+                    let (key, _) = assignment.split_once('=')?;
+                    let (spelling, value) = original.split_once('=')?;
+                    // `env 'NAME=value'` may open a quote before the `=`. Remove the name
+                    // while retaining its quote delimiters, so the value keeps both its
+                    // original expansion and balanced whole-word or mixed quoting.
+                    let quotes: String = spelling
+                        .chars()
+                        .filter(|c| matches!(c, '\'' | '"'))
+                        .collect();
+                    exports.push_str(&format!("set -lx {key} {quotes}{value}; "));
                 }
                 let lookup = if uses_env { "command -v" } else { "type -q" };
                 return Some(format!(
@@ -576,7 +589,15 @@ fn classify(provider: Adapter, code: i32, bytes: &[u8]) -> AuthStatus {
             "The CLI could not confirm authentication. Retry or continue anyway.",
         )
     };
-    AuthStatus::new(provider, state, message)
+    let mut result = AuthStatus::new(provider, state, message);
+    if provider == Adapter::Codex && state == AuthState::SignedOut {
+        // `codex login status` reports the OpenAI account, even when config.toml or a
+        // selected profile uses a local/custom provider. Do not reproduce Codex's layered
+        // configuration loader here: let the user explicitly continue with that preset.
+        result.can_continue = true;
+        result.message = "The Codex CLI account is signed out. Local models and other providers may not need OpenAI sign-in. Sign in, or continue with this configuration.".into();
+    }
+    result
 }
 
 #[cfg(all(test, unix))]
@@ -752,6 +773,25 @@ printf 'Logged in using Agent Identity\n'
         assert!(manager.logins.lock().unwrap().is_empty());
     }
     #[test]
+    fn signed_out_codex_can_explicitly_continue_with_file_configured_local_models() {
+        let fixture = Fixture::new();
+        let manager = Arc::new(AuthManager::default());
+        let mut context = fixture.context(Adapter::Codex, "echo 'Not logged in'; exit 1");
+        let config = fixture.0.join("local config");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join("config.toml"), "model_provider = 'ollama'\n").unwrap();
+        context.command = format!(
+            "env CODEX_HOME={} {}",
+            context::quote_argument(config.to_str().unwrap()),
+            context.command
+        );
+        let status = manager.check(&context, true);
+        assert_eq!(status.state, AuthState::SignedOut);
+        assert!(status.can_continue);
+        assert!(status.message.contains("continue with this configuration"));
+        assert_eq!(serde_json::to_value(status).unwrap()["canContinue"], true);
+    }
+    #[test]
     fn compact_codex_options_reach_both_status_and_login() {
         let fixture = Fixture::new();
         let manager = Arc::new(AuthManager::default());
@@ -806,6 +846,52 @@ esac
             assert!(command.ends_with(&format!("env codex -pwork {suffix}; end")));
             assert!(!command.contains("||"));
             assert!(!command.contains("( "));
+        }
+    }
+    #[test]
+    fn fish_env_assignments_preserve_whole_word_and_mixed_quoting() {
+        for (assignment, expected) in [
+            ("'CODEX_HOME=/tmp/custom home'", "/tmp/custom home"),
+            (
+                r#""CODEX_HOME=$TEST_CONFIG_ROOT/custom home""#,
+                "/tmp/config root/custom home",
+            ),
+            (
+                r#"'CODEX_'HOME="$TEST_CONFIG_ROOT/"'custom home'"#,
+                "/tmp/config root/custom home",
+            ),
+            (r#"CODEX_HOME='/tmp/'"custom home""#, "/tmp/custom home"),
+            (r#""CODEX_HOME="/tmp/'custom home'"#, "/tmp/custom home"),
+        ] {
+            let context = LaunchContext {
+                provider: Adapter::Codex,
+                command: format!("env {assignment} codex"),
+                cwd: PathBuf::from("/tmp"),
+                env: BTreeMap::new(),
+            };
+            for login in [false, true] {
+                let command = context.auth_command_for_shell(login, "fish").unwrap();
+                let exports = command
+                    .strip_prefix("begin; ")
+                    .unwrap()
+                    .split_once("command -v")
+                    .unwrap()
+                    .0;
+                // Both shells share this simple word quoting. Evaluate the generated `set`
+                // arguments with a capture function to check the exact variable name and
+                // expanded value, including whitespace, without requiring fish on the host.
+                let script = format!(
+                    "capture() {{ [ \"$1\" = CODEX_HOME ] && [ \"$#\" -eq 2 ] || exit 9; printf '%s' \"$2\"; }}; {}",
+                    exports.replace("set -lx", "capture")
+                );
+                let output = std::process::Command::new("/bin/sh")
+                    .args(["-c", &script])
+                    .env("TEST_CONFIG_ROOT", "/tmp/config root")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{assignment}: {output:?}");
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            }
         }
     }
     #[test]

@@ -95,6 +95,31 @@
     const before = state().rootTerminals.length
     const canary = 'Preserve my draft and selected components'
     smoke.simpleUi.getState().patch(smoke.simpleKey(opened.id, null), { draft: canary })
+    const local = {
+      id: 'local-codex',
+      name: 'Local Codex',
+      command: `env CODEX_HOME='${base}/config/local' '${base}/codex'`,
+      kind: 'agent',
+      adapter: 'codex',
+      category: 'agent',
+      source: 'user',
+    }
+    const localStatus = await smoke.providerAuthCheck({ provider: 'codex', terminal: local }, true)
+    assert(
+      localStatus.state === 'signedOut' && localStatus.canContinue,
+      'account status blocked the file-configured local provider',
+    )
+    await smoke.startTaskAgent(local).catch(() => {})
+    const localDialog = await until('local-provider setup', () =>
+      document.querySelector('.provider-setup-overlay'),
+    )
+    assert(localDialog.textContent.includes('Signed out'), 'account status was hidden')
+    await until('local-provider explicit continuation', () => {
+      const b = button('Continue anyway', localDialog)
+      return b && !b.disabled && b
+    }).then((b) => b.click())
+    assert(!document.querySelector('.provider-setup-overlay'), 'local continuation kept setup open')
+    assert(state().rootTerminals.length === before, 'local continuation automatically launched')
     for (const provider of ['claude', 'codex']) {
       const command = `env ${provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'}='${base}/config/${provider}' '${base}/${provider}'`
       const device = {

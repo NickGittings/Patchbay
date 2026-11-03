@@ -118,7 +118,7 @@ export default function ProviderAuthSection({
         <button disabled={busy || login} onClick={() => void check()}>
           {busy ? 'Checking…' : 'Check status'}
         </button>
-        {result?.state === 'unknown' && onContinue && (
+        {(result?.state === 'unknown' || result?.canContinue) && onContinue && (
           <>
             <button disabled={busy || login} onClick={() => void check()}>
               Retry

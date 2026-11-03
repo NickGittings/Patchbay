@@ -17,6 +17,7 @@ export interface AuthStatus {
   state: AuthState
   message: string
   loginSupported?: boolean
+  canContinue?: boolean
 }
 export interface AuthRequest {
   provider: Provider
