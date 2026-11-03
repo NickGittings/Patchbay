@@ -231,6 +231,9 @@ pub struct Record {
     /// Digest of the original settings and briefing, retained across conversation resumes.
     #[serde(default)]
     pub restart_context: Option<String>,
+    /// Recovery copy of the original briefing, persisted only in private session history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub briefing_backup: Option<String>,
     pub interrupted: bool,
     pub request_ids: Vec<String>,
 }
@@ -788,6 +791,9 @@ impl Service {
             BTreeMap::new()
         };
         for record in records.values_mut() {
+            if record.briefing_backup.is_none() {
+                record.briefing_backup = crate::context::briefing_backup(&record.spec);
+            }
             // A record without a snapshot was saved mid-launch; nothing runs it any more, and
             // clients read a snapshot-less, uninterrupted record as a session still starting.
             if record.snapshot.is_none() {
@@ -967,6 +973,7 @@ impl Service {
                     history: r.history.iter().map(|s| bare(s, false)).collect(),
                     launch_command: String::new(),
                     restart_context: None,
+                    briefing_backup: None,
                     interrupted: r.interrupted,
                     request_ids,
                 }
@@ -1280,12 +1287,22 @@ impl Service {
         requests.push(request);
         // Only recent launches can be retried; older request ids are useless.
         requests.drain(..requests.len().saturating_sub(16));
+        let briefing_backup = original_command
+            .as_ref()
+            .and(previous.as_ref())
+            .filter(|r| {
+                r.spec.env.get(crate::context::CONTEXT_ENV)
+                    == spec.env.get(crate::context::CONTEXT_ENV)
+            })
+            .and_then(|r| r.briefing_backup.clone())
+            .or_else(|| crate::context::briefing_backup(&spec));
         records.insert(
             id.clone(),
             Record {
                 id: id.clone(),
                 metadata,
                 spec: spec.clone(),
+                briefing_backup,
                 snapshot: None,
                 history,
                 launch_command: original_command.unwrap_or_else(|| spec.command.clone()),
@@ -1433,7 +1450,7 @@ impl Service {
         }
     }
     fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
-        let (metadata, mut spec, launch_command, restart_context) = {
+        let (metadata, mut spec, launch_command, restart_context, briefing_backup) = {
             let records = self.records.lock().unwrap();
             let r = records.get(id).context("Unknown session")?;
             if r.request_ids.contains(&request_id) {
@@ -1444,8 +1461,10 @@ impl Service {
                 r.spec.clone(),
                 r.launch_command.clone(),
                 r.restart_context.clone(),
+                r.briefing_backup.clone(),
             )
         };
+        crate::context::restore_briefing(&spec, briefing_backup.as_deref())?;
         let original = prepare_resume(&metadata, &mut spec, &launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
         self.start_with_command(
@@ -4467,6 +4486,124 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn resume_restores_briefing_and_preserves_conversation_after_service_reload() {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = "PATCHBAY_BRIEFING_RECOVERY_TEST_DIR";
+        let Ok(dir) = std::env::var(marker) else {
+            let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            private_dir(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::tests::resume_restores_briefing_and_preserves_conversation_after_service_reload",
+                    "--nocapture",
+                ])
+                .env(marker, &dir)
+                .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let conversation = "12345678-aaaa-1234-bbbb-123456789abc";
+        let history = dir.join("claude-config/projects");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(history.join(format!("{conversation}.jsonl")), "{}\n").unwrap();
+        let executable = dir.join("claude");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\ncat \"$PATCHBAY_CONTEXT_FILE\"\n"
+                .replace("PATCHBAY_CONTEXT_FILE", crate::context::CONTEXT_ENV),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = std::env::temp_dir()
+            .join("patchbay")
+            .join(format!("recovery-{}.md", uuid::Uuid::new_v4()));
+        let text = "Original briefing\nPreserve this context exactly.\n";
+        atomic_write(&file, text.as_bytes()).unwrap();
+        let command = format!(
+            "{} --append-system-prompt-file {}",
+            crate::context::quote_argument(executable.to_str().unwrap()),
+            crate::context::quote_argument(file.to_str().unwrap())
+        );
+        let (metadata, mut spec) = restart_fixture(&dir, &command);
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            file.display().to_string(),
+        );
+        let service = Service::load(&dir).unwrap();
+        let id = service
+            .start("first".into(), metadata, spec.clone())
+            .unwrap();
+        wait_for_exit(&service, &id);
+        assert_eq!(service.list()[0].briefing_backup.as_deref(), Some(text));
+        let summary = service.handle("client", Request::List).unwrap();
+        assert!(summary[0].get("briefingBackup").is_none());
+        service.persist().unwrap();
+        service.pty.reset();
+        drop(service);
+        std::fs::remove_file(&file).unwrap();
+        let service = Service::load(&dir).unwrap();
+        assert_eq!(service.resume(&id, "recovered".into()).unwrap(), id);
+        let resumed = wait_for_exit(&service, &id);
+        let output = String::from_utf8_lossy(&resumed.data);
+        assert!(
+            output.contains(&format!("--resume {conversation}")),
+            "{output}"
+        );
+        assert!(
+            output.contains("Preserve this context exactly."),
+            "{output}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        assert_eq!(
+            service.list()[0].metadata.conversation_id.as_deref(),
+            Some(conversation)
+        );
+        service.resume(&id, "recovered".into()).unwrap();
+        assert_eq!(
+            service.snapshot(&id).unwrap().generation,
+            resumed.generation
+        );
+        service.persist().unwrap();
+        service.pty.reset();
+        drop(service);
+        // Legacy records acquire a backup on load while the file is still readable.
+        let path = dir.join("sessions.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy[&id]
+            .as_object_mut()
+            .unwrap()
+            .remove("briefingBackup");
+        atomic_write(&path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let backfilled = Service::load(&dir).unwrap();
+        assert_eq!(backfilled.list()[0].briefing_backup.as_deref(), Some(text));
+        std::fs::remove_file(&file).unwrap();
+        drop(backfilled);
+        let missing = Service::load(&dir).unwrap();
+        let error = missing
+            .resume(&id, "missing".into())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no recovery copy"), "{error}");
+        assert_eq!(
+            missing.list()[0].metadata.conversation_id.as_deref(),
+            Some(conversation)
+        );
+        assert!(!file.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn restart_resumes_with_current_launch_settings() {
         use std::os::unix::fs::PermissionsExt;
         // Provider history is selected through process-wide environment variables.
@@ -4845,6 +4982,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(&external).unwrap();
         let record = Record {
+            briefing_backup: None,
             id: "s".into(),
             metadata: Metadata {
                 project_id: "p".into(),
