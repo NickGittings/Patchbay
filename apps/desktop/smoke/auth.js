@@ -1,7 +1,7 @@
 ;(async () => {
   const component = new URLSearchParams(location.search).get('component')
-  const until = async (name, check) => {
-    const end = Date.now() + 15000
+  const until = async (name, check, timeout = 15000) => {
+    const end = Date.now() + timeout
     while (Date.now() < end) {
       const result = await check()
       if (result) return result
@@ -21,6 +21,21 @@
     if (component !== null) {
       await until('pop-out project', () => state().nodes.find((n) => n.id === component))
       await until('pop-out service', () => state().serviceConnected)
+      let broadcasts = 0
+      let localOutput = 0
+      let mainDone = false
+      const stopBroadcast = await smoke.listen('patchbay://provider-login', () => broadcasts++)
+      const stopLocal = await smoke.onProviderLoginEvent(() => localOutput++)
+      const stopDone = await smoke.listen('patchbay://auth-smoke-done', () => {
+        mainDone = true
+      })
+      await smoke.emit('patchbay://auth-smoke-ready')
+      await until('main window sign-in checks', () => mainDone, 60000)
+      stopBroadcast()
+      stopLocal()
+      stopDone()
+      assert(broadcasts === 0, 'another window received raw login output through global events')
+      assert(localOutput === 0, 'another window received raw login output through its channel')
       await smoke.startTerminal(component, 'auth-wrapper', null)
       const setup = await until('pop-out setup', () =>
         document.querySelector('.provider-setup-overlay'),
@@ -44,6 +59,29 @@
     smoke.acceptOpened(opened)
     await until('service', () => state().serviceConnected && !state().restoring)
     const base = opened.project.root.replace(/\/project$/, '')
+    // Observe both global events and the webview-local subscription in a second window while
+    // the main window signs in. Session-history checks alone cannot detect output broadcasts.
+    state().addComponent({ x: 0, y: 0 })
+    const node = state().nodes.at(-1)
+    state().updateComponent(node.id, {
+      terminals: [
+        {
+          id: 'auth-wrapper',
+          name: 'Auth wrapper',
+          kind: 'agent',
+          adapter: 'codex',
+          command: 'printf popout-auth-started',
+        },
+      ],
+    })
+    await smoke.syncCurrentRoots()
+    let privacyReady = false
+    const stopReady = await smoke.listen('patchbay://auth-smoke-ready', () => {
+      privacyReady = true
+    })
+    await smoke.openComponentWindow(node.id)
+    await until('pop-out privacy listeners', () => privacyReady)
+    stopReady()
     let loginId
     let loginExited = false
     unlisten = await smoke.onProviderLoginEvent((e) => {
@@ -141,21 +179,7 @@
       'auth and hooks not separate',
     )
     smoke.rail.setState({ settings: null })
-    state().addComponent({ x: 0, y: 0 })
-    const node = state().nodes.at(-1)
-    state().updateComponent(node.id, {
-      terminals: [
-        {
-          id: 'auth-wrapper',
-          name: 'Auth wrapper',
-          kind: 'agent',
-          adapter: 'codex',
-          command: 'printf popout-auth-started',
-        },
-      ],
-    })
-    await smoke.syncCurrentRoots()
-    await smoke.openComponentWindow(node.id)
+    await smoke.emit('patchbay://auth-smoke-done')
   } catch (e) {
     await smoke.report(`FAIL auth: ${e.message}; ${state().message}`)
   } finally {

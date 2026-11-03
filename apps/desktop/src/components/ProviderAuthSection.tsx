@@ -18,6 +18,7 @@ import { terminalTheme } from '../lib/terminals'
 
 const labels = {
   signedIn: 'Signed in',
+  notRequired: 'Not required',
   signedOut: 'Signed out',
   cliMissing: 'CLI missing',
   unknown: 'Authentication unknown',
@@ -49,7 +50,7 @@ export default function ProviderAuthSection({
       if (disposed || token !== serial.current) return
       setResult(value)
       setBusy(false)
-      if (value.state === 'signedIn') readyRef.current?.()
+      if (value.state === 'signedIn' || value.state === 'notRequired') readyRef.current?.()
     }
     const invalidate = () => {
       serial.current++
@@ -71,7 +72,7 @@ export default function ProviderAuthSection({
     if (token !== serial.current) return
     setResult(value)
     setBusy(false)
-    if (value.state === 'signedIn') readyRef.current?.()
+    if (value.state === 'signedIn' || value.state === 'notRequired') readyRef.current?.()
   }
   return (
     <section aria-label="Provider authentication">
@@ -107,6 +108,7 @@ export default function ProviderAuthSection({
             busy ||
             result?.loginSupported === false ||
             result?.state === 'signedIn' ||
+            result?.state === 'notRequired' ||
             result?.state === 'cliMissing'
           }
           onClick={() => setLogin(true)}

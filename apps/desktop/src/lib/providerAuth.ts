@@ -11,7 +11,7 @@ import {
 import { agentProvider, providerAuthCheck, sessionsList } from './ipc'
 
 export type Provider = 'claude' | 'codex'
-export type AuthState = 'signedIn' | 'signedOut' | 'cliMissing' | 'unknown'
+export type AuthState = 'signedIn' | 'notRequired' | 'signedOut' | 'cliMissing' | 'unknown'
 export interface AuthStatus {
   provider: Provider
   state: AuthState
@@ -116,7 +116,7 @@ export async function requireProviderAuth(target: AuthTarget): Promise<void> {
   const token = generation
   const result = await checkProviderAuth(request)
   if (token !== generation) throw new ProviderSetupRequired()
-  if (result.state === 'signedIn') return
+  if (result.state === 'signedIn' || result.state === 'notRequired') return
   // Concurrent launches retain the first blocked provider, rather than switching the dialog.
   if (!useProviderSetup.getState().pending)
     useProviderSetup.setState({ pending: { request, result } })

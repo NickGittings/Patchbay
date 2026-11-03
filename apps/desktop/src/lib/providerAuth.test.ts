@@ -117,3 +117,10 @@ test('running sessions can resume without another authentication check', async (
   expect(ipc.agentProvider).not.toHaveBeenCalled()
   expect(ipc.providerAuthCheck).not.toHaveBeenCalled()
 })
+test('local-model configurations launch without prompting for provider sign-in', async () => {
+  vi.mocked(ipc.providerAuthCheck).mockResolvedValue(result('notRequired'))
+  await expect(
+    auth.requireProviderAuth({ terminal: { command: 'codex --oss --local-provider ollama' } }),
+  ).resolves.toBeUndefined()
+  expect(auth.useProviderSetup.getState().pending).toBeNull()
+})

@@ -1,12 +1,13 @@
 import { authenticateInvocation, type AuthRequest, type AuthStatus } from './providerAuth'
 import { extraContext } from '../extensions/context'
 import type { ExtensionRegistry } from '../types'
-import { invoke as tauriInvoke } from '@tauri-apps/api/core'
+import { Channel, invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
 import type { OpenedProject, PlanText, SessionRecord, WorkspaceDocument } from '../types'
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  const projectId = useStore.getState().project?.id
   return authenticateInvocation(command, args).then(() =>
-    tauriInvoke<T>(command, { projectId: useStore.getState().project?.id, ...args }),
+    tauriInvoke<T>(command, { projectId, ...args }),
   )
 }
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -642,12 +643,22 @@ export const usageStatusLineConfigure = (install: boolean, sourceOverride?: stri
 
 export const providerAuthCheck = (request: AuthRequest, force = false) =>
   invoke<AuthStatus>('provider_auth_check', { request, force })
-export const providerLoginStart = (request: AuthRequest, id: string) =>
-  invoke<void>('provider_login_start', { request, id })
+const providerLoginListeners = new Set<(event: TerminalEvent) => void>()
+export const providerLoginStart = (request: AuthRequest, id: string) => {
+  const onEvent = new Channel<TerminalEvent>()
+  onEvent.onmessage = (event) => {
+    for (const handler of providerLoginListeners) handler(event)
+  }
+  return invoke<void>('provider_login_start', { request, id, onEvent })
+}
 export const providerLoginCancel = (id: string) => invoke<void>('provider_login_cancel', { id })
 export const providerLoginWrite = (id: string, data: string) =>
   invoke<void>('provider_login_write', { id, data })
 export const providerLoginResize = (id: string, cols: number, rows: number) =>
   invoke<void>('provider_login_resize', { id, cols, rows })
-export const onProviderLoginEvent = (handler: (event: TerminalEvent) => void) =>
-  listen<TerminalEvent>('patchbay://provider-login', (event) => handler(event.payload))
+export const onProviderLoginEvent = async (handler: (event: TerminalEvent) => void) => {
+  providerLoginListeners.add(handler)
+  return () => {
+    providerLoginListeners.delete(handler)
+  }
+}

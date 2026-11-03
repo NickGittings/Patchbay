@@ -37,7 +37,7 @@ import { refreshExtensions } from '../extensions/host'
 import { evaluateWhen } from '../extensions/when'
 import { executeExtensionCommand } from '../extensions/host'
 // Dev-only handles for smoke/popout.js, loaded from main.tsx when import.meta.env.DEV.
-import { emit } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import { useStore } from '../store'
 import { componentContext, openProject, terminalReset, terminalWrite, terminalAttach } from './ipc'
 import { resetSessions, startTerminal, stopTerminal, reconcileSessions } from './sessions'
@@ -137,6 +137,8 @@ const hooks = {
   providerAuthCheck,
   providerLoginWrite,
   onProviderLoginEvent,
+  emit,
+  listen,
   createProviderRun,
   providerRuns,
   driveProviderRuns,

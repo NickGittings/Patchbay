@@ -27,6 +27,7 @@ pub struct LaunchContext {
 #[serde(rename_all = "camelCase")]
 pub enum AuthState {
     SignedIn,
+    NotRequired,
     SignedOut,
     CliMissing,
     Unknown,
@@ -88,9 +89,82 @@ const MISSING: &str = "PATCHBAY_AUTH_CLI_MISSING";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl LaunchContext {
+    /// Only a parsed provider invocation can opt out of the provider's account login.
+    fn auth_not_required(&self) -> bool {
+        if self.provider != Adapter::Codex
+            || context::command_provider(&self.command) != Some(Adapter::Codex)
+        {
+            return false;
+        }
+        let Some(words) = context::launch_words(&self.command) else {
+            return false;
+        };
+        let Some((index, _)) = context::launch_program(&self.command) else {
+            return false;
+        };
+        // Options can follow a subcommand, session id or prompt. Skip option values so a
+        // model/profile named `--oss` cannot disable authentication for a hosted invocation.
+        let mut args = words.iter().skip(index + 1);
+        let mut model_provider = None;
+        while let Some(arg) = args.next() {
+            if arg == "--oss" {
+                return true;
+            }
+            if arg == "--" {
+                break;
+            }
+            let config = if matches!(arg.as_str(), "-c" | "--config") {
+                args.next().map(String::as_str)
+            } else {
+                arg.strip_prefix("--config=")
+                    .or_else(|| arg.strip_prefix("-c").filter(|value| !value.is_empty()))
+            };
+            if let Some(config) = config {
+                if let Some((key, value)) = config.split_once('=')
+                    && key.trim() == "model_provider"
+                {
+                    let value = value.trim();
+                    model_provider = Some(
+                        value
+                            .parse::<toml_edit::Value>()
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| value.to_owned()),
+                    );
+                }
+                continue;
+            }
+            if matches!(
+                arg.as_str(),
+                "-p" | "--profile"
+                    | "-C"
+                    | "--cd"
+                    | "-m"
+                    | "--model"
+                    | "-i"
+                    | "--image"
+                    | "--local-provider"
+                    | "-s"
+                    | "--sandbox"
+                    | "-a"
+                    | "--ask-for-approval"
+                    | "--add-dir"
+                    | "--enable"
+                    | "--disable"
+                    | "--remote"
+                    | "--remote-auth-token-env"
+            ) {
+                args.next();
+            }
+        }
+        matches!(model_provider.as_deref(), Some("ollama" | "lmstudio"))
+    }
     /// Replace the interactive invocation with an auth command, preserving its executable,
     /// assignment prefixes and configuration options. Custom wrappers cannot be verified.
     fn auth_command(&self, login: bool) -> Option<String> {
+        self.auth_command_for_shell(login, &std::env::var("SHELL").unwrap_or_default())
+    }
+    fn auth_command_for_shell(&self, login: bool, _shell: &str) -> Option<String> {
         if context::command_provider(&self.command) != Some(self.provider) {
             return None;
         }
@@ -101,16 +175,26 @@ impl LaunchContext {
         let mut args = words.iter().zip(raw.iter()).skip(index + 1);
         while let Some((arg, original)) = args.next() {
             let flag = arg.split('=').next()?;
-            let config = match self.provider {
-                Adapter::Claude => matches!(flag, "--settings" | "--setting-sources"),
-                Adapter::Codex => {
+            let (config, attached) = match self.provider {
+                Adapter::Claude => (
+                    matches!(flag, "--settings" | "--setting-sources"),
+                    arg.contains('='),
+                ),
+                Adapter::Codex => (
                     matches!(flag, "-c" | "--config" | "-p" | "--profile" | "-C" | "--cd")
-                }
+                        || ["-c", "-p", "-C"]
+                            .iter()
+                            .any(|short| arg.starts_with(short)),
+                    arg.contains('=')
+                        || ["-c", "-p", "-C"]
+                            .iter()
+                            .any(|short| arg.starts_with(short) && arg.len() > short.len()),
+                ),
             };
             if config {
                 options.push(' ');
                 options.push_str(original);
-                if !arg.contains('=') {
+                if !attached {
                     options.push(' ');
                     options.push_str(args.next()?.1);
                 }
@@ -130,12 +214,26 @@ impl LaunchContext {
             // still bypasses those, just as it does for the actual agent invocation.
             let uses_env = words.first().is_some_and(|word| word == "env");
             let assignments = raw[usize::from(uses_env)..index].join(" ");
+            let runner = if uses_env { "env " } else { "" };
+            if std::path::Path::new(_shell)
+                .file_name()
+                .is_some_and(|s| s == "fish")
+            {
+                let mut exports = String::new();
+                for assignment in &raw[usize::from(uses_env)..index] {
+                    let (key, value) = assignment.split_once('=')?;
+                    exports.push_str(&format!("set -lx {key} {value}; "));
+                }
+                let lookup = if uses_env { "command -v" } else { "type -q" };
+                return Some(format!(
+                    "begin; {exports}{lookup} {program} >/dev/null 2>&1; or begin; printf '{MISSING}\\n'; exit 127; end; {runner}{invocation}; end"
+                ));
+            }
             let export = if assignments.is_empty() {
                 String::new()
             } else {
                 format!("export {assignments}; ")
             };
-            let runner = if uses_env { "env " } else { "" };
             Some(format!(
                 "( {export}command -v {program} >/dev/null 2>&1 || {{ printf '{MISSING}\\n'; exit 127; }}; {runner}{invocation} )"
             ))
@@ -169,6 +267,15 @@ impl AuthManager {
         force: bool,
         timeout: Duration,
     ) -> AuthStatus {
+        if context.auth_not_required() {
+            let mut result = AuthStatus::new(
+                context.provider,
+                AuthState::NotRequired,
+                "This local-model configuration does not require provider sign-in.",
+            );
+            result.login_supported = false;
+            return result;
+        }
         let revision = self.revision.load(Ordering::Acquire);
         let key = serde_json::to_string(context).unwrap_or_default();
         if !force
@@ -607,6 +714,99 @@ printf 'Logged in using Agent Identity\n'
         assert_eq!(manager.check(&context, true).state, AuthState::SignedIn);
         context.env.insert("INJECTED".into(), "other-config".into());
         assert_eq!(manager.check(&context, false).state, AuthState::Unknown);
+    }
+    #[test]
+    fn local_models_do_not_require_a_provider_account() {
+        let fixture = Fixture::new();
+        let manager = Arc::new(AuthManager::default());
+        let mut context = fixture.context(Adapter::Codex, "exit 99");
+        for args in [
+            "--oss --local-provider ollama",
+            "--local-provider lmstudio --oss",
+            "-pwork --oss",
+            "-m local-model --oss",
+            "resume --oss --local-provider ollama",
+            "resume a-session --oss",
+            "'write a poem' --oss",
+            "-c model_provider=ollama",
+            "--config 'model_provider=\"lmstudio\"'",
+            "-cmodel_provider=ollama",
+            "--config=\"model_provider = 'ollama'\"",
+            r#"-c 'model_provider="oll\u0061ma"'"#,
+        ] {
+            context.command = format!("codex {args}");
+            let status = manager.check(&context, true);
+            assert_eq!(status.state, AuthState::NotRequired);
+            assert!(!status.login_supported);
+        }
+        for command in [
+            "codex --model '--oss'",
+            "codex 'explain --oss'",
+            "codex -- '--oss'",
+            "my-wrapper --oss",
+            "codex -c model_provider=ollama -c model_provider=openai",
+        ] {
+            context.command = command.into();
+            assert!(!context.auth_not_required(), "{command}");
+        }
+        assert!(manager.logins.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn compact_codex_options_reach_both_status_and_login() {
+        let fixture = Fixture::new();
+        let manager = Arc::new(AuthManager::default());
+        let mut context = fixture.context(
+            Adapter::Codex,
+            r#"
+[ "$1" = '-ccli_auth_credentials_store="keyring"' ] || exit 2
+[ "$2" = '-pwork' ] || exit 3
+[ "$3" = "-C$PWD" ] || exit 4
+[ "$4" = login ] || exit 5
+case "$5" in
+status) printf 'Logged in using an API key\n';;
+"") printf login-complete;;
+*) exit 6;;
+esac
+"#,
+        );
+        context.command = format!(
+            "{} '-ccli_auth_credentials_store=\"keyring\"' -pwork -C{} --model ignored",
+            context.command,
+            context::quote_argument(fixture.0.canonicalize().unwrap().to_str().unwrap())
+        );
+        assert_eq!(manager.check(&context, true).state, AuthState::SignedIn);
+        let (tx, rx) = mpsc::channel();
+        manager
+            .login(
+                "compact-login",
+                &context,
+                Arc::new(move |event| {
+                    if let TerminalEvent::Exited { exit_code, .. } = event {
+                        let _ = tx.send(exit_code);
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
+    }
+    #[test]
+    fn fish_wrappers_use_native_control_syntax_and_preserve_assignments() {
+        let context = LaunchContext {
+            provider: Adapter::Codex,
+            command: "env CODEX_HOME='/tmp/custom home' codex -pwork".into(),
+            cwd: PathBuf::from("/tmp"),
+            env: BTreeMap::new(),
+        };
+        for (login, suffix) in [(false, "login status"), (true, "login")] {
+            let command = context
+                .auth_command_for_shell(login, "/usr/local/bin/fish")
+                .unwrap();
+            assert!(command.starts_with("begin; set -lx CODEX_HOME '/tmp/custom home'; "));
+            assert!(command.contains("; or begin;"));
+            assert!(command.ends_with(&format!("env codex -pwork {suffix}; end")));
+            assert!(!command.contains("||"));
+            assert!(!command.contains("( "));
+        }
     }
     #[test]
     fn status_is_cached_by_context_and_login_invalidates_it() {

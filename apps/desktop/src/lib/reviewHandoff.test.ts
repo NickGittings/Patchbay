@@ -263,3 +263,26 @@ test('provider setup keeps the current worktree and creates no fix terminal', as
   expect(state.addRootTerminal).not.toHaveBeenCalled()
   expect(startTerminal).not.toHaveBeenCalled()
 })
+
+test('a project switch during authentication creates no terminal in either project', async () => {
+  const { requireDeviceAuth } = await import('./providerAuth')
+  vi.mocked(requireDeviceAuth).mockImplementationOnce(async () => {
+    state.project = { id: 'other', root: '/other' }
+  })
+  await expect(fixReviewFindings(record)).rejects.toThrow('Open the reviewed project first')
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+  expect(state.addRootTerminal).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+})
+
+test('a worktree switch during authentication keeps the newly selected worktree', async () => {
+  const { requireDeviceAuth } = await import('./providerAuth')
+  vi.mocked(requireDeviceAuth).mockImplementationOnce(async () => {
+    state.activeTask = 'other'
+  })
+  await expect(fixReviewFindings(record)).rejects.toThrow('The selected worktree changed')
+  expect(state.activeTask).toBe('other')
+  expect(state.setActiveTask).not.toHaveBeenCalled()
+  expect(state.addRootTerminal).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+})

@@ -5,7 +5,6 @@ use patchbay_core::{
     provider_auth::{AuthStatus, LaunchContext},
 };
 
-const EVENT: &str = "patchbay://provider-login";
 #[derive(Clone, Deserialize)]
 struct AuthTerminal {
     command: String,
@@ -156,18 +155,20 @@ pub(crate) async fn provider_login_start(
     state: State<'_, AppState>,
     request: AuthRequest,
     id: String,
+    on_event: tauri::ipc::Channel<patchbay_core::events::TerminalEvent>,
 ) -> CmdResult<()> {
     let session_id = login_id(&window, &id)?;
     let manager = state.provider_auth.clone();
     blocking(move || {
         let context = resolve(&window.state::<AppState>(), request)?;
-        let sink_window = window.clone();
         manager
             .login(
                 &session_id,
                 &context,
                 Arc::new(move |event| {
-                    let _ = sink_window.emit(EVENT, &event);
+                    // A Channel belongs to the invoking webview. Even global event listeners in
+                    // other windows cannot receive its sign-in URLs or device codes.
+                    let _ = on_event.send(event);
                 }),
             )
             .map_err(|_| {
