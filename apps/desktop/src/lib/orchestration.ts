@@ -1,3 +1,4 @@
+import { waitForSetup } from './worktreeSetup'
 import { invoke } from '@tauri-apps/api/core'
 import { projectOf, projectStateOf, useStore } from '../store'
 import type { DeviceManifest, Project, TerminalSpec } from '../types'
@@ -74,6 +75,7 @@ export async function createProviderRun(
   coordinator?: DeviceManifest,
   id: string = crypto.randomUUID(),
 ) {
+  if (kind === 'implementation') await waitForSetup(project.projectId!, task)
   await listenForTerminals()
   return invoke<ProviderRun>('provider_run_create', {
     projectId: project.projectId,

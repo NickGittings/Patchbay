@@ -279,6 +279,7 @@ mod tests {
 
         fn project(&self) -> Project {
             Project {
+                worktree_setup: None,
                 schema_version: SCHEMA_VERSION,
                 name: "Shop".into(),
                 root: self.0.join("shop").display().to_string(),

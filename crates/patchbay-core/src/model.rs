@@ -38,6 +38,8 @@ static MAP_WRITING: Mutex<()> = Mutex::new(());
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_setup: Option<WorktreeSetup>,
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub name: String,
@@ -50,6 +52,11 @@ pub struct Project {
     pub links: Vec<Link>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<ComponentGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSetup {
+    pub command: String,
 }
 
 /// A reusable environment. Ordering is opt-in and follows links within the group.
@@ -772,6 +779,7 @@ mod tests {
             position: Position::default(),
         };
         let project = Project {
+            worktree_setup: None,
             schema_version: SCHEMA_VERSION,
             name: "shop".into(),
             root: "/code/shop".into(),

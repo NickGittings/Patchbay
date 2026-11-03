@@ -1,3 +1,4 @@
+import { worktreeSetup, enableWorktreeSetup } from './ipc'
 import {
   createProviderRun,
   providerRuns,
@@ -162,6 +163,8 @@ const hooks = {
   gitWorktrees,
   taskAttach,
   taskCreate,
+  worktreeSetup,
+  enableWorktreeSetup,
   mergeOutcome,
   attentionItems,
   revealTerminal,

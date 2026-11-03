@@ -1279,6 +1279,7 @@ mod tests {
             });
         }
         let project = Project {
+            worktree_setup: None,
             schema_version: 2,
             name: "big".into(),
             root: root.display().to_string(),

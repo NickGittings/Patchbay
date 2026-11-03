@@ -1,3 +1,4 @@
+import { waitForSetup } from './worktreeSetup'
 import {
   createProviderRun,
   controlProviderRun,
@@ -670,6 +671,7 @@ export async function startAuto(projectId: string, task: string | null, settings
     throw new Error('Auto is still starting an agent; Start once it has started')
   controller.starting = true
   try {
+    await waitForSetup(projectId, task)
     if (unfinished(autoRun(projectId, task)?.status))
       throw new Error('This worktree already has an Auto run')
     if (!validOverrides(settings.overrides ?? {}))

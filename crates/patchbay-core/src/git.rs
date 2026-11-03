@@ -1685,6 +1685,7 @@ mod tests {
         assert!(d(&f.0, &c, PROJECT_SCOPE, "apps/web/new.ts").is_err());
 
         let project = Project {
+            worktree_setup: None,
             schema_version: crate::model::SCHEMA_VERSION,
             name: "p".into(),
             root: f.0.to_string_lossy().into_owned(),

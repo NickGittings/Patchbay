@@ -30,6 +30,8 @@ static LOCK: Mutex<()> = Mutex::new(());
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<crate::worktree_setup::Setup>,
     /// ASCII letters and digits only, so it can end a session id.
     pub id: String,
     pub title: String,
@@ -152,7 +154,10 @@ fn reconcile(root: &Path, tasks: &mut [Task]) {
 }
 
 /// Load, change and save the store under the lock.
-fn modify<T>(root: &Path, change: impl FnOnce(&mut Vec<Task>) -> Result<T>) -> Result<T> {
+pub(crate) fn modify<T>(
+    root: &Path,
+    change: impl FnOnce(&mut Vec<Task>) -> Result<T>,
+) -> Result<T> {
     let file = store_file(root)?;
     let _guard = lock();
     let mut store = load(&file)?;
@@ -349,6 +354,10 @@ pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
     let path = free_path(&main, branch)?;
     // Fail before touching git if the store can't be read.
     load(&store_file(root)?)?;
+    let setup = crate::model::Project::load(root)?
+        .and_then(|p| p.worktree_setup)
+        .filter(|s| !s.command.trim().is_empty())
+        .map(|s| crate::worktree_setup::Setup::new(s.command));
     let existing = verifies(&repo, &format!("refs/heads/{branch}"));
     let mut cmd = git(&repo);
     cmd.args(["worktree", "add"]);
@@ -367,6 +376,7 @@ pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
     run(&mut cmd)?;
     let worktree = path.canonicalize()?.to_string_lossy().into_owned();
     let task = Task {
+        setup,
         id: new_id(),
         title: title.to_string(),
         worktree,
@@ -420,6 +430,7 @@ pub fn attach(
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
         });
     let task = Task {
+        setup: None,
         id: new_id(),
         title,
         worktree: tree.path.clone(),
@@ -730,6 +741,115 @@ mod tests {
             "links": [{ "id": "l", "source": "web", "target": "billing" }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn setup_captures_configuration_and_preserves_local_lifecycle() {
+        use crate::session::Request;
+        use crate::worktree_setup::{self as setup, Status};
+        let f = Fixture::new();
+        let root = f.repo().unwrap();
+        let mut project = project(&root);
+        project.worktree_setup = Some(crate::model::WorktreeSetup {
+            command: "echo prepare".into(),
+        });
+        project.save().unwrap();
+        let task = create(
+            &root,
+            TaskDraft {
+                title: "Setup".into(),
+                branch: "setup".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(task.setup.as_ref().unwrap().command, "echo prepare");
+        project.worktree_setup = Some(crate::model::WorktreeSetup {
+            command: "changed command".into(),
+        });
+        project.save().unwrap();
+        let attached = attach(&root, root.to_str().unwrap(), None, vec![]).unwrap();
+        assert!(attached.setup.is_none());
+        let calls = std::cell::Cell::new(0);
+        let running = std::cell::Cell::new(true);
+        let code = std::cell::Cell::new(0);
+        let mut call = |request| -> Result<serde_json::Value> {
+            match request {
+                Request::Start { spec, metadata, .. } => {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(spec.cwd, PathBuf::from(&task.worktree));
+                    assert_eq!(spec.env["PATCHBAY_PROJECT_ROOT"], project.root);
+                    assert_eq!(spec.env["PATCHBAY_WORKTREE_ROOT"], task.worktree);
+                    assert_eq!(metadata.task.as_deref(), Some(task.id.as_str()));
+                    assert_eq!(spec.command, "echo prepare");
+                    assert_eq!(
+                        spec.id,
+                        crate::model::task_session_id(
+                            &metadata.project_id,
+                            &metadata.component_id,
+                            &metadata.terminal_id,
+                            metadata.task.as_deref()
+                        )
+                    );
+                    Ok(serde_json::json!(spec.id))
+                }
+                Request::Snapshot { .. } => Ok(serde_json::json!({
+                    "data": "", "end": 0, "generation": 1, "running": running.get(),
+                    "exitCode": if running.get() { None } else { Some(code.get()) },
+                    "startedMs": 0, "status": crate::status::SessionStatus::default(), "notice": null
+                })),
+                Request::Stop { .. } => Ok(serde_json::Value::Null),
+                _ => panic!("unexpected request"),
+            }
+        };
+        assert!(setup::action(&project, "p", &task.id, "start", &mut call).is_err());
+        setup::enable(&root, "different").unwrap();
+        assert!(!setup::enabled(&root, "echo prepare").unwrap());
+        setup::enable(&root, "echo prepare").unwrap();
+        let first = setup::action(&project, "p", &task.id, "start", &mut call)
+            .unwrap()
+            .unwrap();
+        setup::action(&project, "p", &task.id, "start", &mut call).unwrap();
+        assert_eq!(calls.get(), 1);
+        assert!(setup::require_ready(&root, &task.id, &mut call).is_err());
+        // Reopening reads the same running session, without starting another process.
+        assert_eq!(
+            setup::read(&root, &task.id, &mut call)
+                .unwrap()
+                .unwrap()
+                .session,
+            first.session
+        );
+        running.set(false);
+        code.set(1);
+        assert_eq!(
+            setup::read(&root, &task.id, &mut call)
+                .unwrap()
+                .unwrap()
+                .status,
+            Status::Failed
+        );
+        assert!(Path::new(&task.worktree).exists());
+        running.set(true);
+        setup::action(&project, "p", &task.id, "start", &mut call).unwrap();
+        assert_eq!(calls.get(), 2);
+        setup::action(&project, "p", &task.id, "stop", &mut call).unwrap();
+        assert!(setup::require_ready(&root, &task.id, &mut call).is_err());
+        setup::action(&project, "p", &task.id, "skip", &mut call).unwrap();
+        setup::require_ready(&root, &task.id, &mut call).unwrap();
+        setup::action(&project, "p", &task.id, "start", &mut call).unwrap();
+        running.set(false);
+        code.set(0);
+        setup::require_ready(&root, &task.id, &mut call).unwrap();
+        assert_eq!(
+            setup::read(&root, &task.id, &mut call)
+                .unwrap()
+                .unwrap()
+                .status,
+            Status::Ready
+        );
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

@@ -18,6 +18,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod briefing;
+pub(crate) use briefing::PendingBriefing;
 pub use briefing::with_pending_briefing;
 
 // Snapshots and live events retain final assistant replies as well as tool activity.
@@ -3325,6 +3326,7 @@ mod tests {
         }))
         .unwrap();
         let project = crate::model::Project {
+            worktree_setup: None,
             schema_version: crate::model::SCHEMA_VERSION,
             root: dir.to_string_lossy().into_owned(),
             name: "P".into(),

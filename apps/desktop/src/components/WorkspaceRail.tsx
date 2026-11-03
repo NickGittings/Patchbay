@@ -1,3 +1,4 @@
+import WorktreeSetupPanel from './WorktreeSetupPanel'
 import RailIcon from './RailIcon'
 import UsagePanel from './UsagePanel'
 import { useUsage, usageWarnings } from '../lib/usage'
@@ -341,6 +342,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
       )}
       {settings === 'profiles' && (
         <AgentProfilesPanel onClose={() => useRail.setState({ settings: null })} />
+      )}
+      {settings === 'worktree-setup' && project && (
+        <WorktreeSetupPanel onClose={() => useRail.setState({ settings: null })} />
       )}
       {settings === 'roles' && project && (
         <AgentRolesPanel onClose={() => useRail.setState({ settings: null })} />
