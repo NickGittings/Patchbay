@@ -1,3 +1,4 @@
+import ValidationAgentSetup from '../ValidationAgentSetup'
 import { taskPassed } from '../../lib/autoSettings'
 import { useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -5,7 +6,6 @@ import { runGraphAction, stopGroup, stopValidation } from '../../lib/actions'
 import { revealTerminal } from '../../lib/attention'
 import {
   hasValidator,
-  hasValidatorSuggestions,
   validatorKey,
   validatorSetup,
   type ValidatorSuggestion,
@@ -22,8 +22,9 @@ export function RunSelect() {
   const declined = useStore((s) => s.validatorDeclined)
   const validated = nodes.filter(hasValidator)
   // Check terminals that could become validators, until the user marks or declines them.
-  const setup = useMemo(() => hasValidatorSuggestions(nodes, declined), [nodes, declined])
-  if (!groups.length && !validated.length && !setup) return null
+  const setup = !!nodes.length
+  void declined
+  if (!nodes.length) return null
   return (
     <select
       value=""
@@ -79,7 +80,9 @@ export function ActivityStatus() {
   return (
     <div className="row task-actions">
       <span role="status">{action?.kind === 'startGroup' ? 'Starting stack…' : 'Validating…'}</span>
-      {(action?.kind === 'validateAffected' || action?.kind === 'validateChanged') && (
+      {(action?.kind === 'validateAffected' ||
+        action?.kind === 'validateChanged' ||
+        action?.kind === 'validateSelected') && (
         <button onClick={() => void stopValidation()}>Stop checks</button>
       )}
     </div>
@@ -222,7 +225,9 @@ export default function TaskActivityPanel() {
             <div key={activity.id} className={`task-action-result panel-section ${activity.state}`}>
               <div className="row">
                 <strong>
-                  {['validate', 'validateChanged'].includes(activity.action.kind)
+                  {['validate', 'validateChanged', 'validateSelected'].includes(
+                    activity.action.kind,
+                  )
                     ? 'Validation'
                     : activity.action.kind === 'environmentStop'
                       ? 'Stop stack'
@@ -244,12 +249,17 @@ export default function TaskActivityPanel() {
                                   kind: 'validateAffected',
                                   componentId: activity.action.componentId!,
                                 }
-                              : activity.action.kind === 'validateChanged'
+                              : activity.action.kind === 'validateSelected'
                                 ? {
-                                    kind: 'validateChanged',
+                                    kind: 'validateSelected',
                                     componentIds: activity.action.componentIds!,
                                   }
-                                : { kind: 'startGroup', groupId: activity.action.groupId! },
+                                : activity.action.kind === 'validateChanged'
+                                  ? {
+                                      kind: 'validateChanged',
+                                      componentIds: activity.action.componentIds!,
+                                    }
+                                  : { kind: 'startGroup', groupId: activity.action.groupId! },
                           )
                     }
                   >
@@ -300,6 +310,7 @@ export default function TaskActivityPanel() {
             </div>
           ))}
       </div>
+      <ValidationAgentSetup key={`agent:${projectId}`} projectId={projectId} />
       <ValidatorSetup key={projectId} />
     </section>
   )

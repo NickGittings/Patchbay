@@ -27,7 +27,8 @@ pub use briefing::with_pending_briefing;
 // provider-specific force checks so a newer client cannot reuse an unsafe older service.
 // Protocol 15 retains scan, coordinator and worker briefings; 16 retrieves planner scan options.
 // Protocol 17 resolves profile credentials at spawn, including resumed sessions.
-pub const PROTOCOL: u32 = 17;
+// Protocol 18 adds ValidationSelection and selected validation action requests.
+pub const PROTOCOL: u32 = 18;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -402,6 +403,10 @@ pub enum Request {
     /// Stop the project's running validation; returns whether one was running.
     ActionCancel {
         project_id: String,
+    },
+    /// The immutable selected component ids retained with a discovery launch.
+    ValidationSelection {
+        id: String,
     },
     /// The running session launched with this agent command token, if any.
     AgentSession {
@@ -1492,6 +1497,19 @@ impl Service {
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::ValidationSelection { id } => {
+                let records = self.records.lock().unwrap();
+                let selection = records
+                    .get(&id)
+                    .filter(|r| {
+                        r.metadata.component_id == crate::model::MAP_SCOPE
+                            && r.metadata.terminal_id
+                                == crate::validation_proposals::VALIDATION_TERMINAL
+                    })
+                    .and_then(|r| r.spec.env.get(crate::validation_proposals::SELECTION_ENV))
+                    .ok_or_else(|| anyhow::anyhow!("Discovery selection unavailable"))?;
+                serde_json::from_str::<serde_json::Value>(selection)?
+            }
             Request::PlannerScanOptions { id } => {
                 let records = self.records.lock().unwrap();
                 let options = records

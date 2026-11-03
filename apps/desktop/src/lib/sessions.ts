@@ -14,6 +14,7 @@ import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
   STACK_AGENT_TERMINAL,
+  VALIDATION_AGENT_TERMINAL,
   PLAN_SCOPE,
   showsInDock,
   isReservedScope,
@@ -33,6 +34,7 @@ import {
 import {
   mapAgentStart,
   stackAgentStart,
+  validationAgentStart,
   onTerminalEvent,
   taskRootStart,
   planStart,
@@ -349,13 +351,16 @@ export const launching = (sid: string) => starting.has(sid) || restarting.has(si
  * preset `preset`. Resolves whether it started; failures are shown as a message. A launch already
  * on its way keeps its own preset, so this one starts nothing.
  */
+const validationSelections = new Map<string, string[]>()
 export async function startMapAgent(
   projectId: string,
   preset: TerminalSpec,
   terminalId = MAP_AGENT_TERMINAL,
+  componentIds?: string[],
 ): Promise<boolean> {
   const launch = captureLaunch(MAP_SCOPE, terminalId, null, projectId)
   if (launching(launch.sid)) return false
+  if (componentIds) validationSelections.set(launch.sid, componentIds)
   const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
   try {
@@ -485,6 +490,14 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           runtime.terminal.command,
           runtime.key,
           task,
+        )
+      else if (componentId === MAP_SCOPE && terminalId === VALIDATION_AGENT_TERMINAL)
+        await validationAgentStart(
+          project,
+          mapPreset(launch.projectId, sid),
+          requestId,
+          !!launch.restart,
+          validationSelections.get(sid) ?? [],
         )
       else if (componentId === MAP_SCOPE)
         await (terminalId === STACK_AGENT_TERMINAL ? stackAgentStart : mapAgentStart)(
