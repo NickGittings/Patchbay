@@ -2561,7 +2561,9 @@ pub fn run() {
             #[cfg(debug_assertions)]
             let main = smoke::window(main);
             #[cfg(target_os = "windows")]
-            let main = window_controls::configure(main);
+            let main = window_controls::configure(main, false);
+            #[cfg(target_os = "linux")]
+            let main = main.decorations(false);
             let _main = main.build()?;
             #[cfg(target_os = "windows")]
             window_controls::verify(&_main)?;
@@ -3310,7 +3312,7 @@ async fn window_open(
         #[cfg(debug_assertions)]
         let builder = smoke::window(builder);
         #[cfg(target_os = "windows")]
-        let builder = window_controls::configure(builder);
+        let builder = window_controls::configure(builder, true);
         let _popout = builder.build().map_err(err)?;
         #[cfg(target_os = "windows")]
         window_controls::verify(&_popout).map_err(err)?;

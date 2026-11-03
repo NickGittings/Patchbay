@@ -1,11 +1,12 @@
-//! Native Windows chrome shared by the main window and component pop-outs.
+//! Windows window flags: custom chrome for main, native chrome for component pop-outs.
 use tauri::{Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
 pub fn configure<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
+    decorations: bool,
 ) -> WebviewWindowBuilder<'a, R, M> {
     builder
-        .decorations(true)
+        .decorations(decorations)
         .resizable(true)
         .minimizable(true)
         .maximizable(true)
@@ -17,6 +18,7 @@ pub fn configure<'a, R: Runtime, M: Manager<R>>(
 /// that still requires a desktop check.
 pub fn verify<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
     let before = settings(window)?;
+    let expected = [window.label() != "main", true, true, true, true];
     eprintln!(
         "Windows controls ({}): decorations={}, resizable={}, minimizable={}, maximizable={}, closable={}",
         window.label(),
@@ -26,12 +28,12 @@ pub fn verify<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
         before[3],
         before[4]
     );
-    if before.iter().all(|enabled| *enabled) {
+    if before == expected {
         return Ok(());
     }
     // Repair only unexpected flags, preserving maximized state and saved geometry.
-    if !before[0] {
-        window.set_decorations(true)?;
+    if before[0] != expected[0] {
+        window.set_decorations(expected[0])?;
     }
     if !before[1] {
         window.set_resizable(true)?;
@@ -45,7 +47,7 @@ pub fn verify<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
     if !before[4] {
         window.set_closable(true)?;
     }
-    if settings(window)?.iter().all(|enabled| *enabled) {
+    if settings(window)? == expected {
         eprintln!(
             "Windows controls ({}): repaired runtime flags",
             window.label()
@@ -53,7 +55,7 @@ pub fn verify<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
         Ok(())
     } else {
         Err(tauri::Error::Anyhow(anyhow::anyhow!(
-            "Native Windows controls remain disabled for {}",
+            "Windows control flags remain incorrect for {}",
             window.label()
         )))
     }

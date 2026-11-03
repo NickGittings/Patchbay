@@ -2,10 +2,12 @@ import { isMac, titleBarMouseDown } from '../lib/platform'
 import { useEffect } from 'react'
 import UnifiedSearch from './UnifiedSearch'
 import Toast from './Toast'
-import type { WorkspaceAction } from '../lib/workspaceActions'
+import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
+import Menu, { MenuItem } from './Menu'
+import WindowControls from './WindowControls'
 import { railViews, selectRailShortcut } from '../lib/rail'
 
-/** The only top-bar control is the combined file and command search. */
+/** Main-window title bar; macOS keeps its native menus and traffic lights. */
 export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -24,11 +26,34 @@ export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
   }, [])
   return (
     <div
-      className={`top-bar${isMac ? ' mac-titlebar' : ''}`}
+      className={`top-bar${isMac ? ' mac-titlebar' : ' custom-titlebar'}`}
       data-tauri-drag-region
       onMouseDown={titleBarMouseDown}
     >
+      {!isMac && (
+        <div className="toolbar-menus">
+          {(['project', 'settings'] as const).map((group) => {
+            const label = group === 'project' ? 'Project' : 'Settings'
+            return (
+              <Menu key={group} label={label} title={label} triggerLabel={label} portal>
+                {actions
+                  .filter((action) => action.group === group)
+                  .map((action) => (
+                    <MenuItem
+                      key={action.id}
+                      disabled={!action.enabled}
+                      onClick={() => runWorkspaceAction(action)}
+                    >
+                      {action.title}
+                    </MenuItem>
+                  ))}
+              </Menu>
+            )
+          })}
+        </div>
+      )}
       <UnifiedSearch actions={actions} />
+      {!isMac && <WindowControls />}
       <Toast />
     </div>
   )

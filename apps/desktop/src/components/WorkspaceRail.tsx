@@ -17,7 +17,7 @@ import {
   useRail,
   type UtilityPanel,
 } from '../lib/rail'
-import { isMac, mod } from '../lib/platform'
+import { mod } from '../lib/platform'
 import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
 import ProjectSwitcher from './ProjectSwitcher'
 import WorktreePicker from './tasks/WorktreePicker'
@@ -34,7 +34,6 @@ import { integrationsProvider, integrationsSetting } from '../lib/agentHooks'
 import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
-import Menu, { MenuItem } from './Menu'
 import PanelContent from './PanelContent'
 
 const utilities: Record<UtilityPanel, { label: string }> = {
@@ -207,23 +206,6 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         {utility('sessions')}
         {utility('usage')}
         <span className="spacer" />
-        {!isMac && (
-          <Menu
-            label={<RailIcon name="settings" />}
-            triggerLabel="Settings"
-            title="Settings"
-            caret={false}
-            portal
-          >
-            {actions
-              .filter((a) => a.group === 'settings')
-              .map((a) => (
-                <MenuItem key={a.id} disabled={!a.enabled} onClick={() => runWorkspaceAction(a)}>
-                  {a.title}
-                </MenuItem>
-              ))}
-          </Menu>
-        )}
       </nav>
       {panel && (
         <>

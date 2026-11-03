@@ -2752,6 +2752,49 @@ kbd {
 .top-bar.mac-titlebar {
   padding-inline: 88px;
 }
+.top-bar.custom-titlebar {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr) 176px;
+  gap: 12px;
+  padding-inline: 8px;
+}
+.custom-titlebar .unified-search {
+  justify-self: center;
+  min-width: 0;
+}
+.toolbar-menus,
+.window-controls {
+  display: flex;
+  align-items: center;
+}
+.window-controls {
+  justify-self: end;
+  align-self: stretch;
+  align-items: stretch;
+}
+.window-controls button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.window-controls button:hover {
+  background: var(--border);
+}
+.window-controls .window-close:hover {
+  color: white;
+  background: #c42b1c;
+}
+.window-controls svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
 .unified-search {
   position: relative;
   width: min(520px, 100%);
