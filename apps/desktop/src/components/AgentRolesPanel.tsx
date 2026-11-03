@@ -1,3 +1,4 @@
+import { useRail } from '../lib/rail'
 import Dialog from './Dialog'
 import { Fragment, useId } from 'react'
 import ReviewerPicker from './ReviewerPicker'
@@ -41,6 +42,9 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   )
   return (
     <Dialog title="Agent roles" subtitle="Default agents for this project" onClose={onClose}>
+      <button onClick={() => useRail.setState({ settings: 'profiles' })}>
+        Manage agent profiles…
+      </button>
       {AGENT_ROLES.map((role) => {
         if (role === 'review') return reviewers
         const id = roles[role]?.[0] ?? ''

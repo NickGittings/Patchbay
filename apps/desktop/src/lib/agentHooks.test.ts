@@ -24,6 +24,7 @@ const {
   missingHooks,
   presetProvider,
   refreshAgentHooks,
+  rememberProfileHooks,
   setHookSource,
   sessionReportedHooks,
   useAgentHooks,
@@ -204,6 +205,28 @@ test('a dialog save shares its answer and close/focus checks honor 30 second fre
   } finally {
     now.mockRestore()
   }
+})
+test('installing profile hooks updates snapshots sharing that file and supersedes old checks', async () => {
+  const profileProvider = (configDir: string, model: string) =>
+    `claude:${btoa(JSON.stringify({ configDir, model })).replace(/=+$/, '')}` as const
+  const first = profileProvider('/profiles/router', 'old-model')
+  const current = profileProvider('/profiles/router', 'new-model')
+  const other = profileProvider('/profiles/other', 'model')
+  check.mockResolvedValue({ ...usable, installed: false })
+  await Promise.all([first, current, other].map((p) => refreshAgentHooks(p, true)))
+  let answer!: (value: Partial<AgentIntegration>) => void
+  check.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+  const stale = refreshAgentHooks(first, true)
+
+  rememberProfileHooks('/profiles/router/settings.json', usable as AgentIntegration)
+  answer({ ...usable, installed: false })
+  await stale
+  expect(useAgentHooks.getState()[first]).toBe(true)
+  expect(useAgentHooks.getState()[current]).toBe(true)
+  expect(useAgentHooks.getState()[other]).toBe(false)
+  await refreshAgentHooks(first)
+  await refreshAgentHooks(current)
+  expect(check).toHaveBeenCalledTimes(4)
 })
 test('native hook evidence survives Esc while legacy reports and stopped processes do not qualify', () => {
   const session = {

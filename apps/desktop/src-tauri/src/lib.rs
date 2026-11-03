@@ -1361,7 +1361,26 @@ async fn task_activate(
 #[tauri::command]
 async fn list_devices(state: State<'_, AppState>) -> CmdResult<Vec<DeviceManifest>> {
     let extensions = state.extensions.clone();
-    blocking(move || Ok(devices::load_devices(&extensions.get()))).await
+    blocking(move || {
+        let mut devices = devices::load_devices(&extensions.get());
+        devices.extend(patchbay_core::profiles::devices().map_err(err)?);
+        Ok(devices)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn agent_profiles_list() -> CmdResult<Vec<patchbay_core::profiles::Profile>> {
+    blocking(|| patchbay_core::profiles::list().map_err(err)).await
+}
+
+#[tauri::command]
+async fn agent_profile_save(
+    profile: patchbay_core::profiles::Profile,
+    key: Option<String>,
+    clear_key: bool,
+) -> CmdResult<patchbay_core::profiles::Profile> {
+    blocking(move || patchbay_core::profiles::save(profile, key, clear_key).map_err(err)).await
 }
 
 #[tauri::command]
@@ -2472,6 +2491,8 @@ pub fn run() {
                 plan_write,
                 list_devices,
                 save_device,
+                agent_profiles_list,
+                agent_profile_save,
                 terminal_start,
                 terminal_attach,
                 terminal_detach,

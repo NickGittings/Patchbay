@@ -21,6 +21,7 @@ const smoke = (script, env = {}, fixture) => ({
   env: { PATCHBAY_SMOKE_SCRIPT: at('smoke', script), PATCHBAY_SMOKE_ROOT: defaultFixture, ...env },
 })
 const SCRIPTS = {
+  profiles: smoke('profiles.js', { PATCHBAY_SMOKE_ROUTER_KEY: 'smoke-fixture-only' }),
   auto: {
     ...smoke(
       'auto.js',

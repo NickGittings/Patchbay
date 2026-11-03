@@ -18,6 +18,7 @@ pub mod model;
 pub mod navigation;
 pub mod plans;
 pub mod policy;
+pub mod profiles;
 pub mod proposals;
 pub mod pty;
 pub mod reviews;

@@ -408,15 +408,21 @@ export const agentProvider = (terminal: Pick<TerminalSpec, 'command' | 'adapter'
     terminal: { id: 'auto', name: 'Auto', kind: 'agent', ...terminal },
   })
 
-export const agentHooksCheck = (provider: 'claude' | 'codex', sourceOverride?: string) =>
-  invoke<import('../types').AgentIntegration>('agent_hooks_check', { provider, sourceOverride })
+export const agentHooksCheck = (
+  provider: 'claude' | 'codex' | `claude:${string}`,
+  sourceOverride?: string,
+) =>
+  invoke<import('../types').AgentIntegration>('agent_hooks_check', {
+    provider: provider.startsWith('claude:') ? 'claude' : provider,
+    sourceOverride,
+  })
 export const agentHooksConfigure = (
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | `claude:${string}`,
   install: boolean,
   sourceOverride?: string,
 ) =>
   invoke<import('../types').AgentIntegration>('agent_hooks_configure', {
-    provider,
+    provider: provider.startsWith('claude:') ? 'claude' : provider,
     install,
     sourceOverride,
   })

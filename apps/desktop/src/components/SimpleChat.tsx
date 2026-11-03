@@ -1,3 +1,4 @@
+import { profileHookProvider } from '../lib/agentProfiles'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
@@ -141,12 +142,15 @@ export default function SimpleChat({
   const runningReview = useRunningReviewLanes(source?.branch)
   const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   const running = model.records.filter((r) => s.sessions[r.id]?.running)
-  const hookProviders = [...running.map((r) => r.metadata.adapter), ...roleProviders].flatMap(
-    (p) => p ?? [],
-  )
+  const hookProviders = [
+    ...running.map((r) => profileHookProvider(r.spec.command) ?? r.metadata.adapter),
+    ...roleProviders,
+  ].flatMap((p) => p ?? [])
   const reporting = new Set(
     running.flatMap((r) =>
-      sessionReportedHooks(s.sessions[r.id]) ? (r.metadata.adapter ?? []) : [],
+      sessionReportedHooks(s.sessions[r.id])
+        ? (profileHookProvider(r.spec.command) ?? r.metadata.adapter ?? [])
+        : [],
     ),
   )
   useEffect(() => {
