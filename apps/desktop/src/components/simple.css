@@ -289,3 +289,16 @@
   flex: 1 1 160px;
   min-width: 0;
 }
+
+.worktree-setup {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.worktree-setup pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.worktree-setup button {
+  margin-right: 6px;
+}

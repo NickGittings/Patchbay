@@ -352,6 +352,7 @@ export interface Added {
 }
 
 export interface Project {
+  worktreeSetup?: { command: string }
   projectId?: string
   schemaVersion: number
   name: string
@@ -800,7 +801,15 @@ export interface OpenedProject {
 }
 
 /** A named piece of work on its own branch and worktree (`tasks::Task`). */
+export interface WorktreeSetup {
+  command: string
+  status: 'preparing' | 'ready' | 'failed' | 'stopped' | 'skipped'
+  session?: string | null
+  attempt: number
+}
+
 export interface Task {
+  setup?: WorktreeSetup
   id: string
   title: string
   /** Absolute, canonical worktree folder. */

@@ -636,3 +636,8 @@ export const usageStatusLineConfigure = (install: boolean, sourceOverride?: stri
     install,
     sourceOverride,
   })
+
+export const worktreeSetup = (projectId: string, task: string, action = 'read') =>
+  invoke<import('../types').WorktreeSetup | null>('worktree_setup', { projectId, task, action })
+export const enableWorktreeSetup = (projectId: string, command: string) =>
+  invoke<void>('worktree_setup_enable', { projectId, command })

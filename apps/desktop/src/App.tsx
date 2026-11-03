@@ -1,3 +1,4 @@
+import WorktreeSetupStatus from './components/tasks/WorktreeSetupStatus'
 import { watchProviderRuns } from './lib/orchestration'
 import StoryBoard from './components/stories/StoryBoard'
 import {
@@ -276,6 +277,7 @@ function AppWorkspace() {
   useEffect(() => watchProviderRuns(), [])
   const view = useStore((s) => s.view)
   const simple = useStore((s) => s.simpleMode)
+  const setupScope = useStore((s) => `${s.project?.id}/${s.activeTask}`)
   const projectId = useStore((s) => s.project?.id)
   const restoring = useStore((s) => s.restoring)
   useEffect(() => {
@@ -382,6 +384,7 @@ function AppWorkspace() {
         <WorkspaceRail actions={actions} />
         <main className="workspace-main">
           <RecoveryBanners />
+          {!restoring && <WorktreeSetupStatus key={setupScope} />}
           {!restoring && (simple || view === 'navigation') && (
             <div className="navigation-shell">
               <NavigationView key={projectId} />

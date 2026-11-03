@@ -3,9 +3,9 @@ use super::Request;
 use crate::{context, pty::SessionSpec};
 use std::path::PathBuf;
 
-pub(super) struct PendingBriefing(Option<PathBuf>);
+pub(crate) struct PendingBriefing(Option<PathBuf>);
 impl PendingBriefing {
-    pub(super) fn new(spec: &SessionSpec) -> Self {
+    pub(crate) fn new(spec: &SessionSpec) -> Self {
         Self(context::owned_briefing(spec))
     }
 }

@@ -1145,6 +1145,8 @@ pub fn launch(
             ]),
             &AllowAll,
         )?;
+        // Setup may defer dispatch before the transport can own this briefing.
+        let _pending = crate::session::PendingBriefing::new(&spec);
         j.session_id = Some(crate::model::task_session_id(
             project_id,
             scope,
@@ -1174,6 +1176,15 @@ pub fn launch(
             Ok(sid) => {
                 j.session_id = Some(sid);
                 j.state = JobState::Running;
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<crate::worktree_setup::Pending>()
+                    .is_some() =>
+            {
+                j.state = JobState::Pending;
+                j.session_id = None;
+                j.launched_ms = 0;
             }
             Err(error) => {
                 j.error = Some(error.to_string());
@@ -1231,6 +1242,7 @@ mod tests {
             run(git(&root).args(["commit", "-m", "Initial"])).unwrap();
             let root = root.canonicalize().unwrap();
             let project = Project {
+                worktree_setup: None,
                 name: "test".into(),
                 root: root.display().to_string(),
                 components: vec![],
@@ -1336,6 +1348,36 @@ mod tests {
             dependencies,
             preset: if id == "a" { "claude" } else { "codex" }.into(),
         }
+    }
+
+    #[test]
+    fn setup_wait_keeps_worker_checkout_pending_until_dispatch_is_ready() {
+        let f = Fixture::new();
+        let r = f.create(Kind::Implementation);
+        let (r, coordinator) = f.coordinator(&r);
+        let r = f.assignments(&r, &coordinator, vec![]);
+        let mut waiting = r;
+        let mut briefings = Vec::new();
+        for _ in 0..3 {
+            waiting = launch(&f.root, "p", &waiting.id, "a", &f.project, |l| {
+                let file = context::owned_briefing(&l.spec).unwrap();
+                assert!(file.exists());
+                briefings.push(file);
+                Err(crate::worktree_setup::Pending.into())
+            })
+            .unwrap();
+            assert!(briefings.iter().all(|file| !file.exists()));
+        }
+        let worker = waiting.jobs.iter().find(|j| j.id == "a").unwrap();
+        assert_eq!(worker.state, JobState::Pending);
+        assert!(worker.session_id.is_none());
+        assert!(worker.error.is_none());
+        let task = worker.task.clone().unwrap();
+        let launched = f.launch(&waiting, "a");
+        let worker = launched.jobs.iter().find(|j| j.id == "a").unwrap();
+        assert_eq!(worker.state, JobState::Running);
+        assert_eq!(worker.task.as_deref(), Some(task.as_str()));
+        assert_eq!(tasks::list(&f.root).unwrap().len(), 1);
     }
 
     #[test]

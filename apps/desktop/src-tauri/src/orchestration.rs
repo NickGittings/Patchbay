@@ -119,6 +119,28 @@ pub async fn provider_job_start(
         let saved = orchestration::read(&root, &project_id, &id).map_err(err)?;
         let project = access.restrict(project, &saved.components).map_err(err)?;
         orchestration::launch(&root, &project_id, &id, &job, &project, |mut launch| {
+            if let Some(task) = launch.task.as_deref() {
+                let mut call = |r| bridge.call(r).map_err(anyhow::Error::msg);
+                let setup = patchbay_core::worktree_setup::read(&root, task, &mut call)?;
+                if let Some(setup) = setup {
+                    if setup.attempt == 0
+                        && setup.status == patchbay_core::worktree_setup::Status::Preparing
+                        && patchbay_core::worktree_setup::enabled(&root, &setup.command)?
+                    {
+                        patchbay_core::worktree_setup::action(
+                            &project,
+                            &project_id,
+                            task,
+                            "start",
+                            &mut call,
+                        )?;
+                    }
+                    if patchbay_core::worktree_setup::require_ready(&root, task, &mut call).is_err()
+                    {
+                        return Err(patchbay_core::worktree_setup::Pending.into());
+                    }
+                }
+            }
             let mut metadata =
                 service::metadata(&project_id, &launch.project, launch.scope, &launch.terminal);
             metadata.task.clone_from(&launch.task);

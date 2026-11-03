@@ -378,6 +378,7 @@ mod tests {
             let root = root.canonicalize().unwrap();
             let source = source.canonicalize().unwrap();
             let project = Project {
+                worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Merge test".into(),
                 root: root.to_string_lossy().into(),

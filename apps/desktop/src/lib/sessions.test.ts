@@ -1,4 +1,4 @@
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
   MAP_SCOPE,
@@ -28,6 +28,7 @@ vi.mock('./ipc', () => ({
   mapAgentStart: vi.fn(async () => ''),
   taskRootStart: vi.fn(),
   extensionTerminalRun: vi.fn(),
+  worktreeSetup: vi.fn(async () => null),
 }))
 vi.mock('../extensions/host', () => ({ executeExtensionCommand: vi.fn() }))
 vi.mock('./planDrafts', () => ({ savePlanDraft: vi.fn(async () => {}) }))
@@ -94,6 +95,7 @@ beforeEach(() => {
   useStore.getState().loadProject(project)
   useStore.setState({ serviceConnected: true })
 })
+afterEach(() => vi.useRealTimers())
 const hasTerminal = () => useStore.getState().nodes[0].data.terminals.length === 1
 
 test('close stops every worktree copy, including records unknown to this window', async () => {
@@ -131,6 +133,40 @@ test('close waits for a spawn without a started event, then stops it', async () 
   expect(await close).toBe(true)
   expect(ipc.terminalStop).toHaveBeenCalledWith(sessionId('web', 'dev', null, 'p'))
 })
+test.each(['preparing', 'failed', 'stopped'] as const)(
+  'close cancels an agent waiting for %s setup',
+  async (status) => {
+    vi.useFakeTimers()
+    const setup = { command: 'install', status, attempt: 1 }
+    useStore.setState({
+      activeTask: 'task',
+      tasks: [
+        {
+          id: 'task',
+          title: 'Task',
+          worktree: '/task',
+          components: [],
+          notes: '',
+          createdMs: 1,
+          missing: false,
+          current: false,
+          setup,
+        },
+      ],
+    })
+    const terminalId = useStore.getState().addRootTerminal(agent)
+    vi.mocked(ipc.worktreeSetup).mockResolvedValue(setup)
+    const start = startTerminal(TASK_ROOT_SCOPE, terminalId, 'task', 'p')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ipc.worktreeSetup).toHaveBeenCalledTimes(1)
+    const close = closeTerminal(TASK_ROOT_SCOPE, terminalId)
+    await vi.advanceTimersByTimeAsync(500)
+    await start
+    expect(await close).toBe(true)
+    expect(ipc.taskRootStart).not.toHaveBeenCalled()
+    expect(ipc.worktreeSetup).toHaveBeenCalledTimes(1)
+  },
+)
 test('close during the restart gap prevents its replacement spawn', async () => {
   const stop = deferred()
   vi.mocked(ipc.terminalStop).mockImplementationOnce(() => stop.promise)
