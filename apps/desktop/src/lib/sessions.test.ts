@@ -823,6 +823,76 @@ test('a successful detection launch keeps the new preset for restart', async () 
   )
 })
 
+test.each(['failed lookup', 'missing record'])(
+  'reconciliation claims a detection launch after an initial %s',
+  async (lookup) => {
+    const { agentChatTask } = await import('./agentChats')
+    const { reconcileSessions } = await import('./sessions')
+    const codex = { id: 'codex', name: 'Codex', command: 'codex', kind: 'agent' as const }
+    const sid = sessionId(MAP_SCOPE, MAP_AGENT_TERMINAL, null, 'p')
+    useStore.setState({
+      serviceInstance: 'test',
+      activeTask: 'task',
+      devices: [{ ...codex, category: 'agent', source: 'builtin' }],
+      tasks: [
+        {
+          id: 'task',
+          title: 'Task',
+          worktree: '/task',
+          createdMs: 1,
+          components: [],
+          notes: '',
+          missing: false,
+          current: false,
+        },
+      ],
+    })
+    useStore.getState().setSession(sid, { running: false, generation: 2 })
+    vi.mocked(showsSession).mockReturnValue(true)
+    if (lookup === 'failed lookup')
+      vi.mocked(ipc.sessionsList).mockRejectedValueOnce(new Error('Temporary lookup failure'))
+    expect(await startMapAgent('p', codex)).toBe(true)
+    const requestId = vi.mocked(ipc.mapAgentStart).mock.lastCall![2]!
+    const r = {
+      ...replyRecord(),
+      id: sid,
+      metadata: {
+        ...replyRecord().metadata,
+        componentId: MAP_SCOPE,
+        terminalId: MAP_AGENT_TERMINAL,
+        kind: 'agent' as const,
+        task: null,
+      },
+      requestIds: [requestId],
+      snapshot: { ...snapshot(true), replies, lastReply: 2 },
+    }
+    expect(agentChatTask(r, 2)).toBeNull()
+    expect(agentChatTask(r)).toBe('task')
+    // Switching away must not redirect the launch's ownership or its replies.
+    useStore.getState().setActiveTask(null, true)
+    // A stale list cannot claim the previous run on behalf of this launch.
+    vi.mocked(ipc.sessionsList).mockResolvedValue([
+      { ...r, requestIds: ['previous'], snapshot: { ...snapshot(false, 2), lastReply: 0 } },
+    ])
+    await reconcileSessions(false)
+    expect(useStore.getState().taskWorkspaces.task.simple).toBeNull()
+    vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValue(r.snapshot)
+    await reconcileSessions(false)
+    await vi.waitFor(() =>
+      expect(useStore.getState().taskWorkspaces.task.simple?.log).toHaveLength(2),
+    )
+    expect(agentChatTask(r)).toBe('task')
+    expect(useStore.getState().taskWorkspaces.task.simple?.agentRuns).toEqual([
+      { sessionId: sid, generation: 3 },
+    ])
+    expect(useStore.getState().simple).toBeNull()
+    expect(agentChatTask(r, 4)).toBeNull()
+    await reconcileSessions(false)
+    expect(useStore.getState().taskWorkspaces.task.simple?.log).toHaveLength(2)
+  },
+)
+
 test('snapshot/live activity races deduplicate by sequence and new generations discard old activity', async () => {
   const sid = sessionId('web', 'dev', null, 'p')
   const event = (sequence: number, generation = 3) => ({

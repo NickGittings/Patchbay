@@ -1,5 +1,5 @@
 import { agentChatTask } from './agentChats'
-import { projectStateOf, useStore } from '../store'
+import { projectStateOf, useStore, workspaceOf } from '../store'
 import { PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
 import { logSimple } from './simpleActions'
 import { ownsPlanner, relatedSession, recordStage, type SimpleState } from './simple'
@@ -98,6 +98,11 @@ function write(
 ) {
   if (!target) return
   for (const { task, simple } of target.scopes) {
+    const state = projectStateOf(target.projectId)
+    if (!state) return
+    // Save the intended cutoff before logSimple can initialize it from the first reply.
+    if (!workspaceOf(state, task).simple)
+      useStore.getState().patchTask(target.projectId, task, { simple })
     for (const reply of [...incoming].sort((a, b) => a.sequence - b.sequence)) {
       if (reply.atMs < simple.startedMs) continue
       void logSimple(target.projectId, task, {

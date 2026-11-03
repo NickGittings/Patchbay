@@ -546,6 +546,28 @@ test('replies create a chat even if chat mode has never been enabled', () => {
   expect(useStore.getState().taskWorkspaces.t.simple?.log).toHaveLength(1)
 })
 
+test.each([null, 50])(
+  'an automatically created chat keeps late earlier replies (run start %s)',
+  (startedMs) => {
+    const r = record()
+    if (startedMs !== null) r.snapshot = { generation: 1, startedMs } as SessionRecord['snapshot']
+    persistReplies('s', 1, [reply(2)], r)
+    expect(useStore.getState().taskWorkspaces.t.simple?.startedMs).toBe(startedMs ?? 0)
+    persistReplies('s', 1, [reply(1), reply(2)], r)
+    expect(
+      useStore.getState().taskWorkspaces.t.simple?.log.map((e) => e.kind === 'reply' && e.sequence),
+    ).toEqual([1, 2])
+  },
+)
+
+test('ingestion respects an existing conversation start', () => {
+  useStore.getState().patchTask('p', 't', { simple: { startedMs: reply(2).atMs, log: [] } })
+  persistReplies('s', 1, [reply(1), reply(2)], record())
+  expect(
+    useStore.getState().taskWorkspaces.t.simple?.log.map((e) => e.kind === 'reply' && e.sequence),
+  ).toEqual([2])
+})
+
 test('a detection launch cannot take earlier generations or lose replies arriving before its RPC', async () => {
   const { agentChatTask, beginAgentChat, claimAgentChat, endAgentChat } =
     await import('./agentChats')

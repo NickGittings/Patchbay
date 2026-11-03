@@ -86,6 +86,24 @@ const fetchingReplies = new Map<string, symbol>()
 const persistedReplies = new Map<string, string>()
 const starting = new Map<string, Promise<string | undefined>>()
 const restarting = new Map<string, Promise<void>>()
+// Keep successful shared-agent launches until their request can be matched to a run.
+const pendingChatLaunches = new Map<
+  string,
+  { projectId: string; task: string | null; requestId: string }
+>()
+
+function claimPendingChat(
+  sid: string,
+  requestId: string | undefined,
+  run: Pick<TerminalSnapshot, 'generation' | 'startedMs'> | null | undefined,
+) {
+  const launch = pendingChatLaunches.get(sid)
+  if (!launch || launch.requestId !== requestId || !run) return
+  claimAgentChat(launch.projectId, launch.task, sid, run.generation, run.startedMs)
+  pendingChatLaunches.delete(sid)
+  endAgentChat(sid)
+}
+
 const closing = new Set<string>()
 const terminalKey = (projectId: string, componentId: string, terminalId: string) =>
   JSON.stringify([projectId, componentId, terminalId])
@@ -112,6 +130,8 @@ export function resetSessions(generationFloor: number) {
   fetchingReplies.clear()
   starting.clear()
   restarting.clear()
+  for (const sid of pendingChatLaunches.keys()) endAgentChat(sid)
+  pendingChatLaunches.clear()
   closing.clear()
   disposeAll()
 }
@@ -433,8 +453,13 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
   const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
   launchRequests.set(sid, requestId)
   const sharedChat = componentId === MAP_SCOPE || componentId === PLAN_SCOPE
-  if (sharedChat)
+  const chatLaunch = sharedChat
+    ? { projectId: launch.projectId, task: launch.chatTask, requestId }
+    : undefined
+  if (chatLaunch) {
+    pendingChatLaunches.set(sid, chatLaunch)
     beginAgentChat(sid, launch.chatTask, useStore.getState().sessions[sid]?.generation)
+  }
   const request = (async () => {
     const requestedEpoch = epoch
     try {
@@ -586,7 +611,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     }
     if (launch.started && sharedChat) {
       const run = await launchedRun(sid, requestId)
-      if (run) claimAgentChat(launch.projectId, launch.chatTask, sid, run.generation, run.startedMs)
+      if (requestedEpoch === epoch) claimPendingChat(sid, requestId, run)
     }
     if (launch.started && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
@@ -598,7 +623,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     }
     return launch.started ? requestId : undefined
   })().finally(() => {
-    if (sharedChat) endAgentChat(sid)
+    if (!launch.started && chatLaunch && pendingChatLaunches.get(sid) === chatLaunch) {
+      pendingChatLaunches.delete(sid)
+      endAgentChat(sid)
+    }
     if (starting.get(sid) === request) starting.delete(sid)
   })
   starting.set(sid, request)
@@ -1072,6 +1100,7 @@ export function reconcileSessions(force = true): Promise<void> {
       for (const r of records) {
         sessionMetadata.set(r.id, { ...r.metadata, task: r.metadata.task ?? null })
         const snapshot = r.snapshot
+        claimPendingChat(r.id, r.requestIds?.at(-1), snapshot)
         if (snapshot) {
           const next = sessionFromSnapshot(useStore.getState().sessions[r.id], snapshot, r)
           const prev = useStore.getState().sessions[r.id]
