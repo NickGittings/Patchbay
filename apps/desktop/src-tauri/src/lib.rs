@@ -23,6 +23,8 @@ mod layout;
 mod native_menu;
 mod orchestration;
 mod service;
+#[cfg(target_os = "windows")]
+mod window_controls;
 #[cfg(target_os = "macos")]
 mod writing_tools;
 use patchbay_core::{Project, context, detect, git, maintenance, watch};
@@ -2436,7 +2438,11 @@ pub fn run() {
             let main = writing_tools::disable(main);
             #[cfg(debug_assertions)]
             let main = smoke::window(main);
+            #[cfg(target_os = "windows")]
+            let main = window_controls::configure(main);
             let _main = main.build()?;
+            #[cfg(target_os = "windows")]
+            window_controls::verify(&_main)?;
             #[cfg(target_os = "macos")]
             writing_tools::hide_affordance(&_main);
             #[cfg(target_os = "macos")]
@@ -3170,7 +3176,11 @@ async fn window_open(
             .traffic_light_position(tauri::LogicalPosition::new(12.0, 22.0));
         #[cfg(debug_assertions)]
         let builder = smoke::window(builder);
+        #[cfg(target_os = "windows")]
+        let builder = window_controls::configure(builder);
         let _popout = builder.build().map_err(err)?;
+        #[cfg(target_os = "windows")]
+        window_controls::verify(&_popout).map_err(err)?;
         #[cfg(target_os = "macos")]
         writing_tools::hide_affordance(&_popout);
         Ok(())
