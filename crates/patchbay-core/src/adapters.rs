@@ -163,7 +163,7 @@ pub fn require_executable(
     };
     #[cfg(windows)]
     let mut probe = {
-        let mut probe = std::process::Command::new("where.exe");
+        let mut probe = crate::process::background_command("where.exe");
         probe.arg(program);
         probe
     };

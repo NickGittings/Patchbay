@@ -874,7 +874,7 @@ fn run_capped(repo: &Path, args: &[String], ok: &[i32]) -> Result<FileDiff> {
 /// index (which would wake the watcher again). Pathspecs are literal, so
 /// folder and file names like `[id]` match only themselves.
 pub(crate) fn git(repo: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::background_command("git");
     cmd.arg("-C").arg(repo).args([
         "-c",
         "core.fsmonitor=false",

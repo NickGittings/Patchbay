@@ -6,7 +6,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, Watch
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -323,7 +323,7 @@ impl Ignores {
 /// Ignored paths in `repo`: `-o` lists untracked files and collapsed
 /// directories (only those without tracked content), `-c` tracked files.
 fn ls_ignored(repo: &Path, which: &str) -> Option<Vec<PathBuf>> {
-    let out = Command::new("git")
+    let out = crate::process::background_command("git")
         .arg("-C")
         .arg(repo)
         .args(["ls-files", "-z", "-i", "--exclude-standard", "--directory"])
@@ -343,7 +343,7 @@ fn ls_ignored(repo: &Path, which: &str) -> Option<Vec<PathBuf>> {
 /// Tracked files and directories holding them are never reported. Failure
 /// reports nothing, which keeps every path.
 fn check_ignore(repo: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
-    let Ok(mut child) = Command::new("git")
+    let Ok(mut child) = crate::process::background_command("git")
         .arg("-C")
         .arg(repo)
         .args(["check-ignore", "--stdin", "-z"])
@@ -386,7 +386,7 @@ fn nul_separated(bytes: &[u8]) -> impl Iterator<Item = String> + '_ {
 
 /// `core.excludesFile`, or Git's default `$XDG_CONFIG_HOME/git/ignore`.
 fn excludes_file(repo: &Path) -> Option<PathBuf> {
-    let configured = Command::new("git")
+    let configured = crate::process::background_command("git")
         .arg("-C")
         .arg(repo)
         .args(["config", "--path", "--get", "core.excludesFile"])
@@ -806,6 +806,7 @@ mod tests {
     use super::*;
     use notify::event::{AccessKind, DataChange, Flag, MetadataKind, RenameMode};
     use std::fs;
+    use std::process::Command;
     use std::sync::atomic::AtomicU64;
 
     struct Fixture(PathBuf);

@@ -39,7 +39,7 @@ pub fn private_dir(dir: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let identity = std::process::Command::new("powershell.exe")
+        let identity = crate::process::background_command("powershell.exe")
             .args([
                 "-NoProfile",
                 "-Command",
@@ -51,7 +51,7 @@ pub fn private_dir(dir: &Path) -> Result<()> {
             "Cannot determine Windows user SID"
         );
         let sid = String::from_utf8(identity.stdout)?;
-        let status = std::process::Command::new("icacls.exe")
+        let status = crate::process::background_command("icacls.exe")
             .arg(dir)
             .args([
                 "/inheritance:r",

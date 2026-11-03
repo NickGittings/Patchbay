@@ -657,9 +657,9 @@ fn kill_tree(child: &mut std::process::Child) {
 
 /// Runs the wrapped status line with Claude's input; true once it printed something.
 fn chained_output(command: &str, bytes: &[u8]) -> Result<bool> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let (shell, flag) = chain_shell();
-    let mut process = Command::new(shell);
+    let mut process = crate::process::background_command(shell);
     process.arg(flag);
     #[cfg(windows)]
     {

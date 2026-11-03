@@ -73,7 +73,7 @@ impl Login {
         }
         #[cfg(windows)]
         if let Some(pid) = self.pid {
-            let _ = std::process::Command::new("taskkill.exe")
+            let _ = crate::process::background_command("taskkill.exe")
                 .args(["/T", "/F", "/PID", &pid.to_string()])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

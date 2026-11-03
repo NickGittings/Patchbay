@@ -19,6 +19,7 @@ pub mod navigation;
 pub mod orchestration;
 pub mod plans;
 pub mod policy;
+mod process;
 pub mod profiles;
 pub mod proposals;
 pub mod provider_auth;
