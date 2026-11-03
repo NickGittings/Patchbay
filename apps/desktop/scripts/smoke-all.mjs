@@ -32,6 +32,7 @@ const SCRIPTS = {
     'providers-fixture.sh',
   ),
   validation: smoke('validation.js'),
+  settings: smoke('settings.js'),
   profiles: smoke('profiles.js', { PATCHBAY_SMOKE_ROUTER_KEY: 'smoke-fixture-only' }),
   auto: {
     ...smoke(

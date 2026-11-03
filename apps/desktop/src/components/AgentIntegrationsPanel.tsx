@@ -2,7 +2,7 @@ import ProviderAuthSection from './ProviderAuthSection'
 import type { AuthRequest } from '../lib/providerAuth'
 import { useStore } from '../store'
 import { decodeProfile } from '../lib/agentProfiles'
-import Dialog from './Dialog'
+import SettingsDialog, { SettingsFeedback, SettingsSection } from './SettingsDialog'
 import { useEffect, useRef, useState } from 'react'
 import { agentHooksCheck, agentHooksConfigure } from '../lib/ipc'
 import { hookSource, rememberAgentHooks, setHookSource, type HookProvider } from '../lib/agentHooks'
@@ -84,7 +84,12 @@ export default function AgentIntegrationsPanel({
       : undefined,
   }
   return (
-    <Dialog title="Agent providers" subtitle="CLI sign-in and status hooks" onClose={onClose}>
+    <SettingsDialog
+      title="Agent providers"
+      subtitle="CLI sign-in and status hooks across projects"
+      behavior="Sign-in and hook actions apply when selected."
+      onClose={onClose}
+    >
       <label className="settings-field">
         Provider{' '}
         <select
@@ -105,65 +110,66 @@ export default function AgentIntegrationsPanel({
           <option value="codex">Codex</option>
         </select>
       </label>
-      <ProviderAuthSection key={provider} request={authRequest} />
-      <hr />
-      <strong>Status hooks</strong>
-      <p>Hooks can be installed independently of sign-in.</p>
-      <p>
-        <label className="settings-field">
-          User hook source
-          <input
-            title="Match the provider’s active user configuration, including CLAUDE_CONFIG_DIR or CODEX_HOME overrides."
-            aria-label="User hook source"
-            value={source}
-            disabled={busy || provider.startsWith('claude:')}
-            onChange={(e) => {
-              setSource(e.target.value)
-              setResult(undefined)
-            }}
-            style={{ width: '100%' }}
-          />
-        </label>
-      </p>
+      <SettingsSection title="CLI sign-in">
+        <ProviderAuthSection key={provider} request={authRequest} />
+      </SettingsSection>
+      <SettingsSection title="Status hooks">
+        <p>Hooks can be installed independently of sign-in.</p>
+        <p>
+          <label className="settings-field">
+            User hook source
+            <input
+              title="Match the provider’s active user configuration, including CLAUDE_CONFIG_DIR or CODEX_HOME overrides."
+              aria-label="User hook source"
+              value={source}
+              disabled={busy || provider.startsWith('claude:')}
+              onChange={(e) => {
+                setSource(e.target.value)
+                setResult(undefined)
+              }}
+            />
+          </label>
+        </p>
 
-      {result && (
-        <>
-          <div className="panel-actions" role="status">
-            <span
-              className="worktree-tag"
-              title="Reporting is confirmed when a running session sends status events."
-            >
-              {result.reportingSessions
-                ? `${result.reportingSessions} reporting`
-                : 'Reporting unconfirmed'}
-            </span>
-            <span className="worktree-tag">
-              {result.installed ? 'Hooks installed' : 'Hooks not installed'}
-            </span>
-            {result.disabled && <span className="worktree-tag bad">Hooks disabled</span>}
-            {result.installed && !result.reporterAvailable && (
-              <span className="worktree-tag bad">Reporter missing</span>
-            )}
-          </div>
-          {result.guidance.map((text) => (
-            <p role="alert" key={text}>
-              {text}
-            </p>
-          ))}
-        </>
-      )}
-      {error && <p role="alert">{error}</p>}
-      <div className="row">
-        <button disabled={busy} onClick={() => void perform()}>
-          Check integration
-        </button>
-        <button className="primary" disabled={busy} onClick={() => void perform(true)}>
-          Install status hooks
-        </button>
-        <button disabled={busy} onClick={() => void perform(false)}>
-          Remove status hooks
-        </button>
-      </div>
-    </Dialog>
+        {result && (
+          <>
+            <div className="panel-actions" role="status">
+              <span
+                className="worktree-tag"
+                title="Reporting is confirmed when a running session sends status events."
+              >
+                {result.reportingSessions
+                  ? `${result.reportingSessions} reporting`
+                  : 'Reporting unconfirmed'}
+              </span>
+              <span className="worktree-tag">
+                {result.installed ? 'Hooks installed' : 'Hooks not installed'}
+              </span>
+              {result.disabled && <span className="worktree-tag bad">Hooks disabled</span>}
+              {result.installed && !result.reporterAvailable && (
+                <span className="worktree-tag bad">Reporter missing</span>
+              )}
+            </div>
+            {result.guidance.map((text) => (
+              <SettingsFeedback key={text}>{text}</SettingsFeedback>
+            ))}
+          </>
+        )}
+        {busy && <SettingsFeedback>Checking integration…</SettingsFeedback>}
+        {error && <SettingsFeedback error>{error}</SettingsFeedback>}
+        <div className="settings-actions">
+          <button disabled={busy} onClick={() => void perform()}>
+            Check integration
+          </button>
+
+          <button className="danger" disabled={busy} onClick={() => void perform(false)}>
+            Remove status hooks
+          </button>
+          <button className="primary" disabled={busy} onClick={() => void perform(true)}>
+            Install status hooks
+          </button>
+        </div>
+      </SettingsSection>
+    </SettingsDialog>
   )
 }

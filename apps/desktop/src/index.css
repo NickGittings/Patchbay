@@ -3314,3 +3314,159 @@ kbd {
 .provider-setup-overlay {
   z-index: 1000;
 }
+
+/* Settings share a shell and form rhythm without changing workflow dialogs. */
+.settings-dialog .dialog-shell {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 100%);
+  overflow: hidden;
+}
+.settings-dialog .utility-header {
+  flex: none;
+  padding: 16px 20px;
+}
+.settings-dialog .utility-header small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.settings-dialog .dialog-body {
+  overflow-y: scroll;
+  min-height: 0;
+  padding: 20px;
+  display: block;
+  overflow-wrap: anywhere;
+}
+.settings-dialog .dialog-body > * + * {
+  margin-top: 16px;
+}
+.settings-dialog p {
+  margin: 0;
+  line-height: 1.5;
+}
+.settings-description,
+.settings-dialog .hint {
+  color: var(--muted);
+}
+.settings-section,
+.settings-form {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+.settings-dialog fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-section + .settings-section {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.settings-section h3,
+.settings-section legend {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.settings-section legend {
+  margin-bottom: 12px;
+}
+.settings-dialog .settings-field {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 8px 16px;
+  line-height: 1.5;
+}
+.settings-dialog select,
+.settings-dialog input:not([type='checkbox']),
+.settings-dialog textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  font: inherit;
+}
+.settings-dialog select {
+  appearance: none;
+  height: 34px;
+  padding: 6px 28px 6px 8px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%237c7c85' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.settings-dialog .settings-toggle,
+.settings-dialog .notifications-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-dialog input[type='checkbox'] {
+  order: 1;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.settings-dialog fieldset:disabled {
+  opacity: 0.6;
+}
+.settings-dialog .row,
+.settings-actions,
+.settings-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-footer {
+  flex: none;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.settings-dialog button {
+  min-height: 32px;
+  white-space: normal;
+}
+.settings-feedback {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.settings-feedback.is-error {
+  color: var(--bad);
+  border-left: 2px solid var(--bad);
+}
+.settings-dialog pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.settings-dialog details > :not(summary) {
+  margin-top: 12px;
+}
+.settings-dialog .extension-entry {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .settings-dialog {
+    padding: 5vh 12px;
+  }
+  .settings-dialog .dialog-shell {
+    max-height: 90vh;
+  }
+  .settings-dialog .settings-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-dialog .dialog-body {
+    padding: 16px;
+  }
+}

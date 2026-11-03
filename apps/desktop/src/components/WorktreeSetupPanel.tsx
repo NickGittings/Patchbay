@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { saveMapNow } from '../lib/mapSave'
 import { enableWorktreeSetup } from '../lib/ipc'
 import { mapEditsBlocked } from '../lib/mapSave'
+import { SettingsFeedback } from './SettingsDialog'
 
 export default function WorktreeSetupPanel() {
   const project = useStore((s) => s.project)
@@ -20,17 +21,23 @@ export default function WorktreeSetupPanel() {
         existing tasks keep their captured setup. Scripts can use PATCHBAY_PROJECT_ROOT and
         PATCHBAY_WORKTREE_ROOT.
       </p>
-      <label>
+      <label className="settings-field">
         Command
-        <input value={command} onChange={(e) => setDraft(e.target.value)} />
+        <input
+          value={command}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            setMessage('')
+          }}
+        />
       </label>
       <p>
         Saving records this command in patchbay.json. Enable this exact command locally to allow
         automatic execution. A changed command needs new enablement.
       </p>
       <pre>{command || 'No setup configured'}</pre>
-      {error && <p role="alert">{error}</p>}
-      {message && <p role="status">{message}</p>}
+      {error && <SettingsFeedback error>{error}</SettingsFeedback>}
+      {message && <SettingsFeedback>{message}</SettingsFeedback>}
       <button
         disabled={busy || blocked}
         onClick={() => {
