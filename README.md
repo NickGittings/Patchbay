@@ -157,6 +157,20 @@ The **Worktree** panel switches between goals such as **Main worktree**, **Add b
 immediately by default; choose **Existing worktree** to attach one instead. A checkout can belong
 to only one task. Non-Git projects keep the Main worktree tab only.
 
+Configure **Settings → Worktree setup…** to prepare new checkouts before implementation,
+for example `npm ci --prefix apps/desktop`. The optional project setting is:
+
+```json
+{ "worktreeSetup": { "command": "npm ci --prefix apps/desktop" } }
+```
+
+Enable the exact command locally before automatic execution. Setup runs at the new worktree’s
+root with `PATCHBAY_PROJECT_ROOT` and `PATCHBAY_WORKTREE_ROOT` available to scripts. Build shows
+its status and live terminal output, with Stop, Retry setup, Run setup again and Continue without
+setup controls. Implementation and Auto wait for success or explicit bypass. Existing checkouts
+are not prepared automatically; switching tasks or reopening Patchbay reconnects to the saved
+setup run. Failed and stopped runs keep their files and output for repair.
+
 The planner and **Saved plan** belong to the project, so planning can start before a task
 worktree exists. On the project folder, **Implement →** opens a menu with **New worktree…** and
 **Implement in project folder**; the latter works without Git. With a task active,

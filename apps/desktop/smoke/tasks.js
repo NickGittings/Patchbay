@@ -84,6 +84,15 @@
     await smoke.refreshTasks()
     assert(state().tasks.length === 0, 'a fresh repo has tasks')
 
+    const setupCommand =
+      'printf "setup:%s:%s:%s\\n" "$PWD" "$PATCHBAY_PROJECT_ROOT" "$PATCHBAY_WORKTREE_ROOT"'
+    smoke.store.setState({
+      project: { ...state().project, worktreeSetup: { command: setupCommand } },
+      dirty: true,
+    })
+    await smoke.saveProject(state().toProject(), null)
+    await smoke.enableWorktreeSetup(state().project.id, setupCommand)
+
     // Start work from Plan, carrying both highlighted components into the dialog.
     click(viewButton('Plan'))
     state().toggleHighlight('web')
@@ -117,6 +126,19 @@
       state().tasks.find((t) => t.branch === 'smoke/task'),
     )
     await until('creation dialog closed', () => !document.querySelector('.task-dialog'))
+    const prepared = await until('worktree setup ready', async () => {
+      const setup = await smoke.worktreeSetup(state().project.id, task.id)
+      if (!setup) throw new Error('Setup configuration was not captured')
+      return setup?.status === 'ready' && setup
+    })
+    assert(prepared.attempt === 1, 'setup ran more than once')
+    const setupSnapshot = await smoke.terminalSnapshot(prepared.session)
+    const setupText = atob(setupSnapshot.data)
+    assert(
+      setupText.includes(`setup:${task.worktree}:${state().project.root}:${task.worktree}`),
+      'setup ran with incorrect directories',
+    )
+
     assert(task.components.length === 2, 'worktree scope was not saved')
     assert(task.branch === 'smoke/task' && !task.missing, 'task has no branch')
     assert(/patchbay-smoke-tasks\/shop-smoke-task$/.test(task.worktree), task.worktree)

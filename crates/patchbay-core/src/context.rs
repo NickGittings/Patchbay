@@ -2475,6 +2475,7 @@ mod tests {
 
     fn project() -> Project {
         Project {
+            worktree_setup: None,
             schema_version: 2,
             name: "demo".into(),
             root: "/repo".into(),

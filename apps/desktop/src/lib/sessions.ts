@@ -1,4 +1,5 @@
 import { requireProviderAuth } from './providerAuth'
+import { waitForSetup } from './worktreeSetup'
 import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { hydrateActivity } from './activity'
 import { stopAndWait } from './stopAndWait'
@@ -469,6 +470,13 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         !fix
       )
         await savePlanDraft(launch.projectId, launch.task)
+      if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
+      if (terminal?.kind === 'agent' && componentId !== PLAN_SCOPE)
+        await waitForSetup(
+          launch.projectId,
+          launch.task,
+          () => requestedEpoch !== epoch || isClosing(launch),
+        )
       if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {

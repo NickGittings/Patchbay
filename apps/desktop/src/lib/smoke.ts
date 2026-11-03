@@ -1,6 +1,7 @@
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { startTaskAgent } from './implement'
 import { providerAuthCheck, providerLoginWrite, onProviderLoginEvent } from './ipc'
+import { worktreeSetup, enableWorktreeSetup } from './ipc'
 import {
   createProviderRun,
   providerRuns,
@@ -173,6 +174,8 @@ const hooks = {
   gitWorktrees,
   taskAttach,
   taskCreate,
+  worktreeSetup,
+  enableWorktreeSetup,
   mergeOutcome,
   attentionItems,
   revealTerminal,

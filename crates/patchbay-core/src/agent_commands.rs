@@ -695,6 +695,7 @@ mod tests {
             calls: Mutex::default(),
             saves: Mutex::default(),
             project: Some(Project {
+                worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Map fixture".into(),
                 root: std::env::temp_dir().display().to_string(),
@@ -803,6 +804,7 @@ mod tests {
             calls: Mutex::default(),
             saves: Mutex::default(),
             project: Some(Project {
+                worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Plan fixture".into(),
                 root: root.display().to_string(),

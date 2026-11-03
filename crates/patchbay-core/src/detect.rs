@@ -1212,6 +1212,7 @@ fn build_project(
     layout(&mut components, &links);
 
     Project {
+        worktree_setup: None,
         schema_version: SCHEMA_VERSION,
         name: dir_name(root),
         root: root.display().to_string(),

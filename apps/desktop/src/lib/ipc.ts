@@ -662,3 +662,7 @@ export const onProviderLoginEvent = async (handler: (event: TerminalEvent) => vo
     providerLoginListeners.delete(handler)
   }
 }
+export const worktreeSetup = (projectId: string, task: string, action = 'read') =>
+  invoke<import('../types').WorktreeSetup | null>('worktree_setup', { projectId, task, action })
+export const enableWorktreeSetup = (projectId: string, command: string) =>
+  invoke<void>('worktree_setup_enable', { projectId, command })

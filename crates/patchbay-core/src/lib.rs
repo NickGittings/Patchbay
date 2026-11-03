@@ -41,3 +41,5 @@ pub mod session;
 pub mod stack_proposals;
 mod submissions;
 pub mod workspace;
+
+pub mod worktree_setup;

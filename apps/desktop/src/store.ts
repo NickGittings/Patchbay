@@ -168,7 +168,7 @@ export interface ProjectState {
   componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
-  project: { id: string; name: string; root: string } | null
+  project: { id: string; name: string; root: string; worktreeSetup?: { command: string } } | null
   nodes: FlowNode[]
   edges: FlowEdge[]
   selectedId: string | null
@@ -243,7 +243,7 @@ interface State {
   componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
-  project: { id: string; name: string; root: string } | null
+  project: { id: string; name: string; root: string; worktreeSetup?: { command: string } } | null
   projects: Record<string, ProjectEntry>
   activeProjectId: string | null
   projectOrder: string[]
@@ -845,7 +845,7 @@ const createState: StateCreator<State> = (set, get) => ({
     const projects = get().captureProjects()
     const state = {
       ...emptyProjectState(),
-      project: { id, name: p.name, root: p.root },
+      project: { id, name: p.name, root: p.root, worktreeSetup: p.worktreeSetup },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
       groups: p.groups ?? [],
@@ -871,7 +871,12 @@ const createState: StateCreator<State> = (set, get) => ({
               ...entry,
               state: {
                 ...entry.state,
-                project: { id: p.projectId, name: p.name, root: p.root },
+                project: {
+                  id: p.projectId,
+                  name: p.name,
+                  root: p.root,
+                  worktreeSetup: p.worktreeSetup,
+                },
                 nodes: p.components.map(componentToNode),
                 edges: p.links.map(linkToEdge),
                 groups: p.groups ?? [],
@@ -884,7 +889,12 @@ const createState: StateCreator<State> = (set, get) => ({
       const selected = new Set(s.nodes.filter((n) => n.selected).map((n) => n.id))
       const selectedEdges = new Set(s.edges.filter((e) => e.selected).map((e) => e.id))
       return {
-        project: { id: p.projectId ?? get().project?.id ?? p.root, name: p.name, root: p.root },
+        project: {
+          id: p.projectId ?? get().project?.id ?? p.root,
+          name: p.name,
+          root: p.root,
+          worktreeSetup: p.worktreeSetup,
+        },
         nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
         edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
         groups: p.groups ?? [],
@@ -1225,6 +1235,7 @@ export function projectFrom({
   groups,
 }: Pick<ProjectState, 'project' | 'nodes' | 'edges' | 'groups'>): Project {
   return {
+    worktreeSetup: project?.worktreeSetup,
     projectId: project?.id,
     schemaVersion: 4,
     name: project?.name ?? 'project',

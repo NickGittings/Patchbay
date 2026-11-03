@@ -1299,6 +1299,39 @@ async fn story_complete_auto(
     blocking(move || stories::complete_auto(&root, &task, &run_id).map_err(err)).await
 }
 
+#[tauri::command]
+async fn worktree_setup(
+    project_id: String,
+    state: State<'_, AppState>,
+    task: String,
+    action: String,
+) -> CmdResult<Option<patchbay_core::worktree_setup::Setup>> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let mut call = |request| bridge.call(request).map_err(anyhow::Error::msg);
+        if action == "read" {
+            return patchbay_core::worktree_setup::read(&root, &task, &mut call).map_err(err);
+        }
+        let project = Project::load(&root)
+            .map_err(err)?
+            .ok_or("Save the project first")?;
+        patchbay_core::worktree_setup::action(&project, &project_id, &task, &action, &mut call)
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn worktree_setup_enable(
+    project_id: String,
+    state: State<'_, AppState>,
+    command: String,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::worktree_setup::enable(&root, &command).map_err(err)).await
+}
+
 /// Create a branch and worktree beside the repo, and a task for them.
 #[tauri::command]
 async fn task_create(
@@ -1307,7 +1340,24 @@ async fn task_create(
     draft: TaskDraft,
 ) -> CmdResult<Task> {
     let (root, _) = task_repo(&state, &project_id)?;
-    blocking(move || tasks::create(&root, draft).map_err(err)).await
+    let bridge = state.service.clone();
+    blocking(move || {
+        let task = tasks::create(&root, draft).map_err(err)?;
+        if let Some(setup) = &task.setup
+            && patchbay_core::worktree_setup::enabled(&root, &setup.command).map_err(err)?
+            && let Some(project) = Project::load(&root).map_err(err)?
+        {
+            let _ = patchbay_core::worktree_setup::action(
+                &project,
+                &project_id,
+                &task.id,
+                "start",
+                &mut |r| bridge.call(r).map_err(anyhow::Error::msg),
+            );
+        }
+        tasks::stored(&root, &task.id).map_err(err)
+    })
+    .await
 }
 
 /// Make a task of one of the repo's existing worktrees.
@@ -1453,6 +1503,17 @@ async fn terminal_start(
     blocking(move || {
         let ids = std::slice::from_ref(&component_id);
         let project = access.restrict(project, ids).map_err(err)?;
+        if let Some(id) = task.as_deref()
+            && project
+                .component(&component_id)
+                .and_then(|c| c.terminals.iter().find(|t| t.id == terminal_id))
+                .is_some_and(|t| t.kind == model::TerminalKind::Agent)
+        {
+            patchbay_core::worktree_setup::require_ready(Path::new(&project.root), id, &mut |r| {
+                bridge.call(r).map_err(anyhow::Error::msg)
+            })
+            .map_err(err)?;
+        }
         let (project, roots, section) = for_task(project, task.as_deref(), ids, roots)?;
         let terminal = project
             .component(&component_id)
@@ -1517,6 +1578,14 @@ async fn task_root_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
+        if terminal.kind == model::TerminalKind::Agent
+            && let Some(id) = task.as_deref()
+        {
+            patchbay_core::worktree_setup::require_ready(Path::new(&project.root), id, &mut |r| {
+                bridge.call(r).map_err(anyhow::Error::msg)
+            })
+            .map_err(err)?;
+        }
         let fix =
             match (kickoff, review_session) {
                 (Some(context::Kickoff::FixFindings), Some(session)) => Some(context::Fix::Review(
@@ -2512,6 +2581,8 @@ pub fn run() {
                 story_remove,
                 story_complete_auto,
                 task_create,
+                worktree_setup,
+                worktree_setup_enable,
                 task_attach,
                 task_update,
                 task_remove,

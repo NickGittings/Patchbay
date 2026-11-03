@@ -2417,6 +2417,7 @@ mod tests {
             git::run(git::git(&dir).args(["checkout", "-qb", "feature/a"])).unwrap();
             let dir = dir.canonicalize().unwrap();
             let project = Project {
+                worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Review test".into(),
                 root: dir.to_string_lossy().into(),
