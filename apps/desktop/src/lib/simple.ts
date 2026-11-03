@@ -8,6 +8,7 @@ import type {
   Verdict,
 } from '../types'
 import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
+import { agentChatTask } from './agentChats'
 import { sessionTimeMs } from './sessionList'
 import { shortTitle } from './shortTitle'
 import { CANVAS_PANEL, CHAT_PANEL, HIERARCHY_PANEL } from './panelLayout'
@@ -62,6 +63,8 @@ export interface SimpleState {
   log: SimpleEntry[]
   /** `SIMPLE_VERSION` once saved by a build whose claims name their run; older logs migrate. */
   version?: number
+  /** Launch ownership of shared agents, retained even when Chat is disabled. */
+  agentRuns?: { sessionId: string; generation: number }[]
 }
 export const SIMPLE_VERSION = 2
 
@@ -89,9 +92,10 @@ export function ownsPlanner(
 ) {
   return (
     generation !== undefined &&
-    !!simple?.log.some(
-      (e) => claimsRun(e) && e.sessionId === sessionId && e.generation === generation,
-    )
+    (!!simple?.agentRuns?.some((r) => r.sessionId === sessionId && r.generation === generation) ||
+      !!simple?.log.some(
+        (e) => claimsRun(e) && e.sessionId === sessionId && e.generation === generation,
+      ))
   )
 }
 
@@ -101,6 +105,7 @@ export function boundedSimple(simple: SimpleState): SimpleState {
     startedMs: simple.startedMs,
     log: boundedSimpleLog(simple.log),
     version: SIMPLE_VERSION,
+    ...(simple.agentRuns?.length ? { agentRuns: simple.agentRuns } : {}),
   }
 }
 
@@ -166,6 +171,15 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   const restored = boundedSimple({
     startedMs: state.startedMs,
+    agentRuns: Array.isArray(state.agentRuns)
+      ? state.agentRuns.filter(
+          (r) =>
+            r &&
+            typeof r.sessionId === 'string' &&
+            Number.isSafeInteger(r.generation) &&
+            r.generation >= 0,
+        )
+      : undefined,
     log: state.log.filter((entry) => {
       if (
         !entry ||
@@ -255,13 +269,15 @@ export const recordStage = (record: SessionRecord): SimpleStage =>
         : 'build'
 
 /** Project planners are explicitly shared; every other record must belong to this worktree. */
-export function relatedSession(record: SessionRecord, worktree: SimpleWorktree) {
-  if (
-    record.metadata.projectId !== worktree.projectId ||
-    record.metadata.kind !== 'agent' ||
-    record.metadata.componentId === '@map'
-  )
+export function relatedSession(
+  record: SessionRecord,
+  worktree: SimpleWorktree,
+  generation = record.snapshot?.generation,
+) {
+  if (record.metadata.projectId !== worktree.projectId || record.metadata.kind !== 'agent')
     return false
+  if (record.metadata.componentId === '@map')
+    return agentChatTask(record, generation) === worktree.task
   if (record.metadata.componentId === PLAN_SCOPE) return true
   if (record.metadata.componentId === MERGE_SCOPE)
     return (
@@ -353,7 +369,7 @@ const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
 /** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
-    .filter((r) => relatedSession(r, worktree))
+    .filter((r) => relatedSession(r, worktree, (snapshot.sessions[r.id] ?? r.snapshot)?.generation))
     .sort(
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
     )
@@ -397,7 +413,8 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       })
       .map((r) => r.id),
   )
-  const latest = records.filter((r) => recordStage(r) !== 'plan').at(-1) ?? records.at(-1)
+  const workflow = records.filter((r) => r.metadata.componentId !== '@map')
+  const latest = workflow.filter((r) => recordStage(r) !== 'plan').at(-1) ?? workflow.at(-1)
   let stage = latest ? recordStage(latest) : 'plan'
   const action = log
     .filter(
@@ -539,11 +556,13 @@ export function sections(
         ? item.action === 'fix'
           ? 'fix'
           : (item.stage ?? 'plan')
-        : record
-          ? recordStage(record)
-          : item.kind === 'agent'
-            ? item.entries[0]?.stage
-            : undefined
+        : record?.metadata.componentId === '@map'
+          ? (current?.stage ?? 'plan')
+          : record
+            ? recordStage(record)
+            : item.kind === 'agent'
+              ? item.entries[0]?.stage
+              : undefined
     const sameStage = current?.stage === stage || (current?.stage === 'fix' && stage === 'build')
     // Several review lanes share one step. Explicit repeated actions still begin a new attempt,
     // except when an immediately preceding launch line has no agent or artifact yet.
@@ -606,7 +625,9 @@ export function selectRecipient(
   if (asking) return asking
   const explicit = eligible.find((r) => r.id === override)
   if (explicit) return explicit
-  const stageRecords = eligible.filter((r) => recordStage(r) === stage)
+  const stageRecords = eligible.filter(
+    (r) => r.metadata.componentId !== '@map' && recordStage(r) === stage,
+  )
   return (
     [...stageRecords].reverse().find((r) => sessions[r.id]?.running ?? r.snapshot?.running) ??
     stageRecords.at(-1)

@@ -199,7 +199,12 @@ function NavigationView() {
   const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
-  const activeSession = useStore((s) => s.activeSession)
+  const activeSession = useStore((s) =>
+    s.simpleMode &&
+    s.sessionRecords.some((r) => r.id === s.activeSession && r.metadata.kind === 'agent')
+      ? null
+      : s.activeSession,
+  )
   // Dragged shut: close it, so the canvas's Inspector button comes back.
   const inspectorPanel = useCollapsed(
     INSPECTOR_PANEL,

@@ -24,6 +24,18 @@ export async function launchedRun(sid: string, requestId: string) {
   let record = ours(useStore.getState().sessionRecords)
   if (!record) {
     record = ours(await sessionsList().catch(() => []))
+    if (record) {
+      const found = record
+      useStore.setState((s) => ({
+        sessionRecords: s.sessionRecords.some((r) => r.id === sid)
+          ? s.sessionRecords.map((r) =>
+              r.id === sid && (r.snapshot?.generation ?? -1) <= (found.snapshot?.generation ?? -1)
+                ? found
+                : r,
+            )
+          : [...s.sessionRecords, found],
+      }))
+    }
     const known = useStore.getState().sessions[sid]
     if (record?.snapshot && record.snapshot.generation > (known?.generation ?? -1))
       useStore.getState().setSession(sid, sessionFromSnapshot(known, record.snapshot, record))
@@ -66,7 +78,7 @@ export function logSimple(projectId: string, task: string | null, entry: Entry) 
   if (!state) return
   const simple = (state.activeTask === task
     ? state.simple
-    : state.taskWorkspaces[task ?? '']?.simple) ?? { startedMs: Date.now(), log: [] }
+    : state.taskWorkspaces[task ?? '']?.simple) ?? { startedMs: entry.atMs ?? Date.now(), log: [] }
   if (
     entry.kind === 'reply' &&
     simple.log.some(

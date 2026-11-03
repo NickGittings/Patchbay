@@ -507,3 +507,84 @@ test('Auto controls never claim a planner run, even naming its generation', () =
   expect(ownsPlanner({ startedMs: 1, log: [pause] }, 's', 1)).toBe(false)
   expect(ownsPlanner({ startedMs: 1, log: [{ ...pause, action: 'resume' }] }, 's', 1)).toBe(true)
 })
+
+test('detection reports to its launching chat across mode changes and generations', async () => {
+  const { claimAgentChat } = await import('./agentChats')
+  const { restoredSimple, selectRecipient } = await import('./simple')
+  const r = record('@map')
+  r.metadata.task = null
+  useStore.setState({ sessionRecords: [r] })
+  claimAgentChat('p', 't', 's', 1, 1)
+  persistReplies('s', 1, [reply(1)], r)
+  persistReplies('s', 1, [reply(1)], r)
+  const saved = useStore.getState().taskWorkspaces.t.simple!
+  expect(saved.log).toHaveLength(1)
+  expect(restoredSimple(JSON.parse(JSON.stringify(saved)))?.agentRuns).toEqual([
+    { sessionId: 's', generation: 1 },
+  ])
+  useStore.setState({ simpleMode: true, sessions: { s: { generation: 1, running: true } } })
+  revealTerminal({ sid: 's', componentId: '@map' })
+  expect(useStore.getState().activeTask).toBe('t')
+  expect(useStore.getState().chatReveal).toEqual({ projectId: 'p', task: 't' })
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', 't')]?.terminal ?? 'closed').toBe('closed')
+  const model = thread(
+    { records: [r], sessions: { s: { generation: 1, running: true } }, simple: saved, auto: null },
+    { projectId: 'p', task: 't', path: '/t' },
+  )
+  expect(model.items.some((i) => i.kind === 'agent' && i.sessionId === 's')).toBe(true)
+  expect(model.stage).toBe('plan')
+  expect(selectRecipient(model.records, {}, model.stage)).toBeUndefined()
+  claimAgentChat('p', null, 's', 2, 1)
+  persistReplies('s', 2, [reply(2)], r)
+  expect(useStore.getState().simple?.log).toHaveLength(1)
+  expect(useStore.getState().taskWorkspaces[''].simple?.log).toHaveLength(1)
+})
+
+test('replies create a chat even if chat mode has never been enabled', () => {
+  const r = record()
+  persistReplies('s', 1, [reply(1)], r)
+  expect(useStore.getState().taskWorkspaces.t.simple?.log).toHaveLength(1)
+})
+
+test('a detection launch cannot take earlier generations or lose replies arriving before its RPC', async () => {
+  const { agentChatTask, beginAgentChat, claimAgentChat, endAgentChat } =
+    await import('./agentChats')
+  const r = record('@map')
+  r.metadata.task = null
+  claimAgentChat('p', null, 's', 1, 1)
+  beginAgentChat('s', 't', 1)
+  try {
+    expect(agentChatTask(r, 1)).toBeNull()
+    expect(agentChatTask(r, 2)).toBe('t')
+    persistReplies('s', 2, [reply(1)], r)
+    claimAgentChat('p', 't', 's', 2, 1)
+  } finally {
+    endAgentChat('s')
+  }
+  expect(agentChatTask(r, 2)).toBe('t')
+  expect(useStore.getState().taskWorkspaces.t.simple?.log).toHaveLength(1)
+  // Showing or retrying the same run in a different chat preserves ownership.
+  claimAgentChat('p', null, 's', 2, 1)
+  expect(agentChatTask(r, 2)).toBe('t')
+  beginAgentChat('s', null, 2)
+  endAgentChat('s') // Failed launch.
+  expect(agentChatTask(r, 2)).toBe('t')
+})
+
+test('detection requiring input can open the chat drawer without becoming the default recipient', async () => {
+  const { selectRecipient } = await import('./simple')
+  const r = record('@map')
+  const sessions = {
+    s: { running: true, generation: 1, status: { agent: { state: 'needsInput' } } },
+  } as unknown as Parameters<typeof selectRecipient>[1]
+  expect(selectRecipient([r], sessions, 'plan')).toBe(r)
+  const ui = inputDrawer(
+    { draft: '', mentions: [], diff: null, changes: false, terminal: 'closed' },
+    r,
+    sessions,
+    ['s'],
+  )
+  expect(ui.terminal).toBe('input')
+  expect(ui.terminalSession?.id).toBe('s')
+  expect(selectRecipient([r], { s: { running: true, generation: 1 } }, 'plan')).toBeUndefined()
+})

@@ -31,7 +31,7 @@ export interface DockTab {
 type DockState = Pick<
   State,
   'nodes' | 'selectedId' | 'sessions' | 'runtimeTerminals' | 'activeTask' | 'dockKept' | 'project'
->
+> & { simpleMode?: boolean }
 
 const listed = (s: DockState, sid: string) =>
   !!s.sessions[sid]?.running || (s.dockKept.includes(sid) && !!s.sessions[sid])
@@ -70,7 +70,9 @@ export function dockTabs(s: DockState): DockTab[] {
         task: t.taskId ?? null,
       })),
   )
-  const shown = all.filter((t) => listed(s, t.sid))
+  const shown = all.filter(
+    (t) => listed(s, t.sid) && !(s.simpleMode && t.terminal.kind === 'agent'),
+  )
   const own = shown.filter((t) => t.componentId === s.selectedId)
   const tabs = own.length ? own : shown
   return tabs.map(({ component, ...t }) => ({
@@ -88,6 +90,12 @@ export function hasDockTabs(s: DockState): boolean {
     if (!listed(s, sid)) return false
     const runtime = s.runtimeTerminals[sid]
     const meta = sessionMetadata.get(sid)
+    const terminal =
+      runtime?.terminal ??
+      s.nodes
+        .find((n) => n.id === meta?.componentId)
+        ?.data.terminals.find((t) => t.id === meta?.terminalId)
+    if (s.simpleMode && terminal?.kind === 'agent') return false
     if (
       meta &&
       sessionId(meta.componentId, meta.terminalId, s.activeTask) === sid &&
@@ -107,6 +115,7 @@ export function hasDockTabs(s: DockState): boolean {
 }
 
 export function useDockTabs(): DockTab[] {
+  const simpleMode = useStore((s) => s.simpleMode)
   const nodes = useStore((s) => s.nodes)
   const selectedId = useStore((s) => s.selectedId)
   const sessions = useStore((s) => s.sessions)
@@ -116,7 +125,16 @@ export function useDockTabs(): DockTab[] {
   const project = useStore((s) => s.project)
   return useMemo(
     () =>
-      dockTabs({ nodes, selectedId, sessions, runtimeTerminals, activeTask, dockKept, project }),
-    [nodes, selectedId, sessions, runtimeTerminals, activeTask, dockKept, project],
+      dockTabs({
+        nodes,
+        selectedId,
+        sessions,
+        runtimeTerminals,
+        activeTask,
+        dockKept,
+        project,
+        simpleMode,
+      }),
+    [nodes, selectedId, sessions, runtimeTerminals, activeTask, dockKept, project, simpleMode],
   )
 }

@@ -111,3 +111,29 @@ test('the dependency agent stays in the dock whichever worktree is active', () =
   expect(labels(s)).toEqual(['detect'])
   expect(hasDockTabs(s)).toBe(true)
 })
+
+test('Chat hides agent dock tabs while preserving task terminals', () => {
+  const sid = sessionId('@map', 'detect', null, 'p-1')
+  const shell = sessionId('web', 'test')
+  const s = state(
+    { [sid]: running },
+    {
+      simpleMode: true,
+      runtimeTerminals: {
+        [sid]: {
+          projectId: 'p-1',
+          componentId: '@map',
+          taskId: null,
+          terminal: { ...terminal('detect'), kind: 'agent' },
+        },
+      },
+    },
+  )
+  expect(dockTabs(s)).toEqual([])
+  expect(hasDockTabs(s)).toBe(false)
+  s.sessions[shell] = running
+  expect(dockTabs(s).map((t) => t.sid)).toEqual([shell])
+  expect(hasDockTabs(s)).toBe(true)
+  s.simpleMode = false
+  expect(dockTabs(s)).toHaveLength(2)
+})

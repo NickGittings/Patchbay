@@ -1,3 +1,5 @@
+import { beginAgentChat, claimAgentChat, endAgentChat } from './agentChats'
+import { launchedRun } from './simpleActions'
 import { requireProviderAuth } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
@@ -181,6 +183,7 @@ interface Launch {
   terminalId: string
   projectId: string
   task: string | null
+  chatTask: string | null
   project: Project
   highlighted: string[]
   rootTerminal?: import('../types').TerminalSpec
@@ -233,6 +236,7 @@ function captureLaunch(
     terminalId,
     projectId: id,
     task: scope,
+    chatTask: workspaceTask,
     project,
     // Saved task layouts can name components removed from the map since; the backend rejects those.
     highlighted: (workspace?.highlighted ?? []).filter((c) =>
@@ -428,6 +432,9 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
   // so an earlier request is spent and would be answered as a duplicate without relaunching.
   const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
   launchRequests.set(sid, requestId)
+  const sharedChat = componentId === MAP_SCOPE || componentId === PLAN_SCOPE
+  if (sharedChat)
+    beginAgentChat(sid, launch.chatTask, useStore.getState().sessions[sid]?.generation)
   const request = (async () => {
     const requestedEpoch = epoch
     try {
@@ -577,6 +584,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
       }
     }
+    if (launch.started && sharedChat) {
+      const run = await launchedRun(sid, requestId)
+      if (run) claimAgentChat(launch.projectId, launch.chatTask, sid, run.generation, run.startedMs)
+    }
     if (launch.started && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
       if (launch.story || projectStateOf(launch.projectId)?.planStoryTerminal === terminalId)
@@ -587,6 +598,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     }
     return launch.started ? requestId : undefined
   })().finally(() => {
+    if (sharedChat) endAgentChat(sid)
     if (starting.get(sid) === request) starting.delete(sid)
   })
   starting.set(sid, request)

@@ -349,7 +349,12 @@ export default function SimpleComposer({
           aria-expanded={open}
           onClick={() => recipient && openTerminal(recipient)}
         >
-          {open ? 'Hide' : 'View'} {shown ? SIMPLE_ROLE_LABEL[recordStage(shown)] : 'agent'}{' '}
+          {open ? 'Hide' : 'View'}{' '}
+          {shown?.metadata.componentId === '@map'
+            ? shown.metadata.name
+            : shown
+              ? SIMPLE_ROLE_LABEL[recordStage(shown)]
+              : 'agent'}{' '}
           terminal
         </button>
         {asking

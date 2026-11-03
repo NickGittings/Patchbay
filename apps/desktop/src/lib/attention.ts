@@ -1,5 +1,6 @@
-import { ownsPlanner, relatedSession } from './simple'
 import { simpleKey, useSimpleUi } from './simpleUi'
+import { agentChatTask } from './agentChats'
+import { ownsPlanner, relatedSession } from './simple'
 import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
@@ -304,19 +305,25 @@ export function revealTerminal(
               ownsPlanner(workspace.simple, record.id, generation),
           )?.[0]
       const task =
-        record.metadata.componentId === PLAN_SCOPE
-          ? plannerTask === undefined
-            ? s.activeTask
-            : plannerTask || null
-          : record.metadata.componentId === MERGE_SCOPE
-            ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
-            : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
-              s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
-              null)
+        record.metadata.componentId === MAP_SCOPE
+          ? agentChatTask(record, generation)
+          : record.metadata.componentId === PLAN_SCOPE
+            ? plannerTask === undefined
+              ? s.activeTask
+              : plannerTask || null
+            : record.metadata.componentId === MERGE_SCOPE
+              ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
+              : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
+                s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
+                null)
       const worktree = s.tasks.find((t) => t.id === task)
       const path = worktree?.worktree ?? s.project.root
       if (
-        relatedSession(record, { projectId: s.project.id, task, path, branch: worktree?.branch })
+        relatedSession(
+          record,
+          { projectId: s.project.id, task, path, branch: worktree?.branch },
+          generation,
+        )
       ) {
         if (task !== s.activeTask) s.setActiveTask(task, true)
         s.revealChat({ projectId: s.project.id, task })

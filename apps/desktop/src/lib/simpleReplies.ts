@@ -1,3 +1,4 @@
+import { agentChatTask } from './agentChats'
 import { projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
 import { logSimple } from './simpleActions'
@@ -21,13 +22,35 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
     Object.entries(state.taskWorkspaces).map(([task, w]) => [task || null, w.simple]),
   )
   all.set(state.activeTask, state.simple)
+  // Ingestion creates related conversations even if Chat has never been opened.
+  if (metadata.componentId !== PLAN_SCOPE) {
+    for (const task of [null, ...state.tasks.map((t) => t.id)]) {
+      const worktree = state.tasks.find((t) => t.id === task)
+      if (
+        !all.get(task) &&
+        relatedSession(
+          r,
+          {
+            projectId: metadata.projectId,
+            task,
+            path: worktree?.worktree ?? state.project.root,
+            branch: worktree?.branch,
+          },
+          generation,
+        )
+      )
+        all.set(task, { startedMs: r.snapshot?.startedMs ?? 0, log: [] })
+    }
+  }
   const scopes: { task: string | null; simple: SimpleState }[] = []
   for (const [task, simple] of all) {
     if (!simple) continue
     const worktree = state.tasks.find((t) => t.id === task)
     const path = worktree?.worktree ?? state.project.root
     const branch = worktree?.branch
-    if (!relatedSession(r, { projectId: metadata.projectId, task, path, branch })) continue
+    if (metadata.componentId === '@map' && agentChatTask(r, generation) !== task) continue
+    if (!relatedSession(r, { projectId: metadata.projectId, task, path, branch }, generation))
+      continue
     // A project planner is shared; only chats that actually used this run receive its replies.
     if (metadata.componentId === PLAN_SCOPE && !ownsPlanner(simple, sid, generation)) continue
     scopes.push({ task, simple })

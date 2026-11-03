@@ -1,6 +1,6 @@
 import { useContext } from 'react'
 import { SimpleChangesContext } from './stories/simpleChanges'
-import type { SimpleDiff } from '../lib/simpleUi'
+import { simpleKey, useSimpleUi, type SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
 import { useStore } from '../store'
@@ -27,7 +27,12 @@ export default function SimpleAgent({
   const changes = useContext(SimpleChangesContext)
   const edited = latest ? changes.bySession.get(sessionId) : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
-  const role = record ? SIMPLE_ROLE_LABEL[recordStage(record)] : 'Agent'
+  const role =
+    record?.metadata.componentId === '@map'
+      ? record.metadata.name
+      : record
+        ? SIMPLE_ROLE_LABEL[recordStage(record)]
+        : 'Agent'
   const provider = record?.metadata.adapter
   return (
     <article className="simple-agent" data-session={sessionId}>
@@ -36,11 +41,24 @@ export default function SimpleAgent({
           {role}
           {provider
             ? ` · ${provider === 'claude' ? 'Claude' : 'Codex'}`
-            : record
+            : record && record.metadata.componentId !== '@map'
               ? ` · ${record.metadata.name}`
               : ''}
         </strong>
         {latest && <SimpleStatus sessions={[session]} />}
+        {record?.metadata.componentId === '@map' && (
+          <button
+            onClick={() => {
+              const s = useStore.getState()
+              useSimpleUi.getState().patch(simpleKey(s.project?.id, s.activeTask), {
+                terminal: 'user',
+                terminalSession: { id: sessionId, generation: session?.generation, pinned: true },
+              })
+            }}
+          >
+            View terminal
+          </button>
+        )}
       </header>
       {entries.map((entry) =>
         entry.kind === 'prompt' ? (
