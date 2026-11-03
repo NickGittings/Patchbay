@@ -43,7 +43,7 @@
       category: 'agent',
       source: 'builtin',
       adapter: 'codex',
-      command: `python3 '${parent}/agent.py'`,
+      command: `'${parent}/codex'`,
     }
     state().setDevices([fake])
     state().setAgentRoles({

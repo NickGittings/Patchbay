@@ -1,3 +1,8 @@
+vi.mock('./providerAuth', () => ({
+  requireProviderAuth: vi.fn(async () => {}),
+  requireDeviceAuth: vi.fn(async () => {}),
+  ProviderSetupRequired: class extends Error {},
+}))
 import { expect, test, vi } from 'vitest'
 import type { DeviceManifest, TerminalSpec } from '../types'
 
@@ -23,6 +28,7 @@ const startTerminal = vi.fn(() => Promise.resolve())
 vi.mock('../store', () => ({
   useStore: {
     getState: () => ({
+      sessions: {},
       rootTerminals,
       nodes,
       addRootTerminal,
@@ -104,4 +110,18 @@ test('a component agent is saved on the component and starts there', async () =>
   await addTaskTerminal('api', { kind: 'device', device: claude })
   expect(addTaskComponentTerminal).toHaveBeenCalledWith('api', 'api-claude')
   expect(startTerminal.mock.calls).toEqual([['api', 'api-claude', 't1']])
+})
+
+test('provider setup blocks terminal creation, focus and launch', async () => {
+  const { requireDeviceAuth } = await import('./providerAuth')
+  vi.mocked(requireDeviceAuth).mockRejectedValueOnce(new Error('Provider setup required'))
+  addRootTerminal.mockClear()
+  setActiveSession.mockClear()
+  startTerminal.mockClear()
+  await expect(startTaskAgent({ ...claude, id: 'signed-out', command: 'codex' })).rejects.toThrow(
+    'Provider setup required',
+  )
+  expect(addRootTerminal).not.toHaveBeenCalled()
+  expect(setActiveSession).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
 })

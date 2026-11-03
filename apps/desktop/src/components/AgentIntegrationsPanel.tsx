@@ -1,3 +1,6 @@
+import ProviderAuthSection from './ProviderAuthSection'
+import type { AuthRequest } from '../lib/providerAuth'
+import { useStore } from '../store'
 import { decodeProfile } from '../lib/agentProfiles'
 import Dialog from './Dialog'
 import { useEffect, useRef, useState } from 'react'
@@ -72,12 +75,16 @@ export default function AgentIntegrationsPanel({
       if (token === request.current) setBusy(false)
     }
   }
+  const authRequest: AuthRequest = {
+    provider: provider.startsWith('claude') ? 'claude' : 'codex',
+    terminal: provider.startsWith('claude:')
+      ? (useStore.getState().devices.find((d) => d.command.includes(provider.slice(7))) ?? {
+          command: `PATCHBAY_AGENT_PROFILE=${provider.slice(7)} claude`,
+        })
+      : undefined,
+  }
   return (
-    <Dialog
-      title="Agent status integration"
-      subtitle="Status hooks for agent sessions"
-      onClose={onClose}
-    >
+    <Dialog title="Agent providers" subtitle="CLI sign-in and status hooks" onClose={onClose}>
       <label className="settings-field">
         Provider{' '}
         <select
@@ -98,6 +105,10 @@ export default function AgentIntegrationsPanel({
           <option value="codex">Codex</option>
         </select>
       </label>
+      <ProviderAuthSection key={provider} request={authRequest} />
+      <hr />
+      <strong>Status hooks</strong>
+      <p>Hooks can be installed independently of sign-in.</p>
       <p>
         <label className="settings-field">
           User hook source

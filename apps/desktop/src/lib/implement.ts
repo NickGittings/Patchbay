@@ -1,3 +1,4 @@
+import { requireDeviceAuth } from './providerAuth'
 import { useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type DeviceManifest, type TerminalSpec } from '../types'
 import { startTerminal } from './sessions'
@@ -17,7 +18,10 @@ export type TaskTerminalChoice =
   { kind: 'device'; device: DeviceManifest | null } | { kind: 'saved'; terminalId: string }
 
 /** A terminal already running this preset, so adding it again reuses that one. */
-function matching(terminals: TerminalSpec[], device: DeviceManifest) {
+function matching(
+  terminals: TerminalSpec[],
+  device: Pick<TerminalSpec, 'command' | 'kind' | 'adapter'>,
+) {
   return terminals.find(
     (t) =>
       t.kind === device.kind &&
@@ -34,9 +38,20 @@ function focus(componentId: string, terminalId: string, task: string | null) {
 }
 
 /** One implementation agent coordinates the task's complete selected scope. */
-export function startTaskAgent(device: DeviceManifest, task = useStore.getState().activeTask) {
+export async function startTaskAgent(
+  device: DeviceManifest,
+  task = useStore.getState().activeTask,
+) {
   const s = useStore.getState()
-  const terminalId = matching(s.rootTerminals, device)?.id ?? s.addRootTerminal(device)
+  const match = matching(s.rootTerminals, device)
+  if (!match || !s.sessions[sessionId(TASK_ROOT_SCOPE, match.id, task)]?.running)
+    await requireDeviceAuth(device, s.project?.id, task)
+  if (
+    useStore.getState().project?.id !== s.project?.id ||
+    useStore.getState().activeTask !== s.activeTask
+  )
+    throw new Error('The worktree changed. Click Start again in the worktree you want.')
+  const terminalId = match?.id ?? s.addRootTerminal(device)
   focus(TASK_ROOT_SCOPE, terminalId, task)
   return startTerminal(TASK_ROOT_SCOPE, terminalId, task)
 }
@@ -51,11 +66,32 @@ export async function addTaskTerminal(target: string, choice: TaskTerminalChoice
   if (target === TASK_ROOT_SCOPE) {
     if (choice.kind === 'saved') return
     if (device?.kind === 'agent') return startTaskAgent(device)
+    if (device) await requireDeviceAuth(device, s.project?.id, s.activeTask)
+    if (
+      useStore.getState().project?.id !== s.project?.id ||
+      useStore.getState().activeTask !== s.activeTask
+    )
+      throw new Error('The worktree changed. Your terminal selection was kept.')
     s.addRootTerminal(device ?? CUSTOM)
     return
   }
   const node = s.nodes.find((n) => n.id === target)
   if (!node) return
+  const preset =
+    device ??
+    (choice.kind === 'saved'
+      ? node.data.terminals.find((t) => t.id === choice.terminalId)
+      : undefined)
+  if (preset) {
+    const match = matching(node.data.terminals, preset)
+    if (!match || !s.sessions[sessionId(target, match.id, s.activeTask)]?.running)
+      await requireDeviceAuth(preset, s.project?.id, s.activeTask, target)
+  }
+  if (
+    useStore.getState().project?.id !== s.project?.id ||
+    useStore.getState().activeTask !== s.activeTask
+  )
+    throw new Error('The worktree changed. Your terminal selection was kept.')
   const terminalId =
     choice.kind === 'saved'
       ? choice.terminalId

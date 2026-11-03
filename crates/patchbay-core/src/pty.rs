@@ -371,7 +371,7 @@ fn remove_status_file(path: Option<&Path>) {
 
 /// Run through the user's login shell so PATH matches their terminal, even when
 /// the app is launched from the dock.
-fn shell_command(command: &str) -> CommandBuilder {
+pub(crate) fn shell_command(command: &str) -> CommandBuilder {
     if cfg!(windows) {
         windows_shell_command(command)
     } else {

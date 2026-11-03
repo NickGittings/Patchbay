@@ -105,8 +105,22 @@ PYTHON
 cat > "$dir/claude" <<'SHELL'
 #!/bin/sh
 set -eu
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  printf '{"loggedIn":true}\n'
+  exit 0
+fi
 # A Claude agent without hooks: it never reports a ready prompt.
 printf 'unhooked-ready\n'
 sleep 120
 SHELL
 chmod +x "$dir/claude"
+
+cat > "$dir/codex" <<SH
+#!/bin/sh
+if [ "\${1:-}" = login ] && [ "\${2:-}" = status ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exec python3 '$dir/agent.py' "\$@"
+SH
+chmod +x "$dir/codex"

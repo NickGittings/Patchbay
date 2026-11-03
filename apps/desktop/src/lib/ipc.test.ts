@@ -3,11 +3,30 @@ import { invoke } from '@tauri-apps/api/core'
 import { extraContext } from '../extensions/context'
 import type { Kickoff, Project, TerminalSpec } from '../types'
 import { taskRootStart } from './ipc'
+import { useStore } from '../store'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('../extensions/context', () => ({ extraContext: vi.fn(async () => []) }))
 
 beforeEach(() => vi.clearAllMocks())
+
+test('IPC keeps the original default project across the authentication await', async () => {
+  const original = useStore.getState().project
+  const { terminalWrite } = await import('./ipc')
+  try {
+    useStore.setState({ project: { id: 'original', root: '/original' } as never })
+    const pending = terminalWrite('session', 'input')
+    useStore.setState({ project: { id: 'selected-later', root: '/other' } as never })
+    await pending
+    expect(invoke).toHaveBeenCalledWith('terminal_write', {
+      projectId: 'original',
+      sessionId: 'session',
+      data: 'input',
+    })
+  } finally {
+    useStore.setState({ project: original })
+  }
+})
 
 test('taskRootStart sends each kickoff field in its backend location only', async () => {
   const project: Project = {

@@ -80,6 +80,15 @@
       ],
     })
     await smoke.startTerminal(id, 'reporter')
+    // A compound fixture with an explicit adapter has no verifiable auth command.
+    const continueSetup = await until('custom provider guidance', () =>
+      [...document.querySelectorAll('.provider-setup-overlay button')].find(
+        (b) => b.textContent.trim() === 'Continue anyway' && !b.disabled,
+      ),
+    )
+    assert((await smoke.sessionsList()).length === 0, 'custom command launched before confirmation')
+    continueSetup.click()
+    await smoke.startTerminal(id, 'reporter')
     const sid = smoke.sessionId(id, 'reporter')
     await until(
       'captured Claude usage',
@@ -135,7 +144,7 @@
       document.querySelector('[data-command-id="integrations"]'),
     ).then((b) => b.click())
     await until('integration dialog', () =>
-      document.querySelector('[aria-label="Agent status integration"]'),
+      document.querySelector('[aria-label="Agent providers"]'),
     )
     await until(
       'setup check',

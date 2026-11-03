@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 import './index.css'
 import App from './App'
 import ComponentWindow from './components/ComponentWindow'
+import ProviderSetupDialog from './components/ProviderSetupDialog'
 import { trackActiveWindow } from './lib/windows'
 
 const component = new URLSearchParams(window.location.search).get('component')
@@ -15,5 +16,8 @@ trackActiveWindow()
 if (import.meta.env.DEV) void import('./lib/smoke').then((m) => m.installSmokeHooks())
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>{component !== null ? <ComponentWindow id={component} /> : <App />}</StrictMode>,
+  <StrictMode>
+    {component !== null ? <ComponentWindow id={component} /> : <App />}
+    <ProviderSetupDialog />
+  </StrictMode>,
 )

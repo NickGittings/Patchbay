@@ -1,3 +1,4 @@
+import { requireDeviceAuth } from './providerAuth'
 import { projectStateOf, useStore } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type AutoBrief, type SessionRecord } from '../types'
 import { reviewFixTask } from './ipc'
@@ -44,9 +45,16 @@ export async function fixReviewFindings(
       'fix',
       agents.find((d) => d.adapter === record.metadata.adapter),
     )
-  const previous = s.activeTask
+  const selectedTask = s.activeTask
+  await requireDeviceAuth(device, projectId, task)
+  const current = useStore.getState()
+  if ((!target && current.project?.id !== projectId) || !projectStateOf(projectId))
+    throw new Error('Open the reviewed project first')
+  if (!target && current.activeTask !== selectedTask)
+    throw new Error('The selected worktree changed')
+  const previous = current.activeTask
   // Exact: a `null` here means no task holds the project folder, so nothing to redirect to.
-  if (!target && previous !== task) s.setActiveTask(task, true)
+  if (!target && previous !== task) current.setActiveTask(task, true)
   const switched = useStore.getState()
   if (!target && switched.activeTask !== task)
     throw new Error("Couldn't switch to the reviewed worktree")

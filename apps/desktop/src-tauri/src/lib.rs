@@ -22,6 +22,7 @@ mod agent_commands;
 mod layout;
 mod native_menu;
 mod orchestration;
+mod provider_auth;
 mod service;
 #[cfg(target_os = "windows")]
 mod window_controls;
@@ -55,6 +56,7 @@ pub(crate) fn component_window_label(project_id: &str, component_id: &str) -> St
 
 #[derive(Default)]
 struct AppState {
+    provider_auth: Arc<patchbay_core::provider_auth::AuthManager>,
     quitting: std::sync::atomic::AtomicBool,
     layout_dirty: std::sync::atomic::AtomicBool,
     service: Arc<service::Bridge>,
@@ -2518,6 +2520,10 @@ pub fn run() {
                     }
                 }
                 WindowEvent::Destroyed => {
+                    window
+                        .state::<AppState>()
+                        .provider_auth
+                        .cancel_prefix(&format!("{}/", window.label()));
                     let bridge = window.app_handle().state::<AppState>().service.clone();
                     let viewer = window.label().to_string();
                     std::thread::spawn(move || {
@@ -2596,6 +2602,11 @@ pub fn run() {
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 native_menu::update_native_menu,
                 agent_provider,
+                provider_auth::provider_auth_check,
+                provider_auth::provider_login_start,
+                provider_auth::provider_login_cancel,
+                provider_auth::provider_login_write,
+                provider_auth::provider_login_resize,
                 agent_hooks_check,
                 agent_hooks_configure,
                 usage_read,
@@ -2743,6 +2754,7 @@ pub fn run() {
                 }
             }
             if let RunEvent::Exit = event {
+                app.state::<AppState>().provider_auth.cancel_prefix("");
                 app.state::<AppState>()
                     .quitting
                     .store(true, std::sync::atomic::Ordering::Release);

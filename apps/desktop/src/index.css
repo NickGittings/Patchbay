@@ -3309,3 +3309,8 @@ kbd {
 .workspace-rail .usage-dot {
   background: #d4a448;
 }
+
+/* Provider setup overlays the launch dialog, whose selections stay mounted. */
+.provider-setup-overlay {
+  z-index: 1000;
+}

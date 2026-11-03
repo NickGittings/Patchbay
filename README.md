@@ -70,8 +70,9 @@ npm run tauri dev        # run the desktop app
 npm run tauri build      # or build a local app bundle
 ```
 
-For agent terminals, install and sign in to Claude Code or Codex separately, and make its
-`claude` or `codex` command available on your login-shell PATH.
+For agent terminals, install Claude Code or Codex and make its `claude` or `codex` command
+available on your login-shell PATH. Sign in through **Settings → Agent providers** or an
+external terminal using the same provider configuration.
 
 The CLI exercises the same core without the UI. After stopping the development app, return
 from `apps/desktop` to the repository root:
@@ -92,7 +93,7 @@ cargo run -p patchbay-cli -- context patchbay-core          # what an agent on t
    them included in [group startup or affected validation](#graph-actions).
 3. Open **Plan**, highlight the components you want to change, and start a planner terminal.
    Agree on a plan and check **Saved plan**. You can also paste and save a plan there. To capture
-   Claude's native plans, install its hooks through **Settings → Agent status integration…**.
+   Claude's native plans, install its hooks through **Settings → Agent providers**.
 4. With **Main worktree** active, open **Implement →** and choose **New worktree…** to name a task
    and create its branch/worktree, or **Implement in project folder** to work in the open folder
    (also available without Git). If a task is already active, choose **Implement in \<task\> →**
@@ -270,7 +271,7 @@ validation, review, fixes, and merge. It detects a starting stage from existing 
 choose another stage before starting. Supply a task goal, an agent preset, and a destination
 branch checked out in another worktree.
 
-Auto requires Claude or Codex status hooks installed through **Settings → Agent status integration…**.
+Auto requires Claude or Codex status hooks installed through **Settings → Agent providers**.
 For Codex, review and trust the hook definitions through `/hooks`. Auto uses native agent status
 to advance between stages and waits when an agent needs input. See
 [agent status setup](docs/agent-status-validation.md).
@@ -387,7 +388,15 @@ Patchbay context. Unsupported compound/wrapper commands report an error when the
 cannot be preserved safely. See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
 and [Codex CLI documentation](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
 
-**Settings → Agent status integration…** provides opt-in Claude/Codex status hooks. Install,
+**Settings → Agent providers** shows CLI authentication and status hooks separately. **Sign in**
+runs `claude auth login` or `codex login` in a temporary embedded terminal. The CLI stores its
+credentials; login output stays outside Patchbay's session history. Closing setup cancels the
+login process without logging out. New or resumed provider sessions check authentication first;
+existing running sessions stay usable. Setup preserves drafts and selections and requires another
+Start/Send click after sign-in. Unknown status offers Retry and Continue anyway; custom wrappers
+with explicit adapters receive guidance and require explicit continuation.
+
+Status hooks can be installed independently of sign-in. Install,
 check, or remove Patchbay-owned entries in the active user hook source while preserving
 existing settings. Codex definitions require review/trust through `/hooks`; Patchbay retains
 output-based Active/Quiet until native reporting is confirmed. Confirmed hooks report Working,
