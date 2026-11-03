@@ -147,5 +147,7 @@ pub fn restore_main(app: &AppHandle) -> CmdResult<()> {
             window.maximize().map_err(err)?;
         }
     }
+    #[cfg(target_os = "windows")]
+    crate::window_controls::verify(&window).map_err(err)?;
     Ok(())
 }
