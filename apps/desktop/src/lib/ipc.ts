@@ -636,3 +636,25 @@ export const usageStatusLineConfigure = (install: boolean, sourceOverride?: stri
     install,
     sourceOverride,
   })
+
+export const onValidationProposals = (handler: (event: { projectId: string }) => void) =>
+  listen<{ projectId: string }>('patchbay://validation-proposals', (e) => handler(e.payload))
+export const validationProposalRead = (projectId: string) =>
+  invoke<import('../types').PendingValidation | null>('validation_proposal_read', { projectId })
+export const validationProposalClear = (projectId: string, id: string) =>
+  invoke<boolean>('validation_proposal_clear', { projectId, id })
+export const validationAgentStart = (
+  project: Project,
+  terminal: TerminalSpec,
+  requestId: string,
+  resume: boolean,
+  componentIds: string[],
+) =>
+  invoke<string>('validation_agent_start', {
+    projectId: project.projectId,
+    project,
+    terminal,
+    requestId,
+    resume,
+    componentIds,
+  })

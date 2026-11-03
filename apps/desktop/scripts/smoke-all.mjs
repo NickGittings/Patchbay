@@ -26,6 +26,7 @@ const SCRIPTS = {
     { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-providers/project') },
     'providers-fixture.sh',
   ),
+  validation: smoke('validation.js'),
   profiles: smoke('profiles.js', { PATCHBAY_SMOKE_ROUTER_KEY: 'smoke-fixture-only' }),
   auto: {
     ...smoke(

@@ -854,8 +854,9 @@ pub fn plan_context(
 /// How implementation agents run checks and environments, in the syntax of the shell they use.
 fn implementation_actions(shell: Shell) -> String {
     format!(
-        "\nAfter changing a component, run its configured affected-component checks with {}. Report missing validators explicitly. Start configured environments when needed with {}, and stop them with {}. Use {}, {} and {} for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
+        "\nAfter changing a component, run its configured affected-component checks with {}. When downstream checks are unnecessary, use {} to validate only selected components. Report missing validators explicitly. Start configured environments when needed with {}, and stop them with {}. Use {}, {} and {} for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
         shell.agent_command("validate <componentId>"),
+        shell.agent_command("validate-selected <componentId> [componentId…]"),
         shell.agent_command("environment start <groupId>"),
         shell.agent_command("environment stop <groupId>"),
         shell.agent_command("context"),

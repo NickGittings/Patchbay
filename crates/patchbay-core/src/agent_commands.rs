@@ -26,6 +26,7 @@ pub trait Host {
     fn proposal_submitted(&self, launch: &LaunchContext);
     fn links_proposed(&self, launch: &LaunchContext);
     fn stack_proposed(&self, launch: &LaunchContext);
+    fn validation_proposed(&self, _launch: &LaunchContext) {}
 }
 
 pub struct ProjectScope {
@@ -314,6 +315,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 Action::Context {}
                     | Action::Status {}
                     | Action::ProposeLinks { .. }
+                    | Action::ProposeValidation { .. }
                     | Action::ProposeStack { .. }
             ),
         "Map detection can only read context and propose links or a stack"
@@ -440,6 +442,27 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 json!({"submitted":pending.links.len(),"alreadyOnMap":pending.skipped.len(),"applied":false}),
             )
         }
+        Action::ProposeValidation { proposal } => {
+            anyhow::ensure!(
+                launch.role == Role::Mapper(Proposes::Validation),
+                "Only validation discovery sessions can propose checks"
+            );
+            let selected: Vec<String> = call(
+                state,
+                Request::ValidationSelection {
+                    id: launch.agent_session.clone(),
+                },
+            )?;
+            let readable = scoped.access.restrict(scoped.project()?, &selected)?;
+            let pending = crate::validation_proposals::submit(
+                &readable,
+                &launch.agent_session,
+                &selected,
+                &proposal,
+            )?;
+            app.validation_proposed(launch);
+            Ok(json!({"submitted":pending.terminals.len(),"applied":false}))
+        }
         Action::ProposeStack { proposal } => {
             anyhow::ensure!(
                 launch.role == Role::Mapper(Proposes::Stack),
@@ -479,6 +502,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         }
         action @ (Action::EnvironmentStart { .. }
         | Action::Validate { .. }
+        | Action::ValidateSelected { .. }
         | Action::ValidateChanged { .. }) => {
             let request = ActionRequest::try_from(action)?;
             let validation = !matches!(request, ActionRequest::StartGroup { .. });
@@ -516,6 +540,9 @@ impl From<ActionRequest> for Action {
         match request {
             ActionRequest::StartGroup { group_id } => Self::EnvironmentStart { group_id },
             ActionRequest::ValidateAffected { component_id } => Self::Validate { component_id },
+            ActionRequest::ValidateSelected { component_ids } => {
+                Self::ValidateSelected { component_ids }
+            }
             ActionRequest::ValidateChanged { component_ids } => {
                 Self::ValidateChanged { component_ids }
             }
@@ -530,6 +557,9 @@ impl TryFrom<Action> for ActionRequest {
         match action {
             Action::EnvironmentStart { group_id } => Ok(Self::StartGroup { group_id }),
             Action::Validate { component_id } => Ok(Self::ValidateAffected { component_id }),
+            Action::ValidateSelected { component_ids } => {
+                Ok(Self::ValidateSelected { component_ids })
+            }
             Action::ValidateChanged { component_ids } => {
                 Ok(Self::ValidateChanged { component_ids })
             }
@@ -540,6 +570,7 @@ impl TryFrom<Action> for ActionRequest {
             | Action::EnvironmentStop { .. }
             | Action::Propose { .. }
             | Action::ProposeLinks { .. }
+            | Action::ProposeValidation { .. }
             | Action::ProposeStack { .. }
             | Action::SavePlan { .. }
             | Action::WithdrawPlan { .. } => anyhow::bail!("Unsupported graph command"),
@@ -718,6 +749,19 @@ mod tests {
         assert!(err.contains("Only dependency detection"), "{err}");
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
         assert!(err.contains("Only stack detection"), "{err}");
+        let validation = Action::ProposeValidation {
+            proposal: crate::validation_proposals::ValidationProposal {
+                version: 1,
+                terminals: vec![],
+                missing: vec![],
+            },
+        };
+        assert!(
+            dispatch(&host, &session, validation)
+                .unwrap_err()
+                .to_string()
+                .contains("Only validation discovery")
+        );
         // Each detection agent submits only what its own terminal detects.
         session.role = Role::Mapper(Proposes::Stack);
         let err = dispatch(&host, &session, propose())
@@ -738,7 +782,12 @@ mod tests {
         session.role = Role::Mapper(Proposes::Stack);
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
         assert!(err.contains("needs terminals"), "{err}");
-        for role in [Proposes::Links, Proposes::Stack, Proposes::Nothing] {
+        for role in [
+            Proposes::Links,
+            Proposes::Stack,
+            Proposes::Validation,
+            Proposes::Nothing,
+        ] {
             session.role = Role::Mapper(role);
             for action in [
                 Action::Validate {

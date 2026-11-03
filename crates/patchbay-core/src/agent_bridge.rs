@@ -70,6 +70,7 @@ pub enum Proposes {
     Links,
     /// Stack detection (`stack_proposals::STACK_TERMINAL`).
     Stack,
+    Validation,
     /// Any other terminal at `MAP_SCOPE`.
     Nothing,
 }
@@ -86,6 +87,7 @@ impl Role {
             crate::model::MAP_SCOPE => Self::Mapper(match terminal_id {
                 crate::link_proposals::MAP_TERMINAL => Proposes::Links,
                 crate::stack_proposals::STACK_TERMINAL => Proposes::Stack,
+                crate::validation_proposals::VALIDATION_TERMINAL => Proposes::Validation,
                 _ => Proposes::Nothing,
             }),
             _ => Self::Component,
@@ -117,6 +119,10 @@ pub enum Action {
         #[serde(rename = "componentId")]
         component_id: String,
     },
+    ValidateSelected {
+        #[serde(rename = "componentIds")]
+        component_ids: Vec<String>,
+    },
     ValidateChanged {
         #[serde(rename = "componentIds")]
         component_ids: Vec<String>,
@@ -142,6 +148,9 @@ pub enum Action {
         proposal: crate::link_proposals::LinkProposal,
     },
     /// A local stack a detection agent proposes for the user to review.
+    ProposeValidation {
+        proposal: crate::validation_proposals::ValidationProposal,
+    },
     ProposeStack {
         proposal: crate::stack_proposals::StackProposal,
     },

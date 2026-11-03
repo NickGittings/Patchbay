@@ -12,7 +12,9 @@ export function taskActionState(
       a.projectId === projectId &&
       a.task === task &&
       a.state === 'running' &&
-      ['environmentStart', 'validate', 'validateChanged'].includes(a.action.kind),
+      ['environmentStart', 'validate', 'validateChanged', 'validateSelected'].includes(
+        a.action.kind,
+      ),
   )
   return {
     graphActionBusy: !!running,
@@ -21,9 +23,11 @@ export function taskActionState(
         ? { kind: 'startGroup', groupId: running.action.groupId! }
         : running?.action.kind === 'validate'
           ? { kind: 'validateAffected', componentId: running.action.componentId! }
-          : running?.action.kind === 'validateChanged'
-            ? { kind: 'validateChanged', componentIds: running.action.componentIds! }
-            : null,
+          : running?.action.kind === 'validateSelected'
+            ? { kind: 'validateSelected', componentIds: running.action.componentIds! }
+            : running?.action.kind === 'validateChanged'
+              ? { kind: 'validateChanged', componentIds: running.action.componentIds! }
+              : null,
   }
 }
 
