@@ -25,7 +25,8 @@ pub use briefing::with_pending_briefing;
 // predecessor. Protocol 13 added explicit forced prompt delivery; 14 requires the
 // provider-specific force checks so a newer client cannot reuse an unsafe older service.
 // Protocol 15 retains scan, coordinator and worker briefings; 16 retrieves planner scan options.
-pub const PROTOCOL: u32 = 16;
+// Protocol 17 resolves profile credentials at spawn, including resumed sessions.
+pub const PROTOCOL: u32 = 17;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;

@@ -1,3 +1,4 @@
+import { decodeProfile, profileHookProvider } from './agentProfiles'
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useStore } from '../store'
@@ -5,7 +6,7 @@ import type { AgentIntegration, TerminalSpec } from '../types'
 import { agentHooksCheck, agentProvider } from './ipc'
 import { useRail } from './rail'
 
-export type HookProvider = 'claude' | 'codex'
+export type HookProvider = 'claude' | 'codex' | `claude:${string}`
 
 /** Installed, enabled and with their reporter present: the only hooks that report status. */
 export const hooksUsable = (
@@ -18,6 +19,9 @@ export const hooksUsable = (
  * notices, Auto's start) reads the file the hooks were installed in.
  */
 export function hookSource(provider: HookProvider): string | undefined {
+  if (provider.startsWith('claude:')) {
+    return decodeProfile(provider.slice(7)).configDir.replace(/[\\/]$/, '') + '/settings.json'
+  }
   const sources = useStore.getState().workspaceSettings.hookSources
   const source =
     sources && typeof sources === 'object'
@@ -36,7 +40,7 @@ export function setHookSource(
     return
   }
   if (result) {
-    ++requests[provider]
+    requests[provider] = (requests[provider] ?? 0) + 1
     inflight.delete(provider)
     checked[provider] = { key: `${provider}\0${source ?? ''}`, atMs: Date.now() }
     useAgentHooks.setState({ [provider]: hooksUsable(result) })
@@ -96,7 +100,7 @@ export type HooksCheck = boolean | 'failed'
 export const useAgentHooks = create<Partial<Record<HookProvider, HooksCheck>>>(() => ({}))
 /** How long a check answers later mounts before they ask again. */
 export const HOOKS_FRESH_MS = 30_000
-const requests: Record<HookProvider, number> = { claude: 0, codex: 0 }
+const requests: Partial<Record<HookProvider, number>> = { claude: 0, codex: 0 }
 const inflight = new Map<HookProvider, { key: string; promise: Promise<void> }>()
 const checked: Partial<Record<HookProvider, { key: string; atMs: number }>> = {}
 /**
@@ -117,7 +121,7 @@ export function refreshAgentHooks(provider: HookProvider, force = false): Promis
     [true, false].includes(useAgentHooks.getState()[provider] as boolean)
   )
     return Promise.resolve()
-  const token = ++requests[provider]
+  const token = (requests[provider] = (requests[provider] ?? 0) + 1)
   if (last?.key !== key) useAgentHooks.setState({ [provider]: undefined })
   const check = (async () => {
     let result: HooksCheck
@@ -145,10 +149,17 @@ export function rememberAgentHooks(
   value: AgentIntegration,
 ) {
   if (hookSource(provider) !== source) return
-  ++requests[provider]
+  requests[provider] = (requests[provider] ?? 0) + 1
   inflight.delete(provider)
   checked[provider] = { key: `${provider}\0${source ?? ''}`, atMs: Date.now() }
   useAgentHooks.setState({ [provider]: hooksUsable(value) })
+}
+
+/** Profile snapshots can differ while sharing the same installed hook file. */
+export function rememberProfileHooks(source: string, value: AgentIntegration) {
+  for (const provider of Object.keys(useAgentHooks.getState()) as HookProvider[]) {
+    if (provider.startsWith('claude:')) rememberAgentHooks(provider, source, value)
+  }
 }
 /** A native provider report remains evidence of hooks after Esc revokes its readiness. */
 export const sessionReportedHooks = (session: import('../types').SessionState | undefined) =>
@@ -192,7 +203,7 @@ export const integrationsSetting = (provider?: HookProvider) =>
  */
 export function integrationsProvider(setting: string | null): HookProvider | null | undefined {
   if (setting === 'integrations') return null
-  const provider = setting?.match(/^integrations:(claude|codex)$/)?.[1]
+  const provider = setting?.match(/^integrations:(claude(?::[\w-]+)?|codex)$/)?.[1]
   return provider ? (provider as HookProvider) : undefined
 }
 export function openIntegrations(provider?: HookProvider) {
@@ -241,7 +252,7 @@ export function presetProvider(
   inferred: Record<string, HookProvider | null>,
 ): HookProvider | null | undefined {
   if (!preset) return undefined
-  return preset.adapter ?? inferred[preset.command]
+  return profileHookProvider(preset.command) ?? preset.adapter ?? inferred[preset.command]
 }
 /** Each of `presets`' providers, inferring those without an `adapter`. */
 export function usePresetProviders(presets: readonly (Preset | undefined)[]) {

@@ -111,6 +111,13 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       run: setting('integrations'),
     },
     {
+      id: 'profiles',
+      title: 'Agent profiles…',
+      group: 'settings',
+      enabled: true,
+      run: setting('profiles'),
+    },
+    {
       id: 'roles',
       title: 'Agent roles',
       group: 'settings',

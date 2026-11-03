@@ -1,3 +1,4 @@
+import { profileHookProvider } from '../lib/agentProfiles'
 import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -82,14 +83,18 @@ export default function SimpleComposer({
   const starts =
     !recipient && stage === 'plan' ? roleDevice(s.devices, s.agentRoles, 'plan') : undefined
   const [startProvider] = usePresetProviders([starts])
-  const provider = recipient ? (recipient.metadata.adapter ?? null) : startProvider
+  const provider = recipient
+    ? (profileHookProvider(recipient.spec.command) ?? recipient.metadata.adapter ?? null)
+    : startProvider
   const hooks = useAgentHooksInstalled(provider ? [provider] : [])
   // Installed hooks, not `authoritative`, which lapses on Esc and is unset until the first hook.
   const installed = provider ? hooks[provider] : undefined
   const status = composerStatus({
     pending,
     connected: s.serviceConnected,
-    provider,
+    provider: provider?.startsWith('claude:')
+      ? 'claude'
+      : (provider as 'claude' | 'codex' | null | undefined),
     installed,
     session: state,
     ready,

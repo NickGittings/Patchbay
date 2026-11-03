@@ -452,3 +452,25 @@ By contributing, you agree that your contributions are licensed under the projec
 ## License
 
 Patchbay is released under the [MIT License](LICENSE).
+
+### Agent profiles and OpenRouter
+
+Open **Settings → Agent profiles…** to create a local Claude Code profile. Choose
+**Claude Code via OpenRouter**, enter a full OpenRouter model ID, and provide an API key.
+Keys are stored in the OS credential manager, separately from project and workspace files.
+Alternatively, reference an environment variable available to the session helper; restart
+that helper after changing its environment. Claude Code must already be installed.
+
+Leave the configuration directory blank for a fresh, isolated directory. A reused directory
+with a cached Anthropic login may require logging out of Claude Code for that directory.
+Save the profile, install its status hooks, and select it in **Agent roles** or an agent picker.
+One profile selects one model; duplicate profiles to configure additional models. Duplicates
+receive a fresh directory and require their own credential selection.
+
+Saving performs local validation only. Verify actual routing in OpenRouter's activity dashboard.
+Profiles retain the Claude Code agent runtime, so model compatibility depends on Claude Code.
+OpenRouter profiles do not use Claude subscription usage gates; OpenRouter billing is external.
+Archiving hides a profile from new-agent pickers while existing sessions retain their recorded
+configuration. Resuming uses the recorded model and directory with the current saved key.
+Advanced environment values are non-secret and are retained in launch commands; use the API-key
+field for credentials. On Linux, OS credential storage requires a running Secret Service.

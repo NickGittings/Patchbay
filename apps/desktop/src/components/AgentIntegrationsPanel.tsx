@@ -1,3 +1,4 @@
+import { decodeProfile } from '../lib/agentProfiles'
 import Dialog from './Dialog'
 import { useEffect, useRef, useState } from 'react'
 import { agentHooksCheck, agentHooksConfigure } from '../lib/ipc'
@@ -90,6 +91,9 @@ export default function AgentIntegrationsPanel({
             setBusy(true)
           }}
         >
+          {provider.startsWith('claude:') && (
+            <option value={provider}>{decodeProfile(provider.slice(7)).name}</option>
+          )}
           <option value="claude">Claude Code</option>
           <option value="codex">Codex</option>
         </select>
@@ -101,7 +105,7 @@ export default function AgentIntegrationsPanel({
             title="Match the provider’s active user configuration, including CLAUDE_CONFIG_DIR or CODEX_HOME overrides."
             aria-label="User hook source"
             value={source}
-            disabled={busy}
+            disabled={busy || provider.startsWith('claude:')}
             onChange={(e) => {
               setSource(e.target.value)
               setResult(undefined)

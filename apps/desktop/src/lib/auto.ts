@@ -4,6 +4,7 @@ import {
   driveProviderRuns,
   providerRuns,
 } from './orchestration'
+import { profileHookProvider, commandProfile } from './agentProfiles'
 import { refreshUsage, usageBlock } from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
@@ -594,7 +595,9 @@ export class AutoHooksRequired extends Error {
 /** Resolves the preset's provider once its status integration is usable. */
 export async function checkAutoHooks(deviceId: string): Promise<HookProvider> {
   const device = agentDevices(useStore.getState().devices).find((d) => d.id === deviceId)
-  const provider = device ? await agentProvider(device) : null
+  const provider = device
+    ? (profileHookProvider(device.command) ?? (await agentProvider(device)))
+    : null
   if (!provider)
     throw new AutoConfigurationError(
       'Choose an agent preset with Claude or Codex status integration',
@@ -1724,7 +1727,16 @@ async function drive(projectId: string, task: string | null) {
       const usage = await reading
       if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
       for (const provider of providers) {
-        const blocked = usageBlock(usage, provider, useStore.getState().usageSettings, Date.now())
+        const blocked = usageBlock(
+          usage,
+          provider?.startsWith('claude:')
+            ? commandProfile(reviewers[providers.indexOf(provider)].command)?.openRouter
+              ? null
+              : 'claude'
+            : (provider as 'claude' | 'codex' | null),
+          useStore.getState().usageSettings,
+          Date.now(),
+        )
         if (blocked) {
           pause(blocked)
           return

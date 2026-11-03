@@ -8,6 +8,7 @@ import { implementPlannerPlan } from './planHandoff'
 import { graphActionIn } from './actions'
 import { startReviewAgents } from './reviewAgents'
 import { reviewRead } from './ipc'
+import { listAgentProfiles, saveAgentProfile } from './agentProfiles'
 import { refreshUsage, useUsage } from './usage'
 import { usageRead, usageStatusLineCheck, usageStatusLineConfigure } from './ipc'
 import { selectPanel, selectRailView, useRail } from './rail'
@@ -149,6 +150,8 @@ const hooks = {
   selectPanel,
   selectRailView,
   rail: useRail,
+  listAgentProfiles,
+  saveAgentProfile,
   stubNotifications: window.__patchbaySmokeRun === true,
   notificationLog: [] as NotificationDelivery[],
   startAuto,

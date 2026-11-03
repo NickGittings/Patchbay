@@ -820,8 +820,30 @@ impl PtyManager {
             .unwrap_or(DEFAULT_SIZE);
         let pair = native_pty_system().openpty(pty_size(size))?;
 
-        let mut cmd = shell_command(&spec.command);
+        let profile = crate::profiles::from_command(&spec.command)?;
+        let mut runtime_command = spec.command.clone();
+        if cfg!(windows) && profile.is_some() {
+            let (_, range) = crate::context::launch_program(&spec.command)
+                .ok_or_else(|| anyhow!("Invalid profile command"))?;
+            runtime_command = spec.command[range.start..].to_owned();
+        }
+        let mut cmd = shell_command(&runtime_command);
+        if cfg!(windows) && profile.is_some() {
+            for word in crate::context::launch_words(&spec.command).unwrap_or_default() {
+                let Some((key, value)) = word.split_once('=') else {
+                    break;
+                };
+                if !key.starts_with("PATCHBAY_") {
+                    cmd.env(key, value);
+                }
+            }
+        }
         cmd.cwd(&spec.cwd);
+        cmd.env_remove("PATCHBAY_PROFILE_TOKEN");
+        if let Some(token) = crate::profiles::launch_token(&spec.command)? {
+            cmd.env("ANTHROPIC_AUTH_TOKEN", &token);
+            cmd.env("PATCHBAY_PROFILE_TOKEN", token);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         // A terminal started from inside an agent session would otherwise inherit its token
@@ -832,6 +854,7 @@ impl PtyManager {
         // User launch options cannot redirect the private reporter transport.
         for (k, v) in spec.env.iter().filter(|(k, _)| {
             !k.eq_ignore_ascii_case(COMMAND_ENV)
+                && !k.eq_ignore_ascii_case("PATCHBAY_PROFILE_TOKEN")
                 && ![
                     STATUS_ENV,
                     crate::agent_hooks::SESSION_ENV,
@@ -1551,6 +1574,45 @@ mod tests {
             }
         }
         assert_eq!(snapshot.end, end);
+    }
+
+    #[test]
+    fn profile_token_is_resolved_at_spawn_without_entering_the_session_spec() {
+        let profile: crate::profiles::Profile = serde_json::from_value(serde_json::json!({
+            "id": "fixture", "name": "Router", "executable": "/bin/sh", "configDir": "/tmp/isolated-profile",
+            "model": "", "openRouter": true, "credentialEnv": "PATH"
+        })).unwrap();
+        let command = format!(
+            "{} -c {}",
+            crate::profiles::command(&profile).unwrap(),
+            crate::context::quote_argument(
+                "test -n \"$ANTHROPIC_AUTH_TOKEN\" && test -z \"$ANTHROPIC_API_KEY\" && test \"$CLAUDE_CONFIG_DIR\" = /tmp/isolated-profile"
+            )
+        );
+        let spec = SessionSpec {
+            id: "profile-test".into(),
+            command,
+            resume_command: None,
+            rerun_on_resume: false,
+            owns_briefing: false,
+            exclusive_cwd: false,
+            merge_source: None,
+            cwd: std::env::temp_dir(),
+            env: BTreeMap::new(),
+            ready_when: String::new(),
+            service: false,
+            notice: None,
+            dirs: Vec::new(),
+        };
+        assert!(
+            !serde_json::to_string(&spec)
+                .unwrap()
+                .contains(&std::env::var("PATH").unwrap())
+        );
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn(spec, sink.clone()).unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
     }
 
     #[test]

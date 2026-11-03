@@ -39,7 +39,9 @@ impl Adapter {
     pub fn resume(self, command: &str, id: &str, cwd: &Path) -> Result<String> {
         let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
         let history = match self {
-            Self::Claude => std::env::var_os("CLAUDE_CONFIG_DIR")
+            Self::Claude => crate::profiles::from_command(command)?
+                .map(|p| std::ffi::OsString::from(p.config_dir))
+                .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| home.join(".claude"))
                 .join("projects"),
@@ -196,6 +198,41 @@ pub fn valid_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_resume_uses_its_isolated_history_and_preserves_model() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let conversation = "11111111-2222-3333-4444-555555555555";
+        std::fs::create_dir_all(dir.join("projects")).unwrap();
+        std::fs::write(
+            dir.join("projects").join(format!("{conversation}.jsonl")),
+            "{}",
+        )
+        .unwrap();
+        let profile: crate::profiles::Profile = serde_json::from_value(serde_json::json!({
+            "id": "fixture", "name": "Router", "executable": "claude", "configDir": dir,
+            "model": "anthropic/example", "openRouter": true
+        }))
+        .unwrap();
+        let command = crate::profiles::command(&profile).unwrap();
+        let resumed = Adapter::Claude
+            .resume(&command, conversation, &dir)
+            .unwrap();
+        assert!(resumed.contains("--resume"));
+        assert!(
+            crate::context::launch_words(&resumed)
+                .unwrap()
+                .contains(&"anthropic/example".to_owned())
+        );
+        assert_eq!(
+            crate::profiles::from_command(&resumed)
+                .unwrap()
+                .unwrap()
+                .config_dir,
+            profile.config_dir
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn captures_only_explicit_resume_ids() {
         let id = "0199a213-81c0-7800-8aa1-bbab2a035a53";

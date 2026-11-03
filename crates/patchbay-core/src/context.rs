@@ -304,18 +304,49 @@ fn sh_tokens(command: &str, raw: bool) -> Option<Vec<String>> {
 /// cmd.exe knows only double quotes, which a backslash never escapes, and
 /// escapes operators with `^`. Single quotes are literal, so `'a & b'` is
 /// compound. `%VAR%` arguments are kept, like `$VAR` on Unix.
+/// Profile assignment values use generated MSVC quoting; they are extracted
+/// into the process environment before cmd.exe runs the remaining command.
 fn cmd_tokens(command: &str, raw: bool) -> Option<Vec<String>> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quoted = false;
     let mut started = false;
     let mut start = 0;
-    for (index, c) in command.char_indices() {
+    let mut profile_assignments = command.trim_start().starts_with("PATCHBAY_AGENT_PROFILE=");
+    let mut assignment = false;
+    let mut chars = command.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
         if !started && !c.is_whitespace() {
             start = index;
+            assignment = profile_assignments
+                && command[index..].split_once('=').is_some_and(|(name, _)| {
+                    !name.is_empty()
+                        && name.bytes().enumerate().all(|(i, c)| {
+                            c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                        })
+                });
+            profile_assignments = assignment;
         }
         if c == '\n' || c == '\r' {
             return None;
+        } else if assignment && c == '\\' {
+            let mut slashes = 1;
+            while chars.peek().is_some_and(|(_, c)| *c == '\\') {
+                chars.next();
+                slashes += 1;
+            }
+            if chars.peek().is_some_and(|(_, c)| *c == '"') {
+                chars.next();
+                token.extend(std::iter::repeat_n('\\', slashes / 2));
+                if slashes % 2 == 1 {
+                    token.push('"');
+                } else {
+                    quoted = !quoted;
+                }
+            } else {
+                token.extend(std::iter::repeat_n('\\', slashes));
+            }
+            started = true;
         } else if c == '"' {
             quoted = !quoted;
             started = true;
@@ -400,7 +431,15 @@ fn review_style_in(command: &str, shell: Shell) -> ReviewStyle {
     let Some(i) = program_index(&tokens) else {
         return ReviewStyle::Patchbay;
     };
-    match agent_named(&tokens[i]) {
+    match if crate::profiles::from_command(command)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        Some(Agent::Claude)
+    } else {
+        agent_named(&tokens[i])
+    } {
         Some(Agent::Claude) => ReviewStyle::Claude,
         Some(Agent::Codex) if codex_global_options(&tokens[i + 1..]) => ReviewStyle::Codex,
         _ => ReviewStyle::Patchbay,
@@ -460,6 +499,13 @@ pub fn agent_provider(terminal: &TerminalSpec) -> Option<crate::adapters::Adapte
 /// counts as Claude or Codex also reports as one.
 #[must_use]
 pub fn command_provider(command: &str) -> Option<crate::adapters::Adapter> {
+    if crate::profiles::from_command(command)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Some(crate::adapters::Adapter::Claude);
+    }
     let tokens = command_tokens(command, Shell::current())?;
     let program = &tokens[program_index(&tokens)?];
     // Retain provider-named wrapper scripts as well as native executables. Briefing
@@ -1494,9 +1540,20 @@ fn brief_agent(
         ));
     };
     let invocation = program_index(&tokens).map(|i| (tokens[i].as_str(), &tokens[i + 1..]));
-    let Some((agent, args)) =
-        invocation.and_then(|(program, args)| Some((agent_named(program)?, args)))
-    else {
+    let Some((agent, args)) = invocation.and_then(|(program, args)| {
+        Some((
+            if crate::profiles::from_command(command)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                Agent::Claude
+            } else {
+                agent_named(program)?
+            },
+            args,
+        ))
+    }) else {
         let program = invocation.map_or("this command", |(program, _)| program);
         return Some(format!(
             "Briefing not injected automatically for {program} — it's at {var}."
@@ -1955,8 +2012,12 @@ pub(crate) fn launch_words(command: &str) -> Option<Vec<String>> {
 }
 /// The actual executable's token index and original byte range, after env/assignments.
 pub(crate) fn launch_program(command: &str) -> Option<(usize, std::ops::Range<usize>)> {
-    let index = program_index(&launch_words(command)?)?;
-    let raw = match Shell::current() {
+    launch_program_in(command, Shell::current())
+}
+
+fn launch_program_in(command: &str, shell: Shell) -> Option<(usize, std::ops::Range<usize>)> {
+    let index = program_index(&command_tokens(command, shell)?)?;
+    let raw = match shell {
         Shell::Unix => sh_tokens(command, true)?,
         Shell::Windows => cmd_tokens(command, true)?,
     };
@@ -3200,6 +3261,31 @@ mod tests {
                 agent_program(command, Shell::Windows),
                 expected,
                 "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_profile_assignments_preserve_msvc_quoted_values_and_executable_range() {
+        for value in [
+            r#"--require "C:\Program Files\tools\module.js""#,
+            r#"a\" b & c"#,
+            "C:\\Program Files\\tools\\",
+            "",
+        ] {
+            let executable = r#""C:\Program Files\Claude\claude.exe""#;
+            let command = format!(
+                "PATCHBAY_AGENT_PROFILE=snapshot NODE_OPTIONS={} {executable} --resume session",
+                cmd_quote(value),
+            );
+            let words = command_tokens(&command, Shell::Windows).unwrap();
+            assert_eq!(words[1], format!("NODE_OPTIONS={value}"));
+            let (index, range) = launch_program_in(&command, Shell::Windows).unwrap();
+            assert_eq!(index, 2);
+            assert_eq!(&command[range.clone()], executable);
+            assert_eq!(
+                &command[range.start..],
+                format!("{executable} --resume session"),
             );
         }
     }

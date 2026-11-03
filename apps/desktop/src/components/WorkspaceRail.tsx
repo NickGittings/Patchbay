@@ -31,6 +31,7 @@ import AttentionMenu from './status/AttentionMenu'
 import ExtensionMenu from '../extensions/ExtensionMenu'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { integrationsProvider, integrationsSetting } from '../lib/agentHooks'
+import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import Menu, { MenuItem } from './Menu'
@@ -337,6 +338,9 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
           initialProvider={integrationsProvider(settings) ?? undefined}
           onClose={() => useRail.setState({ settings: null })}
         />
+      )}
+      {settings === 'profiles' && (
+        <AgentProfilesPanel onClose={() => useRail.setState({ settings: null })} />
       )}
       {settings === 'roles' && project && (
         <AgentRolesPanel onClose={() => useRail.setState({ settings: null })} />
