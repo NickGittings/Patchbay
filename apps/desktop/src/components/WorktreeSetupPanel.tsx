@@ -2,22 +2,27 @@ import { useState } from 'react'
 import { useStore } from '../store'
 import { saveMapNow } from '../lib/mapSave'
 import { enableWorktreeSetup } from '../lib/ipc'
-import Dialog from './Dialog'
+import { mapEditsBlocked } from '../lib/mapSave'
 
-export default function WorktreeSetupPanel({ onClose }: { onClose: () => void }) {
+export default function WorktreeSetupPanel() {
   const project = useStore((s) => s.project)
-  const [command, setCommand] = useState(project?.worktreeSetup?.command ?? '')
+  const [draft, setDraft] = useState<string | null>(null)
+  const command = draft ?? project?.worktreeSetup?.command ?? ''
+  const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   return (
-    <Dialog title="Worktree setup" onClose={onClose}>
+    <section className="panel-section" aria-label="Worktree preparation">
+      <strong>Worktree preparation</strong>
       <p>
-        Run once at each new worktree’s root, before implementation. Scripts can use
-        PATCHBAY_PROJECT_ROOT and PATCHBAY_WORKTREE_ROOT.
+        Run once at each new worktree’s root, before implementation. Saving applies to new tasks;
+        existing tasks keep their captured setup. Scripts can use PATCHBAY_PROJECT_ROOT and
+        PATCHBAY_WORKTREE_ROOT.
       </p>
       <label>
         Command
-        <input value={command} onChange={(e) => setCommand(e.target.value)} />
+        <input value={command} onChange={(e) => setDraft(e.target.value)} />
       </label>
       <p>
         Saving records this command in patchbay.json. Enable this exact command locally to allow
@@ -25,10 +30,13 @@ export default function WorktreeSetupPanel({ onClose }: { onClose: () => void })
       </p>
       <pre>{command || 'No setup configured'}</pre>
       {error && <p role="alert">{error}</p>}
+      {message && <p role="status">{message}</p>}
       <button
-        disabled={busy}
+        disabled={busy || blocked}
         onClick={() => {
           if (!project) return
+          setError('')
+          setMessage('')
           setBusy(true)
           useStore.setState({
             project: { ...project, worktreeSetup: command.trim() ? { command } : undefined },
@@ -36,8 +44,10 @@ export default function WorktreeSetupPanel({ onClose }: { onClose: () => void })
           })
           void saveMapNow(project.id)
             .then((saved) => {
-              if (saved) onClose()
-              else setError('The project could not be saved. Check its map saving status.')
+              if (saved) {
+                setDraft(null)
+                setMessage('Preparation saved for new tasks.')
+              } else setError('The project could not be saved. Check its map saving status.')
             })
             .catch((e) => setError(String(e)))
             .finally(() => setBusy(false))
@@ -46,18 +56,20 @@ export default function WorktreeSetupPanel({ onClose }: { onClose: () => void })
         Save
       </button>
       <button
-        disabled={busy || !command.trim() || !project}
+        disabled={busy || blocked || !command.trim() || !project}
         onClick={() => {
           if (!project) return
+          setError('')
+          setMessage('')
           setBusy(true)
           void enableWorktreeSetup(project.id, command)
-            .then(() => setError('Enabled locally for this exact command.'))
+            .then(() => setMessage('Enabled locally for this exact command.'))
             .catch((e) => setError(String(e)))
             .finally(() => setBusy(false))
         }}
       >
         Enable exact command locally
       </button>
-    </Dialog>
+    </section>
   )
 }

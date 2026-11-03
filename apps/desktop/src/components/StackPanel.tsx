@@ -1,3 +1,5 @@
+import WorktreeSetupPanel from './WorktreeSetupPanel'
+import WorktreeSetupStatus from './tasks/WorktreeSetupStatus'
 import { taskPassed } from '../lib/autoSettings'
 import Menu, { MenuItem } from './Menu'
 import { useMemo, useState } from 'react'
@@ -305,6 +307,7 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
   const busy = useStackProposals((s) => !!s.busy[projectId])
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
+  const [includeSetup, setIncludeSetup] = useState(true)
   const chosen = pending.terminals.filter((t) => !unticked.has(proposedKey(t)))
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
   const terminalOf = (component: string, id: string) =>
@@ -315,6 +318,24 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
         Proposed stack · {pending.name}
       </strong>
       <div className="validator-suggestions">
+        {pending.worktreeSetup && (
+          <label className="validator-suggestion">
+            <input
+              type="checkbox"
+              checked={includeSetup}
+              onChange={(e) => setIncludeSetup(e.target.checked)}
+            />
+            <span className="validator-suggestion-details">
+              <span>Worktree preparation (for new tasks)</span>
+              <code>{pending.worktreeSetup.command}</code>
+              <span className="hint">{pending.worktreeSetup.reason}</span>
+              <span className="hint">
+                Saves or replaces the preparation command. Enable the exact command locally to allow
+                execution.
+              </span>
+            </span>
+          </label>
+        )}
         {pending.terminals.map((t) => {
           const key = proposedKey(t)
           const existing = t.terminal ? terminalOf(t.component, t.terminal) : undefined
@@ -353,9 +374,9 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
       <div className="row">
         <button
           className="primary"
-          disabled={busy || blocked || !chosen.length}
+          disabled={busy || blocked || (!chosen.length && !(includeSetup && pending.worktreeSetup))}
           title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
-          onClick={() => void applyStackProposal(pending, chosen, projectId)}
+          onClick={() => void applyStackProposal(pending, chosen, projectId, includeSetup)}
         >
           Apply
         </button>
@@ -393,7 +414,7 @@ function StackAgent({ projectId, pending }: { projectId: string; pending?: Pendi
                 ? 'Locked until the proposed stack is applied or discarded'
                 : blocked
                   ? 'Resolve the map conflict or project recovery first'
-                  : 'An agent reads the project (README, scripts, docker-compose…) and proposes a stack for you to review'
+                  : 'An agent reads the project and proposes worktree preparation and services for you to review'
           }
           onClick={() => preset && void startStackAgent(projectId, preset)}
         >
@@ -464,6 +485,7 @@ function NewStackForm() {
  * dependencies first when ordered, each waiting until it is ready.
  */
 export default function StackPanel() {
+  const task = useStore((s) => s.activeTask)
   const projectId = useStore((s) => s.project?.id)
   const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
   const groups = useStore((s) => s.groups)
@@ -485,6 +507,8 @@ export default function StackPanel() {
       {projectId && pending && (
         <StackReview key={pending.id} pending={pending} projectId={projectId} />
       )}
+      <WorktreeSetupPanel />
+      <WorktreeSetupStatus key={task ?? 'main'} />
       <StackSuggestions />
       {groups.map((group) => (
         <GroupEditor key={group.id} group={group} />

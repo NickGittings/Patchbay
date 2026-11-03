@@ -127,6 +127,7 @@ export async function applyStackProposal(
   pending: PendingStack,
   chosen: ProposedStackTerminal[],
   projectId: string,
+  includeSetup = false,
 ) {
   const s = useStore.getState()
   if (s.project?.id !== projectId)
@@ -146,10 +147,16 @@ export async function applyStackProposal(
     return patch ? [{ t, current, patch }] : []
   })
   // Nothing to apply: keep the proposal, so it can still be read or discarded.
-  if (!edits.length)
+  const setup = includeSetup ? pending.worktreeSetup : undefined
+  if (!edits.length && !setup)
     return s.setMessage(
       'None of the chosen terminals can be applied: they were removed, renamed, or are no longer task terminals (or are Validation ones).',
     )
+  if (setup)
+    useStore.setState({
+      project: { ...s.project, worktreeSetup: { command: setup.command } },
+      dirty: true,
+    })
   const members: string[] = []
   for (const { t, current, patch } of edits) {
     s.updateTerminal(t.component, current?.id ?? s.addTerminal(t.component, null, false), patch)

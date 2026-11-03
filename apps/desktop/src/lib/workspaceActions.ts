@@ -118,13 +118,6 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       run: setting('profiles'),
     },
     {
-      id: 'worktree-setup',
-      title: 'Worktree setup…',
-      group: 'settings',
-      enabled: available,
-      run: setting('worktree-setup'),
-    },
-    {
       id: 'roles',
       title: 'Agent roles',
       group: 'settings',

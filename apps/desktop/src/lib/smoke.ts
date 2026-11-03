@@ -40,7 +40,14 @@ import { executeExtensionCommand } from '../extensions/host'
 // Dev-only handles for smoke/popout.js, loaded from main.tsx when import.meta.env.DEV.
 import { emit, listen } from '@tauri-apps/api/event'
 import { useStore } from '../store'
-import { componentContext, openProject, terminalReset, terminalWrite, terminalAttach } from './ipc'
+import {
+  componentContext,
+  openProject,
+  reloadProject,
+  terminalReset,
+  terminalWrite,
+  terminalAttach,
+} from './ipc'
 import { resetSessions, startTerminal, stopTerminal, reconcileSessions } from './sessions'
 import {
   editorOpen,
@@ -186,6 +193,7 @@ const hooks = {
   saveMap,
   flushMapSaves,
   saveProject,
+  reloadProject,
   agentHooksCheck,
   agentHooksConfigure,
   reviewRescan,

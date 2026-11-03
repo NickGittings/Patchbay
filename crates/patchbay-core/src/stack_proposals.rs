@@ -41,6 +41,14 @@ pub struct ProposedTerminal {
     pub reason: String,
 }
 
+/// One-time preparation at each new worktree root, separate from service startup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedSetup {
+    pub command: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StackProposal {
@@ -49,6 +57,8 @@ pub struct StackProposal {
     #[serde(default)]
     pub ordered_startup: bool,
     pub terminals: Vec<ProposedTerminal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_setup: Option<ProposedSetup>,
 }
 
 /// A submission awaiting review. `id` is unique per submission, so clearing one
@@ -62,6 +72,8 @@ pub struct Pending {
     pub name: String,
     pub ordered_startup: bool,
     pub terminals: Vec<ProposedTerminal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_setup: Option<ProposedSetup>,
 }
 
 impl Submission for Pending {
@@ -98,7 +110,20 @@ impl StackProposal {
             !self.name.trim().is_empty() && one_line(&self.name, NAME_LIMIT),
             "Name the stack in one line of at most {NAME_LIMIT} characters"
         );
-        ensure!(!self.terminals.is_empty(), "The proposal needs terminals");
+        ensure!(
+            !self.terminals.is_empty() || self.worktree_setup.is_some(),
+            "The proposal needs terminals or worktree preparation"
+        );
+        if let Some(setup) = &self.worktree_setup {
+            ensure!(
+                !setup.command.trim().is_empty() && one_line(&setup.command, COMMAND_LIMIT),
+                "Preparation commands are one line of at most {COMMAND_LIMIT} characters"
+            );
+            ensure!(
+                !setup.reason.trim().is_empty() && setup.reason.chars().count() <= REASON_LIMIT,
+                "Preparation needs a reason of at most {REASON_LIMIT} characters"
+            );
+        }
         ensure!(
             self.terminals.len() <= MAX_TERMINALS,
             "Propose at most {MAX_TERMINALS} terminals"
@@ -195,6 +220,10 @@ fn submit_in(
         submitted_ms: now_ms,
         name: proposal.name.trim().into(),
         ordered_startup: proposal.ordered_startup,
+        worktree_setup: proposal.worktree_setup.as_ref().map(|setup| ProposedSetup {
+            command: setup.command.trim().into(),
+            reason: setup.reason.trim().into(),
+        }),
         terminals: proposal
             .terminals
             .iter()
@@ -314,6 +343,23 @@ pub fn stack_context(project: &Project) -> String {
     for g in &project.groups {
         let _ = writeln!(out, "- {}: {}", g.name, g.component_ids.join(", "));
     }
+    let _ = writeln!(
+        out,
+        "\n## Current worktree preparation\n\n{}",
+        project
+            .worktree_setup
+            .as_ref()
+            .map_or("None.", |s| s.command.as_str())
+    );
+    out.push_str(
+        "\nAlso inspect dependency installation, ignored environment files and generated assets needed \
+         in a fresh worktree. Optionally propose worktreeSetup: {command, reason}, with file:line \
+         evidence. The command runs once from the worktree root before implementation; use \
+         PATCHBAY_PROJECT_ROOT and PATCHBAY_WORKTREE_ROOT for paths when needed. Keep long-running \
+         services in terminals. Omit worktreeSetup when no preparation change is needed. \
+         Preparation-only proposals may use an empty terminals array. Never read or include secret \
+         values. The user reviews preparation separately; applying never enables or runs it.\n"
+    );
     let _ = write!(
         out,
         "\n## Task\n\nWork out how a developer runs this project locally: the long-running \
@@ -323,7 +369,7 @@ pub fn stack_context(project: &Project) -> String {
          framework configuration. Prefer an existing task terminal that isn't a Validation \
          one; propose a new one (with a name and a one-line command run from the component's \
          folder) only when none fits. \
-         Leave out tests, builds, linters and one-off scripts.\n\n\
+         Leave tests and linters out of service terminals; put necessary one-time preparation in worktreeSetup.\n\n\
          For each terminal give `readyWhen`: text the process prints once it accepts \
          connections (matched case-insensitively, such as `ready to accept connections` or \
          `Listening on`), or an empty string when you can't tell. Set `orderedStartup` when \
@@ -478,6 +524,58 @@ mod tests {
     }
 
     #[test]
+    fn preparation_is_optional_validated_and_persisted() {
+        let p = project();
+        let mut proposal = proposal(json!([]));
+        assert!(proposal.worktree_setup.is_none());
+        assert!(proposal.validate(&p).is_err());
+        proposal.worktree_setup = Some(ProposedSetup {
+            command: " npm ci ".into(),
+            reason: " package-lock.json:1 ".into(),
+        });
+        assert!(proposal.validate(&p).is_ok());
+        let store = std::env::temp_dir().join(format!("patchbay-stack-{}", uuid::Uuid::new_v4()));
+        let pending = submit_in(&store, &p, "s", &proposal, 1).unwrap();
+        let setup = pending.worktree_setup.as_ref().unwrap();
+        assert_eq!(setup.command, "npm ci");
+        assert_eq!(setup.reason, "package-lock.json:1");
+        assert_eq!(read_in(&store, &p.root).unwrap(), Some(pending));
+        for command in [
+            "",
+            "  ",
+            "npm ci\nnpm start",
+            &"x".repeat(COMMAND_LIMIT + 1),
+        ] {
+            proposal.worktree_setup.as_mut().unwrap().command = command.into();
+            assert!(proposal.validate(&p).is_err());
+        }
+        proposal.worktree_setup.as_mut().unwrap().command = "npm ci".into();
+        proposal.worktree_setup.as_mut().unwrap().reason = " ".into();
+        assert!(proposal.validate(&p).is_err());
+        let mut old = serde_json::to_value(
+            submit_in(
+                &store,
+                &p,
+                "s",
+                &self::proposal(json!([{
+                    "component": "api", "terminal": "dev", "reason": "Makefile:1"
+                }])),
+                2,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        old.as_object_mut().unwrap().remove("worktreeSetup");
+        assert!(
+            serde_json::from_value::<Pending>(old)
+                .unwrap()
+                .worktree_setup
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(store);
+    }
+
+    #[test]
     fn names_match_ignoring_case_and_spacing() {
         let mut p = project();
         p.components[0].terminals.push(
@@ -537,5 +635,11 @@ mod tests {
         assert!(text.contains("- `web` → `api`"));
         assert!(text.contains("- Old: api"));
         assert!(text.contains("agent propose-stack --file -"));
+        assert!(text.contains("worktreeSetup"));
+        let mut configured = project();
+        configured.worktree_setup = Some(crate::model::WorktreeSetup {
+            command: "npm ci".into(),
+        });
+        assert!(stack_context(&configured).contains("npm ci"));
     }
 }

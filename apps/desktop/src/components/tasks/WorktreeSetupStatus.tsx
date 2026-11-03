@@ -3,8 +3,9 @@ import { useStore } from '../../store'
 import { enableWorktreeSetup, worktreeSetup } from '../../lib/ipc'
 import { TASK_ROOT_SCOPE, type WorktreeSetup } from '../../types'
 import TerminalPane from '../TerminalPane'
+import { selectPanel } from '../../lib/rail'
 
-export default function WorktreeSetupStatus() {
+export default function WorktreeSetupStatus({ notice = false }: { notice?: boolean }) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const [setup, setSetup] = useState<WorktreeSetup | null>(null)
@@ -40,11 +41,23 @@ export default function WorktreeSetupStatus() {
       .finally(() => setBusy(false))
   }
   const running = setup?.status === 'preparing' && !!setup.session
+  if (notice) {
+    if (!setup || running || setup.status === 'ready' || setup.status === 'skipped') return null
+    return (
+      <section className="worktree-setup" aria-label="Preparation needs attention">
+        Worktree preparation{' '}
+        {setup.status === 'preparing' ? 'needs enablement or a run' : setup.status}.
+        <button onClick={() => selectPanel('stack')}>Open Stack</button>
+      </section>
+    )
+  }
   return (
-    <section className="worktree-setup" aria-label="Worktree setup">
+    <section className="worktree-setup" aria-label="Task preparation">
       <strong>
-        Worktree setup:{' '}
-        {setup ? setup.status[0].toUpperCase() + setup.status.slice(1) : 'Not configured'}
+        Task preparation:{' '}
+        {setup
+          ? setup.status[0].toUpperCase() + setup.status.slice(1)
+          : 'No preparation captured for this task'}
       </strong>
       {setup && (
         <>

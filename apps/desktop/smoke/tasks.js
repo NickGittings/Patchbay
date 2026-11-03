@@ -132,6 +132,21 @@
       return setup?.status === 'ready' && setup
     })
     assert(prepared.attempt === 1, 'setup ran more than once')
+    await smoke.worktreeSetup(state().project.id, task.id, 'stop')
+    const notice = await until('preparation attention notice', () =>
+      document.querySelector('[aria-label="Preparation needs attention"]'),
+    )
+    button(notice, 'Open Stack').click()
+    const taskPreparation = await until('task preparation in Stack', () =>
+      document.querySelector('.component-groups [aria-label="Task preparation"]'),
+    )
+    assert(taskPreparation.textContent.includes('Stopped'), 'stopped status missing in Stack')
+    button(taskPreparation, 'Continue without setup').click()
+    await until(
+      'preparation notice cleared',
+      () => !document.querySelector('[aria-label="Preparation needs attention"]'),
+    )
+
     const setupSnapshot = await smoke.terminalSnapshot(prepared.session)
     const setupText = atob(setupSnapshot.data)
     assert(

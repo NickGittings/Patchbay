@@ -41,12 +41,13 @@
       links: [{ id: 'wa', source: 'web', target: 'api' }],
       groups: [],
     }
-    state().loadProject(project)
+    smoke.acceptOpened({ ...opened, project })
     await smoke.syncAgentProject(state().toProject())
     const stack = {
       version: 1,
       name: 'Local stack',
       orderedStartup: true,
+      worktreeSetup: { command: 'printf preparation', reason: 'README.md:5 install dependencies' },
       terminals: [
         { component: 'api', terminal: 'serve', readyWhen: 'Listening on', reason: 'Makefile:3' },
         {
@@ -89,6 +90,11 @@
     )
     assert(review.textContent.includes('Makefile:3'), 'the reason must be shown')
     assert(review.textContent.includes('Vite (new)'), 'a new terminal must be marked new')
+    assert(review.textContent.includes('README.md:5'), 'preparation evidence missing')
+    assert(
+      !document.querySelector('[aria-label="Preparation needs attention"]'),
+      'unconfigured task shows a notice',
+    )
     button(review, 'Apply').click()
     await until('stack applied', () => state().groups.length === 1)
     const [group] = state().groups
@@ -102,7 +108,29 @@
       'new terminal not added',
     )
     await until('proposal cleared', () => !document.querySelector('[aria-label="Proposed stack"]'))
-    assert(!(await smoke.stackProposalRead(state().project.id)), 'applied proposal stayed on disk')
+    await until(
+      'proposal cleared on disk',
+      async () => !(await smoke.stackProposalRead(state().project.id)),
+    )
+    assert(
+      state().project.worktreeSetup.command === stack.worktreeSetup.command,
+      'preparation not applied',
+    )
+    assert(await smoke.saveMap(state().project.id), 'map save failed')
+    assert(await smoke.flushMapSaves(), 'map flush failed')
+    assert(
+      (await smoke.reloadProject(state().project.id)).project.worktreeSetup.command ===
+        stack.worktreeSetup.command,
+      'preparation not persisted',
+    )
+    assert(
+      document.querySelector('[aria-label="Worktree preparation"]'),
+      'preparation editor not in Stack',
+    )
+    assert(
+      !Object.values(state().sessions).some((s) => s.command === stack.worktreeSetup.command),
+      'applying ran preparation',
+    )
     smoke.stopTerminal(sid)
     await smoke.report('PASS stack: agent proposal, refused run, review, apply, clear')
   } catch (e) {

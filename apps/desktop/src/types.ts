@@ -343,6 +343,7 @@ export interface PendingStack {
   name: string
   orderedStartup: boolean
   terminals: ProposedStackTerminal[]
+  worktreeSetup?: { command: string; reason: string } | null
 }
 
 /** What a rescan or Add repo… put on the map: new components and their links, with final ids. */

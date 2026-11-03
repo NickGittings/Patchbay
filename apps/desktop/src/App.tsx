@@ -387,7 +387,7 @@ function AppWorkspace() {
         <WorkspaceRail actions={actions} />
         <main className="workspace-main">
           <RecoveryBanners />
-          {!restoring && <WorktreeSetupStatus key={setupScope} />}
+          {!restoring && <WorktreeSetupStatus key={setupScope} notice />}
           {!restoring && (simple || view === 'navigation') && (
             <div className="navigation-shell">
               <NavigationView key={projectId} />
