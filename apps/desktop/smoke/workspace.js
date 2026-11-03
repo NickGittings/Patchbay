@@ -125,9 +125,13 @@
       }
       ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
       await until('rail close confirmation', () => confirmations.length === 1)
-      ;[...document.querySelectorAll('.rail-actions button')]
-        .find((button) => button.textContent === 'Close project')
-        .click()
+      document.querySelector('[aria-label="Project actions"]').click()
+      const closeAction = await until('Close project menu item', () =>
+        [...document.querySelectorAll('[role="menuitem"]')].find(
+          (button) => button.textContent === 'Close project',
+        ),
+      )
+      closeAction.click()
       await until('Project action close confirmation', () => confirmations.length === 2)
       if (!s().projects[one.id] || !s().sessions[sidOne]?.running)
         throw new Error('Canceling project close changed running work')
@@ -181,6 +185,61 @@
         if (!localStorage.getItem('patchbay.utilityPanelWidth'))
           throw new Error('Panel width not persisted')
       }
+      // Every utility fits the narrow dock, including expanded configuration.
+      for (const id of ['project', 'worktree', 'auto', 'activity', 'stack', 'usage']) {
+        smoke.selectPanel(id)
+        const panel = await until(`${id} panel`, () =>
+          document.querySelector(`.utility-panel[data-panel="${id}"]`),
+        )
+        panel.style.width = '240px'
+        await sleep(100)
+        const scroll = panel.querySelector('.utility-scroll')
+        if (scroll.scrollWidth > scroll.clientWidth + 1)
+          throw new Error(`${id} panel overflows at minimum width`)
+        if (id === 'project') {
+          const savedEntry = s().projects[one.id]
+          try {
+            for (const status of [
+              { mapSave: { status: 'error', error: 'Smoke save failure' } },
+              { mapSave: { status: 'conflict' } },
+              { conflict: one.project, unavailable: 'Folder is unavailable' },
+            ]) {
+              smoke.store.setState({
+                projects: { ...s().projects, [one.id]: { ...savedEntry, ...status } },
+              })
+              await sleep(100)
+              const row = switcher().parentElement
+              const warning = row.querySelector('.project-status .worktree-tag.bad')
+              if (!warning || !row.querySelector('.worktree-tag.running'))
+                throw new Error('Project warning or running count missing')
+              if (scroll.scrollWidth > scroll.clientWidth + 1)
+                throw new Error('Project warning and running count overflow at minimum width')
+              const bounds = row.getBoundingClientRect()
+              const close = row.querySelector('.panel-row-actions').getBoundingClientRect()
+              if (
+                row.querySelector('.project-name').getBoundingClientRect().width < 32 ||
+                close.right > bounds.right ||
+                close.top < bounds.top ||
+                close.bottom > bounds.bottom
+              )
+                throw new Error('Project status collapses the name or displaces the close button')
+            }
+          } finally {
+            smoke.store.setState({ projects: { ...s().projects, [one.id]: savedEntry } })
+          }
+        }
+        for (const details of panel.querySelectorAll('.rail-details')) {
+          if (details.open) throw new Error(`${id} configuration starts expanded`)
+          details.open = true
+        }
+        await sleep(100)
+        if (scroll.scrollWidth > scroll.clientWidth + 1)
+          throw new Error(`${id} expanded configuration overflows at minimum width`)
+      }
+      smoke.selectPanel('project')
+      await until('Project panel restored', () =>
+        document.querySelector('[aria-label="Project panel"]'),
+      )
       document.querySelector('.workspace-rail [aria-label="Plan"]').click()
       await until(
         'Plan with dock still open',

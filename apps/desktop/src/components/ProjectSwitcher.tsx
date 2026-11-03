@@ -20,6 +20,8 @@ export default function ProjectSwitcher() {
       {order.map((id, i) => {
         const entry = projects[id]
         if (!entry) return null
+        const needsAttention =
+          entry.conflict || ['error', 'conflict'].includes(entry.mapSave?.status ?? '')
         return (
           <div className={`panel-list-row ${activeId === id ? 'active' : ''}`} key={id}>
             <button
@@ -31,7 +33,6 @@ export default function ProjectSwitcher() {
               <span className="project-name">{entry.name}</span>
               {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}
             </button>
-            <RunningTag count={running[i]} />
             <button
               className="panel-row-actions"
               aria-label={`Close ${entry.name}`}
@@ -39,6 +40,19 @@ export default function ProjectSwitcher() {
             >
               ×
             </button>
+            {(needsAttention || running[i] > 0) && (
+              <div className="project-status">
+                {needsAttention && (
+                  <span
+                    className="worktree-tag bad"
+                    title={entry.mapSave?.error ?? 'Map needs attention'}
+                  >
+                    Needs attention
+                  </span>
+                )}
+                <RunningTag count={running[i]} />
+              </div>
+            )}
           </div>
         )
       })}

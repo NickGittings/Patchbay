@@ -153,15 +153,11 @@ describe('session labels', () => {
 })
 
 describe('projectSessions', () => {
-  test('defaults to all sessions, most recently started or exited first', () => {
-    expect(DEFAULT_SESSION_LIST_OPTIONS).toEqual({ filter: 'all', sort: 'latest' })
+  test('defaults to running sessions, most recently started first', () => {
+    expect(DEFAULT_SESSION_LIST_OPTIONS).toEqual({ filter: 'running', sort: 'latest' })
     const newer = record('newer', { snapshot: snapshot({ startedMs: 200 }) })
-    expect(ids(projectSessions([ended, newer, running], defaults))).toEqual([
-      'newer',
-      'ended',
-      'running',
-    ])
-    expect(projectSessions(categories, defaults)).toHaveLength(categories.length)
+    expect(ids(projectSessions([ended, newer, running], defaults))).toEqual(['newer', 'running'])
+    expect(ids(projectSessions(categories, defaults))).toEqual(['running', 'starting'])
   })
 
   test('running holds running and still-starting sessions', () => {

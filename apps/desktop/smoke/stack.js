@@ -74,6 +74,10 @@
     ])
     smoke.selectPanel('stack')
     const panel = await until('stack panel', () => document.querySelector('.component-groups'))
+    const setup = [...panel.querySelectorAll('summary')].find(
+      (el) => el.textContent === 'Stack setup and suggestions',
+    )
+    setup.click()
     const detect = await until('detect button', () => button(panel, 'Detect stack with an agent'))
     detect.click()
     const sid = smoke.sessionId('@map', 'stack', null)

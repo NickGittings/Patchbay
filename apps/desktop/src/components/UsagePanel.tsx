@@ -1,3 +1,4 @@
+import PanelSection, { PanelDetails } from './PanelSection'
 import { useState } from 'react'
 import { useStore } from '../store'
 import { useClockTick } from '../lib/clock'
@@ -55,7 +56,28 @@ export default function UsagePanel() {
   const now = Date.now()
   return (
     <div className="usage-panel">
-      <p className="usage-note">Subscription limits across all projects and agent sessions.</p>
+      <PanelSection
+        title="Provider usage"
+        actions={
+          <>
+            <button
+              onClick={async () => {
+                setRefreshing(true)
+                try {
+                  await refreshUsage()
+                } finally {
+                  setRefreshing(false)
+                }
+              }}
+              disabled={busy || refreshing}
+            >
+              {refreshing ? 'Refreshing usage…' : 'Refresh usage'}
+            </button>
+          </>
+        }
+      >
+        <p className="usage-note">Limits across all projects.</p>
+      </PanelSection>
       {error && <p role="alert">{error}</p>}
       {!usage && !error && <p role="status">Reading local usage…</p>}
       {USAGE_PROVIDERS.map((provider) => {
@@ -113,7 +135,9 @@ export default function UsagePanel() {
               </p>
             )}
             {provider === 'claude' && capture && (
-              <>
+              <PanelDetails
+                title={capture.installed ? 'Capture settings' : 'Set up Claude capture'}
+              >
                 <button
                   disabled={busy}
                   onClick={async () => {
@@ -151,62 +175,48 @@ export default function UsagePanel() {
                 <small className="usage-source" title={capture.source}>
                   {capture.source}
                 </small>
-              </>
+              </PanelDetails>
             )}
           </section>
         )
       })}
-      <section className="panel-section usage-controls" aria-label="Usage thresholds">
-        <h3>Thresholds</h3>
-        {(
-          [
-            ['warnPercent', 'Warn at'],
-            ['pausePercent', 'Pause Auto at'],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key}>
-            {label}
-            <span>
-              <ThresholdInput
-                value={settings[key]}
-                onCommit={(value) =>
-                  setSettings({ ...useStore.getState().usageSettings, [key]: value })
-                }
-              />{' '}
-              %
-            </span>
+      <PanelDetails title="Thresholds and Auto limits">
+        <section className="panel-section usage-controls" aria-label="Usage thresholds">
+          <h3>Thresholds</h3>
+          {(
+            [
+              ['warnPercent', 'Warn at'],
+              ['pausePercent', 'Pause Auto at'],
+            ] as const
+          ).map(([key, label]) => (
+            <label key={key}>
+              {label}
+              <span>
+                <ThresholdInput
+                  value={settings[key]}
+                  onCommit={(value) =>
+                    setSettings({ ...useStore.getState().usageSettings, [key]: value })
+                  }
+                />{' '}
+                %
+              </span>
+            </label>
+          ))}
+          <label className="usage-check">
+            <input
+              type="checkbox"
+              checked={settings.gateAuto}
+              onChange={(e) =>
+                setSettings({ ...useStore.getState().usageSettings, gateAuto: e.target.checked })
+              }
+            />{' '}
+            Pause Auto before a stage when a provider reaches its limit threshold
           </label>
-        ))}
-        <label className="usage-check">
-          <input
-            type="checkbox"
-            checked={settings.gateAuto}
-            onChange={(e) =>
-              setSettings({ ...useStore.getState().usageSettings, gateAuto: e.target.checked })
-            }
-          />{' '}
-          Pause Auto before a stage when a provider reaches its limit threshold
-        </label>
-        <p className="usage-note">
-          Missing or expired windows allow Auto to continue. Resume checks usage again.
-        </p>
-      </section>
-      <section className="rail-actions panel-section" aria-label="Usage actions">
-        <div className="section-title">Actions</div>
-        <button
-          onClick={async () => {
-            setRefreshing(true)
-            try {
-              await refreshUsage()
-            } finally {
-              setRefreshing(false)
-            }
-          }}
-          disabled={busy || refreshing}
-        >
-          {refreshing ? 'Refreshing usage…' : 'Refresh usage'}
-        </button>
-      </section>
+          <p className="usage-note">
+            Missing or expired windows allow Auto to continue. Resume checks usage again.
+          </p>
+        </section>
+      </PanelDetails>
     </div>
   )
 }

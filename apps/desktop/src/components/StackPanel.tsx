@@ -1,3 +1,4 @@
+import PanelSection, { PanelDetails } from './PanelSection'
 import WorktreeSetupPanel from './WorktreeSetupPanel'
 import WorktreeSetupStatus from './tasks/WorktreeSetupStatus'
 import { taskPassed } from '../lib/autoSettings'
@@ -495,24 +496,26 @@ export default function StackPanel() {
     <section className="component-groups" aria-label="Stacks">
       {!groups.length && (
         <p className="panel-empty panel-empty-start">
-          A stack starts its components’ Development terminals together, such as a database, an API
-          and a web app. Mark terminals as Development in the component inspector.
+          Start related Development terminals together. Create a stack or discover one in Stack
+          setup and suggestions.
         </p>
       )}
-      <div className="rail-actions panel-section">
-        <div className="section-title">Actions</div>
-        <NewStackForm />
-        {projectId && <StackAgent projectId={projectId} pending={pending} />}
-      </div>
+      <PanelSection title="Stacks" actions={<NewStackForm />}>
+        {groups.map((group) => (
+          <GroupEditor key={group.id} group={group} />
+        ))}
+      </PanelSection>
       {projectId && pending && (
         <StackReview key={pending.id} pending={pending} projectId={projectId} />
       )}
-      <WorktreeSetupPanel />
       <WorktreeSetupStatus key={task ?? 'main'} />
-      <StackSuggestions />
-      {groups.map((group) => (
-        <GroupEditor key={group.id} group={group} />
-      ))}
+      <PanelDetails title="Stack setup and suggestions">
+        {projectId && <StackAgent projectId={projectId} pending={pending} />}
+        <StackSuggestions />
+      </PanelDetails>
+      <PanelDetails title="Worktree preparation">
+        <WorktreeSetupPanel />
+      </PanelDetails>
       {report && (
         <details className="action-results">
           <summary>

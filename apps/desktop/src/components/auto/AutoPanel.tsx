@@ -95,6 +95,9 @@ export default function AutoPanel({
               </button>
             )}
           </div>
+          <p className="auto-goal" title={run.goal}>
+            {run.goal}
+          </p>
           <ol className="auto-stepper" aria-label="Run stages">
             {(
               [
@@ -122,9 +125,6 @@ export default function AutoPanel({
               </li>
             ))}
           </ol>
-          <p className="auto-goal" title={run.goal}>
-            {run.goal}
-          </p>
           {['paused', 'waitingOnYou', 'failed'].includes(run.status) &&
             (run.reason || run.gateError) && (
               <p className="panel-callout" role="status">
@@ -137,22 +137,6 @@ export default function AutoPanel({
               branch={run.branch}
               refresh={`${run.stage}:${run.status}:${run.log.length}`}
             />
-          )}
-          {(run.round > 0 || run.validation?.some((r) => r.results.length)) && (
-            <dl className="auto-values">
-              {run.round > 0 && (
-                <>
-                  <dt>Fix rounds</dt>
-                  <dd>{run.round}</dd>
-                </>
-              )}
-              {run.validation?.some((r) => r.results.length) && (
-                <>
-                  <dt>Validation</dt>
-                  <dd>{validationSummary(run.validation)}</dd>
-                </>
-              )}
-            </dl>
           )}
           <div className="auto-controls">
             {run.status === 'running' ? (
@@ -196,6 +180,23 @@ export default function AutoPanel({
           {error && <p role="alert">{error}</p>}
           <details>
             <summary>Activity and details</summary>
+            {(run.round > 0 || run.validation?.some((r) => r.results.length)) && (
+              <dl className="auto-values">
+                {run.round > 0 && (
+                  <>
+                    <dt>Fix rounds</dt>
+                    <dd>{run.round}</dd>
+                  </>
+                )}
+                {run.validation?.some((r) => r.results.length) && (
+                  <>
+                    <dt>Validation</dt>
+                    <dd>{validationSummary(run.validation)}</dd>
+                  </>
+                )}
+              </dl>
+            )}
+
             <p>Merge into: {run.merge.destinationBranch}</p>
             <p>Fix round limit: {effortSettings(run).maxRounds}</p>
             <ol className="auto-log">

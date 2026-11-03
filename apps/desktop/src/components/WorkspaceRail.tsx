@@ -35,6 +35,8 @@ import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import PanelContent from './PanelContent'
+import PanelSection from './PanelSection'
+import Menu, { MenuItem } from './Menu'
 
 const utilities: Record<UtilityPanel, { label: string }> = {
   project: { label: 'Project' },
@@ -211,6 +213,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         <>
           <aside
             className="utility-panel"
+            data-panel={panel}
             style={{ width: actualWidth }}
             aria-label={`${utilities[panel].label} panel`}
             onKeyDown={closeOnEscape}
@@ -242,21 +245,36 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
               <PanelContent>
                 {panel === 'project' && (
                   <>
-                    <ProjectSwitcher />
+                    <PanelSection title="Open projects">
+                      <ProjectSwitcher />
+                    </PanelSection>
                     <MapSaveStatus />
-                    <div className="rail-actions panel-section">
-                      <div className="section-title">Actions</div>
+                    <div className="rail-toolbar">
                       {actions
-                        .filter((a) => a.group === 'project' && a.id !== 'save')
+                        .filter((a) => a.id === 'open')
                         .map((a) => (
                           <button
                             key={a.id}
+                            className="primary"
                             disabled={!a.enabled}
                             onClick={() => runWorkspaceAction(a)}
                           >
                             {a.title}
                           </button>
                         ))}
+                      <Menu label="⋯" triggerLabel="Project actions" caret={false} portal>
+                        {actions
+                          .filter((a) => a.group === 'project' && !['save', 'open'].includes(a.id))
+                          .map((a) => (
+                            <MenuItem
+                              key={a.id}
+                              disabled={!a.enabled}
+                              onClick={() => runWorkspaceAction(a)}
+                            >
+                              {a.title}
+                            </MenuItem>
+                          ))}
+                      </Menu>
                       <ExtensionMenu slot="toolbar" />
                     </div>
                   </>

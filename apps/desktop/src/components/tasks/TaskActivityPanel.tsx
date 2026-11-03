@@ -1,3 +1,4 @@
+import PanelSection, { PanelDetails } from '../PanelSection'
 import ValidationAgentSetup from '../ValidationAgentSetup'
 import { taskPassed } from '../../lib/autoSettings'
 import { useMemo, useState } from 'react'
@@ -207,6 +208,101 @@ export default function TaskActivityPanel() {
           : (nodes.find((n) => n.id === component)?.data.name ?? component)
     return `${location} · ${record?.metadata.name ?? 'Agent'}`
   }
+  const ordered = own.slice().reverse()
+  const completed = ordered.filter(
+    (a) =>
+      a.state === 'finished' &&
+      !a.error &&
+      !a.report?.plan.skipped.length &&
+      !a.report?.results.some((r) => !taskPassed(r)),
+  )
+  const current = ordered.filter((a) => !completed.includes(a))
+  const renderActivity = (activity: (typeof own)[number]) => (
+    <div key={activity.id} className={`task-action-result panel-section ${activity.state}`}>
+      <div className="row">
+        <strong>
+          {['validate', 'validateChanged', 'validateSelected'].includes(activity.action.kind)
+            ? 'Validation'
+            : activity.action.kind === 'environmentStop'
+              ? 'Stop stack'
+              : 'Start stack'}{' '}
+          · {activity.state}
+        </strong>
+        <span className="hint" title={activity.initiator}>
+          {initiatorLabel(activity.initiator)}
+        </span>
+        {activity.state !== 'running' && (
+          <button
+            disabled={busy}
+            onClick={() =>
+              activity.action.kind === 'environmentStop'
+                ? void stopGroup(activity.action.groupId!)
+                : void runGraphAction(
+                    activity.action.kind === 'validate'
+                      ? {
+                          kind: 'validateAffected',
+                          componentId: activity.action.componentId!,
+                        }
+                      : activity.action.kind === 'validateSelected'
+                        ? {
+                            kind: 'validateSelected',
+                            componentIds: activity.action.componentIds!,
+                          }
+                        : activity.action.kind === 'validateChanged'
+                          ? {
+                              kind: 'validateChanged',
+                              componentIds: activity.action.componentIds!,
+                            }
+                          : { kind: 'startGroup', groupId: activity.action.groupId! },
+                  )
+            }
+          >
+            Rerun
+          </button>
+        )}
+      </div>
+      {activity.error && <p className="hint file-tree-error">{activity.error}</p>}
+      {!!activity.report?.plan.skipped.length && (
+        <p className="hint">
+          Missing configured validators/tasks:{' '}
+          {activity.report.plan.skipped
+            .map((id) => nodes.find((n) => n.id === id)?.data.name ?? id)
+            .join(', ')}
+        </p>
+      )}
+      <div className="scope-chips">
+        {activity.report?.results
+          .filter((result) => !taskPassed(result))
+          .map((result) => (
+            <button
+              key={result.sessionId}
+              className="chip"
+              onClick={() =>
+                revealTerminal({
+                  sid: result.sessionId,
+                  componentId: parseSessionId(result.sessionId).componentId,
+                })
+              }
+            >
+              {records.find((r) => r.id === result.sessionId)?.metadata.name ??
+                parseSessionId(result.sessionId).terminalId}
+              : {result.outcome}
+            </button>
+          ))}
+        {activity.previewUrls.map((url) => (
+          <button
+            key={url}
+            className="chip"
+            onClick={() =>
+              void openUrl(url).catch((e) => useStore.getState().setMessage(String(e)))
+            }
+          >
+            Open {url}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
   return (
     <section
       className="task-activity-panel panel-section"
@@ -217,101 +313,20 @@ export default function TaskActivityPanel() {
       {!own.length && (
         <p className="panel-empty">No stacks started or validations run in this worktree yet.</p>
       )}
-      <div className="task-activity">
-        {own
-          .slice()
-          .reverse()
-          .map((activity) => (
-            <div key={activity.id} className={`task-action-result panel-section ${activity.state}`}>
-              <div className="row">
-                <strong>
-                  {['validate', 'validateChanged', 'validateSelected'].includes(
-                    activity.action.kind,
-                  )
-                    ? 'Validation'
-                    : activity.action.kind === 'environmentStop'
-                      ? 'Stop stack'
-                      : 'Start stack'}{' '}
-                  · {activity.state}
-                </strong>
-                <span className="hint" title={activity.initiator}>
-                  {initiatorLabel(activity.initiator)}
-                </span>
-                {activity.state !== 'running' && (
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      activity.action.kind === 'environmentStop'
-                        ? void stopGroup(activity.action.groupId!)
-                        : void runGraphAction(
-                            activity.action.kind === 'validate'
-                              ? {
-                                  kind: 'validateAffected',
-                                  componentId: activity.action.componentId!,
-                                }
-                              : activity.action.kind === 'validateSelected'
-                                ? {
-                                    kind: 'validateSelected',
-                                    componentIds: activity.action.componentIds!,
-                                  }
-                                : activity.action.kind === 'validateChanged'
-                                  ? {
-                                      kind: 'validateChanged',
-                                      componentIds: activity.action.componentIds!,
-                                    }
-                                  : { kind: 'startGroup', groupId: activity.action.groupId! },
-                          )
-                    }
-                  >
-                    Rerun
-                  </button>
-                )}
-              </div>
-              {activity.error && <p className="hint file-tree-error">{activity.error}</p>}
-              {!!activity.report?.plan.skipped.length && (
-                <p className="hint">
-                  Missing configured validators/tasks:{' '}
-                  {activity.report.plan.skipped
-                    .map((id) => nodes.find((n) => n.id === id)?.data.name ?? id)
-                    .join(', ')}
-                </p>
-              )}
-              <div className="scope-chips">
-                {activity.report?.results
-                  .filter((result) => !taskPassed(result))
-                  .map((result) => (
-                    <button
-                      key={result.sessionId}
-                      className="chip"
-                      onClick={() =>
-                        revealTerminal({
-                          sid: result.sessionId,
-                          componentId: parseSessionId(result.sessionId).componentId,
-                        })
-                      }
-                    >
-                      {records.find((r) => r.id === result.sessionId)?.metadata.name ??
-                        parseSessionId(result.sessionId).terminalId}
-                      : {result.outcome}
-                    </button>
-                  ))}
-                {activity.previewUrls.map((url) => (
-                  <button
-                    key={url}
-                    className="chip"
-                    onClick={() =>
-                      void openUrl(url).catch((e) => useStore.getState().setMessage(String(e)))
-                    }
-                  >
-                    Open {url}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-      </div>
-      <ValidationAgentSetup key={`agent:${projectId}`} projectId={projectId} />
-      <ValidatorSetup key={projectId} />
+      <PanelSection title="Recent activity">
+        <div className="task-activity">
+          {current.map(renderActivity)}
+          {!!completed.length && (
+            <PanelDetails title={`Completed activity (${completed.length})`}>
+              {completed.map(renderActivity)}
+            </PanelDetails>
+          )}
+        </div>
+      </PanelSection>
+      <PanelDetails title="Validation setup">
+        <ValidationAgentSetup key={`agent:${projectId}`} projectId={projectId} />
+        <ValidatorSetup key={projectId} />
+      </PanelDetails>
     </section>
   )
 }
