@@ -317,17 +317,22 @@ pub fn call(address: &str, token: &str, action: Action) -> Result<Response> {
 }
 
 fn call_within(address: &str, token: &str, action: Action, wait: Duration) -> Result<Response> {
+    call_via(address, token, action, wait, managed_proxy()?.as_deref())
+}
+
+fn call_via(
+    address: &str,
+    token: &str,
+    action: Action,
+    wait: Duration,
+    proxy: Option<&str>,
+) -> Result<Response> {
     let address: SocketAddr = address
         .trim()
         .parse()
         .context("Invalid Patchbay desktop connection address in endpoint file; restart Patchbay to refresh it")?;
     ensure!(address.ip().is_loopback(), "Desktop bridge must be local");
-    let mut stream = TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(2)))
-        .with_context(|| {
-            format!(
-                "Could not connect to Patchbay desktop at {address}; start or reopen Patchbay and try again"
-            )
-        })?;
+    let mut stream = connect(address, wait, proxy)?;
     stream
         .set_read_timeout(Some(wait))
         .context("Could not configure desktop response timeout")?;
@@ -362,6 +367,140 @@ fn call_within(address: &str, token: &str, action: Action, wait: Duration) -> Re
         response.version
     );
     Ok(response)
+}
+
+/// Only Codex's explicit marker opts into proxying. Other providers and ordinary
+/// shell proxy settings retain the direct bridge connection. Never bypass a
+/// managed proxy after a rejection or connection failure.
+fn managed_proxy() -> Result<Option<String>> {
+    proxy_setting(
+        std::env::var(crate::agent_hooks::PROVIDER_ENV)
+            .ok()
+            .as_deref(),
+        std::env::var("CODEX_NETWORK_PROXY_ACTIVE").ok().as_deref(),
+        std::env::var("ALL_PROXY")
+            .or_else(|_| std::env::var("all_proxy"))
+            .ok(),
+    )
+}
+
+fn proxy_setting(
+    provider: Option<&str>,
+    active: Option<&str>,
+    proxy: Option<String>,
+) -> Result<Option<String>> {
+    if provider != Some("codex") || active.is_none() || active == Some("0") {
+        return Ok(None);
+    }
+    ensure!(
+        active == Some("1"),
+        "Unrecognized Codex managed network marker; restart the agent session"
+    );
+    let proxy = proxy
+        .context("Codex managed networking is active but its SOCKS proxy is missing; restart the agent session to receive updated launch settings")?;
+    Ok(Some(proxy))
+}
+
+fn connect(address: SocketAddr, wait: Duration, proxy: Option<&str>) -> Result<TcpStream> {
+    let Some(proxy) = proxy else {
+        return TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(2)))
+            .map_err(|error| connection_error(address, error));
+    };
+    let proxy = url::Url::parse(proxy).context("Invalid Codex managed SOCKS proxy URL")?;
+    ensure!(
+        matches!(proxy.scheme(), "socks5" | "socks5h")
+            && proxy.username().is_empty()
+            && proxy.password().is_none(),
+        "Codex managed networking requires an unauthenticated SOCKS5 proxy; restart the agent session or check its network policy"
+    );
+    // Managed Codex listeners are local. Never send a bridge capability to an
+    // arbitrary proxy from an inherited environment variable.
+    let host = proxy.host_str().context("Missing Codex SOCKS proxy host")?;
+    let ip: std::net::IpAddr = host
+        .trim_matches(['[', ']'])
+        .parse()
+        .context("Codex managed SOCKS proxy must use a loopback IP address")?;
+    ensure!(ip.is_loopback(), "Codex managed SOCKS proxy must be local");
+    let port = proxy.port().context("Missing Codex SOCKS proxy port")?;
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::new(ip, port),
+        wait.min(Duration::from_secs(2)),
+    ).context("Could not connect to Codex managed SOCKS proxy; restart the agent session to receive updated launch settings")?;
+    stream.set_read_timeout(Some(wait.min(Duration::from_secs(2))))?;
+    stream.set_write_timeout(Some(wait.min(Duration::from_secs(2))))?;
+    socks_connect(&mut stream, address).context("Could not reach Patchbay desktop through Codex managed SOCKS proxy; check the loopback allowance and managed network policy. Restart the agent session after changing launch settings")?;
+    Ok(stream)
+}
+
+fn socks_connect(stream: &mut TcpStream, address: SocketAddr) -> Result<()> {
+    stream.write_all(&[5, 1, 0])?; // SOCKS5, one method, no authentication.
+    let mut greeting = [0; 2];
+    stream.read_exact(&mut greeting)?;
+    ensure!(
+        greeting == [5, 0],
+        "Codex SOCKS proxy rejected unauthenticated SOCKS5"
+    );
+    let mut request = vec![5, 1, 0]; // CONNECT; the destination is always loopback.
+    match address.ip() {
+        std::net::IpAddr::V4(ip) => {
+            request.push(1);
+            request.extend(ip.octets());
+        }
+        std::net::IpAddr::V6(ip) => {
+            request.push(4);
+            request.extend(ip.octets());
+        }
+    }
+    request.extend(address.port().to_be_bytes());
+    stream.write_all(&request)?;
+    let mut reply = [0; 4];
+    stream.read_exact(&mut reply)?;
+    ensure!(
+        reply[0] == 5 && reply[2] == 0,
+        "Invalid Codex SOCKS5 response"
+    );
+    match reply[1] {
+        0 => {}
+        2 => anyhow::bail!(
+            "Codex SOCKS proxy denied the Patchbay loopback destination under its network policy"
+        ),
+        5 => anyhow::bail!(
+            "Patchbay desktop refused the proxied connection; start or reopen Patchbay and try again"
+        ),
+        code => anyhow::bail!(
+            "Codex SOCKS proxy could not connect to Patchbay desktop (SOCKS5 reply {code})"
+        ),
+    }
+    let size = match reply[3] {
+        1 => 4,
+        4 => 16,
+        3 => {
+            let mut length = [0];
+            stream.read_exact(&mut length)?;
+            usize::from(length[0])
+        }
+        _ => anyhow::bail!("Invalid Codex SOCKS5 address type"),
+    };
+    let mut bound = vec![0; size + 2];
+    stream.read_exact(&mut bound)?;
+    Ok(())
+}
+
+fn connection_error(address: SocketAddr, error: std::io::Error) -> anyhow::Error {
+    let message = if error.kind() == std::io::ErrorKind::PermissionDenied {
+        format!(
+            "Permission denied connecting to Patchbay desktop at {address}; check the agent's \
+             sandbox and managed network policy. Restart the agent session after changing its \
+             launch settings; reopening the desktop does not update a running agent's permissions. \
+             Codex scoped networking requires its managed SOCKS proxy and a loopback allowance; \
+             this requires support from the installed Codex version and managed policy"
+        )
+    } else {
+        format!(
+            "Could not connect to Patchbay desktop at {address}; start or reopen Patchbay and try again"
+        )
+    };
+    anyhow::Error::new(error).context(message)
 }
 
 /// [`call`] with the endpoint and token an agent terminal was launched with.
@@ -658,6 +797,231 @@ mod tests {
         assert!(message.contains("start or reopen Patchbay"));
         assert!(error.chain().count() > 1);
         assert!(!message.contains("secret-token"));
+        assert!(!message.contains("Permission denied"));
+        assert!(!message.contains("Restart the agent session"));
+    }
+
+    #[test]
+    fn denied_connection_explains_network_policy_and_session_restart() {
+        let address = "127.0.0.1:12345".parse().unwrap();
+        let cause = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let expected = cause.to_string();
+        let error = connection_error(address, cause);
+        let message = format!("{error:#}");
+        assert!(message.contains("Permission denied connecting"));
+        assert!(message.contains(&address.to_string()));
+        assert!(message.contains("sandbox and managed network policy"));
+        assert!(message.contains("Restart the agent session"));
+        assert!(message.contains("reopening the desktop does not update"));
+        assert!(message.contains("managed SOCKS proxy and a loopback allowance"));
+        assert!(message.contains(&expected));
+        assert_eq!(error.chain().count(), 2);
+        assert!(!message.contains("start or reopen Patchbay"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_permission_errors_are_not_reported_as_an_unavailable_desktop() {
+        // EPERM and EACCES are both used by Unix sandbox implementations.
+        for errno in [1, 13] {
+            let error = connection_error(
+                "127.0.0.1:12345".parse().unwrap(),
+                std::io::Error::from_raw_os_error(errno),
+            );
+            assert!(error.to_string().contains("Permission denied connecting"));
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+    }
+
+    #[test]
+    fn only_codex_managed_networking_selects_a_proxy() {
+        let proxy = Some("socks5h://127.0.0.1:8081".into());
+        for provider in [None, Some("claude"), Some("other")] {
+            assert_eq!(
+                proxy_setting(provider, Some("1"), proxy.clone()).unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            proxy_setting(Some("codex"), None, proxy.clone()).unwrap(),
+            None
+        );
+        assert_eq!(
+            proxy_setting(Some("codex"), Some("0"), proxy.clone()).unwrap(),
+            None
+        );
+        assert_eq!(
+            proxy_setting(Some("codex"), Some("1"), proxy.clone()).unwrap(),
+            proxy
+        );
+        assert!(proxy_setting(Some("codex"), Some("1"), None).is_err());
+        assert!(proxy_setting(Some("codex"), Some("unexpected"), proxy).is_err());
+    }
+
+    /// A mock proxy validates the request, with short reads on the client, and
+    /// returns its CONNECT header plus any tunneled data supplied by the test.
+    fn with_proxy(
+        destination: SocketAddr,
+        reply: Vec<u8>,
+        serve: impl FnOnce(TcpStream) + Send + 'static,
+        check: impl FnOnce(&str),
+    ) {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let url = format!("socks5h://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).unwrap();
+            let size = if destination.is_ipv4() { 10 } else { 22 };
+            let mut request = vec![0; size];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request[..3], &[5, 1, 0]);
+            match destination.ip() {
+                std::net::IpAddr::V4(ip) => {
+                    assert_eq!(request[3], 1);
+                    assert_eq!(&request[4..8], ip.octets());
+                }
+                std::net::IpAddr::V6(ip) => {
+                    assert_eq!(request[3], 4);
+                    assert_eq!(&request[4..20], ip.octets());
+                }
+            }
+            assert_eq!(&request[size - 2..], destination.port().to_be_bytes());
+            for byte in reply {
+                stream.write_all(&[byte]).unwrap();
+            }
+            serve(stream);
+        });
+        check(&url);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn socks_tunnels_ipv4_and_ipv6_without_consuming_bridge_data() {
+        for destination in ["127.0.0.1:12345", "[::1]:12345"] {
+            for bound in [
+                vec![1, 127, 0, 0, 1, 0, 1],
+                vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
+                vec![3, 3, b'a', b'b', b'c', 0, 1],
+            ] {
+                let address = destination.parse().unwrap();
+                let mut reply = vec![5, 0, 0];
+                reply.extend(bound);
+                reply.extend(b"bridge");
+                with_proxy(
+                    address,
+                    reply,
+                    |_| {},
+                    |proxy| {
+                        let mut stream =
+                            connect(address, Duration::from_secs(5), Some(proxy)).unwrap();
+                        let mut bytes = [0; 6];
+                        stream.read_exact(&mut bytes).unwrap();
+                        assert_eq!(&bytes, b"bridge");
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn socks_keeps_the_authenticated_version_one_bridge_protocol() {
+        let destination = "127.0.0.1:12345".parse().unwrap();
+        with_proxy(
+            destination,
+            vec![5, 0, 0, 1, 127, 0, 0, 1, 0, 1],
+            |mut stream| {
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Request = serde_json::from_str(&line).unwrap();
+                assert_eq!(request.version, 1);
+                assert_eq!(request.token, "launch-capability");
+                assert!(matches!(request.action, Action::Status {}));
+                stream
+                    .write_all(b"{\"version\":1,\"ok\":true,\"result\":{\"proxied\":true}}\n")
+                    .unwrap();
+            },
+            |proxy| {
+                let response = call_via(
+                    &destination.to_string(),
+                    "launch-capability",
+                    Action::Status {},
+                    Duration::from_secs(5),
+                    Some(proxy),
+                )
+                .unwrap();
+                assert_eq!(response.result.unwrap()["proxied"], true);
+            },
+        );
+    }
+
+    #[test]
+    fn socks_denials_and_protocol_failures_never_fall_back_to_direct_tcp() {
+        let desktop = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        desktop.set_nonblocking(true).unwrap();
+        let address = desktop.local_addr().unwrap();
+        for (reply, expected) in [
+            (vec![5, 2, 0, 1], "denied the Patchbay loopback destination"),
+            (vec![5, 5, 0, 1], "start or reopen Patchbay"),
+            (vec![4, 0, 0, 1], "Invalid Codex SOCKS5 response"),
+            (vec![5, 0, 1, 1], "Invalid Codex SOCKS5 response"),
+            (vec![5, 0, 0, 2], "Invalid Codex SOCKS5 address type"),
+            (vec![5, 0], "failed to fill whole buffer"),
+        ] {
+            with_proxy(
+                address,
+                reply,
+                |_| {},
+                |proxy| {
+                    let error = call_via(
+                        &address.to_string(),
+                        "secret-token",
+                        Action::Status {},
+                        Duration::from_secs(5),
+                        Some(proxy),
+                    )
+                    .unwrap_err();
+                    let message = format!("{error:#}");
+                    assert!(message.contains(expected), "{message}");
+                    assert!(!message.contains("secret-token"));
+                    assert_eq!(
+                        desktop.accept().unwrap_err().kind(),
+                        std::io::ErrorKind::WouldBlock
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_nonlocal_proxy_settings_are_rejected_without_leaking_credentials() {
+        for proxy in [
+            "http://127.0.0.1:8081",
+            "socks5h://example.com:8081",
+            "socks5h://192.168.1.1:8081",
+            "socks5h://user:secret-token@127.0.0.1:8081",
+            "socks5h://127.0.0.1",
+            "not a URL",
+        ] {
+            let error = connect(
+                "127.0.0.1:12345".parse().unwrap(),
+                Duration::from_millis(10),
+                Some(proxy),
+            )
+            .unwrap_err();
+            assert!(!format!("{error:#}").contains("secret-token"));
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 pub mod access;
 pub mod actions;
+mod codex;
 pub mod context;
 pub mod detect;
 pub mod devices;

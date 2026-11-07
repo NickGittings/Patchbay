@@ -613,7 +613,7 @@ fn quote_path(shell: Shell, path: &Path, env: &mut BTreeMap<String, String>) -> 
 /// A TOML basic string whose content is inert even through npm's cmd shims.
 /// Quotes and backslashes occur only as TOML delimiters and Unicode escapes;
 /// parentheses are escaped too, since shims expand `%*` inside `IF (...)` blocks.
-fn toml_inert(s: &str) -> String {
+pub(crate) fn toml_inert(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || " .,:_/-".contains(c) {
@@ -1180,6 +1180,8 @@ pub fn job_agent_spec(
         extra_env,
         policy,
         |command, file, dirs, env| {
+            let network_notice =
+                configure_codex_network(command, Path::new(&project.root), Shell::current(), env);
             let notice = brief_agent(
                 command,
                 &Briefing {
@@ -1192,7 +1194,10 @@ pub fn job_agent_spec(
                 Shell::current(),
                 env,
             );
-            (notice, job_resume_command(command, prompt, env))
+            (
+                combine_notices(notice, network_notice),
+                job_resume_command(command, prompt, env),
+            )
         },
     )
 }
@@ -1582,6 +1587,46 @@ fn brief_agent(
     }
 }
 
+fn combine_notices(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (first, second) => first.or(second),
+    }
+}
+
+fn configure_codex_network(
+    command: &mut String,
+    cwd: &Path,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let tokens = command_tokens(command, shell)?;
+    let program = program_index(&tokens)?;
+    if agent_named(&tokens[program]) != Some(Agent::Codex)
+        || unsupported_codex_subcommand(&tokens[program + 1..])
+    {
+        return None;
+    }
+    match crate::codex::launch_options(command, cwd) {
+        Ok(options) => {
+            // Old CLIs must reject unsupported settings instead of silently
+            // enabling command networking without its destination enforcement.
+            command.push_str(" --strict-config");
+            for option in options {
+                let _ = write!(
+                    command,
+                    " -c {}",
+                    quote_path(shell, Path::new(&option), env)
+                );
+            }
+            None
+        }
+        Err(error) => Some(format!(
+            "Patchbay could not configure scoped Codex networking: {error:#}. The existing sandbox and network settings were preserved. Restart the agent session after correcting its configuration."
+        )),
+    }
+}
+
 /// Build a planner terminal session at the project root.
 ///
 /// An empty scope plans over all components. Agent commands receive the context file.
@@ -1839,7 +1884,16 @@ fn root_session_spec(
             prompt: prompt.as_deref(),
             reserve,
         };
-        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        let network_notice = configure_codex_network(
+            &mut command,
+            Path::new(&project.root),
+            Shell::current(),
+            &mut env,
+        );
+        notice = combine_notices(
+            brief_agent(&mut command, &briefing, Shell::current(), &mut env),
+            network_notice,
+        );
         // A resumed conversation is never prompted again. A fix and an Auto planner pass
         // their kickoff again on Restart, and an implement restart passes none, so every
         // root start resumes with the same command and Restart's fingerprint matches.
@@ -1961,7 +2015,16 @@ pub fn session_spec_with(
             prompt: None,
             reserve: 0,
         };
-        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        let network_notice = configure_codex_network(
+            &mut command,
+            &project.component_dir(component),
+            Shell::current(),
+            &mut env,
+        );
+        notice = combine_notices(
+            brief_agent(&mut command, &briefing, Shell::current(), &mut env),
+            network_notice,
+        );
     }
 
     policy
@@ -3357,7 +3420,7 @@ mod tests {
         let spec = session_spec(&p, "api", "agent", &AllowAll, &sections).unwrap();
         assert!(
             spec.command
-                .starts_with("env A=1 codex --model x --add-dir ")
+                .starts_with("env A=1 codex --model x --strict-config ")
         );
         let config = format!(
             "developer_instructions={}",
@@ -3372,6 +3435,89 @@ mod tests {
             component_context(&p, "api", &sections)
         );
         assert!(spec.notice.is_none());
+    }
+
+    #[test]
+    fn codex_network_settings_reach_planner_implementation_merge_and_resume() {
+        let mut p = project();
+        let command = "env A=1 codex --model x -p selected --sandbox workspace-write -a on-request -c 'sandbox_workspace_write.exclude_slash_tmp=true'";
+        p.components[0].terminals[0].command = command.into();
+        let terminal = &p.components[0].terminals[0];
+        let specs = [
+            session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap(),
+            plan_session_spec(&p, &[], terminal, &AllowAll, &[], Some(Kickoff::Plan)).unwrap(),
+            task_root_session_spec(
+                &p,
+                &[],
+                terminal,
+                None,
+                &AllowAll,
+                &[],
+                Some(Kickoff::ImplementPlan { subagents: None }),
+            )
+            .unwrap(),
+            merge_agent_spec(
+                &p,
+                terminal,
+                "Merge the selected worktrees",
+                vec![],
+                &AllowAll,
+            )
+            .unwrap(),
+            job_agent_spec(
+                &p,
+                terminal,
+                "Review interactively",
+                vec![],
+                crate::model::REVIEW_SCOPE,
+                REVIEW_PROMPT,
+                BTreeMap::new(),
+                &AllowAll,
+            )
+            .unwrap(),
+        ];
+        for spec in specs {
+            assert!(spec.command.starts_with(command));
+            assert!(spec.command.contains("features.network_proxy="));
+            assert!(
+                spec.command
+                    .contains("sandbox_workspace_write.network_access=true")
+            );
+            assert!(spec.command.contains("--strict-config"));
+            assert!(!spec.command.contains("danger-full-access"));
+            assert!(spec.notice.is_none(), "{:?}", spec.notice);
+            if let Some(resume) = &spec.resume_command {
+                assert!(resume.starts_with(command));
+                assert!(resume.contains("features.network_proxy="));
+                assert!(resume.contains("sandbox_workspace_write.network_access=true"));
+            }
+            if let Some(file) = owned_briefing(&spec) {
+                remove_owned_briefing_file(&file);
+            }
+        }
+        let native = codex_review_command(
+            "codex -m review",
+            "main",
+            Path::new("findings.md"),
+            &review_briefing(),
+            Shell::current(),
+            &mut BTreeMap::new(),
+        );
+        assert!(!native.contains("network_proxy"));
+        assert!(!native.contains("network_access"));
+        assert!(native.contains("exec --sandbox read-only review"));
+        assert!(native.contains("-o"));
+        let mut claude = "claude -m other".into();
+        assert!(
+            configure_codex_network(
+                &mut claude,
+                Path::new("/repo"),
+                Shell::current(),
+                &mut BTreeMap::new()
+            )
+            .is_none()
+        );
+        assert_eq!(claude, "claude -m other");
     }
 
     #[test]
