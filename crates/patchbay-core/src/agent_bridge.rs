@@ -186,7 +186,7 @@ impl Response {
                 version: 1,
                 ok: false,
                 result: None,
-                error: Some(error.to_string()),
+                error: Some(format!("{error:#}")),
             },
         }
     }
@@ -294,7 +294,7 @@ impl Server {
             ensure!(request.version == 1, "Unsupported bridge version");
             ensure!(
                 !self.stopped.load(Ordering::Acquire),
-                "Desktop disconnected"
+                "Patchbay desktop bridge is shutting down; reopen Patchbay and try again"
             );
             let context = authenticate(&request.token)
                 .context("Authentication failed; the agent session has ended or restarted")?;
@@ -320,12 +320,20 @@ fn call_within(address: &str, token: &str, action: Action, wait: Duration) -> Re
     let address: SocketAddr = address
         .trim()
         .parse()
-        .context("Invalid desktop connection address")?;
+        .context("Invalid Patchbay desktop connection address in endpoint file; restart Patchbay to refresh it")?;
     ensure!(address.ip().is_loopback(), "Desktop bridge must be local");
     let mut stream = TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(2)))
-        .context("Desktop disconnected; open the launch project in Patchbay")?;
-    stream.set_read_timeout(Some(wait))?;
-    stream.set_write_timeout(Some(wait.min(Duration::from_secs(10))))?;
+        .with_context(|| {
+            format!(
+                "Could not connect to Patchbay desktop at {address}; start or reopen Patchbay and try again"
+            )
+        })?;
+    stream
+        .set_read_timeout(Some(wait))
+        .context("Could not configure desktop response timeout")?;
+    stream
+        .set_write_timeout(Some(wait.min(Duration::from_secs(10))))
+        .context("Could not configure desktop request timeout")?;
     serde_json::to_writer(
         &mut stream,
         &Request {
@@ -333,15 +341,25 @@ fn call_within(address: &str, token: &str, action: Action, wait: Duration) -> Re
             token: token.into(),
             action,
         },
-    )?;
-    stream.write_all(b"\n")?;
+    )
+    .with_context(|| format!("Could not send request to Patchbay desktop at {address}; the request outcome is unknown"))?;
+    stream.write_all(b"\n").with_context(|| {
+        format!("Could not finish sending request to Patchbay desktop at {address}; the request outcome is unknown")
+    })?;
     let mut line = String::new();
-    BufReader::new(stream.take(16 * LIMIT)).read_line(&mut line)?;
-    ensure!(!line.is_empty(), "Desktop disconnected");
-    let response: Response = serde_json::from_str(&line)?;
+    BufReader::new(stream.take(16 * LIMIT))
+        .read_line(&mut line)
+        .with_context(|| format!("Could not read response from Patchbay desktop at {address} (response timeout: {} seconds); the request outcome is unknown", wait.as_secs_f64()))?;
+    ensure!(
+        !line.is_empty(),
+        "Patchbay desktop at {address} closed the connection without a response; the request outcome is unknown. Reopen Patchbay and inspect the action status before retrying"
+    );
+    let response: Response = serde_json::from_str(&line)
+        .context("Invalid response from Patchbay desktop; expected a version 1 JSON response. The request outcome is unknown")?;
     ensure!(
         response.version == 1,
-        "Unsupported desktop response version"
+        "Unsupported Patchbay desktop response version {}; expected version 1. Use matching desktop and CLI versions; the request outcome is unknown",
+        response.version
     );
     Ok(response)
 }
@@ -367,8 +385,12 @@ pub fn call_from_env_within(action: Action, wait: Duration) -> Result<Response> 
 }
 
 fn call_endpoint(endpoint: &Path, token: &str, action: Action, wait: Duration) -> Result<Response> {
-    let address = std::fs::read_to_string(endpoint)
-        .context("Desktop disconnected; open the launch project in Patchbay")?;
+    let address = std::fs::read_to_string(endpoint).with_context(|| {
+        format!(
+            "Could not read Patchbay desktop endpoint file {}; start or reopen Patchbay and try again",
+            endpoint.display()
+        )
+    })?;
     call_within(&address, token, action, wait)
 }
 
@@ -558,6 +580,179 @@ mod tests {
         BufReader::new(stream).read_line(&mut text).unwrap();
         assert!(serde_json::from_str::<Response>(&text).unwrap().ok);
         server.stop();
+        let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
+    }
+
+    /// Consume the complete request before replying so EOF tests do not depend on
+    /// platform-specific connection resets caused by unread socket data.
+    fn with_desktop(reply: impl FnOnce(TcpStream) + Send + 'static, check: impl FnOnce(&str)) {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            reply(stream);
+        });
+        check(&address);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn response_preserves_error_chain_and_json_shape() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let cause = error.to_string();
+        let response = Response::from_result(Err(
+            anyhow::Error::new(error).context("Could not read desktop endpoint")
+        ));
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["ok"], false);
+        assert!(json["result"].is_null());
+        let message = json["error"].as_str().unwrap();
+        assert!(message.contains("Could not read desktop endpoint"));
+        assert!(message.contains(&cause));
+    }
+
+    #[test]
+    fn missing_endpoint_reports_path_and_recovery() {
+        let endpoint = std::env::temp_dir().join(format!("missing-endpoint-{}", new_id()));
+        let error = call_endpoint(
+            &endpoint,
+            "secret-token",
+            Action::Status {},
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(&endpoint.display().to_string()));
+        assert!(message.contains("Could not read"));
+        assert!(message.contains("start or reopen Patchbay"));
+        assert!(error.chain().count() > 1);
+        assert!(!message.contains("secret-token"));
+    }
+
+    #[test]
+    fn invalid_endpoint_address_reports_parse_failure() {
+        let error = call("invalid-address", "secret-token", Action::Status {}).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid Patchbay desktop connection address")
+        );
+        assert!(error.chain().count() > 1);
+    }
+
+    #[test]
+    fn refused_connection_reports_address_and_cause() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let error = call(&address, "secret-token", Action::Status {}).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Could not connect"));
+        assert!(message.contains(&address));
+        assert!(message.contains("start or reopen Patchbay"));
+        assert!(error.chain().count() > 1);
+        assert!(!message.contains("secret-token"));
+    }
+
+    #[test]
+    fn eof_reports_unknown_request_outcome() {
+        with_desktop(drop, |address| {
+            let error = call(address, "secret-token", Action::Status {}).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains(address));
+            assert!(message.contains("closed the connection without a response"));
+            assert!(message.contains("outcome is unknown"));
+        });
+    }
+
+    #[test]
+    fn read_timeout_reports_phase_and_unknown_outcome() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        with_desktop(
+            move |_stream| {
+                let _ = wait.recv_timeout(Duration::from_secs(5));
+            },
+            |address| {
+                let error = call_within(
+                    address,
+                    "secret-token",
+                    Action::Status {},
+                    Duration::from_millis(30),
+                )
+                .unwrap_err();
+                release.send(()).unwrap();
+                let message = format!("{error:#}");
+                assert!(message.contains("Could not read response"));
+                assert!(message.contains(address));
+                assert!(message.contains("response timeout: 0.03 seconds"));
+                assert!(message.contains("outcome is unknown"));
+                assert!(error.chain().count() > 1);
+            },
+        );
+    }
+
+    #[test]
+    fn malformed_response_reports_protocol_failure() {
+        with_desktop(
+            |mut stream| {
+                stream.write_all(b"not-json\n").unwrap();
+            },
+            |address| {
+                let error = call(address, "secret-token", Action::Status {}).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Invalid response from Patchbay desktop")
+                );
+                assert!(error.to_string().contains("outcome is unknown"));
+                assert!(error.chain().count() > 1);
+            },
+        );
+    }
+
+    #[test]
+    fn unsupported_response_version_reports_versions() {
+        with_desktop(
+            |mut stream| {
+                stream
+                    .write_all(b"{\"version\":2,\"ok\":true,\"result\":null,\"error\":null}\n")
+                    .unwrap();
+            },
+            |address| {
+                let error = call(address, "secret-token", Action::Status {}).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("response version 2; expected version 1")
+                );
+                assert!(error.to_string().contains("outcome is unknown"));
+            },
+        );
+    }
+
+    #[test]
+    fn stopped_bridge_reports_shutdown() {
+        let tokens = Arc::default();
+        let (server, endpoint) = server(tokens, |_, _| panic!("Stopped server must not dispatch"));
+        server.stop();
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            server
+                .serve(stream, &|_| None, &|_, _| unreachable!())
+                .unwrap();
+        });
+        let response = call(&address, "secret-token", Action::Status {}).unwrap();
+        assert!(!response.ok);
+        assert!(response.error.unwrap().contains("bridge is shutting down"));
+        thread.join().unwrap();
         let _ = std::fs::remove_dir_all(endpoint.parent().unwrap());
     }
 
