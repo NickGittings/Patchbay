@@ -5,6 +5,7 @@
 pub mod access;
 pub mod actions;
 mod codex;
+mod codex_config;
 pub mod context;
 pub mod detect;
 pub mod devices;

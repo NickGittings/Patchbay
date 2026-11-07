@@ -9,10 +9,9 @@ struct Denies {
     profiles: std::collections::BTreeMap<String, Table>,
 }
 
-/// Read local configuration conservatively, including project layers even when
-/// Codex might ignore an untrusted layer. Keeping an extra deny is preferable to
-/// accidentally replacing it with Patchbay's loopback allowance. Managed policy
-/// remains Codex's responsibility and cannot be overridden by these options.
+/// Codex decides which layers are trusted. Only denies from inactive layers may
+/// affect the generated overrides; their allowances and permission selections
+/// must never become active merely because Patchbay read them.
 pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
     let words = crate::context::launch_words(command).context("Unsupported Codex command")?;
     let (program, _) = crate::context::launch_program(command).context("Missing Codex program")?;
@@ -37,75 +36,23 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
         "Scoped networking must be configured on the remote Codex server"
     );
     ensure!(
-        !args
-            .windows(2)
-            .any(|pair| matches!(pair[0].as_str(), "--enable" | "--disable")
-                && pair[1] == "network_proxy"),
+        !args.iter().enumerate().any(|(index, arg)| {
+            let value = if matches!(arg.as_str(), "--enable" | "--disable") {
+                args.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--enable=")
+                    .or_else(|| arg.strip_prefix("--disable="))
+            };
+            value.is_some_and(|value| value.split(',').any(|feature| feature == "network_proxy"))
+        }),
         "Use a network_proxy configuration table instead of a feature toggle to preserve destination rules"
+    );
+    ensure!(
+        option(args, "-C", "--cd").is_none(),
+        "Scoped networking cannot inspect a Codex working-directory override safely; use the Patchbay session's working directory"
     );
     let mut config = Table::new();
     let mut denies = Denies::default();
-    if !cfg!(test) {
-        let mut home = std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|p| p.join(".codex")));
-        for word in &words[..program] {
-            if let Some(value) = word.strip_prefix("CODEX_HOME=") {
-                ensure!(
-                    !value.contains(['$', '%', '~']),
-                    "Cannot resolve dynamic CODEX_HOME safely"
-                );
-                home = Some(PathBuf::from(value));
-            }
-        }
-        read(
-            &PathBuf::from("/etc/codex/config.toml"),
-            &mut config,
-            &mut denies,
-        )?;
-        if let Some(home) = &home {
-            read(&home.join("config.toml"), &mut config, &mut denies)?;
-        }
-        let mut cwd = cwd.to_path_buf();
-        if let Some(path) = option(args, "-C", "--cd") {
-            ensure!(
-                !path.contains(['$', '%', '~']),
-                "Cannot resolve dynamic Codex working directory safely"
-            );
-            cwd = cwd.join(path);
-        }
-        let ancestors = cwd.ancestors().collect::<Vec<_>>();
-        for path in ancestors.into_iter().rev() {
-            read(&path.join(".codex/config.toml"), &mut config, &mut denies)?;
-        }
-        if let Some(profile) = option(args, "-p", "--profile").or_else(|| {
-            config
-                .get("profile")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        }) {
-            ensure!(
-                !profile.contains(['/', '\\', '$', '%']),
-                "Cannot resolve Codex profile safely"
-            );
-            if let Some(legacy) = config
-                .get("profiles")
-                .and_then(|v| v.get(&profile))
-                .and_then(Value::as_table)
-                .cloned()
-            {
-                collect_denies(&legacy, &mut denies);
-                merge(&mut config, legacy);
-            }
-            if let Some(home) = &home {
-                read(
-                    &home.join(format!("{profile}.config.toml")),
-                    &mut config,
-                    &mut denies,
-                )?;
-            }
-        }
-    }
     for raw in overrides(args) {
         let (key, raw) = raw
             .split_once('=')
@@ -116,6 +63,10 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
             "default_permissions",
             "sandbox_mode",
             "sandbox_workspace_write",
+            "projects",
+            "profile",
+            "config_server",
+            "forced_",
         ]
         .iter()
         .any(|prefix| key.trim().starts_with(prefix))
@@ -133,6 +84,63 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
             .map_err(|_| anyhow!("Cannot resolve Codex configuration override safely"))?;
         collect_denies(&layer, &mut denies);
         merge(&mut config, layer);
+    }
+    if !cfg!(test) {
+        let snapshot = crate::codex_config::inspect(command, cwd, &overrides(args))?;
+        let base = resolve_layers(&snapshot, None, &mut denies)?;
+        let mut profile_config = Table::new();
+        if let Some(profile) = option(args, "-p", "--profile").or_else(|| {
+            base.get("profile")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }) {
+            ensure!(
+                !profile.contains(['/', '\\', '$', '%']),
+                "Cannot resolve Codex profile safely"
+            );
+            if let Some(legacy) = base
+                .get("profiles")
+                .and_then(|v| v.get(&profile))
+                .and_then(Value::as_table)
+            {
+                merge(&mut profile_config, legacy.clone());
+            }
+            let mut home = std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|p| p.join(".codex")));
+            for word in &words[..program] {
+                if let Some(value) = word.strip_prefix("CODEX_HOME=") {
+                    ensure!(
+                        !value.contains(['$', '%', '~']),
+                        "Cannot resolve dynamic CODEX_HOME safely"
+                    );
+                    home = Some(PathBuf::from(value));
+                }
+            }
+            if let Some(home) = home {
+                read(
+                    &cwd.join(home).join(format!("{profile}.config.toml")),
+                    &mut profile_config,
+                    &mut denies,
+                )?;
+            }
+            ensure!(
+                ![
+                    "projects",
+                    "config_server",
+                    "forced_chatgpt_workspace_id",
+                    "forced_login_method",
+                    "profile"
+                ]
+                .iter()
+                .any(|key| profile_config.contains_key(*key)),
+                "This Codex profile changes trust or managed-policy identity; scoped networking requires authoritative profile inspection"
+            );
+            collect_denies(&profile_config, &mut denies);
+        }
+        let mut effective = resolve_layers(&snapshot, Some(&profile_config), &mut denies)?;
+        merge(&mut effective, config);
+        config = effective;
     }
     if let Some(mode) = option(args, "-s", "--sandbox") {
         config.insert("sandbox_mode".into(), Value::String(mode));
@@ -153,6 +161,71 @@ fn option(args: &[String], short: &str, long: &str) -> Option<String> {
         }
     }
     found
+}
+
+fn resolve_layers(
+    snapshot: &serde_json::Value,
+    profile: Option<&Table>,
+    denies: &mut Denies,
+) -> Result<Table> {
+    // The protocol returns highest precedence first.
+    let mut layers = snapshot
+        .get("layers")
+        .and_then(serde_json::Value::as_array)
+        .context("Installed Codex did not provide configuration layers")?
+        .iter()
+        .rev()
+        .collect::<Vec<_>>();
+    let insert = if profile.is_some_and(|p| !p.is_empty()) {
+        if let Some(user) = layers
+            .iter()
+            .rposition(|layer| layer["name"]["type"] == "user")
+        {
+            user + 1
+        } else {
+            ensure!(
+                layers.iter().all(|layer| matches!(
+                    layer["name"]["type"].as_str(),
+                    Some("system" | "project" | "sessionFlags" | "packagedDefaults")
+                )),
+                "Cannot resolve Codex profile precedence safely"
+            );
+            layers
+                .iter()
+                .position(|layer| {
+                    matches!(
+                        layer["name"]["type"].as_str(),
+                        Some("project" | "sessionFlags")
+                    )
+                })
+                .unwrap_or(layers.len())
+        }
+    } else {
+        layers.len()
+    };
+    let mut config = Table::new();
+    // A sentinel inserts profile defaults even when there are no higher layers.
+    layers.push(&serde_json::Value::Null);
+    for (index, layer) in layers.into_iter().enumerate() {
+        if index == insert
+            && let Some(profile) = profile
+        {
+            merge(&mut config, profile.clone());
+        }
+        if layer.is_null() {
+            continue;
+        }
+        let table: Table = serde_json::from_value(layer["config"].clone())
+            .map_err(|_| anyhow!("Invalid Codex configuration layer metadata"))?;
+        collect_denies(&table, denies);
+        if layer
+            .get("disabledReason")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            merge(&mut config, table);
+        }
+    }
+    Ok(config)
 }
 
 fn overrides(args: &[String]) -> Vec<String> {
@@ -576,6 +649,60 @@ extends = "parent"
             );
         }
         assert!(launch_options("codex --sandbox read-only", Path::new("/repo")).is_err());
-        assert!(launch_options("codex --disable network_proxy", Path::new("/repo")).is_err());
+        for flags in [
+            "--disable network_proxy",
+            "--disable=network_proxy",
+            "--enable=network_proxy",
+            "--disable=network_proxy --disable=other",
+            "--enable=other,network_proxy",
+        ] {
+            assert!(
+                launch_options(&format!("codex {flags}"), Path::new("/repo")).is_err(),
+                "{flags}"
+            );
+        }
+    }
+
+    #[test]
+    fn inactive_project_layers_contribute_only_denies() {
+        let snapshot = serde_json::json!({"layers":[
+            {"name":{"type":"project"},"disabledReason":"untrusted", "config":{
+                "default_permissions":":workspace",
+                "features":{"network_proxy":{"domains":{"*":"allow","blocked.example":"deny"}}}
+            }},
+            {"name":{"type":"user"},"config":{"default_permissions":":read-only"}}
+        ]});
+        let mut denies = Denies::default();
+        let config = resolve_layers(&snapshot, None, &mut denies).unwrap();
+        assert_eq!(config["default_permissions"].as_str(), Some(":read-only"));
+        let mut updated = config.clone();
+        for option in network_options(&config, denies).unwrap() {
+            merge(&mut updated, toml::from_str(&option).unwrap());
+        }
+        let domains = updated["features"]["network_proxy"]["domains"]
+            .as_table()
+            .unwrap();
+        assert_eq!(domains["blocked.example"].as_str(), Some("deny"));
+        assert!(!domains.contains_key("*"));
+        assert_eq!(
+            updated["permissions"]["patchbay_loopback"]["extends"].as_str(),
+            Some(":read-only")
+        );
+    }
+
+    #[test]
+    fn profile_defaults_precede_trusted_project_and_cli_layers() {
+        let snapshot = serde_json::json!({"layers":[
+            {"name":{"type":"project"},"config":{"default_permissions":":read-only"}},
+            {"name":{"type":"user"},"config":{"default_permissions":":read-only"}},
+            {"name":{"type":"system"},"config":{}}
+        ]});
+        let profile: Table = toml::from_str("default_permissions=\":workspace\"").unwrap();
+        let config = resolve_layers(&snapshot, Some(&profile), &mut Denies::default()).unwrap();
+        assert_eq!(config["default_permissions"].as_str(), Some(":read-only"));
+        let mut with_cli = snapshot.clone();
+        with_cli["layers"].as_array_mut().unwrap().insert(0, serde_json::json!({"name":{"type":"sessionFlags"},"config":{"default_permissions":"custom"}}));
+        let config = resolve_layers(&with_cli, Some(&profile), &mut Denies::default()).unwrap();
+        assert_eq!(config["default_permissions"].as_str(), Some("custom"));
     }
 }

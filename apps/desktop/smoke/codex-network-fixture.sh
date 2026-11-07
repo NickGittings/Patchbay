@@ -29,6 +29,9 @@ cat > "$dir/codex" <<'PYTHON'
 #!/usr/bin/env python3
 import json, os, pathlib, sys
 root = pathlib.Path(__file__).parent
+if 'app-server' in sys.argv:
+    real = (root/'real-codex').read_text().strip()
+    os.execv(real, [real, *sys.argv[1:]])
 if sys.argv[-2:] == ['login', 'status']:
     print('Logged in using ChatGPT')  # Scripted sandbox probe; no model authentication needed.
     sys.exit(0)
