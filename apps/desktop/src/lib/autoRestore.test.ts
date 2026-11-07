@@ -156,3 +156,40 @@ test('a coordinated launch identity survives restart before its result is confir
   ).toMatchObject({ stage: 'implement', status: 'paused', implementationLaunch: 'reserved' })
   expect(restoredAuto({ ...saved, implementationLaunch: 42 })?.implementationLaunch).toBeUndefined()
 })
+
+test('explicit schedules survive restart only with compatible pause metadata', () => {
+  const scheduled = {
+    ...saved,
+    status: 'paused',
+    pauseKind: 'scheduled',
+    resumeTrigger: { kind: 'time', atMs: 1000 },
+  }
+  expect(restoredAuto(scheduled)).toMatchObject({
+    pauseKind: 'scheduled',
+    resumeTrigger: scheduled.resumeTrigger,
+  })
+  for (const patch of [
+    { status: 'running' },
+    { pauseKind: 'needsUser' },
+    { pauseKind: 'user' },
+    { status: 'stopped' },
+    { resumeTrigger: { kind: 'time', atMs: NaN } },
+  ])
+    expect(restoredAuto({ ...scheduled, ...patch })?.resumeTrigger).toBeUndefined()
+  const usage = {
+    ...saved,
+    status: 'paused',
+    pauseKind: 'usage',
+    resumeOnUsageReset: true,
+    usageWait: { providers: ['codex'], atMs: 1000 },
+    resumeTrigger: { kind: 'usage', atMs: 1000 },
+  }
+  expect(restoredAuto(usage)).toMatchObject({
+    pauseKind: 'usage',
+    resumeTrigger: usage.resumeTrigger,
+  })
+  expect(restoredAuto({ ...usage, resumeOnUsageReset: false })?.resumeTrigger).toBeUndefined()
+  expect(
+    restoredAuto({ ...usage, usageWait: { providers: ['invalid'], atMs: 1000 } })?.resumeTrigger,
+  ).toBeUndefined()
+})

@@ -62,7 +62,37 @@ export function restoredAuto(value: unknown): AutoRun | null {
             ? 'restored'
             : 'user'
         : 'restored'
+  const usageWait =
+    r.usageWait &&
+    Number.isFinite(r.usageWait.atMs) &&
+    Array.isArray(r.usageWait.providers) &&
+    r.usageWait.providers.length > 0 &&
+    r.usageWait.providers.every((p) => p === 'claude' || p === 'codex')
+      ? r.usageWait
+      : undefined
+  const trigger = r.resumeTrigger
+  const scheduled =
+    !finished &&
+    r.status === 'paused' &&
+    trigger &&
+    Number.isFinite(trigger.atMs) &&
+    ((trigger.kind === 'time' && r.pauseKind === 'scheduled') ||
+      (trigger.kind === 'usage' &&
+        r.pauseKind === 'usage' &&
+        r.resumeOnUsageReset === true &&
+        usageWait))
+      ? trigger
+      : undefined
+  const restoredPause =
+    r.status === 'paused' &&
+    ((r.pauseKind === 'usage' && usageWait) || (r.pauseKind === 'scheduled' && scheduled))
+      ? r.pauseKind
+      : pauseKind
   return {
+    resumeOnUsageReset: r.resumeOnUsageReset === true,
+    usageWait:
+      !finished && r.status === 'paused' && r.pauseKind === 'usage' ? usageWait : undefined,
+    resumeTrigger: scheduled,
     runId: r.runId,
     stage: r.stage,
     goal: r.goal,
@@ -99,7 +129,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
     round: r.round,
     status: finished ? r.status : 'paused',
     background: r.background === true,
-    pauseKind: finished ? undefined : pauseKind,
+    pauseKind: finished ? undefined : restoredPause,
     pausedMs: finished
       ? undefined
       : ((r.status === 'paused' ? finite(r.pausedMs) : undefined) ?? Date.now()),
@@ -141,7 +171,10 @@ export function restoredAuto(value: unknown): AutoRun | null {
       ? typeof r.reason === 'string'
         ? r.reason
         : undefined
-      : pauseKind === 'user' || pauseKind === 'needsUser'
+      : restoredPause === 'usage' ||
+          restoredPause === 'scheduled' ||
+          pauseKind === 'user' ||
+          pauseKind === 'needsUser'
         ? typeof r.reason === 'string'
           ? r.reason
           : 'Paused — Resume?'

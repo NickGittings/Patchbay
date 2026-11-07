@@ -97,6 +97,9 @@ const {
   autoRun,
   agentFor,
   runAgents,
+  scheduleAutoResume,
+  cancelAutoResume,
+  setAutoUsageResume,
 } = await import('./auto')
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
@@ -4344,3 +4347,210 @@ test('a failed coordinated launch saves its identity before handoff and recovers
     expect(implementPlannerPlan).toHaveBeenCalledOnce()
   })
 })
+
+test('a timed resume waits for its deadline and resumes once', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  setRun({ status: 'paused', pauseKind: 'user' })
+  scheduleAutoResume('p', 't', 6000)
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+    expect(autoRun('p', 't')?.log.filter((l) => l.text.startsWith('Resumed:'))).toHaveLength(1)
+  })
+})
+test('cancel and manual pause prevent an overdue schedule from resuming', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  for (const cancel of [cancelAutoResume, pauseAuto, stopAuto]) {
+    setRun({ status: 'paused', pauseKind: 'user' })
+    scheduleAutoResume('p', 't', 2000)
+    cancel('p', 't')
+    vi.setSystemTime(3000)
+    await withFollower(flush)
+    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+    expect(autoRun('p', 't')?.log.some((l) => l.text.startsWith('Resumed:'))).toBe(false)
+    vi.setSystemTime(1000)
+  }
+})
+test('scheduled resume waits for service connection and cancels on auth failure', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  setRun({ status: 'paused', pauseKind: 'user' })
+  scheduleAutoResume('p', 't', 2000)
+  useStore.setState({ serviceConnected: false })
+  vi.setSystemTime(3000)
+  const auth = await import('./providerAuth')
+  vi.mocked(auth.requireDeviceAuth).mockRejectedValue(new Error('Sign in required'))
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')?.resumeTrigger).toBeDefined()
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'needsUser',
+      reason: 'Error: Sign in required',
+    })
+    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+    expect(auth.requireDeviceAuth).toHaveBeenCalledWith(
+      expect.anything(),
+      'p',
+      't',
+      undefined,
+      false,
+    )
+  })
+})
+test('usage wait can opt in, and a time schedule takes precedence', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  setRun({ status: 'paused', pauseKind: 'usage', usageWait: { providers: ['codex'], atMs: 2000 } })
+  setAutoUsageResume('p', 't', true)
+  expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 2000 })
+  scheduleAutoResume('p', 't', 3000)
+  setAutoUsageResume('p', 't', false)
+  expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'time', atMs: 3000 })
+  expect(() => scheduleAutoResume('p', 't', 999)).toThrow('future')
+})
+test('cancellation during scheduled authentication prevents a resume', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  setRun({ status: 'paused', pauseKind: 'user' })
+  scheduleAutoResume('p', 't', 2000)
+  vi.setSystemTime(3000)
+  let release!: () => void
+  const auth = await import('./providerAuth')
+  vi.mocked(auth.requireDeviceAuth).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve
+      }),
+  )
+  await withFollower(async () => {
+    await flush()
+    cancelAutoResume('p', 't')
+    release()
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    expect(autoRun('p', 't')?.log.some((l) => l.text.startsWith('Resumed:'))).toBe(false)
+  })
+})
+
+test('usage resumes only after every required provider window clears, rechecking extended resets', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  const codex = useStore.getState().devices[0]
+  useStore.setState({
+    devices: [codex, { ...codex, id: 'claude', command: 'claude', adapter: 'claude' }],
+  })
+  vi.mocked(ipc.agentProvider).mockImplementation(async (d) =>
+    d.adapter === 'claude' ? 'claude' : 'codex',
+  )
+  const data = {
+    claude: {
+      provider: 'claude' as const,
+      fiveHour: null,
+      weekly: { usedPercent: 96, resetsAtMs: 6000, windowMinutes: 10080 },
+      observedMs: 1000,
+    },
+    codex: {
+      provider: 'codex' as const,
+      weekly: null,
+      fiveHour: { usedPercent: 96, resetsAtMs: 3000, windowMinutes: 300 },
+      observedMs: 1000,
+    },
+    claudeCapture: { installed: true, chained: null, source: '/settings.json' },
+    claudeError: null,
+    codexError: null,
+  }
+  vi.mocked(ipc.usageRead).mockResolvedValue(data)
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
+    useStore.setState({ sessions: { s: reviewSession('working'), lane: reviewSession('working') } })
+    return request.lane === 'claude' ? 'lane' : 's'
+  })
+  await withFollower(async () => {
+    await startAuto('p', 't', {
+      ...run(),
+      effort: 'light',
+      resumeOnUsageReset: true,
+      reviewers: ['codex', 'claude'],
+    })
+    await flush()
+    expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 6000 })
+    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+    data.claude.weekly.resetsAtMs = 11000
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 11000 })
+    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(jobs.startReviewAgents).toHaveBeenCalledTimes(1)
+    expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
+    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+  })
+})
+
+test('cancelling while usage refresh is pending leaves Auto paused', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  setRun({
+    status: 'paused',
+    pauseKind: 'usage',
+    resumeOnUsageReset: true,
+    usageWait: { providers: ['codex'], atMs: 500 },
+    resumeTrigger: { kind: 'usage', atMs: 500 },
+  })
+  const empty = await ipc.usageRead()
+  let resolve!: (data: typeof empty) => void
+  vi.mocked(ipc.usageRead).mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        resolve = r
+      }),
+  )
+  await withFollower(async () => {
+    await flush()
+    cancelAutoResume('p', 't')
+    resolve(empty)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('paused')
+    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+  })
+})
+
+test.each([false, true])(
+  'overdue schedules respect background permission (%s)',
+  async (background) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    setRun({ status: 'paused', pauseKind: 'user', background })
+    scheduleAutoResume('p', 't', 2000)
+    const { restoredAuto } = await import('./autoRestore')
+    setRun(restoredAuto(autoRun('p', 't'))!)
+    useStore.getState().setActiveTask(null, true)
+    vi.setSystemTime(3000)
+    await withFollower(async () => {
+      await flush()
+      if (!background) {
+        expect(autoRun('p', 't')?.resumeTrigger).toBeDefined()
+        expect(autoRun('p', 't')?.status).toBe('paused')
+        useStore.getState().setActiveTask('t')
+        await flush()
+      }
+      expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+      expect(autoRun('p', 't')?.log.filter((l) => l.text.startsWith('Resumed:'))).toHaveLength(1)
+    })
+  },
+)

@@ -147,3 +147,11 @@ test('signed-out Codex with a local config can explicitly continue on the next c
     auth.requireProviderAuth({ terminal: { command: 'codex -p other' } }),
   ).rejects.toThrow(auth.ProviderSetupRequired)
 })
+
+test('scheduled authentication reports setup requirements without opening a dialog', async () => {
+  vi.mocked(ipc.providerAuthCheck).mockResolvedValue(result('signedOut'))
+  await expect(auth.requireProviderAuth({ terminal: { command: 'codex' } }, false)).rejects.toThrow(
+    auth.ProviderSetupRequired,
+  )
+  expect(auth.useProviderSetup.getState().pending).toBeNull()
+})

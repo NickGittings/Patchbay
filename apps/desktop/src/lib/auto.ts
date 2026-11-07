@@ -7,7 +7,7 @@ import {
   providerRuns,
 } from './orchestration'
 import { profileHookProvider, commandProfile } from './agentProfiles'
-import { refreshUsage, usageBlock } from './usage'
+import { refreshUsage, usageBlock, usageWarnings } from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
@@ -295,9 +295,21 @@ function workspace(projectId: string, task: string | null) {
 export const autoRun = (projectId: string, task: string | null) => workspace(projectId, task)?.auto
 function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
   if (update.status === 'paused') {
-    return { pauseKind: 'needsUser', pausedMs: Date.now(), ...update }
+    return {
+      resumeTrigger: undefined,
+      usageWait: undefined,
+      pauseKind: 'needsUser',
+      pausedMs: Date.now(),
+      ...update,
+    }
   } else if (update.status) {
-    return { ...update, pauseKind: undefined, pausedMs: undefined }
+    return {
+      ...update,
+      resumeTrigger: undefined,
+      usageWait: undefined,
+      pauseKind: undefined,
+      pausedMs: undefined,
+    }
   }
   return update
 }
@@ -563,6 +575,7 @@ export type AutoSettings = Pick<
   | 'scanners'
   | 'workers'
   | 'background'
+  | 'resumeOnUsageReset'
 > & {
   stage?: AutoStage
 }
@@ -744,12 +757,14 @@ export function pauseAuto(
   ))
     void controlProviderRun(projectId, id, { kind: 'pause' }).catch(() => {})
 }
-export async function resumeAuto(projectId: string, task: string | null) {
+export async function resumeAuto(projectId: string, task: string | null, scheduled = false) {
+  if (!scheduled) cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
   if (!run) return
   for (const id of runAgents(run)) {
     const device = agentDevices(useStore.getState().devices).find((d) => d.id === id)
-    if (device) await requireDeviceAuth(device, projectId, task)
+    if (device) await requireDeviceAuth(device, projectId, task, undefined, !scheduled)
+    if (autoRun(projectId, task) !== run) return
   }
   // Resume changes the run id, so let a pending launch attach its session first.
   if (peekController(projectId, task)?.phase === 'launching')
@@ -768,7 +783,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
     )
     if (build && autoRun(projectId, task) === run) {
       patch(projectId, task, { implementationRun: build.id, ...track([]) })
-      return resumeAuto(projectId, task)
+      return resumeAuto(projectId, task, scheduled)
     }
   }
   if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
@@ -777,6 +792,7 @@ export async function resumeAuto(projectId: string, task: string | null) {
       const existing = (await providerRuns(projectId)).find((r) => r.id === id)
       // A scan ID is saved before creation; a failed write must be retried with that same ID.
       if (!existing && run.stage !== 'scan') throw new Error('The provider run is missing')
+      if (autoRun(projectId, task) !== run) return
       if (existing?.state === 'paused') await controlProviderRun(projectId, id, { kind: 'resume' })
     }
     if (autoRun(projectId, task) === run)
@@ -1092,6 +1108,7 @@ export function stopAuto(projectId: string, task: string | null) {
     void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
 }
 export async function skipStage(projectId: string, task: string | null) {
+  cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
   if (!run || run.status === 'running') return
   if (run.stage === 'scan') {
@@ -1733,23 +1750,36 @@ async function drive(projectId: string, task: string | null) {
     // Usage is read beside the hook checks; refreshUsage never rejects.
     const reading = useStore.getState().usageSettings.gateAuto ? refreshUsage() : null
     const providers = await Promise.all(reviewers.map((d) => checkAutoHooks(d.id)))
+    const usageProviders = providers.map((provider, i) =>
+      provider?.startsWith('claude:')
+        ? commandProfile(reviewers[i].command)?.openRouter
+          ? null
+          : 'claude'
+        : (provider as 'claude' | 'codex' | null),
+    )
     if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
     if (reading && useStore.getState().usageSettings.gateAuto) {
       const usage = await reading
       if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
-      for (const provider of providers) {
-        const blocked = usageBlock(
-          usage,
-          provider?.startsWith('claude:')
-            ? commandProfile(reviewers[providers.indexOf(provider)].command)?.openRouter
-              ? null
-              : 'claude'
-            : (provider as 'claude' | 'codex' | null),
-          useStore.getState().usageSettings,
-          Date.now(),
-        )
+      for (const provider of usageProviders) {
+        const blocked = usageBlock(usage, provider, useStore.getState().usageSettings, Date.now())
         if (blocked) {
-          pause(blocked)
+          const warnings = usageWarnings(
+            usage,
+            useStore.getState().usageSettings,
+            Date.now(),
+          ).filter((w) => w.level === 'limit' && usageProviders.includes(w.provider))
+          const usageWait = {
+            providers: [...new Set(usageProviders.filter((p): p is 'claude' | 'codex' => !!p))],
+            atMs: Math.max(...warnings.map((w) => w.window.resetsAtMs)),
+          }
+          pause(blocked, 'usage')
+          patch(projectId, task, {
+            usageWait,
+            resumeTrigger: run.resumeOnUsageReset
+              ? { kind: 'usage', atMs: usageWait.atMs }
+              : undefined,
+          })
           return
         }
       }
@@ -1955,6 +1985,90 @@ async function drive(projectId: string, task: string | null) {
       launchingSessions.delete(reservedSession)
   }
 }
+export function cancelAutoResume(projectId: string, task: string | null) {
+  if (autoRun(projectId, task)?.resumeTrigger)
+    patch(projectId, task, { resumeTrigger: undefined }, 'Scheduled resume cancelled')
+}
+export function scheduleAutoResume(projectId: string, task: string | null, atMs: number) {
+  const run = autoRun(projectId, task)
+  if (run?.status !== 'paused' || run.pauseKind === 'needsUser')
+    throw new Error('Resolve the issue or pause the run before scheduling')
+  if (!Number.isFinite(atMs) || atMs <= Date.now()) throw new Error('Choose a future date and time')
+  patch(
+    projectId,
+    task,
+    {
+      pauseKind: 'scheduled',
+      resumeTrigger: { kind: 'time', atMs },
+    },
+    `Resume scheduled for ${new Date(atMs).toLocaleString()}`,
+  )
+}
+export function setAutoUsageResume(projectId: string, task: string | null, enabled: boolean) {
+  const run = autoRun(projectId, task)
+  if (!run) return
+  patch(
+    projectId,
+    task,
+    {
+      resumeOnUsageReset: enabled,
+      resumeTrigger:
+        run.resumeTrigger?.kind === 'time'
+          ? run.resumeTrigger
+          : enabled && run.status === 'paused' && run.pauseKind === 'usage' && run.usageWait
+            ? { kind: 'usage', atMs: run.usageWait.atMs }
+            : undefined,
+    },
+    enabled ? 'Usage reset resume enabled' : 'Usage reset resume disabled',
+  )
+}
+async function driveScheduledResume(projectId: string, task: string | null) {
+  const run = autoRun(projectId, task)
+  const trigger = run?.resumeTrigger
+  if (
+    !run ||
+    !trigger ||
+    run.status !== 'paused' ||
+    !['usage', 'scheduled'].includes(run.pauseKind ?? '') ||
+    trigger.atMs > Date.now() ||
+    !useStore.getState().serviceConnected ||
+    !driveable(projectId, task, run)
+  )
+    return
+  const live = () => autoRun(projectId, task) === run
+  try {
+    if (trigger.kind === 'usage') {
+      const usage = await refreshUsage()
+      if (!live()) return
+      const blocked = usageWarnings(usage, useStore.getState().usageSettings, Date.now()).filter(
+        (w) => w.level === 'limit' && run.usageWait?.providers.includes(w.provider),
+      )
+      if (useStore.getState().usageSettings.gateAuto && blocked.length) {
+        patch(projectId, task, {
+          resumeTrigger: {
+            kind: 'usage',
+            atMs: Math.max(...blocked.map((w) => w.window.resetsAtMs)),
+          },
+        })
+        return
+      }
+    }
+    if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
+    await resumeAuto(projectId, task, true)
+  } catch (e) {
+    if (live())
+      patch(
+        projectId,
+        task,
+        {
+          status: 'paused',
+          pauseKind: 'needsUser',
+          reason: String(e),
+        },
+        `Scheduled resume needs attention: ${String(e)}`,
+      )
+  }
+}
 /** The main window owns a single driver; the timer also polls findings every five seconds. */
 export function followAuto() {
   let queued = false
@@ -1969,7 +2083,11 @@ export function followAuto() {
     }
     controller.pending = false
     controller.phase = 'driving'
-    void drive(projectId, task).finally(() => release(controller))
+    void (
+      autoRun(projectId, task)?.resumeTrigger
+        ? driveScheduledResume(projectId, task)
+        : drive(projectId, task)
+    ).finally(() => release(controller))
   }
   const tick = () => {
     if (queued || disposed) return
@@ -1984,7 +2102,8 @@ export function followAuto() {
         for (const { task, run } of autoRuns(p)) {
           if (
             run &&
-            (run.status === 'running' ||
+            (run.resumeTrigger ||
+              run.status === 'running' ||
               (run.status === 'waitingOnYou' &&
                 (run.waitingFor === 'agentInput' || run.stage === 'mergeGate')))
           )
@@ -2051,6 +2170,7 @@ export function followAuto() {
     watched = next
     if (changed) tick()
   })
+  globalThis.window?.addEventListener('focus', tick)
   const interval = setInterval(tick, 5000)
   tick()
   return () => {
@@ -2062,5 +2182,6 @@ export function followAuto() {
     }
     unsubscribe()
     clearInterval(interval)
+    globalThis.window?.removeEventListener('focus', tick)
   }
 }

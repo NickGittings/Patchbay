@@ -125,7 +125,12 @@ export interface AutoRun {
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
   /** Allow this run to launch work while another worktree or project tab is selected. */
   background?: boolean
-  pauseKind?: 'user' | 'restored' | 'inactive' | 'interrupted' | 'needsUser'
+  /** Opt in to scheduling a continuation when the launch usage gate blocks. */
+  resumeOnUsageReset?: boolean
+  /** One persisted, one-time continuation; executed only while Patchbay is open. */
+  resumeTrigger?: { kind: 'time' | 'usage'; atMs: number }
+  usageWait?: { providers: ('claude' | 'codex')[]; atMs: number }
+  pauseKind?: 'user' | 'restored' | 'inactive' | 'interrupted' | 'needsUser' | 'usage' | 'scheduled'
   pausedMs?: number
   stage: AutoStage
   goal: string

@@ -69,3 +69,26 @@ test('Auto offers Review even when findings could not be loaded', () => {
   expect(html).toContain('No verdict')
   expect(html).toContain('View findings')
 })
+
+test('a scheduled paused run exposes its deadline and schedule controls in Simple mode', () => {
+  mock.state.auto = {
+    ...mock.state.auto!,
+    status: 'paused',
+    pauseKind: 'scheduled',
+    resumeTrigger: { kind: 'time', atMs: 2000000000000 },
+  }
+  const html = renderToStaticMarkup(
+    createElement(AutoPanel, { onIntegrations: () => {}, simple: true }),
+  )
+  expect(html).toContain('Cancel schedule')
+  expect(html).toContain('Change schedule')
+  expect(html).toContain('Resume now')
+  expect(html).toContain('datetime-local')
+  expect(html).toContain('Requires Patchbay open')
+})
+
+test('an attention pause cannot schedule around the issue', () => {
+  mock.state.auto = { ...mock.state.auto!, status: 'paused', pauseKind: 'needsUser' }
+  const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
+  expect(html).not.toContain('datetime-local')
+})

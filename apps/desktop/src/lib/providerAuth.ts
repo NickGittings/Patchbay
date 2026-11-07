@@ -99,7 +99,7 @@ export function continueProviderSetup(request: AuthRequest) {
   allowances.set(keyOf(request), Date.now() + 30_000)
   useProviderSetup.setState({ pending: null })
 }
-export async function requireProviderAuth(target: AuthTarget): Promise<void> {
+export async function requireProviderAuth(target: AuthTarget, interactive = true): Promise<void> {
   const provider = await agentProvider(target.terminal)
   if (!provider) return
   const request: AuthRequest = {
@@ -119,7 +119,7 @@ export async function requireProviderAuth(target: AuthTarget): Promise<void> {
   if (token !== generation) throw new ProviderSetupRequired()
   if (result.state === 'signedIn' || result.state === 'notRequired') return
   // Concurrent launches retain the first blocked provider, rather than switching the dialog.
-  if (!useProviderSetup.getState().pending)
+  if (interactive && !useProviderSetup.getState().pending)
     useProviderSetup.setState({ pending: { request, result } })
   throw new ProviderSetupRequired()
 }
@@ -128,9 +128,10 @@ export async function requireDeviceAuth(
   projectId = useStore.getState().project?.id,
   task = useStore.getState().activeTask,
   componentId?: string,
+  interactive = true,
 ) {
   const project = projectId ? (projectOf(projectId) ?? undefined) : undefined
-  return requireProviderAuth({ terminal, project, task, componentId })
+  return requireProviderAuth({ terminal, project, task, componentId }, interactive)
 }
 /** Final check for every desktop IPC launch, including extensions calling the shared wrappers. */
 export async function authenticateInvocation(command: string, args: Record<string, unknown>) {

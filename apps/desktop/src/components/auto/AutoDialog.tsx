@@ -469,6 +469,14 @@ export default function AutoDialog({
         />
         Keep going in background
       </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={draft.resumeOnUsageReset === true}
+          onChange={(e) => edit({ resumeOnUsageReset: e.target.checked })}
+        />
+        Resume when usage resets
+      </label>
       <button
         disabled={
           loading ||
@@ -485,6 +493,7 @@ export default function AutoDialog({
           void startAuto(projectId, task, {
             goal,
             background: draft.background === true,
+            resumeOnUsageReset: draft.resumeOnUsageReset === true,
             effort: simple ? 'light' : effort,
             overrides: simple ? {} : overrides,
             merge: { mode: simple ? 'ask' : mode, destinationBranch: destination },

@@ -4,6 +4,9 @@ import { useState } from 'react'
 import { useStore } from '../../store'
 import { parseSessionId, type ActionReport } from '../../types'
 import {
+  cancelAutoResume,
+  scheduleAutoResume,
+  setAutoUsageResume,
   effortSettings,
   mergeNow,
   pauseAuto,
@@ -44,6 +47,7 @@ export default function AutoPanel({
   const task = useStore((s) => s.activeTask)
   const draftVersion = useStore((s) => s.autoDraftVersion)
   const [error, setError] = useState('')
+  const [resumeTime, setResumeTime] = useState('')
   // The finished run New run was pressed for; another run or worktree shows its own state.
   const [newRunFor, setNewRunFor] = useState<string | null>(null)
   const finished = !!run && ended(run.status)
@@ -138,6 +142,54 @@ export default function AutoPanel({
               refresh={`${run.stage}:${run.status}:${run.log.length}`}
             />
           )}
+          {!finished && (
+            <label>
+              <input
+                type="checkbox"
+                checked={run.resumeOnUsageReset === true}
+                onChange={(e) => projectId && setAutoUsageResume(projectId, task, e.target.checked)}
+              />
+              Resume when usage resets
+            </label>
+          )}
+          {run.resumeTrigger && (
+            <p role="status">
+              Resume {run.resumeTrigger.kind === 'usage' ? 'after usage reset' : 'scheduled'}:{' '}
+              {new Date(run.resumeTrigger.atMs).toLocaleString(undefined, {
+                timeZoneName: 'short',
+              })}
+              . Requires Patchbay open and this worktree active or background work enabled.
+              <button onClick={() => projectId && cancelAutoResume(projectId, task)}>
+                Cancel schedule
+              </button>
+            </p>
+          )}
+          {run.status === 'paused' && run.pauseKind !== 'needsUser' && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                try {
+                  if (projectId) scheduleAutoResume(projectId, task, new Date(resumeTime).getTime())
+                  setError('')
+                } catch (e) {
+                  setError(String(e))
+                }
+              }}
+            >
+              <label>
+                Resume at ({Intl.DateTimeFormat().resolvedOptions().timeZone})
+                <input
+                  type="datetime-local"
+                  required
+                  value={resumeTime}
+                  onChange={(e) => setResumeTime(e.target.value)}
+                />
+              </label>
+              <button type="submit">
+                {run.resumeTrigger ? 'Change schedule' : 'Schedule resume'}
+              </button>
+            </form>
+          )}
           <div className="auto-controls">
             {run.status === 'running' ? (
               <button onClick={() => act('pauseAuto', pauseAuto)}>Pause</button>
@@ -149,9 +201,9 @@ export default function AutoPanel({
                       ? undefined
                       : 'primary'
                   }
-                  onClick={() => act('resumeAuto', resumeAuto)}
+                  onClick={() => act('resumeAuto', (id, task) => resumeAuto(id, task))}
                 >
-                  Resume
+                  {run.resumeTrigger ? 'Resume now' : 'Resume'}
                 </button>
               )
             )}
