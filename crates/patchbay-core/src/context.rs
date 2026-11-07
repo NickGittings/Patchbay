@@ -460,7 +460,7 @@ fn codex_global_options(args: &[String]) -> bool {
     true
 }
 
-fn codex_option_takes_value(arg: &str) -> bool {
+pub(crate) fn codex_option_takes_value(arg: &str) -> bool {
     matches!(
         arg,
         "-c" | "--config"
@@ -613,7 +613,7 @@ fn quote_path(shell: Shell, path: &Path, env: &mut BTreeMap<String, String>) -> 
 /// A TOML basic string whose content is inert even through npm's cmd shims.
 /// Quotes and backslashes occur only as TOML delimiters and Unicode escapes;
 /// parentheses are escaped too, since shims expand `%*` inside `IF (...)` blocks.
-fn toml_inert(s: &str) -> String {
+pub(crate) fn toml_inert(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || " .,:_/-".contains(c) {
@@ -1171,6 +1171,11 @@ pub fn job_agent_spec(
     extra_env: BTreeMap<String, String>,
     policy: &dyn Policy,
 ) -> Result<SessionSpec> {
+    preflight_codex_network(
+        terminal,
+        Scope::Plan(&project.components.iter().collect::<Vec<_>>()),
+        policy,
+    )?;
     build_job_agent_spec(
         project,
         terminal,
@@ -1180,7 +1185,7 @@ pub fn job_agent_spec(
         extra_env,
         policy,
         |command, file, dirs, env| {
-            let notice = brief_agent(
+            let notice = brief_network_agent(
                 command,
                 &Briefing {
                     file,
@@ -1189,6 +1194,7 @@ pub fn job_agent_spec(
                     prompt: Some(prompt),
                     reserve: 0,
                 },
+                Path::new(&project.root),
                 Shell::current(),
                 env,
             );
@@ -1582,6 +1588,141 @@ fn brief_agent(
     }
 }
 
+fn combine_notices(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (first, second) => first.or(second),
+    }
+}
+
+fn configure_codex_network(
+    command: &mut String,
+    cwd: &Path,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    if !interactive_codex(command, shell) {
+        return None;
+    }
+    match crate::codex::launch_options(command, cwd) {
+        Ok(options) => match append_codex_network_options(command, &options, shell, env) {
+            Ok(()) => None,
+            Err(error) => Some(network_notice(&error)),
+        },
+        Err(error) => Some(network_notice(&error)),
+    }
+}
+
+fn network_notice(error: &anyhow::Error) -> String {
+    format!(
+        "Patchbay could not configure scoped Codex networking: {error:#}. The existing sandbox and network settings were preserved. Restart the agent session after correcting its configuration."
+    )
+}
+
+fn append_codex_network_options(
+    command: &mut String,
+    options: &[String],
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let mut candidate = command.clone();
+    let mut candidate_env = env.clone();
+    // Old CLIs must reject unsupported settings instead of silently
+    // enabling command networking without its destination enforcement.
+    if !command_tokens(&candidate, shell)
+        .context("Unsupported Codex command")?
+        .iter()
+        .any(|arg| arg == "--strict-config")
+    {
+        candidate.push_str(" --strict-config");
+    }
+    for option in options {
+        let _ = write!(
+            candidate,
+            " -c {}",
+            quote_path(shell, Path::new(&option), &mut candidate_env)
+        );
+    }
+    anyhow::ensure!(
+        command_len(shell, &candidate, &candidate_env) <= launch_budget(shell),
+        "Network settings exceed the command launch limit"
+    );
+    *command = candidate;
+    *env = candidate_env;
+    Ok(())
+}
+
+fn launch_budget(shell: Shell) -> usize {
+    match shell {
+        Shell::Windows => CMD_BUDGET,
+        Shell::Unix => SHELL_ARG_BUDGET,
+    }
+}
+
+fn brief_network_agent(
+    command: &mut String,
+    briefing: &Briefing<'_>,
+    cwd: &Path,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let original_command = command.clone();
+    let original_env = env.clone();
+    let configured = interactive_codex(command, shell);
+    let notice = configure_codex_network(command, cwd, shell, env);
+    let briefing_notice = brief_agent(command, briefing, shell, env);
+    let prompt_len = briefing
+        .prompt
+        .map(|prompt| command_len(shell, &format!(" {}", shell.quote(prompt)), env))
+        .unwrap_or_default();
+    let reserved = briefing.reserve.saturating_sub(prompt_len);
+    if configured
+        && notice.is_none()
+        && command_len(shell, command, env) + reserved > launch_budget(shell)
+    {
+        // Count the final briefing, directories and kickoff too. Restoring both
+        // values keeps rejected generated environment substitutions out of the launch.
+        *command = original_command;
+        *env = original_env;
+        return combine_notices(
+            brief_agent(command, briefing, shell, env),
+            Some(network_notice(&anyhow!(
+                "Network settings and briefing exceed the command launch limit"
+            ))),
+        );
+    }
+    combine_notices(briefing_notice, notice)
+}
+
+fn interactive_codex(command: &str, shell: Shell) -> bool {
+    let Some(tokens) = command_tokens(command, shell) else {
+        return false;
+    };
+    let Some(program) = program_index(&tokens) else {
+        return false;
+    };
+    agent_named(&tokens[program]) == Some(Agent::Codex)
+        && !unsupported_codex_subcommand(&tokens[program + 1..])
+}
+
+/// Inspection executes the selected program, so the original preset needs
+/// authorization before that read-only probe. Builders still check the fully
+/// decorated command before returning a launchable session.
+fn preflight_codex_network(
+    terminal: &TerminalSpec,
+    scope: Scope<'_>,
+    policy: &dyn Policy,
+) -> Result<()> {
+    if terminal.kind == TerminalKind::Agent
+        && interactive_codex(&terminal.command, Shell::current())
+    {
+        policy
+            .check(scope, terminal.command.trim())
+            .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
+    }
+    Ok(())
+}
+
 /// Build a planner terminal session at the project root.
 ///
 /// An empty scope plans over all components. Agent commands receive the context file.
@@ -1768,6 +1909,7 @@ fn root_session_spec(
         }
     }
     let components = plan_components(project, component_ids);
+    preflight_codex_network(terminal, Scope::Plan(&components), policy)?;
     let mut env = BTreeMap::from([(
         COMPONENT_ENV.to_string(),
         if planning {
@@ -1839,7 +1981,13 @@ fn root_session_spec(
             prompt: prompt.as_deref(),
             reserve,
         };
-        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        notice = brief_network_agent(
+            &mut command,
+            &briefing,
+            Path::new(&project.root),
+            Shell::current(),
+            &mut env,
+        );
         // A resumed conversation is never prompted again. A fix and an Auto planner pass
         // their kickoff again on Restart, and an implement restart passes none, so every
         // root start resumes with the same command and Restart's fingerprint matches.
@@ -1935,6 +2083,7 @@ pub fn session_spec_with(
         .find(|t| t.id == terminal_id)
         .ok_or_else(|| anyhow!("unknown terminal {terminal_id}"))?;
 
+    preflight_codex_network(terminal, Scope::Component(component), policy)?;
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), component.name.clone())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
@@ -1961,7 +2110,13 @@ pub fn session_spec_with(
             prompt: None,
             reserve: 0,
         };
-        notice = brief_agent(&mut command, &briefing, Shell::current(), &mut env);
+        notice = brief_network_agent(
+            &mut command,
+            &briefing,
+            &project.component_dir(component),
+            Shell::current(),
+            &mut env,
+        );
     }
 
     policy
@@ -3357,7 +3512,7 @@ mod tests {
         let spec = session_spec(&p, "api", "agent", &AllowAll, &sections).unwrap();
         assert!(
             spec.command
-                .starts_with("env A=1 codex --model x --add-dir ")
+                .starts_with("env A=1 codex --model x --strict-config ")
         );
         let config = format!(
             "developer_instructions={}",
@@ -3372,6 +3527,252 @@ mod tests {
             component_context(&p, "api", &sections)
         );
         assert!(spec.notice.is_none());
+    }
+
+    #[test]
+    fn codex_network_settings_reach_planner_implementation_merge_and_resume() {
+        let mut p = project();
+        let command = "env A=1 codex --model x -p selected --sandbox workspace-write -a on-request -c 'sandbox_workspace_write.exclude_slash_tmp=true'";
+        p.components[0].terminals[0].command = command.into();
+        let terminal = &p.components[0].terminals[0];
+        let specs = [
+            session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap(),
+            plan_session_spec(&p, &[], terminal, &AllowAll, &[], Some(Kickoff::Plan)).unwrap(),
+            task_root_session_spec(
+                &p,
+                &[],
+                terminal,
+                None,
+                &AllowAll,
+                &[],
+                Some(Kickoff::ImplementPlan { subagents: None }),
+            )
+            .unwrap(),
+            merge_agent_spec(
+                &p,
+                terminal,
+                "Merge the selected worktrees",
+                vec![],
+                &AllowAll,
+            )
+            .unwrap(),
+            job_agent_spec(
+                &p,
+                terminal,
+                "Review interactively",
+                vec![],
+                crate::model::REVIEW_SCOPE,
+                REVIEW_PROMPT,
+                BTreeMap::new(),
+                &AllowAll,
+            )
+            .unwrap(),
+        ];
+        for spec in specs {
+            assert!(spec.command.starts_with(command));
+            assert!(spec.command.contains("features.network_proxy="));
+            assert!(
+                spec.command
+                    .contains("sandbox_workspace_write.network_access=true")
+            );
+            assert!(spec.command.contains("--strict-config"));
+            assert!(!spec.command.contains("danger-full-access"));
+            assert!(spec.notice.is_none(), "{:?}", spec.notice);
+            if let Some(resume) = &spec.resume_command {
+                assert!(resume.starts_with(command));
+                assert!(resume.contains("features.network_proxy="));
+                assert!(resume.contains("sandbox_workspace_write.network_access=true"));
+            }
+            if let Some(file) = owned_briefing(&spec) {
+                remove_owned_briefing_file(&file);
+            }
+        }
+        let native = codex_review_command(
+            "codex -m review",
+            "main",
+            Path::new("findings.md"),
+            &review_briefing(),
+            Shell::current(),
+            &mut BTreeMap::new(),
+        );
+        assert!(!native.contains("network_proxy"));
+        assert!(!native.contains("network_access"));
+        assert!(native.contains("exec --sandbox read-only review"));
+        assert!(native.contains("-o"));
+        let mut claude = "claude -m other".into();
+        assert!(
+            configure_codex_network(
+                &mut claude,
+                Path::new("/repo"),
+                Shell::current(),
+                &mut BTreeMap::new()
+            )
+            .is_none()
+        );
+        assert_eq!(claude, "claude -m other");
+    }
+
+    #[test]
+    fn codex_presets_receive_strict_config_exactly_once() {
+        for preset in [
+            "codex --model preserved",
+            "codex --strict-config --model preserved",
+        ] {
+            let mut command = preset.to_owned();
+            assert!(
+                configure_codex_network(
+                    &mut command,
+                    Path::new("/repo"),
+                    Shell::current(),
+                    &mut BTreeMap::new()
+                )
+                .is_none()
+            );
+            assert!(command.starts_with(preset));
+            let tokens = command_tokens(&command, Shell::current()).unwrap();
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|arg| *arg == "--strict-config")
+                    .count(),
+                1
+            );
+            assert!(command.contains("features.network_proxy="));
+        }
+    }
+
+    #[test]
+    fn oversized_network_settings_preserve_command_and_environment() {
+        let original = "codex --model preserved";
+        let mut command = original.to_owned();
+        let mut env = BTreeMap::from([("KEEP".into(), "value".into())]);
+        let original_env = env.clone();
+        let domains = (0..500)
+            .map(|n| format!("\"host{n}.example.test\"=\"allow\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let options = [
+            "features.network_proxy.proxy_url=\"%PROBE%\"".into(),
+            format!("features.network_proxy.domains={{{domains}}}"),
+        ];
+        let error = append_codex_network_options(&mut command, &options, Shell::Windows, &mut env)
+            .unwrap_err();
+        assert!(error.to_string().contains("command launch limit"));
+        assert_eq!(command, original);
+        assert_eq!(env, original_env);
+    }
+
+    #[test]
+    fn complete_briefing_budget_can_reject_otherwise_fitting_network_settings() {
+        let original = format!("codex --model {}", "x".repeat(CMD_BUDGET - 1314));
+        let mut command = original.clone();
+        let mut env = BTreeMap::new();
+        let file = PathBuf::from(format!(r"C:\Temp\{}.md", "x".repeat(1100)));
+        let text = "briefing ".repeat(2000);
+        let notice = brief_network_agent(
+            &mut command,
+            &briefing(&file, &text, &[]),
+            Path::new("/repo"),
+            Shell::Windows,
+            &mut env,
+        )
+        .unwrap();
+        assert!(notice.contains("command launch limit"), "{notice}");
+        assert!(command.starts_with(&original));
+        assert!(!command.contains("features.network_proxy="));
+        assert!(command_len(Shell::Windows, &command, &env) <= CMD_BUDGET);
+    }
+
+    #[test]
+    fn networking_budget_keeps_room_for_a_future_kickoff_prompt() {
+        let original = format!("codex --model {}", "x".repeat(CMD_BUDGET - 1800));
+        let file = PathBuf::from(format!(r"C:\Temp\{}.md", "x".repeat(500)));
+        let text = "briefing ".repeat(2000);
+        let mut brief = briefing(&file, &text, &[]);
+        let mut candidate = original.clone();
+        let mut candidate_env = BTreeMap::new();
+        assert!(
+            configure_codex_network(
+                &mut candidate,
+                Path::new("/repo"),
+                Shell::Windows,
+                &mut candidate_env
+            )
+            .is_none()
+        );
+        brief_agent(&mut candidate, &brief, Shell::Windows, &mut candidate_env);
+        let len = command_len(Shell::Windows, &candidate, &candidate_env);
+        assert!(len < CMD_BUDGET);
+        brief.reserve = CMD_BUDGET - len + 1;
+        let mut command = original;
+        let mut env = BTreeMap::new();
+        let notice = brief_network_agent(
+            &mut command,
+            &brief,
+            Path::new("/repo"),
+            Shell::Windows,
+            &mut env,
+        )
+        .unwrap();
+        assert!(notice.contains("command launch limit"));
+        assert!(!command.contains("features.network_proxy="));
+        assert!(command_len(Shell::Windows, &command, &env) + brief.reserve <= CMD_BUDGET);
+    }
+
+    #[test]
+    fn codex_inspection_requires_original_policy_approval_and_final_commands_are_rechecked() {
+        struct Guard {
+            original: String,
+            deny_original: bool,
+            calls: std::sync::Mutex<Vec<String>>,
+        }
+        impl Policy for Guard {
+            fn check(&self, _scope: Scope<'_>, command: &str) -> std::result::Result<(), String> {
+                self.calls.lock().unwrap().push(command.into());
+                if command == self.original {
+                    if self.deny_original {
+                        Err("original denied".into())
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Err("decorated denied".into())
+                }
+            }
+        }
+        let mut p = project();
+        let terminal = &mut p.components[0].terminals[0];
+        terminal.id = format!("policy-probe-{}", uuid::Uuid::new_v4());
+        terminal.command = "codex --model preserved".into();
+        let terminal = &p.components[0].terminals[0];
+        for deny_original in [true, false] {
+            for kind in ["component", "planner", "implementation", "merge"] {
+                let policy = Guard {
+                    original: terminal.command.clone(),
+                    deny_original,
+                    calls: std::sync::Mutex::new(vec![]),
+                };
+                let result = match kind {
+                    "component" => session_spec(&p, "api", &terminal.id, &policy, &[]),
+                    "planner" => plan_session_spec(&p, &[], terminal, &policy, &[], None),
+                    "implementation" => {
+                        task_root_session_spec(&p, &[], terminal, None, &policy, &[], None)
+                    }
+                    _ => merge_agent_spec(&p, terminal, "Merge", vec![], &policy),
+                };
+                let error = result.unwrap_err().to_string();
+                let calls = policy.calls.lock().unwrap();
+                assert_eq!(calls[0], terminal.command);
+                if deny_original {
+                    assert!(error.contains("original denied"));
+                    assert_eq!(calls.len(), 1);
+                } else {
+                    assert!(error.contains("decorated denied"));
+                    assert_eq!(calls.len(), 2);
+                    assert!(calls[1].contains("features.network_proxy="));
+                }
+            }
+        }
     }
 
     #[test]

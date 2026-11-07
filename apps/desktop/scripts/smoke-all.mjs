@@ -55,6 +55,18 @@ const SCRIPTS = {
   }),
   popout: smoke('popout.js'),
   bridge: smoke('bridge.js', { PATCHBAY_SMOKE_AGENT_ENDPOINT_FAILURE: '1' }),
+  // Requires an installed Codex CLI and native sandbox support; run explicitly.
+  'codex-network': {
+    ...smoke(
+      'codex-network.js',
+      {
+        PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-codex-network/project'),
+        PATCHBAY_PROBE_DISABLED_FEATURE: 'network_proxy',
+      },
+      'codex-network-fixture.sh',
+    ),
+    manual: true,
+  },
   autosave: smoke(
     'autosave.js',
     {
