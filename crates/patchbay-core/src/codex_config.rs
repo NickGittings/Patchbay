@@ -7,17 +7,42 @@ use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-pub(crate) fn inspect(command: &str, cwd: &Path, overrides: &[String]) -> Result<Value> {
+fn probe_command(command: &str) -> Result<String> {
     let raw = crate::context::launch_raw_words(command).context("Unsupported Codex command")?;
+    let words = crate::context::launch_words(command).context("Unsupported Codex command")?;
     let (program, _) = crate::context::launch_program(command).context("Missing Codex program")?;
     let mut probe = format!("{} app-server --stdio", raw[..=program].join(" "));
     if program > 0 && raw[0].contains('=') {
         probe.insert_str(0, "env ");
     }
-    for value in overrides {
-        probe.push_str(" -c ");
-        probe.push_str(&crate::context::quote_argument(value));
+    let mut index = program + 1;
+    while index < words.len() {
+        let arg = &words[index];
+        if matches!(arg.as_str(), "-c" | "--config") {
+            let value = raw
+                .get(index + 1)
+                .context("Missing Codex config override")?;
+            probe.push_str(&format!(" {} {value}", raw[index]));
+            index += 2;
+        } else if arg.starts_with("--config=") || arg.starts_with("-c") && arg.len() > 2 {
+            probe.push(' ');
+            probe.push_str(&raw[index]);
+            index += 1;
+        } else {
+            // Preserve original shell syntax for configuration arguments. In
+            // particular, MSVC-requoting a value is unsafe inside raw cmd /C.
+            index += if crate::context::codex_option_takes_value(arg) {
+                2
+            } else {
+                1
+            };
+        }
     }
+    Ok(probe)
+}
+
+pub(crate) fn inspect(command: &str, cwd: &Path) -> Result<Value> {
+    let probe = probe_command(command)?;
     #[cfg(unix)]
     let mut process = {
         let mut process = crate::process::background_command(
@@ -29,8 +54,13 @@ pub(crate) fn inspect(command: &str, cwd: &Path, overrides: &[String]) -> Result
     };
     #[cfg(windows)]
     let mut process = {
+        use std::os::windows::process::CommandExt as _;
         let mut process = crate::process::background_command("cmd.exe");
-        process.args(["/D", "/S", "/C", &probe]);
+        // /S removes these outer quotes. The inner executable/config quotes
+        // must reach cmd verbatim, without Rust's MSVC argument escaping.
+        process
+            .args(["/D", "/V:OFF", "/S", "/C"])
+            .raw_arg(format!("\"{probe}\""));
         process
     };
     let mut child = process
@@ -163,5 +193,51 @@ mod tests {
                     .contains("was not enabled")
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_inspection_accepts_quoted_program_paths_and_config_values() {
+        let dir =
+            std::env::temp_dir().join(format!("patchbay quoted probe {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("codex.cmd");
+        std::fs::write(
+            &program,
+            "@echo off\r\npowershell.exe -NoProfile -NonInteractive -File \"%~dp0server.ps1\"\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("server.ps1"),
+            r#"
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{"id":0,"result":{}}')
+$null = [Console]::In.ReadLine()
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{"id":1,"result":{"layers":[]}}')
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{"id":2,"result":{"requirements":null}}')
+"#,
+        )
+        .unwrap();
+        let command = format!(
+            "{} -c {}",
+            crate::context::quote_argument(program.to_str().unwrap()),
+            crate::context::quote_argument("developer_instructions=\"quoted value\"")
+        );
+        let result = inspect(&command, &dir).unwrap();
+        assert_eq!(result["layers"], json!([]));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configuration_probe_preserves_original_shell_quoting() {
+        let command = r#"env A='one two' '/path with spaces/codex' -m preserved -p selected -c 'developer_instructions="literal $VALUE & text"' --config='features.network_proxy=false'"#;
+        let probe = probe_command(command).unwrap();
+        assert_eq!(
+            probe,
+            r#"env A='one two' '/path with spaces/codex' app-server --stdio -c 'developer_instructions="literal $VALUE & text"' --config='features.network_proxy=false'"#
+        );
     }
 }

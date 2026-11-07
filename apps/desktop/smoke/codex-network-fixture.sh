@@ -35,6 +35,7 @@ if 'app-server' in sys.argv:
 if sys.argv[-2:] == ['login', 'status']:
     print('Logged in using ChatGPT')  # Scripted sandbox probe; no model authentication needed.
     sys.exit(0)
+assert sys.argv[1:].count('--strict-config') == 1, 'strict-config flag must occur once'
 args = iter(sys.argv[1:])
 overrides, writable = [], []
 for arg in args:

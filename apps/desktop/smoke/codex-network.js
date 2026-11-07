@@ -28,7 +28,7 @@
       category: 'agent',
       kind: 'agent',
       source: 'builtin',
-      command: `env CODEX_HOME='${base}/${role === 'denied-named' ? 'home-named' : 'home'}' PATCHBAY_NETWORK_PROBE_ROLE=${role} '${base}/codex' ${extra}`,
+      command: `env CODEX_HOME='${base}/${role === 'denied-named' ? 'home-named' : 'home'}' PATCHBAY_NETWORK_PROBE_ROLE=${role} '${base}/codex' --strict-config ${extra}`,
     })
     const restricted = state().addRootTerminal(preset('restricted'))
     await smoke.startTerminal('@task', restricted)

@@ -460,7 +460,7 @@ fn codex_global_options(args: &[String]) -> bool {
     true
 }
 
-fn codex_option_takes_value(arg: &str) -> bool {
+pub(crate) fn codex_option_takes_value(arg: &str) -> bool {
     matches!(
         arg,
         "-c" | "--config"
@@ -1612,7 +1612,12 @@ fn configure_codex_network(
         Ok(options) => {
             // Old CLIs must reject unsupported settings instead of silently
             // enabling command networking without its destination enforcement.
-            command.push_str(" --strict-config");
+            if !command_tokens(command, shell)?
+                .iter()
+                .any(|arg| arg == "--strict-config")
+            {
+                command.push_str(" --strict-config");
+            }
             for option in options {
                 let _ = write!(
                     command,
@@ -3550,6 +3555,35 @@ mod tests {
             .is_none()
         );
         assert_eq!(claude, "claude -m other");
+    }
+
+    #[test]
+    fn codex_presets_receive_strict_config_exactly_once() {
+        for preset in [
+            "codex --model preserved",
+            "codex --strict-config --model preserved",
+        ] {
+            let mut command = preset.to_owned();
+            assert!(
+                configure_codex_network(
+                    &mut command,
+                    Path::new("/repo"),
+                    Shell::current(),
+                    &mut BTreeMap::new()
+                )
+                .is_none()
+            );
+            assert!(command.starts_with(preset));
+            let tokens = command_tokens(&command, Shell::current()).unwrap();
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|arg| *arg == "--strict-config")
+                    .count(),
+                1
+            );
+            assert!(command.contains("features.network_proxy="));
+        }
     }
 
     #[test]

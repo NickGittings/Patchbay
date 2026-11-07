@@ -86,7 +86,7 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
         merge(&mut config, layer);
     }
     if !cfg!(test) {
-        let snapshot = crate::codex_config::inspect(command, cwd, &overrides(args))?;
+        let snapshot = crate::codex_config::inspect(command, cwd)?;
         let base = resolve_layers(&snapshot, None, &mut denies)?;
         let mut profile_config = Table::new();
         if let Some(profile) = option(args, "-p", "--profile").or_else(|| {
