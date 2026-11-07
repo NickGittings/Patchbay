@@ -45,6 +45,8 @@ for arg in args:
         writable.append(next(args))
     elif arg == '--strict-config':
         pass
+    elif arg in ('--disable', '--enable'):
+        overrides.extend([arg, next(args)])
     else:
         raise AssertionError('Unexpected probe launch argument: '+arg)
 if writable:
@@ -68,7 +70,7 @@ def agent(*args, success=True):
     print(result.stdout, flush=True)
     assert (result.returncode == 0) == success, result.stdout+result.stderr
     return json.loads(result.stdout)
-if role == 'restricted':
+if role in ('restricted', 'dynamic-disabled'):
     reply = agent('status', success=False)
     assert 'Permission denied connecting' in reply['error'], reply
     print('original-restricted-tcp-failure', flush=True)

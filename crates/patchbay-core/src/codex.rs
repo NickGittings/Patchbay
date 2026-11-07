@@ -38,19 +38,33 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
     ensure!(
         !args.iter().enumerate().any(|(index, arg)| {
             let value = if matches!(arg.as_str(), "--enable" | "--disable") {
-                args.get(index + 1).map(String::as_str)
+                Some(args.get(index + 1).map_or("", String::as_str))
             } else {
                 arg.strip_prefix("--enable=")
                     .or_else(|| arg.strip_prefix("--disable="))
             };
-            value.is_some_and(|value| value.split(',').any(|feature| feature == "network_proxy"))
+            value.is_some_and(|value| {
+                value.split(',').any(|feature| {
+                    feature == "network_proxy"
+                        || feature.is_empty()
+                        || !feature
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                })
+            })
         }),
-        "Use a network_proxy configuration table instead of a feature toggle to preserve destination rules"
+        "Use literal feature names and a network_proxy configuration table to preserve destination rules; unresolved feature toggles cannot safely enable networking"
     );
     ensure!(
         option(args, "-C", "--cd").is_none(),
         "Scoped networking cannot inspect a Codex working-directory override safely; use the Patchbay session's working directory"
     );
+    validate_shell_arguments(
+        &words,
+        &crate::context::launch_raw_words(command).context("Unsupported Codex command")?,
+        program,
+        cfg!(windows),
+    )?;
     let mut config = Table::new();
     let mut denies = Denies::default();
     for raw in overrides(args) {
@@ -152,6 +166,107 @@ fn option(args: &[String], short: &str, long: &str) -> Option<String> {
         }
     }
     found
+}
+
+fn validate_shell_arguments(
+    words: &[String],
+    raw: &[String],
+    program: usize,
+    windows: bool,
+) -> Result<()> {
+    for word in &raw[..=program] {
+        shell_expansion(word, windows)?;
+    }
+    let mut value = false;
+    for (word, raw) in words[program + 1..].iter().zip(&raw[program + 1..]) {
+        let expanded = shell_expansion(raw, windows)?;
+        let flag = word.split_once('=').map_or(word.as_str(), |(flag, _)| flag);
+        let inline_value = word.contains('=') && crate::context::codex_option_takes_value(flag)
+            || ["-m", "-p", "-c", "-s", "-a", "-C"]
+                .iter()
+                .any(|prefix| word.starts_with(prefix) && word.len() > 2);
+        ensure!(
+            value
+                || inline_value
+                || !word.trim_start_matches(['\\', '\n', '\r']).starts_with('-')
+                || !raw.contains('\\'),
+            "Cannot resolve escaped Codex option names safely"
+        );
+        ensure!(
+            !expanded || value || inline_value,
+            "Cannot resolve dynamic Codex options safely; use fixed option names and quoted scalar option values"
+        );
+        if value {
+            value = false;
+        } else {
+            value = crate::context::codex_option_takes_value(word);
+        }
+    }
+    Ok(())
+}
+
+/// A quoted POSIX scalar remains one argument. Unquoted expansions, arrays,
+/// globs, or cmd variable expansion can introduce extra flags after the network
+/// overrides, including --disable network_proxy. Never grant networking then.
+fn shell_expansion(raw: &str, windows: bool) -> Result<bool> {
+    if windows {
+        ensure!(
+            !raw.contains(['%', '!']),
+            "Cannot resolve cmd variable expansion safely for scoped Codex networking"
+        );
+        return Ok(false);
+    }
+    let chars = raw.chars().collect::<Vec<_>>();
+    let mut quote = None;
+    let mut expanded = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && quote != Some('\'') {
+            i += 2;
+            continue;
+        }
+        if Some(c) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else if quote != Some('\'') && c == '$' {
+            ensure!(
+                quote == Some('"'),
+                "Unquoted Codex variable expansion can change the option list; quote scalar option values"
+            );
+            expanded = true;
+            i += 1;
+            let braced = chars.get(i) == Some(&'{');
+            if braced {
+                i += 1;
+            }
+            let start = i;
+            while chars
+                .get(i)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+            {
+                i += 1;
+            }
+            ensure!(
+                i > start && (!braced || chars.get(i) == Some(&'}')),
+                "Only quoted scalar Codex variables can safely receive scoped networking"
+            );
+            if !braced {
+                continue;
+            }
+        } else if quote != Some('\'') && c == '!' {
+            anyhow::bail!("Shell history expansion cannot safely receive scoped Codex networking");
+        } else if quote.is_none() {
+            ensure!(
+                !matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '^' | '#')
+                    && (c != '~' || i == 0 || chars[i - 1] == '='),
+                "Shell expansion can change the Codex option list; quote literal arguments"
+            );
+        }
+        i += 1;
+    }
+    Ok(expanded)
 }
 
 fn resolve_layers(
@@ -368,20 +483,23 @@ fn network_options(config: &Table, mut denies: Denies) -> Result<Vec<String>> {
     proxy.insert("enabled".into(), Value::Boolean(true));
     proxy.insert("enable_socks5".into(), Value::Boolean(true));
     proxy.insert("allow_local_binding".into(), Value::Boolean(false));
+    let feature_domains = proxy.contains_key("domains");
     let domains = proxy
         .entry("domains")
         .or_insert_with(|| Value::Table(Table::new()))
         .as_table_mut()
         .context("Invalid Codex network domains")?;
     // Codex's feature-level map can replace the profile's destination map.
-    // Carry the selected inheritance chain into it, with deny winning on every
-    // conflict, so adding loopback cannot erase a profile's existing policy.
+    // Preserve that precedence for allowances. Import the profile map only when
+    // no feature map replaces it; keep explicit denies from both sources.
     if let Some(name) = config.get("default_permissions").and_then(Value::as_str) {
         let mut selected = std::collections::HashSet::new();
         let network = profile_network(config, name, &mut selected)?;
         if let Some(inherited) = network.get("domains").and_then(Value::as_table) {
             for (host, rule) in inherited {
-                if domains.get(host).and_then(Value::as_str) != Some("deny") {
+                if (!feature_domains || rule.as_str() == Some("deny"))
+                    && domains.get(host).and_then(Value::as_str) != Some("deny")
+                {
                     domains.insert(host.clone(), rule.clone());
                 }
             }
@@ -621,6 +739,29 @@ extends = "parent"
     }
 
     #[test]
+    fn feature_domain_maps_do_not_promote_superseded_profile_allowances() {
+        let updated = apply(
+            r#"
+default_permissions = "selected"
+[features.network_proxy.domains]
+"feature.example" = "allow"
+[permissions.selected]
+extends = ":workspace"
+[permissions.selected.network.domains]
+"profile.example" = "allow"
+"blocked.example" = "deny"
+"#,
+        );
+        let domains = updated["features"]["network_proxy"]["domains"]
+            .as_table()
+            .unwrap();
+        assert_eq!(domains["feature.example"].as_str(), Some("allow"));
+        assert_eq!(domains["blocked.example"].as_str(), Some("deny"));
+        assert_eq!(domains["127.0.0.1"].as_str(), Some("allow"));
+        assert!(!domains.contains_key("profile.example"));
+    }
+
+    #[test]
     fn settings_add_only_loopback_and_preserve_deny_from_an_earlier_layer() {
         let mut config = Table::new();
         let mut denies = Denies::default();
@@ -657,6 +798,9 @@ extends = "parent"
             "codex -p fast -m model -c model_reasoning_effort=high",
             "codex --profile=fast --config=model_reasoning_effort=high",
             "codex -cmodel_reasoning_effort=high",
+            "codex --disable hooks --enable other_feature",
+            "codex --model \"$MODEL\"",
+            "codex --model=\"${MODEL}\"",
         ] {
             assert!(
                 launch_options(command, Path::new("/repo")).is_ok(),
@@ -670,12 +814,41 @@ extends = "parent"
             "--enable=network_proxy",
             "--disable=network_proxy --disable=other",
             "--enable=other,network_proxy",
+            "--disable \"$FEATURE\"",
+            "--disable=%FEATURE%",
+            "--disable=network_*",
+            "--enable=network_{proxy,other}",
         ] {
             assert!(
                 launch_options(&format!("codex {flags}"), Path::new("/repo")).is_err(),
                 "{flags}"
             );
         }
+        #[cfg(unix)]
+        for command in [
+            "codex \"$OPTION\" network_proxy",
+            "codex --model $MODEL",
+            "codex --model \"$@\"",
+            "codex --model \"${MODEL[@]}\"",
+            "codex --dis\\able network_proxy",
+            "codex \\-\\-disable network_proxy",
+            "codex --dis\\\nable network_proxy",
+            "codex ^unresolved",
+            "codex --di#sable network_proxy",
+            "codex \"!!\"",
+        ] {
+            assert!(
+                launch_options(command, Path::new("/repo")).is_err(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_variable_expansion_cannot_change_generated_permission_options() {
+        assert!(shell_expansion("\"%OPTION%\"", true).is_err());
+        assert!(shell_expansion("--model=%MODEL%", true).is_err());
+        assert!(!shell_expansion("\"C:\\Program Files\\codex.cmd\"", true).unwrap());
     }
 
     #[test]

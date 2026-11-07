@@ -1185,9 +1185,7 @@ pub fn job_agent_spec(
         extra_env,
         policy,
         |command, file, dirs, env| {
-            let network_notice =
-                configure_codex_network(command, Path::new(&project.root), Shell::current(), env);
-            let notice = brief_agent(
+            let notice = brief_network_agent(
                 command,
                 &Briefing {
                     file,
@@ -1196,13 +1194,11 @@ pub fn job_agent_spec(
                     prompt: Some(prompt),
                     reserve: 0,
                 },
+                Path::new(&project.root),
                 Shell::current(),
                 env,
             );
-            (
-                combine_notices(notice, network_notice),
-                job_resume_command(command, prompt, env),
-            )
+            (notice, job_resume_command(command, prompt, env))
         },
     )
 }
@@ -1609,28 +1605,93 @@ fn configure_codex_network(
         return None;
     }
     match crate::codex::launch_options(command, cwd) {
-        Ok(options) => {
-            // Old CLIs must reject unsupported settings instead of silently
-            // enabling command networking without its destination enforcement.
-            if !command_tokens(command, shell)?
-                .iter()
-                .any(|arg| arg == "--strict-config")
-            {
-                command.push_str(" --strict-config");
-            }
-            for option in options {
-                let _ = write!(
-                    command,
-                    " -c {}",
-                    quote_path(shell, Path::new(&option), env)
-                );
-            }
-            None
-        }
-        Err(error) => Some(format!(
-            "Patchbay could not configure scoped Codex networking: {error:#}. The existing sandbox and network settings were preserved. Restart the agent session after correcting its configuration."
-        )),
+        Ok(options) => match append_codex_network_options(command, &options, shell, env) {
+            Ok(()) => None,
+            Err(error) => Some(network_notice(&error)),
+        },
+        Err(error) => Some(network_notice(&error)),
     }
+}
+
+fn network_notice(error: &anyhow::Error) -> String {
+    format!(
+        "Patchbay could not configure scoped Codex networking: {error:#}. The existing sandbox and network settings were preserved. Restart the agent session after correcting its configuration."
+    )
+}
+
+fn append_codex_network_options(
+    command: &mut String,
+    options: &[String],
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let mut candidate = command.clone();
+    let mut candidate_env = env.clone();
+    // Old CLIs must reject unsupported settings instead of silently
+    // enabling command networking without its destination enforcement.
+    if !command_tokens(&candidate, shell)
+        .context("Unsupported Codex command")?
+        .iter()
+        .any(|arg| arg == "--strict-config")
+    {
+        candidate.push_str(" --strict-config");
+    }
+    for option in options {
+        let _ = write!(
+            candidate,
+            " -c {}",
+            quote_path(shell, Path::new(&option), &mut candidate_env)
+        );
+    }
+    anyhow::ensure!(
+        command_len(shell, &candidate, &candidate_env) <= launch_budget(shell),
+        "Network settings exceed the command launch limit"
+    );
+    *command = candidate;
+    *env = candidate_env;
+    Ok(())
+}
+
+fn launch_budget(shell: Shell) -> usize {
+    match shell {
+        Shell::Windows => CMD_BUDGET,
+        Shell::Unix => SHELL_ARG_BUDGET,
+    }
+}
+
+fn brief_network_agent(
+    command: &mut String,
+    briefing: &Briefing<'_>,
+    cwd: &Path,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let original_command = command.clone();
+    let original_env = env.clone();
+    let configured = interactive_codex(command, shell);
+    let notice = configure_codex_network(command, cwd, shell, env);
+    let briefing_notice = brief_agent(command, briefing, shell, env);
+    let prompt_len = briefing
+        .prompt
+        .map(|prompt| command_len(shell, &format!(" {}", shell.quote(prompt)), env))
+        .unwrap_or_default();
+    let reserved = briefing.reserve.saturating_sub(prompt_len);
+    if configured
+        && notice.is_none()
+        && command_len(shell, command, env) + reserved > launch_budget(shell)
+    {
+        // Count the final briefing, directories and kickoff too. Restoring both
+        // values keeps rejected generated environment substitutions out of the launch.
+        *command = original_command;
+        *env = original_env;
+        return combine_notices(
+            brief_agent(command, briefing, shell, env),
+            Some(network_notice(&anyhow!(
+                "Network settings and briefing exceed the command launch limit"
+            ))),
+        );
+    }
+    combine_notices(briefing_notice, notice)
 }
 
 fn interactive_codex(command: &str, shell: Shell) -> bool {
@@ -1920,15 +1981,12 @@ fn root_session_spec(
             prompt: prompt.as_deref(),
             reserve,
         };
-        let network_notice = configure_codex_network(
+        notice = brief_network_agent(
             &mut command,
+            &briefing,
             Path::new(&project.root),
             Shell::current(),
             &mut env,
-        );
-        notice = combine_notices(
-            brief_agent(&mut command, &briefing, Shell::current(), &mut env),
-            network_notice,
         );
         // A resumed conversation is never prompted again. A fix and an Auto planner pass
         // their kickoff again on Restart, and an implement restart passes none, so every
@@ -2052,15 +2110,12 @@ pub fn session_spec_with(
             prompt: None,
             reserve: 0,
         };
-        let network_notice = configure_codex_network(
+        notice = brief_network_agent(
             &mut command,
+            &briefing,
             &project.component_dir(component),
             Shell::current(),
             &mut env,
-        );
-        notice = combine_notices(
-            brief_agent(&mut command, &briefing, Shell::current(), &mut env),
-            network_notice,
         );
     }
 
@@ -3584,6 +3639,84 @@ mod tests {
             );
             assert!(command.contains("features.network_proxy="));
         }
+    }
+
+    #[test]
+    fn oversized_network_settings_preserve_command_and_environment() {
+        let original = "codex --model preserved";
+        let mut command = original.to_owned();
+        let mut env = BTreeMap::from([("KEEP".into(), "value".into())]);
+        let original_env = env.clone();
+        let domains = (0..500)
+            .map(|n| format!("\"host{n}.example.test\"=\"allow\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let options = [
+            "features.network_proxy.proxy_url=\"%PROBE%\"".into(),
+            format!("features.network_proxy.domains={{{domains}}}"),
+        ];
+        let error = append_codex_network_options(&mut command, &options, Shell::Windows, &mut env)
+            .unwrap_err();
+        assert!(error.to_string().contains("command launch limit"));
+        assert_eq!(command, original);
+        assert_eq!(env, original_env);
+    }
+
+    #[test]
+    fn complete_briefing_budget_can_reject_otherwise_fitting_network_settings() {
+        let original = format!("codex --model {}", "x".repeat(CMD_BUDGET - 1314));
+        let mut command = original.clone();
+        let mut env = BTreeMap::new();
+        let file = PathBuf::from(format!(r"C:\Temp\{}.md", "x".repeat(1100)));
+        let text = "briefing ".repeat(2000);
+        let notice = brief_network_agent(
+            &mut command,
+            &briefing(&file, &text, &[]),
+            Path::new("/repo"),
+            Shell::Windows,
+            &mut env,
+        )
+        .unwrap();
+        assert!(notice.contains("command launch limit"), "{notice}");
+        assert!(command.starts_with(&original));
+        assert!(!command.contains("features.network_proxy="));
+        assert!(command_len(Shell::Windows, &command, &env) <= CMD_BUDGET);
+    }
+
+    #[test]
+    fn networking_budget_keeps_room_for_a_future_kickoff_prompt() {
+        let original = format!("codex --model {}", "x".repeat(CMD_BUDGET - 1800));
+        let file = PathBuf::from(format!(r"C:\Temp\{}.md", "x".repeat(500)));
+        let text = "briefing ".repeat(2000);
+        let mut brief = briefing(&file, &text, &[]);
+        let mut candidate = original.clone();
+        let mut candidate_env = BTreeMap::new();
+        assert!(
+            configure_codex_network(
+                &mut candidate,
+                Path::new("/repo"),
+                Shell::Windows,
+                &mut candidate_env
+            )
+            .is_none()
+        );
+        brief_agent(&mut candidate, &brief, Shell::Windows, &mut candidate_env);
+        let len = command_len(Shell::Windows, &candidate, &candidate_env);
+        assert!(len < CMD_BUDGET);
+        brief.reserve = CMD_BUDGET - len + 1;
+        let mut command = original;
+        let mut env = BTreeMap::new();
+        let notice = brief_network_agent(
+            &mut command,
+            &brief,
+            Path::new("/repo"),
+            Shell::Windows,
+            &mut env,
+        )
+        .unwrap();
+        assert!(notice.contains("command launch limit"));
+        assert!(!command.contains("features.network_proxy="));
+        assert!(command_len(Shell::Windows, &command, &env) + brief.reserve <= CMD_BUDGET);
     }
 
     #[test]

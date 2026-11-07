@@ -30,12 +30,16 @@
       source: 'builtin',
       command: `env CODEX_HOME='${base}/${role === 'denied-named' ? 'home-named' : 'home'}' PATCHBAY_NETWORK_PROBE_ROLE=${role} '${base}/codex' --strict-config ${extra}`,
     })
-    const restricted = state().addRootTerminal(preset('restricted'))
-    await smoke.startTerminal('@task', restricted)
-    const restrictedSid = smoke.sessionId('@task', restricted, null)
-    await until('original restricted TCP failure', () =>
-      text(restrictedSid).includes('codex-network-finished restricted'),
-    )
+    for (const role of ['restricted', 'dynamic-disabled']) {
+      const extra =
+        role === 'dynamic-disabled' ? '--disable "$PATCHBAY_PROBE_DISABLED_FEATURE"' : ''
+      const restricted = state().addRootTerminal(preset(role, extra))
+      await smoke.startTerminal('@task', restricted)
+      const restrictedSid = smoke.sessionId('@task', restricted, null)
+      await until(`${role} keeps TCP restricted`, () =>
+        text(restrictedSid).includes(`codex-network-finished ${role}`),
+      )
+    }
     const planner = preset('planner')
     state().setDevices([planner])
     smoke.selectRailView('plan')

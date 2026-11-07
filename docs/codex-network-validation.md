@@ -33,7 +33,12 @@ use `exec --sandbox read-only review ... -o ...` without additional networking s
 Unresolvable configuration, explicit working-directory overrides, remote servers, legacy read-only/full-access modes, and
 sandbox-bypass presets receive a launch notice instead of a permission change. Codex
 feature-toggle presets for `network_proxy` must use a configuration table so their
-rules can be preserved. `--strict-config` makes unsupported CLI configuration fail
+rules can be preserved. Unresolved toggles, variable option names, and expansions
+that could introduce additional arguments leave networking unchanged. Quoted POSIX
+scalar option values retain their original syntax. Oversized generated settings are
+rejected before changing the command or its environment, including space for the
+briefing, directories, and reserved kickoff prompt.
+`--strict-config` makes unsupported CLI configuration fail
 visibly. Unavailable configuration metadata or a managed pin disabling the proxy
 leaves networking settings unchanged. Managed network policy remains authoritative; an explicit deny or exclusive
 administrator allowlist can prevent bridge access. Patchbay does not bypass it.
