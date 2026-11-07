@@ -1171,6 +1171,11 @@ pub fn job_agent_spec(
     extra_env: BTreeMap<String, String>,
     policy: &dyn Policy,
 ) -> Result<SessionSpec> {
+    preflight_codex_network(
+        terminal,
+        Scope::Plan(&project.components.iter().collect::<Vec<_>>()),
+        policy,
+    )?;
     build_job_agent_spec(
         project,
         terminal,
@@ -1600,11 +1605,7 @@ fn configure_codex_network(
     shell: Shell,
     env: &mut BTreeMap<String, String>,
 ) -> Option<String> {
-    let tokens = command_tokens(command, shell)?;
-    let program = program_index(&tokens)?;
-    if agent_named(&tokens[program]) != Some(Agent::Codex)
-        || unsupported_codex_subcommand(&tokens[program + 1..])
-    {
+    if !interactive_codex(command, shell) {
         return None;
     }
     match crate::codex::launch_options(command, cwd) {
@@ -1625,6 +1626,35 @@ fn configure_codex_network(
             "Patchbay could not configure scoped Codex networking: {error:#}. The existing sandbox and network settings were preserved. Restart the agent session after correcting its configuration."
         )),
     }
+}
+
+fn interactive_codex(command: &str, shell: Shell) -> bool {
+    let Some(tokens) = command_tokens(command, shell) else {
+        return false;
+    };
+    let Some(program) = program_index(&tokens) else {
+        return false;
+    };
+    agent_named(&tokens[program]) == Some(Agent::Codex)
+        && !unsupported_codex_subcommand(&tokens[program + 1..])
+}
+
+/// Inspection executes the selected program, so the original preset needs
+/// authorization before that read-only probe. Builders still check the fully
+/// decorated command before returning a launchable session.
+fn preflight_codex_network(
+    terminal: &TerminalSpec,
+    scope: Scope<'_>,
+    policy: &dyn Policy,
+) -> Result<()> {
+    if terminal.kind == TerminalKind::Agent
+        && interactive_codex(&terminal.command, Shell::current())
+    {
+        policy
+            .check(scope, terminal.command.trim())
+            .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
+    }
+    Ok(())
 }
 
 /// Build a planner terminal session at the project root.
@@ -1813,6 +1843,7 @@ fn root_session_spec(
         }
     }
     let components = plan_components(project, component_ids);
+    preflight_codex_network(terminal, Scope::Plan(&components), policy)?;
     let mut env = BTreeMap::from([(
         COMPONENT_ENV.to_string(),
         if planning {
@@ -1989,6 +2020,7 @@ pub fn session_spec_with(
         .find(|t| t.id == terminal_id)
         .ok_or_else(|| anyhow!("unknown terminal {terminal_id}"))?;
 
+    preflight_codex_network(terminal, Scope::Component(component), policy)?;
     let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), component.name.clone())]);
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
@@ -3518,6 +3550,62 @@ mod tests {
             .is_none()
         );
         assert_eq!(claude, "claude -m other");
+    }
+
+    #[test]
+    fn codex_inspection_requires_original_policy_approval_and_final_commands_are_rechecked() {
+        struct Guard {
+            original: String,
+            deny_original: bool,
+            calls: std::sync::Mutex<Vec<String>>,
+        }
+        impl Policy for Guard {
+            fn check(&self, _scope: Scope<'_>, command: &str) -> std::result::Result<(), String> {
+                self.calls.lock().unwrap().push(command.into());
+                if command == self.original {
+                    if self.deny_original {
+                        Err("original denied".into())
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Err("decorated denied".into())
+                }
+            }
+        }
+        let mut p = project();
+        let terminal = &mut p.components[0].terminals[0];
+        terminal.id = format!("policy-probe-{}", uuid::Uuid::new_v4());
+        terminal.command = "codex --model preserved".into();
+        let terminal = &p.components[0].terminals[0];
+        for deny_original in [true, false] {
+            for kind in ["component", "planner", "implementation", "merge"] {
+                let policy = Guard {
+                    original: terminal.command.clone(),
+                    deny_original,
+                    calls: std::sync::Mutex::new(vec![]),
+                };
+                let result = match kind {
+                    "component" => session_spec(&p, "api", &terminal.id, &policy, &[]),
+                    "planner" => plan_session_spec(&p, &[], terminal, &policy, &[], None),
+                    "implementation" => {
+                        task_root_session_spec(&p, &[], terminal, None, &policy, &[], None)
+                    }
+                    _ => merge_agent_spec(&p, terminal, "Merge", vec![], &policy),
+                };
+                let error = result.unwrap_err().to_string();
+                let calls = policy.calls.lock().unwrap();
+                assert_eq!(calls[0], terminal.command);
+                if deny_original {
+                    assert!(error.contains("original denied"));
+                    assert_eq!(calls.len(), 1);
+                } else {
+                    assert!(error.contains("decorated denied"));
+                    assert_eq!(calls.len(), 2);
+                    assert!(calls[1].contains("features.network_proxy="));
+                }
+            }
+        }
     }
 
     #[test]

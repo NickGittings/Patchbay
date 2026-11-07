@@ -20,6 +20,10 @@ Patchbay asks Codex's app server for its configuration layers and managed requir
 before enabling command networking. Only active layers can contribute allowances or
 permission selection; inactive project layers contribute conservative denies only.
 Selected legacy or file-based profile defaults precede trusted project overrides.
+The profile directory comes from the probe's user-layer metadata, including a
+`CODEX_HOME` exported only by the login shell. A missing selected profile is an
+inspection failure rather than an empty set of defaults. The original preset is
+checked by launch policy before inspection; the decorated command is checked again.
 Denies found in earlier layers are retained, including the selected profile's parents.
 Named permission profiles retain their filesystem and inheritance; built-in profiles
 use an invocation-local derived profile. Legacy workspace-write launches retain their

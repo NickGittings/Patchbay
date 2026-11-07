@@ -98,32 +98,23 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
                 !profile.contains(['/', '\\', '$', '%']),
                 "Cannot resolve Codex profile safely"
             );
-            if let Some(legacy) = base
+            let legacy = base
                 .get("profiles")
                 .and_then(|v| v.get(&profile))
-                .and_then(Value::as_table)
-            {
+                .and_then(Value::as_table);
+            if let Some(legacy) = legacy {
                 merge(&mut profile_config, legacy.clone());
             }
-            let mut home = std::env::var_os("CODEX_HOME")
-                .map(PathBuf::from)
-                .or_else(|| dirs::home_dir().map(|p| p.join(".codex")));
-            for word in &words[..program] {
-                if let Some(value) = word.strip_prefix("CODEX_HOME=") {
-                    ensure!(
-                        !value.contains(['$', '%', '~']),
-                        "Cannot resolve dynamic CODEX_HOME safely"
-                    );
-                    home = Some(PathBuf::from(value));
-                }
-            }
-            if let Some(home) = home {
-                read(
-                    &cwd.join(home).join(format!("{profile}.config.toml")),
-                    &mut profile_config,
-                    &mut denies,
-                )?;
-            }
+            let home = profile_home(&snapshot)?;
+            let file_loaded = read(
+                &home.join(format!("{profile}.config.toml")),
+                &mut profile_config,
+                &mut denies,
+            )?;
+            ensure!(
+                legacy.is_some() || file_loaded,
+                "Selected Codex profile was not found in the probed configuration home"
+            );
             ensure!(
                 ![
                     "projects",
@@ -228,6 +219,30 @@ fn resolve_layers(
     Ok(config)
 }
 
+fn profile_home(snapshot: &serde_json::Value) -> Result<PathBuf> {
+    let file = snapshot
+        .get("layers")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|layers| {
+            layers.iter().find(|layer| {
+                layer["name"]["type"] == "user"
+                    && layer
+                        .get("disabledReason")
+                        .is_none_or(serde_json::Value::is_null)
+            })
+        })
+        .and_then(|layer| layer["name"]["file"].as_str())
+        .context("Installed Codex did not identify its active user configuration home")?;
+    let file = Path::new(file);
+    ensure!(
+        file.is_absolute(),
+        "Codex configuration home metadata must be absolute"
+    );
+    file.parent()
+        .map(Path::to_path_buf)
+        .context("Invalid Codex user configuration path")
+}
+
 fn overrides(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut args = args.iter();
@@ -245,16 +260,16 @@ fn overrides(args: &[String]) -> Vec<String> {
     out
 }
 
-fn read(path: &Path, config: &mut Table, denies: &mut Denies) -> Result<()> {
+fn read(path: &Path, config: &mut Table, denies: &mut Denies) -> Result<bool> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let layer = toml::from_str::<Table>(&text)
                 .map_err(|_| anyhow!("Cannot parse Codex network policy in {}", path.display()))?;
             collect_denies(&layer, denies);
             merge(config, layer);
-            Ok(())
+            Ok(true)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error)
             .with_context(|| format!("Cannot read Codex network policy in {}", path.display())),
     }
@@ -704,5 +719,50 @@ extends = "parent"
         with_cli["layers"].as_array_mut().unwrap().insert(0, serde_json::json!({"name":{"type":"sessionFlags"},"config":{"default_permissions":"custom"}}));
         let config = resolve_layers(&with_cli, Some(&profile), &mut Denies::default()).unwrap();
         assert_eq!(config["default_permissions"].as_str(), Some("custom"));
+    }
+
+    #[test]
+    fn selected_profile_uses_the_login_shells_probed_configuration_home() {
+        let home =
+            std::env::temp_dir().join(format!("patchbay-probed-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("locked.config.toml"), "default_permissions=\":read-only\"\n[features.network_proxy.domains]\n\"127.0.0.1\"=\"deny\"\n").unwrap();
+        let snapshot = serde_json::json!({"layers":[{"name":{"type":"user","file":home.join("config.toml")},"config":{"default_permissions":":workspace"}}]});
+        let actual_home = profile_home(&snapshot).unwrap();
+        assert_eq!(actual_home, home);
+        let mut profile = Table::new();
+        let mut denies = Denies::default();
+        assert!(
+            read(
+                &actual_home.join("locked.config.toml"),
+                &mut profile,
+                &mut denies
+            )
+            .unwrap()
+        );
+        let config = resolve_layers(&snapshot, Some(&profile), &mut denies).unwrap();
+        assert_eq!(config["default_permissions"].as_str(), Some(":read-only"));
+        let mut updated = config.clone();
+        for option in network_options(&config, denies).unwrap() {
+            merge(&mut updated, toml::from_str(&option).unwrap());
+        }
+        assert_eq!(
+            updated["permissions"]["patchbay_loopback"]["extends"].as_str(),
+            Some(":read-only")
+        );
+        assert_eq!(
+            updated["features"]["network_proxy"]["domains"]["127.0.0.1"].as_str(),
+            Some("deny")
+        );
+        assert!(profile_home(&serde_json::json!({"layers":[]})).is_err());
+        assert!(
+            !read(
+                &actual_home.join("missing.config.toml"),
+                &mut Table::new(),
+                &mut Denies::default()
+            )
+            .unwrap()
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
