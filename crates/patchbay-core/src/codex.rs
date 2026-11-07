@@ -147,7 +147,12 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
         merge(&mut effective, config);
         config = effective;
     }
-    if let Some(mode) = option(args, "-s", "--sandbox") {
+    let sandbox = option(args, "-s", "--sandbox").or_else(|| {
+        args.iter()
+            .any(|arg| matches!(arg.as_str(), "--approve-for-me" | "--full-auto"))
+            .then(|| "workspace-write".into())
+    });
+    if let Some(mode) = sandbox {
         config.insert("sandbox_mode".into(), Value::String(mode));
     }
     network_options(&config, denies)
@@ -849,6 +854,35 @@ extends = ":workspace"
         assert!(shell_expansion("\"%OPTION%\"", true).is_err());
         assert!(shell_expansion("--model=%MODEL%", true).is_err());
         assert!(!shell_expansion("\"C:\\Program Files\\codex.cmd\"", true).unwrap());
+    }
+
+    #[test]
+    fn workspace_shorthands_override_legacy_read_only_defaults_without_changing_approvals() {
+        for shorthand in ["--approve-for-me", "--full-auto"] {
+            let command = format!(
+                "codex {shorthand} -c {}",
+                crate::context::quote_argument("sandbox_mode=\"read-only\"")
+            );
+            let options = launch_options(&command, Path::new("/repo")).unwrap();
+            assert!(
+                options
+                    .iter()
+                    .any(|option| option == "sandbox_workspace_write.network_access=true")
+            );
+            assert!(
+                !options
+                    .iter()
+                    .any(|option| option.contains("approval_policy")
+                        || option.starts_with("sandbox_mode="))
+            );
+        }
+        assert!(
+            launch_options(
+                "codex --approve-for-me --sandbox read-only",
+                Path::new("/repo")
+            )
+            .is_err()
+        );
     }
 
     #[test]

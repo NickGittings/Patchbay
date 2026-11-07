@@ -104,7 +104,7 @@ else:
         stream.sendall(bytes([5,1,0])); assert stream.recv(2) == bytes([5,0])
         stream.sendall(bytes([5,1,0,1,127,0,0,2])+struct.pack('!H',12345))
         reply = stream.recv(4)
-        assert len(reply) == 4 and reply[1] != 0, reply
+        assert len(reply) == 4 and reply[0] == 5 and reply[1] == 2, reply
     print('unapproved-destination-blocked', flush=True)
     # Command networking must not make a sibling directory writable.
     try:
