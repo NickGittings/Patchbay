@@ -294,6 +294,15 @@ agent owned by that run and cancels its active validation. **Resume** reassesses
 Auto can pause between stages when its worktree is inactive; switch back and resume to continue.
 Unfinished runs restore paused after reopening Patchbay. `npm run smoke:auto` exercises the flow.
 
+Enable **Keep device awake for Auto work** in the Auto panel to prevent idle sleep while
+plugged in during active Auto work or scheduled resume waits. The setting applies across
+projects, defaults off, and allows the screen to turn off and lock. Patchbay must stay open;
+this does not wake an already sleeping device or override manual sleep or closing a laptop lid.
+On Linux, sleep prevention requires UPower, logind, and a supported desktop session power
+manager (GNOME, KDE, or the freedesktop power-management interface). The panel reports when
+power detection or inhibition is unavailable. Unplugging releases sleep prevention within
+five seconds; plugging back in reacquires it if eligible work remains.
+
 ## Editor navigation
 
 Choose **Settings → Preferred editor…** to select VS Code (the default), Cursor, Zed, or a custom

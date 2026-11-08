@@ -1,3 +1,4 @@
+import { setAutoKeepAwake, useAutoPower } from '../../lib/autoPower'
 import { logSimple } from '../../lib/simpleActions'
 import { simpleStageOf, type SimpleAction } from '../../lib/simple'
 import { useState } from 'react'
@@ -42,6 +43,8 @@ export default function AutoPanel({
   onIntegrations: (provider?: HookProvider) => void
   simple?: boolean
 }) {
+  const keepAwake = useStore((s) => s.workspaceSettings.autoKeepAwake === true)
+  const power = useAutoPower()
   const run = useStore((s) => s.auto)
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
@@ -75,6 +78,32 @@ export default function AutoPanel({
   }
   return (
     <PanelContent>
+      <label className="auto-check">
+        <input
+          type="checkbox"
+          checked={keepAwake}
+          onChange={(e) => setAutoKeepAwake(e.target.checked)}
+        />
+        Keep device awake for Auto work
+      </label>
+      <p className="muted">
+        While plugged in, prevent idle sleep during Auto work and scheduled waits. Keep Patchbay
+        open. The screen can turn off. This does not wake a sleeping device.
+      </p>
+      {keepAwake && (
+        <p role="status" className="muted">
+          {
+            {
+              inactive: 'Sleep prevention is idle.',
+              active: 'Keeping device awake while plugged in.',
+              onBattery: 'On battery: scheduled work may wait until the device wakes.',
+              powerUnknown: 'Power source unknown: sleep prevention is inactive.',
+              unavailable: 'Sleep prevention unavailable.',
+            }[power.status]
+          }
+          {power.error && ` ${power.error}`}
+        </p>
+      )}
       {!run || newRun ? (
         <AutoDialog
           key={`${autoDraftKey(projectId, task)}/${draftVersion}`}

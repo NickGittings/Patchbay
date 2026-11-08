@@ -241,9 +241,11 @@ export function initializeWorkspace() {
     const initialUsage = useStore.getState().usageSettings
     let savedUsage: unknown
     const initialNotifications = useStore.getState().notifications
+    const initialKeepAwake = useStore.getState().workspaceSettings.autoKeepAwake
     const initialHookSources = useStore.getState().workspaceSettings.hookSources
     let restoredSettings: unknown
     let savedHookSources: unknown
+    let savedKeepAwake: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
     await listen('patchbay://quit-request', async () => {
@@ -271,6 +273,7 @@ export function initializeWorkspace() {
       savedUsage = document.settings?.usage
       restoredSettings = document.settings?.notifications
       savedHookSources = document.settings?.hookSources
+      savedKeepAwake = document.settings?.autoKeepAwake
       useStore.setState((s) => {
         const { hookSources: _saved, ...settings } = document.settings ?? {}
         const hookSources = mergeRestoredHookSources(
@@ -280,7 +283,13 @@ export function initializeWorkspace() {
         )
         return {
           usageSettings: mergeRestoredUsage(savedUsage, s.usageSettings, initialUsage),
-          workspaceSettings: hookSources ? { ...settings, hookSources } : settings,
+          workspaceSettings: {
+            ...settings,
+            ...(hookSources ? { hookSources } : {}),
+            ...(s.workspaceSettings.autoKeepAwake !== initialKeepAwake
+              ? { autoKeepAwake: s.workspaceSettings.autoKeepAwake }
+              : {}),
+          },
           notifications: mergeRestoredNotifications(
             restoredSettings,
             s.notifications,
@@ -401,6 +410,8 @@ export function initializeWorkspace() {
         useStore.getState().notifications,
         restoredNotifications(restoredSettings),
       ) ||
+      (useStore.getState().workspaceSettings.autoKeepAwake === true) !==
+        (savedKeepAwake === true) ||
       JSON.stringify(useStore.getState().workspaceSettings.hookSources) !==
         JSON.stringify(savedHookSources)
     ) {

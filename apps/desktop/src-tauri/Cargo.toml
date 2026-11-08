@@ -23,8 +23,16 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 percent-encoding = "2"
+keepawake = "0.6.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Power"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-io-kit = { version = "0.3.2", features = ["ps"] }
 objc2 = "0.6"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 

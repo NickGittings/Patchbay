@@ -365,3 +365,8 @@ test('repeated View requests each supply a fresh reveal token', () => {
   expect(useStore.getState().chatReveal).toEqual({ projectId: 'p', task: null })
   expect(useStore.getState().chatReveal).not.toBe(first)
 })
+
+test('Auto keep-awake preference is saved globally with other workspace settings', () => {
+  useStore.setState({ workspaceSettings: { autoKeepAwake: true, custom: 'kept' } })
+  expect(workspaceDocument().settings).toMatchObject({ autoKeepAwake: true, custom: 'kept' })
+})
