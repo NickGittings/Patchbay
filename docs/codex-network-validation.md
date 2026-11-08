@@ -79,7 +79,10 @@ sandbox selects its named permission profile explicitly and does not accept the 
 The suite reproduces the original permission-denied status request under restricted
 networking, then verifies a sandboxed planner's saved plan and proposal appear in the
 Plan view without changing scope or starting implementation agents, then restarts
-the planner and verifies it can still save the plan. The scripted provider forwards
+the planner and verifies it can still save the plan.
+Each planner invocation writes a unique token into its plan and completion marker;
+the restart check requires a new token in both, so retained output or an older plan
+cannot satisfy it. The scripted provider forwards
 the generated directory configuration unchanged to the real sandbox and rejects
 `--add-dir`, so it cannot hide a launch regression by converting those flags itself.
 An implementation

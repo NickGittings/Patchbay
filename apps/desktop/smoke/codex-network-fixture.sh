@@ -58,7 +58,7 @@ os.execv(real, [real, *overrides, 'sandbox', '-P', profile, '--', sys.executable
 PYTHON
 chmod +x "$dir/codex"
 cat > "$dir/agent.py" <<'PYTHON'
-import json, os, pathlib, socket, struct, subprocess, urllib.parse
+import json, os, pathlib, socket, struct, subprocess, urllib.parse, uuid
 root = pathlib.Path(__file__).parent
 role = os.environ['PATCHBAY_NETWORK_PROBE_ROLE']
 cli = os.environ['PATCHBAY_CLI']
@@ -89,9 +89,14 @@ else:
         raise AssertionError('Direct socket bypassed the managed proxy')
     agent('status')
     if role == 'planner':
+        run_id = uuid.uuid4().hex
         proposal = json.loads((root/'project/proposal.json').read_text())
+        proposal['plan'] += '\n\nProbe run: '+run_id
         pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text(proposal['plan'])
-        agent('propose', '--file', str(root/'project/proposal.json'))
+        proposal_file = pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).with_suffix('.json')
+        proposal_file.write_text(json.dumps(proposal))
+        agent('propose', '--file', str(proposal_file))
+        proposal_file.unlink()
     else:
         reply = agent('validate', 'web')
         assert reply['result']['passed'], reply
@@ -110,7 +115,7 @@ else:
         print('filesystem-restriction-preserved', flush=True)
     else:
         raise AssertionError('Networking widened filesystem permissions')
-print('codex-network-finished '+role, flush=True)
+print('codex-network-finished '+role+(' '+run_id if role == 'planner' else ''), flush=True)
 PYTHON
 cd "$dir/project"
 git init -q -b main

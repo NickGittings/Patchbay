@@ -207,6 +207,19 @@ fn configured_directories(
             !shell_expansion(&raw[last], cfg!(windows))?,
             "Cannot resolve a dynamic Codex additional directory safely"
         );
+        let value = if cfg!(windows) {
+            value.to_owned()
+        } else {
+            let decoded = literal_shell_word(&raw[last])?;
+            if last == index {
+                decoded
+                    .strip_prefix("--add-dir=")
+                    .context("Invalid Codex directory option")?
+                    .to_owned()
+            } else {
+                decoded
+            }
+        };
         roots.push(PathBuf::from(value));
         removed.extend(index..=last);
         index = last + 1;
@@ -233,6 +246,36 @@ fn configured_directories(
         }
     }
     Ok((updated, canonical))
+}
+
+/// Decode a POSIX word after shell_expansion has ruled out dynamic values.
+/// The command tokenizer deliberately retains some backslashes for inspection;
+/// directory configuration needs the literal value the shell would pass instead.
+fn literal_shell_word(raw: &str) -> Result<String> {
+    let mut value = String::new();
+    let mut quote = None;
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && quote != Some('\'') {
+            let next = chars.peek().copied().context("Trailing shell escape")?;
+            if quote.is_none() || matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                chars.next();
+                if next != '\n' {
+                    value.push(next);
+                }
+            } else {
+                value.push(c);
+            }
+        } else if Some(c) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else {
+            value.push(c);
+        }
+    }
+    ensure!(quote.is_none(), "Unclosed shell quote");
+    Ok(value)
 }
 
 fn directory_options(config: &Table, dirs: &[PathBuf], options: &mut Vec<String>) -> Result<()> {
@@ -961,6 +1004,51 @@ extends = ":workspace"
                     .contains_key("filesystem")
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn additional_directories_match_literal_shell_escape_values() {
+        let cwd = std::env::temp_dir().join(format!("patchbay-dirs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        for raw in [
+            r"./a\*",
+            r"./a\?",
+            r"./a\q",
+            r"./a\ space",
+            r#""./a\*""#,
+            r"'./a\*'",
+            r#""./a\\b""#,
+            r#""./a\$ROOT""#,
+            "'./a`literal`'",
+            r#"'./a'\''quote'"#,
+            "./a\\\ncontinued",
+        ] {
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("printf %s {raw}")])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{raw}");
+            let path = cwd.join(String::from_utf8(output.stdout).unwrap());
+            std::fs::create_dir_all(&path).unwrap();
+            let expected = path.canonicalize().unwrap();
+            for flag in ["--add-dir ", "--add-dir="] {
+                let command = format!("codex {flag}{raw}");
+                let options = launch_options(&command, &cwd, &[])
+                    .unwrap_or_else(|error| panic!("{command}: {error}"));
+                assert_eq!(options.command, "codex", "{command}");
+                let mut config = Table::new();
+                for option in options.config {
+                    merge(&mut config, toml::from_str(&option).unwrap());
+                }
+                assert_eq!(
+                    config["sandbox_workspace_write"]["writable_roots"],
+                    Value::Array(vec![Value::String(expected.to_str().unwrap().into())]),
+                    "{command}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(cwd).unwrap();
     }
 
     #[cfg(unix)]
