@@ -2069,7 +2069,7 @@ button.review-name:hover:not(:disabled) {
 .worktree-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
 .worktree-new {
   flex: none;
@@ -2126,10 +2126,14 @@ button.review-name:hover:not(:disabled) {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-2);
-  padding: 10px 12px;
+  min-width: 0;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
+}
+.worktree-row button {
+  padding: 2px 6px;
 }
 .worktree-row.active {
   border-color: var(--task);
@@ -2138,7 +2142,7 @@ button.review-name:hover:not(:disabled) {
 .worktree-row.missing {
   opacity: 0.6;
 }
-.worktree-row:not(.missing, .active) {
+.worktree-row:not(.missing) {
   cursor: pointer;
 }
 .worktree-row:not(.missing, .active):hover {
@@ -2154,17 +2158,20 @@ button.review-name:hover:not(:disabled) {
 }
 .worktree-row-switch {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex: 1 1 180px;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 100px;
   min-width: 0;
   text-align: left;
   background: transparent;
   border: none;
 }
 .worktree-row-switch strong {
-  overflow-wrap: anywhere;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .worktree-row-switch code {
   max-width: 100%;
@@ -2175,7 +2182,7 @@ button.review-name:hover:not(:disabled) {
 .worktree-row-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .worktree-tag {
@@ -2213,8 +2220,8 @@ button.review-name:hover:not(:disabled) {
 }
 .worktree-confirm {
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px;
+  gap: 4px;
+  padding: 5px;
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
   font-size: 12px;
@@ -2223,7 +2230,68 @@ button.review-name:hover:not(:disabled) {
   display: grid;
   grid-template-columns: 90px 1fr;
   align-items: start;
-  gap: 8px;
+  gap: 4px;
+}
+.worktree-signals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 4px;
+}
+.worktree-signal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.worktree-signal svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+.worktree-signal[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.worktree-detail-panel {
+  grid-column: 1 / -1;
+  order: 1;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 5px;
+  cursor: auto;
+}
+.worktree-detail-panel .scope-chips {
+  gap: 4px;
+  margin-top: 4px;
+}
+.worktree-detail-panel .chip {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: left;
+}
+.worktree-detail-panel p {
+  margin: 0;
+  color: var(--muted);
+}
+.worktree-action-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.worktree-row form input {
+  min-width: 0;
+  width: 100%;
+}
+.worktree-row form {
+  flex-wrap: wrap;
 }
 .worktree-detail .section-title {
   margin: 4px 0 0;
@@ -3110,12 +3178,18 @@ kbd {
 .project-list .panel-list-row {
   border: 1px solid transparent;
   flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+.project-list button {
+  padding: 2px 5px;
 }
 .project-status {
   display: flex;
   flex: 0 0 100%;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 3px;
 }
 .panel-list-row:hover {
   background: var(--panel);
@@ -3597,6 +3671,10 @@ kbd {
   border-left: 2px solid var(--accent);
   padding-left: 8px;
 }
+.utility-panel .worktree-row {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
 .utility-panel .stack-card .scope-chips {
   margin: 8px 0;
 }
@@ -3613,8 +3691,7 @@ kbd {
   border-top: 1px solid var(--border);
   padding-top: 10px;
 }
-.utility-panel .usage-source,
-.utility-panel .worktree-row-switch code {
+.utility-panel .usage-source {
   overflow-wrap: anywhere;
   white-space: normal;
 }

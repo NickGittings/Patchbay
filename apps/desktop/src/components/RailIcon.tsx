@@ -12,6 +12,10 @@ const paths: Record<string, string> = {
   usage: 'M4 18a9 9 0 1 1 16 0 M12 13l5-5 M6 18h12 M5 10l2 1 M12 4v3 M19 10l-2 1',
   sessions: 'M3 4h18v16H3Z M3 9h18 M8 9v11',
   settings: 'M9 3h6l1 4 4 1v8l-4 1-1 4H9l-1-4-4-1V8l4-1Z M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0',
+  tests: 'M9 3h6 M10 3v6l-6 10a1 1 0 0 0 1 2h14a1 1 0 0 0 1-2L14 9V3 M7 15h10',
+  issues: 'm12 3 10 18H2Z M12 9v5 M12 17h.01',
+  changes: 'M14 3H5v18h14V8Z M14 3v5h5 M8 12h8 M8 16h5',
+  running: 'M3 4h18v16H3Z m4 4 4 4-4 4 M13 16h4',
 }
 export default function RailIcon({ name }: { name: string }) {
   return (

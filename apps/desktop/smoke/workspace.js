@@ -51,9 +51,7 @@
       !missingTab.querySelector('.worktree-tag.bad')
     )
       throw new Error('Sole unavailable project lost its name or status')
-    ;[...(await projectMenu()).querySelectorAll('button[aria-pressed]')]
-      .find((item) => item.textContent.includes('Missing project'))
-      .click()
+    missingTab.parentElement.click()
     await until('missing project recovery', () =>
       document.querySelector('.recovery-banner')?.textContent.includes(missing.root),
     )
@@ -365,7 +363,12 @@
     if (sidOne === sidTwo) throw new Error('Project session IDs collided')
     await until('second counter', () => s().sessions[sidTwo]?.running)
     if (!s().sessions[sidOne]?.running) throw new Error('Switching stopped the first project')
-    s().activateProject(one.id)
+    const projectsPanel = await projectMenu()
+    const firstCard = [...projectsPanel.querySelectorAll('.panel-list-row')].find(
+      (row) => row.querySelector('button[aria-pressed]')?.title === one.project.root,
+    )
+    firstCard.querySelector('.project-status').click()
+    await until('project selected from status background', () => s().activeProjectId === one.id)
     if (s().view !== 'plan' || !s().highlighted.includes(first.id))
       throw new Error('Project layout/scope was lost')
     await until('continued output', () => smoke.terminalText(sidOne).text.includes('number:3'))
