@@ -37,21 +37,18 @@ if sys.argv[-2:] == ['login', 'status']:
     sys.exit(0)
 assert sys.argv[1:].count('--strict-config') == 1, 'strict-config flag must occur once'
 args = iter(sys.argv[1:])
-overrides, writable = [], []
+overrides = []
 for arg in args:
     if arg in ('-c', '--config'):
         overrides.extend(['-c', next(args)])
     elif arg == '--add-dir':
-        writable.append(next(args))
+        raise AssertionError('Managed networking must configure roots before sandbox resolution, not pass --add-dir')
     elif arg == '--strict-config':
         pass
     elif arg in ('--disable', '--enable'):
         overrides.extend([arg, next(args)])
     else:
         raise AssertionError('Unexpected probe launch argument: '+arg)
-if writable:
-    filesystem = {':workspace_roots':'write', **{path:'write' for path in writable}}
-    overrides.extend(['-c', 'permissions.scoped.filesystem={'+','.join(json.dumps(k)+'='+json.dumps(v) for k,v in filesystem.items())+'}'])
 if os.environ['PATCHBAY_NETWORK_PROBE_ROLE'] == 'restricted':
     overrides.extend(['-c', 'features.network_proxy=false', '-c', 'permissions.scoped.network.enabled=false'])
 real = (root/'real-codex').read_text().strip()

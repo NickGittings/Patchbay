@@ -1598,17 +1598,24 @@ fn combine_notices(first: Option<String>, second: Option<String>) -> Option<Stri
 fn configure_codex_network(
     command: &mut String,
     cwd: &Path,
+    dirs: &[PathBuf],
     shell: Shell,
     env: &mut BTreeMap<String, String>,
 ) -> Option<String> {
     if !interactive_codex(command, shell) {
         return None;
     }
-    match crate::codex::launch_options(command, cwd) {
-        Ok(options) => match append_codex_network_options(command, &options, shell, env) {
-            Ok(()) => None,
-            Err(error) => Some(network_notice(&error)),
-        },
+    match crate::codex::launch_options(command, cwd, dirs) {
+        Ok(options) => {
+            let mut candidate = options.command;
+            match append_codex_network_options(&mut candidate, &options.config, shell, env) {
+                Ok(()) => {
+                    *command = candidate;
+                    None
+                }
+                Err(error) => Some(network_notice(&error)),
+            }
+        }
         Err(error) => Some(network_notice(&error)),
     }
 }
@@ -1669,8 +1676,18 @@ fn brief_network_agent(
     let original_command = command.clone();
     let original_env = env.clone();
     let configured = interactive_codex(command, shell);
-    let notice = configure_codex_network(command, cwd, shell, env);
-    let briefing_notice = brief_agent(command, briefing, shell, env);
+    let notice = configure_codex_network(command, cwd, briefing.dirs, shell, env);
+    // The roots are already part of the effective Codex permissions. Passing
+    // --add-dir too would fail after the network proxy restricts the sandbox.
+    let configured_briefing = Briefing {
+        dirs: if configured && notice.is_none() {
+            &[]
+        } else {
+            briefing.dirs
+        },
+        ..*briefing
+    };
+    let briefing_notice = brief_agent(command, &configured_briefing, shell, env);
     let prompt_len = briefing
         .prompt
         .map(|prompt| command_len(shell, &format!(" {}", shell.quote(prompt)), env))
@@ -3604,6 +3621,7 @@ mod tests {
             configure_codex_network(
                 &mut claude,
                 Path::new("/repo"),
+                &[],
                 Shell::current(),
                 &mut BTreeMap::new()
             )
@@ -3623,6 +3641,7 @@ mod tests {
                 configure_codex_network(
                     &mut command,
                     Path::new("/repo"),
+                    &[],
                     Shell::current(),
                     &mut BTreeMap::new()
                 )
@@ -3695,6 +3714,7 @@ mod tests {
             configure_codex_network(
                 &mut candidate,
                 Path::new("/repo"),
+                &[],
                 Shell::Windows,
                 &mut candidate_env
             )
@@ -3897,7 +3917,11 @@ mod tests {
             let mut p = project();
             p.components[0].terminals[0].command = command.into();
             let spec = session_spec(&p, "api", "agent", &AllowAll, &[]).unwrap();
-            assert!(spec.command.contains("--add-dir"));
+            assert!(!spec.command.contains("--add-dir"));
+            assert!(
+                spec.command
+                    .contains("sandbox_workspace_write.writable_roots=")
+            );
             assert!(spec.notice.is_none());
         }
     }
@@ -4242,11 +4266,12 @@ mod tests {
         terminal.command = "codex".into();
         let scope = ["api".into()];
         let spec = plan_session_spec(&p, &scope, &terminal, &AllowAll, &[], None).unwrap();
-        assert!(spec.command.contains(&format!(
-            "--add-dir {}",
-            Shell::current().quote(&p.component_dir(&p.components[1]).display().to_string())
-        )));
-        assert_eq!(spec.command.matches("--add-dir").count(), 1);
+        assert!(!spec.command.contains("--add-dir"));
+        assert!(
+            spec.command
+                .contains("sandbox_workspace_write.writable_roots=")
+        );
+        assert!(spec.command.contains("/shared/db"));
         let config = format!(
             "developer_instructions={}",
             toml_string(Shell::current(), &plan_context(&p, &scope, &[]))
@@ -4353,11 +4378,19 @@ mod tests {
         let expected = component_context(&p, "api", &sections);
         let output = launch(spec);
         assert_eq!(instructions(&output), expected);
-        assert!(output.contains("ARG:--add-dir"));
+        assert!(!output.contains("ARG:--add-dir"));
         assert!(
             output
                 .lines()
-                .any(|line| line == format!("ARG:{}", p.component_dir(&p.components[1]).display()))
+                .filter_map(|line| line.strip_prefix("ARG:sandbox_workspace_write.writable_roots="))
+                .any(|value| {
+                    let parsed: toml::Table = toml::from_str(&format!("roots={value}")).unwrap();
+                    parsed["roots"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|root| root.as_str() == p.component_dir(&p.components[1]).to_str())
+                })
         );
         assert!(output.lines().any(|line| line == "ARG:test"));
 

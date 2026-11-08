@@ -48,7 +48,13 @@ import {
   terminalWrite,
   terminalAttach,
 } from './ipc'
-import { resetSessions, startTerminal, stopTerminal, reconcileSessions } from './sessions'
+import {
+  resetSessions,
+  startTerminal,
+  restartTerminal,
+  stopTerminal,
+  reconcileSessions,
+} from './sessions'
 import {
   editorOpen,
   editorPreferences,
@@ -269,6 +275,7 @@ const hooks = {
   requestGitRefresh,
   syncCurrentRoots,
   startTerminal,
+  restartTerminal,
   stopTerminal,
   terminalReset,
   resetSessions,

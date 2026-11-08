@@ -30,6 +30,17 @@ use an invocation-local derived profile. Legacy workspace-write launches retain 
 writable roots and temporary-directory exclusions. Native Codex review continues to
 use `exec --sandbox read-only review ... -o ...` without additional networking settings.
 
+Additional directories, including the planner's `.git/patchbay/plans` folder, are
+configured before Codex resolves its sandbox: legacy launches append to
+`sandbox_workspace_write.writable_roots`; permission profiles add `workspace_roots`
+while retaining their inherited filesystem rules. Patchbay also moves literal
+`--add-dir` preset arguments into these settings and preserves other arguments'
+shell quoting. This avoids Codex's "effective permissions do not allow additional
+writable roots" error when a terminal restarts with restricted permissions.
+Directory paths are keys inside inline TOML tables because Codex's `-c` key parser
+splits dotted paths even when quoted. Dynamic additional directories leave networking
+unchanged with a launch notice.
+
 Unresolvable configuration, explicit working-directory overrides, remote servers, legacy read-only/full-access modes, and
 sandbox-bypass presets receive a launch notice instead of a permission change. Codex
 feature-toggle presets for `network_proxy` must use a configuration table so their
@@ -67,7 +78,11 @@ sandbox selects its named permission profile explicitly and does not accept the 
 
 The suite reproduces the original permission-denied status request under restricted
 networking, then verifies a sandboxed planner's saved plan and proposal appear in the
-Plan view without changing scope or starting implementation agents. An implementation
+Plan view without changing scope or starting implementation agents, then restarts
+the planner and verifies it can still save the plan. The scripted provider forwards
+the generated directory configuration unchanged to the real sandbox and rejects
+`--add-dir`, so it cannot hide a launch regression by converting those flags itself.
+An implementation
 session exercises status and the configured validator. It also checks a blocked raw
 socket, an unapproved destination, an explicit feature-level loopback deny, a named
 profile loopback deny, and a denied write outside the workspace.

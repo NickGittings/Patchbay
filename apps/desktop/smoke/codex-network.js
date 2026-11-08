@@ -61,6 +61,19 @@
       (await smoke.planRead(opened.id)).text.includes('# Scoped TCP plan'),
       'plan was not saved',
     )
+    await until('planner exit', () => !state().sessions[plannerSid]?.running)
+    const generation = state().sessions[plannerSid].generation
+    await smoke.restartTerminal('@plan', planner.id, null)
+    await until(
+      'restarted sandboxed planner',
+      () =>
+        state().sessions[plannerSid]?.generation > generation &&
+        text(plannerSid).includes('codex-network-finished planner'),
+    )
+    assert(
+      (await smoke.planRead(opened.id)).text.includes('# Scoped TCP plan'),
+      'restarted planner could not save its plan',
+    )
     for (const role of ['worker', 'denied', 'denied-named']) {
       const device = preset(
         role,
