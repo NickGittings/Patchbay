@@ -9,10 +9,15 @@ struct Denies {
     profiles: std::collections::BTreeMap<String, Table>,
 }
 
+pub(crate) struct LaunchOptions {
+    pub command: String,
+    pub config: Vec<String>,
+}
+
 /// Codex decides which layers are trusted. Only denies from inactive layers may
 /// affect the generated overrides; their allowances and permission selections
 /// must never become active merely because Patchbay read them.
-pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
+pub(crate) fn launch_options(command: &str, cwd: &Path, dirs: &[PathBuf]) -> Result<LaunchOptions> {
     let words = crate::context::launch_words(command).context("Unsupported Codex command")?;
     let (program, _) = crate::context::launch_program(command).context("Missing Codex program")?;
     let args = &words[program + 1..];
@@ -155,7 +160,176 @@ pub(crate) fn launch_options(command: &str, cwd: &Path) -> Result<Vec<String>> {
     if let Some(mode) = sandbox {
         config.insert("sandbox_mode".into(), Value::String(mode));
     }
-    network_options(&config, denies)
+    let mut options = network_options(&config, denies)?;
+    let (command, dirs) = configured_directories(command, cwd, dirs)?;
+    directory_options(&config, &dirs, &mut options)?;
+    Ok(LaunchOptions {
+        command,
+        config: options,
+    })
+}
+
+/// The TUI cannot apply --add-dir once managed networking has made its effective
+/// permissions restricted. Move those roots into the configuration before Codex
+/// resolves its sandbox, preserving every other preset argument's shell spelling.
+fn configured_directories(
+    command: &str,
+    cwd: &Path,
+    dirs: &[PathBuf],
+) -> Result<(String, Vec<PathBuf>)> {
+    let words = crate::context::launch_words(command).context("Unsupported Codex command")?;
+    let raw = crate::context::launch_raw_words(command).context("Unsupported Codex command")?;
+    let (program, _) = crate::context::launch_program(command).context("Missing Codex program")?;
+    let mut roots = dirs.to_vec();
+    let mut removed = std::collections::HashSet::new();
+    let mut index = program + 1;
+    while index < words.len() {
+        let arg = &words[index];
+        let (value, last) = if arg == "--add-dir" {
+            (
+                words
+                    .get(index + 1)
+                    .context("Missing Codex directory")?
+                    .as_str(),
+                index + 1,
+            )
+        } else if let Some(value) = arg.strip_prefix("--add-dir=") {
+            (value, index)
+        } else {
+            index += if crate::context::codex_option_takes_value(arg) {
+                2
+            } else {
+                1
+            };
+            continue;
+        };
+        ensure!(
+            !shell_expansion(&raw[last], cfg!(windows))?,
+            "Cannot resolve a dynamic Codex additional directory safely"
+        );
+        let value = if cfg!(windows) {
+            value.to_owned()
+        } else {
+            let decoded = literal_shell_word(&raw[last])?;
+            if last == index {
+                decoded
+                    .strip_prefix("--add-dir=")
+                    .context("Invalid Codex directory option")?
+                    .to_owned()
+            } else {
+                decoded
+            }
+        };
+        roots.push(PathBuf::from(value));
+        removed.extend(index..=last);
+        index = last + 1;
+    }
+    let mut updated = String::new();
+    let mut end = 0;
+    for (index, word) in raw.iter().enumerate() {
+        let start = end
+            + command[end..]
+                .find(word)
+                .context("Missing Codex argument")?;
+        if !removed.contains(&index) {
+            updated.push_str(&command[end..start + word.len()]);
+        }
+        end = start + word.len();
+    }
+    updated.push_str(&command[end..]);
+    let mut canonical = Vec::new();
+    for dir in roots {
+        let dir = cwd.join(dir);
+        let dir = dir.canonicalize().unwrap_or(dir);
+        if !canonical.contains(&dir) {
+            canonical.push(dir);
+        }
+    }
+    Ok((updated, canonical))
+}
+
+/// Decode a POSIX word after shell_expansion has ruled out dynamic values.
+/// The command tokenizer deliberately retains some backslashes for inspection;
+/// directory configuration needs the literal value the shell would pass instead.
+fn literal_shell_word(raw: &str) -> Result<String> {
+    let mut value = String::new();
+    let mut quote = None;
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && quote != Some('\'') {
+            let next = chars.peek().copied().context("Trailing shell escape")?;
+            if quote.is_none() || matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                chars.next();
+                if next != '\n' {
+                    value.push(next);
+                }
+            } else {
+                value.push(c);
+            }
+        } else if Some(c) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else {
+            value.push(c);
+        }
+    }
+    ensure!(quote.is_none(), "Unclosed shell quote");
+    Ok(value)
+}
+
+fn directory_options(config: &Table, dirs: &[PathBuf], options: &mut Vec<String>) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    if let Some(name) = config.get("default_permissions").and_then(Value::as_str) {
+        let name = if name.starts_with(':') {
+            "patchbay_loopback"
+        } else {
+            name
+        };
+        let mut roots = config
+            .get("permissions")
+            .and_then(|value| value.get(name))
+            .and_then(|value| value.get("workspace_roots"))
+            .map(|value| value.as_table().context("Invalid Codex workspace roots"))
+            .transpose()?
+            .cloned()
+            .unwrap_or_default();
+        // Workspace roots apply the profile's inherited filesystem restrictions
+        // to each added folder, including read-only and denied subpaths.
+        for dir in dirs {
+            roots.insert(
+                dir.to_str().context("Invalid Codex directory")?.into(),
+                Value::Boolean(true),
+            );
+        }
+        // Codex splits -c keys at every dot, even inside quotes. Keep paths
+        // (notably .git/patchbay/plans) as keys inside an inline table instead.
+        options.push(format!(
+            "permissions.{name}.workspace_roots={}",
+            inline(&Value::Table(roots))
+        ));
+    } else {
+        let mut roots = config
+            .get("sandbox_workspace_write")
+            .and_then(|value| value.get("writable_roots"))
+            .map(|value| value.as_array().context("Invalid Codex writable roots"))
+            .transpose()?
+            .cloned()
+            .unwrap_or_default();
+        for dir in dirs {
+            let value = Value::String(dir.to_str().context("Invalid Codex directory")?.into());
+            if !roots.contains(&value) {
+                roots.push(value);
+            }
+        }
+        options.push(format!(
+            "sandbox_workspace_write.writable_roots={}",
+            inline(&Value::Array(roots))
+        ));
+    }
+    Ok(())
 }
 
 fn option(args: &[String], short: &str, long: &str) -> Option<String> {
@@ -268,6 +442,7 @@ fn shell_expansion(raw: &str, windows: bool) -> Result<bool> {
                     && (c != '~' || i == 0 || chars[i - 1] == '='),
                 "Shell expansion can change the Codex option list; quote literal arguments"
             );
+            expanded |= c == '~';
         }
         i += 1;
     }
@@ -383,8 +558,31 @@ fn overrides(args: &[String]) -> Vec<String> {
 fn read(path: &Path, config: &mut Table, denies: &mut Denies) -> Result<bool> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let layer = toml::from_str::<Table>(&text)
+            let mut layer = toml::from_str::<Table>(&text)
                 .map_err(|_| anyhow!("Cannot parse Codex network policy in {}", path.display()))?;
+            if let Some(roots) = layer
+                .get_mut("sandbox_workspace_write")
+                .and_then(|value| value.get_mut("writable_roots"))
+            {
+                // File-profile paths belong to the source directory. Once
+                // copied into a CLI override, relative paths would use cwd.
+                let parent = path.parent().context("Invalid Codex profile path")?;
+                for root in roots
+                    .as_array_mut()
+                    .context("Invalid Codex writable roots")?
+                {
+                    let value = Path::new(root.as_str().context("Invalid Codex writable root")?);
+                    if value.is_relative() {
+                        *root = Value::String(
+                            parent
+                                .join(value)
+                                .to_str()
+                                .context("Invalid Codex writable root path")?
+                                .into(),
+                        );
+                    }
+                }
+            }
             collect_denies(&layer, denies);
             merge(config, layer);
             Ok(true)
@@ -744,6 +942,220 @@ extends = "parent"
     }
 
     #[test]
+    fn additional_directories_preserve_legacy_roots_and_preset_quoting() {
+        let cwd = std::env::temp_dir();
+        let extra = cwd.join("related component");
+        let command = format!(
+            "env A='one two' codex --model 'kept model' --add-dir {} --add-dir={} -c {}",
+            crate::context::quote_argument(extra.to_str().unwrap()),
+            crate::context::quote_argument(extra.to_str().unwrap()),
+            crate::context::quote_argument("sandbox_workspace_write.writable_roots=['/existing']")
+        );
+        let options = launch_options(&command, &cwd, std::slice::from_ref(&extra)).unwrap();
+        assert!(!options.command.contains("--add-dir"));
+        assert!(
+            options
+                .command
+                .starts_with("env A='one two' codex --model 'kept model'")
+        );
+        let mut config = Table::new();
+        for option in options.config {
+            merge(&mut config, toml::from_str(&option).unwrap());
+        }
+        assert_eq!(
+            config["sandbox_workspace_write"]["writable_roots"],
+            Value::Array(vec![
+                Value::String("/existing".into()),
+                Value::String(extra.to_str().unwrap().into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn additional_directories_preserve_file_profile_relative_root_locations() {
+        let fixture =
+            std::env::temp_dir().join(format!("patchbay-profile-roots-{}", uuid::Uuid::new_v4()));
+        let home = fixture.join("profiles");
+        let cwd = fixture.join("session");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let absolute = fixture.join("absolute");
+        let roots = ["../shared", "future", absolute.to_str().unwrap()];
+        std::fs::write(
+            home.join("locked.config.toml"),
+            format!(
+                "[sandbox_workspace_write]\nwritable_roots={}",
+                inline(&Value::Array(
+                    roots
+                        .iter()
+                        .map(|root| Value::String((*root).into()))
+                        .collect()
+                ))
+            ),
+        )
+        .unwrap();
+        let snapshot = serde_json::json!({"layers":[{
+            "name":{"type":"user","file":home.join("config.toml")},"config":{}
+        }]});
+        let mut profile = Table::new();
+        let mut denies = Denies::default();
+        read(
+            &profile_home(&snapshot).unwrap().join("locked.config.toml"),
+            &mut profile,
+            &mut denies,
+        )
+        .unwrap();
+        let config = resolve_layers(&snapshot, Some(&profile), &mut denies).unwrap();
+        let (_, dirs) = configured_directories("codex --add-dir extra", &cwd, &[]).unwrap();
+        let mut options = network_options(&config, denies).unwrap();
+        directory_options(&config, &dirs, &mut options).unwrap();
+        let mut updated = config;
+        for option in options {
+            merge(&mut updated, toml::from_str(&option).unwrap());
+        }
+        assert_eq!(
+            updated["sandbox_workspace_write"]["writable_roots"],
+            Value::Array(
+                [
+                    home.join("../shared"),
+                    home.join("future"),
+                    absolute,
+                    cwd.join("extra")
+                ]
+                .iter()
+                .map(|root| Value::String(root.to_str().unwrap().into()))
+                .collect()
+            )
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn additional_profile_roots_keep_inherited_filesystem_restrictions() {
+        let original: Table = toml::from_str(
+            r#"
+default_permissions = "locked"
+[permissions.locked]
+extends = ":workspace"
+[permissions.locked.workspace_roots]
+"/existing" = true
+[permissions.locked.filesystem.":workspace_roots"]
+".env" = "deny"
+"read-only" = "read"
+"#,
+        )
+        .unwrap();
+        let mut options = network_options(&original, Denies::default()).unwrap();
+        directory_options(
+            &original,
+            &[PathBuf::from("/repo/.git/patchbay/plans")],
+            &mut options,
+        )
+        .unwrap();
+        let mut updated = original.clone();
+        for option in options {
+            merge(&mut updated, toml::from_str(&option).unwrap());
+        }
+        assert_eq!(
+            original["permissions"]["locked"]["filesystem"],
+            updated["permissions"]["locked"]["filesystem"]
+        );
+        assert_eq!(
+            updated["permissions"]["locked"]["extends"].as_str(),
+            Some(":workspace")
+        );
+        let roots = &updated["permissions"]["locked"]["workspace_roots"];
+        assert_eq!(roots["/existing"].as_bool(), Some(true));
+        assert_eq!(roots["/repo/.git/patchbay/plans"].as_bool(), Some(true));
+        for builtin in [":workspace", ":read-only"] {
+            let config = toml::from_str(&format!("default_permissions={builtin:?}")).unwrap();
+            let mut options = network_options(&config, Denies::default()).unwrap();
+            directory_options(&config, &[PathBuf::from("/plans")], &mut options).unwrap();
+            let mut updated = config;
+            for option in options {
+                merge(&mut updated, toml::from_str(&option).unwrap());
+            }
+            assert_eq!(
+                updated["permissions"]["patchbay_loopback"]["workspace_roots"]["/plans"].as_bool(),
+                Some(true)
+            );
+            assert!(
+                !updated["permissions"]["patchbay_loopback"]
+                    .as_table()
+                    .unwrap()
+                    .contains_key("filesystem")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn additional_directories_match_literal_shell_escape_values() {
+        let cwd = std::env::temp_dir().join(format!("patchbay-dirs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        for raw in [
+            r"./a\*",
+            r"./a\?",
+            r"./a\q",
+            r"./a\ space",
+            r#""./a\*""#,
+            r"'./a\*'",
+            r#""./a\\b""#,
+            r#""./a\$ROOT""#,
+            "'./a`literal`'",
+            r#"'./a'\''quote'"#,
+            "./a\\\ncontinued",
+        ] {
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("printf %s {raw}")])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{raw}");
+            let path = cwd.join(String::from_utf8(output.stdout).unwrap());
+            std::fs::create_dir_all(&path).unwrap();
+            let expected = path.canonicalize().unwrap();
+            for flag in ["--add-dir ", "--add-dir="] {
+                let command = format!("codex {flag}{raw}");
+                let options = launch_options(&command, &cwd, &[])
+                    .unwrap_or_else(|error| panic!("{command}: {error}"));
+                assert_eq!(options.command, "codex", "{command}");
+                let mut config = Table::new();
+                for option in options.config {
+                    merge(&mut config, toml::from_str(&option).unwrap());
+                }
+                assert_eq!(
+                    config["sandbox_workspace_write"]["writable_roots"],
+                    Value::Array(vec![Value::String(expected.to_str().unwrap().into())]),
+                    "{command}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(cwd).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn additional_directory_conversion_distinguishes_flags_values_and_expansions() {
+        let cwd = Path::new("/repo");
+        let command =
+            "codex --model '--add-dir' --add-dir 'literal $ROOT' -c 'model_reasoning_effort=high'";
+        let (updated, dirs) = configured_directories(command, cwd, &[]).unwrap();
+        assert_eq!(
+            updated,
+            "codex --model '--add-dir' -c 'model_reasoning_effort=high'"
+        );
+        assert_eq!(dirs, [PathBuf::from("/repo/literal $ROOT")]);
+        for command in [
+            "codex --add-dir",
+            "codex --add-dir \"$ROOT\"",
+            "codex --add-dir=\"$ROOT\"",
+            "codex --add-dir ~/shared",
+        ] {
+            assert!(launch_options(command, cwd, &[]).is_err(), "{command}");
+        }
+    }
+
+    #[test]
     fn feature_domain_maps_do_not_promote_superseded_profile_allowances() {
         let updated = apply(
             r#"
@@ -808,11 +1220,11 @@ extends = ":workspace"
             "codex --model=\"${MODEL}\"",
         ] {
             assert!(
-                launch_options(command, Path::new("/repo")).is_ok(),
+                launch_options(command, Path::new("/repo"), &[]).is_ok(),
                 "{command}"
             );
         }
-        assert!(launch_options("codex --sandbox read-only", Path::new("/repo")).is_err());
+        assert!(launch_options("codex --sandbox read-only", Path::new("/repo"), &[]).is_err());
         for flags in [
             "--disable network_proxy",
             "--disable=network_proxy",
@@ -825,7 +1237,7 @@ extends = ":workspace"
             "--enable=network_{proxy,other}",
         ] {
             assert!(
-                launch_options(&format!("codex {flags}"), Path::new("/repo")).is_err(),
+                launch_options(&format!("codex {flags}"), Path::new("/repo"), &[]).is_err(),
                 "{flags}"
             );
         }
@@ -843,7 +1255,7 @@ extends = ":workspace"
             "codex \"!!\"",
         ] {
             assert!(
-                launch_options(command, Path::new("/repo")).is_err(),
+                launch_options(command, Path::new("/repo"), &[]).is_err(),
                 "{command}"
             );
         }
@@ -863,14 +1275,16 @@ extends = ":workspace"
                 "codex {shorthand} -c {}",
                 crate::context::quote_argument("sandbox_mode=\"read-only\"")
             );
-            let options = launch_options(&command, Path::new("/repo")).unwrap();
+            let options = launch_options(&command, Path::new("/repo"), &[]).unwrap();
             assert!(
                 options
+                    .config
                     .iter()
                     .any(|option| option == "sandbox_workspace_write.network_access=true")
             );
             assert!(
                 !options
+                    .config
                     .iter()
                     .any(|option| option.contains("approval_policy")
                         || option.starts_with("sandbox_mode="))
@@ -879,7 +1293,8 @@ extends = ":workspace"
         assert!(
             launch_options(
                 "codex --approve-for-me --sandbox read-only",
-                Path::new("/repo")
+                Path::new("/repo"),
+                &[]
             )
             .is_err()
         );

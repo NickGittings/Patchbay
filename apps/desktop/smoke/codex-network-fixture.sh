@@ -37,21 +37,18 @@ if sys.argv[-2:] == ['login', 'status']:
     sys.exit(0)
 assert sys.argv[1:].count('--strict-config') == 1, 'strict-config flag must occur once'
 args = iter(sys.argv[1:])
-overrides, writable = [], []
+overrides = []
 for arg in args:
     if arg in ('-c', '--config'):
         overrides.extend(['-c', next(args)])
     elif arg == '--add-dir':
-        writable.append(next(args))
+        raise AssertionError('Managed networking must configure roots before sandbox resolution, not pass --add-dir')
     elif arg == '--strict-config':
         pass
     elif arg in ('--disable', '--enable'):
         overrides.extend([arg, next(args)])
     else:
         raise AssertionError('Unexpected probe launch argument: '+arg)
-if writable:
-    filesystem = {':workspace_roots':'write', **{path:'write' for path in writable}}
-    overrides.extend(['-c', 'permissions.scoped.filesystem={'+','.join(json.dumps(k)+'='+json.dumps(v) for k,v in filesystem.items())+'}'])
 if os.environ['PATCHBAY_NETWORK_PROBE_ROLE'] == 'restricted':
     overrides.extend(['-c', 'features.network_proxy=false', '-c', 'permissions.scoped.network.enabled=false'])
 real = (root/'real-codex').read_text().strip()
@@ -61,7 +58,7 @@ os.execv(real, [real, *overrides, 'sandbox', '-P', profile, '--', sys.executable
 PYTHON
 chmod +x "$dir/codex"
 cat > "$dir/agent.py" <<'PYTHON'
-import json, os, pathlib, socket, struct, subprocess, urllib.parse
+import json, os, pathlib, socket, struct, subprocess, urllib.parse, uuid
 root = pathlib.Path(__file__).parent
 role = os.environ['PATCHBAY_NETWORK_PROBE_ROLE']
 cli = os.environ['PATCHBAY_CLI']
@@ -92,9 +89,14 @@ else:
         raise AssertionError('Direct socket bypassed the managed proxy')
     agent('status')
     if role == 'planner':
+        run_id = uuid.uuid4().hex
         proposal = json.loads((root/'project/proposal.json').read_text())
+        proposal['plan'] += '\n\nProbe run: '+run_id
         pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text(proposal['plan'])
-        agent('propose', '--file', str(root/'project/proposal.json'))
+        proposal_file = pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).with_suffix('.json')
+        proposal_file.write_text(json.dumps(proposal))
+        agent('propose', '--file', str(proposal_file))
+        proposal_file.unlink()
     else:
         reply = agent('validate', 'web')
         assert reply['result']['passed'], reply
@@ -113,7 +115,7 @@ else:
         print('filesystem-restriction-preserved', flush=True)
     else:
         raise AssertionError('Networking widened filesystem permissions')
-print('codex-network-finished '+role, flush=True)
+print('codex-network-finished '+role+(' '+run_id if role == 'planner' else ''), flush=True)
 PYTHON
 cd "$dir/project"
 git init -q -b main

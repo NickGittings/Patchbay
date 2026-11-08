@@ -48,9 +48,11 @@
     const roots = state().rootTerminals.length
     await smoke.startTerminal('@plan', planner.id)
     const plannerSid = smoke.sessionId('@plan', planner.id, null)
-    await until('sandboxed proposal', () =>
-      text(plannerSid).includes('codex-network-finished planner'),
-    )
+    const plannerRuns = () =>
+      [...text(plannerSid).matchAll(/codex-network-finished planner ([a-f0-9]{32})/g)].map(
+        (match) => match[1],
+      )
+    const firstRun = await until('sandboxed proposal', () => plannerRuns()[0])
     await until('proposal visible in Patchbay', () => state().proposedScope.includes('web'))
     assert(
       JSON.stringify(scope) === JSON.stringify(state().highlighted),
@@ -58,8 +60,21 @@
     )
     assert(state().rootTerminals.length === roots, 'submission started an implementation agent')
     assert(
-      (await smoke.planRead(opened.id)).text.includes('# Scoped TCP plan'),
+      (await smoke.planRead(opened.id)).text.includes(`Probe run: ${firstRun}`),
       'plan was not saved',
+    )
+    await until('planner exit', () => !state().sessions[plannerSid]?.running)
+    const generation = state().sessions[plannerSid].generation
+    await smoke.restartTerminal('@plan', planner.id, null)
+    const restartedRun = await until(
+      'restarted sandboxed planner',
+      () =>
+        state().sessions[plannerSid]?.generation > generation &&
+        plannerRuns().find((run) => run !== firstRun),
+    )
+    assert(
+      (await smoke.planRead(opened.id)).text.includes(`Probe run: ${restartedRun}`),
+      'restarted planner could not save its plan',
     )
     for (const role of ['worker', 'denied', 'denied-named']) {
       const device = preset(

@@ -71,6 +71,14 @@ fn profile_restrictions_come_from_the_home_reported_by_the_launched_codex() {
     let dir = std::env::temp_dir().join(format!("patchbay-profile-{}", uuid::Uuid::new_v4()));
     let home = dir.join("shell-home");
     std::fs::create_dir_all(&home).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&dir)
+            .status()
+            .unwrap()
+            .success()
+    );
     let profile = format!("locked-{}", uuid::Uuid::new_v4());
     std::fs::write(home.join(format!("{profile}.config.toml")), "default_permissions=\":read-only\"\n[features.network_proxy.domains]\n\"127.0.0.1\"=\"deny\"\n").unwrap();
     let snapshot = serde_json::json!({"id":1,"result":{"layers":[{
@@ -107,5 +115,28 @@ fn profile_restrictions_come_from_the_home_reported_by_the_launched_codex() {
         spec.command
     );
     assert!(spec.command.contains("\"127.0.0.1\"=\"deny\""));
+    assert!(!spec.command.contains("--add-dir"));
+    let plans = patchbay_core::plans::dir(&dir).unwrap();
+    assert!(spec.dirs.contains(&plans));
+    assert!(
+        spec.command
+            .contains("permissions.patchbay_loopback.workspace_roots=")
+    );
+    assert!(
+        !spec
+            .command
+            .contains("permissions.patchbay_loopback.filesystem")
+    );
+    let restarted = context::plan_session_spec(
+        &project,
+        &[],
+        &terminal,
+        &patchbay_core::policy::AllowAll,
+        &[],
+        None,
+    )
+    .unwrap();
+    assert_eq!(spec.command, restarted.command);
+    assert_eq!(spec.dirs, restarted.dirs);
     std::fs::remove_dir_all(dir).unwrap();
 }
