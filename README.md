@@ -299,9 +299,10 @@ plugged in during active Auto work or scheduled resume waits. The setting applie
 projects, defaults off, and allows the screen to turn off and lock. Patchbay must stay open;
 this does not wake an already sleeping device or override manual sleep or closing a laptop lid.
 On Linux, sleep prevention requires UPower, logind, and a supported desktop session power
-manager (GNOME, KDE, or the freedesktop power-management interface). The panel reports when
-power detection or inhibition is unavailable. Unplugging releases sleep prevention within
-five seconds; plugging back in reacquires it if eligible work remains.
+manager (KDE or the freedesktop power-management interface). GNOME is reported as unsupported
+because its suspend inhibitor also blocks manual sleep. The panel reports when power detection
+or inhibition is unavailable. Unplugging releases sleep prevention within five seconds;
+plugging back in reacquires it if eligible work remains.
 
 ## Editor navigation
 
