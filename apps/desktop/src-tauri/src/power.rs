@@ -2,10 +2,11 @@
 //! thread-local power assertions are acquired and released on the same thread.
 use serde::Serialize;
 use std::sync::{Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 const POLL: Duration = Duration::from_secs(5);
+const LEASE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,15 +62,22 @@ pub fn set_auto_keep_awake_demand(
         std::thread::spawn(move || {
             let mut awake = None;
             let mut demand = false;
+            let mut refreshed = Instant::now();
             loop {
                 match receiver.recv_timeout(POLL) {
                     Ok(value) => {
                         demand = value;
+                        refreshed = Instant::now();
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                let report = reconcile(&mut awake, demand, external_power, acquire);
+                let report = reconcile(
+                    &mut awake,
+                    demand && refreshed.elapsed() < LEASE,
+                    external_power,
+                    acquire,
+                );
                 let _ = app.emit_to("main", "auto-power-status", report);
             }
         });

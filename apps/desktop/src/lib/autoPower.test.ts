@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { AutoRun } from '../types'
 import { emptyTaskWorkspace, useStore } from '../store'
-import { followAutoPower, needsAutoPower, setAutoKeepAwake } from './autoPower'
+import { followAutoPower, needsAutoPower, setAutoKeepAwake, useAutoPower } from './autoPower'
 import { invoke } from '@tauri-apps/api/core'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
@@ -10,6 +10,11 @@ const run = (patch: Partial<AutoRun> = {}) => ({ status: 'running', ...patch }) 
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  vi.stubGlobal('navigator', {
+    locks: {
+      request: (_name: string, _options: unknown, callback: () => Promise<void>) => callback(),
+    },
+  })
   useStore.setState({
     restoring: false,
     serviceConnected: true,
@@ -22,7 +27,10 @@ beforeEach(() => {
     taskWorkspaces: {},
   })
 })
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 test('only eligible running work and explicit scheduled pauses need power', () => {
   expect(needsAutoPower(run(), true)).toBe(true)
@@ -136,5 +144,18 @@ test('background permission and other runs keep one demand until the last run en
     enabled: true,
     needed: false,
   })
+  stop()
+})
+
+test('unavailable background execution does not request sleep prevention', async () => {
+  vi.stubGlobal('navigator', {})
+  setAutoKeepAwake(true)
+  const stop = followAutoPower()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(invoke).toHaveBeenLastCalledWith('set_auto_keep_awake_demand', {
+    enabled: false,
+    needed: true,
+  })
+  expect(useAutoPower.getState().status).toBe('unavailable')
   stop()
 })
