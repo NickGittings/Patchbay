@@ -558,8 +558,31 @@ fn overrides(args: &[String]) -> Vec<String> {
 fn read(path: &Path, config: &mut Table, denies: &mut Denies) -> Result<bool> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let layer = toml::from_str::<Table>(&text)
+            let mut layer = toml::from_str::<Table>(&text)
                 .map_err(|_| anyhow!("Cannot parse Codex network policy in {}", path.display()))?;
+            if let Some(roots) = layer
+                .get_mut("sandbox_workspace_write")
+                .and_then(|value| value.get_mut("writable_roots"))
+            {
+                // File-profile paths belong to the source directory. Once
+                // copied into a CLI override, relative paths would use cwd.
+                let parent = path.parent().context("Invalid Codex profile path")?;
+                for root in roots
+                    .as_array_mut()
+                    .context("Invalid Codex writable roots")?
+                {
+                    let value = Path::new(root.as_str().context("Invalid Codex writable root")?);
+                    if value.is_relative() {
+                        *root = Value::String(
+                            parent
+                                .join(value)
+                                .to_str()
+                                .context("Invalid Codex writable root path")?
+                                .into(),
+                        );
+                    }
+                }
+            }
             collect_denies(&layer, denies);
             merge(config, layer);
             Ok(true)
@@ -946,6 +969,65 @@ extends = "parent"
                 Value::String(extra.to_str().unwrap().into()),
             ])
         );
+    }
+
+    #[test]
+    fn additional_directories_preserve_file_profile_relative_root_locations() {
+        let fixture =
+            std::env::temp_dir().join(format!("patchbay-profile-roots-{}", uuid::Uuid::new_v4()));
+        let home = fixture.join("profiles");
+        let cwd = fixture.join("session");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let absolute = fixture.join("absolute");
+        let roots = ["../shared", "future", absolute.to_str().unwrap()];
+        std::fs::write(
+            home.join("locked.config.toml"),
+            format!(
+                "[sandbox_workspace_write]\nwritable_roots={}",
+                inline(&Value::Array(
+                    roots
+                        .iter()
+                        .map(|root| Value::String((*root).into()))
+                        .collect()
+                ))
+            ),
+        )
+        .unwrap();
+        let snapshot = serde_json::json!({"layers":[{
+            "name":{"type":"user","file":home.join("config.toml")},"config":{}
+        }]});
+        let mut profile = Table::new();
+        let mut denies = Denies::default();
+        read(
+            &profile_home(&snapshot).unwrap().join("locked.config.toml"),
+            &mut profile,
+            &mut denies,
+        )
+        .unwrap();
+        let config = resolve_layers(&snapshot, Some(&profile), &mut denies).unwrap();
+        let (_, dirs) = configured_directories("codex --add-dir extra", &cwd, &[]).unwrap();
+        let mut options = network_options(&config, denies).unwrap();
+        directory_options(&config, &dirs, &mut options).unwrap();
+        let mut updated = config;
+        for option in options {
+            merge(&mut updated, toml::from_str(&option).unwrap());
+        }
+        assert_eq!(
+            updated["sandbox_workspace_write"]["writable_roots"],
+            Value::Array(
+                [
+                    home.join("../shared"),
+                    home.join("future"),
+                    absolute,
+                    cwd.join("extra")
+                ]
+                .iter()
+                .map(|root| Value::String(root.to_str().unwrap().into()))
+                .collect()
+            )
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
