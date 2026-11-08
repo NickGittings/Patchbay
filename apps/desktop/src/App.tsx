@@ -1,3 +1,4 @@
+import { followAutoPower } from './lib/autoPower'
 import WorktreeSetupStatus from './components/tasks/WorktreeSetupStatus'
 import { watchProviderRuns } from './lib/orchestration'
 import StoryBoard from './components/stories/StoryBoard'
@@ -295,6 +296,7 @@ function AppWorkspace() {
     const stopWindows = syncComponentWindows()
     const stopTasks = followActiveTask()
     const stopAuto = followAuto()
+    const stopPower = followAutoPower()
     const stopQueues = followQueuedPrompts()
     const stopNotifications = followNotifications()
     const stopUsage = followUsage()
@@ -307,6 +309,7 @@ function AppWorkspace() {
       stopWindows()
       stopTasks()
       stopAuto()
+      stopPower()
       stopQueues()
       stopNotifications()
       stopUsage()

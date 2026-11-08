@@ -27,6 +27,7 @@ vi.mock('./AutoDialog', () => ({ default: () => null }))
 
 beforeEach(() => {
   mock.state = {
+    workspaceSettings: {},
     project: { id: 'p' },
     auto: {
       runId: 'run',

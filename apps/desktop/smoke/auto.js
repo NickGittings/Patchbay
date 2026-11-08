@@ -171,6 +171,23 @@
     await until('Auto dialog before presets load', () =>
       document.querySelector('.auto-content select'),
     )
+    const awakeToggle = await until('keep-awake toggle', () =>
+      document.querySelector('.auto-check input'),
+    )
+    assert(!awakeToggle.checked, 'Keep awake must default off')
+    awakeToggle.click()
+    await until(
+      'global keep-awake preference',
+      () => smoke.workspaceDocument().settings.autoKeepAwake === true,
+    )
+    await until('idle power status', () =>
+      document.body.textContent.includes('Sleep prevention is idle.'),
+    )
+    awakeToggle.click()
+    await until(
+      'keep-awake disabled',
+      () => smoke.workspaceDocument().settings.autoKeepAwake === false,
+    )
     smoke.store.setState({
       devices: [
         {
@@ -308,6 +325,39 @@
       smoke.restoredLayout(backgroundLayout).taskWorkspaces[description.id].auto
     assert(restoredBackground.background === true, 'Restore lost background permission')
     assert(unfinished.auto.pauseKind === 'restored', 'Restore lost its pause kind')
+    // A future schedule holds power without launching an agent or changing scheduler rules.
+    const completedAuto = state().auto
+    smoke.store.setState({
+      auto: {
+        ...completedAuto,
+        status: 'paused',
+        pauseKind: 'scheduled',
+        resumeTrigger: { kind: 'time', atMs: Date.now() + 3600000 },
+      },
+      workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: true },
+    })
+    if (!document.querySelector('.auto-check input'))
+      document.querySelector('.workspace-rail [aria-label="Auto mode"]').click()
+    const powerText = await until('scheduled power status', () => {
+      const text = document.body.textContent
+      return (
+        /Keeping device awake while plugged in|On battery:|Power source unknown:|Sleep prevention unavailable/.test(
+          text,
+        ) && text
+      )
+    })
+    if (powerText.includes('Sleep prevention unavailable'))
+      throw new Error('Native sleep prevention unavailable')
+    console.log(
+      `Power smoke: ${powerText.includes('Keeping device awake') ? 'active on AC' : 'inactive on battery/unknown power'}`,
+    )
+    smoke.store.setState({ auto: completedAuto })
+    await until('power released after completed run', () =>
+      document.body.textContent.includes('Sleep prevention is idle.'),
+    )
+    smoke.store.setState({
+      workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },
+    })
     await smoke.report(
       'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, background description planning/implementation/affected validation and automatic merge without switching worktrees or views',
     )

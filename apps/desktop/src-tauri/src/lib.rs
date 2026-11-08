@@ -22,6 +22,7 @@ mod agent_commands;
 mod layout;
 mod native_menu;
 mod orchestration;
+mod power;
 mod provider_auth;
 mod service;
 #[cfg(target_os = "windows")]
@@ -2508,6 +2509,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
             layout::event(window, event);
+            if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+                window.state::<power::PowerManager>().close();
+            }
             match event {
                 WindowEvent::Focused(true) => {
                     let _ = window.app_handle().emit_to("main", GIT_DIRTY_EVENT, ());
@@ -2549,13 +2553,16 @@ pub fn run() {
             }
         })
         .manage(AppState::default())
+        .manage(power::PowerManager::default())
         .setup(|app| {
             #[cfg(debug_assertions)]
             smoke::setup(app);
             // Built here rather than by Tauri (`create: false`) so smoke runs can adjust it.
             let config = app.config().app.windows.first().cloned();
             let config = config.ok_or("tauri.conf.json defines no main window")?;
-            let main = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+            // Auto's scheduler must continue while the main window is hidden/minimized.
+            let main = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
             #[cfg(target_os = "macos")]
             let main = writing_tools::disable(main);
             #[cfg(debug_assertions)]
@@ -2602,6 +2609,7 @@ pub fn run() {
                 return inspect(invoke);
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                power::set_auto_keep_awake_demand,
                 native_menu::update_native_menu,
                 agent_provider,
                 provider_auth::provider_auth_check,
