@@ -261,6 +261,10 @@
       ),
       'Worktree details must start collapsed with tooltips',
     )
+    assert(
+      !otherRow.querySelector('.worktree-detail-panel .scope-chips > *'),
+      'Collapsed categories rendered result entries',
+    )
     const signal = (row, label) => row.querySelector(`.worktree-signal[aria-label^="${label}:"]`)
     for (const label of ['Tests', 'Issues', 'Changes', 'Running']) {
       const toggle = signal(otherRow, label)
@@ -339,6 +343,10 @@
         [...otherRow.querySelectorAll('.worktree-signal')].every((b) => b.disabled),
         'Missing worktree detail controls are enabled',
       )
+      assert(
+        [...otherRow.querySelectorAll('.worktree-detail-panel')].every((region) => region.hidden),
+        'Missing worktree kept actionable details expanded',
+      )
     } finally {
       smoke.store.setState({ tasks: originalTasks })
       await until('worktree restored', () => !otherRow.classList.contains('missing'))
@@ -359,6 +367,8 @@
     click(viewButton('Plan'))
     await openPicker()
     await until('worktree rows', () => document.querySelectorAll('.worktree-row').length === 2)
+    const changesToggle = signal(document.querySelector('.worktree-row.active'), 'Changes')
+    if (changesToggle.getAttribute('aria-expanded') === 'false') click(changesToggle)
     await until('active worktree changes', () =>
       document.querySelector('.worktree-row.active')?.textContent.includes('±1'),
     )
