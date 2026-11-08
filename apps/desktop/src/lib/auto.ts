@@ -979,6 +979,17 @@ function observe(run: AutoRun, waitingOn?: string) {
     }
   })
 }
+/** A tracked agent can keep working while a different reviewer waits for input. */
+export function autoHasWorkingSessions(run: AutoRun) {
+  return observe(run, run.inputSessionId).some(
+    (session) =>
+      !session.failed &&
+      !session.done &&
+      session.snapshot?.running &&
+      (session.agent?.state === 'working' || (!session.agent && session.snapshot.status?.active)),
+  )
+}
+
 type Observed = ReturnType<typeof observe>[number]
 function failureReason(run: AutoRun, r: Observed, waitingOn?: string) {
   if (r.sessionId === run.sessionId)

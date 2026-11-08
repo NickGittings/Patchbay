@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import { projectStateOf, useStore } from '../store'
 import type { AutoRun } from '../types'
 import { autoRuns } from './autoState'
+import { autoHasWorkingSessions } from './auto'
 
 export type PowerStatus = 'inactive' | 'active' | 'onBattery' | 'powerUnknown' | 'unavailable'
 export const useAutoPower = create<{ status: PowerStatus; error?: string | null }>(() => ({
@@ -11,13 +12,15 @@ export const useAutoPower = create<{ status: PowerStatus; error?: string | null 
 }))
 
 export function needsAutoPower(run: AutoRun, eligible: boolean) {
+  // Inactivity prevents the next launch; the current stage is allowed to finish.
+  if (run.status === 'running') return true
+  if (run.status === 'waitingOnYou') return autoHasWorkingSessions(run)
   return (
     eligible &&
-    (run.status === 'running' ||
-      (run.status === 'paused' &&
-        ['scheduled', 'usage'].includes(run.pauseKind ?? '') &&
-        !!run.resumeTrigger &&
-        Number.isFinite(run.resumeTrigger.atMs)))
+    run.status === 'paused' &&
+    ['scheduled', 'usage'].includes(run.pauseKind ?? '') &&
+    !!run.resumeTrigger &&
+    Number.isFinite(run.resumeTrigger.atMs)
   )
 }
 
@@ -121,6 +124,7 @@ export function followAutoPower() {
       s.project !== prev.project ||
       s.activeTask !== prev.activeTask ||
       s.serviceConnected !== prev.serviceConnected ||
+      s.sessionRecords !== prev.sessionRecords ||
       s.restoring !== prev.restoring ||
       s.projectOrder !== prev.projectOrder
     )

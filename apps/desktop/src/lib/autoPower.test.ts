@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { AutoRun } from '../types'
+import type { AutoRun, SessionState } from '../types'
 import { emptyTaskWorkspace, useStore } from '../store'
 import { followAutoPower, needsAutoPower, setAutoKeepAwake, useAutoPower } from './autoPower'
 import { invoke } from '@tauri-apps/api/core'
 
+vi.mock('./windows', () => ({}))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }))
 const run = (patch: Partial<AutoRun> = {}) => ({ status: 'running', ...patch }) as AutoRun
@@ -32,9 +33,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test('only eligible running work and explicit scheduled pauses need power', () => {
+test('running stages retain power while scheduled waits require launch eligibility', () => {
   expect(needsAutoPower(run(), true)).toBe(true)
-  expect(needsAutoPower(run(), false)).toBe(false)
+  expect(needsAutoPower(run(), false)).toBe(true)
   for (const status of ['waitingOnYou', 'done', 'failed', 'stopped', 'paused'] as const)
     expect(needsAutoPower(run({ status }), true)).toBe(false)
   for (const pauseKind of ['scheduled', 'usage'] as const)
@@ -113,7 +114,15 @@ test('background permission and other runs keep one demand until the last run en
   useStore.setState({
     auto: run({ status: 'paused' }),
     taskWorkspaces: {
-      t: { ...emptyTaskWorkspace(), auto: run({ background: false }) },
+      t: {
+        ...emptyTaskWorkspace(),
+        auto: run({
+          status: 'paused',
+          pauseKind: 'scheduled',
+          resumeTrigger: { kind: 'time', atMs: 1000 },
+          background: false,
+        }),
+      },
     } as ReturnType<typeof useStore.getState>['taskWorkspaces'],
   })
   const stop = followAutoPower()
@@ -124,7 +133,15 @@ test('background permission and other runs keep one demand until the last run en
   })
   useStore.setState({
     taskWorkspaces: {
-      t: { ...emptyTaskWorkspace(), auto: run({ background: true }) },
+      t: {
+        ...emptyTaskWorkspace(),
+        auto: run({
+          status: 'paused',
+          pauseKind: 'scheduled',
+          resumeTrigger: { kind: 'time', atMs: 1000 },
+          background: true,
+        }),
+      },
     } as ReturnType<typeof useStore.getState>['taskWorkspaces'],
   })
   await vi.advanceTimersByTimeAsync(0)
@@ -158,4 +175,29 @@ test('unavailable background execution does not request sleep prevention', async
   })
   expect(useAutoPower.getState().status).toBe('unavailable')
   stop()
+})
+
+test('another working reviewer holds power during an input wait, until its turn ends', () => {
+  const waiting = run({
+    status: 'waitingOnYou',
+    stage: 'review',
+    sessionId: 'primary',
+    sessionStartedMs: 100,
+    inputSessionId: 'lane',
+    laneSessions: [{ sessionId: 'lane', startedMs: 100 }],
+  })
+  const session = (agent: string) =>
+    ({
+      running: true,
+      startedMs: 100,
+      status: { agent: { state: agent, authoritative: true, sinceMs: 200 } },
+    }) as SessionState
+  useStore.setState({ sessions: { primary: session('working'), lane: session('needsInput') } })
+  expect(needsAutoPower(waiting, false)).toBe(true)
+  useStore.setState({ sessions: { primary: session('review'), lane: session('needsInput') } })
+  expect(needsAutoPower(waiting, false)).toBe(false)
+  useStore.setState({
+    sessions: { primary: { ...session('working'), startedMs: 300 }, lane: session('needsInput') },
+  })
+  expect(needsAutoPower(waiting, false)).toBe(false)
 })
