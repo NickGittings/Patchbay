@@ -219,9 +219,22 @@
     const taskRow = await until('Navigation task row', () =>
       navOverview.querySelector('.worktree-row.active'),
     )
-    // Clicking the active card leaves the picker open.
-    click(taskRow)
-    await sleep(100)
+    // Even the selected card's background invokes selection; the dock stays open.
+    const setActiveTask = state().setActiveTask
+    let selectedAgain = false
+    smoke.store.setState({
+      setActiveTask: (id, exact) => {
+        selectedAgain = id === task.id
+        setActiveTask(id, exact)
+      },
+    })
+    try {
+      click(taskRow)
+      await sleep(100)
+      assert(selectedAgain, 'selected worktree background did not invoke selection')
+    } finally {
+      smoke.store.setState({ setActiveTask })
+    }
     assert(
       state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
       'clicking the active worktree card switched or closed the picker',
@@ -242,7 +255,102 @@
     // Another card's own controls and its path (kept for copying) don't switch.
     const otherRow = overview.querySelector('.worktree-row:not(.active)')
     assert(otherRow.querySelector('.worktree-row-switch').title, 'Missing worktree path tooltip')
-    assert(!otherRow.querySelector('.worktree-detail'), 'Inactive worktree details are expanded')
+    assert(
+      [...otherRow.querySelectorAll('.worktree-signal')].every(
+        (b) => b.getAttribute('aria-expanded') === 'false' && b.title,
+      ),
+      'Worktree details must start collapsed with tooltips',
+    )
+    assert(
+      !otherRow.querySelector('.worktree-detail-panel .scope-chips > *'),
+      'Collapsed categories rendered result entries',
+    )
+    const signal = (row, label) => row.querySelector(`.worktree-signal[aria-label^="${label}:"]`)
+    for (const label of ['Tests', 'Issues', 'Changes', 'Running']) {
+      const toggle = signal(otherRow, label)
+      toggle.focus()
+      assert(document.activeElement === toggle, `${label} toggle cannot receive keyboard focus`)
+      click(toggle)
+      await until(`${label} expanded`, () => toggle.getAttribute('aria-expanded') === 'true')
+      assert(
+        state().activeTask === null && state().utilityPanel === 'worktree',
+        `${label} toggle selected the worktree or closed the panel`,
+      )
+      assert(
+        !otherRow.querySelector(`[role="region"][aria-label="${label}"]`).hidden,
+        `${label} details are hidden`,
+      )
+    }
+    click(signal(otherRow, 'Tests'))
+    await sleep(50)
+    assert(
+      signal(otherRow, 'Tests').getAttribute('aria-expanded') === 'false' &&
+        signal(otherRow, 'Running').getAttribute('aria-expanded') === 'true',
+      'Closing one category collapsed another',
+    )
+    click(otherRow.querySelector('[role="region"][aria-label="Running"]'))
+    assert(state().activeTask === null, 'Detail background selected the worktree')
+    // Selecting text on another card must keep it available to copy.
+    const selection = window.getSelection()
+    const range = document.createRange()
+    range.selectNodeContents(otherRow.querySelector('strong'))
+    selection.removeAllRanges()
+    selection.addRange(range)
+    click(otherRow)
+    assert(state().activeTask === null, 'Text selection switched worktrees')
+    selection.removeAllRanges()
+    // The compact layout must also fit a narrow dock with long names and branches.
+    const panel = document.querySelector('[aria-label="Worktree panel"]')
+    const originalWidth = panel.style.width
+    const title = otherRow.querySelector('strong')
+    const branch = otherRow.querySelector('.worktree-row-switch code')
+    const originalTitle = title.textContent
+    const originalBranch = branch.textContent
+    try {
+      panel.style.width = '240px'
+      title.textContent = 'A very long worktree name '.repeat(12)
+      branch.textContent = 'feature/a-very-long-branch-name/'.repeat(12)
+      await sleep(50)
+      const scroll = panel.querySelector('.utility-scroll')
+      assert(scroll.scrollWidth <= scroll.clientWidth + 1, 'Compact worktree card overflows')
+      assert(title.scrollWidth > title.clientWidth, 'Long worktree name is not truncated')
+      assert(
+        branch.scrollWidth > branch.clientWidth,
+        `Long branch is not truncated: ${JSON.stringify({
+          scroll: branch.scrollWidth,
+          client: branch.clientWidth,
+          width: branch.getBoundingClientRect().width,
+          text: branch.textContent,
+          display: getComputedStyle(branch).display,
+        })}`,
+      )
+    } finally {
+      panel.style.width = originalWidth
+      title.textContent = originalTitle
+      branch.textContent = originalBranch
+    }
+    // Missing worktrees keep their management controls but cannot be selected or expanded.
+    const originalTasks = state().tasks
+    try {
+      smoke.store.setState({
+        tasks: originalTasks.map((t) => (t.id === task.id ? { ...t, missing: true } : t)),
+      })
+      await until('missing worktree card', () => otherRow.classList.contains('missing'))
+      click(otherRow)
+      assert(state().activeTask === null, 'Missing worktree selected')
+      assert(otherRow.querySelector('.worktree-row-switch').disabled, 'Missing title is enabled')
+      assert(
+        [...otherRow.querySelectorAll('.worktree-signal')].every((b) => b.disabled),
+        'Missing worktree detail controls are enabled',
+      )
+      assert(
+        [...otherRow.querySelectorAll('.worktree-detail-panel')].every((region) => region.hidden),
+        'Missing worktree kept actionable details expanded',
+      )
+    } finally {
+      smoke.store.setState({ tasks: originalTasks })
+      await until('worktree restored', () => !otherRow.classList.contains('missing'))
+    }
     click(otherRow.querySelector('.worktree-row-switch'))
     await until(
       'worktree selected',
@@ -259,11 +367,16 @@
     click(viewButton('Plan'))
     await openPicker()
     await until('worktree rows', () => document.querySelectorAll('.worktree-row').length === 2)
+    const changesToggle = signal(document.querySelector('.worktree-row.active'), 'Changes')
+    if (changesToggle.getAttribute('aria-expanded') === 'false') click(changesToggle)
     await until('active worktree changes', () =>
       document.querySelector('.worktree-row.active')?.textContent.includes('±1'),
     )
     const activeRow = document.querySelector('.worktree-row.active')
-    assert(activeRow.textContent.includes('2 running'), 'worktree running count missing')
+    assert(
+      signal(activeRow, 'Running').getAttribute('aria-label') === 'Running: 2',
+      'worktree running count missing',
+    )
     const bounds = document.querySelector('[aria-label="Worktree panel"]').getBoundingClientRect()
     assert(
       bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight,
@@ -489,6 +602,10 @@
     await smoke.startTerminal('@task', rootAgent, task.id)
     await until('root worker starts', () => state().sessions[rootAgentSid]?.running)
     state().setActiveTask(secondTask.id)
+    const liveOverview = await openPicker()
+    const backgroundRow = [...liveOverview.querySelectorAll('.worktree-row')].find(
+      (row) => row.getAttribute('aria-label') === task.title,
+    )
     await until(
       'worker finishes commands in background task',
       () => textOf(rootAgentSid).includes('worker-finished'),
@@ -527,6 +644,42 @@
         state().sessions[rootAgentSid]?.running &&
         state().sessions[taskSid]?.running,
       'tab switch stopped processes',
+    )
+    const validationResults = Object.values(state().taskActivities)
+      .filter(
+        (a) =>
+          a.task === task.id &&
+          ['validate', 'validateChanged', 'validateSelected'].includes(a.action.kind),
+      )
+      .flatMap((a) => a.report?.results ?? [])
+    assert(validationResults.length > 0, 'No recorded validation results to check')
+    await until(
+      'live worktree validation count',
+      () =>
+        signal(backgroundRow, 'Tests').getAttribute('aria-label') ===
+        `Tests: ${validationResults.length}`,
+    )
+    assert(
+      Number(signal(backgroundRow, 'Issues').textContent) > 0,
+      'Unseen actions did not update the issues count',
+    )
+    click(signal(backgroundRow, 'Issues'))
+    const issueEntry = await until('worktree issue terminal', () =>
+      backgroundRow.querySelector('[aria-label="Issues"] button.chip'),
+    )
+    click(issueEntry)
+    await until('issue opens its worktree terminal', () => state().activeTask === task.id)
+    state().setActiveTask(secondTask.id)
+    click(signal(backgroundRow, 'Tests'))
+    const testEntry = await until('recorded test terminal', () =>
+      backgroundRow.querySelector('[aria-label="Tests"] button.chip'),
+    )
+    click(testEntry)
+    await until(
+      'test opens its worktree terminal',
+      () =>
+        state().activeTask === task.id &&
+        validationResults.some((result) => result.sessionId === state().activeSession),
     )
     state().setActiveTask(task.id)
     smoke.selectPanel('activity')

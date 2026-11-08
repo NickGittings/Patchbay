@@ -10,6 +10,14 @@ export default function MapSaveStatus() {
   const absent = entry.fingerprint === 'absent'
   const status = entry.mapSave?.status
   const blocked = mapBlocked(entry)
+  if (
+    !blocked &&
+    !absent &&
+    !dirty &&
+    !entry.mapSave?.error &&
+    !['saving', 'error', 'conflict'].includes(status ?? '')
+  )
+    return null
   const label = blocked
     ? 'Map needs recovery'
     : status === 'error'

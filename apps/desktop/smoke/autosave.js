@@ -44,7 +44,7 @@
     await choose('Create map configuration', false)
     await until('first save', () => !s().dirty)
     assert(!(await smoke.openProject()).detected, 'Explicit creation did not write the map')
-    await until('saved status', () => status()?.textContent.includes('Map saved'))
+    await until('saved status hidden', () => !document.querySelector('.map-save-status'))
     s().updateComponent(component, { notes: 'Saved on inactive tab' })
     const two = await smoke.openSecondProject()
     smoke.acceptOpened(two)

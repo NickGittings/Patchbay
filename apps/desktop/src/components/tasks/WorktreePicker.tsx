@@ -1,13 +1,30 @@
-import PanelSection, { PanelDetails } from '../PanelSection'
+import PanelSection from '../PanelSection'
 import Menu, { MenuItem } from '../Menu'
-import RunningTag from '../RunningTag'
-import { useCallback, useContext, useEffect, useRef, useState, type RefObject } from 'react'
-import { componentTerminals, revealTerminal, worktreeAttention } from '../../lib/attention'
+import RailIcon from '../RailIcon'
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react'
+import {
+  attentionItems,
+  componentTerminals,
+  revealTerminal,
+  type AttentionItem,
+} from '../../lib/attention'
 import { KIND_COLOR } from '../../lib/display'
 import { gitReview, taskUpdate } from '../../lib/ipc'
 import { refreshMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
 import { useShallow } from 'zustand/react/shallow'
 import { planTerminals } from '../../lib/plan'
+import { selectPanel } from '../../lib/rail'
+import { unseenFinished } from '../../lib/taskActions'
+import { useClockTick } from '../../lib/clock'
 import { refreshTasks, removeTask, seedNewTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import {
@@ -15,6 +32,7 @@ import {
   PLAN_SCOPE,
   PROJECT_SCOPE,
   plannerSessionId,
+  parseSessionId,
   sessionId,
   type Review,
   type Task,
@@ -28,34 +46,53 @@ import { CloseMenu } from '../menuContext'
  */
 export default function WorktreePicker({ copyPlan = false }: { copyPlan?: boolean }) {
   const projectId = useStore((s) => s.project?.id)
-  const counts = useStore(useShallow(worktreeAttention))
   const main = useMainWorktree((m) => m[projectId ?? ''])
   const refreshBranch = useCallback(() => refreshMainWorktree(projectId), [projectId])
   return (
     <WorktreeOverview
       branch={main?.branch ?? ''}
       onOpen={refreshBranch}
-      counts={counts}
       git={!!main?.git}
       copyPlan={copyPlan}
     />
   )
 }
 
+/** One project snapshot and attention scan serves every card in the overview. */
+function useWorktreeSnapshot() {
+  return useStore(
+    useShallow((s) => ({
+      nodes: s.nodes,
+      sessions: s.sessions,
+      runtimeTerminals: s.runtimeTerminals,
+      devices: s.devices,
+      activeTask: s.activeTask,
+      rootTerminals: s.rootTerminals,
+      taskWorkspaces: s.taskWorkspaces,
+      tasks: s.tasks,
+      auto: s.auto,
+      sessionRecords: s.sessionRecords,
+      taskActivities: s.taskActivities,
+      seenActivities: s.seenActivities,
+    })),
+  )
+}
+
 function WorktreeOverview({
   branch,
   onOpen,
-  counts,
   git,
   copyPlan,
 }: {
   branch: string
   onOpen: () => void
-  counts: Record<string, number>
   git: boolean
   copyPlan: boolean
 }) {
-  const tasks = useStore((s) => s.tasks)
+  useClockTick()
+  const snapshot = useWorktreeSnapshot()
+  const { tasks } = snapshot
+  const attention = attentionItems(snapshot)
   const close = useContext(CloseMenu)
   useEffect(() => {
     void refreshTasks()
@@ -77,10 +114,10 @@ function WorktreeOverview({
       <PanelSection title="Worktrees">
         <div className="worktree-list">
           {!tasks.some((t) => t.current && !t.missing) && (
-            <WorktreeRow task={null} branch={branch} attention={counts[''] ?? 0} />
+            <WorktreeRow task={null} branch={branch} snapshot={snapshot} attention={attention} />
           )}
           {tasks.map((task) => (
-            <WorktreeRow key={task.id} task={task} attention={counts[task.id] ?? 0} />
+            <WorktreeRow key={task.id} task={task} snapshot={snapshot} attention={attention} />
           ))}
         </div>
       </PanelSection>
@@ -100,17 +137,19 @@ function saveNotes(pending: RefObject<{ id: string; notes: string; projectId?: s
 
 const ROW_CONTROLS =
   'button, a, input, textarea, select, summary, form, details[open] > :not(summary), .chip, ' +
-  '.worktree-path, .worktree-confirm, .file-tree-error'
+  '.worktree-path, .worktree-confirm, .file-tree-error, .worktree-detail-panel, [role="menu"]'
 
 /** One worktree's summary and its rename, notes and remove controls. */
 function WorktreeRow({
   task,
-  attention,
   branch,
+  snapshot,
+  attention,
 }: {
   task: Task | null
-  attention: number
   branch?: string
+  snapshot: ReturnType<typeof useWorktreeSnapshot>
+  attention: AttentionItem[]
 }) {
   const close = useContext(CloseMenu)
   const projectId = useStore((s) => s.project?.id)
@@ -122,13 +161,34 @@ function WorktreeRow({
     close()
     useStore.getState().setActiveTask(id)
   }
-  const nodes = useStore((s) => s.nodes)
-  const sessions = useStore((s) => s.sessions)
-  const runtimeTerminals = useStore((s) => s.runtimeTerminals)
-  const devices = useStore((s) => s.devices)
-  const activeTask = useStore((s) => s.activeTask)
-  const rootTerminals = useStore((s) => s.rootTerminals)
-  const taskWorkspaces = useStore((s) => s.taskWorkspaces)
+  const { nodes, sessions, runtimeTerminals, devices, activeTask, rootTerminals, taskWorkspaces } =
+    snapshot
+  const issues = attention.filter((item) => item.task === id)
+  const activities = Object.values(snapshot.taskActivities)
+    .filter((a) => a.projectId === projectId && (a.task ?? null) === id)
+    .reverse()
+  const tests = activities
+    .filter((a) => ['validate', 'validateChanged', 'validateSelected'].includes(a.action.kind))
+    .flatMap((a) => (a.report?.results ?? []).map((result) => ({ ...result, activityId: a.id })))
+  const seen = new Set(snapshot.seenActivities)
+  const finished = activities.filter(
+    (a) => activeTask !== id && unseenFinished(a, projectId, id, seen),
+  )
+  const terminalName = (sid: string) => {
+    const { componentId, terminalId } = parseSessionId(sid)
+    const record = snapshot.sessionRecords.find((r) => r.id === sid)
+    const terminal = componentTerminals(
+      componentId,
+      nodes.find((n) => n.id === componentId)?.data.terminals ?? [],
+      runtimeTerminals,
+      id,
+    ).find(([session]) => session === sid)?.[1]
+    return record?.metadata.name ?? terminal?.name ?? terminalId ?? sid
+  }
+  const openTerminal = (sid: string) => {
+    close()
+    revealTerminal({ sid, componentId: parseSessionId(sid).componentId })
+  }
   const roots = activeTask === id ? rootTerminals : (taskWorkspaces[id ?? '']?.rootTerminals ?? [])
   const revision = useStore((s) => s.gitChanges)
   const pathsKey = useStore((s) => s.nodes.map((n) => `${n.id}\0${n.data.path}`).join('\n'))
@@ -231,13 +291,13 @@ function WorktreeRow({
   }
 
   return (
-    // Another worktree's whole card switches, except its own controls, chips, the path and error
-    // (kept for copying) and the remove confirmation; the title button stays the keyboard and
-    // screen-reader way in, and its click is excluded here.
+    // Background clicks select even the current worktree. The title button provides keyboard
+    // access; controls and selectable detail text keep their own interactions.
     <section
       className={`worktree-row ${active ? 'active' : ''} ${task?.missing ? 'missing' : ''}`}
+      aria-label={task?.title ?? 'Main worktree'}
       onClick={(e) => {
-        if (active || (e.target as Element).closest(ROW_CONTROLS)) return
+        if ((e.target as Element).closest(ROW_CONTROLS)) return
         if (window.getSelection()?.toString()) return
         switchTo()
       }}
@@ -250,25 +310,15 @@ function WorktreeRow({
           title={task?.worktree}
           onClick={switchTo}
         >
-          <strong>{task ? task.title : 'Main worktree'}</strong>
-          {(task?.branch ?? branch) && <code>{task?.branch ?? branch}</code>}
+          <strong title={task?.title ?? 'Main worktree'}>
+            {task ? task.title : 'Main worktree'}
+          </strong>
+          {(task?.branch ?? branch) && (
+            <code title={task?.branch ?? branch}>{task?.branch ?? branch}</code>
+          )}
         </button>
         {task?.current && <span className="worktree-tag">main worktree</span>}
         {task?.missing && <span className="worktree-tag bad">worktree missing</span>}
-        {attention > 0 && (
-          <span
-            className="worktree-tag attention"
-            title="Terminals or finished actions that need you"
-          >
-            ● {attention}
-          </span>
-        )}
-        {changedCount > 0 && (
-          <span className="worktree-tag" title="Uncommitted files">
-            ±{changedCount}
-          </span>
-        )}
-        <RunningTag count={running.length} />
         <button
           disabled={!!task?.missing}
           onClick={() => {
@@ -336,50 +386,135 @@ function WorktreeRow({
           {error}
         </p>
       )}
-      {active &&
-        (changed.length > 0 ||
-          projectFiles > 0 ||
-          (review?.affected.length ?? 0) > 0 ||
-          running.length > 0) && (
-          <PanelDetails title="Worktree details">
-            {active && (changed.length > 0 || projectFiles > 0) && (
-              <div className="worktree-detail">
-                <span className="section-title">Changed</span>
-                <div className="scope-chips">
-                  {changed.map((c) => chip(c.id, `±${c.files}`))}
-                  {projectFiles > 0 && <span className="chip">Project files ±{projectFiles}</span>}
-                </div>
-              </div>
-            )}
-            {active && review && review.affected.length > 0 && (
-              <div className="worktree-detail">
-                <span className="section-title">May affect</span>
-                <div className="scope-chips">
-                  {review.affected.map((a) => chip(a.id, `via ${a.via.map(nameOf).join(', ')}`))}
-                </div>
-              </div>
-            )}
-            {active && running.length > 0 && (
-              <div className="worktree-detail">
-                <span className="section-title">Running</span>
-                <div className="scope-chips">
-                  {running.map(({ componentId, name, t, sid }) => (
+      <div className="worktree-signals">
+        <WorktreeDetail label="Tests" icon="tests" count={tests.length} disabled={!!task?.missing}>
+          {() => (
+            <>
+              {!tests.length && <p>No validation results recorded.</p>}
+              {tests.map((result, index) => (
+                <button
+                  key={`${result.activityId}:${result.sessionId}:${index}`}
+                  className="chip"
+                  title={result.message}
+                  onClick={() => openTerminal(result.sessionId)}
+                >
+                  {terminalName(result.sessionId)}: {result.outcome}
+                  {result.exitCode !== null && result.exitCode !== 0 && ` (${result.exitCode})`}
+                </button>
+              ))}
+            </>
+          )}
+        </WorktreeDetail>
+        <WorktreeDetail
+          label="Issues"
+          icon="issues"
+          count={issues.length + finished.length}
+          disabled={!!task?.missing}
+        >
+          {() => (
+            <>
+              {!issues.length && !finished.length && <p>Nothing needs attention.</p>}
+              {issues.map((item) => (
+                <button
+                  key={item.sid}
+                  className="chip"
+                  title={item.status.detail}
+                  onClick={() => {
+                    close()
+                    revealTerminal(item)
+                  }}
+                >
+                  {item.owner}: {item.terminal.name} · {item.status.label}
+                </button>
+              ))}
+              {finished.map((activity) => (
+                <div key={activity.id} className="worktree-action-result">
+                  <span>
+                    {activity.action.kind.startsWith('validate') ? 'Validation' : 'Stack'} ·{' '}
+                    {activity.state}
+                  </span>
+                  {activity.error && <p className="file-tree-error">{activity.error}</p>}
+                  {activity.report?.results.map((result, index) => (
                     <button
-                      key={sid}
+                      key={`${result.sessionId}:${index}`}
                       className="chip"
-                      onClick={() => {
-                        close()
-                        revealTerminal({ sid, componentId })
-                      }}
+                      onClick={() => openTerminal(result.sessionId)}
                     >
-                      {name}: {t.name}
+                      {terminalName(result.sessionId)}: {result.outcome}
                     </button>
                   ))}
+                  {!activity.report?.results.length && (
+                    <button
+                      onClick={() => {
+                        useStore.getState().setActiveTask(id)
+                        selectPanel('activity')
+                      }}
+                    >
+                      View activity
+                    </button>
+                  )}
                 </div>
-              </div>
-            )}
-          </PanelDetails>
-        )}
+              ))}
+            </>
+          )}
+        </WorktreeDetail>
+        <WorktreeDetail
+          label="Changes"
+          icon="changes"
+          count={changedCount}
+          disabled={!!task?.missing}
+        >
+          {() => (
+            <>
+              {!review && !error && <p>Loading changes…</p>}
+              {review && !changedCount && !review.affected.length && <p>No changes.</p>}
+              {(changed.length > 0 || projectFiles > 0) && (
+                <div className="worktree-detail">
+                  <span className="section-title">Changed</span>
+                  <div className="scope-chips">
+                    {changed.map((c) => chip(c.id, `±${c.files}`))}
+                    {projectFiles > 0 && (
+                      <span className="chip">Project files ±{projectFiles}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {!!review?.affected.length && (
+                <div className="worktree-detail">
+                  <span className="section-title">May affect</span>
+                  <div className="scope-chips">
+                    {review.affected.map((a) => chip(a.id, `via ${a.via.map(nameOf).join(', ')}`))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </WorktreeDetail>
+        <WorktreeDetail
+          label="Running"
+          icon="running"
+          count={running.length}
+          disabled={!!task?.missing}
+        >
+          {() => (
+            <>
+              {!running.length && <p>No running terminals.</p>}
+              {running.map(({ componentId, name, t, sid }) => (
+                <button
+                  key={sid}
+                  className="chip"
+                  onClick={() => {
+                    close()
+                    revealTerminal({ sid, componentId })
+                  }}
+                >
+                  {name}: {t.name}
+                </button>
+              ))}
+            </>
+          )}
+        </WorktreeDetail>
+      </div>
       {active && task && (
         <details className="worktree-notes-detail">
           <summary>Notes{notes ? `: ${notes.split('\n')[0]}` : ''}</summary>
@@ -394,5 +529,50 @@ function WorktreeRow({
         </details>
       )}
     </section>
+  )
+}
+
+/** Each category owns its disclosure so opening one never collapses its neighbors. */
+function WorktreeDetail({
+  label,
+  icon,
+  count,
+  disabled,
+  children,
+}: {
+  label: string
+  icon: string
+  count: number
+  disabled: boolean
+  children: () => ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  const expanded = open && !disabled
+  return (
+    <>
+      <button
+        className="worktree-signal"
+        title={`${label}: ${count}${label === 'Changes' ? ' files' : ''}`}
+        aria-label={`${label}: ${count}`}
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
+        <RailIcon name={icon} />
+        <span>{count}</span>
+      </button>
+      <div
+        id={panelId}
+        className="worktree-detail-panel"
+        role="region"
+        aria-label={label}
+        hidden={!expanded}
+      >
+        <span className="section-title">{label}</span>
+        <div className="scope-chips">{expanded && children()}</div>
+      </div>
+    </>
   )
 }

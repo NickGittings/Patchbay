@@ -23,7 +23,15 @@ export default function ProjectSwitcher() {
         const needsAttention =
           entry.conflict || ['error', 'conflict'].includes(entry.mapSave?.status ?? '')
         return (
-          <div className={`panel-list-row ${activeId === id ? 'active' : ''}`} key={id}>
+          <div
+            className={`panel-list-row ${activeId === id ? 'active' : ''}`}
+            key={id}
+            onClick={(e) => {
+              if ((e.target as Element).closest('button, a, input, textarea, select')) return
+              if (window.getSelection()?.toString()) return
+              useStore.getState().activateProject(id)
+            }}
+          >
             <button
               className="grow"
               aria-pressed={activeId === id}
