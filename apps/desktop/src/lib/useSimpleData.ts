@@ -134,7 +134,9 @@ export function useSimpleData(visible: boolean) {
     const turnEnds = new Map<string, number>()
     const stages = (state: ReturnType<typeof useStore.getState>) =>
       state.sessionRecords
-        .filter((r) => relatedSession(r, scope))
+        .filter((r) =>
+          relatedSession(r, scope, (state.sessions[r.id] ?? r.snapshot)?.generation, state.simple),
+        )
         .map((r) => {
           const session = state.sessions[r.id],
             agent = session?.status?.agent

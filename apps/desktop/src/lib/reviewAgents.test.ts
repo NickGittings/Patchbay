@@ -505,3 +505,29 @@ test('a start still spawning when the backend looked is adopted once the round r
     errors: [],
   })
 })
+
+test('Main worktree starts an incoming merge with an explicit source', async () => {
+  const { initialMergeSelection } = await import('./reviewAgents')
+  const main = tree('/main', 'trunk', true)
+  expect(initialMergeSelection(main, [main, source])).toEqual({ source: '', destination: '/main' })
+  expect(initialMergeSelection(source, [main, source])).toEqual({
+    source: '/feature',
+    destination: '/main',
+  })
+  expect(initialMergeSelection(source, [source])).toEqual({ source: '/feature', destination: '' })
+})
+
+test('source changes keep eligible destinations and replace invalid ones safely', async () => {
+  const { reconcileMergeDestination } = await import('./reviewAgents')
+  const main = tree('/main', 'main', true)
+  const other = tree('/other', 'other')
+  const trees = [main, source, other, tree('/detached', undefined), tree('/same', 'feature')]
+  expect(mergeDestinations(undefined, trees).map((w) => w.path)).not.toContain('/detached')
+  expect(reconcileMergeDestination(source, trees, '/other')).toBe('/other')
+  for (const invalid of ['/feature', '/same', '/detached', '/missing']) {
+    expect(reconcileMergeDestination(source, trees, invalid)).toBe('/main')
+  }
+  expect(reconcileMergeDestination(main, trees, '/main')).toBe('')
+  expect(reconcileMergeDestination(source, [source, other], '/missing')).toBe('')
+  expect(reconcileMergeDestination(source, trees, '')).toBe('')
+})

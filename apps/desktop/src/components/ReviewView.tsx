@@ -267,7 +267,6 @@ export default function ReviewView() {
           key={`${projectId}/${source.path}/${source.branch}`}
           source={source}
           worktrees={worktrees}
-          findings={findings}
           close={() => setMergeDialogScope(null)}
           launched={(sid) => {
             if (useStore.getState().project?.id === projectId)

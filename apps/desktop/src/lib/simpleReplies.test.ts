@@ -2,8 +2,9 @@ import { beforeEach, expect, test } from 'vitest'
 import { useStore } from '../store'
 import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
 import { revealTerminal } from './attention'
-import { inputDrawer, simpleKey, useSimpleUi } from './simpleUi'
-import { ownsPlanner, thread } from './simple'
+import { emptySimpleUi, inputDrawer, simpleKey, useSimpleUi } from './simpleUi'
+import { ownsPlanner, selectRecipient, thread, type SimpleState } from './simple'
+import { flow } from './simpleFlow'
 import { sessionMetadata, type Reply, type SessionRecord, type Task } from '../types'
 const reply = (sequence: number): Reply => ({
   sequence,
@@ -421,6 +422,134 @@ test('View selects a merge source even when its destination task is listed first
     activeSession: 's',
   })
 })
+
+test.each([null, 't'])(
+  'a merge selected from Main stays in its launching chat (active %s)',
+  (task) => {
+    const r = {
+      ...record('@merge'),
+      spec: { cwd: '/p', merge_source: '/t', command: 'cat' },
+    }
+    const simple: SimpleState = {
+      startedMs: 1,
+      log: [
+        {
+          id: 'merge',
+          kind: 'action',
+          action: 'merge',
+          stage: 'merge',
+          atMs: 10,
+          sessionId: 's',
+          generation: 1,
+          request: {
+            source: '/t',
+            sourceBranch: 'feature',
+            destination: '/p',
+            destinationBranch: 'main',
+          },
+        },
+      ],
+    }
+    const sessions = {
+      s: {
+        generation: 1,
+        running: true,
+        replies: [reply(1)],
+        status: {
+          lastOutputMs: 100,
+          active: false,
+          url: null,
+          ready: false,
+          healthy: null,
+          stopped: false,
+          seenMs: null,
+          agent: {
+            state: 'needsInput' as const,
+            message: 'Approve the merge?',
+            prompt: null,
+            authoritative: true,
+            sinceMs: 100,
+            turnId: 'turn',
+          },
+        },
+      },
+    }
+    useStore.setState({ activeTask: task, simpleMode: true, sessionRecords: [r], sessions })
+    useStore.getState().patchTask('p', null, { simple })
+    const scope = { projectId: 'p', task: null, path: '/p', branch: 'main' }
+    const snapshot = { records: [r], sessions, simple, auto: null }
+    const model = thread(snapshot, scope)
+    const recipient = selectRecipient(model.records, sessions, model.stage)
+    expect(recipient?.id).toBe('s')
+    expect(model.items.find((i) => i.kind === 'agent')).toMatchObject({
+      record: r,
+      entries: [expect.objectContaining({ kind: 'reply', text: 'Reply 1' })],
+    })
+    expect(flow({ ...snapshot, worktree: scope }, model, recipient).agent?.id).toBe('s')
+    expect(inputDrawer(emptySimpleUi(), recipient, sessions, ['s'])).toMatchObject({
+      terminal: 'input',
+      terminalSession: { id: 's', generation: 1 },
+    })
+    persistReplies('s', 1, [reply(1)], r)
+    const saved =
+      task === null ? useStore.getState().simple : useStore.getState().taskWorkspaces[''].simple
+    expect(saved!.log).toContainEqual(expect.objectContaining({ kind: 'reply', text: 'Reply 1' }))
+    // Source recovery still receives replies, even though Main initiated the request.
+    const source =
+      task === 't' ? useStore.getState().simple : useStore.getState().taskWorkspaces.t.simple
+    expect(source!.log).toContainEqual(expect.objectContaining({ kind: 'reply', text: 'Reply 1' }))
+    revealTerminal({ sid: 's', componentId: '@merge' })
+    expect(useStore.getState()).toMatchObject({
+      activeTask: null,
+      activeSession: 's',
+      simpleMode: true,
+    })
+  },
+)
+
+test.each(['unknown run', 'later run', 'other source', 'other destination', 'other project'])(
+  'a selected merge excludes replies for %s from the launching chat',
+  (mismatch) => {
+    const r = { ...record('@merge'), spec: { cwd: '/p', merge_source: '/t', command: 'cat' } }
+    const simple: SimpleState = {
+      startedMs: 1,
+      log: [
+        {
+          id: 'merge',
+          kind: 'action',
+          action: 'merge',
+          stage: 'merge',
+          atMs: 10,
+          sessionId: 's',
+          generation: mismatch === 'unknown run' ? undefined : 1,
+          request: {
+            source: mismatch === 'other source' ? '/other' : '/t',
+            sourceBranch: 'feature',
+            destination: mismatch === 'other destination' ? '/other' : '/p',
+            destinationBranch: 'main',
+          },
+        },
+      ],
+    }
+    if (mismatch === 'other project') r.metadata = { ...r.metadata, projectId: 'other' }
+    const generation = mismatch === 'later run' ? 2 : 1
+    const sessions = { s: { generation, running: true, replies: [reply(1)] } }
+    useStore.setState({ simple, sessionRecords: [r], sessions })
+    expect(
+      thread(
+        { records: [r], sessions, simple, auto: null },
+        {
+          projectId: 'p',
+          task: null,
+          path: '/p',
+          branch: 'main',
+        },
+      ).records,
+    ).toEqual([])
+    persistReplies('s', generation, [reply(1)], r)
+    expect(useStore.getState().simple!.log.some((e) => e.kind === 'reply')).toBe(false)
+  },
+)
 
 test('repeated persistence writes only when the replies or the chats receiving them change', () => {
   const r = record('@plan')

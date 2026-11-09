@@ -542,7 +542,37 @@
     // Forgetting the hidden merge must not collapse the next merge, even before selection.
     await smoke.sessionForget(sid)
     await smoke.reconcileSessions()
-    choose(form.querySelector('select[aria-label="Destination worktree"]'), opened.project.root)
+    click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
+    state().setActiveTask(null)
+    await until('Main worktree Review rendered', () => !visible('.review-banner'))
+    form = await openDialog()
+    const sourceSelect = () => form.querySelector('select[aria-label="Source worktree"]')
+    const destinationSelect = () => form.querySelector('select[aria-label="Destination worktree"]')
+    assert(sourceSelect().value === '', 'Main worktree did not require a source choice')
+    assert(destinationSelect().value === opened.project.root, 'main destination not preselected')
+    assert(form.querySelector('button[type="submit"]').disabled, 'missing source allowed launch')
+    choose(sourceSelect(), `${parent}/feature`)
+    await until(
+      'incoming merge ready with feature findings',
+      () =>
+        !form.querySelector('button[type="submit"]').disabled &&
+        form
+          .querySelector('[aria-label="Source review status"]')
+          ?.textContent.includes('changed since review'),
+    )
+    assert(
+      destinationSelect().value === opened.project.root,
+      'source choice changed main destination',
+    )
+    assert(
+      ![...destinationSelect().options].some((o) => o.value === `${parent}/feature`),
+      'source was offered as a destination',
+    )
+    choose(sourceSelect(), opened.project.root)
+    assert(destinationSelect().value === '', 'invalid destination survived source change')
+    assert(form.querySelector('button[type="submit"]').disabled, 'same worktree allowed launch')
+    choose(sourceSelect(), `${parent}/feature`)
+    choose(destinationSelect(), opened.project.root)
     submit()
     await until('conflict destination terminal', () => {
       const el = visible('.review-merge-terminal')
@@ -552,6 +582,8 @@
     await until('conflict merge verified', () =>
       text(sid).includes(`merge-verified:${opened.project.root}`),
     )
+    assert(state().activeTask === null, 'incoming merge switched away from Main worktree')
+    assert(text(sid).includes('Source branch: feature'), 'incoming merge used wrong source')
     assert(
       text(sid).includes('merge-result:resolved-conflict'),
       'conflicting destination was not resolved',
@@ -574,12 +606,19 @@
       ),
     )
     await until('finished merge hidden', () => !visible('.review-merge-terminal'))
+    // Restore the task's dock for the existing finished-session recovery checks.
+    state().setActiveTask(task.id)
     state().setView('navigation')
     await until('left finished merge Review', () => !visible('.review-view'))
     state().setView('review')
     await until('finished merge Review remounted', () => visible('.review-view'))
     assert(!visible('.review-merge-terminal'), 'finished hidden merge reopened on remount')
+    await smoke.reconcileSessions()
     smoke.selectPanel('sessions')
+    choose(
+      await until('session filter', () => visible('select[aria-label="Filter sessions"]')),
+      'all',
+    )
     // Only once it has ended: a running row has neither Show in Review nor (without an
     // adapter) a menu.
     const mergeRow = await until('finished destination session row', () =>

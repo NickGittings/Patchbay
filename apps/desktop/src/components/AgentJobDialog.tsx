@@ -10,6 +10,7 @@ export default function AgentJobDialog({
   role,
   title,
   source,
+  sourceField,
   ready,
   running,
   runningText,
@@ -23,7 +24,8 @@ export default function AgentJobDialog({
   /** Preselects the project's agents for this job; several may review at once. */
   role: 'review' | 'merge'
   title: string
-  source: Worktree
+  source?: Worktree
+  sourceField?: (props: { busy: boolean; clearError: () => void }) => ReactNode
   /** The job-specific fields are complete. */
   ready: boolean
   running: boolean
@@ -50,7 +52,7 @@ export default function AgentJobDialog({
     : roleDevices(devices, roles, role)
   const device = chosen[0] as DeviceManifest | undefined
   const submit = async () => {
-    if (pending.current || !ready || !source.branch || !device || !connected || running) return
+    if (pending.current || !ready || !source?.branch || !device || !connected || running) return
     pending.current = true
     setBusy(true)
     setError('')
@@ -85,10 +87,14 @@ export default function AgentJobDialog({
         }}
       >
         <h2>{title}</h2>
-        <label>
-          Source branch <strong>{source.branch}</strong>
-          <code>{source.path}</code>
-        </label>
+        {sourceField ? (
+          sourceField({ busy, clearError: () => setError('') })
+        ) : (
+          <label>
+            Source branch <strong>{source?.branch}</strong>
+            <code>{source?.path}</code>
+          </label>
+        )}
         {children({ busy, clearError: () => setError('') })}
         {multiple && agents.length > 1 ? (
           <fieldset className="agent-job-agents" disabled={busy}>
