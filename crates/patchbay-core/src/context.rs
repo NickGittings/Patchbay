@@ -1217,26 +1217,8 @@ fn claude_review_prompt(base: &str) -> String {
 
 const CODEX_REVIEW_INSTRUCTIONS: &str = "Report findings only. Do not edit source files, stage, commit, stash, reset, check out or change Git state. Do not run checks that modify the tree. Return your complete final review in Markdown, beginning with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}, with nonnegative integer totals for all findings. Tag findings [P0], [P1], [P2] or [P3], corresponding to critical, high, medium and low. Use clean only after completing the review with no findings. If unable to complete the review, explain why and omit Verdict and Counts. Do not write a findings file yourself; the CLI saves the final message.";
 
-fn codex_review_command(
-    command: &str,
-    base: &str,
-    findings: &Path,
-    briefing: &Briefing<'_>,
-    shell: Shell,
-    env: &mut BTreeMap<String, String>,
-) -> String {
-    let tokens = command_tokens(command, shell).expect("native Codex invocation");
-    let raw = match shell {
-        Shell::Unix => sh_tokens(command, true),
-        Shell::Windows => cmd_tokens(command, true),
-    }
-    .unwrap();
-    let program = program_index(&tokens).unwrap();
-    let existing = codex_instructions(&tokens[program + 1..], codex_config().as_ref());
-    let instructions = match existing {
-        Some(existing) => format!("{existing}\n\n{CODEX_REVIEW_INSTRUCTIONS}"),
-        None => CODEX_REVIEW_INSTRUCTIONS.into(),
-    };
+// Both initial reviews and follow-ups preserve preset syntax while owning permissions.
+fn codex_review_options(tokens: &[String], raw: &[String], program: usize) -> String {
     let mut kept = raw[..=program].to_vec();
     let mut i = program + 1;
     while i < tokens.len() {
@@ -1270,11 +1252,70 @@ fn codex_review_command(
         }
         i += 1 + usize::from(takes_value);
     }
+    kept.join(" ")
+}
+
+/// Build from the recorded preset, never from the non-interactive review command.
+pub(crate) fn codex_review_followup(command: &str) -> Result<String> {
+    codex_review_followup_in(command, Shell::current())
+}
+
+fn codex_review_followup_in(command: &str, shell: Shell) -> Result<String> {
+    anyhow::ensure!(
+        review_style_in(command, shell) == ReviewStyle::Codex,
+        "The recorded Codex preset cannot be resumed safely; start a new review"
+    );
+    let tokens = command_tokens(command, shell).context("Cannot read Codex preset")?;
+    let raw = match shell {
+        Shell::Unix => sh_tokens(command, true),
+        Shell::Windows => cmd_tokens(command, true),
+    }
+    .context("Cannot preserve Codex preset")?;
+    let program = program_index(&tokens).context("Cannot locate Codex executable")?;
+    let existing = codex_instructions(&tokens[program + 1..], codex_config().as_ref());
+    let followup = "Answer follow-up questions conversationally using the existing review context. Do not repeat the full review or require Verdict/Counts formatting. Do not edit source files, change Git state, run modifying checks, or write or change saved findings or verdict files. Only an explicit new Patchbay Review action updates saved findings.";
+    let instructions = existing.map_or_else(
+        || followup.to_owned(),
+        |text| format!("{text}\n\n{followup}"),
+    );
+    Ok(format!(
+        "{} --sandbox read-only --ask-for-approval never -c {} -c {} -c {}",
+        codex_review_options(&tokens, &raw, program),
+        shell.quote("sandbox_mode=\"read-only\""),
+        shell.quote("approval_policy=\"never\""),
+        shell.quote(&format!(
+            "developer_instructions={}",
+            toml_string(shell, &instructions)
+        )),
+    ))
+}
+
+fn codex_review_command(
+    command: &str,
+    base: &str,
+    findings: &Path,
+    briefing: &Briefing<'_>,
+    shell: Shell,
+    env: &mut BTreeMap<String, String>,
+) -> String {
+    let tokens = command_tokens(command, shell).expect("native Codex invocation");
+    let raw = match shell {
+        Shell::Unix => sh_tokens(command, true),
+        Shell::Windows => cmd_tokens(command, true),
+    }
+    .unwrap();
+    let program = program_index(&tokens).unwrap();
+    let existing = codex_instructions(&tokens[program + 1..], codex_config().as_ref());
+    let instructions = match existing {
+        Some(existing) => format!("{existing}\n\n{CODEX_REVIEW_INSTRUCTIONS}"),
+        None => CODEX_REVIEW_INSTRUCTIONS.into(),
+    };
+    let kept = codex_review_options(&tokens, &raw, program);
     // Exec's sandbox flag must follow exec: a root flag/config override can
     // otherwise lose to the selected profile. Exec itself disables approvals.
     let mut command = format!(
         "{} -c {} exec --sandbox read-only review --base {} -o {}",
-        kept.join(" "),
+        kept,
         shell.quote("approval_policy=\"never\""),
         quote_path(shell, Path::new(base), env),
         quote_path(shell, findings, env),
@@ -1322,7 +1363,7 @@ pub(crate) fn native_review_spec(
             policy,
         );
     }
-    let mut spec = build_job_agent_spec(
+    let spec = build_job_agent_spec(
         project,
         terminal,
         text,
@@ -1331,6 +1372,7 @@ pub(crate) fn native_review_spec(
         env,
         policy,
         |command, file, _, env| {
+            let resume = codex_review_followup(command).expect("native Codex preset");
             *command = codex_review_command(
                 command,
                 base,
@@ -1345,10 +1387,9 @@ pub(crate) fn native_review_spec(
                 Shell::current(),
                 env,
             );
-            (Some("Codex review runs non-interactively. Resume reruns the review. Native review excludes untracked files; they are omitted and prevent automatic merge until reviewed by another flow.".into()), command.clone())
+            (Some("Codex review runs non-interactively. Send a follow-up to continue this conversation. Saved findings change only through a new Review action. Native review excludes untracked files; they are omitted and prevent automatic merge until reviewed by another flow.".into()), resume)
         },
     )?;
-    spec.rerun_on_resume = true;
     Ok(spec)
 }
 
@@ -2488,6 +2529,42 @@ mod tests {
             assert!(command.contains("Do not edit source files"));
             assert!(command_len(shell, &command, &env) < CMD_BUDGET);
         }
+    }
+
+    #[test]
+    fn codex_followups_preserve_options_and_enforce_read_only() {
+        for shell in [Shell::Unix, Shell::Windows] {
+            let command = codex_review_followup_in(
+                "codex --model review-model -p reviewer -c model_auto_compact_token_limit=120000 --yolo -s workspace-write -a on-request --add-dir elsewhere --cd elsewhere",
+                shell,
+            ).unwrap();
+            let tokens = command_tokens(&command, shell).unwrap();
+            assert!(tokens.windows(2).any(|w| w == ["--model", "review-model"]));
+            assert!(tokens.windows(2).any(|w| w == ["-p", "reviewer"]));
+            assert!(tokens.contains(&"model_auto_compact_token_limit=120000".into()));
+            assert!(tokens.windows(2).any(|w| w == ["--sandbox", "read-only"]));
+            assert!(
+                tokens
+                    .windows(2)
+                    .any(|w| w == ["--ask-for-approval", "never"])
+            );
+            for removed in [
+                "--yolo",
+                "workspace-write",
+                "on-request",
+                "--add-dir",
+                "--cd",
+                "exec",
+                "-o",
+                "--base",
+            ] {
+                assert!(!tokens.iter().any(|t| t == removed), "{command}");
+            }
+            assert!(command.contains("Answer follow-up questions conversationally"));
+            assert!(command.contains("saved findings"));
+        }
+        assert!(codex_review_followup("codex exec review -o report.md").is_err());
+        assert!(codex_review_followup("codex kickoff").is_err());
     }
 
     #[test]

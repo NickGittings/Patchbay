@@ -449,7 +449,7 @@ struct Started {
     /// Native Codex base review omits files that were untracked at launch.
     #[serde(default)]
     excluded_untracked: bool,
-    /// The base commit a native Codex command names; its resume reruns against it.
+    /// The base commit named by the initial native Codex review command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_commit: Option<String>,
     branch: String,
@@ -958,6 +958,10 @@ pub fn resume_attempt(
         in_lane(&folder, &old.branch, old.lane.as_deref()) == findings,
         "The review's findings file is outside the reviews folder"
     );
+    // Codex resumes only to discuss the saved review, even after the tree changes.
+    if old.native == Some(context::ReviewStyle::Codex) {
+        return Ok(None);
+    }
     let cwd = spec.cwd.as_path();
     let branch = current_branch(cwd).unwrap_or_default();
     ensure!(
@@ -969,8 +973,7 @@ pub fn resume_attempt(
     if head == old.head && !git::changed_since(cwd, old.started_ms).unwrap_or(true) {
         return Ok(None);
     }
-    // A Codex resume reruns its recorded command, which names the launch's base commit,
-    // so its range is measured from that commit rather than the base branch's tip.
+    // Preserve the recorded base for any older attempt that pins one.
     let base = old.base_commit.as_deref().unwrap_or(&old.base);
     let merge_base = git::run(git::git(cwd).args(["merge-base", base, "HEAD"]))
         .with_context(|| format!("The review base {} is gone; start a new review", old.base))?;
@@ -3077,8 +3080,8 @@ mod tests {
                     );
                     assert!(job.spec.command.contains(" -o "));
                     assert!(job.spec.command.contains("developer_instructions"));
-                    assert!(job.spec.rerun_on_resume);
-                    assert_eq!(job.spec.resume_command.as_ref(), Some(&job.spec.command));
+                    assert!(!job.spec.rerun_on_resume);
+                    assert!(!job.spec.resume_command.as_ref().unwrap().contains(" exec "));
                     assert!(
                         job.spec
                             .notice
@@ -3412,29 +3415,36 @@ mod tests {
     }
 
     #[test]
-    fn codex_resume_measures_its_range_from_the_launch_base_commit() {
+    fn codex_followups_preserve_findings_and_verdict_after_the_tree_changes() {
         let f = Fixture::new();
         let job = f.prepare("codex").unwrap();
-        let launch_base = git::run(git::git(&f.dir).args(["rev-parse", "main"])).unwrap();
-        // main advances and the branch merges it; the rerun still names the old commit.
-        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
-        fs::write(f.dir.join("main.txt"), "main\n").unwrap();
-        git::run(git::git(&f.dir).args(["add", "."])).unwrap();
-        git::run(git::git(&f.dir).args(["commit", "-qm", "main"])).unwrap();
-        git::run(git::git(&f.dir).args(["checkout", "-q", "feature/a"])).unwrap();
-        git::run(git::git(&f.dir).args(["merge", "-q", "--no-edit", "main"])).unwrap();
-        drop(
-            resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
-                .unwrap()
-                .unwrap(),
+        f.save(
+            "Verdict: clean\nCounts: {\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}",
+            true,
         );
         let path = file(&f.dir, &f.request.branch).unwrap();
-        let started: Started =
-            serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
-        assert_eq!(started.merge_base, launch_base);
-        assert_eq!(started.base_commit.as_deref(), Some(launch_base.as_str()));
-        if let Some(briefing) = context::owned_briefing(&job.spec) {
-            context::remove_owned_briefing_file(&briefing);
+        let report = fs::read(&path).unwrap();
+        let sidecar = fs::read(path.with_extension("json")).unwrap();
+        fs::write(f.dir.join("file.txt"), "next\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "next"])).unwrap();
+        for _ in 0..2 {
+            assert!(
+                resume_attempt(&f.dir, &job.spec, &f.request.branch, None)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(fs::read(&path).unwrap(), report);
+            assert_eq!(fs::read(path.with_extension("json")).unwrap(), sidecar);
+        }
+        // An explicit Review creates a fresh attempt and can replace the findings.
+        let fresh = f.prepare("codex").unwrap();
+        assert_ne!(fs::read(path.with_extension("json")).unwrap(), sidecar);
+        f.save("new findings", true);
+        assert_ne!(fs::read(&path).unwrap(), report);
+        for spec in [&job.spec, &fresh.spec] {
+            if let Some(briefing) = context::owned_briefing(spec) {
+                context::remove_owned_briefing_file(&briefing);
+            }
         }
     }
 

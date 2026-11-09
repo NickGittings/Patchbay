@@ -1,6 +1,6 @@
 import type { SessionState } from '../types'
 import { useStore } from '../store'
-import { terminalAttach, terminalDetach, terminalPrompt } from './ipc'
+import { terminalAttach, terminalDetach, terminalPrompt, sessionResume } from './ipc'
 import { logSimple } from './simpleActions'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
@@ -226,6 +226,12 @@ export async function deliverPrompt(
       for (const listener of deliveryListeners) listener()
     }, 0)
   }
+}
+
+/** Resume must succeed before the composer claims the run or attempts message delivery. */
+export async function resumeRecipient(sid: string, requestId: string, claim: () => Promise<void>) {
+  await sessionResume(sid, requestId)
+  await claim()
 }
 
 /** Startup is a bounded wait, cancelled immediately when its captured scope or process changes. */

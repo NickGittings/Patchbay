@@ -36,7 +36,8 @@ in one view.
 ### Review
 
 Inspect Git changes by component, read diffs, and check affected components before reviewing or
-merging a branch.
+merging a branch. Send a follow-up to a finished Codex reviewer to continue its existing
+conversation. Saved findings and Auto’s verdict stay unchanged until you start a new review.
 
 ![Review view showing the worktree's changes by component, the catalog search diff, and the API as possibly affected](docs/screenshots/review.png)
 
