@@ -60,3 +60,10 @@ test('components depending on a changed one, transitively, may be affected', () 
   expect([...affectedIds({ api: 1, lib: 1 }, edges)].sort()).toEqual(['docs', 'web'])
   expect([...affectedIds({}, edges)]).toEqual([])
 })
+
+test('a removed planner preset falls back to the selected role provider', () => {
+  const claude = device('claude', 'agent')
+  const codex = device('codex', 'agent')
+  expect(plannerDevice([claude, codex], 'removed-preset', codex)).toBe(codex)
+  expect(plannerDevice([claude, codex], 'claude', codex)).toBe(claude)
+})

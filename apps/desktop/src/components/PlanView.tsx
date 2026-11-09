@@ -41,7 +41,6 @@ export default function PlanView() {
   const project = useStore((s) => s.project)
   const task = usePlanningTask()
   const selectDraft = usePlanningSelection((s) => s.selectDraft)
-  useEffect(() => () => usePlanningSelection.getState().selectDraft(false), [])
   const workspace = useStore((s) =>
     task === s.activeTask ? s : (s.taskWorkspaces[task ?? ''] ?? EMPTY_PLANNING_WORKSPACE),
   )

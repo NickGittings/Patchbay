@@ -14,18 +14,26 @@ export const usePlanningSelection = create<{
   },
 }))
 
+let stopFollowing: (() => void) | undefined
+
 export function usePlanningTask() {
+  // Start once with the application, after the store is available. Leaving Plan or switching
+  // checkout resets selection; an explicit draft reveal survives StrictMode's mount replay.
+  useEffect(() => {
+    stopFollowing ??= useStore.subscribe((s, previous) => {
+      if (
+        s.project?.id !== previous.project?.id ||
+        s.activeTask !== previous.activeTask ||
+        (previous.view === 'plan' && s.view !== 'plan') ||
+        (!previous.simpleMode && s.simpleMode)
+      )
+        usePlanningSelection.getState().selectDraft(false)
+    })
+  }, [])
   const task = useStore((s) => s.activeTask)
   const fullPlan = useStore((s) => !s.simpleMode && s.view === 'plan')
   const key = useStore((s) => JSON.stringify([s.project?.id, s.activeTask]))
   const draftKey = usePlanningSelection((s) => s.draftKey)
-  useEffect(() => {
-    if (
-      usePlanningSelection.getState().draftKey &&
-      usePlanningSelection.getState().draftKey !== key
-    )
-      usePlanningSelection.getState().selectDraft(false)
-  }, [key])
   return fullPlan && draftKey === key ? PROJECT_DRAFT : task
 }
 const EMPTY_HIGHLIGHTS: string[] = []

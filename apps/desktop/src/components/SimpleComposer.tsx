@@ -93,10 +93,9 @@ export default function SimpleComposer({
   const running = !!state?.running
   // The recipient's provider, else that of the planner Send would start; `null` for neither
   // Claude nor Codex, which can never report a ready prompt.
-  const starts =
-    !recipient && stage === 'plan'
-      ? plannerDevice(s.devices, s.planActive ?? roleDevice(s.devices, s.agentRoles, 'plan').id)
-      : undefined
+  const planRole = roleDevice(s.devices, s.agentRoles, 'plan')
+  const plannedDevice = plannerDevice(s.devices, s.planActive ?? planRole.id, planRole)
+  const starts = !recipient && stage === 'plan' ? plannedDevice : undefined
   const [startProvider] = usePresetProviders([starts])
   const provider = recipient
     ? (profileHookProvider(recipient.spec.command) ?? recipient.metadata.adapter ?? null)
@@ -220,10 +219,7 @@ export default function SimpleComposer({
       } else if (!target) {
         if (stage !== 'plan')
           throw new Error('Open a stage terminal or choose another recipient to continue.')
-        const device = plannerDevice(
-          s.devices,
-          s.planActive ?? roleDevice(s.devices, s.agentRoles, 'plan').id,
-        )
+        const device = plannedDevice
         await startTerminal(PLAN_SCOPE, device.id, task, projectId)
         await reconcileFreshSessions()
         target = useStore

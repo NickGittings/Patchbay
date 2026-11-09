@@ -42,8 +42,13 @@ export function useClockNow(deadlines: readonly number[] = []) {
     const timers = key
       .split(',')
       .map(Number)
-      .filter((at) => at > now)
-      .map((at) => setTimeout(() => setDeadlineNow((previous) => Math.max(previous, at)), at - now))
+      .filter((at) => Number.isFinite(at) && at > 0)
+      .map((at) =>
+        setTimeout(
+          () => setDeadlineNow((previous) => Math.max(previous, at, Date.now())),
+          Math.max(0, at - now),
+        ),
+      )
     return () => {
       for (const timer of timers) clearTimeout(timer)
     }

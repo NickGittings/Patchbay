@@ -261,6 +261,11 @@
     const destinationSid = smoke.sessionId('@plan', fake.id, destination)
     await until('fresh destination planner', () => state().sessions[destinationSid]?.running)
     assert(destinationSid !== draftSid, 'handoff reused the source provider session')
+    smoke.revealTerminal({ sid: draftSid, componentId: '@plan' })
+    await until(
+      'explicit draft terminal reveal',
+      () => document.querySelector('[aria-label="Planning scope"]')?.value === 'draft',
+    )
     await smoke.report(
       'PASS planning: concurrent worktree planners, active-turn Clear/cancel/guard/replay, queued delivery, usage expiration, unsaved draft handoff and preserved history boundary',
     )

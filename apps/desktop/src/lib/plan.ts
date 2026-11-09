@@ -28,9 +28,13 @@ export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
 }
 
 /** The agent preset behind planner terminal `id`, so components get the planner's own agent. */
-export function plannerDevice(devices: DeviceManifest[], id: string): DeviceManifest {
+export function plannerDevice(
+  devices: DeviceManifest[],
+  id: string,
+  fallback?: DeviceManifest,
+): DeviceManifest {
   const agents = agentDevices(devices)
-  return agents.find((d) => d.id === id) ?? agents[0]
+  return agents.find((d) => d.id === id) ?? fallback ?? agents[0]
 }
 
 /**
