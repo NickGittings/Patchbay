@@ -2352,7 +2352,7 @@ async fn session_resume(
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
-        // A resumed review re-reviews the worktree as it is now.
+        // Interactive reviewers may update their attempt; Codex follow-ups retain saved findings.
         if record.metadata.component_id == model::REVIEW_SCOPE
             && let Some(attempt) =
                 patchbay_core::reviews::resume_attempt(

@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import {
   composerStatus,
+  resumeRecipient,
   deliverPrompt,
   editedMentions,
   forceable,
@@ -11,6 +12,13 @@ import {
   type SendPort,
 } from './simpleComposer'
 import type { SessionState } from '../types'
+import { sessionResume } from './ipc'
+vi.mock('./ipc', () => ({
+  sessionResume: vi.fn(),
+  terminalAttach: vi.fn(),
+  terminalDetach: vi.fn(),
+  terminalPrompt: vi.fn(),
+}))
 const ready = (): SessionState => ({
   generation: 1,
   running: true,
@@ -401,4 +409,38 @@ test('a forced submission waits for its new turn, even if the interrupted turn s
   expect(promptReady(withAgent({ state: 'review', sinceMs: 400, turnId: null }), submitted)).toBe(
     false,
   )
+})
+
+test('a stopped reviewer resumes before a follow-up is delivered; failed resume keeps the draft', async () => {
+  const p = port()
+  let session = { ...ready(), running: false }
+  p.session = () => session
+  let draft = 'Why is this finding high priority?'
+  const events: string[] = []
+  vi.mocked(sessionResume).mockImplementationOnce(async () => {
+    expect(p.write).not.toHaveBeenCalled()
+    events.push('resume')
+    session = ready()
+    return 's'
+  })
+  const send = async () => {
+    await resumeRecipient('s', 'request', async () => {
+      events.push('claim')
+    })
+    await waitForPrompt(context, p)
+    await deliverPrompt(context, draft, p)
+    draft = ''
+  }
+  await send()
+  expect(events).toEqual(['resume', 'claim'])
+  expect(p.write).toHaveBeenCalledExactlyOnceWith('Why is this finding high priority?')
+  expect(draft).toBe('')
+  draft = 'Can you explain another finding?'
+  vi.mocked(sessionResume).mockRejectedValueOnce(
+    new Error('Provider history is missing; restore it'),
+  )
+  await expect(send()).rejects.toThrow('history is missing')
+  expect(draft).toBe('Can you explain another finding?')
+  expect(events).toEqual(['resume', 'claim'])
+  expect(p.write).toHaveBeenCalledOnce()
 })

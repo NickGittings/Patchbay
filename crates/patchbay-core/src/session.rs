@@ -1433,9 +1433,12 @@ impl Service {
                     }
                     return result;
                 }
-                Err(_) => {
+                Err(error) => {
                     if let Some(file) = candidate {
                         self.remove_unused_briefing(&file);
+                    }
+                    if native_codex_review(&resume_metadata, &resumed) {
+                        return Err(error);
                     }
                 }
             }
@@ -1987,6 +1990,14 @@ fn restart_conversation(adapter: Adapter, snapshot: &Snapshot) -> Option<String>
         .or_else(|| agent.and_then(|a| a.conversation_id.clone()))
 }
 
+fn native_codex_review(metadata: &Metadata, spec: &SessionSpec) -> bool {
+    metadata.component_id == crate::model::REVIEW_SCOPE
+        && crate::adapters::Adapter::default_for(&metadata.command) == Some(Adapter::Codex)
+        && (spec.rerun_on_resume
+            || crate::context::review_style(&metadata.command)
+                == crate::context::ReviewStyle::Codex)
+}
+
 /// Validate and prepare before spawning, so a definite refusal may safely start fresh.
 fn prepare_resume(
     metadata: &Metadata,
@@ -2006,20 +2017,32 @@ fn prepare_resume(
             "This agent's briefing is gone (temporary files were cleaned up). Start it again instead of resuming."
         );
     }
-    if spec.rerun_on_resume {
+    let codex_review = native_codex_review(metadata, spec);
+    if spec.rerun_on_resume && !codex_review {
         spec.command.clone_from(&original);
         crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
         return Ok(original);
     }
-    let resume_command = spec.resume_command.as_deref().unwrap_or(&original);
-    let adapter = metadata
-        .adapter
-        .context("Select an adapter to resume this conversation")?;
+    // Legacy review records stored the exec command as their resume command.
+    let followup = codex_review
+        .then(|| crate::context::codex_review_followup(&metadata.command))
+        .transpose()?;
+    let resume_command = followup
+        .as_deref()
+        .or(spec.resume_command.as_deref())
+        .unwrap_or(&original);
+    let adapter = if codex_review {
+        Adapter::Codex
+    } else {
+        metadata
+            .adapter
+            .context("Select an adapter to resume this conversation")?
+    };
     let conversation = metadata
         .conversation_id
         .as_ref()
         .context("Set conversation ID before resuming")?;
-    spec.command = adapter.resume(resume_command, conversation, &spec.cwd)?;
+    spec.command = adapter.resume_with_env(resume_command, conversation, &spec.cwd, &spec.env)?;
     crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
     Ok(original)
 }
@@ -4391,55 +4414,120 @@ mod tests {
         }
     }
 
+    #[test]
+    fn codex_review_resume_requires_conversation_and_history_even_for_legacy_records() {
+        let dir = std::env::temp_dir();
+        for legacy in [false, true] {
+            let (mut metadata, mut spec) = restart_fixture(&dir, "codex --model review-model");
+            metadata.component_id = crate::model::REVIEW_SCOPE.into();
+            metadata.adapter = Some(Adapter::Codex);
+            metadata.conversation_id = None;
+            spec.command = "codex exec review --base main -o findings.md".into();
+            spec.resume_command = Some(spec.command.clone());
+            spec.rerun_on_resume = legacy;
+            let original = spec.command.clone();
+            let error = prepare_resume(&metadata, &mut spec, &original).unwrap_err();
+            assert!(error.to_string().contains("conversation ID"), "{error}");
+            metadata.conversation_id = Some(uuid::Uuid::new_v4().to_string());
+            let error = prepare_resume(&metadata, &mut spec, &original).unwrap_err();
+            assert!(error.to_string().contains("history"), "{error}");
+            assert_eq!(spec.command, original);
+            spec.env.insert(
+                crate::context::CONTEXT_ENV.into(),
+                dir.join(uuid::Uuid::new_v4().to_string())
+                    .display()
+                    .to_string(),
+            );
+            let error = prepare_resume(&metadata, &mut spec, &original).unwrap_err();
+            assert!(error.to_string().contains("briefing is gone"), "{error}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
-    fn native_codex_review_resume_reruns_without_conversation_history() {
+    fn codex_review_resume_uses_the_presets_effective_home() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        private_dir(&dir).unwrap();
+        let custom_home = dir.join("custom home");
+        let history = custom_home.join("sessions/2026/11/09");
+        std::fs::create_dir_all(&history).unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let file = history.join(format!("rollout-{conversation}.jsonl"));
+        std::fs::write(&file, "{}\n").unwrap();
         let program = dir.join("codex");
-        std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let command = format!(
-            "{} --sandbox read-only exec review -o 'findings.md' --base 'main'",
-            crate::context::quote_argument(program.to_str().unwrap())
-        );
-        let (mut metadata, mut spec) = restart_fixture(&dir, &command);
+        let quoted_home = crate::context::quote_argument(custom_home.to_str().unwrap());
+        let quoted_program = crate::context::quote_argument(program.to_str().unwrap());
+        for prefix in [
+            format!("env CODEX_HOME={quoted_home} "),
+            format!("CODEX_HOME={quoted_home} "),
+            "env CODEX_HOME=\"$PATCHBAY_TEST_CONFIG_ROOT/custom home\" ".into(),
+            String::new(),
+        ] {
+            for legacy in [false, true] {
+                let command = format!("{prefix}{quoted_program} --model review-model");
+                let (mut metadata, mut spec) = restart_fixture(&dir, &command);
+                metadata.component_id = crate::model::REVIEW_SCOPE.into();
+                metadata.adapter = Some(Adapter::Codex);
+                metadata.conversation_id = Some(conversation.clone());
+                // A command prefix must take precedence over the session environment.
+                spec.env.insert(
+                    "CODEX_HOME".into(),
+                    if prefix.is_empty() {
+                        custom_home.clone()
+                    } else {
+                        dir.join("other home")
+                    }
+                    .display()
+                    .to_string(),
+                );
+                spec.env.insert(
+                    "PATCHBAY_TEST_CONFIG_ROOT".into(),
+                    dir.display().to_string(),
+                );
+                spec.command = format!("{command} exec review --base main -o findings.md");
+                spec.resume_command = Some(spec.command.clone());
+                spec.rerun_on_resume = legacy;
+                let original = spec.command.clone();
+                assert_eq!(
+                    prepare_resume(&metadata, &mut spec, &original).unwrap(),
+                    original
+                );
+                assert!(
+                    spec.command
+                        .starts_with(&format!("{prefix}{quoted_program} resume "))
+                );
+                assert!(spec.command.contains(&conversation));
+                assert!(spec.command.contains("--model review-model"));
+                metadata.conversation_id = Some(uuid::Uuid::new_v4().to_string());
+                let error = prepare_resume(&metadata, &mut spec, &original).unwrap_err();
+                assert!(error.to_string().contains("history"), "{error}");
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matching_codex_review_restart_never_falls_back_to_a_fresh_review() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let (mut metadata, mut spec) = restart_fixture(&dir, "codex");
         metadata.component_id = crate::model::REVIEW_SCOPE.into();
         metadata.adapter = Some(Adapter::Codex);
         metadata.conversation_id = None;
-        spec.resume_command = Some(command.clone());
-        spec.rerun_on_resume = true;
-        let briefing = dir.join("briefing.md");
-        std::fs::write(&briefing, "# Review").unwrap();
-        spec.env.insert(
-            crate::context::CONTEXT_ENV.into(),
-            briefing.display().to_string(),
-        );
+        spec.command = "printf 'initial review completed'".into();
         let service = Service::load(&dir).unwrap();
         let id = service
-            .start("first".into(), metadata.clone(), spec.clone())
+            .start("initial".into(), metadata.clone(), spec.clone())
             .unwrap();
         let first = wait_for_exit(&service, &id);
-        // A large Codex briefing is only a pointer to this file, so a rerun needs it.
-        std::fs::remove_file(&briefing).unwrap();
-        let gone = service.resume(&id, "gone".into()).unwrap_err().to_string();
-        assert!(gone.contains("briefing is gone"), "{gone}");
-        std::fs::write(&briefing, "# Review").unwrap();
-        assert_eq!(service.resume(&id, "resume".into()).unwrap(), id);
-        let second = wait_for_exit(&service, &id);
-        assert!(second.generation > first.generation);
-        let output = String::from_utf8_lossy(&second.data);
-        assert!(output.contains("exec\r\nreview\r\n-o"), "{output}");
-        assert!(!output.contains("resume"));
-        assert_eq!(service.list()[0].spec.command, command);
-        // Identical Restart settings also rerun instead of entering conversation resume.
-        assert_eq!(
-            service.restart("restart".into(), metadata, spec).unwrap(),
-            id
-        );
-        let third = wait_for_exit(&service, &id);
-        assert!(third.generation > second.generation);
+        let error = service
+            .restart("followup".into(), metadata, spec)
+            .unwrap_err();
+        assert!(error.to_string().contains("conversation ID"), "{error}");
+        assert_eq!(service.snapshot(&id).unwrap().generation, first.generation);
         service.pty.reset();
         std::fs::remove_dir_all(dir).unwrap();
     }

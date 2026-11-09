@@ -19,6 +19,7 @@ import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } fro
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
+  resumeRecipient,
   sendToSession,
   lastSubmission,
   editedMentions,
@@ -29,7 +30,6 @@ import {
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { roleDevice } from '../lib/agentRoles'
-import { sessionResume } from '../lib/ipc'
 import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled, usePresetProviders } from '../lib/agentHooks'
@@ -199,22 +199,24 @@ export default function SimpleComposer({
       if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
         const requestId = crypto.randomUUID()
-        await sessionResume(target.id, requestId)
-        // Claim the resumed run before reconciling, so that pass persists its replies and input
-        // waits into this chat. Replies that arrived before the claim were left out: persist now.
-        // The claim is logged even if the worktree changed meanwhile, then the send stops.
-        await logLaunch(
-          projectId,
-          task,
-          { kind: 'action', action: 'resume', stage, sessionId: target.id },
-          requestId,
-        )
-        const resumed = useStore.getState().sessions[target.id]
-        if (resumed?.generation !== undefined)
-          persistReplies(target.id, resumed.generation, resumed.replies ?? [])
-        check()
-        await reconcileFreshSessions()
-        await refreshSession(target.id)
+        const recipientId = target.id
+        await resumeRecipient(recipientId, requestId, async () => {
+          // Claim the resumed run before reconciling, so that pass persists its replies and input
+          // waits into this chat. Replies that arrived before the claim were left out: persist now.
+          // The claim is logged even if the worktree changed meanwhile, then the send stops.
+          await logLaunch(
+            projectId,
+            task,
+            { kind: 'action', action: 'resume', stage, sessionId: recipientId },
+            requestId,
+          )
+          const resumed = useStore.getState().sessions[recipientId]
+          if (resumed?.generation !== undefined)
+            persistReplies(recipientId, resumed.generation, resumed.replies ?? [])
+          check()
+          await reconcileFreshSessions()
+          await refreshSession(recipientId)
+        })
       } else if (!target) {
         if (stage !== 'plan')
           throw new Error('Open a stage terminal or choose another recipient to continue.')
