@@ -49,7 +49,9 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
     const path = worktree?.worktree ?? state.project.root
     const branch = worktree?.branch
     if (metadata.componentId === '@map' && agentChatTask(r, generation) !== task) continue
-    if (!relatedSession(r, { projectId: metadata.projectId, task, path, branch }, generation))
+    if (
+      !relatedSession(r, { projectId: metadata.projectId, task, path, branch }, generation, simple)
+    )
       continue
     // A project planner is shared; only chats that actually used this run receive its replies.
     if (metadata.componentId === PLAN_SCOPE && !ownsPlanner(simple, sid, generation)) continue

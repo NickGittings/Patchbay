@@ -127,6 +127,7 @@ function SimpleChanges({
   const nodes = useStore((s) => (simple ? s.nodes : undefined))
   const records = useStore((s) => (simple ? s.sessionRecords : undefined))
   const sessions = useStore((s) => (simple ? s.sessions : undefined))
+  const conversation = useStore((s) => (simple ? s.simple : undefined))
   const { files, scope: worktree } = reader
   const value = useMemo(() => {
     // A hidden Chat keeps its last count without continuing to read or follow sessions.
@@ -134,7 +135,9 @@ function SimpleChanges({
     const components = nodes.map((n) => ({ id: n.id, path: n.data.path }))
     // Only a file the tab lists: a write since committed or reverted has no diff to show.
     const writes = records
-      .filter((r) => relatedSession(r, worktree))
+      .filter((r) =>
+        relatedSession(r, worktree, (sessions[r.id] ?? r.snapshot)?.generation, conversation),
+      )
       .flatMap((r) => {
         const write = newestWrite(r, sessions[r.id], components, worktree.path, files)
         return write ? [{ ...write, sessionId: r.id }] : []
@@ -145,7 +148,7 @@ function SimpleChanges({
       newest: writes[0]?.file,
       bySession: new Map(writes.map((w) => [w.sessionId, w.file])),
     }
-  }, [nodes, records, sessions, files, worktree])
+  }, [nodes, records, sessions, files, worktree, conversation])
   return <SimpleChangesContext value={value}>{children}</SimpleChangesContext>
 }
 

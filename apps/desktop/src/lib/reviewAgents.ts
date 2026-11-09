@@ -19,8 +19,27 @@ import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 import { reviewerBusy } from './review'
 
-export function mergeDestinations(source: Worktree, worktrees: Worktree[]) {
-  return worktrees.filter((w) => w.branch && w.path !== source.path && w.branch !== source.branch)
+export function mergeDestinations(source: Worktree | undefined, worktrees: Worktree[]) {
+  return worktrees.filter((w) => w.branch && w.path !== source?.path && w.branch !== source?.branch)
+}
+
+/** Main worktree starts an incoming merge; task worktrees retain their outgoing defaults. */
+export function initialMergeSelection(active: Worktree, worktrees: Worktree[]) {
+  return active.current
+    ? { source: '', destination: active.path }
+    : { source: active.path, destination: defaultMergeDestination(active, worktrees) }
+}
+
+/** Keep a valid destination, otherwise prefer the project's open worktree. */
+export function reconcileMergeDestination(
+  source: Worktree | undefined,
+  worktrees: Worktree[],
+  destination: string,
+) {
+  const destinations = mergeDestinations(source, worktrees)
+  return !destination || destinations.some((w) => w.path === destination)
+    ? destination
+    : (destinations.find((w) => w.current)?.path ?? '')
 }
 
 /** Only the project's open worktree is an automatic default. */

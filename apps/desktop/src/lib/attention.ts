@@ -1,6 +1,6 @@
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { agentChatTask } from './agentChats'
-import { ownsPlanner, relatedSession } from './simple'
+import { ownsMerge, ownsPlanner, relatedSession } from './simple'
 import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
@@ -304,6 +304,12 @@ export function revealTerminal(
               (task || null) !== s.activeTask &&
               ownsPlanner(workspace.simple, record.id, generation),
           )?.[0]
+      const mergeTask = ownsMerge(s.simple, record, generation)
+        ? s.activeTask
+        : Object.entries(s.taskWorkspaces).find(
+            ([task, workspace]) =>
+              (task || null) !== s.activeTask && ownsMerge(workspace.simple, record, generation),
+          )?.[0]
       const task =
         record.metadata.componentId === MAP_SCOPE
           ? agentChatTask(record, generation)
@@ -312,7 +318,9 @@ export function revealTerminal(
               ? s.activeTask
               : plannerTask || null
             : record.metadata.componentId === MERGE_SCOPE
-              ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
+              ? mergeTask === undefined
+                ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
+                : mergeTask || null
               : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
                 s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
                 null)
@@ -323,6 +331,7 @@ export function revealTerminal(
           record,
           { projectId: s.project.id, task, path, branch: worktree?.branch },
           generation,
+          task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple,
         )
       ) {
         if (task !== s.activeTask) s.setActiveTask(task, true)

@@ -268,11 +268,33 @@ export const recordStage = (record: SessionRecord): SimpleStage =>
         ? 'merge'
         : 'build'
 
-/** Project planners are explicitly shared; every other record must belong to this worktree. */
+/** A selected merge also belongs to the chat that launched this specific run and request. */
+export function ownsMerge(
+  simple: SimpleState | null | undefined,
+  record: SessionRecord,
+  generation = record.snapshot?.generation,
+) {
+  return (
+    record.metadata.componentId === MERGE_SCOPE &&
+    generation !== undefined &&
+    !!simple?.log.some(
+      (e) =>
+        e.kind === 'action' &&
+        e.action === 'merge' &&
+        e.sessionId === record.id &&
+        e.generation === generation &&
+        e.request?.source === record.spec.merge_source &&
+        e.request?.destination === record.spec.cwd,
+    )
+  )
+}
+
+/** Planners are shared; merges also belong to the chat that selected their request. */
 export function relatedSession(
   record: SessionRecord,
   worktree: SimpleWorktree,
   generation = record.snapshot?.generation,
+  simple?: SimpleState | null,
 ) {
   if (record.metadata.projectId !== worktree.projectId || record.metadata.kind !== 'agent')
     return false
@@ -282,6 +304,7 @@ export function relatedSession(
   if (record.metadata.componentId === MERGE_SCOPE)
     return (
       record.spec.merge_source === worktree.path ||
+      ownsMerge(simple, record, generation) ||
       (!!worktree.branch && record.metadata.branch === worktree.branch)
     )
   if (record.metadata.componentId === REVIEW_SCOPE) return record.spec.cwd === worktree.path
@@ -369,7 +392,14 @@ const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
 /** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
-    .filter((r) => relatedSession(r, worktree, (snapshot.sessions[r.id] ?? r.snapshot)?.generation))
+    .filter((r) =>
+      relatedSession(
+        r,
+        worktree,
+        (snapshot.sessions[r.id] ?? r.snapshot)?.generation,
+        snapshot.simple,
+      ),
+    )
     .sort(
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
     )

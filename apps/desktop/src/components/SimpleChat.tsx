@@ -380,7 +380,6 @@ export default function SimpleChat({
         <MergeAgentDialog
           source={source}
           worktrees={data?.worktrees ?? []}
-          findings={findings}
           close={() => setDialog(undefined)}
           onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
           launched={() => setDialog(undefined)}
