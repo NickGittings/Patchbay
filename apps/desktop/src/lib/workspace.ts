@@ -90,14 +90,22 @@ export function workspaceDocument(): WorkspaceDocument {
     }),
   }
 }
-export function flushWorkspace() {
+export function flushWorkspace(strict = false) {
   clearTimeout(timer)
-  if (useStore.getState().restoring || recoveryBlocked) return writing
+  if (useStore.getState().restoring || recoveryBlocked)
+    return strict
+      ? Promise.reject(
+          new Error('Workspace history cannot be persisted until restoration or recovery finishes'),
+        )
+      : writing
   const document = workspaceDocument()
   writing = writing
     .catch(() => {})
     .then(() => workspaceSave(document))
-    .catch((e) => useStore.getState().setMessage(String(e)))
+    .catch((e) => {
+      useStore.getState().setMessage(String(e))
+      if (strict) throw e
+    })
   return writing
 }
 export function restoredLayout(
@@ -107,6 +115,9 @@ export function restoredLayout(
   const out: Partial<ProjectState> = {}
   out.auto = restoredAuto(layout.auto)
   out.simple = restoredSimple(layout.simple)
+  out.planStory = typeof layout.planStory === 'string' ? layout.planStory : null
+  out.planStoryTerminal =
+    typeof layout.planStoryTerminal === 'string' ? layout.planStoryTerminal : null
   if (!nested) {
     out.simpleMode = layout.simpleMode === true
     out.storyBoard = layout.storyBoard === true
@@ -221,8 +232,6 @@ export function restoredLayout(
                 'viewport',
                 'planStartedWith',
                 'storyBoard',
-                'planStory',
-                'planStoryTerminal',
                 'agentRoles',
                 'implementSubagents',
                 'validatorDeclined',

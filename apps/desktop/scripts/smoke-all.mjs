@@ -50,6 +50,14 @@ const SCRIPTS = {
     ),
     run: ['scripts/hooks-home.mjs'],
   },
+  planning: {
+    ...smoke(
+      'planning.js',
+      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
+      'simple-fixture.sh',
+    ),
+    run: ['scripts/hooks-home.mjs'],
+  },
   'chat-controls': smoke('chat-controls.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
@@ -75,7 +83,14 @@ const SCRIPTS = {
     },
     'autosave-fixture.sh',
   ),
-  views: smoke('views.js'),
+  views: {
+    ...smoke(
+      'views.js',
+      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-views/project') },
+      'views-fixture.sh',
+    ),
+    run: ['scripts/hooks-home.mjs'],
+  },
   stories: smoke('stories.js'),
   merge: smoke(
     'merge.js',

@@ -445,6 +445,8 @@ test('planner restart applies the current highlights and clears the scope warnin
     undefined,
     undefined,
     undefined,
+    undefined,
+    null,
   )
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -744,6 +746,8 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
     { kind: 'plan' },
     auto,
     undefined,
+    undefined,
+    null,
   ])
   // Once the run moved on, the terminal starts like any other.
   tracking('other')
@@ -756,6 +760,8 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
     undefined,
     undefined,
     undefined,
+    undefined,
+    null,
   ])
 })
 
@@ -1032,6 +1038,8 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     { kind: 'planStory' },
     undefined,
     'story1',
+    undefined,
+    null,
   )
   expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
   await restartTerminal(PLAN_SCOPE, 'claude', null)
@@ -1044,6 +1052,8 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     { kind: 'planStory' },
     undefined,
     'story1',
+    undefined,
+    null,
   )
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
@@ -1052,6 +1062,8 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     undefined,
     undefined,
     undefined,
+    undefined,
+    null,
   ])
 })
 
@@ -1068,6 +1080,8 @@ test('a lost story planner reply still keeps the story for Restart', async () =>
     { kind: 'planStory' },
     undefined,
     'story1',
+    undefined,
+    null,
   ])
 })
 
@@ -1108,6 +1122,8 @@ test('another planner preset leaves the story planner linked for Restart and Imp
     { kind: 'planStory' },
     undefined,
     'story1',
+    undefined,
+    null,
   ])
 })
 test('a direct story launch cannot take an Auto planner even when its session is running', async () => {
@@ -1340,7 +1356,7 @@ test('replies read for a newer run keep every field of its snapshot', async () =
   expect(useStore.getState().sessions[r.id].interrupted).toBeUndefined()
 })
 
-test('an Auto planner uses its background worktree highlights while keeping a project-wide session', async () => {
+test('an Auto planner uses its background worktree highlights with its own session', async () => {
   useStore.setState({ highlighted: [] })
   useStore.getState().patchTask('p', 'background', { highlighted: ['web'] })
   const auto = { goal: 'Background goal', fixFloor: null, effortNote: '', commit: false }
@@ -1354,19 +1370,21 @@ test('an Auto planner uses its background worktree highlights while keeping a pr
     { kind: 'plan' },
     auto,
     undefined,
+    undefined,
+    'background',
   )
   expect(useStore.getState().highlighted).toEqual([])
   expect(useStore.getState().activeTask).toBeNull()
-  expect(useStore.getState().planStartedWith[sessionId(PLAN_SCOPE, 'claude', null, 'p')]).toBe(
-    'web',
-  )
+  expect(
+    useStore.getState().planStartedWith[sessionId(PLAN_SCOPE, 'claude', 'background', 'p')],
+  ).toBe('web')
 })
 
 test.each(['start', 'restart'] as const)(
   'Plan dock %s keeps a tracked Auto planner’s worktree highlights and briefing',
   async (action) => {
     useStore.setState({ highlighted: [] })
-    const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+    const sid = sessionId(PLAN_SCOPE, 'claude', 'background', 'p')
     const auto = { goal: 'Background goal', fixFloor: null, effortNote: '', commit: false }
     useStore.getState().patchTask('p', 'background', {
       highlighted: ['web'],
@@ -1384,8 +1402,8 @@ test.each(['start', 'restart'] as const)(
         sessionBrief: { sessionId: sid, auto, kickoff: { kind: 'plan' } },
       },
     })
-    if (action === 'restart') await restartTerminal(PLAN_SCOPE, 'claude')
-    else await startTerminal(PLAN_SCOPE, 'claude')
+    if (action === 'restart') await restartTerminal(PLAN_SCOPE, 'claude', 'background')
+    else await startTerminal(PLAN_SCOPE, 'claude', 'background')
     expect(ipc.planStart).toHaveBeenCalledWith(
       expect.anything(),
       ['web'],
@@ -1395,6 +1413,8 @@ test.each(['start', 'restart'] as const)(
       { kind: 'plan' },
       auto,
       undefined,
+      undefined,
+      'background',
     )
     expect(useStore.getState().highlighted).toEqual([])
     expect(useStore.getState().planStartedWith[sid]).toBe('web')

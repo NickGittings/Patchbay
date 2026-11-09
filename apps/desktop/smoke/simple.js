@@ -56,11 +56,22 @@
     await smoke.agentHooksConfigure('codex', true)
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
+    await until('root chat before worktree creation', () => document.querySelector('.simple-chat'))
+    await until('root chat layout saved', () => smoke.chatPanel.width() > 0)
+    const initialRootChatWidth = smoke.chatPanel.width()
+    const initialRootLayout = { ...state().panels['App-simple'] }
+    await smoke.createTask({
+      title: 'Simple chat build',
+      branch: 'simple-chat-build',
+      components: ['app'],
+    })
+    state().setSimpleMode(true)
+    if (!state().panels['App-simple']) state().setPanelLayout('App-simple', initialRootLayout)
+    state().revealChat({ projectId, task: state().activeTask })
     await until('chat', () => document.querySelector('.simple-chat'))
     // Chat's resize handle must receive pointer hits even while Inspector is hidden.
     const { width: chatWidth, drag: dragChat } = smoke.chatPanel
     await until('chat width saved', () => chatWidth() > 0)
-    const rootChatWidth = chatWidth()
     assert(!document.querySelector('.simple-stage-tabs'), 'stage tabs remain')
     assert(!document.querySelector('.simple-terminal-drawer'), 'terminal starts open')
     assert(
@@ -193,16 +204,6 @@
     )
     await smoke.report('INFO simple: planner input and repeated reveals passed')
     click(button('Build'))
-    const dialog = await until('new worktree offered', () =>
-      document.querySelector('form[aria-label="New task"]'),
-    )
-    input(dialog.querySelector('input'), 'Simple chat build')
-    click(
-      await until('create task ready', () => {
-        const b = dialog.querySelector('button[type="submit"]')
-        return !b.disabled && b
-      }),
-    )
     await until('worktree build done', () => chatText().includes('Building done.'))
     inChat()
     const task = state().activeTask
@@ -210,7 +211,9 @@
     await dragChat(-70)
     const taskChatWidth = chatWidth()
     state().setActiveTask(null, true)
-    await until('root chat width restored', () => Math.abs(chatWidth() - rootChatWidth) < 0.1)
+    await until('root chat visible', () => chatWidth() > 0)
+    if (initialRootChatWidth)
+      assert(Math.abs(chatWidth() - initialRootChatWidth) < 0.1, 'root layout changed')
     state().setActiveTask(task)
     await until('worktree chat width restored', () => Math.abs(chatWidth() - taskChatWidth) < 0.1)
     assert(
@@ -364,7 +367,7 @@
     // Runs launched outside Chat have no block to scroll to. View must keep their output open
     // even after a successful or failed exit, and consume the reveal without claiming the run.
     for (const exitCode of [0, 1]) {
-      await smoke.startTerminal('@plan', fake.id, null, projectId)
+      await smoke.startTerminal('@plan', fake.id, task, projectId)
       await until(
         'external planner ready',
         () =>
@@ -400,7 +403,7 @@
     }
     // A permission wait of a planner run this chat started switches both recipient and drawer
     // to it; another chat's run of the shared planner never does.
-    await smoke.startTerminal('@plan', fake.id, null, projectId)
+    await smoke.startTerminal('@plan', fake.id, task, projectId)
     await until('planner restarted', () => state().sessions[planner]?.running)
     state().patchTask(projectId, task, {
       simple: {

@@ -259,11 +259,11 @@ function WorktreeRow({
       })),
     ),
     // The planner belongs to the project folder, whichever worktree is active.
-    ...(id === null ? planTerminals(devices) : []).map((t) => ({
+    ...planTerminals(devices).map((t) => ({
       componentId: PLAN_SCOPE,
       name: 'Planner',
       t,
-      sid: plannerSessionId(t.id),
+      sid: plannerSessionId(t.id, undefined, id),
     })),
   ].filter(({ sid }) => sessions[sid]?.running)
 

@@ -1,3 +1,4 @@
+import { planningHighlights, usePlanningTask } from '../../lib/planningScope'
 import { rolesOf, useMapActivity } from '../../lib/mapActivity'
 import type { AgentRole, RoleActivity } from '../../lib/activity'
 import { revealTerminal } from '../../lib/attention'
@@ -22,12 +23,15 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const simple = useStore((s) => s.simpleMode)
   const pulsing = useMapActivity((s) => s.active.includes(id))
   const roles = useMapActivity(rolesOf(id))
+  const planningTask = usePlanningTask()
   const planning = useStore((s) => s.simpleMode || s.view === 'plan')
-  const highlighted = useStore((s) => s.highlighted.includes(id))
+  const highlighted = useStore((s) => planningHighlights(s, planningTask).includes(id))
   const nearby = useStore(
-    (s) => (s.simpleMode || s.view === 'plan') && nearbyIds(s.highlighted, s.edges).has(id),
+    (s) =>
+      (s.simpleMode || s.view === 'plan') &&
+      nearbyIds(planningHighlights(s, planningTask), s.edges).has(id),
   )
-  const hasHighlights = useStore((s) => s.highlighted.length > 0)
+  const hasHighlights = useStore((s) => planningHighlights(s, planningTask).length > 0)
   const proposed = useStore((s) => s.view === 'plan' && s.proposedScope.includes(id))
   const planClass = !planning
     ? ''

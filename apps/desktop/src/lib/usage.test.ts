@@ -430,3 +430,34 @@ test.each(['enabled', 'usageLimits'] as const)(
     }
   },
 )
+
+test('composer exhaustion shows every unexpired 100% window for its provider independently of thresholds', async () => {
+  const { exhaustedWindows } = await import('./usage')
+  const usage = {
+    claude: {
+      fiveHour: { usedPercent: 100, resetsAtMs: 200 },
+      weekly: { usedPercent: 120, resetsAtMs: 300 },
+    },
+    codex: { fiveHour: { usedPercent: 100, resetsAtMs: 400 }, weekly: null },
+  } as Usage
+  expect(exhaustedWindows(usage, 'claude', 100).map((w) => w.key)).toEqual(['fiveHour', 'weekly'])
+  expect(exhaustedWindows(usage, 'claude:router', 100)).toHaveLength(2)
+  expect(exhaustedWindows(usage, 'codex', 100).map((w) => w.key)).toEqual(['fiveHour'])
+  expect(exhaustedWindows(usage, 'claude', 200).map((w) => w.key)).toEqual(['weekly'])
+  expect(exhaustedWindows(usage, 'claude', 300)).toEqual([])
+  expect(usageBlock(usage, 'claude', { ...DEFAULT_USAGE, gateAuto: false }, 100)).toBeNull()
+  expect(exhaustedWindows(usage, 'claude', 100)).toHaveLength(2)
+})
+
+test('missing usage and unsupported recipients stay unknown, while less than 100% is not exhaustion', async () => {
+  const { exhaustedWindows } = await import('./usage')
+  expect(exhaustedWindows(null, 'codex', 100)).toEqual([])
+  expect(exhaustedWindows(null, null, 100)).toEqual([])
+  expect(
+    exhaustedWindows(
+      { claude: { fiveHour: { usedPercent: 99, resetsAtMs: 200 } } } as Usage,
+      'claude',
+      100,
+    ),
+  ).toEqual([])
+})

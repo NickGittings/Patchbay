@@ -1,7 +1,7 @@
 import { shortTitle } from './shortTitle'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import type { Task } from '../types'
+import { PROJECT_DRAFT, plannerSessionId, type Task } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
@@ -14,11 +14,17 @@ vi.mock('./ipc', () => ({
   taskCreate: vi.fn(),
   taskAttach: vi.fn(),
   taskRemove: vi.fn(async () => true),
+  planTransferPending: vi.fn(async () => null),
+  planTransfer: vi.fn(async () => {}),
   planRead: vi.fn(async () => ({ text: '', cut: false })),
   planWrite: vi.fn(async () => true),
 }))
 vi.mock('./git', () => ({ invalidateGitRefresh: vi.fn(), requestGitRefresh: vi.fn() }))
-vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
+vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
+vi.mock('./sessions', () => ({
+  launching: vi.fn(() => false),
+  reconcileFreshSessions: vi.fn(async () => {}),
+}))
 const {
   attachTask,
   branchFor,
@@ -31,8 +37,16 @@ const {
   titleFor,
 } = await import('./tasks')
 const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')
-const { planRead, planWrite, taskAttach, taskCreate, taskUpdate, taskList, taskRemove } =
-  await import('./ipc')
+const {
+  planTransfer,
+  planRead,
+  planWrite,
+  taskAttach,
+  taskCreate,
+  taskUpdate,
+  taskList,
+  taskRemove,
+} = await import('./ipc')
 const { reconcileFreshSessions } = await import('./sessions')
 
 let stop: (() => void) | undefined
@@ -250,7 +264,7 @@ test('a removal that succeeded is cleaned up even when refreshing the list fails
 
 const fresh = { id: 'n', title: 'N', components: [] } as unknown as Task
 
-test('a new worktree asked to copy the plan starts with the project plan, before its follow-up', async () => {
+test('a new worktree receives its project draft before its follow-up', async () => {
   removalProject(null)
   vi.mocked(taskCreate).mockResolvedValue(fresh)
   vi.mocked(taskList).mockResolvedValue([fresh])
@@ -259,11 +273,12 @@ test('a new worktree asked to copy the plan starts with the project plan, before
   seedNewTask(then, { copyPlan: true })
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(useStore.getState().activeTask).toBe('n')
-  expect(planRead).toHaveBeenCalledWith('p')
+  expect(planTransfer).toHaveBeenCalledWith('p', 'n', false)
+  expect(planTransfer).toHaveBeenCalledWith('p', 'n', true)
   // Only into a worktree that has no plan yet.
-  expect(planWrite).toHaveBeenCalledExactlyOnceWith('p', 'n', '# Plan', '')
+  expect(planWrite).not.toHaveBeenCalled()
   expect(then).toHaveBeenCalledExactlyOnceWith(fresh, 'p')
-  expect(vi.mocked(planWrite).mock.invocationCallOrder[0]).toBeLessThan(
+  expect(vi.mocked(planTransfer).mock.invocationCallOrder.at(-1)!).toBeLessThan(
     then.mock.invocationCallOrder[0],
   )
 })
@@ -302,13 +317,13 @@ test('a failed copy keeps the new worktree and says so', async () => {
   vi.mocked(taskCreate).mockResolvedValue(fresh)
   vi.mocked(taskList).mockResolvedValue([fresh])
   vi.mocked(planRead).mockResolvedValue({ text: '# Plan', cut: false })
-  vi.mocked(planWrite).mockRejectedValueOnce(new Error('disk full'))
+  vi.mocked(planTransfer).mockRejectedValueOnce(new Error('disk full'))
   const then = vi.fn()
   seedNewTask(then, { copyPlan: true })
-  await expect(createTask({ title: 'N', branch: 'n', components: [] })).resolves.toBe(fresh)
+  await expect(createTask({ title: 'N', branch: 'n', components: [] })).rejects.toThrow('disk full')
   expect(useStore.getState().activeTask).toBe('n')
-  expect(then).toHaveBeenCalledOnce()
-  expect(useStore.getState().message).toMatch('could not be copied')
+  expect(then).not.toHaveBeenCalled()
+  expect(planTransfer).not.toHaveBeenCalledWith('p', 'n', true)
 })
 
 test('a cut title never splits an emoji', () => {
@@ -402,4 +417,113 @@ test('leaving a worktree marks its finished actions seen in the same update', ()
   // Leaving the task in turn marks its own.
   useStore.getState().setActiveTask(null)
   expect(useStore.getState().seenActivities).toEqual(['a', 'c'])
+})
+
+test('draft handoff carries conversation, clear boundary and story, persists before cleanup, and leaves sibling history alone', async () => {
+  removalProject(null)
+  const { transferProjectDraft } = await import('./tasks')
+  const { flushWorkspace } = await import('./workspace')
+  const simple = {
+    startedMs: 1,
+    log: [],
+    clearBoundary: { atMs: 50, runs: [{ sessionId: 'old', generation: 1, sequence: 4 }] },
+  }
+  useStore.getState().patchTask('p', PROJECT_DRAFT, {
+    simple,
+    planStory: 'story',
+    planStoryTerminal: 'codex',
+    planActive: 'codex',
+    highlighted: ['web'],
+  })
+  const original = { startedMs: 10, log: [] }
+  useStore.getState().patchTask('p', null, { simple: original })
+  vi.mocked(planTransfer).mockImplementation(async (_pid, task, finish) => {
+    if (finish) {
+      expect(task).toBe('t')
+      expect(flushWorkspace).toHaveBeenCalledWith(true)
+      expect(useStore.getState().taskWorkspaces[PROJECT_DRAFT].simple).toMatchObject({
+        ...simple,
+        transferTarget: 't',
+      })
+    }
+  })
+  await transferProjectDraft('p', 't')
+  expect(useStore.getState().taskWorkspaces.t).toMatchObject({
+    simple: { ...simple, transferredFrom: PROJECT_DRAFT },
+    planStory: 'story',
+    planActive: 'codex',
+    highlighted: ['web'],
+  })
+  expect(useStore.getState().taskWorkspaces[PROJECT_DRAFT].simple).toMatchObject({
+    log: [],
+    clearBoundary: { atMs: expect.any(Number) },
+  })
+  expect(useStore.getState().simple).toEqual(original)
+})
+
+test('draft handoff refuses a live planner and cancellation leaves no pending transfer', async () => {
+  removalProject(null)
+  const sid = plannerSessionId('claude', 'p', PROJECT_DRAFT)
+  useStore.setState({ sessions: { [sid]: { running: true } } })
+  seedNewTask(undefined, { copyPlan: true })
+  await expect(createTask({ title: 'N', branch: 'n', components: [] })).rejects.toThrow(
+    'stop the project draft planner',
+  )
+  expect(taskCreate).not.toHaveBeenCalled()
+  cancelNewTask()
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  await createTask({ title: 'N', branch: 'n', components: [] })
+  expect(planTransfer).not.toHaveBeenCalled()
+})
+
+test('a failed history save preserves the source and allows the exact handoff to be retried', async () => {
+  removalProject(null)
+  const { transferProjectDraft } = await import('./tasks')
+  const { flushWorkspace } = await import('./workspace')
+  const simple = { startedMs: 1, log: [] }
+  useStore.getState().patchTask('p', PROJECT_DRAFT, { simple, planStory: 'story' })
+  vi.mocked(flushWorkspace).mockRejectedValueOnce(new Error('history disk full'))
+  vi.mocked(planTransfer).mockResolvedValue(undefined)
+  await expect(transferProjectDraft('p', 't')).rejects.toThrow('history disk full')
+  expect(planTransfer).not.toHaveBeenCalledWith('p', 't', true)
+  expect(useStore.getState().taskWorkspaces[PROJECT_DRAFT].simple).toMatchObject({
+    ...simple,
+    transferTarget: 't',
+  })
+  await transferProjectDraft('p', 't')
+  expect(useStore.getState().taskWorkspaces.t.simple).toMatchObject(simple)
+  expect(useStore.getState().taskWorkspaces[PROJECT_DRAFT].simple).toMatchObject({
+    log: [],
+    clearBoundary: { atMs: expect.any(Number) },
+  })
+})
+
+test('retrying a handoff preserves new messages already written in the destination', async () => {
+  removalProject(null)
+  const { transferProjectDraft } = await import('./tasks')
+  const source = { startedMs: 1, log: [], transferTarget: 't' }
+  useStore.getState().patchTask('p', PROJECT_DRAFT, { simple: source })
+  useStore.getState().patchTask('p', 't', {
+    simple: {
+      startedMs: 1,
+      transferredFrom: PROJECT_DRAFT,
+      log: [
+        {
+          id: 'new',
+          atMs: 100,
+          kind: 'prompt',
+          stage: 'plan',
+          text: 'New destination message',
+          mentions: [],
+        },
+      ],
+    },
+  })
+  await expect(transferProjectDraft('p', 't')).rejects.toThrow('destination conversation changed')
+  expect(useStore.getState().taskWorkspaces.t.simple?.log[0]).toMatchObject({
+    text: 'New destination message',
+  })
+  expect(useStore.getState().taskWorkspaces[PROJECT_DRAFT].simple).toEqual(source)
+  expect(planTransfer).not.toHaveBeenCalled()
 })

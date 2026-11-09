@@ -137,8 +137,10 @@ test('timeline groups consecutive messages and deduplicates replies against live
     },
     worktree,
   )
-  expect(model.items.map((i) => i.kind)).toEqual(['line', 'agent', 'plan'])
-  expect(model.items[1]).toMatchObject({ entries })
+  expect(model.items.map((i) => i.kind)).toEqual(['line', 'agent', 'plan', 'agent'])
+  expect(model.items[1]).toMatchObject({ entries: [entries[0]] })
+  expect(model.items[3]).toMatchObject({ entries: [entries[1]] })
+  expect(model.items[2].atMs).toBe(15)
   expect(model.planReady).toBe(true)
   const stale = thread(
     { ...snapshot([]), createdMs: 30, plan: { text: '# Old', cut: false, savedMs: 20 } },

@@ -848,6 +848,7 @@ async fn plan_context(
     component_ids: Vec<String>,
     extra_context: Option<Vec<ContextSection>>,
     story: Option<String>,
+    planning_scope: Option<patchbay_core::planning::PlanningScope>,
 ) -> CmdResult<String> {
     let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
@@ -855,6 +856,14 @@ async fn plan_context(
     let roots = scoped.roots();
     blocking(move || {
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, _, _) = for_task(
+            project,
+            planning_scope
+                .as_ref()
+                .and_then(patchbay_core::planning::PlanningScope::worktree_task),
+            &component_ids,
+            roots.clone(),
+        )?;
         let story_section = stories::planner_section(&story_root, story.as_deref()).map_err(err)?;
         let sections = briefing_sections(
             &extensions.get(),
@@ -885,6 +894,7 @@ async fn plan_start(
     kickoff: Option<context::Kickoff>,
     story: Option<String>,
     scan_round: Option<String>,
+    planning_scope: patchbay_core::planning::PlanningScope,
 ) -> CmdResult<String> {
     let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
@@ -892,13 +902,41 @@ async fn plan_start(
     let roots = scoped.roots();
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
-    // The planner belongs to the project, not a worktree: it always runs in the project folder.
+    // The explicit planning scope fixes the checkout, artifacts and session identity.
     blocking(move || {
+        let records = bridge.call::<Vec<Record>>(Request::List)?;
+        if records.iter().any(|r| {
+            r.metadata.project_id == project_id
+                && r.metadata.component_id == model::PLAN_SCOPE
+                && r.metadata.task.is_none()
+                && r.snapshot.as_ref().is_some_and(|s| s.running)
+        }) {
+            return Err(
+                "Finish or stop the legacy project planner before starting a scoped planner".into(),
+            );
+        }
         let project = access.restrict(project, &component_ids).map_err(err)?;
+        let (project, roots, task_section) = for_task(
+            project,
+            planning_scope.worktree_task(),
+            &component_ids,
+            roots,
+        )?;
+        let artifact_task = Some(planning_scope.artifact_task());
+        if planning_scope.artifact_task() == patchbay_core::planning::DRAFT
+            && patchbay_core::planning::pending_transfer(&story_root)
+                .map_err(err)?
+                .is_some()
+        {
+            return Err(
+                "Finish the pending project draft transfer before starting its planner".into(),
+            );
+        }
         // A manual scan handoff has no Auto controller to retain its startup options.
         // Recover its scan round and goal when that same planner is restarted.
         let previous = if resume.unwrap_or(false) {
-            let sid = model::task_session_id(&project_id, model::PLAN_SCOPE, &terminal.id, None);
+            let sid =
+                model::task_session_id(&project_id, model::PLAN_SCOPE, &terminal.id, artifact_task);
             bridge.call::<session::PlannerScanOptions>(session::Request::PlannerScanOptions {
                 id: sid,
             })?
@@ -942,17 +980,20 @@ async fn plan_start(
             &project,
             &component_ids,
             &roots,
-            scan_section
+            task_section
                 .into_iter()
+                .chain(scan_section)
                 .chain(story_section)
                 .chain(auto.as_ref().map(context::AutoBrief::plan_section)),
             extra_context,
         );
-        let metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
-        let mut spec = context::plan_session_spec(
+        let mut metadata = service::metadata(&project_id, &project, model::PLAN_SCOPE, &terminal);
+        metadata.task = artifact_task.map(str::to_string);
+        let mut spec = context::scoped_plan_session_spec(
             &project,
             &component_ids,
             &terminal,
+            &planning_scope,
             &AllowAll,
             &sections,
             kickoff,
@@ -968,7 +1009,7 @@ async fn plan_start(
             }
         }
         if terminal.kind == model::TerminalKind::Agent {
-            agent_commands::inject(agent_server, &project_id, None, &mut spec);
+            agent_commands::inject(agent_server, &project_id, artifact_task, &mut spec);
         }
         let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
         Ok(id)
@@ -1039,7 +1080,7 @@ fn handoff_sections(
     let mut peers = peers.unwrap_or_default();
     peers.sort();
     peers.dedup();
-    let plan = patchbay_core::plans::section(root, task);
+    let plan = patchbay_core::plans::section(root, patchbay_core::planning::artifact_task(task));
     let mut dirs: Vec<PathBuf> = peers
         .iter()
         .filter(|id| *id != component_id)
@@ -1050,7 +1091,11 @@ fn handoff_sections(
         dirs.extend(patchbay_core::plans::existing_dir(root));
     }
     let peers = context::peers_section(project, component_id, &peers);
-    let assignments = patchbay_core::proposals::section(project, task, &[component_id.into()]);
+    let assignments = patchbay_core::proposals::section(
+        project,
+        patchbay_core::planning::artifact_task(task),
+        &[component_id.into()],
+    );
     (
         plan.into_iter().chain(assignments).chain(peers).collect(),
         dirs,
@@ -1063,9 +1108,86 @@ async fn plan_read(
     project_id: String,
     state: State<'_, AppState>,
     task: Option<String>,
+    legacy_claims: Option<HashMap<String, Vec<String>>>,
 ) -> CmdResult<patchbay_core::plans::Plan> {
     let (root, _) = task_repo(&state, &project_id)?;
-    blocking(move || patchbay_core::plans::read(&root, task.as_deref()).map_err(err)).await
+    let bridge = state.service.clone();
+    blocking(move || {
+        if patchbay_core::plans::dir(&root)
+            .map_err(err)?
+            .join("scoped-migration.json")
+            .exists()
+        {
+            return patchbay_core::plans::read(&root, task.as_deref()).map_err(err);
+        }
+        let records = bridge.call::<Vec<Record>>(Request::List)?;
+        if !records.iter().any(|r| {
+            r.metadata.project_id == project_id
+                && r.metadata.component_id == model::PLAN_SCOPE
+                && r.metadata.task.is_none()
+                && r.snapshot.as_ref().is_some_and(|s| s.running)
+        }) {
+            let legacy: std::collections::HashSet<_> = records
+                .iter()
+                .filter(|r| {
+                    r.metadata.project_id == project_id
+                        && r.metadata.component_id == model::PLAN_SCOPE
+                        && r.metadata.task.is_none()
+                })
+                .map(|r| r.id.as_str())
+                .collect();
+            let owners: Vec<_> = legacy_claims
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, claims)| claims.iter().any(|id| legacy.contains(id.as_str())))
+                .map(|(task, _)| {
+                    if task.is_empty() {
+                        patchbay_core::planning::MAIN.to_string()
+                    } else {
+                        task
+                    }
+                })
+                .collect();
+            let owner = (owners.len() == 1).then(|| owners[0].as_str());
+            patchbay_core::planning::migrate_legacy(&root, owner).map_err(err)?;
+        }
+        patchbay_core::plans::read(&root, task.as_deref()).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plan_transfer_pending(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<String>> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::planning::pending_transfer(&root).map_err(err)).await
+}
+
+/// Copy/acknowledge a stopped draft; the desktop persists history between these two calls.
+#[tauri::command]
+async fn plan_transfer(
+    project_id: String,
+    task: String,
+    finish: bool,
+    state: State<'_, AppState>,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let records = bridge.call::<Vec<Record>>(Request::List)?;
+        if records.iter().any(|r| {
+            r.metadata.project_id == project_id
+                && r.metadata.component_id == model::PLAN_SCOPE
+                && r.metadata.task.as_deref() == Some(patchbay_core::planning::DRAFT)
+                && r.snapshot.as_ref().is_some_and(|s| s.running)
+        }) {
+            return Err("Finish or stop the project draft planner before transferring it".into());
+        }
+        patchbay_core::planning::transfer_draft(&root, &task, finish).map_err(err)
+    })
+    .await
 }
 
 /// Replace the saved plan of the project (or `task`) while it still holds
@@ -1080,6 +1202,13 @@ async fn plan_write(
 ) -> CmdResult<bool> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || {
+        if task.as_deref() == Some(patchbay_core::planning::DRAFT)
+            && patchbay_core::planning::pending_transfer(&root)
+                .map_err(err)?
+                .is_some()
+        {
+            return Err("Finish the pending project draft transfer before editing its plan".into());
+        }
         patchbay_core::plans::write_if(&root, task.as_deref(), &text, expected.as_deref())
             .map_err(err)
     })
@@ -2661,6 +2790,8 @@ pub fn run() {
                 orchestration::provider_job_start,
                 plan_context,
                 plan_read,
+                plan_transfer,
+                plan_transfer_pending,
                 task_root_start,
                 merge_agent_start,
                 map_agent_start,

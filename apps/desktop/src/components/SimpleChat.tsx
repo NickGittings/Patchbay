@@ -14,7 +14,7 @@ import {
   type SimpleStage,
 } from '../lib/simple'
 import { flow, type FlowAction } from '../lib/simpleFlow'
-import { logLaunch, logSimple } from '../lib/simpleActions'
+import { clearSimpleChat, logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { useExpiredDeadline } from '../lib/clock'
@@ -32,8 +32,6 @@ import {
 } from '../lib/reviewAgents'
 import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
 import { gitWorktrees, mergeConflicts } from '../lib/ipc'
-import { seedNewTask } from '../lib/tasks'
-import { linkStory } from '../lib/stories'
 import { mergeNow, resumeAuto } from '../lib/auto'
 import {
   missingHooks,
@@ -76,10 +74,15 @@ export default function SimpleChat({
   const { data, source, scope: worktree, files: changed, error, findings } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
-  const [pending, setPending] = useState('')
-  const [failure, setFailure] = useState('')
+  const [pendingResult, setPendingResult] = useState({ key: '', action: '' })
+  const pending = pendingResult.key === key ? pendingResult.action : ''
+  const [failureResult, setFailureResult] = useState({ key: '', text: '' })
+  const failure = failureResult.key === key ? failureResult.text : ''
+  const setFailure = (text: string) => setFailureResult({ key, text })
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
+  const [clearKey, setClearKey] = useState<string>()
+  useEffect(() => setClearKey(undefined), [key])
   const threadRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',
@@ -237,10 +240,11 @@ export default function SimpleChat({
       requestId,
     )
   const run = async (action: string, fn: () => Promise<void>) => {
-    const lock = `${key}:${action}`
+    const lock = key
     if (pendingActions.has(lock)) return
     pendingActions.add(lock)
-    setPending(action)
+    useSimpleUi.getState().patch(key, { pendingWorkflow: true })
+    setPendingResult({ key, action })
     setFailure('')
     try {
       await fn()
@@ -248,7 +252,8 @@ export default function SimpleChat({
       setFailure(String(e))
     } finally {
       pendingActions.delete(lock)
-      setPending('')
+      useSimpleUi.getState().patch(key, { pendingWorkflow: false })
+      setPendingResult((current) => (current.key === key ? { key, action: '' } : current))
     }
   }
   const build = async (destinationTask = task) => {
@@ -261,31 +266,7 @@ export default function SimpleChat({
   const act = (action: FlowAction) =>
     void run(action, async () => {
       if (action === 'build') {
-        if (task) await build()
-        else {
-          const conversation = s.simple
-          const state = useStore.getState()
-          const story = state.planStoryTerminal === planner ? state.planStory : null
-          seedNewTask(
-            (created, pid) => {
-              if (ui.terminal === 'user')
-                useSimpleUi.getState().patch(simpleKey(pid, created.id), { terminal: 'user' })
-              if (conversation)
-                useStore.getState().patchTask(pid, created.id, {
-                  simple: {
-                    ...conversation,
-                    startedMs: model.planningStarted,
-                    log: conversation.log.filter((e) => e.atMs >= model.planningStarted),
-                  },
-                })
-              void run('build', async () => {
-                if (story) await linkStory(pid, story, created.id)
-                await build(created.id)
-              })
-            },
-            { copyPlan: true },
-          )
-        }
+        await build()
       } else if (action === 'plan') {
         threadRef.current
           ?.closest('.simple-chat')
@@ -356,6 +337,13 @@ export default function SimpleChat({
         <span>{source?.branch ?? 'Project folder'}</span>
         <button onClick={() => useStore.getState().showAutoPanel()}>Auto</button>
         <button
+          disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
+          onClick={() => setClearKey(key)}
+          title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
+        >
+          Clear chat
+        </button>
+        <button
           className="inspector-close simple-hide-chat"
           aria-label="Hide chat"
           title="Hide chat"
@@ -364,6 +352,27 @@ export default function SimpleChat({
           ×
         </button>
       </header>
+      {clearKey === key && (
+        <div className="simple-clear-confirm" role="group" aria-label="Clear chat confirmation">
+          <span>Clear this worktree’s chat history? Agents keep their context.</span>
+          <button
+            disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
+            onClick={() => {
+              const current = useStore.getState()
+              if (
+                simpleKey(current.project?.id, current.activeTask) !== clearKey ||
+                pendingActions.has(key) ||
+                useSimpleUi.getState().worktrees[key]?.pendingAction
+              )
+                return
+              if (clearSimpleChat(projectId, task)) setClearKey(undefined)
+            }}
+          >
+            Clear
+          </button>
+          <button onClick={() => setClearKey(undefined)}>Cancel</button>
+        </div>
+      )}
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
@@ -424,21 +433,19 @@ export default function SimpleChat({
               return item.stale ? (
                 <details className="simple-earlier-plan" key={item.id}>
                   <summary>
-                    An earlier project plan exists
-                    {data?.plan.savedMs
-                      ? ` (saved ${new Date(data.plan.savedMs).toLocaleString()})`
-                      : ''}{' '}
-                    · Show
+                    An earlier worktree plan exists
+                    {item.atMs ? ` (saved ${new Date(item.atMs).toLocaleString()})` : ''} · Show
                   </summary>
                   <Markdown text={item.text} />
                 </details>
               ) : (
-                state.step !== 'planning' && (
-                  <article className="simple-result" key={item.id}>
-                    <h3>Plan</h3>
-                    <Markdown text={item.text} />
-                  </article>
-                )
+                <article className="simple-result" key={item.id}>
+                  <h3>Plan</h3>
+                  <time dateTime={new Date(item.atMs).toISOString()}>
+                    {new Date(item.atMs).toLocaleString()}
+                  </time>
+                  <Markdown text={item.text} />
+                </article>
               )
             if (item.result === 'review')
               return (

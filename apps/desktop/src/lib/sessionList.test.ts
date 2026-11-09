@@ -494,3 +494,17 @@ describe('sessionTimeMs', () => {
     expect(sessionTimeMs(retained)).toBeUndefined()
   })
 })
+
+test('scoped main planners group with the main worktree and drafts keep their own label', async () => {
+  const { MAIN_PLANNING_TASK, PROJECT_DRAFT } = await import('../types')
+  const main = record('main')
+  const scoped = record('planner', {
+    metadata: { ...main.metadata, task: MAIN_PLANNING_TASK, componentId: PLAN_SCOPE },
+  })
+  const draft = record('draft', {
+    metadata: { ...main.metadata, task: PROJECT_DRAFT, componentId: PLAN_SCOPE },
+  })
+  const groups = groupByWorktree([main, scoped, draft], DEFAULT_SESSION_LIST_OPTIONS)
+  expect(groups.map((g) => g.title)).toEqual(['Main worktree', 'Project draft'])
+  expect(groups[0].rows.map((r) => r.record.id).sort()).toEqual(['main', 'planner'])
+})

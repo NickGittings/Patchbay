@@ -62,3 +62,35 @@ test('a launch without a request claims no run', async () => {
   expect(log()[0].generation).toBeUndefined()
   expect(ipc.sessionsList).not.toHaveBeenCalled()
 })
+
+test('Clear is isolated to its selected worktree and rechecks pending actions', async () => {
+  const { clearSimpleChat } = await import('./simpleActions')
+  const { simpleKey, useSimpleUi } = await import('./simpleUi')
+  const { useStore } = await import('../store')
+  const original = {
+    startedMs: 1,
+    log: [
+      {
+        id: 'secret',
+        atMs: 10,
+        kind: 'prompt' as const,
+        stage: 'plan' as const,
+        text: 'private',
+        mentions: [],
+      },
+    ],
+  }
+  useStore.getState().patchTask('p', null, { simple: original })
+  useStore.getState().patchTask('p', 'sibling', { simple: original })
+  const key = simpleKey('p', null)
+  useSimpleUi.getState().patch(key, { draft: 'keep this draft', pendingAction: true })
+  expect(clearSimpleChat('p', null)).toBe(false)
+  useSimpleUi.getState().patch(key, { pendingAction: false, pendingWorkflow: true })
+  expect(clearSimpleChat('p', null)).toBe(false)
+  useSimpleUi.getState().patch(key, { pendingWorkflow: false })
+  expect(clearSimpleChat('p', 'sibling')).toBe(false)
+  expect(clearSimpleChat('p', null)).toBe(true)
+  expect(useStore.getState().simple?.log).toEqual([])
+  expect(useStore.getState().taskWorkspaces.sibling.simple).toEqual(original)
+  expect(useSimpleUi.getState().worktrees[key].draft).toBe('keep this draft')
+})

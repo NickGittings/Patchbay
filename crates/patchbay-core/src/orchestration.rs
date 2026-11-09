@@ -1128,7 +1128,7 @@ pub fn launch(
                 .map(|w| w.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            crate::plans::read(root, r.task.as_deref())
+            crate::plans::read(root, crate::planning::artifact_task(r.task.as_deref()))
                 .map(|p| p.text)
                 .unwrap_or_default()
         );

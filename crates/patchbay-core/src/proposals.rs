@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-static SUBMISSIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SUBMISSIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -158,7 +158,7 @@ pub fn submit(project: &Project, task: Option<&str>, proposal: &Proposal) -> Res
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     proposal.validate(project)?;
-    if let Some(id) = task {
+    if let Some(id) = crate::planning::checkout_task(task) {
         tasks::find(Path::new(&project.root), id)?;
     }
     save(Path::new(&project.root), task, proposal, false)
@@ -195,7 +195,7 @@ pub fn apply(
         .iter()
         .map(|a| a.component_id.clone())
         .collect::<Vec<_>>();
-    if let Some(id) = to {
+    if let Some(id) = crate::planning::checkout_task(to) {
         tasks::find(root, id)?;
         tasks::update(
             root,

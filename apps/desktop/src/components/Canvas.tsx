@@ -1,3 +1,4 @@
+import { planningHighlights, togglePlanningHighlight, usePlanningTask } from '../lib/planningScope'
 import { StoryViewTabs } from './stories/StoryBoard'
 import {
   Background,
@@ -158,13 +159,13 @@ function isValidConnection(c: Connection | Edge) {
 }
 
 export default function Canvas() {
+  const planningTask = usePlanningTask()
   const {
     project,
     planning,
     storyBoard,
     boardToggle,
     highlighted,
-    toggleHighlight,
     nodes,
     edges,
     onNodesChange,
@@ -178,8 +179,7 @@ export default function Canvas() {
       planning: s.simpleMode || s.view === 'plan',
       storyBoard: s.storyBoard,
       boardToggle: s.simpleMode || s.view !== 'plan',
-      highlighted: s.highlighted,
-      toggleHighlight: s.toggleHighlight,
+      highlighted: planningHighlights(s, planningTask),
       nodes: s.nodes,
       edges: s.edges,
       onNodesChange: s.onNodesChange,
@@ -260,7 +260,9 @@ export default function Canvas() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
-        onNodeClick={(_, n) => (planning ? toggleHighlight(n.id) : select(n.id))}
+        onNodeClick={(_, n) =>
+          planning ? togglePlanningHighlight(planningTask, n.id) : select(n.id)
+        }
         onEdgeClick={(_, e) => {
           if (!planning) selectEdge(e.id)
         }}

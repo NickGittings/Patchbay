@@ -1,5 +1,6 @@
-import { projectStateOf, useStore } from '../store'
-import { boundedSimple, type SimpleEntry } from './simple'
+import { projectStateOf, useStore, workspaceOf } from '../store'
+import { boundedSimple, clearedSimple, type SimpleEntry } from './simple'
+import { simpleKey, useSimpleUi } from './simpleUi'
 import { sessionsList } from './ipc'
 import { sessionFromSnapshot } from './sessionState'
 import type { SessionRecord } from '../types'
@@ -11,6 +12,26 @@ type Entry = SimpleEntry extends infer E
   : never
 
 type Run = { generation?: number; startedMs?: number } | null | undefined
+
+/** Confirmation is bound to the selected worktree and rechecks in-flight actions at commit. */
+export function clearSimpleChat(projectId: string, task: string | null) {
+  const current = useStore.getState()
+  const ui = useSimpleUi.getState().worktrees[simpleKey(projectId, task)]
+  if (
+    current.project?.id !== projectId ||
+    current.activeTask !== task ||
+    ui?.pendingAction ||
+    ui?.pendingWorkflow
+  )
+    return false
+  const state = projectStateOf(projectId)
+  if (!state) return false
+  const simple = workspaceOf(state, task).simple ?? { startedMs: Date.now(), log: [] }
+  current.patchTask(projectId, task, {
+    simple: clearedSimple(simple, current.sessions, Date.now()),
+  })
+  return true
+}
 
 /**
  * The run launch `requestId` started in `sid`: the run of the record whose latest request it is,

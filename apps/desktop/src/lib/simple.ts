@@ -7,7 +7,7 @@ import type {
   SessionState,
   Verdict,
 } from '../types'
-import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE } from '../types'
+import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask } from '../types'
 import { agentChatTask } from './agentChats'
 import { sessionTimeMs } from './sessionList'
 import { shortTitle } from './shortTitle'
@@ -65,8 +65,86 @@ export interface SimpleState {
   version?: number
   /** Launch ownership of shared agents, retained even when Chat is disabled. */
   agentRuns?: { sessionId: string; generation: number }[]
+  transferredFrom?: string
+  transferTarget?: string
+  clearBoundary?: {
+    atMs: number
+    runs: { sessionId: string; generation: number; sequence: number }[]
+  }
+  /** Text-free facts needed by workflow controls after clearing visible history. */
+  retainedWorkflow?: SimpleEntry[]
 }
 export const SIMPLE_VERSION = 2
+
+export const workflowLog = (simple: SimpleState | null | undefined) =>
+  [...(simple?.retainedWorkflow ?? []), ...(simple?.log ?? [])].toSorted(entryOrder)
+
+export function visibleReply(
+  simple: SimpleState | null | undefined,
+  sid: string,
+  generation: number,
+  reply: { atMs: number; sequence: number },
+) {
+  const boundary = simple?.clearBoundary
+  if (!boundary) return true
+  if (reply.atMs <= boundary.atMs) return false
+  return !boundary.runs.some(
+    (r) =>
+      r.sessionId === sid &&
+      (generation < r.generation || (generation === r.generation && reply.sequence <= r.sequence)),
+  )
+}
+
+export function clearedSimple(
+  simple: SimpleState,
+  sessions: Record<string, SessionState>,
+  atMs: number,
+): SimpleState {
+  const facts = new Map<string, SimpleEntry>()
+  for (const e of workflowLog(simple)) {
+    if (e.kind === 'reply') continue
+    const fact =
+      e.kind === 'prompt'
+        ? { ...e, text: '', mentions: [] }
+        : { ...e, text: undefined, mentions: undefined }
+    const key = `${e.kind}:${e.kind === 'action' ? e.action : ''}:${e.sessionId}:${e.generation}`
+    // Keep the first planning boundary as well as the latest delivery/launch fact.
+    if (e.stage === 'plan' && !facts.has(`start:${key}`)) facts.set(`start:${key}`, fact)
+    facts.set(key, fact)
+  }
+  const runs = new Map((simple.clearBoundary?.runs ?? []).map((r) => [r.sessionId, r]))
+  for (const [sessionId, s] of Object.entries(sessions)) {
+    if (s.generation === undefined) continue
+    const sequence = Math.max(0, ...(s.replies ?? []).map((r) => r.sequence))
+    const old = runs.get(sessionId)
+    if (
+      !old ||
+      old.generation < s.generation ||
+      (old.generation === s.generation && old.sequence < sequence)
+    )
+      runs.set(sessionId, { sessionId, generation: s.generation, sequence })
+  }
+  for (const e of simple.log)
+    if (e.kind === 'reply') {
+      const old = runs.get(e.sessionId)
+      if (
+        !old ||
+        old.generation < e.generation ||
+        (old.generation === e.generation && old.sequence < e.sequence)
+      )
+        runs.set(e.sessionId, {
+          sessionId: e.sessionId,
+          generation: e.generation,
+          sequence: e.sequence,
+        })
+    }
+  return boundedSimple({
+    ...simple,
+    log: [],
+    clearBoundary: { atMs, runs: [...runs.values()] },
+    retainedWorkflow: [...new Map([...facts.values()].map((e) => [e.id, e])).values()],
+  })
+}
 
 /** Entries that start, resume or prompt a run, the only ones that may claim it. */
 const CLAIMING_ACTIONS: readonly SimpleAction[] = [
@@ -93,7 +171,7 @@ export function ownsPlanner(
   return (
     generation !== undefined &&
     (!!simple?.agentRuns?.some((r) => r.sessionId === sessionId && r.generation === generation) ||
-      !!simple?.log.some(
+      !!workflowLog(simple).some(
         (e) => claimsRun(e) && e.sessionId === sessionId && e.generation === generation,
       ))
   )
@@ -102,8 +180,15 @@ export function ownsPlanner(
 /** Reapplying old snapshots trims the same oldest text, without persisting per-run cursors. */
 export function boundedSimple(simple: SimpleState): SimpleState {
   return {
+    ...simple,
     startedMs: simple.startedMs,
-    log: boundedSimpleLog(simple.log),
+    log: boundedSimpleLog(
+      simple.log.filter((e) =>
+        e.kind === 'reply'
+          ? visibleReply(simple, e.sessionId, e.generation, e)
+          : !simple.clearBoundary || e.atMs > simple.clearBoundary.atMs,
+      ),
+    ),
     version: SIMPLE_VERSION,
     ...(simple.agentRuns?.length ? { agentRuns: simple.agentRuns } : {}),
   }
@@ -171,6 +256,40 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   const restored = boundedSimple({
     startedMs: state.startedMs,
+    transferredFrom: typeof state.transferredFrom === 'string' ? state.transferredFrom : undefined,
+    transferTarget: typeof state.transferTarget === 'string' ? state.transferTarget : undefined,
+    clearBoundary:
+      state.clearBoundary &&
+      Number.isFinite(state.clearBoundary.atMs) &&
+      Array.isArray(state.clearBoundary.runs)
+        ? {
+            atMs: state.clearBoundary.atMs,
+            runs: state.clearBoundary.runs.filter(
+              (r) =>
+                !!r &&
+                typeof r.sessionId === 'string' &&
+                Number.isSafeInteger(r.generation) &&
+                r.generation >= 0 &&
+                Number.isSafeInteger(r.sequence) &&
+                r.sequence >= 0,
+            ),
+          }
+        : undefined,
+    retainedWorkflow: Array.isArray(state.retainedWorkflow)
+      ? state.retainedWorkflow.flatMap((e) =>
+          e &&
+          typeof e.id === 'string' &&
+          Number.isFinite(e.atMs) &&
+          SIMPLE_STAGES.includes(e.stage) &&
+          (e.kind === 'prompt' || (e.kind === 'action' && SIMPLE_ACTIONS.includes(e.action)))
+            ? [
+                e.kind === 'prompt'
+                  ? { ...e, text: '', mentions: [] }
+                  : { ...e, text: undefined, mentions: undefined },
+              ]
+            : [],
+        )
+      : undefined,
     agentRuns: Array.isArray(state.agentRuns)
       ? state.agentRuns.filter(
           (r) =>
@@ -242,7 +361,7 @@ export function pendingLaunch(
   records: readonly SessionRecord[],
   now = Date.now(),
 ) {
-  const launch = snapshot.simple?.log.findLast(
+  const launch = workflowLog(snapshot.simple).findLast(
     (e) =>
       e.kind === 'action' &&
       ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
@@ -277,7 +396,7 @@ export function ownsMerge(
   return (
     record.metadata.componentId === MERGE_SCOPE &&
     generation !== undefined &&
-    !!simple?.log.some(
+    !!workflowLog(simple).some(
       (e) =>
         e.kind === 'action' &&
         e.action === 'merge' &&
@@ -300,7 +419,8 @@ export function relatedSession(
     return false
   if (record.metadata.componentId === '@map')
     return agentChatTask(record, generation) === worktree.task
-  if (record.metadata.componentId === PLAN_SCOPE) return true
+  if (record.metadata.componentId === PLAN_SCOPE)
+    return record.metadata.task ? plannerChatTask(record.metadata.task) === worktree.task : true
   if (record.metadata.componentId === MERGE_SCOPE)
     return (
       record.spec.merge_source === worktree.path ||
@@ -325,8 +445,8 @@ export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
         : 'build'
 
 /** Start of this planning attempt, rather than a follow-up message within its turn. */
-export function planningStarted(snapshot: SimpleSnapshot) {
-  const log = snapshot.simple?.log ?? []
+export function planningStarted(snapshot: SimpleSnapshot, worktree?: SimpleWorktree) {
+  const log = workflowLog(snapshot.simple)
   const start = log
     .filter(
       (e) =>
@@ -349,6 +469,7 @@ export function planningStarted(snapshot: SimpleSnapshot) {
       ? Math.max(atMs, record.snapshot.startedMs)
       : atMs
   }
+  if (snapshot.simple?.transferredFrom || worktree?.task === null) return 0
   return snapshot.createdMs ?? snapshot.simple?.startedMs ?? 0
 }
 export type TimelineItem =
@@ -415,9 +536,17 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     if (generation === undefined) continue
     for (const reply of session?.replies ?? []) {
       const key = `${record.id}:${generation}:${reply.sequence}`
-      if (seen.has(key) || reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0))
+      if (
+        seen.has(key) ||
+        !visibleReply(snapshot.simple, record.id, generation, reply) ||
+        reply.atMs < (snapshot.simple?.startedMs ?? snapshot.createdMs ?? 0)
+      )
         continue
-      if (recordStage(record) === 'plan' && !ownsPlanner(snapshot.simple, record.id, generation))
+      if (
+        recordStage(record) === 'plan' &&
+        !record.metadata.task &&
+        !ownsPlanner(snapshot.simple, record.id, generation)
+      )
         continue
       seen.add(key)
       log.push({
@@ -432,21 +561,26 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       })
     }
   }
-  log = boundedSimpleLog(log)
+  log = boundedSimple({ ...(snapshot.simple ?? { startedMs: snapshot.createdMs ?? 0 }), log }).log
   // The shared planner's current run belongs to the chats that launched or prompted it.
   const foreign = new Set(
     records
       .filter((r) => recordStage(r) === 'plan')
       .filter((r) => {
         const generation = (snapshot.sessions[r.id] ?? r.snapshot)?.generation
-        return !ownsPlanner(snapshot.simple, r.id, generation)
+        return (
+          !r.metadata.task &&
+          (!ownsPlanner(snapshot.simple, r.id, generation) ||
+            !(snapshot.sessions[r.id] ?? r.snapshot)?.running)
+        )
       })
       .map((r) => r.id),
   )
   const workflow = records.filter((r) => r.metadata.componentId !== '@map')
-  const latest = workflow.filter((r) => recordStage(r) !== 'plan').at(-1) ?? workflow.at(-1)
+  const latest =
+    workflow.filter((r) => recordStage(r) !== 'plan' || !!r.metadata.task).at(-1) ?? workflow.at(-1)
   let stage = latest ? recordStage(latest) : 'plan'
-  const action = log
+  const action = workflowLog(snapshot.simple)
     .filter(
       (e) =>
         (e.kind === 'action' &&
@@ -457,15 +591,26 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   if (action && action.atMs >= (latest ? (stageSessionTime(latest) ?? 0) : 0)) stage = action.stage
   if (snapshot.auto && !['stopped', 'failed', 'done'].includes(snapshot.auto.status))
     stage = simpleStageOf(snapshot.auto.stage)
-  const start = planningStarted(snapshot)
+  const start = planningStarted(snapshot, worktree)
   const plan =
     (snapshot.proposal?.savedMs ?? 0) > (snapshot.plan?.savedMs ?? 0)
       ? { text: snapshot.proposal!.plan, savedMs: snapshot.proposal!.savedMs }
       : snapshot.plan
   const currentPlan = !!plan?.text.trim() && (plan.savedMs ?? 0) >= start
   const items: TimelineItem[] = []
+  const planTime = plan?.savedMs ?? 0
+  const planItem: TimelineItem | undefined =
+    plan?.text.trim() &&
+    (!snapshot.simple?.clearBoundary || planTime > snapshot.simple.clearBoundary.atMs)
+      ? { kind: 'plan', id: 'plan', atMs: planTime, text: plan.text, stale: !currentPlan }
+      : undefined
+  let planInserted = false
   const planning = new Set<string>()
   for (const entry of log) {
+    if (planItem && !planInserted && entry.atMs >= planTime) {
+      items.push(planItem)
+      planInserted = true
+    }
     if (
       entry.stage === 'plan' &&
       (entry.kind === 'prompt' || (entry.kind === 'action' && entry.action === 'plan'))
@@ -509,6 +654,11 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   for (const record of records) {
     if (items.some((i) => i.kind === 'agent' && i.sessionId === record.id)) continue
     if (foreign.has(record.id)) continue
+    if (
+      snapshot.simple?.clearBoundary &&
+      (stageSessionTime(record) ?? 0) <= snapshot.simple.clearBoundary.atMs
+    )
+      continue
     items.push({
       kind: 'agent',
       id: `agent:${record.id}`,
@@ -518,21 +668,15 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       entries: [],
     })
   }
-  const plannerEnd = Math.max(
-    0,
-    ...log.filter((e) => e.stage === 'plan' && e.kind === 'reply').map((e) => e.atMs),
-  )
-  if (plan?.text.trim())
-    items.push({
-      kind: 'plan',
-      id: 'plan',
-      atMs: currentPlan ? Math.max(plan.savedMs ?? 0, plannerEnd) + 0.1 : start,
-      text: plan.text,
-      stale: !currentPlan,
-    })
+  if (planItem && !planInserted) items.push(planItem)
   for (const result of ['review', 'merge'] as const) {
     const r = records.filter((r) => recordStage(r) === result).at(-1)
-    if (r)
+    if (
+      r &&
+      (!snapshot.simple?.clearBoundary ||
+        (snapshot.sessions[r.id]?.status?.agent?.sinceMs ?? stageSessionTime(r) ?? 0) >
+          snapshot.simple.clearBoundary.atMs)
+    )
       items.push({
         kind: 'result',
         id: result,
@@ -544,7 +688,12 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
             : undefined,
       })
   }
-  items.sort((a, b) => a.atMs - b.atMs)
+  items.sort(
+    (a, b) =>
+      a.atMs - b.atMs ||
+      Number(b.kind === 'plan') - Number(a.kind === 'plan') ||
+      a.id.localeCompare(b.id),
+  )
   return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start }
 }
 

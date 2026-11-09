@@ -275,7 +275,7 @@ test('Simple defaults off, preserves the Full view and restores the complete wor
   expect(useStore.getState().dirty).toBe(false)
 })
 
-test('story board and planner story persist per project, outside task layouts and map dirtiness', () => {
+test('story board persists per project and planner story persists in task layouts without map dirtiness', () => {
   useStore.getState().select('a')
   useStore.getState().setStoryBoard(true)
   useStore.setState({ planStory: 'story1', planStoryTerminal: 'claude' })
@@ -292,7 +292,7 @@ test('story board and planner story persist per project, outside task layouts an
     planStoryTerminal: 'claude',
   })
   expect(layout.taskWorkspaces?.['']).not.toHaveProperty('storyBoard')
-  expect(layout.taskWorkspaces?.['']).not.toHaveProperty('planStory')
+  expect(layout.taskWorkspaces?.['']).toHaveProperty('planStory', 'story1')
   expect(workspaceDocument().projects[0]).not.toHaveProperty('stories')
   expect(restoredLayout({ storyBoard: 'true', planStory: 3 })).toMatchObject({
     storyBoard: false,

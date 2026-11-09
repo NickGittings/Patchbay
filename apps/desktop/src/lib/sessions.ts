@@ -219,8 +219,8 @@ interface Launch {
 }
 
 /**
- * `task` defaults to the project's active task; `null` is the project's own worktree. Planners
- * always run in the project's own worktree.
+ * `task` defaults to the project's active task; `null` is its main worktree. Planners
+ * use that checkout too; project drafts use their reserved planning identity.
  */
 function captureLaunch(
   componentId: string,
@@ -234,9 +234,8 @@ function captureLaunch(
   const project = id ? projectOf(id) : null
   if (!id || !project) throw new Error('Open a project first')
   const state = projectStateOf(id, s)
-  // The planner belongs to the project, whatever the worktree, and plans what is highlighted now.
-  // Dependency detection belongs to the project too.
-  const planner = componentId === PLAN_SCOPE || componentId === MAP_SCOPE
+  // Only dependency detection is project-wide; planners follow their selected checkout.
+  const planner = componentId === MAP_SCOPE
   const scope = planner ? null : task === undefined ? (state?.activeTask ?? null) : task
   const sid = sessionId(componentId, terminalId, scope, id)
   // Restart from the Plan dock keeps the tracked run's worktree, just like its initial launch.
@@ -267,8 +266,8 @@ function captureLaunch(
         ? workspace?.rootTerminals.find((t) => t.id === terminalId)
         : undefined,
     story:
-      componentId === PLAN_SCOPE && state?.planStoryTerminal === terminalId
-        ? (state.planStory ?? undefined)
+      componentId === PLAN_SCOPE && workspace?.planStoryTerminal === terminalId
+        ? (workspace.planStory ?? undefined)
         : undefined,
     runtime: s.runtimeTerminals[sid],
   }
@@ -428,7 +427,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
   if (componentId === PLAN_SCOPE) {
     const state = projectStateOf(launch.projectId)
     const owner =
-      state && autoRuns(state).find(({ run }) => unfinished(run.status) && run.plannerTurn)
+      state &&
+      autoRuns(state).find(
+        ({ task, run }) => task === launch.task && unfinished(run.status) && run.plannerTurn,
+      )
     if (
       owner &&
       (owner.run.stage === 'scan' ||
@@ -436,7 +438,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     )
       return Promise.reject(
         new Error(
-          'The project planner is reserved by an Auto run; finish its scans and plan or Stop the run',
+          'This worktree’s planner is reserved by an Auto run; finish its scans and plan or Stop the run',
         ),
       )
   }
@@ -568,7 +570,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           kickoff,
           auto,
           launch.story,
-          ...(launch.scanRound ? [launch.scanRound] : []),
+          launch.scanRound,
+          launch.task,
         )
       } else {
         await terminalStart(
@@ -615,8 +618,12 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     }
     if (launch.started && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
-      if (launch.story || projectStateOf(launch.projectId)?.planStoryTerminal === terminalId)
-        useStore.getState().patchProject(launch.projectId, {
+      if (
+        launch.story ||
+        workspaceOf(projectStateOf(launch.projectId)!, launch.task)?.planStoryTerminal ===
+          terminalId
+      )
+        useStore.getState().patchTask(launch.projectId, launch.task, {
           planStory: launch.story ?? null,
           planStoryTerminal: launch.story ? terminalId : null,
         })

@@ -1,4 +1,14 @@
+import { plannerDevice } from '../lib/plan'
 import { profileHookProvider } from '../lib/agentProfiles'
+import { useClockNow } from '../lib/clock'
+import {
+  exhaustedWindows,
+  providerName,
+  resetLabel,
+  resetsIn,
+  useUsage,
+  windowName,
+} from '../lib/usage'
 import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -46,6 +56,7 @@ export default function SimpleComposer({
       nodes: s.nodes,
       devices: s.devices,
       agentRoles: s.agentRoles,
+      planActive: s.planActive,
       serviceConnected: s.serviceConnected,
     })),
   )
@@ -57,8 +68,10 @@ export default function SimpleComposer({
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
   const shown = open ? terminalRecord : recipient
-  const [pending, setPending] = useState(false),
-    [error, setError] = useState('')
+  const pending = !!ui.pendingAction
+  const [errorResult, setErrorResult] = useState({ key: '', text: '' })
+  const error = errorResult.key === scopeKey ? errorResult.text : ''
+  const setError = (text: string) => setErrorResult({ key: scopeKey, text })
   const [caret, setCaret] = useState(0)
   const input = useRef<HTMLTextAreaElement>(null)
   const lifecycle = useRef(0)
@@ -81,11 +94,16 @@ export default function SimpleComposer({
   // The recipient's provider, else that of the planner Send would start; `null` for neither
   // Claude nor Codex, which can never report a ready prompt.
   const starts =
-    !recipient && stage === 'plan' ? roleDevice(s.devices, s.agentRoles, 'plan') : undefined
+    !recipient && stage === 'plan'
+      ? plannerDevice(s.devices, s.planActive ?? roleDevice(s.devices, s.agentRoles, 'plan').id)
+      : undefined
   const [startProvider] = usePresetProviders([starts])
   const provider = recipient
     ? (profileHookProvider(recipient.spec.command) ?? recipient.metadata.adapter ?? null)
     : startProvider
+  const usage = useUsage((s) => s.usage)
+  const usageNow = useClockNow(exhaustedWindows(usage, provider, 0).map((w) => w.window.resetsAtMs))
+  const exhausted = exhaustedWindows(usage, provider, usageNow)
   const hooks = useAgentHooksInstalled(provider ? [provider] : [])
   // Installed hooks, not `authoritative`, which lapses on Esc and is unset until the first hook.
   const installed = provider ? hooks[provider] : undefined
@@ -156,7 +174,7 @@ export default function SimpleComposer({
       if (force || ready) await flushQueued(scopeKey, force)
       return
     }
-    setPending(true)
+    patch({ pendingAction: true })
     setError('')
     let cancelled = false
     const unsubscribe = useStore.subscribe((next, prev) => {
@@ -200,12 +218,15 @@ export default function SimpleComposer({
       } else if (!target) {
         if (stage !== 'plan')
           throw new Error('Open a stage terminal or choose another recipient to continue.')
-        const device = roleDevice(s.devices, s.agentRoles, 'plan')
-        await startTerminal(PLAN_SCOPE, device.id, null, projectId)
+        const device = plannerDevice(
+          s.devices,
+          s.planActive ?? roleDevice(s.devices, s.agentRoles, 'plan').id,
+        )
+        await startTerminal(PLAN_SCOPE, device.id, task, projectId)
         await reconcileFreshSessions()
         target = useStore
           .getState()
-          .sessionRecords.find((r) => r.id === plannerSessionId(device.id, projectId))
+          .sessionRecords.find((r) => r.id === plannerSessionId(device.id, projectId, task))
         if (!target) throw new Error('The planner did not start. Open its terminal to continue.')
       }
       check()
@@ -252,7 +273,7 @@ export default function SimpleComposer({
       setError(String(e))
     } finally {
       unsubscribe()
-      setPending(false)
+      patch({ pendingAction: false })
     }
   }
   const mention = (id: string) => {
@@ -274,6 +295,13 @@ export default function SimpleComposer({
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
+      {exhausted.map(({ provider, key, window }) => (
+        <p className="simple-usage-warning" role="status" key={`${provider}:${key}`}>
+          {providerName(provider)} {windowName(key)} usage exhausted (
+          {Math.round(window.usedPercent)}%). Resets {resetLabel(window.resetsAtMs, usageNow)} · in{' '}
+          {resetsIn(window.resetsAtMs, usageNow)}.
+        </p>
+      ))}
       {ui.queued && (
         <div className="simple-queued" role="status">
           <span>

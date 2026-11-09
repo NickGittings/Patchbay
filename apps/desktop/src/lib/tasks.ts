@@ -1,3 +1,6 @@
+import { clearedSimple } from './simple'
+import { savePlanDraft } from './planDrafts'
+import { planTerminals } from './plan'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
@@ -6,15 +9,16 @@ import {
   reconcileTaskList,
   switchTaskWorkspace,
   useStore,
+  workspaceOf,
 } from '../store'
-import type { Task, TaskDraft } from '../types'
+import { PROJECT_DRAFT, plannerSessionId, type Task, type TaskDraft } from '../types'
 import { taskActionState, unseenFinished } from './taskActions'
 import { forgetAutoDrafts } from './autoDrafts'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
-import { reconcileFreshSessions } from './sessions'
+import { reconcileFreshSessions, launching } from './sessions'
 import {
-  planRead,
-  planWrite,
+  planTransfer,
+  planTransferPending,
   taskActivate,
   taskAttach,
   taskCreate,
@@ -200,6 +204,17 @@ export function followActiveTask() {
 export async function createTask(draft: TaskDraft): Promise<Task> {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
+  if (onNewTask?.copyPlan) {
+    assertDraftStopped(projectId)
+    if (
+      (await planTransferPending(projectId)) ||
+      projectStateOf(projectId)?.taskWorkspaces[PROJECT_DRAFT]?.simple?.transferTarget
+    )
+      throw new Error(
+        'Retry the pending project draft transfer in Plan before creating another worktree',
+      )
+    await savePlanDraft(projectId, PROJECT_DRAFT)
+  }
   const task = await taskCreate(draft, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
@@ -258,8 +273,9 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
 interface NewTaskSeed {
   /** The worktree's title to start from. */
   title?: string
-  /** A new worktree (not an attached one) starts with a copy of the project plan. */
+  /** Explicit project-draft transfer; ordinary creation and attachment inherit nothing. */
   copyPlan?: boolean
+  components?: string[]
 }
 /** What to do with the worktree the open New worktree dialog makes, once it is active. */
 let onNewTask: {
@@ -277,26 +293,68 @@ async function afterNewTask(task: Task, projectId: string, created: boolean) {
   onNewTask = null
   if (!pending) return
   // Before the follow-up, so an Auto panel it opens already infers its goal from the copy.
-  if (created && pending.copyPlan) await copyProjectPlan(projectId, task.id)
+  if (created && pending.copyPlan) await transferProjectDraft(projectId, task.id)
   pending.then?.(task, projectId)
 }
 
-/**
- * Give a new worktree the project plan as its own plan, which its agents and Auto read, when the
- * project plan is whole and nonempty and the worktree has none. The worktree exists already, so a
- * failed copy only says so.
- */
-async function copyProjectPlan(projectId: string, task: string) {
-  try {
-    const { text, cut } = await planRead(projectId)
-    if (!cut && text.trim()) await planWrite(projectId, task, text, '')
-  } catch (e) {
-    useStore
-      .getState()
-      .setMessage(
-        `Worktree created, but the project plan could not be copied into it: ${String(e)}`,
-      )
+/** A transfer cannot move a live planner or race a launch already in flight. */
+function assertDraftStopped(projectId: string) {
+  const s = useStore.getState()
+  for (const terminal of planTerminals(s.devices)) {
+    const sid = plannerSessionId(terminal.id, projectId, PROJECT_DRAFT)
+    if (launching(sid) || s.sessions[sid]?.running)
+      throw new Error('Finish or stop the project draft planner before creating its worktree')
   }
+}
+
+export async function transferProjectDraft(projectId: string, task: string) {
+  assertDraftStopped(projectId)
+  await savePlanDraft(projectId, PROJECT_DRAFT)
+  const state = projectStateOf(projectId)
+  if (!state) throw new Error('Open the project first')
+  const source = workspaceOf(state, PROJECT_DRAFT)
+  const destination = workspaceOf(state, task)
+  const conversation = source.simple ?? { startedMs: 0, log: [] }
+  const carried = { ...conversation, transferredFrom: PROJECT_DRAFT, transferTarget: undefined }
+  if (
+    destination.simple?.transferredFrom === PROJECT_DRAFT &&
+    JSON.stringify(destination.simple) !== JSON.stringify(carried)
+  )
+    throw new Error(
+      'The destination conversation changed during handoff; both histories were preserved',
+    )
+  if (
+    destination.simple?.transferredFrom !== PROJECT_DRAFT &&
+    (destination.simple?.log.length || destination.simple?.clearBoundary)
+  )
+    throw new Error('The destination already has chat history; the draft was preserved')
+  await planTransfer(projectId, task, false)
+  useStore.getState().patchTask(projectId, PROJECT_DRAFT, {
+    simple: { ...conversation, transferTarget: task },
+  })
+  // The history belongs to Patchbay; no live provider process or conversation ID is moved.
+  useStore.getState().patchTask(projectId, task, {
+    simple: carried,
+    planStory: source.planStory,
+    planStoryTerminal: source.planStoryTerminal,
+    planActive: source.planActive,
+    highlighted: source.highlighted,
+  })
+  await (await import('./workspace')).flushWorkspace(true)
+  await planTransfer(projectId, task, true)
+  const cleared = clearedSimple(conversation, useStore.getState().sessions, Date.now())
+  useStore.getState().patchTask(projectId, PROJECT_DRAFT, {
+    simple: {
+      startedMs: cleared.clearBoundary!.atMs,
+      log: [],
+      clearBoundary: cleared.clearBoundary,
+    },
+    planStory: null,
+    planStoryTerminal: null,
+    planActive: null,
+    highlighted: [],
+  })
+  await (await import('./workspace')).flushWorkspace(true)
 }
 
 /**
@@ -305,12 +363,14 @@ async function copyProjectPlan(projectId: string, task: string) {
  */
 export function seedNewTask(
   then?: (task: Task, projectId: string) => void,
-  { title, copyPlan = false }: NewTaskSeed = {},
+  { title, copyPlan = false, components }: NewTaskSeed = {},
 ) {
   onNewTask = then || copyPlan ? { then, copyPlan } : null
   const s = useStore.getState()
   s.setNewTask({
-    components: s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : [],
+    components:
+      components ??
+      (s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : []),
     title,
   })
 }

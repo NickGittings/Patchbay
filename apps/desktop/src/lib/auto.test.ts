@@ -338,6 +338,21 @@ function load() {
   vi.mocked(ipc.reviewRead).mockResolvedValue(null)
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
 }
+function mockScopePlannerLaunch() {
+  vi.mocked(awaitSessions.startTerminal).mockImplementation(
+    async (_component, device, task, projectId) => {
+      const { plannerSessionId } = await import('../types')
+      const sid = plannerSessionId(device, projectId, task ?? null)
+      useStore.setState({
+        sessions: {
+          ...useStore.getState().sessions,
+          [sid]: { running: true, startedMs: Date.now() },
+        },
+      })
+      return 'request'
+    },
+  )
+}
 function setRun(patch: Partial<AutoRun> = {}) {
   useStore.getState().patchTask('p', 't', { auto: run(patch) })
 }
@@ -744,9 +759,9 @@ test.each([false, true])(
     vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
     const { startTerminal } = await import('./sessions')
     const { implementPlannerPlan } = await import('./planHandoff')
-    vi.mocked(startTerminal).mockImplementation(async () => {
+    vi.mocked(startTerminal).mockImplementation(async (_component, _device, task) => {
       const { plannerSessionId } = await import('../types')
-      const sid = plannerSessionId('codex', 'p')
+      const sid = plannerSessionId('codex', 'p', task ?? null)
       useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
     })
     vi.mocked(implementPlannerPlan).mockResolvedValue({
@@ -991,7 +1006,7 @@ test('the project-wide planner belongs to a run only while it plans or tracks it
   load()
   const planner = {
     id: 'planner',
-    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent' },
+    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent', task: 't' },
     spec: { cwd: '/p', command: 'codex' },
   } as unknown as import('../types').SessionRecord
   useStore.setState({
@@ -1276,7 +1291,7 @@ test('needsInput can go directly to review without an observed working tick', as
 function plannerRecord() {
   return {
     id: 's',
-    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent' },
+    metadata: { projectId: 'p', componentId: '@plan', kind: 'agent', task: 't' },
     spec: { cwd: '/p', command: 'codex' },
   } as unknown as import('../types').SessionRecord
 }
@@ -1350,7 +1365,7 @@ test('snapshot reads the project plan once in the project folder', async () => {
   load()
   useStore.getState().setActiveTask(null, true)
   await autoSnapshot('p', null, run({ merge: { mode: 'ask', destinationBranch: 'feature' } }))
-  expect(ipc.planRead).toHaveBeenCalledExactlyOnceWith('p')
+  expect(ipc.planRead).toHaveBeenCalledExactlyOnceWith('p', undefined)
 })
 
 test.each(['plan', 'implement', 'fix', 'merge'] as const)(
@@ -1360,7 +1375,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
     const { plannerSessionId } = await import('../types')
     const { implementPlannerPlan } = await import('./planHandoff')
     const { fixReviewFindings } = await import('./reviewHandoff')
-    const sid = stage === 'plan' ? plannerSessionId('codex', 'p') : 'launched'
+    const sid = stage === 'plan' ? plannerSessionId('codex', 'p', 't') : 'launched'
     vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
     vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
       useStore.setState({ sessions: { [sid]: { running: true } } })
@@ -1438,18 +1453,14 @@ test('Auto refuses an unconfirmed launch without recording a phantom session', a
   })
 })
 
-test('shared planner is reserved while a launch is pending without session records', async () => {
-  vi.useFakeTimers()
+test('planners in separate worktrees launch concurrently before either has session records', async () => {
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  let finish!: () => void
+  const finishes: (() => void)[] = []
   vi.mocked(awaitSessions.startTerminal).mockImplementation(
-    () =>
-      new Promise<undefined>((resolve) => {
-        finish = () => resolve(undefined)
-      }),
+    () => new Promise<undefined>((resolve) => finishes.push(() => resolve(undefined))),
   )
-  setRun({ stage: 'plan' })
+  setRun({ stage: 'plan', background: true })
   const stop = followAuto()
   try {
     await flush()
@@ -1463,15 +1474,15 @@ test('shared planner is reserved while a launch is pending without session recor
       }),
     })
     await flush()
-    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
-    expect(autoRun('p', null)).toMatchObject({
-      status: 'running',
-      reason: 'Waiting for the planner',
-    })
+    expect(awaitSessions.startTerminal).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(awaitSessions.startTerminal).mock.calls.map((args) => args[2])).toEqual([
+      't',
+      null,
+    ])
   } finally {
     stopAuto('p', null)
     stopAuto('p', 't')
-    finish()
+    for (const finish of finishes) finish()
     await flush()
     stop()
   }
@@ -1571,7 +1582,7 @@ test('a planner that ends its turn without a new plan pauses instead of handing 
   const { startTerminal } = await import('./sessions')
   const { implementPlannerPlan } = await import('./planHandoff')
   const { plannerSessionId } = await import('../types')
-  const sid = plannerSessionId('codex', 'p')
+  const sid = plannerSessionId('codex', 'p', 't')
   vi.mocked(startTerminal).mockImplementation(async () => {
     useStore.setState({ sessions: { [sid]: { running: true, startedMs: 1000 } } })
   })
@@ -3542,11 +3553,10 @@ test('service disconnection waits without pausing and reconnect continues drivin
   })
 })
 
-test('background runs wait for a shared planner through its implementation handoff', async () => {
-  vi.useFakeTimers()
+test('a background planner continues while a sibling worktree hands off to Build', async () => {
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  setRun({ stage: 'plan', background: true })
+  setRun({ stage: 'implement', background: true, planMark: 'accepted' })
   useStore.getState().setActiveTask(null, true)
   useStore.getState().patchTask('p', null, {
     auto: run({
@@ -3556,52 +3566,31 @@ test('background runs wait for a shared planner through its implementation hando
       merge: { mode: 'ask', destinationBranch: 'feature' },
     }),
   })
-  // A recorded planner owns the project even if a different preset would get another session id.
-  setRun({ stage: 'plan', background: true, sessionId: 'owner', planMark: 'old' })
-  useStore.setState({ sessions: { owner: reviewSession('working', 1500) } })
+  mockScopePlannerLaunch()
+  const { implementPlannerPlan } = await import('./planHandoff')
+  let finish!: () => void
+  vi.mocked(implementPlannerPlan).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
+      }),
+  )
   await withFollower(async () => {
-    await flush()
-    expect(autoRun('p', null)).toMatchObject({
-      status: 'running',
-      reason: 'Waiting for the planner',
-    })
-    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
-    const { implementPlannerPlan } = await import('./planHandoff')
-    let finish!: () => void
-    vi.mocked(implementPlannerPlan).mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
-        }),
-    )
-    setRun({ stage: 'implement', background: true, planMark: 'old' })
-    await flush()
-    expect(implementPlannerPlan).toHaveBeenCalledOnce()
-    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
-    finish()
-    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
-      const { plannerSessionId } = await import('../types')
-      const sid = plannerSessionId('codex', 'p')
-      useStore.setState({
-        sessions: {
-          ...useStore.getState().sessions,
-          [sid]: { running: true, startedMs: Date.now() },
-        },
-      })
-      return 'request'
-    })
-    await flush()
-    await vi.advanceTimersByTimeAsync(5000)
-    await flush()
-    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
-    expect(awaitSessions.startTerminal).toHaveBeenCalledWith(
-      '@plan',
-      'codex',
-      null,
-      'p',
-      expect.anything(),
-    )
-    expect(autoRun('p', null)?.status).toBe('running')
+    try {
+      await flush()
+      expect(implementPlannerPlan).toHaveBeenCalledOnce()
+      expect(awaitSessions.startTerminal).toHaveBeenCalledWith(
+        '@plan',
+        'codex',
+        null,
+        'p',
+        expect.anything(),
+      )
+      expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
+    } finally {
+      finish()
+      await flush()
+    }
   })
 })
 
@@ -3661,6 +3650,8 @@ test.each([false, true])(
     load()
     vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
     const record = plannerRecord()
+    record.metadata.task = '_worktree_main'
+    mockScopePlannerLaunch()
     useStore.setState({ sessionRecords: [record], sessions: { s: reviewSession('working', 1500) } })
     useStore
       .getState()
@@ -3681,14 +3672,14 @@ test.each([false, true])(
       await flush()
       expect(autoRun('p', 't')).toMatchObject({
         status: 'running',
-        reason: 'Waiting for the planner',
+        plannerTurn: true,
       })
-      expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+      expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
     })
   },
 )
 
-test('a handoff keeps priority over a waiting planner when controller reservations are rebuilt', async () => {
+test('rebuilding controllers keeps a sibling handoff and planner independent', async () => {
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
   setRun({ stage: 'implement', background: true, planMark: 'accepted' })
@@ -3698,33 +3689,19 @@ test('a handoff keeps priority over a waiting planner when controller reservatio
       runId: 'next',
       stage: 'plan',
       background: true,
-      planMark: 'waiting',
       merge: { mode: 'ask', destinationBranch: 'feature' },
     }),
   })
+  mockScopePlannerLaunch()
   const { implementPlannerPlan } = await import('./planHandoff')
-  let finish!: () => void
-  vi.mocked(implementPlannerPlan).mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finish = () => resolve({ sessionId: 'implementation', requestId: 'r' })
-      }),
-  )
-  const dispose = followAuto()
-  try {
+  vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: 'implementation', requestId: 'r' })
+  await withFollower(async () => {
     await flush()
     expect(implementPlannerPlan).toHaveBeenCalledOnce()
     expect(vi.mocked(implementPlannerPlan).mock.calls[0][4]).toEqual({ projectId: 'p', task: 't' })
-    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
-    expect(autoRun('p', null)).toMatchObject({
-      status: 'running',
-      reason: 'Waiting for the planner',
-    })
-  } finally {
-    dispose()
-    finish()
-    await flush()
-  }
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(autoRun('p', null)).toMatchObject({ status: 'running', plannerTurn: true })
+  })
 })
 
 test.each(['preset', 'destination', 'base', 'branch'] as const)(
@@ -3774,9 +3751,9 @@ test('an inactive run without a planner releases its reservation to a background
         merge: { mode: 'ask', destinationBranch: 'feature' },
       }),
     })
-    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+    vi.mocked(awaitSessions.startTerminal).mockImplementation(async (_component, _device, task) => {
       const { plannerSessionId } = await import('../types')
-      const sid = plannerSessionId('codex', 'p')
+      const sid = plannerSessionId('codex', 'p', task ?? null)
       useStore.setState({ sessions: { [sid]: { running: true, startedMs: Date.now() } } })
       return 'request'
     })
@@ -3788,25 +3765,31 @@ test('an inactive run without a planner releases its reservation to a background
   })
 })
 
-test('a paused implementation handoff preserves its plan while blocked runs wait', async () => {
+test('a paused implementation handoff preserves its plan while a sibling planner runs', async () => {
   load()
   setRun({ stage: 'implement', planMark: 'ready', status: 'paused', pauseKind: 'inactive' })
   useStore.getState().setActiveTask(null, true)
   useStore.getState().patchTask('p', null, {
-    auto: run({ runId: 'next', stage: 'plan', background: true }),
+    auto: run({
+      runId: 'next',
+      stage: 'plan',
+      background: true,
+      merge: { mode: 'ask', destinationBranch: 'feature' },
+    }),
   })
+  mockScopePlannerLaunch()
   await withFollower(async () => {
     await flush()
     expect(autoRun('p', null)).toMatchObject({
       status: 'running',
-      reason: 'Waiting for the planner',
+      plannerTurn: true,
     })
-    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
   })
 })
 
 test.each([false, true])(
-  'Start cannot adopt a planner reserved for implementation handoff (background: %s)',
+  'a sibling handoff does not reserve this worktree’s planner (background: %s)',
   async (background) => {
     load()
     vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
@@ -3826,7 +3809,8 @@ test.each([false, true])(
       merge: { mode: 'ask', destinationBranch: 'main' },
     })
     expect(autoRun('p', 't')).toMatchObject({ status: 'running', stage: 'plan' })
-    expect(autoRun('p', 't')?.sessionId).toBeUndefined()
+    expect(autoRun('p', 't')?.sessionId).toBe('s')
+    expect(autoRun('p', null)?.stage).toBe('implement')
   },
 )
 
@@ -3996,10 +3980,12 @@ test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)
       merge: { mode: 'ask', destinationBranch: 'feature' },
     })
     expect(autoRun('p', null)?.planMark).toBeUndefined()
-    vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+    vi.mocked(awaitSessions.startTerminal).mockImplementation(async (_component, _device, task) => {
       const { plannerSessionId } = await import('../types')
       useStore.setState({
-        sessions: { [plannerSessionId('codex', 'p')]: { running: true, startedMs: 2000 } },
+        sessions: {
+          [plannerSessionId('codex', 'p', task ?? null)]: { running: true, startedMs: 2000 },
+        },
       })
       return 'request'
     })
@@ -4011,7 +3997,7 @@ test.each(['user', 'needsUser', 'interrupted', 'restored', 'inactive'] as const)
   },
 )
 
-test('restoring and resuming a handoff keeps its turn ahead of a later run, which continues automatically', async () => {
+test('restoring and resuming a handoff preserves its scope while a sibling planner continues', async () => {
   load()
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
   vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Owner plan', cut: false })
@@ -4043,12 +4029,12 @@ test('restoring and resuming a handoff keeps its turn ahead of a later run, whic
         }
       }),
   )
-  vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+  vi.mocked(awaitSessions.startTerminal).mockImplementation(async (_component, _device, task) => {
     const { plannerSessionId } = await import('../types')
     useStore.setState({
       sessions: {
         ...useStore.getState().sessions,
-        [plannerSessionId('codex', 'p')]: { running: true, startedMs: 3000 },
+        [plannerSessionId('codex', 'p', task ?? null)]: { running: true, startedMs: 3000 },
       },
     })
     return 'request'
@@ -4057,14 +4043,14 @@ test('restoring and resuming a handoff keeps its turn ahead of a later run, whic
     await flush()
     expect(autoRun('p', null)).toMatchObject({
       status: 'running',
-      reason: 'Waiting for the planner',
+      plannerTurn: true,
     })
     await resumeAuto('p', 't')
     expect(autoRun('p', 't')?.runId).not.toBe('run')
     expect(autoRun('p', 't')?.plannerTurn).toBe(true)
     await flush()
     expect(implementPlannerPlan).toHaveBeenCalledOnce()
-    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
     finish()
     await flush()
     expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()

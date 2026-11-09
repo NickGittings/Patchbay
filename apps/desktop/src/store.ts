@@ -1,3 +1,4 @@
+import { PROJECT_DRAFT } from './types'
 import {
   addEdge,
   applyEdgeChanges,
@@ -97,6 +98,8 @@ export interface TaskComponentTerminal {
 
 /** Saved per task. Processes and output remain service-owned. */
 export interface TaskWorkspace {
+  planStory: string | null
+  planStoryTerminal: string | null
   simple: import('./lib/simple').SimpleState | null
   highlighted: string[]
   implementationComponents: ImplementationComponent[] | null
@@ -114,6 +117,8 @@ export interface TaskWorkspace {
 }
 export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
   return {
+    planStory: null,
+    planStoryTerminal: null,
     simple: null,
     highlighted: components,
     implementationComponents: components.map((id) => ({ id, visible: true })),
@@ -131,6 +136,8 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
 }
 export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
   const {
+    planStory,
+    planStoryTerminal,
     simple,
     highlighted,
     implementationComponents,
@@ -146,6 +153,8 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     graphActionReport,
   } = s
   return {
+    planStory,
+    planStoryTerminal,
     simple,
     highlighted,
     implementationComponents,
@@ -491,7 +500,9 @@ export function reconcileTaskList(s: TaskState, tasks: Task[]): Partial<ProjectS
   // Removed tasks' layouts would otherwise stay in the saved workspace for good.
   const known = new Set(['', ...tasks.map((t) => t.id)])
   const taskWorkspaces = Object.fromEntries(
-    Object.entries(switched.taskWorkspaces ?? s.taskWorkspaces).filter(([id]) => known.has(id)),
+    Object.entries(switched.taskWorkspaces ?? s.taskWorkspaces).filter(
+      ([id]) => known.has(id) || id === PROJECT_DRAFT,
+    ),
   )
   return { tasks, ...switched, taskWorkspaces }
 }

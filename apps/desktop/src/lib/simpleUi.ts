@@ -21,6 +21,8 @@ export interface QueuedPrompt {
   atMs: number
 }
 export interface SimpleUi {
+  pendingAction?: boolean
+  pendingWorkflow?: boolean
   draft: string
   mentions: Mention[]
   diff: SimpleDiff | null

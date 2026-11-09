@@ -3,6 +3,8 @@ import { projectOf, useStore } from '../store'
 import {
   sessionId,
   PLAN_SCOPE,
+  PROJECT_DRAFT,
+  type PlanningScope,
   TASK_ROOT_SCOPE,
   MAP_SCOPE,
   type Project,
@@ -160,6 +162,14 @@ export async function authenticateInvocation(command: string, args: Record<strin
     ].includes(command)
   )
     return
+  const planning =
+    command === 'plan_start' ? (args.planningScope as PlanningScope | undefined) : undefined
+  const launchTask =
+    planning?.kind === 'projectDraft'
+      ? PROJECT_DRAFT
+      : planning?.kind === 'worktree'
+        ? planning.task
+        : (args.task as string | undefined)
   const project = args.project as Project
   const componentId = args.componentId as string | undefined
   const terminal =
@@ -184,7 +194,7 @@ export async function authenticateInvocation(command: string, args: Record<strin
         : command === 'task_root_start'
           ? TASK_ROOT_SCOPE
           : MAP_SCOPE)
-    const sid = sessionId(scope, terminal.id, args.task as string | undefined, project.projectId)
+    const sid = sessionId(scope, terminal.id, launchTask, project.projectId)
     if (useStore.getState().sessions[sid]?.running && !args.resume) return
   }
   const job = args.request as { worktree?: string; destination?: string } | undefined
@@ -193,7 +203,7 @@ export async function authenticateInvocation(command: string, args: Record<strin
       terminal,
       project,
       componentId,
-      task: args.task as string | undefined,
+      task: launchTask,
       workingDirectory: job?.destination ?? job?.worktree,
     })
 }

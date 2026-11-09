@@ -254,7 +254,7 @@ pub async fn proposal_read(
 ) -> CmdResult<Option<patchbay_core::proposals::Proposal>> {
     let (root, _) = crate::task_repo(&state, &project_id)?;
     blocking(move || {
-        if let Some(id) = &task {
+        if let Some(id) = patchbay_core::planning::checkout_task(task.as_deref()) {
             patchbay_core::tasks::find(&root, id).map_err(err)?;
         }
         patchbay_core::proposals::read(&root, task.as_deref(), false).map_err(err)

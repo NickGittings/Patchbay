@@ -69,6 +69,7 @@ export async function flushQueued(key: string, force = false) {
     return
   useSimpleUi.getState().patch(key, { queued: undefined })
   const [projectId, task] = JSON.parse(key) as [string, string | null]
+  useSimpleUi.getState().patch(key, { pendingAction: true })
   try {
     await sendToSession({
       projectId,
@@ -80,6 +81,8 @@ export async function flushQueued(key: string, force = false) {
     })
   } catch (error) {
     restore(key, queued, String(error))
+  } finally {
+    useSimpleUi.getState().patch(key, { pendingAction: false })
   }
 }
 

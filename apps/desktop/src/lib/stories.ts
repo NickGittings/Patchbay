@@ -244,7 +244,7 @@ export async function planStory(projectId: string, story: Story) {
   const task = s.activeTask
   const chat = s.simpleMode
   const device = roleDevice(s.devices, s.agentRoles, 'plan')
-  const sid = plannerSessionId(device.id, projectId)
+  const sid = plannerSessionId(device.id, projectId, s.activeTask)
   if (autoRuns(s).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
     throw new Error('Stop the Auto run before using its planner for a story')
   if ((await terminalSnapshot(sid, 0))?.running) {
@@ -263,7 +263,7 @@ export async function planStory(projectId: string, story: Story) {
   else s.revealChat({ projectId, task })
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
-  const requestId = await startTerminal(PLAN_SCOPE, device.id, null, projectId, {
+  const requestId = await startTerminal(PLAN_SCOPE, device.id, s.activeTask, projectId, {
     kickoff: { kind: 'planStory' },
     story: story.id,
   })
@@ -304,7 +304,6 @@ export function newWorktreeForStory(projectId: string, story: Story) {
     s.toggleHighlight(id)
   seedNewTask((task, pid) => void linkStory(pid, story.id, task.id), {
     title: story.title,
-    copyPlan: true,
   })
 }
 

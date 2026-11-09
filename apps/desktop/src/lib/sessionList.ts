@@ -1,6 +1,8 @@
 import {
   MAP_SCOPE,
   PLAN_SCOPE,
+  PROJECT_DRAFT,
+  plannerChatTask,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   STACK_AGENT_TERMINAL,
@@ -92,7 +94,7 @@ export function groupByWorktree(
   const knownTasks = new Map(tasks.map((task) => [task.id, task]))
   const groups = new Map<string | null, WorktreeSessionGroup>()
   for (const row of projectSessions(records, { ...options, filter: 'all' })) {
-    const id = row.record.metadata.task ?? null
+    const id = plannerChatTask(row.record.metadata.task)
     const group = groups.get(id)
     if (group) group.rows.push(row)
     else groups.set(id, { task: id, title: '', path: undefined, branch: undefined, rows: [row] })
@@ -101,6 +103,7 @@ export function groupByWorktree(
     // Folder moves and mixed legacy records must not make the displayed sort choose the path.
     group.path = newestRow(group.rows).record.metadata.projectRoot
     if (group.task === null) group.title = 'Main worktree'
+    else if (group.task === PROJECT_DRAFT) group.title = 'Project draft'
     else {
       group.branch = knownTasks.get(group.task)?.branch
       const named = group.rows.filter((row) => row.record.metadata.taskTitle)

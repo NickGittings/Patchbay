@@ -87,7 +87,7 @@ pub fn for_task(
     required: &[String],
     roots: Vec<PathBuf>,
 ) -> Result<(Project, Vec<PathBuf>, Option<context::ContextSection>)> {
-    let Some(id) = task else {
+    let Some(id) = crate::planning::checkout_task(task) else {
         return Ok((project, roots, None));
     };
     let task = tasks::stored(Path::new(&project.root), id)?;

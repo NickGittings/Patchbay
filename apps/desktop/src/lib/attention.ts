@@ -1,3 +1,4 @@
+import { usePlanningSelection } from './planningScope'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { agentChatTask } from './agentChats'
 import { ownsMerge, ownsPlanner, relatedSession } from './simple'
@@ -14,6 +15,8 @@ import {
   sessionView,
   parseSessionId,
   plannerSessionId,
+  plannerChatTask,
+  PROJECT_DRAFT,
   sessionId,
   sessionTask,
   type AutoRun,
@@ -119,7 +122,10 @@ export function autoAttentionItems(s: AutoSnapshot): (AttentionItem & { run: Aut
  * oldest first within a level.
  */
 export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
-  const scopes = worktreeScopes(s)
+  const scopes: [string | null, string | undefined][] = [
+    ...worktreeScopes(s),
+    [PROJECT_DRAFT, 'Project draft'],
+  ]
   const terminals: Omit<AttentionItem, 'status' | 'sinceMs'>[] = [
     ...scopes.flatMap(([task, taskTitle]) => [
       ...s.nodes.flatMap((n) =>
@@ -143,9 +149,9 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
         taskTitle,
         terminal,
       })),
-      // The planner belongs to the project, so it is listed once, with the project folder.
-      ...(task === null ? planTerminals(s.devices) : []).map((terminal) => ({
-        sid: plannerSessionId(terminal.id),
+      // Each worktree and the project draft have their own planner slots.
+      ...planTerminals(s.devices).map((terminal) => ({
+        sid: plannerSessionId(terminal.id, undefined, task),
         componentId: PLAN_SCOPE,
         owner: 'Planner',
         task,
@@ -293,7 +299,7 @@ export function revealTerminal(
   item: Pick<AttentionItem, 'sid' | 'componentId'> & Partial<Pick<AttentionItem, 'auto' | 'task'>>,
 ) {
   const s = useStore.getState()
-  if (s.simpleMode && s.project) {
+  if (s.simpleMode && s.project && sessionTask(item.sid) !== PROJECT_DRAFT) {
     const record = s.sessionRecords.find((r) => r.id === item.sid)
     if (record) {
       const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
@@ -314,9 +320,11 @@ export function revealTerminal(
         record.metadata.componentId === MAP_SCOPE
           ? agentChatTask(record, generation)
           : record.metadata.componentId === PLAN_SCOPE
-            ? plannerTask === undefined
-              ? s.activeTask
-              : plannerTask || null
+            ? record.metadata.task
+              ? plannerChatTask(record.metadata.task)
+              : plannerTask === undefined
+                ? s.activeTask
+                : plannerTask || null
             : record.metadata.componentId === MERGE_SCOPE
               ? mergeTask === undefined
                 ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
@@ -339,7 +347,13 @@ export function revealTerminal(
         s.setActiveSession(item.sid)
         // A planner launched outside Chat has no conversation block; its terminal is still
         // accessible in the chat drawer without changing the conversation's ownership.
-        if (record.metadata.componentId === PLAN_SCOPE && plannerTask === undefined) {
+        if (
+          record.metadata.componentId === PLAN_SCOPE &&
+          (plannerTask === undefined ||
+            !(task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple)?.log.some(
+              (e) => e.sessionId === record.id && e.generation === generation,
+            ))
+        ) {
           useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
             terminal: 'user',
             terminalSession: { id: record.id, generation, pinned: true },
@@ -371,12 +385,17 @@ export function revealTerminal(
   const extension = !!(runtime?.extensionId || runtime?.commandId)
   // Extension terminals run in the open worktree and show in any task, and the planner in every
   // task, so neither switches it.
-  if (!extension && item.componentId !== PLAN_SCOPE) s.setActiveTask(sessionTask(item.sid), true)
+  if (!extension && sessionTask(item.sid) !== PROJECT_DRAFT)
+    s.setActiveTask(sessionTask(item.sid), true)
   s.setActiveSession(item.sid)
   if (item.componentId === PLAN_SCOPE) {
     const { terminalId } = parseSessionId(item.sid)
     if (!terminalId) return
-    s.setPlanActive(terminalId)
+    if (sessionTask(item.sid) === PROJECT_DRAFT) {
+      s.setSimpleMode(false)
+      usePlanningSelection.getState().selectDraft(true)
+      if (s.project) s.patchTask(s.project.id, PROJECT_DRAFT, { planActive: terminalId })
+    } else s.setPlanActive(terminalId)
     s.setView('plan')
     return
   }

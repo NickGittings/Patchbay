@@ -75,12 +75,7 @@
         source: 'builtin',
         kind: 'agent',
         adapter: 'claude',
-        command:
-          'printf "planner-root:%s\\n" "$PWD"; cat "$PATCHBAY_CONTEXT_FILE"; ' +
-          'while IFS= read -r line; do printf "%s\\n" "$line"; ' +
-          'if [ "$line" = "handoff" ]; then ' +
-          `printf '%s' '{"hook_event_name":"PreToolUse","session_id":"smoke-native-plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Smoke handoff\\nImplement the saved plan."}}' | ` +
-          '"${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude; fi; done',
+        command: `'${project.root}/../claude'`,
       },
     ])
     await until(
@@ -261,7 +256,11 @@
     assert(getComputedStyle(popout).visibility === 'visible', 'pop-out is excluded from tab order')
     const sid = smoke.sessionId('@plan', 'smoke-planner')
     await smoke.startTerminal('@plan', 'smoke-planner')
-    await until('planner running', () => state().sessions[sid]?.running)
+    await until('planner running', () => state().sessions[sid]?.running).catch((e) => {
+      throw new Error(
+        `${e.message}; message=${state().message}; sessions=${JSON.stringify(state().sessionRecords.map((r) => ({ id: r.id, task: r.metadata.task })))}`,
+      )
+    })
     await until(
       'planner briefing',
       () => textOf(sid).includes('## Nearby components') && textOf(sid).includes('nearby notes'),
@@ -310,17 +309,10 @@
     await until('native plan captured', async () =>
       (await smoke.planRead(project.projectId)).text.includes('# Smoke handoff'),
     )
-    // On the project folder, Implement asks where: a new worktree or the folder itself.
+    // The main worktree builds its own plan directly.
     click(
       Array.from(document.querySelectorAll('.plan-implement button')).find((b) =>
         b.textContent.includes('Implement'),
-      ),
-    )
-    click(
-      await until('implement target menu', () =>
-        Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
-          b.textContent.includes('Implement in project folder'),
-        ),
       ),
     )
     await until('implementation grid', () => query('.implementation-view .terminal-tile'))

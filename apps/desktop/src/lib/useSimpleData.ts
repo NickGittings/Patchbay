@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useStore, type FlowNode } from '../store'
 import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
 import { activeWorktree } from './tasks'
-import { relatedSession } from './simple'
+import { relatedSession, workflowLog } from './simple'
 import { changeGroups } from './changeGroups'
 import { changeRefs } from './changeNav'
 import { useReviewFindings } from './useReviewFindings'
@@ -60,11 +60,12 @@ export function useSimpleData(visible: boolean) {
       const state = useStore.getState()
       const project = state.toProject()
       try {
+        const scopedPlan = await planRead(projectId, task ?? undefined)
         const [plan, acceptedPlan, proposal, review, worktrees] = await Promise.all([
-          planRead(projectId),
+          scopedPlan,
           // The project folder's accepted plan is the project plan itself.
-          task ? planRead(projectId, task) : undefined,
-          proposalRead(projectId),
+          scopedPlan,
+          proposalRead(projectId, task ?? undefined),
           gitReview(project, worktree),
           gitWorktrees(projectId),
         ])
@@ -124,7 +125,7 @@ export function useSimpleData(visible: boolean) {
     }
     const scope = { projectId, task, path: worktree ?? useStore.getState().project!.root }
     const latestMerge = (state: ReturnType<typeof useStore.getState>) =>
-      [...(state.simple?.log ?? [])]
+      [...workflowLog(state.simple)]
         .reverse()
         .find((e) => e.kind === 'action' && e.action === 'merge' && e.request)
     // Keep one reader for this scope. Change signals share its in-flight guard;

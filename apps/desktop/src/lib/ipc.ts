@@ -1,8 +1,9 @@
+import { planningScope, planningTask } from '../types'
 import { authenticateInvocation, type AuthRequest, type AuthStatus } from './providerAuth'
 import { extraContext } from '../extensions/context'
 import type { ExtensionRegistry } from '../types'
 import { Channel, invoke as tauriInvoke } from '@tauri-apps/api/core'
-import { useStore } from '../store'
+import { projectStateOf, useStore, workspaceOf } from '../store'
 import type { OpenedProject, PlanText, SessionRecord, WorkspaceDocument } from '../types'
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   const projectId = useStore.getState().project?.id
@@ -176,18 +177,74 @@ export const gitWorktrees = (projectId = useStore.getState().project?.id) =>
   invoke<Worktree[]>('git_worktrees', { projectId })
 export const gitBranches = (projectId = useStore.getState().project?.id) =>
   invoke<string[]>('git_branches', { projectId })
-/** Planners belong to the project, so they never take a task. */
-export const planContext = async (project: Project, componentIds: string[], story?: string) =>
+/** Preview the selected worktree or project draft briefing. */
+export const planContext = async (
+  project: Project,
+  componentIds: string[],
+  story?: string,
+  task: string | null = null,
+) =>
   invoke<string>('plan_context', {
     project,
     projectId: project.projectId,
     componentIds,
     story,
+    planningScope: planningScope(task),
     extraContext: await extraContext(project, componentIds),
   })
+function transferredPlanContext(projectId: string, task: string | null) {
+  const state = projectStateOf(projectId)
+  const simple = state && workspaceOf(state, task).simple
+  if (!simple?.transferredFrom) return []
+  const text = simple.log
+    .flatMap((e) =>
+      e.kind === 'prompt' || e.kind === 'reply'
+        ? [`${e.kind === 'prompt' ? 'User' : 'Planner'}: ${e.text}`]
+        : [],
+    )
+    .join('\n\n')
+
+  const excerpt = Array.from(text).slice(-16000).join('')
+  return excerpt ? [{ title: 'Transferred planning conversation', body: excerpt }] : []
+}
+/** A legacy shared artifact migrates only when saved launch/Auto facts identify one owner. */
+function legacyPlanClaims(projectId: string) {
+  const state = projectStateOf(projectId)
+  if (!state) return {}
+  const workspaces = new Map(Object.entries(state.taskWorkspaces))
+  workspaces.set(state.activeTask ?? '', workspaceOf(state, state.activeTask))
+  return Object.fromEntries(
+    [...workspaces].map(([task, workspace]) => [
+      task,
+      [
+        ...new Set([
+          ...(workspace.simple?.agentRuns?.map((r) => r.sessionId) ?? []),
+          ...[
+            ...(workspace.simple?.retainedWorkflow ?? []),
+            ...(workspace.simple?.log ?? []),
+          ].flatMap((e) =>
+            e.stage === 'plan' && e.kind !== 'reply' && e.sessionId ? [e.sessionId] : [],
+          ),
+          ...(workspace.auto?.sessionId ? [workspace.auto.sessionId] : []),
+          ...(workspace.auto?.sessionBrief?.sessionId
+            ? [workspace.auto.sessionBrief.sessionId]
+            : []),
+        ]),
+      ],
+    ]),
+  )
+}
 /** The plan the planner saved for the project (or task); empty when there is none. */
+export const planTransferPending = (projectId: string) =>
+  invoke<string | null>('plan_transfer_pending', { projectId })
+export const planTransfer = (projectId: string, task: string, finish: boolean) =>
+  invoke<void>('plan_transfer', { projectId, task, finish })
 export const planRead = (projectId: string, task?: string) =>
-  invoke<PlanText>('plan_read', { projectId, task })
+  invoke<PlanText>('plan_read', {
+    projectId,
+    task: planningTask(task),
+    legacyClaims: legacyPlanClaims(projectId),
+  })
 /**
  * Replace the saved plan that component agents receive in their briefing, while the file still
  * holds `expected` (`null` replaces any content); `false` when it didn't.
@@ -197,7 +254,7 @@ export const planWrite = (
   task: string | undefined,
   text: string,
   expected: string | null,
-) => invoke<boolean>('plan_write', { projectId, task, text, expected })
+) => invoke<boolean>('plan_write', { projectId, task: planningTask(task), text, expected })
 export const planStart = async (
   project: Project,
   componentIds: string[],
@@ -208,6 +265,7 @@ export const planStart = async (
   auto?: AutoBrief,
   story?: string,
   scanRound?: string,
+  task: string | null = null,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -218,9 +276,13 @@ export const planStart = async (
     auto,
     story,
     scanRound,
+    planningScope: planningScope(task),
     kickoff,
     resume,
-    extraContext: await extraContext(project, componentIds),
+    extraContext: [
+      ...(await extraContext(project, componentIds)),
+      ...transferredPlanContext(project.projectId ?? '', task),
+    ],
   })
 
 const activeId = () => useStore.getState().project?.id
@@ -530,7 +592,10 @@ export const stackAgentStart = (
     resume,
   })
 export const proposalRead = (projectId: string, task?: string) =>
-  invoke<import('../types').PlannerProposal | null>('proposal_read', { projectId, task })
+  invoke<import('../types').PlannerProposal | null>('proposal_read', {
+    projectId,
+    task: planningTask(task),
+  })
 export const proposalApply = (
   project: Project,
   task: string | undefined,
@@ -541,8 +606,8 @@ export const proposalApply = (
   invoke<string[]>('proposal_apply', {
     projectId: project.projectId,
     project,
-    task,
-    target,
+    task: planningTask(task),
+    target: planningTask(target ?? task),
     expected,
   })
 export const taskActivities = (projectId: string) =>

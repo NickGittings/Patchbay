@@ -433,8 +433,9 @@
     )
     click(save)
     await until('plan saved', () => save.disabled)
-    const briefSid = smoke.sessionId('web', 'brief', null)
-    await smoke.startTerminal('web', 'brief', null)
+    const briefTask = state().activeTask
+    const briefSid = smoke.sessionId('web', 'brief', briefTask)
+    await smoke.startTerminal('web', 'brief', briefTask)
     await until(
       'plan in the agent briefing',
       () =>
@@ -523,9 +524,9 @@
     state().setDevices([plannerDevice])
     click(viewButton('Plan'))
     const scopeBefore = [...state().highlighted]
-    // The planner belongs to the project: asked for the task, it still runs in the project folder.
+    // This worktree owns its planner and proposals.
     await smoke.startTerminal('@plan', plannerDevice.id, task.id)
-    const plannerSid = smoke.sessionId('@plan', plannerDevice.id, null)
+    const plannerSid = smoke.sessionId('@plan', plannerDevice.id, task.id)
     await until('planner CLI submission', () =>
       textOf(plannerSid).includes('"submitted":true'),
     ).catch((e) => {

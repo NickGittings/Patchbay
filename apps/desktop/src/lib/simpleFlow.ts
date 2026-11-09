@@ -1,6 +1,7 @@
 import type { MergeOutcome, ReviewFindings, SessionRecord } from '../types'
 import { reviewerBusy } from './review'
 import {
+  workflowLog,
   recordStage,
   pendingLaunch,
   selectRecipient,
@@ -69,7 +70,7 @@ export function flow(
   const auto = snapshot.auto
   const manualAfterAuto =
     auto?.status === 'done' &&
-    snapshot.simple?.log.some(
+    workflowLog(snapshot.simple).some(
       (e) =>
         (e.kind === 'prompt' ||
           (e.kind === 'action' &&
@@ -258,7 +259,7 @@ function awaitingTurn(
   agent: SessionRecord,
   session: import('../types').SessionState | import('../types').TerminalSnapshot,
 ) {
-  const latest = snapshot.simple?.log.findLast(
+  const latest = workflowLog(snapshot.simple).findLast(
     (e) =>
       e.sessionId === agent.id &&
       e.kind !== 'reply' &&
@@ -274,7 +275,7 @@ function awaitingTurn(
 }
 function isFix(snapshot: FlowSnapshot, agent: SessionRecord | undefined) {
   if (!agent || recordStage(agent) !== 'build') return false
-  const action = snapshot.simple?.log
+  const action = workflowLog(snapshot.simple)
     .filter((e) => e.kind === 'action' && (e.action === 'fix' || e.action === 'implement'))
     .at(-1)
   return action?.kind === 'action' ? action.action === 'fix' : !!agent.metadata.branch

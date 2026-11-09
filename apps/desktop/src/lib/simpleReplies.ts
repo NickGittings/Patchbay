@@ -2,7 +2,7 @@ import { agentChatTask } from './agentChats'
 import { projectStateOf, useStore, workspaceOf } from '../store'
 import { PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
 import { logSimple } from './simpleActions'
-import { ownsPlanner, relatedSession, recordStage, type SimpleState } from './simple'
+import { ownsPlanner, relatedSession, recordStage, visibleReply, type SimpleState } from './simple'
 import { hydrateJournal } from './journal'
 
 export const hydrateReplies = hydrateJournal('replies', 20)
@@ -23,7 +23,7 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
   )
   all.set(state.activeTask, state.simple)
   // Ingestion creates related conversations even if Chat has never been opened.
-  if (metadata.componentId !== PLAN_SCOPE) {
+  if (metadata.componentId !== PLAN_SCOPE || metadata.task) {
     for (const task of [null, ...state.tasks.map((t) => t.id)]) {
       const worktree = state.tasks.find((t) => t.id === task)
       if (
@@ -54,7 +54,12 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
     )
       continue
     // A project planner is shared; only chats that actually used this run receive its replies.
-    if (metadata.componentId === PLAN_SCOPE && !ownsPlanner(simple, sid, generation)) continue
+    if (
+      metadata.componentId === PLAN_SCOPE &&
+      !metadata.task &&
+      !ownsPlanner(simple, sid, generation)
+    )
+      continue
     scopes.push({ task, simple })
   }
   return { projectId: metadata.projectId, record: r, scopes }
@@ -86,7 +91,7 @@ export function persistChangedReplies(
   const key = JSON.stringify([
     generation,
     replies.map((r) => r.sequence),
-    target?.scopes.map(({ task, simple }) => [task, simple.startedMs]),
+    target?.scopes.map(({ task, simple }) => [task, simple.startedMs, simple.clearBoundary]),
   ])
   if (key !== previous && replies.length) write(sid, generation, replies, target)
   return key
@@ -106,7 +111,7 @@ function write(
     if (!workspaceOf(state, task).simple)
       useStore.getState().patchTask(target.projectId, task, { simple })
     for (const reply of [...incoming].sort((a, b) => a.sequence - b.sequence)) {
-      if (reply.atMs < simple.startedMs) continue
+      if (reply.atMs < simple.startedMs || !visibleReply(simple, sid, generation, reply)) continue
       void logSimple(target.projectId, task, {
         kind: 'reply',
         stage: recordStage(target.record),

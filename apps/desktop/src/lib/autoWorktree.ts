@@ -2,13 +2,7 @@ import { useStore } from '../store'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
 import { seedNewTask, titleFor } from './tasks'
 
-/**
- * Auto's "New worktree…" for the project folder: a new worktree starts with a copy of the project
- * plan, and the goal the user typed (else the copied plan fills it in there) moves with the
- * dialog's other choices to that worktree's draft. A goal the dialog only `inferred` titles the
- * worktree but isn't kept as typed. An existing worktree picked instead that has a draft of its own
- * keeps it, and the project folder then keeps its draft too, so nothing typed is lost.
- */
+/** Carry Auto's goal and dialog choices into a new worktree with an independent plan. */
 export function seedAutoTask(draftKey: string, goal: string, inferred = false) {
   const carried = inferred ? '' : goal.trim()
   const saved = autoDrafts.get(draftKey)
@@ -29,6 +23,6 @@ export function seedAutoTask(draftKey: string, goal: string, inferred = false) {
       const s = useStore.getState()
       if (s.project?.id === projectId && s.activeTask === created.id) s.showAutoPanel()
     },
-    { title: titleFor(goal) || undefined, copyPlan: true },
+    { title: titleFor(goal) || undefined },
   )
 }

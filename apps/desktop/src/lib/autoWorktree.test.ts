@@ -96,7 +96,7 @@ beforeEach(() => {
   vi.mocked(ipc.taskList).mockResolvedValue([created])
 })
 
-test("a worktree from Auto's prompt takes a copy of the project plan as its goal", async () => {
+test("a worktree from Auto's prompt starts with its own plan", async () => {
   // Outside Plan, as the dialog is in Navigation, the prompt still copies the plan.
   expect(useStore.getState().view).toBe('navigation')
   // The goal the dialog filled in titles the worktree but isn't kept as typed.
@@ -111,10 +111,10 @@ test("a worktree from Auto's prompt takes a copy of the project plan as its goal
   await createTask({ title: 'N', branch: 'n', components: [] })
   panel()
   expect(useStore.getState().activeTask).toBe('n')
-  expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
+  expect(plans.get('n')).toBeUndefined()
   expect(autoDrafts.has(target)).toBe(false)
   expect(useStore.getState().utilityPanel).toBe('auto')
-  await vi.waitFor(() => expect(goal).toBe('Planned goal'))
+  await vi.waitFor(() => expect(goal).toBe('N'))
 })
 
 test("attaching a worktree from Auto's prompt copies no plan", async () => {
@@ -161,7 +161,7 @@ test('the Auto panel opens only while the new worktree is still the active one',
   expect(useStore.getState().project?.id).toBe('q')
   expect(useStore.getState().utilityPanel).toBeNull()
   // The worktree still has the plan in its own project.
-  expect(plans.get('n')).toBe('# Planned goal\n\nDo the work.')
+  expect(plans.get('n')).toBeUndefined()
 })
 
 test('a story draft keeps its pending link while moving into a new Auto worktree', async () => {

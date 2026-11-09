@@ -148,10 +148,10 @@ test('a launch failure after stopping the planner stays in Plan and reports the 
   expect(useStore.getState().view).toBe('plan')
 })
 
-test('an empty project plan cannot reuse a previous worktree plan', async () => {
+test('an empty worktree plan cannot use a project draft', async () => {
   useStore.setState({ activeTask: 'later' })
   vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
-    text: task ? '# Old worktree plan' : ' ',
+    text: task ? ' ' : '# Project draft',
     cut: false,
   }))
   await expect(implementPlannerPlan('claude')).rejects.toThrow('No plan received yet')
@@ -202,14 +202,14 @@ test('switching tasks while reading the plan cannot launch into another task', a
   expect(ipc.terminalStop).not.toHaveBeenCalled()
 })
 
-test('a plan made on the project folder is copied into the worktree it is implemented in', async () => {
-  const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
+test('Build uses the worktree plan without copying the project draft', async () => {
+  const sid = sessionId(PLAN_SCOPE, 'claude', 'later', 'p')
   useStore.setState({ sessions: { [sid]: { running: true } }, activeTask: 'later' })
   vi.mocked(ipc.planRead).mockImplementation(async (_, task) =>
     task ? { text: '# Copied', cut: false } : { text: '# Plan', cut: false },
   )
   await implementPlannerPlan('claude')
-  expect(ipc.planWrite).toHaveBeenCalledWith('p', 'later', '# Plan', null)
+  expect(ipc.planWrite).not.toHaveBeenCalled()
   expect(ipc.terminalStop).toHaveBeenCalledWith(sid)
   expect(startTerminal).toHaveBeenCalledWith(
     TASK_ROOT_SCOPE,
@@ -220,7 +220,7 @@ test('a plan made on the project folder is copied into the worktree it is implem
   )
 })
 
-test('a project-folder proposal is applied to the active worktree', async () => {
+test('a worktree proposal is applied within that worktree', async () => {
   useStore.setState({ activeTask: 'later' })
   const proposal = {
     version: 1,
@@ -230,10 +230,10 @@ test('a project-folder proposal is applied to the active worktree', async () => 
   vi.mocked(ipc.proposalRead).mockResolvedValue(proposal)
   vi.mocked(ipc.proposalApply).mockResolvedValue(['web'])
   await implementPlannerPlan('claude')
-  expect(ipc.proposalRead).toHaveBeenCalledWith('p')
+  expect(ipc.proposalRead).toHaveBeenCalledWith('p', 'later')
   expect(ipc.proposalApply).toHaveBeenCalledWith(
     expect.objectContaining({ projectId: 'p' }),
-    undefined,
+    'later',
     proposal,
     'later',
   )
@@ -267,10 +267,10 @@ test('Auto implements the project plan and returns the launched session', async 
   })
 })
 
-test('Auto never falls back to an older worktree plan', async () => {
+test('Auto does not use a project draft when its worktree has no plan', async () => {
   useStore.setState({ activeTask: 'later' })
   vi.mocked(ipc.planRead).mockImplementation(async (_, task) => ({
-    text: task ? '# Old worktree plan' : '',
+    text: task ? '' : '# Draft',
     cut: false,
   }))
   await expect(
@@ -411,7 +411,7 @@ test('an explicit handoff copies the plan and creates a terminal in a background
   expect(s.activeSession).toBeNull()
   expect(s.view).toBe('plan')
   expect(s.dirty).toBe(false)
-  expect(ipc.planWrite).toHaveBeenCalledWith('p', 'background', '# Plan', null)
+  expect(ipc.planWrite).not.toHaveBeenCalled()
   expect(startTerminal).toHaveBeenCalledWith(TASK_ROOT_SCOPE, terminal.id, 'background', 'p', {
     kickoff: { kind: 'implementPlan' },
   })
@@ -446,7 +446,7 @@ test('an explicit background proposal updates only the target workspace', async 
   await implementPlannerPlan('claude', undefined, undefined, 'stay', { projectId: 'p', task: 'bg' })
   expect(ipc.proposalApply).toHaveBeenCalledWith(
     expect.objectContaining({ projectId: 'p' }),
-    undefined,
+    'bg',
     proposal,
     'bg',
   )

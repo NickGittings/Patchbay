@@ -189,6 +189,7 @@ test('a reviewer whose idle is stale or unconfirmed still holds the review open'
 })
 test('a shared planner another chat is using does not make this one plan', () => {
   const s = snapshot('@plan', 'working')
+  s.records[0].metadata.task = null // Historical shared planner, before explicit scopes.
   s.plan = { text: 'new', cut: false, savedMs: 30 }
   expect(flow(s).step).toBe('planReady')
   expect(flow(s).busyAgent).toBeUndefined()

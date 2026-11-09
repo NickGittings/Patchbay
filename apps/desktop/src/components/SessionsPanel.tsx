@@ -1,3 +1,4 @@
+import { plannerChatTask, MAIN_PLANNING_TASK, PROJECT_DRAFT } from '../types'
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type KeyboardEventHandler } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -106,6 +107,8 @@ function SessionList({
         records.some(
           ({ metadata }) =>
             metadata.task &&
+            metadata.task !== MAIN_PLANNING_TASK &&
+            metadata.task !== PROJECT_DRAFT &&
             !metadata.taskTitle &&
             !projectTasks[projectId]?.some((t) => t.id === metadata.task),
         ),
@@ -224,7 +227,7 @@ function SessionList({
                             await startTerminal(
                               r.metadata.componentId,
                               r.metadata.terminalId,
-                              r.metadata.task ?? null,
+                              plannerChatTask(r.metadata.task),
                               r.metadata.projectId,
                             )
                           }),

@@ -15,7 +15,12 @@ const reply = (sequence: number): Reply => ({
 const record = (scope = '@task'): SessionRecord =>
   ({
     id: 's',
-    metadata: { projectId: 'p', componentId: scope, kind: 'agent', task: 't' },
+    metadata: {
+      projectId: 'p',
+      componentId: scope,
+      kind: 'agent',
+      task: scope === '@plan' ? null : 't',
+    },
     spec: { cwd: '/t' },
     snapshot: null,
     history: [],

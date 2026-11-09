@@ -1777,6 +1777,61 @@ pub fn plan_session_spec(
     }
 }
 
+/// Build a planner in an explicit draft or worktree scope. Legacy entry points remain readable.
+///
+/// # Errors
+/// As [`plan_session_spec`].
+pub fn scoped_plan_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    scope: &crate::planning::PlanningScope,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+    kickoff: Option<Kickoff>,
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        kickoff.is_none() || matches!(kickoff, Some(Kickoff::Plan | Kickoff::PlanStory)),
+        "Start implementation agents in Implementation"
+    );
+    let root = Path::new(&project.root);
+    let mut sections = sections.to_vec();
+    sections.push(ContextSection { title: "Planning scope".into(), body: match scope {
+        crate::planning::PlanningScope::ProjectDraft => "Project draft. This plan is separate from every worktree. It will be transferred only when the user creates a worktree from this draft.".into(),
+        crate::planning::PlanningScope::Worktree { task: None } => "Main worktree. Plan only for this checkout; sibling worktrees and project drafts have separate planners and artifacts.".into(),
+        crate::planning::PlanningScope::Worktree { task: Some(task) } => format!("Worktree {task}. Plan only for this checkout; sibling worktrees and project drafts have separate planners and artifacts."),
+    } });
+    sections.extend(crate::plans::section(root, Some(scope.artifact_task())));
+    sections.extend(crate::proposals::section(
+        project,
+        Some(scope.artifact_task()),
+        component_ids,
+    ));
+    if crate::plans::plan_file(root, Some(scope.artifact_task())).is_ok()
+        && let Some(proposal) = crate::proposals::read(root, Some(scope.artifact_task()), false)?
+    {
+        sections.push(ContextSection {
+            title: "Pending component assignments".into(),
+            body: serde_json::to_string(&proposal)?,
+        });
+    }
+    let mut spec = root_session_spec(
+        project,
+        component_ids,
+        terminal,
+        Some(scope.artifact_task()),
+        policy,
+        &sections,
+        true,
+        kickoff,
+    )?;
+    spec.env.insert(
+        "PATCHBAY_PLANNING_SCOPE".into(),
+        serde_json::to_string(scope)?,
+    );
+    Ok(spec)
+}
+
 /// [`plan_session_spec`] for a task's planner: the session id and briefing
 /// file carry the task id, so planners of different tasks run side by side.
 /// `project` should already be the task's ([`crate::tasks::project_in`]).
@@ -1869,8 +1924,9 @@ pub fn root_handoff(
             .as_ref()
             .and_then(|r| crate::reviews::handoff(root, r).ok()),
         None => {
-            let plan = crate::plans::section(root, task);
-            let proposal = crate::proposals::section(project, task, selected);
+            let plan = crate::plans::section(root, crate::planning::artifact_task(task));
+            let proposal =
+                crate::proposals::section(project, crate::planning::artifact_task(task), selected);
             return Ok((kickoff, plan.into_iter().chain(proposal).collect()));
         }
     };

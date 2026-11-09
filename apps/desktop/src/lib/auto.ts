@@ -437,12 +437,22 @@ export async function autoSnapshot(
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state?.project || !project) throw new Error('Open the project first')
-  const plannerPlanPromise = planRead(projectId)
+  const legacyPlanner = useStore
+    .getState()
+    .sessionRecords.find(
+      (r) =>
+        r.id === run.sessionId &&
+        r.metadata.projectId === projectId &&
+        r.metadata.componentId === PLAN_SCOPE &&
+        !r.metadata.task,
+    )
+  const plannerArtifact = legacyPlanner ? 'main' : (task ?? undefined)
+  const plannerPlanPromise = planRead(projectId, plannerArtifact)
   const [worktrees, branches, saved, proposal, plannerPlan] = await Promise.all([
     gitWorktrees(projectId),
     gitBranches(projectId),
     task ? planRead(projectId, task) : plannerPlanPromise,
-    proposalRead(projectId),
+    plannerPlanPromise.then(() => proposalRead(projectId, plannerArtifact)),
     plannerPlanPromise,
   ])
   const { source, tasks } = await sourceWorktree(projectId, task, worktrees, run.branch)
@@ -467,7 +477,7 @@ export async function autoSnapshot(
   const records = useStore
     .getState()
     .sessionRecords.filter((r) => r.metadata.projectId === projectId)
-  const turn = plannerOwner(projectId)
+  const turn = plannerOwner(projectId, task)
   const relevant = records.filter(
     (r) =>
       (r.metadata.kind === 'agent' &&
@@ -479,6 +489,8 @@ export async function autoSnapshot(
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
       // The planner is project-wide: it belongs to this run only while it plans or tracks it.
       (r.metadata.componentId === PLAN_SCOPE &&
+        ((r.metadata.task ?? null) === (task ?? '_worktree_main') ||
+          (!r.metadata.task && r.id === run.sessionId)) &&
         (r.id === run.sessionId ||
           (run.stage === 'plan' &&
             !run.sessionId &&
@@ -857,7 +869,7 @@ export async function resumeAuto(projectId: string, task: string | null, schedul
       turnSince: decision.turnSince,
       observedWorking: decision.observedWorking ?? false,
       plannerTurn:
-        plannerOwner(projectId)?.task === task ||
+        plannerOwner(projectId, task)?.task === task ||
         (decision.stage === 'plan' && !!decision.sessionId),
     },
     `Resumed: ${
@@ -1216,7 +1228,7 @@ function sessionAvailable(
   const p = projectStateOf(projectId)
   return !(
     (reservation && reservation !== key) ||
-    (planner && turn && turn.task !== task) ||
+    (planner && turn && turn.task !== task && turn.run.sessionId === sessionId) ||
     (p &&
       autoRuns(p).some(
         ({ task: other, run: owner }) =>
@@ -1233,18 +1245,19 @@ function assertSessionAvailable(projectId: string, task: string | null, sessionI
       task,
       sessionId,
       record?.metadata.componentId === PLAN_SCOPE,
-      plannerOwner(projectId),
+      plannerOwner(projectId, task),
     )
   )
     throw new AutoConfigurationError('This planner or agent already belongs to another Auto run')
 }
 // Ownership lives with the run, so Resume's new runId and app restarts preserve the same turn.
 // Reads never reserve a planner; a launch acquires it immediately before its first side effect.
-function plannerOwner(projectId: string) {
+function plannerOwner(projectId: string, scopeTask?: string | null) {
   const state = projectStateOf(projectId)
   return state
     ? autoRuns(state).find(
-        ({ run }) =>
+        ({ task, run }) =>
+          (scopeTask === undefined || task === scopeTask) &&
           unfinished(run.status) &&
           (run.stage === 'scan' ||
             run.stage === 'plan' ||
@@ -1258,7 +1271,7 @@ function plannerOwner(projectId: string) {
     : undefined
 }
 function plannerAvailable(projectId: string, task: string | null) {
-  const turn = plannerOwner(projectId)
+  const turn = plannerOwner(projectId, task)
   return !turn || turn.task === task
 }
 /** Cache only the pinned merge request; outcome checks need no plans, findings or diff. */
@@ -1837,7 +1850,7 @@ async function drive(projectId: string, task: string | null) {
     const presentation = run.background || projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow'
     switch (run.stage) {
       case 'plan':
-        sid = plannerSessionId(deviceId, projectId)
+        sid = plannerSessionId(deviceId, projectId, task)
         assertSessionAvailable(projectId, task, sid)
         launchingSessions.set(sid, key)
         reservedSession = sid

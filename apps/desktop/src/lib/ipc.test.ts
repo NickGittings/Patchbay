@@ -113,6 +113,7 @@ test('planner preview sends the same story id as the launch briefing', async () 
     project,
     componentIds: ['api'],
     story: 'story1',
+    planningScope: { kind: 'worktree', task: null },
     extraContext: [],
   })
 })

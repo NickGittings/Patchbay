@@ -302,3 +302,24 @@
 .worktree-setup button {
   margin-right: 6px;
 }
+
+.simple-usage-warning {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.simple-clear-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.simple-result > time {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}

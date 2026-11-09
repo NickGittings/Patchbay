@@ -14,6 +14,22 @@ export const providerName = (provider: 'claude' | 'codex') =>
 export const windowName = (window: 'fiveHour' | 'weekly') =>
   window === 'fiveHour' ? '5-hour' : 'weekly'
 
+/** Composer warnings describe provider exhaustion independently of Auto and notifications. */
+export function exhaustedWindows(
+  usage: Usage | null,
+  provider: string | null | undefined,
+  now: number,
+) {
+  const key = provider?.startsWith('claude:') ? 'claude' : provider
+  if (key !== 'claude' && key !== 'codex') return []
+  return USAGE_WINDOWS.flatMap((window) => {
+    const value = usage?.[key]?.[window]
+    return value && value.usedPercent >= 100 && value.resetsAtMs > now
+      ? [{ provider: key as 'claude' | 'codex', key: window, window: value }]
+      : []
+  })
+}
+
 export function usageLevel(window: UsageWindow, settings: UsageSettings): UsageLevel {
   if (window.usedPercent >= settings.pausePercent) return 'limit'
   return window.usedPercent >= settings.warnPercent ? 'warn' : 'ok'

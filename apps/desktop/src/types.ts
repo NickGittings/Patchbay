@@ -4,6 +4,15 @@ export const SCAN_SCOPE = '@scan'
 export const COORDINATOR_SCOPE = '@coordinator'
 export const WORKER_SCOPE = '@worker'
 export const PLAN_SCOPE = '@plan'
+export const PROJECT_DRAFT = '_project_draft'
+export const MAIN_PLANNING_TASK = '_worktree_main'
+export type PlanningScope = { kind: 'projectDraft' } | { kind: 'worktree'; task: string | null }
+export const planningScope = (task: string | null): PlanningScope =>
+  task === PROJECT_DRAFT ? { kind: 'projectDraft' } : { kind: 'worktree', task }
+export const planningTask = (task?: string | null) => task ?? MAIN_PLANNING_TASK
+export const plannerChatTask = (task?: string | null) =>
+  task === MAIN_PLANNING_TASK ? null : (task ?? null)
+
 export const TASK_ROOT_SCOPE = '@task'
 export const MERGE_SCOPE = '@merge'
 export const REVIEW_SCOPE = '@review'
@@ -173,9 +182,9 @@ export interface AutoRun {
    * so its briefing, and with it Restart's fingerprint, stays the same.
    */
   sessionBrief?: { sessionId: string; auto: AutoBrief; kickoff?: Kickoff }
-  /** Fingerprint of the project plan and proposal when the planner launched. */
+  /** Fingerprint of this worktree's plan and proposal when the planner launched. */
   planMark?: string
-  /** Acquired when launching or adopting the shared planner; kept until implementation starts. */
+  /** Acquired for this worktree’s planner; kept until implementation starts. */
   plannerTurn?: boolean
   log: { atMs: number; text: string }[]
   reason?: string
@@ -663,6 +672,7 @@ export function sessionId(
   task?: string | null,
   projectId = activeProjectId,
 ) {
+  if (componentId === PLAN_SCOPE) task = planningTask(task)
   const terminal = task ? `${terminalId}${TASK_SEPARATOR}${task}` : terminalId
   const key = JSON.stringify([projectId, componentId, terminal])
   const known = hashed.get(key)
@@ -684,9 +694,12 @@ export function sessionId(
   return id
 }
 
-/** The planner belongs to the project, not a worktree, so its sessions never carry a task. */
-export const plannerSessionId = (terminalId: string, projectId?: string) =>
-  sessionId(PLAN_SCOPE, terminalId, null, projectId)
+/** Planner sessions carry a worktree or project-draft identity, distinct from legacy sessions. */
+export const plannerSessionId = (
+  terminalId: string,
+  projectId?: string,
+  task: string | null = null,
+) => sessionId(PLAN_SCOPE, terminalId, planningTask(task), projectId)
 /** Ids already hashed: selectors compute them for every terminal on every store change. */
 const hashed = new Map<string, string>()
 
@@ -703,7 +716,7 @@ export function parseSessionId(sid: string): SessionIdentity {
 }
 
 /** The task a session belongs to (`null` for the project's own worktree). */
-export const sessionTask = (sid: string) => parseSessionId(sid).task
+export const sessionTask = (sid: string) => plannerChatTask(parseSessionId(sid).task)
 
 /** `sid` moved to `task`'s scope (or the project's own worktree). */
 export function retask(sid: string, task: string | null): string {

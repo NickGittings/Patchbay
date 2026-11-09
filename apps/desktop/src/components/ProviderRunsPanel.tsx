@@ -144,7 +144,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                 onClick={() =>
                   void action(async () => {
                     const planner = roleDevice(devices, roles, 'plan')
-                    const sid = plannerSessionId(planner.id, projectId)
+                    const sid = plannerSessionId(planner.id, projectId, task)
                     if (useStore.getState().sessions[sid]?.running)
                       throw new Error(
                         'Close the current planner before starting with scan findings',
