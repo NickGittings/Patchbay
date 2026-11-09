@@ -78,7 +78,7 @@ export default function AutoDialog({
   // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
   const edit = (patch: Partial<AutoDraft>) =>
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
-  // This run's choices; unpicked stages follow the project's agent roles.
+  // This run's choices; unpicked stages follow the global agent roles.
   const { picked, reviewers: pickedReviewers, effort, overrides, mode, stage } = draft
   const reviewers = useMemo(() => {
     const kept = pickedReviewers && agents.filter((a) => pickedReviewers.includes(a.id))

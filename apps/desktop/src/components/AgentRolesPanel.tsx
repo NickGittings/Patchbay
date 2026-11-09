@@ -17,7 +17,7 @@ const DEFAULTS: Record<AgentRole, string> = {
   merge: 'the first agent preset',
 }
 
-/** The project's agent per role; dialogs and Auto start from it and may override it per run. */
+/** Global agents per role; dialogs and Auto may override them per run. */
 export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   const subagentsId = useId()
   const devices = useStore((s) => s.devices)
@@ -45,8 +45,8 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   return (
     <SettingsDialog
       title="Agent roles"
-      subtitle="Default agents for this project"
-      behavior="Changes apply immediately to this project. Individual runs can override these defaults."
+      subtitle="Default agents for all projects"
+      behavior="Changes apply immediately across all projects. Individual runs can override these defaults."
       onClose={onClose}
     >
       <div className="settings-actions">

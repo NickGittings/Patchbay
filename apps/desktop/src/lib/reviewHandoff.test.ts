@@ -211,7 +211,8 @@ test('a review from another project cannot launch here', async () => {
 })
 
 test('an explicit background fix launches without selecting its worktree or project', async () => {
-  const background = { ...state, project: { id: 'p', root: '/p' }, agentRoles: { fix: ['claude'] } }
+  const background = { ...state, project: { id: 'p', root: '/p' } }
+  state.agentRoles = { fix: ['claude'] }
   vi.mocked(projectStateOf).mockImplementation((id) =>
     id === 'p' ? (background as never) : undefined,
   )

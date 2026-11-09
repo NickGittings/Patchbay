@@ -93,7 +93,7 @@ export interface AutoBrief {
   effortNote: string
   commit: boolean
 }
-/** The jobs an agent preset can be assigned to (per project, workspace layout only). */
+/** The jobs an agent preset can be assigned to globally in workspace settings. */
 export type AgentRole = 'scan' | 'plan' | 'implement' | 'worker' | 'review' | 'fix' | 'merge'
 export const AGENT_ROLES: AgentRole[] = [
   'plan',

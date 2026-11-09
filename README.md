@@ -147,8 +147,9 @@ remain available without an active project.
 - **Link**: "depends on". Agent terminals get `PATCHBAY_CONTEXT_FILE`, a briefing with the component's notes and its related components. Claude and Codex additionally receive the briefing as native instructions and the related folders via `--add-dir`, on Unix and Windows. Other agents show a notice that the briefing was not injected automatically.
 - **Device**: a terminal preset (`*.device.json`). Add your own in `~/.patchbay/devices/`.
 
-Use **Settings → Agent roles…** to choose separate presets for plan, implement, review, fix and
-merge. For optional compaction overrides and commands for POSIX shells and Windows, see
+Use **Settings → Agent roles…** to choose global presets for plan, implement, review, fix and
+merge across all projects. Individual runs can override these defaults. For optional compaction
+overrides and commands for POSIX shells and Windows, see
 [agent preset compaction](docs/architecture/views-and-auto.md#agent-preset-compaction).
 
 ## Task workspaces

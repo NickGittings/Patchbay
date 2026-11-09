@@ -45,7 +45,7 @@
     state().setAgentRoles({ plan: ['a'], review: ['a', 'removed'] })
     state().activateProject(one.id)
     await onBranch(one.id)
-    state().setAgentRoles({ plan: ['a'], review: ['a'] })
+    assert(state().agentRoles.review?.join(',') === 'a,removed', 'New project lost global roles')
     smoke.store.setState({
       devices: ['a', 'b'].map((id) => ({
         id,
@@ -64,6 +64,7 @@
     await until('first project defaults', () =>
       reviewerTrigger(autoAgents() ?? document)?.textContent.includes('a'),
     )
+    autoAgents().closest('details').open = true
     assert(!autoAgents().querySelector('input'), 'Reviewer checkboxes are visible while closed')
     const trigger = reviewerTrigger(autoAgents())
     trigger.click()
@@ -129,6 +130,7 @@
         roleSelect('Plan').value === 'a' &&
         reviewerTrigger(autoAgents()).textContent.includes('a'),
     )
+    autoAgents().closest('details').open = true
     reviewerTrigger(autoAgents()).click()
     await until('second project reviewer', () => checked() === 'a')
     autoButton.click()
@@ -161,7 +163,7 @@
     await until('missing reviewer removed', () => state().agentRoles.review?.join(',') === 'a')
     panel.querySelector('.reviewer-options input[value="a"]').click()
     await until('default reviewers restored', () => !state().agentRoles.review)
-    assert(roleTrigger.textContent.includes('Default:'), 'Project default summary is missing')
+    assert(roleTrigger.textContent.includes('Default:'), 'Global default summary is missing')
     panel.querySelector('.reviewer-options input[value="a"]').click()
     await until('reviewer saved', () => state().agentRoles.review?.join(',') === 'a')
     escape(document.activeElement)
@@ -171,8 +173,31 @@
     )
     assert(document.activeElement === roleTrigger, 'Roles dropdown did not restore focus')
     assert(panel.isConnected, 'Closing reviewers closed the Agent roles dialog')
+    state().activateProject(one.id)
+    await until(
+      'global role settings stay open across projects',
+      () =>
+        document.querySelector('[aria-label="Agent roles"]') === panel &&
+        state().agentRoles.review?.join(',') === 'a',
+    )
+    const saved = smoke.workspaceDocument()
+    assert(saved.settings.agentRoles.review.join(',') === 'a', 'Global roles were not saved')
+    assert(
+      saved.projects.every((p) => !('agentRoles' in p.layout)),
+      'Roles still saved per project',
+    )
+    state().closeProject(one.id)
+    state().closeProject(two.id)
+    await until(
+      'role settings available without projects',
+      () => document.querySelector('[aria-label="Agent roles"]') === panel,
+    )
+    assert(
+      smoke.workspaceDocument().settings.agentRoles.review.join(',') === 'a',
+      'Closing projects lost global roles',
+    )
     await smoke.report(
-      'PASS reviewers: multi-select dropdowns preserve parallel reviews, defaults and overrides; focus, dismissal, narrow layout and missing presets work',
+      'PASS reviewers: global roles persist across projects and without projects; parallel reviews, per-run overrides, focus, narrow layout and missing presets work',
     )
   } catch (e) {
     await smoke.report(`FAIL reviewers: ${e.message ?? e} ${e.stack ?? ''}`)

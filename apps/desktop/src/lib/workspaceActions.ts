@@ -121,7 +121,7 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       id: 'roles',
       title: 'Agent roles',
       group: 'settings',
-      enabled: available,
+      enabled: true,
       run: setting('roles'),
     },
     {

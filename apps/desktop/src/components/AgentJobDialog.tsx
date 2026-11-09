@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from 'react'
 import ReviewerPicker from './ReviewerPicker'
 import { roleDevices } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
+import { useRail } from '../lib/rail'
 import { useStore } from '../store'
 import type { DeviceManifest, Worktree } from '../types'
 
@@ -9,6 +10,7 @@ import type { DeviceManifest, Worktree } from '../types'
 export default function AgentJobDialog({
   role,
   title,
+  compact = false,
   source,
   sourceField,
   ready,
@@ -21,9 +23,11 @@ export default function AgentJobDialog({
   launched,
   children,
 }: {
-  /** Preselects the project's agents for this job; several may review at once. */
+  /** Preselects the global agents for this job; several may review at once. */
   role: 'review' | 'merge'
   title: string
+  /** Chat shows only job inputs and a summary of the selected agents. */
+  compact?: boolean
   source?: Worktree
   sourceField?: (props: { busy: boolean; clearError: () => void }) => ReactNode
   /** The job-specific fields are complete. */
@@ -44,6 +48,7 @@ export default function AgentJobDialog({
   const multiple = role === 'review'
   // Devices may still be loading, so the role's presets are resolved until the user picks.
   const [picked, setPicked] = useState<string[]>()
+  const [changingAgents, setChangingAgents] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
@@ -89,48 +94,85 @@ export default function AgentJobDialog({
         <h2>{title}</h2>
         {sourceField ? (
           sourceField({ busy, clearError: () => setError('') })
-        ) : (
+        ) : !compact ? (
           <label>
             Source branch <strong>{source?.branch}</strong>
             <code>{source?.path}</code>
           </label>
-        )}
+        ) : null}
         {children({ busy, clearError: () => setError('') })}
-        {multiple && agents.length > 1 ? (
-          <fieldset className="agent-job-agents" disabled={busy}>
-            <legend>Agents</legend>
-            <ReviewerPicker
-              agents={agents}
-              selected={chosen.map((d) => d.id)}
-              onChange={setPicked}
-              disabled={busy}
-            />
-            {chosen.length > 1 && (
-              <p className="hint">
-                Each agent reviews independently; their findings are combined for the fix.
-              </p>
-            )}
-          </fieldset>
-        ) : (
-          <label>
-            Agent
-            <select
-              aria-label="Agent"
-              value={device?.id ?? ''}
-              disabled={busy || !device}
-              onChange={(e) => setPicked([e.target.value])}
+        {compact && (
+          <p className="agent-job-summary">
+            <span>Agents: {chosen.map((d) => d.name).join(', ') || 'None selected'}</span>{' '}
+            <button
+              type="button"
+              disabled={busy || !agents.length}
+              aria-expanded={changingAgents}
+              onClick={() => setChangingAgents(!changingAgents)}
             >
-              {!device && <option value="">No agent presets</option>}
-              {agents.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {changingAgents ? 'Done' : 'Change'}
+            </button>
+          </p>
         )}
-        <p className="hint">{hint}</p>
-        {!device && <p role="status">Choose at least one agent.</p>}
+        {(!compact || changingAgents) &&
+          (multiple && agents.length > 1 ? (
+            <fieldset className="agent-job-agents" disabled={busy}>
+              <legend>Agents</legend>
+              <ReviewerPicker
+                agents={agents}
+                selected={chosen.map((d) => d.id)}
+                onChange={setPicked}
+                disabled={busy}
+              />
+              {!compact && chosen.length > 1 && (
+                <p className="hint">
+                  Each agent reviews independently; their findings are combined for the fix.
+                </p>
+              )}
+            </fieldset>
+          ) : (
+            <label>
+              Agent
+              <select
+                aria-label="Agent"
+                value={device?.id ?? ''}
+                disabled={busy || !device}
+                onChange={(e) => setPicked([e.target.value])}
+              >
+                {!device && <option value="">No agent presets</option>}
+                {agents.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        {!compact && (
+          <p className="hint">
+            {roles[role]?.length
+              ? 'Using global role defaults.'
+              : `No global ${role} role default is set. Using the first agent preset.`}{' '}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                close()
+                useRail.setState({ settings: 'roles' })
+              }}
+            >
+              Edit role defaults…
+            </button>
+          </p>
+        )}
+        {!compact && <p className="hint">{hint}</p>}
+        {!device && (
+          <p role="status">
+            {compact && !agents.length
+              ? 'Add an agent preset in Settings.'
+              : 'Choose at least one agent.'}
+          </p>
+        )}
         {running && <p role="status">{runningText}</p>}
         {!connected && <p role="status">{offlineText}</p>}
         {error && (
@@ -148,7 +190,7 @@ export default function AgentJobDialog({
             className="primary"
             disabled={busy || !ready || !device || !connected || running}
           >
-            {busy ? 'Starting…' : title}
+            {busy ? 'Starting…' : compact ? `Start ${role}` : title}
           </button>
         </div>
       </form>

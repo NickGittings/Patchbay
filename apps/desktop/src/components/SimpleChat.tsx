@@ -111,6 +111,7 @@ export default function SimpleChat({
     mergeBase ??
     target?.branch ??
     (source && defaultReviewBase(source, s.tasks, data?.worktrees ?? [], []))
+  const reviewBase = findings?.findings?.base || base
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = selectRecipient(
     model.records,
@@ -274,11 +275,11 @@ export default function SimpleChat({
           ?.focus()
       } else if (action === 'review') {
         // Without a base, Options asks for one; the review starts from that dialog.
-        if (source?.branch && !base) {
+        if (source?.branch && !reviewBase) {
           setDialog('review')
           return
         }
-        const request = simpleReviewRequest(source, base)
+        const request = simpleReviewRequest(source, reviewBase)
         const { started, errors } = await startSimpleReview(
           useStore.getState().toProject(),
           request,
@@ -335,6 +336,13 @@ export default function SimpleChat({
       <header>
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
+        <button
+          aria-label="Review options"
+          disabled={!source?.branch || !!ui.pendingWorkflow || !!ui.pendingAction}
+          onClick={() => setDialog('review')}
+        >
+          Review…
+        </button>
         <button onClick={() => useStore.getState().showAutoPanel()}>Auto</button>
         <button
           disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
@@ -377,7 +385,10 @@ export default function SimpleChat({
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
         <ReviewAgentDialog
+          compact
+          key={`${projectId}/${source.path}/${source.branch}`}
           restartSettled
+          initialBase={reviewBase || undefined}
           source={source}
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}
@@ -387,6 +398,7 @@ export default function SimpleChat({
       )}
       {source && dialog === 'merge' && (
         <MergeAgentDialog
+          compact
           source={source}
           worktrees={data?.worktrees ?? []}
           close={() => setDialog(undefined)}

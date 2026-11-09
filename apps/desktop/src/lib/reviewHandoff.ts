@@ -34,14 +34,14 @@ export async function fixReviewFindings(
   const state = projectStateOf(projectId)
   if ((!target && s.project?.id !== projectId) || !state)
     throw new Error('Open the reviewed project first')
-  // Auto's fix agent, else the project's fix role, else the reviewer's provider: session records
+  // Auto's fix agent, else the global fix role, else the reviewer's provider: session records
   // keep the preset's command but not its id, so match by adapter.
   const agents = agentDevices(s.devices)
   const device =
     (deviceId && agents.find((d) => d.id === deviceId)) ||
     roleDevice(
       s.devices,
-      state.agentRoles,
+      s.agentRoles,
       'fix',
       agents.find((d) => d.adapter === record.metadata.adapter),
     )

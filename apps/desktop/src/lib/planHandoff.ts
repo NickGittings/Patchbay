@@ -15,7 +15,7 @@ export type HandoffTarget = { projectId: string; task: string | null; providerRu
 
 /**
  * Accept the target worktree's own plan and assignments, then launch its implementation agent.
- * Provider order is an explicit preset, the project's implement role, then its planner.
+ * Provider order is an explicit preset, the global implement role, then its planner.
  */
 async function handoffPlannerPlan(
   plannerId: string,
@@ -37,7 +37,7 @@ async function handoffPlannerPlan(
     (deviceId && agentDevices(initial.devices).find((d) => d.id === deviceId)) ||
     roleDevice(
       initial.devices,
-      state.agentRoles,
+      initial.agentRoles,
       'implement',
       plannerDevice(initial.devices, plannerId),
     )
@@ -53,7 +53,7 @@ async function handoffPlannerPlan(
     ? agentDevices(initial.devices).filter((d) => workerIds.includes(d.id))
     : auto
       ? []
-      : roleDevices(initial.devices, state.agentRoles, 'worker')
+      : roleDevices(initial.devices, initial.agentRoles, 'worker')
   for (const provider of [device, ...authWorkers])
     await requireDeviceAuth(provider, projectId, task)
   current()
@@ -91,7 +91,7 @@ async function handoffPlannerPlan(
       })
     : auto
       ? []
-      : roleDevices(initial.devices, s.agentRoles, 'worker')
+      : roleDevices(initial.devices, useStore.getState().agentRoles, 'worker')
   let launched: { sessionId: string; requestId?: string; implementationRun?: string }
   if (workers.length) {
     const project = projectOf(projectId)
@@ -131,7 +131,10 @@ async function handoffPlannerPlan(
   } else {
     const terminalId = useStore.getState().addRootTerminal(device, target)
     const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-      kickoff: { kind: 'implementPlan', subagents: s.implementSubagents || undefined },
+      kickoff: {
+        kind: 'implementPlan',
+        subagents: useStore.getState().implementSubagents || undefined,
+      },
       auto,
     })
     launched = { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }

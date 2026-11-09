@@ -348,12 +348,12 @@ const mapPresets = new Map<string, string>()
  * record keeps (`metadata.lane`), else the planner's role. Never the recorded command, which
  * already carries its briefing.
  */
-function mapPreset(projectId: string, sid: string): TerminalSpec {
+function mapPreset(sid: string): TerminalSpec {
   const s = useStore.getState()
   const id = mapPresetId(sid)
   const preset =
     planTerminals(s.devices).find((t) => t.id === id) ??
-    roleTerminal(s.devices, projectStateOf(projectId, s)?.agentRoles ?? {}, 'plan')
+    roleTerminal(s.devices, s.agentRoles, 'plan')
   if (!preset) throw new Error('Add an agent preset to run detection')
   return preset
 }
@@ -413,7 +413,7 @@ async function checkLaunchAuth(launch: Launch) {
     (componentId === PLAN_SCOPE
       ? planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
       : componentId === MAP_SCOPE
-        ? mapPreset(launch.projectId, sid)
+        ? mapPreset(sid)
         : project.components
             .find((c) => c.id === componentId)
             ?.terminals.find((t) => t.id === terminalId))
@@ -545,7 +545,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       else if (componentId === MAP_SCOPE && terminalId === VALIDATION_AGENT_TERMINAL)
         await validationAgentStart(
           project,
-          mapPreset(launch.projectId, sid),
+          mapPreset(sid),
           requestId,
           !!launch.restart,
           validationSelections.get(sid) ?? [],
@@ -553,7 +553,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       else if (componentId === MAP_SCOPE)
         await (terminalId === STACK_AGENT_TERMINAL ? stackAgentStart : mapAgentStart)(
           project,
-          mapPreset(launch.projectId, sid),
+          mapPreset(sid),
           requestId,
           !!launch.restart,
         )

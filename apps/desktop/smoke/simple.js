@@ -57,6 +57,30 @@
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
     await until('root chat before worktree creation', () => document.querySelector('.simple-chat'))
+    click(
+      await until('review options before planning', () =>
+        document.querySelector('.simple-chat [aria-label="Review options"]:not(:disabled)'),
+      ),
+    )
+    const reviewOptions = await until('review base picker before planning', () =>
+      document.querySelector('form[aria-label="Review"]'),
+    )
+    assert(reviewOptions.querySelector('[aria-label="Base branch"]'), 'missing review base picker')
+    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'default agent is hidden')
+    assert(!reviewOptions.querySelector('[aria-label="Agent"]'), 'agent picker should start closed')
+    assert(!reviewOptions.querySelector('code'), 'compact review shows the source path')
+    click(button('Change', reviewOptions))
+    await until('review agent picker expanded', () =>
+      reviewOptions.querySelector('[aria-label="Agent"]'),
+    )
+    click(button('Done', reviewOptions))
+    await until(
+      'review agent picker collapsed',
+      () => !reviewOptions.querySelector('[aria-label="Agent"]'),
+    )
+    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'agent summary disappeared')
+    click(button('Cancel', reviewOptions))
+    await until('review options closed', () => !document.querySelector('[role="dialog"]'))
     await until('root chat layout saved', () => smoke.chatPanel.width() > 0)
     const initialRootChatWidth = smoke.chatPanel.width()
     const initialRootLayout = { ...state().panels['App-simple'] }
