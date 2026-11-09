@@ -1,6 +1,7 @@
 //! Explicit conversation adapters. Provider identities never double as PTY identities.
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,18 +38,26 @@ impl Adapter {
     /// Fails if the id is invalid, `cwd` is missing, the command isn't a plain
     /// provider command, already resumes, or the provider has no history for `id`.
     pub fn resume(self, command: &str, id: &str, cwd: &Path) -> Result<String> {
+        self.resume_with_env(command, id, cwd, &BTreeMap::new())
+    }
+    /// Resume using the same environment as the recorded launch.
+    pub(crate) fn resume_with_env(
+        self,
+        command: &str,
+        id: &str,
+        cwd: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Result<String> {
         let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
         let history = match self {
             Self::Claude => crate::profiles::from_command(command)?
                 .map(|p| std::ffi::OsString::from(p.config_dir))
+                .or_else(|| env.get("CLAUDE_CONFIG_DIR").map(std::ffi::OsString::from))
                 .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| home.join(".claude"))
                 .join("projects"),
-            Self::Codex => std::env::var_os("CODEX_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| home.join(".codex"))
-                .join("sessions"),
+            Self::Codex => codex_home(command, cwd, env)?.join("sessions"),
         };
         self.resume_with_history(command, id, cwd, &history)
     }
@@ -132,6 +141,61 @@ impl Adapter {
         contains(root, id, 6)
     }
 }
+
+/// Evaluate only the parsed assignment prefix, never the provider executable or its options.
+/// This preserves shell expansion, quoting and prefix precedence over the session environment.
+fn codex_home(
+    _command: &str,
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    let directory = {
+        use std::os::unix::ffi::OsStringExt;
+        let (_, range) = crate::context::launch_program(_command)
+            .context("Cannot locate provider executable")?;
+        let read_home =
+            crate::context::quote_argument("printf '\\0%s\\0' \"${CODEX_HOME-${HOME}/.codex}\"");
+        let output =
+            std::process::Command::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()))
+                .args([
+                    "-ilc",
+                    &format!("{} /bin/sh -c {read_home}", &_command[..range.start]),
+                ])
+                .current_dir(cwd)
+                .envs(env)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .context("Cannot resolve the reviewer's CODEX_HOME")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "Cannot resolve the reviewer's CODEX_HOME"
+        );
+        // Ignore any login-shell startup output before the NUL-delimited result.
+        let directory = output
+            .stdout
+            .split(|b| *b == 0)
+            .rev()
+            .nth(1)
+            .context("Cannot read the reviewer's CODEX_HOME")?;
+        std::path::PathBuf::from(std::ffi::OsString::from_vec(directory.to_vec()))
+    };
+    #[cfg(not(unix))]
+    let directory = env
+        .get("CODEX_HOME")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("CODEX_HOME"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .context("No home directory")?;
+    Ok(if directory.is_absolute() {
+        directory
+    } else {
+        cwd.join(directory)
+    })
+}
+
 /// Probe the same login-shell PATH before creating a resumed process incarnation.
 ///
 /// # Errors
@@ -317,6 +381,27 @@ mod tests {
                 .resume_with_history("claude", id, &fixture, &fixture)
                 .is_ok()
         );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn codex_reviewer_resumes_interactively_with_its_original_options() {
+        let fixture = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&fixture).unwrap();
+        let id = "12345678-abcd-4321-aaaa-123456789abc";
+        std::fs::write(fixture.join(format!("{id}.jsonl")), "{}").unwrap();
+        let preset = "codex --model review-model -p reviewer --full-auto";
+        let followup = crate::context::codex_review_followup(preset).unwrap();
+        let resumed = Adapter::Codex
+            .resume_with_history(&followup, id, &fixture, &fixture)
+            .unwrap();
+        assert!(resumed.starts_with("codex resume "));
+        assert!(resumed.contains(id));
+        assert!(resumed.contains("--model review-model -p reviewer"));
+        assert!(resumed.contains("--sandbox read-only --ask-for-approval never"));
+        assert!(!resumed.contains(" exec "));
+        assert!(!resumed.contains(" -o "));
+        assert!(!resumed.contains("--full-auto"));
         std::fs::remove_dir_all(fixture).unwrap();
     }
 
