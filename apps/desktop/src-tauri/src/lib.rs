@@ -1144,6 +1144,69 @@ async fn git_changes(
     .await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryQuery {
+    worktree: Option<String>,
+    repo: Option<String>,
+    limit: Option<usize>,
+    commit: Option<String>,
+    path: Option<String>,
+}
+
+/// All history commands resolve repository paths through the same readable component snapshot.
+#[tauri::command]
+async fn git_history(
+    project_id: String,
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+    query: HistoryQuery,
+) -> CmdResult<serde_json::Value> {
+    let HistoryQuery {
+        worktree,
+        repo,
+        limit,
+        commit,
+        path,
+    } = query;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || {
+        let root = access
+            .root()
+            .ok_or_else(|| "No project is open".to_string())?;
+        let components = readable_components(&access, components);
+        let (root, components) =
+            git::in_worktree(&root, components, worktree.as_deref()).map_err(err)?;
+        let repos = git::history_repos(&root, &components);
+        let Some(repo) = repo else {
+            return serde_json::to_value(
+                repos
+                    .iter()
+                    .map(|g| g.root.to_string_lossy())
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(err);
+        };
+        let repo = repos
+            .iter()
+            .find(|g| g.root.to_string_lossy() == repo)
+            .ok_or_else(|| "Repository is not readable".to_string())?;
+        if let Some(commit) = commit {
+            if let Some(path) = path {
+                serde_json::to_value(git::history_diff(repo, &commit, &path).map_err(err)?)
+                    .map_err(err)
+            } else {
+                serde_json::to_value(git::history_files(repo, &commit).map_err(err)?).map_err(err)
+            }
+        } else {
+            serde_json::to_value(git::history(&repo.root, limit.unwrap_or(50)).map_err(err)?)
+                .map_err(err)
+        }
+    })
+    .await
+}
+
 /// The worktrees of the project root's repo, for review.
 #[tauri::command]
 async fn git_worktrees(
@@ -2652,6 +2715,7 @@ pub fn run() {
                 task_activate,
                 git_changes,
                 git_diff,
+                git_history,
                 git_review,
                 git_worktrees,
                 git_branches,

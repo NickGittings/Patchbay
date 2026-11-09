@@ -1,0 +1,90 @@
+.commit-history {
+  border-top: 1px solid var(--border, #383838);
+  margin-top: 16px;
+  padding-top: 8px;
+}
+.commit-history > header {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 8px;
+}
+.commit-history select,
+.commit-details select {
+  max-width: 100%;
+}
+.commit-row {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  text-align: left;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+}
+.commit-row:hover,
+.commit-row.active {
+  background: var(--selection, #ffffff12);
+}
+.commit-row svg {
+  flex-shrink: 0;
+}
+.commit-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  gap: 3px;
+}
+.commit-subject,
+.commit-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-meta {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.commit-details {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.commit-details > header {
+  padding: 12px;
+  border-bottom: 1px solid var(--border, #383838);
+  max-height: 40%;
+  overflow: auto;
+}
+.commit-details pre {
+  white-space: pre-wrap;
+  font: inherit;
+}
+.commit-details .diff-view {
+  flex: 1;
+  min-height: 0;
+}
+.commit-files {
+  margin: 4px 8px 8px 20px;
+  max-height: 180px;
+  overflow: auto;
+}
+.commit-files button {
+  display: block;
+  text-align: left;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-files span {
+  opacity: 0.6;
+  font-size: 10px;
+}
+.commit-files button.active {
+  background: var(--selection, #ffffff12);
+}

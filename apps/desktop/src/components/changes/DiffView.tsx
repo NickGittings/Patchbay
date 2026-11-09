@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { stepKey } from '../../lib/changeNav'
 import { hunkRange, parsePatch } from '../../lib/diff'
 import { componentPaths } from '../../lib/git'
+import { historyRequest, type HistorySelection } from '../../lib/history'
 import { gitDiff } from '../../lib/ipc'
 import { KIND_LABEL, splitPath } from '../../lib/review'
 import type { ChangedFile, FileDiff } from '../../types'
@@ -82,6 +83,7 @@ function FileHeader({
  * on every Git refresh, so an edit that leaves the file list unchanged still reloads the diff.
  */
 export default function DiffView({
+  history,
   componentId,
   file,
   revision,
@@ -89,6 +91,7 @@ export default function DiffView({
   lineFocus,
   nav,
 }: {
+  history?: HistorySelection
   lineFocus?: number
   /** Previous/next buttons in the header, and ←/→ while the diff has focus. */
   nav?: DiffNav
@@ -104,11 +107,15 @@ export default function DiffView({
   const [diff, setDiff] = useState<{ key: string; diff: FileDiff } | null>(null)
   // Keyed like the diff, so one file's error never shows under another's header.
   const [failure, setFailure] = useState<{ key: string; error: string } | null>(null)
-  const key = `${worktree ?? ''}\0${path ?? ''}`
+  const key = `${history?.repo ?? ''}\0${history?.commit.hash ?? ''}\0${worktree ?? ''}\0${path ?? ''}`
   useEffect(() => {
     if (!path) return
     let disposed = false
-    void gitDiff(componentPaths(), componentId, path, oldPath, worktree)
+    void (
+      history
+        ? historyRequest<FileDiff>(worktree, history.repo, undefined, history.commit.hash, path)
+        : gitDiff(componentPaths(), componentId, path, oldPath, worktree)
+    )
       .then((d) => {
         if (!disposed) {
           setDiff({ key, diff: d })
@@ -121,7 +128,7 @@ export default function DiffView({
     return () => {
       disposed = true
     }
-  }, [componentId, path, oldPath, worktree, key, revision])
+  }, [componentId, path, oldPath, worktree, key, revision, history])
 
   const loaded = diff?.key === key ? diff.diff : null
   const error = failure?.key === key ? failure.error : ''

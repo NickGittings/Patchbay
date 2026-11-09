@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
@@ -129,6 +129,210 @@ pub struct ChangedFile {
     pub added: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub removed: Option<u32>,
+}
+
+/// Read-only repository history, independent of component filters.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCommit {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub timestamp: i64,
+    pub message: String,
+    pub refs: String,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub commits: Vec<HistoryCommit>,
+    pub head: String,
+    pub more: bool,
+}
+
+/// Repositories and readable folder prefixes from the project/component snapshot.
+/// Discovering a containing repo does not grant access to its other folders.
+pub fn history_repos(root: &Path, components: &[(String, PathBuf)]) -> Vec<RepoGroup> {
+    let mut repos = group_by_repo(&with_project_scope(root, components));
+    if let Some(repo) = repo_root(root)
+        && let Some(index) = repos.iter().position(|g| g.root == repo)
+    {
+        let project = repos.remove(index);
+        repos.insert(0, project);
+    }
+    repos
+}
+
+pub fn history(repo: &Path, limit: usize) -> Result<HistoryPage> {
+    let head = run(git(repo).args(["rev-parse", "--verify", "HEAD"]))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let count = limit.clamp(1, 5000);
+    let out = run(git(repo)
+        .args([
+            "log",
+            "--no-show-signature",
+            "--all",
+            "--topo-order",
+            "--date-order",
+            "--format=%H%x00%P%x00%an%x00%ct%x00%B%x00%D%x00",
+            &format!("-{}", count + 1),
+        ])
+        .args(if head.is_empty() {
+            vec![]
+        } else {
+            vec!["HEAD"]
+        }))?;
+    let fields: Vec<_> = out.split('\0').collect();
+    let mut commits = Vec::new();
+    for f in fields.chunks(6) {
+        if f.len() < 6 || f[0].trim().is_empty() {
+            continue;
+        }
+        commits.push(HistoryCommit {
+            hash: f[0].trim().into(),
+            parents: f[1].split_whitespace().map(String::from).collect(),
+            author: f[2].into(),
+            timestamp: f[3].parse().unwrap_or(0),
+            message: f[4].trim_end().into(),
+            refs: f[5].into(),
+        });
+    }
+    let more = commits.len() > count;
+    commits.truncate(count);
+    Ok(HistoryPage {
+        commits,
+        head,
+        more,
+    })
+}
+
+fn history_base(repo: &Path, hash: &str) -> Result<String> {
+    if !matches!(hash.len(), 40 | 64) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("Expected a full commit object ID");
+    }
+    run(git(repo).args(["cat-file", "-e", &format!("{hash}^{{commit}}")]))?;
+    let parents = run(git(repo).args(["rev-list", "--parents", "-n", "1", hash]))?;
+    if let Some(parent) = parents.split_whitespace().nth(1) {
+        return Ok(parent.into());
+    }
+    Ok(run(git(repo)
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .stdin(Stdio::null()))?
+    .trim()
+    .into())
+}
+
+pub fn history_files(group: &RepoGroup, hash: &str) -> Result<Vec<ChangedFile>> {
+    let repo = &group.root;
+    let base = history_base(repo, hash)?;
+    let names = run(git(repo).args([
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "-M",
+        "--name-status",
+        "-z",
+        &base,
+        hash,
+        "--",
+    ]))?;
+    let stats = run(git(repo).args([
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "-M",
+        "--numstat",
+        "-z",
+        &base,
+        hash,
+        "--",
+    ]))?;
+    let counts = parse_numstat(&stats);
+    Ok(committed_changes(&names)
+        .into_iter()
+        // Both sides of a rename must be readable: its patch can expose the
+        // old path and content even when the destination is in a granted folder.
+        .filter(|(_, old, path)| {
+            owner_of(path, &group.members).is_some()
+                && old.is_none_or(|old| owner_of(old, &group.members).is_some())
+        })
+        .map(|(kind, old, path)| {
+            let count = counts.get(path);
+            ChangedFile {
+                path: path.into(),
+                kind,
+                old_path: old.map(String::from),
+                modified_ms: None,
+                added: count.map(|c| c.0),
+                removed: count.map(|c| c.1),
+            }
+        })
+        .collect())
+}
+
+pub fn history_diff(group: &RepoGroup, hash: &str, path: &str) -> Result<FileDiff> {
+    let repo = &group.root;
+    let base = history_base(repo, hash)?;
+    let file = history_files(group, hash)?
+        .into_iter()
+        .find(|f| f.path == path)
+        .ok_or_else(|| anyhow!("File is not part of this commit or is not readable"))?;
+    let mut args: Vec<String> = [
+        "-c",
+        "core.quotePath=true",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-relative",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--submodule=short",
+        "-M",
+    ]
+    .map(String::from)
+    .into();
+    let old = file.old_path.as_deref().unwrap_or(&file.path);
+    let header = format!(
+        "diff --git {} {}\n",
+        quote_diff_path(&format!("a/{old}")),
+        quote_diff_path(&format!("b/{}", file.path)),
+    );
+    args.extend([base, hash.into(), "--".into(), file.path]);
+    args.extend(file.old_path);
+    // Literal pathspecs still recurse when a historical file path is now a
+    // directory. Select only the exact pair's section, before applying the cap.
+    run_capped_matching(repo, &args, &[0], Some(header.as_bytes()))
+}
+
+/// Git's C-style path quoting with core.quotePath=true. Spaces are unquoted.
+fn quote_diff_path(path: &str) -> String {
+    if !path
+        .bytes()
+        .any(|b| !(32..127).contains(&b) || matches!(b, b'"' | b'\\'))
+    {
+        return path.into();
+    }
+    let mut out = String::from("\"");
+    for b in path.bytes() {
+        match b {
+            b'\x07' => out.push_str("\\a"),
+            b'\x08' => out.push_str("\\b"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            b'\x0b' => out.push_str("\\v"),
+            b'\x0c' => out.push_str("\\f"),
+            b'\r' => out.push_str("\\r"),
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            32..=126 => out.push(char::from(b)),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A file's diff against `HEAD`.
@@ -836,27 +1040,71 @@ fn base_tree(repo: &Path) -> Result<String> {
 
 /// Run git in `repo`, keeping at most [`MAX_DIFF_BYTES`] of its output.
 fn run_capped(repo: &Path, args: &[String], ok: &[i32]) -> Result<FileDiff> {
+    run_capped_matching(repo, args, ok, None)
+}
+
+/// Keep only the diff section starting with `header`, if given. Discard other
+/// sections without spending the selected file's output budget.
+fn run_capped_matching(
+    repo: &Path,
+    args: &[String],
+    ok: &[i32],
+    header: Option<&[u8]>,
+) -> Result<FileDiff> {
     let mut child = git(repo)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("git diff has no output"))?,
+    );
     let mut bytes = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("git diff has no output"))?
-        .take(MAX_DIFF_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    let truncated = bytes.len() > MAX_DIFF_BYTES;
-    if truncated {
-        bytes.truncate(MAX_DIFF_BYTES);
+    let mut selected = header.is_none();
+    let mut line_start = true;
+    let mut stopped = false;
+    let mut truncated = false;
+    loop {
+        let mut line = Vec::new();
+        // Bound even a single very long line, including lines being discarded.
+        let read = stdout
+            .by_ref()
+            .take(MAX_DIFF_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if line_start && line.starts_with(b"diff --git ") && header.is_some() {
+            if selected && header != Some(line.as_slice()) {
+                stopped = true;
+                break;
+            }
+            selected = header == Some(line.as_slice());
+        }
+        line_start = line.ends_with(b"\n");
+        if selected {
+            let remaining = MAX_DIFF_BYTES - bytes.len();
+            bytes.extend_from_slice(&line[..line.len().min(remaining)]);
+            if line.len() > remaining {
+                truncated = true;
+                stopped = true;
+                break;
+            }
+        }
+    }
+    if stopped {
         let _ = child.kill();
     }
     let status = child.wait()?;
-    if !truncated && !status.code().is_some_and(|c| ok.contains(&c)) {
+    if !stopped && !status.code().is_some_and(|c| ok.contains(&c)) {
         bail!("git diff failed ({status})");
+    }
+    if header.is_some() && !selected {
+        bail!("Git did not return a patch for the selected file pair");
     }
     let patch = String::from_utf8_lossy(&bytes).into_owned();
     let binary = patch
@@ -1128,6 +1376,363 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn history_handles_roots_renames_deletions_and_literal_paths() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        let first = history(&f.0, 1).unwrap();
+        let hash = &first.commits[0].hash;
+        assert!(
+            history_diff(&history_repos(&f.0, &[])[0], hash, "README")
+                .unwrap()
+                .patch
+                .contains("+hi")
+        );
+        assert!(history_diff(&history_repos(&f.0, &[])[0], hash, "../outside").is_err());
+        assert!(history_files(&history_repos(&f.0, &[])[0], "HEAD").is_err());
+        assert!(history_files(&history_repos(&f.0, &[])[0], &"0".repeat(40)).is_err());
+        assert!(run_git(&f.0, &["mv", "README", "[literal]"]));
+        assert!(run_git(&f.0, &["commit", "-qm", "rename"]));
+        let page = history(&f.0, 1).unwrap();
+        assert!(page.more);
+        let files = history_files(&history_repos(&f.0, &[])[0], &page.head).unwrap();
+        assert_eq!(files[0].kind, ChangeKind::Renamed);
+        assert_eq!(files[0].old_path.as_deref(), Some("README"));
+        assert!(
+            history_diff(&history_repos(&f.0, &[])[0], &page.head, "[literal]")
+                .unwrap()
+                .patch
+                .contains("rename")
+        );
+        assert!(run_git(&f.0, &["rm", "[literal]"]));
+        assert!(run_git(&f.0, &["commit", "-qm", "delete"]));
+        let page = history(&f.0, 50).unwrap();
+        assert_eq!(
+            history_files(&history_repos(&f.0, &[])[0], &page.head).unwrap()[0].kind,
+            ChangeKind::Deleted
+        );
+        assert!(
+            history_diff(&history_repos(&f.0, &[])[0], &page.head, "[literal]")
+                .unwrap()
+                .patch
+                .contains("-hi")
+        );
+    }
+
+    #[test]
+    fn history_includes_branches_merges_and_detached_head() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        assert!(run_git(&f.0, &["branch", "side"]));
+        f.write("main", "main");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "main change"]));
+        let main = history(&f.0, 50).unwrap().head;
+        assert!(run_git(&f.0, &["checkout", "-q", "side"]));
+        f.write("side", "side");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "side change"]));
+        assert_eq!(history(&f.0, 50).unwrap().commits.len(), 3);
+        assert!(run_git(&f.0, &["merge", "--no-ff", "-qm", "merge", &main]));
+        let page = history(&f.0, 50).unwrap();
+        assert_eq!(page.commits[0].parents.len(), 2);
+        let files = history_files(&history_repos(&f.0, &[])[0], &page.head).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "main");
+        assert!(run_git(&f.0, &["checkout", "--detach", "-q", &page.head]));
+        assert_eq!(history(&f.0, 50).unwrap().head, page.head);
+    }
+
+    #[test]
+    fn history_diffs_binary_and_caps_large_files() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("binary", "a\0b");
+        f.write("large", &"x\n".repeat(MAX_DIFF_BYTES));
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "files"]));
+        let head = history(&f.0, 50).unwrap().head;
+        assert!(
+            history_diff(&history_repos(&f.0, &[])[0], &head, "binary")
+                .unwrap()
+                .binary
+        );
+        assert!(
+            history_diff(&history_repos(&f.0, &[])[0], &head, "large")
+                .unwrap()
+                .truncated
+        );
+    }
+
+    #[test]
+    fn history_repositories_follow_worktree_mapping() {
+        let f = Fixture::new();
+        assert!(f.repo("project"));
+        assert!(f.repo("external"));
+        let root = f.0.join("project").canonicalize().unwrap();
+        let external = f.0.join("external").canonicalize().unwrap();
+        let target = f.0.join("task");
+        assert!(run_git(
+            &root,
+            &["worktree", "add", "-qb", "task", target.to_str().unwrap()]
+        ));
+        let (mapped, components) = in_worktree(
+            &root,
+            vec![
+                ("local".into(), root.clone()),
+                ("external".into(), external.clone()),
+            ],
+            Some(target.to_str().unwrap()),
+        )
+        .unwrap();
+        let repos = history_repos(&mapped, &components);
+        assert_eq!(repos[0].root, target);
+        // Other repositories are not mapped into a task worktree.
+        assert!(!repos.iter().any(|g| g.root == external));
+        assert!(
+            history_repos(&root, &[("external".into(), external.clone())])
+                .iter()
+                .any(|g| g.root == external)
+        );
+        assert!(!repos.iter().any(|g| g.root == root));
+        assert_eq!(history(&mapped, 50).unwrap().commits.len(), 1);
+    }
+
+    #[test]
+    fn history_preserves_project_and_external_folder_grants() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("app/visible", "visible content");
+        f.write("appish/secret", "private content");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "folders"]));
+        assert!(f.repo("external"));
+        f.write("external/shared/visible", "shared content");
+        f.write("external/private/secret", "external private content");
+        let external = f.0.join("external");
+        assert!(run_git(&external, &["add", "."]));
+        assert!(run_git(&external, &["commit", "-qm", "external folders"]));
+        let root = f.0.join("app");
+        let repos = history_repos(&root, &[("external".into(), external.join("shared"))]);
+        assert_eq!(repos.len(), 2);
+        for (group, visible, secret) in [
+            (&repos[0], "app/visible", "appish/secret"),
+            (&repos[1], "shared/visible", "private/secret"),
+        ] {
+            let head = history(&group.root, 50).unwrap().head;
+            let files = history_files(group, &head).unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path, visible);
+            assert!(
+                history_diff(group, &head, visible)
+                    .unwrap()
+                    .patch
+                    .contains("content")
+            );
+            assert!(history_diff(group, &head, secret).is_err());
+            // Explicitly granting the containing repo permits the sibling file.
+            let whole_repo = history_repos(&group.root, &[]).remove(0);
+            assert!(history_diff(&whole_repo, &head, secret).is_ok());
+        }
+    }
+
+    #[test]
+    fn history_preserves_folder_grants_in_linked_worktrees() {
+        let f = Fixture::new();
+        assert!(f.repo("project"));
+        f.write("project/app/visible", "visible content");
+        f.write("project/private/secret", "private content");
+        let repo = f.0.join("project");
+        assert!(run_git(&repo, &["add", "."]));
+        assert!(run_git(&repo, &["commit", "-qm", "folders"]));
+        let target = f.0.join("task");
+        assert!(run_git(
+            &repo,
+            &["worktree", "add", "-qb", "task", target.to_str().unwrap()]
+        ));
+        let (root, components) =
+            in_worktree(&repo.join("app"), vec![], Some(target.to_str().unwrap())).unwrap();
+        let group = history_repos(&root, &components).remove(0);
+        assert_eq!(group.root, target);
+        let head = history(&group.root, 50).unwrap().head;
+        let files = history_files(&group, &head).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "app/visible");
+        assert!(history_diff(&group, &head, "private/secret").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_keeps_both_sections_of_a_file_type_change() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        fs::remove_file(f.0.join("README")).unwrap();
+        std::os::unix::fs::symlink("target", f.0.join("README")).unwrap();
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "file becomes symlink"]));
+        let group = history_repos(&f.0, &[]).remove(0);
+        let head = history(&f.0, 50).unwrap().head;
+        let files = history_files(&group, &head).unwrap();
+        assert_eq!(files[0].kind, ChangeKind::TypeChanged);
+        let diff = history_diff(&group, &head, "README").unwrap();
+        assert!(diff.patch.contains("-hi"));
+        assert!(diff.patch.contains("+target"));
+    }
+
+    #[test]
+    fn history_rejects_renames_across_granted_boundaries() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("app/exported", "public content");
+        f.write("private/imported", "private content");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "before renames"]));
+        assert!(run_git(&f.0, &["mv", "app/exported", "private/exported"]));
+        assert!(run_git(&f.0, &["mv", "private/imported", "app/imported"]));
+        assert!(run_git(&f.0, &["commit", "-qm", "cross boundaries"]));
+        let head = history(&f.0, 50).unwrap().head;
+        let group = history_repos(&f.0.join("app"), &[]).remove(0);
+        assert!(history_files(&group, &head).unwrap().is_empty());
+        assert!(history_diff(&group, &head, "app/imported").is_err());
+        assert!(history_diff(&group, &head, "private/exported").is_err());
+    }
+
+    #[test]
+    fn history_selects_only_the_renamed_pair_when_old_path_is_a_directory() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("module", &"original line\n".repeat(100));
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "module file"]));
+        fs::rename(f.0.join("module"), f.0.join("temporary")).unwrap();
+        fs::create_dir(f.0.join("module")).unwrap();
+        fs::rename(f.0.join("temporary"), f.0.join("module/index")).unwrap();
+        f.write(
+            "module/index",
+            &format!("{}selected change\n", "original line\n".repeat(100)),
+        );
+        // Sort a large unrelated patch before the selected section to ensure
+        // neither its content nor its truncation consumes the selected budget.
+        f.write("module/aaa", &"unrelated secret\n".repeat(MAX_DIFF_BYTES));
+        f.write("module/other", "other secret\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "file becomes directory"]));
+        let group = history_repos(&f.0, &[]).remove(0);
+        let head = history(&f.0, 50).unwrap().head;
+        let files = history_files(&group, &head).unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .find(|f| f.path == "module/index")
+                .unwrap()
+                .kind,
+            ChangeKind::Renamed
+        );
+        let diff = history_diff(&group, &head, "module/index").unwrap();
+        assert!(diff.patch.contains("rename from module\n"));
+        assert!(diff.patch.contains("+selected change"));
+        assert_eq!(diff.patch.matches("diff --git ").count(), 1);
+        assert!(!diff.patch.contains("secret"));
+        assert!(!diff.truncated);
+    }
+
+    #[test]
+    fn history_selects_quoted_paths_independently_of_diff_configuration() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        let paths = [
+            "a space",
+            "[literal]",
+            "a\tfile",
+            "a\nfile",
+            "a\"file",
+            "a\\file",
+            "café",
+        ];
+        for path in paths {
+            f.write(path, "selected content\n");
+        }
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "quoted paths"]));
+        assert!(run_git(&f.0, &["config", "core.quotePath", "false"]));
+        assert!(run_git(&f.0, &["config", "diff.noprefix", "true"]));
+        assert!(run_git(&f.0, &["config", "diff.relative", "true"]));
+        let group = history_repos(&f.0, &[]).remove(0);
+        let head = history(&f.0, 50).unwrap().head;
+        for path in paths {
+            let diff = history_diff(&group, &head, path).unwrap();
+            assert!(
+                diff.patch.contains("+selected content"),
+                "missing patch for {path:?}: {}",
+                diff.patch
+            );
+            assert_eq!(diff.patch.matches("diff --git ").count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_ignores_configured_signature_output() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        let key = f.0.join("signing_key");
+        assert!(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&key)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let allowed = f.0.join("allowed_signers");
+        fs::write(
+            &allowed,
+            format!(
+                "t@t {}",
+                fs::read_to_string(key.with_extension("pub")).unwrap()
+            ),
+        )
+        .unwrap();
+        for (name, value) in [
+            ("gpg.format", "ssh"),
+            ("gpg.ssh.program", "ssh-keygen"),
+            ("user.signingkey", key.to_str().unwrap()),
+            ("gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()),
+            ("log.showSignature", "true"),
+        ] {
+            assert!(run_git(&f.0, &["config", name, value]));
+        }
+        assert!(run_git(
+            &f.0,
+            &[
+                "-c",
+                "commit.gpgsign=true",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "signed commit"
+            ]
+        ));
+        let raw = run(git(&f.0).args(["log", "-1", "--format=%H"])).unwrap();
+        assert!(
+            raw.contains("Good"),
+            "signature verification did not run: {raw}"
+        );
+        let page = history(&f.0, 50).unwrap();
+        assert_eq!(page.commits[0].hash, page.head);
+        assert_eq!(page.commits[0].parents, [page.commits[1].hash.clone()]);
+        assert_eq!(page.commits[0].message, "signed commit");
+        let group = history_repos(&f.0, &[]).remove(0);
+        assert!(history_files(&group, &page.commits[0].hash).is_ok());
+    }
+
+    #[test]
+    fn history_empty_repository() {
+        let f = Fixture::new();
+        assert!(run_git(&f.0, &["init", "-q"]));
+        assert!(history(&f.0, 50).unwrap().commits.is_empty());
     }
 
     /// [`diff`] of a listed file in the open worktree.
