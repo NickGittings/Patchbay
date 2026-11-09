@@ -31,7 +31,7 @@ import {
   useRunningReviewLanes,
 } from '../lib/reviewAgents'
 import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
-import { gitWorktrees, mergeConflicts } from '../lib/ipc'
+import { gitBranches, gitWorktrees, mergeConflicts } from '../lib/ipc'
 import { mergeNow, resumeAuto } from '../lib/auto'
 import {
   missingHooks,
@@ -279,9 +279,17 @@ export default function SimpleChat({
           setDialog('review')
           return
         }
-        const request = simpleReviewRequest(source, reviewBase)
+        const branches = await gitBranches(projectId)
+        const current = useStore.getState()
+        if (current.project?.id !== projectId || current.activeTask !== task)
+          throw new Error('The worktree changed. Choose Review in the intended chat.')
+        const request = simpleReviewRequest(source, reviewBase, branches)
+        if (!request) {
+          setDialog('review')
+          return
+        }
         const { started, errors } = await startSimpleReview(
-          useStore.getState().toProject(),
+          current.toProject(),
           request,
           roleDevices(s.devices, s.agentRoles, 'review'),
         )

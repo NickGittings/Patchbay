@@ -22,12 +22,23 @@ const snapshot = {
 } as TerminalSnapshot
 
 test('Review explains missing worktrees, detached HEAD and unresolved bases', () => {
-  expect(() => simpleReviewRequest(undefined, 'main')).toThrow('worktree to load')
-  expect(() => simpleReviewRequest({ path: '/t' }, 'main')).toThrow('HEAD is detached')
-  expect(() => simpleReviewRequest({ path: '/t', branch: 'feature' }, undefined)).toThrow(
+  expect(() => simpleReviewRequest(undefined, 'main', ['main'])).toThrow('worktree to load')
+  expect(() => simpleReviewRequest({ path: '/t' }, 'main', ['main'])).toThrow('HEAD is detached')
+  expect(() => simpleReviewRequest({ path: '/t', branch: 'feature' }, undefined, [])).toThrow(
     'Choose a review base in Options',
   )
-  expect(simpleReviewRequest({ path: '/t', branch: 'feature' }, 'main')).toEqual(request)
+  expect(simpleReviewRequest({ path: '/t', branch: 'feature' }, 'main', ['main'])).toEqual(request)
+})
+
+test('review again requires a new base when the saved branch was deleted or renamed', () => {
+  const source = { path: '/t', branch: 'feature' }
+  expect(simpleReviewRequest(source, 'release', ['feature', 'main', 'release'])).toEqual({
+    ...request,
+    base: 'release',
+  })
+  expect(simpleReviewRequest(source, 'release', ['feature', 'main'])).toBeUndefined()
+  expect(simpleReviewRequest(source, 'release', ['feature', 'main', 'renamed'])).toBeUndefined()
+  expect(simpleReviewRequest(source, 'feature', ['feature', 'main'])).toBeUndefined()
 })
 beforeEach(() => {
   vi.resetAllMocks()
