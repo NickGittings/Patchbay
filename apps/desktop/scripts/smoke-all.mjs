@@ -91,6 +91,7 @@ const SCRIPTS = {
     ),
     run: ['scripts/hooks-home.mjs'],
   },
+  history: smoke('history.js'),
   stories: smoke('stories.js'),
   merge: smoke(
     'merge.js',

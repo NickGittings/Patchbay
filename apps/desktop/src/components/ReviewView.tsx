@@ -1,3 +1,6 @@
+import CommitHistory from './changes/CommitHistory'
+import CommitDetails from './changes/CommitDetails'
+import type { HistorySelection } from '../lib/history'
 import { useStepKeys } from './changes/useStepKeys'
 import { changeGroups } from '../lib/changeGroups'
 import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
@@ -41,6 +44,7 @@ const WORKTREE_POLL_MS = 5000
  * chooses which worktree of the repo is reviewed.
  */
 export default function ReviewView() {
+  const [history, setHistory] = useState<HistorySelection | null>(null)
   const revision = useStore((s) => s.gitChanges)
   const nodes = useStore((s) => s.nodes)
   // Selecting or dragging replaces nodes and edges; refetch only when folders or links change.
@@ -213,6 +217,7 @@ export default function ReviewView() {
   // Arrows step through the files of expanded groups, in the order the list shows them.
   const order = changeRefs(shown.filter((g) => !collapsed[g.id]))
   const step = (delta: -1 | 1) => {
+    if (history) return
     const next = stepChange(order, current, delta)
     if (!next) return
     setSelected(next)
@@ -425,11 +430,12 @@ export default function ReviewView() {
                           files={g.files}
                           base={g.base}
                           selected={
-                            pane !== 'findings' && current?.componentId === g.id
+                            !history && pane !== 'findings' && current?.componentId === g.id
                               ? current.path
                               : undefined
                           }
                           onSelect={(path) => {
+                            setHistory(null)
                             setSelected({ componentId: g.id, path })
                             setPane('diff')
                           }}
@@ -441,6 +447,14 @@ export default function ReviewView() {
                     </section>
                   )
                 })}
+                <CommitHistory
+                  worktree={target}
+                  selected={history}
+                  onSelect={(value) => {
+                    setHistory(value)
+                    if (value) setPane('diff')
+                  }}
+                />
                 {review && affected.length > 0 && (
                   <>
                     <div className="panel-title review-affected-title">May be affected</div>
@@ -474,7 +488,9 @@ export default function ReviewView() {
             <Separator className="separator" />
             <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
               <div ref={pane === 'findings' ? undefined : diffPane} className="review-pane">
-                {pane === 'findings' ? (
+                {history && pane === 'diff' ? (
+                  <CommitDetails onSelect={setHistory} selection={history} worktree={target} />
+                ) : pane === 'findings' ? (
                   <FindingsPanel
                     loaded={findings}
                     status={status}

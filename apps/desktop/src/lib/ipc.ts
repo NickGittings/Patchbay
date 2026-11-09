@@ -753,3 +753,13 @@ export const validationAgentStart = (
     resume,
     componentIds,
   })
+
+/** Read-only history; omitted repo lists the authorized repositories. */
+export const gitHistory = <T>(
+  components: { id: string; path: string }[],
+  worktree?: string,
+  repo?: string,
+  limit?: number,
+  commit?: string,
+  path?: string,
+) => invoke<T>('git_history', { components, query: { worktree, repo, limit, commit, path } })

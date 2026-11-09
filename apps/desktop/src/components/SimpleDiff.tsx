@@ -1,4 +1,7 @@
-import { useRef } from 'react'
+import CommitHistory from './changes/CommitHistory'
+import CommitDetails from './changes/CommitDetails'
+import type { HistorySelection } from '../lib/history'
+import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
 import { useStore } from '../store'
@@ -17,6 +20,7 @@ export default function SimpleDiff({
   selection?: Selection | null
   reader: ReturnType<typeof useSimpleData>
 }) {
+  const [history, setHistory] = useState<HistorySelection | null>(null)
   const task = useStore((s) => s.activeTask)
   const { groups, files: order } = reader
   const file = selection
@@ -25,6 +29,7 @@ export default function SimpleDiff({
     : null
   const patch = useSimpleUi.getState().patch
   const step = (delta: -1 | 1) => {
+    if (history) return
     const next = stepChange(order, selection, delta)
     if (next) patch(scopeKey, { diff: next })
   }
@@ -44,16 +49,22 @@ export default function SimpleDiff({
               <ChangeList
                 files={g.files}
                 base={g.base}
-                selected={g.id === selection?.componentId ? selection.path : undefined}
-                onSelect={(path) => patch(scopeKey, { diff: { componentId: g.id, path } })}
+                selected={!history && g.id === selection?.componentId ? selection.path : undefined}
+                onSelect={(path) => {
+                  setHistory(null)
+                  patch(scopeKey, { diff: { componentId: g.id, path } })
+                }}
                 onStep={step}
                 task={task}
                 worktree={reader.source?.path}
               />
             </section>
           ))}
+          <CommitHistory worktree={reader.source?.path} selected={history} onSelect={setHistory} />
         </aside>
-        {file && selection ? (
+        {history ? (
+          <CommitDetails onSelect={setHistory} selection={history} worktree={reader.source?.path} />
+        ) : file && selection ? (
           <DiffView
             componentId={selection.componentId}
             file={file}
