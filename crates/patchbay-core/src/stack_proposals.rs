@@ -24,8 +24,8 @@ pub const READY_LIMIT: usize = 200;
 pub const REASON_LIMIT: usize = 1000;
 const PROMPT: &str = "Work out the local stack described in your Patchbay briefing and submit it with propose-stack.";
 
-/// One terminal of the stack: an existing one by `terminal`, or a new one with
-/// `name` and `command`.
+/// One terminal of the stack: an existing one by `terminal`, optionally replacing
+/// its `command`, or a new one with `name` and `command`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposedTerminal {
@@ -54,6 +54,9 @@ pub struct ProposedSetup {
 pub struct StackProposal {
     pub version: u32,
     pub name: String,
+    /// Stable id of the stack to replace; omitted by older, additive proposals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_id: Option<String>,
     #[serde(default)]
     pub ordered_startup: bool,
     pub terminals: Vec<ProposedTerminal>,
@@ -70,6 +73,8 @@ pub struct Pending {
     pub session_id: String,
     pub submitted_ms: u64,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_id: Option<String>,
     pub ordered_startup: bool,
     pub terminals: Vec<ProposedTerminal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,8 +115,14 @@ impl StackProposal {
             !self.name.trim().is_empty() && one_line(&self.name, NAME_LIMIT),
             "Name the stack in one line of at most {NAME_LIMIT} characters"
         );
+        if let Some(id) = &self.stack_id {
+            ensure!(
+                project.groups.iter().any(|g| &g.id == id),
+                "Unknown stack {id}"
+            );
+        }
         ensure!(
-            !self.terminals.is_empty() || self.worktree_setup.is_some(),
+            !self.terminals.is_empty() || self.worktree_setup.is_some() || self.stack_id.is_some(),
             "The proposal needs terminals or worktree preparation"
         );
         if let Some(setup) = &self.worktree_setup {
@@ -138,7 +149,13 @@ impl StackProposal {
                 anyhow::bail!("{at}: unknown component {}", t.component);
             };
             match (&t.terminal, &t.name, &t.command) {
-                (Some(id), None, None) => {
+                (Some(id), None, command) => {
+                    if let Some(command) = command {
+                        ensure!(
+                            !command.trim().is_empty() && one_line(command, COMMAND_LIMIT),
+                            "{at}: commands are one line of at most {COMMAND_LIMIT} characters"
+                        );
+                    }
                     let existing = component.terminals.iter().find(|x| &x.id == id);
                     ensure!(existing.is_some(), "{at}: unknown terminal {id}");
                     ensure!(
@@ -219,6 +236,7 @@ fn submit_in(
         session_id: session.into(),
         submitted_ms: now_ms,
         name: proposal.name.trim().into(),
+        stack_id: proposal.stack_id.clone(),
         ordered_startup: proposal.ordered_startup,
         worktree_setup: proposal.worktree_setup.as_ref().map(|setup| ProposedSetup {
             command: setup.command.trim().into(),
@@ -312,6 +330,12 @@ fn describe(t: &TerminalSpec) -> String {
 /// dependencies and stacks already on the map, and how to submit.
 #[must_use]
 pub fn stack_context(project: &Project) -> String {
+    stack_context_for(project, None)
+}
+
+/// Briefing for a new stack or a replacement of the stack with `stack_id`.
+#[must_use]
+pub fn stack_context_for(project: &Project, stack_id: Option<&str>) -> String {
     let mut out = format!(
         "# Patchbay stack detection\n\nProject: {}\nRoot: {}\n\n## Components and their terminals\n\n",
         project.name, project.root
@@ -341,7 +365,21 @@ pub fn stack_context(project: &Project) -> String {
         out.push_str("None.\n");
     }
     for g in &project.groups {
-        let _ = writeln!(out, "- {}: {}", g.name, g.component_ids.join(", "));
+        let _ = writeln!(
+            out,
+            "- {}: {} (id `{}`, orderedStartup: {}, readiness timeout: {}s)",
+            g.name,
+            g.component_ids.join(", "),
+            g.id,
+            g.ordered_startup,
+            g.readiness_timeout_seconds
+        );
+    }
+    if let Some(id) = stack_id {
+        let _ = writeln!(
+            out,
+            "\n## Replace stack `{id}`\n\nInclude \"stackId\":\"{id}\" in your proposal. Correct or replace its commands, readiness conditions and component membership. Submit the complete resulting set of terminals, omitting obsolete ones; do not append duplicates. Reuse existing task terminal ids wherever possible. An empty set removes all members. The current configuration is listed above."
+        );
     }
     let _ = writeln!(
         out,
@@ -355,8 +393,9 @@ pub fn stack_context(project: &Project) -> String {
         "\nAlso inspect dependency installation, ignored environment files and generated assets needed \
          in a fresh worktree. Optionally propose worktreeSetup: {command, reason}, with file:line \
          evidence. The command runs once from the worktree root before implementation; use \
-         PATCHBAY_PROJECT_ROOT and PATCHBAY_WORKTREE_ROOT for paths when needed. Keep long-running \
-         services in terminals. Omit worktreeSetup when no preparation change is needed. \
+         PATCHBAY_PROJECT_ROOT and PATCHBAY_WORKTREE_ROOT for paths when needed. This is not a \
+         stack-start hook: starting a stack does not rerun worktreeSetup. Keep services and native \
+         app launchers in terminals. Omit worktreeSetup when no preparation change is needed. \
          Preparation-only proposals may use an empty terminals array. Never read or include secret \
          values. The user reviews preparation separately; applying never enables or runs it.\n"
     );
@@ -364,12 +403,31 @@ pub fn stack_context(project: &Project) -> String {
         out,
         "\n## Task\n\nWork out how a developer runs this project locally: the long-running \
          processes that must be up together, such as databases and queues (often in \
-         docker-compose files), API servers, workers and web or mobile dev servers. Read \
+         docker-compose files), API servers, workers, web or mobile dev servers, and native \
+         development apps and simulators. Read \
          README files, package scripts, Makefiles, Procfiles, docker-compose files and \
-         framework configuration. Prefer an existing task terminal that isn't a Validation \
-         one; propose a new one (with a name and a one-line command run from the component's \
+         framework configuration, including native project files and shared run schemes. \
+         Check whether local development requires Xcode, Simulator, Android Studio, or an emulator, \
+         even when the project has no backend or dev server. Verify installed native app bundle \
+         paths and executable availability using read-only checks before proposing commands. Names \
+         and locations vary by tool version (for example, DeviceHub.app versus Simulator.app); do \
+         not assume an app name from documentation is installed or registered with the OS launcher. \
+         Prefer verified bundle paths when name lookup may fail. Propose documented native app launchers \
+         as Development terminals so Start stack opens them; do not put them in worktreeSetup. \
+         When a GUI launch command hands off to another process, keep its terminal attached to the \
+         app (for example, use open -W on macOS); stack startup expects Development terminals to \
+         stay running. Leave readyWhen empty for GUI launchers without readiness output. \
+         Explain any manual destination selection or Run action still needed; opening an IDE or \
+         simulator does not build, install, or launch the project app. \
+         Prefer an existing task terminal that isn't a Validation \
+         one, supplying command to replace its faulty command when needed; propose a new one \
+         (with a name and a one-line command run from the component's \
          folder) only when none fits. \
-         Leave tests and linters out of service terminals; put necessary one-time preparation in worktreeSetup.\n\n\
+         Include repeatable dependency installation, generated assets, required builds and actual app \
+         launch in the Development command, chained with && so a failed preparation or build prevents launch. \
+         Commands run relative to the component in the selected worktree; never hard-code another checkout. \
+         Opening an IDE alone is not app launch. Report missing system tools, credentials and unavoidable \
+         manual steps in the reasons without reading secrets. Leave tests and linters out of service terminals.\n\n\
          For each terminal give `readyWhen`: text the process prints once it accepts \
          connections (matched case-insensitively, such as `ready to accept connections` or \
          `Listening on`), or an empty string when you can't tell. Set `orderedStartup` when \
@@ -398,13 +456,32 @@ pub fn prepare(
     preset: &TerminalSpec,
     policy: &dyn Policy,
 ) -> Result<(TerminalSpec, SessionSpec)> {
+    prepare_for(project, preset, None, policy)
+}
+
+/// Prepare detection targeting a stable stack id, failing if it no longer exists.
+///
+/// # Errors
+/// Fails for an unknown stack, invalid preset, briefing I/O or a rejected policy check.
+pub fn prepare_for(
+    project: &Project,
+    preset: &TerminalSpec,
+    stack_id: Option<&str>,
+    policy: &dyn Policy,
+) -> Result<(TerminalSpec, SessionSpec)> {
+    if let Some(id) = stack_id {
+        ensure!(
+            project.groups.iter().any(|g| g.id == id),
+            "Unknown stack {id}"
+        );
+    }
     let mut terminal = preset.clone();
     terminal.id = STACK_TERMINAL.into();
     terminal.name = format!("Detect stack · {}", preset.name);
     let spec = context::job_agent_spec(
         project,
         &terminal,
-        &stack_context(project),
+        &stack_context_for(project, stack_id),
         project.external_dirs(),
         MAP_SCOPE,
         PROMPT,
@@ -460,6 +537,14 @@ mod tests {
             (
                 json!([{"component":"api","terminal":"nope","reason":"x"}]),
                 "unknown terminal nope",
+            ),
+            (
+                json!([{"component":"api","terminal":"dev","command":" ","reason":"x"}]),
+                "commands are one line",
+            ),
+            (
+                json!([{"component":"api","terminal":"dev","command":"a\nb","reason":"x"}]),
+                "commands are one line",
             ),
             (
                 json!([{"component":"api","terminal":"agent","reason":"x"}]),
@@ -521,6 +606,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn replacement_targets_a_stable_id_and_persists_corrected_commands() {
+        let project = project();
+        let mut replacement = proposal(json!([{
+            "component":"api", "terminal":"dev", "command":" npm ci && npm run dev ",
+            "readyWhen":"", "reason":"package.json:3"
+        }]));
+        replacement.stack_id = Some("g".into());
+        replacement.name = "Corrected stack".into();
+        assert!(replacement.validate(&project).is_ok());
+        let store = std::env::temp_dir().join(format!("patchbay-stack-{}", uuid::Uuid::new_v4()));
+        let pending = submit_in(&store, &project, "s", &replacement, 1).unwrap();
+        assert_eq!(pending.stack_id.as_deref(), Some("g"));
+        assert_eq!(
+            pending.terminals[0].command.as_deref(),
+            Some("npm ci && npm run dev")
+        );
+        assert_eq!(read_in(&store, &project.root).unwrap(), Some(pending));
+        replacement.terminals.clear();
+        assert!(
+            replacement.validate(&project).is_ok(),
+            "can remove all members"
+        );
+        replacement.stack_id = Some("missing".into());
+        assert!(
+            replacement
+                .validate(&project)
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown stack")
+        );
+        let text = stack_context_for(&project, Some("g"));
+        assert!(text.contains("Include \"stackId\":\"g\""));
+        assert!(text.contains("omitting obsolete ones"));
+        assert!(text.contains("chained with &&"));
+        assert!(text.contains("selected worktree"));
+        let _ = std::fs::remove_dir_all(store);
     }
 
     #[test]
@@ -636,6 +760,15 @@ mod tests {
         assert!(text.contains("- Old: api"));
         assert!(text.contains("agent propose-stack --file -"));
         assert!(text.contains("worktreeSetup"));
+        assert!(text.contains("starting a stack does not rerun worktreeSetup"));
+        assert!(text.contains("Xcode, Simulator, Android Studio, or an emulator"));
+        assert!(text.contains("as Development terminals so Start stack opens them"));
+        assert!(text.contains("do not put them in worktreeSetup"));
+        assert!(text.contains("DeviceHub.app versus Simulator.app"));
+        assert!(text.contains("Verify installed native app bundle"));
+        assert!(text.contains("Prefer verified bundle paths when name lookup may fail"));
+        assert!(text.contains("open -W on macOS"));
+        assert!(text.contains("does not build, install, or launch the project app"));
         let mut configured = project();
         configured.worktree_setup = Some(crate::model::WorktreeSetup {
             command: "npm ci".into(),

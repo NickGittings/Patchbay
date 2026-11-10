@@ -8,6 +8,7 @@ import { useStore } from '../store'
 import {
   MAP_SCOPE,
   MAP_AGENT_TERMINAL,
+  STACK_AGENT_TERMINAL,
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
   sessionId,
@@ -31,6 +32,7 @@ vi.mock('./ipc', () => ({
   onTerminalEvent: vi.fn(async () => () => {}),
   planStart: vi.fn(),
   mapAgentStart: vi.fn(async () => ''),
+  stackAgentStart: vi.fn(async () => ''),
   taskRootStart: vi.fn(),
   extensionTerminalRun: vi.fn(),
   worktreeSetup: vi.fn(async () => null),
@@ -1428,4 +1430,33 @@ test('a signed-out restart keeps the existing process and does not save launch d
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(ipc.terminalStart).not.toHaveBeenCalled()
   expect(savePlanDraft).not.toHaveBeenCalled()
+})
+
+test('stack detection passes the selected stack id, retains it on restart and clears it for new detection', async () => {
+  const codex = { id: 'codex', name: 'Codex', command: 'codex', kind: 'agent' as const }
+  useStore.setState({ devices: [{ ...codex, category: 'agent', source: 'builtin' }] })
+  expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL, undefined, 'stack-id')).toBe(true)
+  expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    codex,
+    expect.any(String),
+    false,
+    'stack-id',
+  )
+  await restartTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
+  expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    codex,
+    expect.any(String),
+    true,
+    'stack-id',
+  )
+  expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL)).toBe(true)
+  expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    codex,
+    expect.any(String),
+    false,
+    undefined,
+  )
 })

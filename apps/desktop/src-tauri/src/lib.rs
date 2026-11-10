@@ -1904,6 +1904,7 @@ async fn map_agent_start(
 
 /// Launch the agent that proposes the project's local stack, at the project root,
 /// beside dependency detection. `terminal` is the chosen agent preset.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn stack_agent_start(
     window: WebviewWindow,
@@ -1913,6 +1914,7 @@ async fn stack_agent_start(
     terminal: TerminalSpec,
     request_id: String,
     resume: Option<bool>,
+    stack_id: Option<String>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1921,8 +1923,13 @@ async fn stack_agent_start(
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
         let project = access.restrict(project, &[]).map_err(err)?;
-        let (job, mut spec) =
-            patchbay_core::stack_proposals::prepare(&project, &terminal, &AllowAll).map_err(err)?;
+        let (job, mut spec) = patchbay_core::stack_proposals::prepare_for(
+            &project,
+            &terminal,
+            stack_id.as_deref(),
+            &AllowAll,
+        )
+        .map_err(err)?;
         let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);

@@ -113,3 +113,23 @@ test('applying a proposal keeps validators and the user’s ready text when the 
     readyWhen: '',
   })
 })
+
+test('replacement commands and empty readiness replace faulty configuration while older proposals retain readiness', () => {
+  const current = terminal('dev', 'old', { readyWhen: 'old ready' })
+  const proposed = {
+    component: 'api',
+    terminal: 'dev',
+    command: 'npm ci && npm start',
+    readyWhen: '',
+    reason: 'README:1',
+  }
+  expect(proposedPatch(proposed, current)).toEqual({
+    action: 'development',
+    command: 'npm ci && npm start',
+    readyWhen: '',
+  })
+  expect(proposedPatch({ ...proposed, command: undefined }, current, true)).toEqual({
+    action: 'development',
+    readyWhen: '',
+  })
+})

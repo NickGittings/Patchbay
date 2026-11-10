@@ -583,6 +583,7 @@ export const stackAgentStart = (
   terminal: TerminalSpec,
   requestId: string,
   resume?: boolean,
+  stackId?: string,
 ) =>
   invoke<string>('stack_agent_start', {
     projectId: project.projectId,
@@ -590,6 +591,7 @@ export const stackAgentStart = (
     terminal,
     requestId,
     resume,
+    stackId,
   })
 export const proposalRead = (projectId: string, task?: string) =>
   invoke<import('../types').PlannerProposal | null>('proposal_read', {

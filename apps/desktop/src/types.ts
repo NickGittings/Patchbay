@@ -355,8 +355,8 @@ export interface PendingLinks {
 }
 
 /**
- * Mirrors `stack_proposals::ProposedTerminal`: an existing terminal by `terminal`, or a new one
- * with `name` and `command`.
+ * Mirrors `stack_proposals::ProposedTerminal`: an existing terminal by `terminal` with an
+ * optional replacement `command`, or a new one with `name` and `command`.
  */
 export interface ProposedStackTerminal {
   component: string
@@ -372,6 +372,7 @@ export interface PendingStack {
   id: string
   sessionId: string
   submittedMs: number
+  stackId?: string | null
   name: string
   orderedStartup: boolean
   terminals: ProposedStackTerminal[]

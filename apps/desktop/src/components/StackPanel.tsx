@@ -4,7 +4,7 @@ import WorktreeSetupStatus from './tasks/WorktreeSetupStatus'
 import { taskPassed } from '../lib/autoSettings'
 import Menu, { MenuItem } from './Menu'
 import { useMemo, useState } from 'react'
-import { linkedWithin, stackSetup, type DevelopmentSuggestion } from '../lib/stack'
+import { linkedWithin, proposedPatch, stackSetup, type DevelopmentSuggestion } from '../lib/stack'
 import { validatorKey } from '../lib/validators'
 import { planTerminals } from '../lib/plan'
 import { roleTerminal } from '../lib/agentRoles'
@@ -81,12 +81,78 @@ function DevelopmentStatus({ node }: { node: FlowNode }) {
   })
 }
 
+/** Edits the same terminal definitions used by the Inspector and every stack. */
+function StackTerminals({ node }: { node: FlowNode }) {
+  const { updateTerminal, addTerminal } = useStore.getState()
+  return (
+    <div className="stack-terminal-editor" aria-label={`${node.data.name} Development terminals`}>
+      <strong>{node.data.name}</strong>
+      <p className="hint">Commands run in this component’s folder in the selected worktree.</p>
+      {node.data.terminals
+        .filter((t) => t.kind === 'task' && t.action !== 'validation')
+        .map((t) => (
+          <div className="terminal-row" key={t.id}>
+            <label className="group-option">
+              <input
+                type="checkbox"
+                checked={t.action === 'development'}
+                onChange={(e) =>
+                  updateTerminal(node.id, t.id, {
+                    action: e.target.checked ? 'development' : undefined,
+                  })
+                }
+              />
+              Include {t.name} in Development startup
+            </label>
+            <label>
+              Terminal name
+              <input
+                aria-label={`${node.data.name} › ${t.id} name`}
+                value={t.name}
+                onChange={(e) => updateTerminal(node.id, t.id, { name: e.target.value })}
+              />
+            </label>
+            <label>
+              Command
+              <input
+                aria-label={`${node.data.name} › ${t.id} command`}
+                placeholder="npm ci && npm run build && npm start"
+                value={t.command}
+                onChange={(e) => updateTerminal(node.id, t.id, { command: e.target.value })}
+              />
+            </label>
+            <label>
+              Ready when
+              <input
+                aria-label={`${node.data.name} › ${t.id} ready when`}
+                placeholder="Output text to wait for (optional)"
+                value={t.readyWhen ?? ''}
+                onChange={(e) => updateTerminal(node.id, t.id, { readyWhen: e.target.value })}
+              />
+            </label>
+          </div>
+        ))}
+      <button
+        onClick={() => {
+          const id = addTerminal(node.id, null, false)
+          updateTerminal(node.id, id, { name: 'Development', action: 'development' })
+        }}
+      >
+        Add Development terminal to {node.data.name}
+      </button>
+    </div>
+  )
+}
+
 function GroupEditor({ group }: { group: ComponentGroup }) {
   const nodes = useStore((s) => s.nodes)
   const busy = useStore((s) => s.graphActionBusy)
   const { updateGroup, removeGroup, toggleHighlight } = useStore.getState()
   const [stopping, setStopping] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [editing, setEditing] = useState(!group.componentIds.length)
+  const projectId = useStore((s) => s.project?.id)
+  const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
+  const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
   return (
     <section className="stack-card">
       <div className="panel-section-head">
@@ -124,6 +190,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
             </span>
           ))}
       </div>
+      {projectId && <StackAgent projectId={projectId} pending={pending} stackId={group.id} />}
       <details
         className="component-group"
         open={editing}
@@ -132,49 +199,65 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
         <summary>
           Edit stack <span className="count">{group.componentIds.length}</span>
         </summary>
-        <label>
-          Name
-          <input
-            aria-label="Stack name"
-            value={group.name}
-            onChange={(e) => updateGroup(group.id, { name: e.target.value })}
-          />
-        </label>
-        <div className="group-members">
-          {nodes.map((node) => (
-            // The status chips sit beside the label, so clicking one doesn't toggle membership.
-            <div key={node.id} className="group-member">
-              <label className="group-option">
-                <input
-                  type="checkbox"
-                  checked={group.componentIds.includes(node.id)}
-                  onChange={(e) =>
-                    updateGroup(group.id, {
-                      componentIds: e.target.checked
-                        ? [...group.componentIds, node.id]
-                        : group.componentIds.filter((id) => id !== node.id),
-                    })
-                  }
-                />
-                {node.data.name}
-              </label>
-              {group.componentIds.includes(node.id) && <DevelopmentStatus node={node} />}
-            </div>
-          ))}
-        </div>
-        <label className="group-option">
-          <input
-            type="checkbox"
-            checked={group.orderedStartup}
-            onChange={(e) => updateGroup(group.id, { orderedStartup: e.target.checked })}
-          />
-          Start dependencies first
-        </label>
-        <TimeoutField group={group} />
+        <fieldset disabled={blocked}>
+          <label>
+            Name
+            <input
+              aria-label="Stack name"
+              value={group.name}
+              onChange={(e) => updateGroup(group.id, { name: e.target.value })}
+            />
+          </label>
+          <div className="group-members">
+            {nodes.map((node) => (
+              // The status chips sit beside the label, so clicking one doesn't toggle membership.
+              <div key={node.id} className="group-member">
+                <label className="group-option">
+                  <input
+                    type="checkbox"
+                    checked={group.componentIds.includes(node.id)}
+                    onChange={(e) =>
+                      updateGroup(group.id, {
+                        componentIds: e.target.checked
+                          ? [...group.componentIds, node.id]
+                          : group.componentIds.filter((id) => id !== node.id),
+                      })
+                    }
+                  />
+                  {node.data.name}
+                </label>
+                {group.componentIds.includes(node.id) && <DevelopmentStatus node={node} />}
+              </div>
+            ))}
+          </div>
+          <label className="group-option">
+            <input
+              type="checkbox"
+              checked={group.orderedStartup}
+              onChange={(e) => updateGroup(group.id, { orderedStartup: e.target.checked })}
+            />
+            Start dependencies first
+          </label>
+          <TimeoutField group={group} />
+          <p className="hint">
+            Terminal edits are shared with the Inspector and every stack using the component.
+            Removing a terminal from startup keeps its saved definition. Stop and start running
+            terminals to use changed commands or readiness settings.
+          </p>
+          <p className="hint">
+            Chain preparation, builds and app launch with &amp;&amp; so failures prevent launch.
+          </p>
+          {nodes
+            .filter((n) => group.componentIds.includes(n.id))
+            .map((n) => (
+              <StackTerminals key={n.id} node={n} />
+            ))}
+        </fieldset>
       </details>
       <div className="row">
         <button
           className="primary"
+          title="Start stack in the selected worktree"
           disabled={busy || stopping || !group.componentIds.length}
           onClick={() => void runGraphAction({ kind: 'startGroup', groupId: group.id })}
         >
@@ -310,14 +393,62 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
   const [includeSetup, setIncludeSetup] = useState(true)
   const chosen = pending.terminals.filter((t) => !unticked.has(proposedKey(t)))
+  const target = useStore((s) => s.groups.find((g) => g.id === pending.stackId))
+  const members = [...new Set(chosen.map((t) => t.component))]
+  const removals = target
+    ? nodes.flatMap((n) => {
+        if (!target.componentIds.includes(n.id) && !members.includes(n.id)) return []
+        return n.data.terminals
+          .filter(
+            (t) =>
+              t.kind === 'task' &&
+              t.action === 'development' &&
+              !chosen.some(
+                (p) =>
+                  p.component === n.id &&
+                  (p.terminal === t.id ||
+                    (!p.terminal && p.name?.trim().toLowerCase() === t.name.trim().toLowerCase())),
+              ),
+          )
+          .map((t) => `${n.data.name} › ${t.name}`)
+      })
+    : []
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
   const terminalOf = (component: string, id: string) =>
     nodes.find((n) => n.id === component)?.data.terminals.find((t) => t.id === id)
   return (
     <div className="task-action-result stack-suggestions" aria-label="Proposed stack">
-      <strong title="Applying marks terminals Development and adds their components to the stack. Dependencies wait for ready text when ordered startup is enabled.">
-        Proposed stack · {pending.name}
-      </strong>
+      <strong>Proposed stack · {pending.name}</strong>
+      <p className="hint">
+        {target ? `Replaces “${target.name}” (${target.id}).` : 'Configures Development startup.'}{' '}
+        {pending.orderedStartup ? 'Starts dependencies first.' : 'Starts members together.'}{' '}
+        Applying saves configuration. Start executes it in the selected worktree.
+      </p>
+      {pending.stackId && !target && (
+        <p className="hint">The target stack was removed. Discard and detect again.</p>
+      )}
+      <p className="hint">
+        Resulting components: {members.map((id) => name(id)).join(', ') || 'none'}.
+      </p>
+      {target && (
+        <p className="hint">
+          Removed components:{' '}
+          {target.componentIds
+            .filter((id) => !members.includes(id))
+            .map(name)
+            .join(', ') || 'none'}
+          .
+        </p>
+      )}
+      <p className="hint">
+        Shared terminal edits affect other stacks using them. Stop and start running terminals to
+        use changes.
+      </p>
+      {removals.length > 0 && (
+        <p className="hint">
+          Removed from Development startup (definitions kept): {removals.join(', ')}.
+        </p>
+      )}
       <div className="validator-suggestions">
         {pending.worktreeSetup && (
           <label className="validator-suggestion">
@@ -340,8 +471,14 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
         {pending.terminals.map((t) => {
           const key = proposedKey(t)
           const existing = t.terminal ? terminalOf(t.component, t.terminal) : undefined
-          // Applying keeps an existing terminal's ready text when the agent gives none.
-          const ready = t.readyWhen || existing?.readyWhen
+          const patch = proposedPatch(t, existing, !!pending.stackId)
+          const ready = patch?.readyWhen ?? existing?.readyWhen
+          const changed =
+            existing &&
+            patch &&
+            Object.entries(patch).some(
+              ([key, value]) => existing[key as keyof typeof existing] !== value,
+            )
           return (
             <label key={key} className="validator-suggestion">
               <input
@@ -362,7 +499,24 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
                   {name(t.component)} ›{' '}
                   {t.terminal ? (existing?.name ?? t.terminal) : `${t.name} (new)`}
                 </span>
-                {t.command && <code>{t.command}</code>}
+                <span className="hint">
+                  {unticked.has(key)
+                    ? 'Excluded'
+                    : !existing
+                      ? 'Added'
+                      : changed
+                        ? 'Changed'
+                        : 'Unchanged'}
+                </span>
+                <code>{t.command ?? existing?.command}</code>
+                {existing && t.command != null && t.command !== existing.command && (
+                  <span className="hint">Replaces: {existing.command}</span>
+                )}
+                {existing && ready !== (existing.readyWhen ?? '') && (
+                  <span className="hint">
+                    Previous readiness: {existing.readyWhen || 'no wait'}
+                  </span>
+                )}
                 <span className="hint">
                   {ready ? `Ready when “${ready}”` : 'Starts without waiting'}
                 </span>
@@ -375,7 +529,12 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
       <div className="row">
         <button
           className="primary"
-          disabled={busy || blocked || (!chosen.length && !(includeSetup && pending.worktreeSetup))}
+          disabled={
+            busy ||
+            blocked ||
+            (!!pending.stackId && !target) ||
+            (!target && !chosen.length && !(includeSetup && pending.worktreeSetup))
+          }
           title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
           onClick={() => void applyStackProposal(pending, chosen, projectId, includeSetup)}
         >
@@ -393,7 +552,15 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
  * Detection with an agent, for stacks the rules above can't see. A pending proposal locks a new
  * run until it is applied or discarded, though a running agent can always be shown.
  */
-function StackAgent({ projectId, pending }: { projectId: string; pending?: PendingStack }) {
+function StackAgent({
+  projectId,
+  pending,
+  stackId,
+}: {
+  projectId: string
+  pending?: PendingStack
+  stackId?: string
+}) {
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const running = useStore((s) => !!s.sessions[stackAgentSession(projectId)]?.running)
@@ -417,13 +584,17 @@ function StackAgent({ projectId, pending }: { projectId: string; pending?: Pendi
                   ? 'Resolve the map conflict or project recovery first'
                   : 'An agent reads the project and proposes worktree preparation and services for you to review'
           }
-          onClick={() => preset && void startStackAgent(projectId, preset)}
+          onClick={() => preset && void startStackAgent(projectId, preset, stackId)}
         >
-          {running ? 'Show stack detection' : 'Detect stack with an agent…'}
+          {running
+            ? 'Show stack detection'
+            : stackId
+              ? 'Detect again'
+              : 'Detect stack with an agent…'}
         </button>
         {presets.length > 1 && (
           <select
-            aria-label="Stack detection agent"
+            aria-label={stackId ? `Detection agent for ${stackId}` : 'Stack detection agent'}
             value={preset?.id ?? ''}
             onChange={(e) => setChoice(e.target.value)}
           >
@@ -442,11 +613,12 @@ function StackAgent({ projectId, pending }: { projectId: string; pending?: Pendi
 
 /** "＋ New stack" and its name form; a new stack starts with the selected components. */
 function NewStackForm() {
+  const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   return (
     <>
-      <button onClick={() => setCreating(!creating)} aria-expanded={creating}>
+      <button disabled={blocked} onClick={() => setCreating(!creating)} aria-expanded={creating}>
         ＋ New stack
       </button>
       {creating && (
@@ -454,7 +626,7 @@ function NewStackForm() {
           className="row"
           onSubmit={(e) => {
             e.preventDefault()
-            if (!name.trim()) return
+            if (!name.trim() || blocked) return
             const s = useStore.getState()
             const selected = s.nodes.filter((n) => n.selected || n.id === s.selectedId)
             s.addGroup(
@@ -476,7 +648,11 @@ function NewStackForm() {
           </button>
         </form>
       )}
-      {creating && <p className="hint">New stacks start with the selected components.</p>}
+      {creating && (
+        <p className="hint">
+          Choose components and configure their terminals in Edit stack after adding it.
+        </p>
+      )}
     </>
   )
 }

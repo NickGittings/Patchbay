@@ -74,11 +74,12 @@ export const stackAgentSession = (projectId: string) =>
   sessionId(MAP_SCOPE, STACK_AGENT_TERMINAL, null, projectId)
 
 /** Start the stack detection agent with `preset`; one already running is shown instead. */
-export function startStackAgent(projectId: string, preset: TerminalSpec) {
+export function startStackAgent(projectId: string, preset: TerminalSpec, stackId?: string) {
   return startDetectionAgent(projectId, preset, {
     terminalId: STACK_AGENT_TERMINAL,
     label: 'Stack detection',
     tab: 'Detect stack',
+    stackId,
   })
 }
 
@@ -113,16 +114,7 @@ const sameName = (a: string, b: string) => {
   return key(a) === key(b)
 }
 
-/**
- * Mark the chosen terminals Development with their ready text, when the agent gives one (adding
- * the proposed new ones, unless the component has a terminal of that name already; shell, agent
- * and Validation terminals are left out, `proposedPatch`), and put their components in the
- * proposed stack, an ordinary map edit; a stack of the same name gains them, keeping its own
- * startup order, and isn't edited when no member is added. Names match ignoring case and spacing,
- * so applying a submission again changes nothing. When none of the chosen terminals applies, the
- * proposal stays and the user is told; when only some do, the user is told which were left out.
- * Only for the active project, whose map the store holds.
- */
+/** Apply reviewed configuration without running commands. Targeted proposals replace by stable id. */
 export async function applyStackProposal(
   pending: PendingStack,
   chosen: ProposedStackTerminal[],
@@ -134,6 +126,9 @@ export async function applyStackProposal(
     return s.setMessage('Switch back to this project to apply its proposed stack.')
   if (!canEdit(projectId))
     return s.setMessage('Resolve the map conflict or project recovery before applying the stack.')
+  const target = pending.stackId ? s.groups.find((g) => g.id === pending.stackId) : undefined
+  if (pending.stackId && !target)
+    return s.setMessage('The stack to replace was removed. Discard this proposal and detect again.')
   // Each chosen terminal as it is on the map now, which may have changed since the agent looked.
   const edits = chosen.flatMap((t) => {
     const node = s.nodes.find((n) => n.id === t.component)
@@ -143,12 +138,16 @@ export async function applyStackProposal(
       : node.data.terminals.find((x) => sameName(x.name, t.name ?? 'Dev'))
     if (t.terminal && !current) return []
     // The backend refuses these too, but a terminal may have changed since.
-    const patch = proposedPatch(t, current)
+    const patch = proposedPatch(t, current, !!target)
     return patch ? [{ t, current, patch }] : []
   })
+  if (target && edits.length !== chosen.length)
+    return s.setMessage(
+      'Some proposed terminals were removed or changed roles. Detect again before replacing this stack.',
+    )
   // Nothing to apply: keep the proposal, so it can still be read or discarded.
   const setup = includeSetup ? pending.worktreeSetup : undefined
-  if (!edits.length && !setup)
+  if (!edits.length && !setup && !target)
     return s.setMessage(
       'None of the chosen terminals can be applied: they were removed, renamed, or are no longer task terminals (or are Validation ones).',
     )
@@ -157,16 +156,39 @@ export async function applyStackProposal(
       project: { ...s.project, worktreeSetup: { command: setup.command } },
       dirty: true,
     })
+  // Development is shared terminal configuration. Keep saved definitions, clearing only startup
+  // roles omitted from the complete replacement, including components that leave the stack.
+  if (target) {
+    const scope = new Set([...target.componentIds, ...edits.map((e) => e.t.component)])
+    for (const node of s.nodes) {
+      if (!scope.has(node.id)) continue
+      for (const terminal of node.data.terminals) {
+        if (
+          terminal.kind === 'task' &&
+          terminal.action === 'development' &&
+          !edits.some((e) => e.t.component === node.id && e.current?.id === terminal.id)
+        )
+          s.updateTerminal(node.id, terminal.id, { action: undefined })
+      }
+    }
+  }
   const members: string[] = []
   for (const { t, current, patch } of edits) {
     s.updateTerminal(t.component, current?.id ?? s.addTerminal(t.component, null, false), patch)
     if (!members.includes(t.component)) members.push(t.component)
   }
-  const existing = useStore.getState().groups.find((g) => sameName(g.name, pending.name))
+  if (target)
+    s.updateGroup(target.id, {
+      name: pending.name,
+      componentIds: members,
+      orderedStartup: pending.orderedStartup,
+    })
+  const existing = target ?? useStore.getState().groups.find((g) => sameName(g.name, pending.name))
   const added = members.filter((id) => !existing?.componentIds.includes(id))
-  if (existing && added.length)
+  if (!target && existing && added.length)
     s.updateGroup(existing.id, { componentIds: [...existing.componentIds, ...added] })
-  else if (!existing && added.length) s.addGroup(pending.name, added, pending.orderedStartup)
+  else if (!target && !existing && added.length)
+    s.addGroup(pending.name, added, pending.orderedStartup)
   // Some left out: say which, before the clear, whose failure, if any, matters more.
   const skipped = chosen.filter((t) => !edits.some((e) => e.t === t))
   if (skipped.length) {

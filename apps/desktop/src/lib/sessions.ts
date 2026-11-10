@@ -376,15 +376,22 @@ export const launching = (sid: string) => starting.has(sid) || restarting.has(si
  * on its way keeps its own preset, so this one starts nothing.
  */
 const validationSelections = new Map<string, string[]>()
+const stackSelections = new Map<string, string>()
 export async function startMapAgent(
   projectId: string,
   preset: TerminalSpec,
   terminalId = MAP_AGENT_TERMINAL,
   componentIds?: string[],
+  stackId?: string,
 ): Promise<boolean> {
   const launch = captureLaunch(MAP_SCOPE, terminalId, null, projectId)
   if (launching(launch.sid)) return false
   if (componentIds) validationSelections.set(launch.sid, componentIds)
+  const previousStack = stackSelections.get(launch.sid)
+  if (terminalId === STACK_AGENT_TERMINAL) {
+    if (stackId) stackSelections.set(launch.sid, stackId)
+    else stackSelections.delete(launch.sid)
+  }
   const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
   try {
@@ -392,6 +399,8 @@ export async function startMapAgent(
     return !!launch.started
   } finally {
     if (!launch.started) {
+      if (previousStack === undefined) stackSelections.delete(launch.sid)
+      else stackSelections.set(launch.sid, previousStack)
       if (previous === undefined) mapPresets.delete(launch.sid)
       else mapPresets.set(launch.sid, previous)
     }
@@ -550,13 +559,16 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           !!launch.restart,
           validationSelections.get(sid) ?? [],
         )
-      else if (componentId === MAP_SCOPE)
-        await (terminalId === STACK_AGENT_TERMINAL ? stackAgentStart : mapAgentStart)(
+      else if (componentId === MAP_SCOPE && terminalId === STACK_AGENT_TERMINAL)
+        await stackAgentStart(
           project,
           mapPreset(sid),
           requestId,
           !!launch.restart,
+          stackSelections.get(sid),
         )
+      else if (componentId === MAP_SCOPE)
+        await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart)
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
