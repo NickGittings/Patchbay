@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 
 /** Shared hierarchy for utility panels; disclosures keep configuration close to its context. */
 export default function PanelSection({
@@ -21,9 +21,21 @@ export default function PanelSection({
   )
 }
 
-export function PanelDetails({ title, children }: { title: string; children: ReactNode }) {
+export function PanelDetails({
+  title,
+  children,
+  reveal = false,
+}: {
+  title: string
+  children: ReactNode
+  reveal?: boolean
+}) {
+  const details = useRef<HTMLDetailsElement>(null)
+  useEffect(() => {
+    if (reveal && details.current) details.current.open = true
+  }, [reveal])
   return (
-    <details className="rail-details">
+    <details className="rail-details" ref={details}>
       <summary>{title}</summary>
       <div className="rail-details-body">{children}</div>
     </details>

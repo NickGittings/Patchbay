@@ -14,6 +14,7 @@ import {
 import { validatorKey } from '../lib/validators'
 import { planTerminals } from '../lib/plan'
 import { roleTerminal } from '../lib/agentRoles'
+import { revealTerminal } from '../lib/attention'
 import {
   applyStackProposal,
   discardStackProposal,
@@ -26,7 +27,7 @@ import { mapEditsBlocked } from '../lib/mapSave'
 import { useStore, type FlowNode } from '../store'
 import { runGraphAction, stopGroup } from '../lib/actions'
 import { statusTitle, terminalStatus } from '../lib/display'
-import { parseSessionId, sessionId, type ComponentGroup } from '../types'
+import { MAP_SCOPE, parseSessionId, sessionId, type ComponentGroup } from '../types'
 
 const MAX_TIMEOUT = 3600
 
@@ -156,9 +157,7 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
   const { updateGroup, removeGroup, toggleHighlight } = useStore.getState()
   const [stopping, setStopping] = useState(false)
   const [editing, setEditing] = useState(!group.componentIds.length)
-  const projectId = useStore((s) => s.project?.id)
   const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
-  const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
   return (
     <section className="stack-card">
       <div className="panel-section-head">
@@ -196,7 +195,6 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
             </span>
           ))}
       </div>
-      {projectId && <StackAgent projectId={projectId} pending={pending} stackId={group.id} />}
       <details
         className="component-group"
         open={editing}
@@ -555,29 +553,58 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
  * Detection with an agent, for stacks the rules above can't see. A pending proposal locks a new
  * run until it is applied or discarded, though a running agent can always be shown.
  */
-function StackAgent({
-  projectId,
-  pending,
-  stackId,
-}: {
-  projectId: string
-  pending?: PendingStack
-  stackId?: string
-}) {
+function StackAgent({ projectId, pending }: { projectId: string; pending?: PendingStack }) {
   const devices = useStore((s) => s.devices)
+  const groups = useStore((s) => s.groups)
   const roles = useStore((s) => s.agentRoles)
   const running = useStore((s) => !!s.sessions[stackAgentSession(projectId)]?.running)
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
   const presets = planTerminals(devices)
   const [choice, setChoice] = useState<string>()
+  const [target, setTarget] = useState('')
+  // Clear a deleted target so restoring or recreating it doesn't silently select it again.
+  const stackId = groups.find((g) => g.id === target)?.id
+  if (target && !stackId) setTarget('')
   const preset =
     presets.find((t) => t.id === choice) ?? roleTerminal(devices, roles, 'plan') ?? presets[0]
   const locked = !running && !!pending
   return (
     <>
       <div className="stack-agent">
+        <label>
+          Target
+          <select
+            aria-label="Stack detection target"
+            value={stackId ?? ''}
+            disabled={running || !!pending || blocked}
+            onChange={(e) => setTarget(e.target.value)}
+          >
+            <option value="">New stack</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Agent
+          <select
+            aria-label="Stack detection agent"
+            value={preset?.id ?? ''}
+            disabled={running || !!pending || blocked || !presets.length}
+            onChange={(e) => setChoice(e.target.value)}
+          >
+            {!presets.length && <option value="">No agents available</option>}
+            {presets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
-          disabled={!preset || (!running && (locked || blocked))}
+          disabled={!running && (!preset || locked || blocked)}
           title={
             running
               ? 'Show the running stack detection agent'
@@ -587,27 +614,14 @@ function StackAgent({
                   ? 'Resolve the map conflict or project recovery first'
                   : 'An agent reads the project and proposes worktree preparation and services for you to review'
           }
-          onClick={() => preset && void startStackAgent(projectId, preset, stackId)}
+          onClick={() => {
+            if (running)
+              revealTerminal({ sid: stackAgentSession(projectId), componentId: MAP_SCOPE })
+            else if (preset) void startStackAgent(projectId, preset, stackId)
+          }}
         >
-          {running
-            ? 'Show stack detection'
-            : stackId
-              ? 'Detect again'
-              : 'Detect stack with an agent…'}
+          {running ? 'Show stack detection' : 'Detect stack'}
         </button>
-        {presets.length > 1 && (
-          <select
-            aria-label={stackId ? `Detection agent for ${stackId}` : 'Stack detection agent'}
-            value={preset?.id ?? ''}
-            onChange={(e) => setChoice(e.target.value)}
-          >
-            {presets.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
       </div>
       {locked && <p className="hint">Apply or discard the proposed stack to detect again.</p>}
     </>
@@ -669,14 +683,13 @@ export default function StackPanel() {
   const projectId = useStore((s) => s.project?.id)
   const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
   const groups = useStore((s) => s.groups)
-  const nodes = useStore((s) => s.nodes)
   const report = useStore((s) => s.graphActionReport)
   return (
     <section className="component-groups" aria-label="Stacks">
       {!groups.length && (
         <p className="panel-empty panel-empty-start">
           Start related Development terminals together. Create a stack or discover one in Stack
-          setup and suggestions.
+          Detection.
         </p>
       )}
       <PanelSection title="Stacks" actions={<NewStackForm />}>
@@ -684,54 +697,69 @@ export default function StackPanel() {
           <GroupEditor key={group.id} group={group} />
         ))}
       </PanelSection>
-      {projectId && pending && (
-        <StackReview key={pending.id} pending={pending} projectId={projectId} />
-      )}
       <WorktreeSetupStatus key={task ?? 'main'} />
-      <PanelDetails title="Stack setup and suggestions">
-        {projectId && <StackAgent projectId={projectId} pending={pending} />}
+      <PanelDetails title="Stack Detection" reveal={!!pending}>
+        {projectId && <StackAgent key={projectId} projectId={projectId} pending={pending} />}
+        {projectId && pending && (
+          <StackReview key={pending.id} pending={pending} projectId={projectId} />
+        )}
         <StackSuggestions />
       </PanelDetails>
       <PanelDetails title="Worktree preparation">
         <WorktreeSetupPanel />
       </PanelDetails>
-      {report && (
+      {report && <StackActionResult />}
+    </section>
+  )
+}
+
+/** Always show the latest outcome; only offer details when there is something to inspect. */
+function StackActionResult() {
+  const report = useStore((s) => s.graphActionReport)
+  const nodes = useStore((s) => s.nodes)
+  if (!report) return null
+  const unsuccessful = report.results.filter((result) => !taskPassed(result))
+  const skipped = report.plan.skipped.length
+  return (
+    <div className="stack-action-result">
+      <p className="hint" role="status">
+        Last action ·{' '}
+        {report.results.length
+          ? `${report.results.filter(taskPassed).length}/${report.results.length} tasks passed`
+          : 'No tasks ran'}
+        {unsuccessful.length > 0 && ` · ${unsuccessful.length} unsuccessful`}
+        {skipped > 0 && ` · ${skipped} skipped`}
+      </p>
+      {(unsuccessful.length > 0 || skipped > 0) && (
         <details className="action-results">
-          <summary>
-            Last action · {report.results.length} tasks · {report.results.filter(taskPassed).length}{' '}
-            passed
-          </summary>
-          {report.results
-            .filter((result) => !taskPassed(result))
-            .map((result) => (
-              <button
-                className="action-result"
-                key={result.sessionId}
-                data-session={result.sessionId}
-                onClick={() => {
-                  // Navigation, where these results and the dock live.
-                  const { componentId, task } = parseSessionId(result.sessionId)
-                  const s = useStore.getState()
-                  s.setActiveTask(task)
-                  s.select(componentId)
-                  s.setActiveSession(result.sessionId)
-                  s.setView('navigation')
-                }}
+          <summary>View details</summary>
+          {unsuccessful.map((result) => (
+            <button
+              className="action-result"
+              key={result.sessionId}
+              data-session={result.sessionId}
+              onClick={() => {
+                // Navigation, where these results and the dock live.
+                const { componentId, task } = parseSessionId(result.sessionId)
+                const s = useStore.getState()
+                s.setActiveTask(task)
+                s.select(componentId)
+                s.setActiveSession(result.sessionId)
+                s.setView('navigation')
+              }}
+            >
+              <span>{resultLabel(result.sessionId)}</span>
+              <strong
+                className={
+                  result.outcome === 'failed' || result.outcome === 'stopped' ? result.outcome : ''
+                }
+                title={result.message}
               >
-                <span>{resultLabel(result.sessionId)}</span>
-                <strong
-                  className={
-                    result.outcome === 'failed' || result.outcome === 'stopped'
-                      ? result.outcome
-                      : ''
-                  }
-                  title={result.message}
-                >
-                  {result.outcome}
-                  {result.exitCode !== null ? ` (${result.exitCode})` : ''}
-                </strong>
-              </button>
-            ))}
+                {result.outcome}
+                {result.exitCode !== null ? ` (${result.exitCode})` : ''}
+              </strong>
+            </button>
+          ))}
           {report.plan.skipped.map((id) => (
             <p className="hint" key={id}>
               {nodes.find((n) => n.id === id)?.data.name ?? id}: no configured tasks
@@ -739,7 +767,7 @@ export default function StackPanel() {
           ))}
         </details>
       )}
-    </section>
+    </div>
   )
 }
 

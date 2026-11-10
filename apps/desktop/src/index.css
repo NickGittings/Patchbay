@@ -2001,7 +2001,38 @@ button.review-name:hover:not(:disabled) {
   color: var(--muted);
 }
 .component-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   padding: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.component-groups .row,
+.worktree-setup-editor .row {
+  flex-wrap: wrap;
+}
+.component-groups button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.stack-card .panel-section-head > strong {
+  flex: 1;
+  min-width: 0;
+}
+.stack-card .chip {
+  white-space: normal;
+}
+.stack-action-result {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.stack-action-result > p {
+  margin: 0;
+}
+.stack-action-result details {
+  margin-top: 8px;
 }
 .component-groups form input {
   min-width: 0;
@@ -3286,17 +3317,40 @@ kbd {
   margin: 0 0 10px;
 }
 .stack-agent {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  gap: 12px;
 }
-.stack-agent button {
-  flex: 1;
+.stack-agent label,
+.worktree-setup-editor .settings-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
   min-width: 0;
 }
 .stack-agent select {
   min-width: 0;
-  max-width: 40%;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.worktree-setup-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.worktree-setup-editor p {
+  margin: 0;
+}
+.worktree-setup-editor textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+.component-groups .rail-details-body {
+  gap: 16px;
 }
 .auto-values {
   display: grid;
@@ -3625,6 +3679,9 @@ kbd {
 .rail-details + .rail-details {
   margin-top: 16px;
 }
+.component-groups > :is(.rail-section, .rail-details) {
+  margin-top: 0;
+}
 .rail-section-header,
 .rail-toolbar {
   display: flex;
@@ -3677,7 +3734,6 @@ kbd {
 .utility-panel:not([data-panel='sessions']) :is(.row, .panel-actions) {
   flex-wrap: wrap;
 }
-.utility-panel .stack-card,
 .utility-panel .worktree-row {
   background: transparent;
   border: 0;
