@@ -165,6 +165,9 @@ test.each(['scan', 'implementation'] as const)(
     })
     await driveProviderRuns('p')
     expect(starts()).toHaveLength(3)
+    useStore.getState().patchTask('p', null, { auto: { ...auto, autonomous: true } })
+    await driveProviderRuns('p')
+    expect(starts()).toHaveLength(4)
   },
 )
 test('Stop is routed through the backend so launch ownership and late replies are reconciled together', async () => {

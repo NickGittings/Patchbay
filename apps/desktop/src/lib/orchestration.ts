@@ -33,6 +33,7 @@ export interface ProviderJob {
   integratedHead: string | null
 }
 export interface ProviderRun {
+  auto?: import('../types').AutoBrief
   id: string
   projectId: string
   task: string | null
@@ -52,7 +53,9 @@ export interface ProviderRun {
   error: string | null
 }
 export type ProviderControl =
-  { kind: 'pause' | 'resume' | 'stop' | 'continueScan' } | { kind: 'retry'; job: string }
+  | { kind: 'pause' | 'resume' | 'stop' | 'continueScan' }
+  | { kind: 'retry'; job: string }
+  | { kind: 'continueJob'; job: string; requestId: string }
 const terminal = (d: DeviceManifest): TerminalSpec => ({
   id: d.id,
   name: d.name,
@@ -92,6 +95,7 @@ export async function createProviderRun(
   devices: DeviceManifest[],
   coordinator?: DeviceManifest,
   id: string = crypto.randomUUID(),
+  auto?: import('../types').AutoBrief,
 ) {
   for (const device of [...devices, ...(coordinator ? [coordinator] : [])])
     await requireProviderAuth({ terminal: device, project, task })
@@ -101,6 +105,7 @@ export async function createProviderRun(
     projectId: project.projectId,
     project,
     draft: {
+      ...(auto ? { auto } : {}),
       id,
       kind,
       goal,
@@ -144,7 +149,7 @@ export async function driveProviderRuns(projectId: string): Promise<ProviderRun[
         const foreground = active.project?.id === projectId && active.activeTask === owner.task
         if (
           !['running', 'waitingOnYou'].includes(owner.run.status) ||
-          (!foreground && owner.run.background !== true)
+          (!foreground && owner.run.background !== true && owner.run.autonomous !== true)
         )
           continue
       }

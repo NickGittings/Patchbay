@@ -384,15 +384,20 @@ export default function AutoDialog({
         </label>
       </details>
       <label>
-        Merge
-        <select
-          disabled={simple}
-          value={simple ? 'ask' : mode}
-          onChange={(e) => edit({ mode: e.target.value as 'ask' | 'auto' })}
-        >
-          <option value="ask">Ask before merging</option>
-          <option value="auto">Merge automatically</option>
-        </select>
+        <input
+          type="checkbox"
+          checked={draft.autonomous === true}
+          onChange={(e) => edit({ autonomous: e.target.checked })}
+        />
+        Autonomous execution
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={mode === 'auto'}
+          onChange={(e) => edit({ mode: e.target.checked ? 'auto' : 'ask' })}
+        />
+        Merge automatically after review
       </label>
       <label>
         Destination branch
@@ -464,7 +469,8 @@ export default function AutoDialog({
       <label>
         <input
           type="checkbox"
-          checked={draft.background === true}
+          disabled={draft.autonomous === true}
+          checked={draft.autonomous === true || draft.background === true}
           onChange={(e) => edit({ background: e.target.checked })}
         />
         Keep going in background
@@ -492,11 +498,12 @@ export default function AutoDialog({
           setStarting(true)
           void startAuto(projectId, task, {
             goal,
+            autonomous: draft.autonomous === true,
             background: draft.background === true,
             resumeOnUsageReset: draft.resumeOnUsageReset === true,
             effort: simple ? 'light' : effort,
             overrides: simple ? {} : overrides,
-            merge: { mode: simple ? 'ask' : mode, destinationBranch: destination },
+            merge: { mode, destinationBranch: destination },
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,

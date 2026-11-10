@@ -193,3 +193,74 @@ test('explicit schedules survive restart only with compatible pause metadata', (
     restoredAuto({ ...usage, usageWait: { providers: ['invalid'], atMs: 1000 } })?.resumeTrigger,
   ).toBeUndefined()
 })
+
+test('only active autonomous runs request startup continuation', () => {
+  expect(restoredAuto({ ...saved, autonomous: true })).toMatchObject({
+    status: 'paused',
+    pauseKind: 'restored',
+    restartPending: true,
+    autonomous: true,
+  })
+  for (const status of ['paused', 'waitingOnYou', 'failed', 'done', 'stopped'])
+    expect(restoredAuto({ ...saved, autonomous: true, status })?.restartPending).toBe(false)
+  for (const autonomous of [undefined, false, 'true', 1])
+    expect(restoredAuto({ ...saved, autonomous })?.restartPending).toBe(false)
+  expect(
+    restoredAuto({
+      ...saved,
+      autonomous: true,
+      status: 'paused',
+      pauseKind: 'restored',
+      restartPending: true,
+    })?.restartPending,
+  ).toBe(true)
+})
+
+test('recovery reservations, validation identity and autonomous briefs survive restart', () => {
+  const recovery = {
+    stage: 'plan',
+    mark: 'artifact',
+    attempts: 2,
+    action: 'relaunch',
+    atMs: 123,
+    pending: true,
+    reason: 'No plan',
+  }
+  expect(
+    restoredAuto({
+      ...saved,
+      autonomous: true,
+      recovery,
+      validationHead: 'validated',
+      sessionBrief: {
+        ...saved.sessionBrief,
+        auto: { ...saved.sessionBrief.auto, autonomous: true },
+      },
+    }),
+  ).toMatchObject({
+    recovery,
+    validationHead: 'validated',
+    sessionBrief: { auto: { autonomous: true } },
+  })
+  for (const patch of [{ attempts: -1 }, { attempts: 4 }, { stage: 'other' }, { mark: 7 }])
+    expect(
+      restoredAuto({ ...saved, recovery: { ...recovery, ...patch } })?.recovery,
+    ).toBeUndefined()
+})
+
+test('an autonomous run with a future schedule waits for that schedule after restart', () => {
+  const trigger = { kind: 'time', atMs: Date.now() + 3600000 }
+  expect(
+    restoredAuto({
+      ...saved,
+      autonomous: true,
+      status: 'paused',
+      pauseKind: 'scheduled',
+      resumeTrigger: trigger,
+    }),
+  ).toMatchObject({
+    restartPending: false,
+    resumeTrigger: trigger,
+    pauseKind: 'scheduled',
+  })
+})

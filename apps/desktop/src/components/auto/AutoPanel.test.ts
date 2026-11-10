@@ -93,3 +93,19 @@ test('an attention pause cannot schedule around the issue', () => {
   const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
   expect(html).not.toContain('datetime-local')
 })
+
+test('the run panel exposes autonomous decisions and recovery attempts in Simple mode', () => {
+  mock.state.auto = {
+    ...mock.state.auto!,
+    autonomous: true,
+    recovery: { stage: 'review', attempts: 2, mark: 'm', reason: 'Missing review artifact' },
+    log: [{ atMs: 1, text: 'Recovery 2/3: relaunch the stage' }],
+  }
+  const html = renderToStaticMarkup(
+    createElement(AutoPanel, { onIntegrations: () => {}, simple: true }),
+  )
+  expect(html).toContain('Autonomous execution')
+  expect(html).toContain('Recovery 2/3 without progress')
+  expect(html).toContain('Missing review artifact')
+  expect(html).toContain('relaunch the stage')
+})

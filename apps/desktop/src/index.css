@@ -750,20 +750,26 @@ input[type='radio'] {
   color: var(--text);
   border-color: var(--border-strong);
 }
-.component-node.activity-pulse {
-  animation: activity-pulse 1.4s ease-in-out infinite;
+.component-node.activity-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 1px solid var(--running);
+  border-radius: inherit;
+  box-shadow: 0 0 12px 2px color-mix(in srgb, var(--running) 35%, transparent);
+  pointer-events: none;
+  opacity: 0.2;
+  animation: activity-glow 1.8s ease-in-out infinite;
 }
-@keyframes activity-pulse {
+@keyframes activity-glow {
   50% {
-    outline: 3px solid var(--running);
-    outline-offset: 5px;
+    opacity: 0.55;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .component-node.activity-pulse {
+  .component-node.activity-pulse::after {
     animation: none;
-    outline: 2px solid var(--running);
-    outline-offset: 4px;
+    opacity: 0.3;
   }
 }
 .component-node.affected {

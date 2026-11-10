@@ -117,6 +117,7 @@ async function handoffPlannerPlan(
         workers,
         device,
         target?.providerRunId,
+        ...(auto?.autonomous ? [auto] : []),
       ))
     const started = run.coordinator?.sessionId
       ? run

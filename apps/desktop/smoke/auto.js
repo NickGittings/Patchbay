@@ -297,7 +297,7 @@
       if (run && descriptionStages.at(-1) !== run.stage) descriptionStages.push(run.stage)
     })
     await smoke.startAuto(projectId, description.id, {
-      background: true,
+      autonomous: true,
       goal: 'Finish the fixture task',
       effort: 'standard',
       device: 'auto-fixture',
@@ -311,6 +311,11 @@
       return run?.status === 'done'
     })
     unsubscribeDescription()
+    assert(backgroundRun().autonomous === true, 'Autonomous execution preference was lost')
+    assert(
+      backgroundRun().log.some((l) => l.text.startsWith('Recovery 1/3:')),
+      'Missing autonomous recovery decision',
+    )
     assert(
       descriptionStages.join(',') === 'plan,implement,validate,review,mergeGate,merge,done',
       `Wrong description sequence ${descriptionStages}`,
@@ -323,7 +328,7 @@
     const backgroundLayout = smoke.workspaceDocument().projects[0].layout
     const restoredBackground =
       smoke.restoredLayout(backgroundLayout).taskWorkspaces[description.id].auto
-    assert(restoredBackground.background === true, 'Restore lost background permission')
+    assert(restoredBackground.autonomous === true, 'Restore lost autonomous execution')
     assert(unfinished.auto.pauseKind === 'restored', 'Restore lost its pause kind')
     // A future schedule holds power without launching an agent or changing scheduler rules.
     const completedAuto = state().auto
@@ -359,7 +364,7 @@
       workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },
     })
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, background description planning/implementation/affected validation and automatic merge without switching worktrees or views',
+      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, autonomous recovery from a missing plan, background description planning/implementation/affected validation and automatic merge without switching worktrees or views',
     )
   } catch (e) {
     await smoke.report(

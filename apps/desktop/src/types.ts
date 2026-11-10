@@ -64,6 +64,8 @@ export const sessionView = (scope: string): View | null =>
 
 /** A whole-branch merge between existing worktrees of the project repository. */
 export interface MergeRequest {
+  /** Automatic merge is pinned to the commit that passed review. */
+  expectedSourceHead?: string
   source: string
   sourceBranch: string
   destination: string
@@ -88,6 +90,7 @@ export interface Verdict {
 }
 export type MergeOutcome = 'merged' | 'alreadyIntegrated' | 'inProgress' | 'dirty' | 'notMerged'
 export interface AutoBrief {
+  autonomous?: boolean
   goal: string
   fixFloor: Severity | null
   effortNote: string
@@ -130,6 +133,19 @@ export interface AutoLaunch {
   observedWorking?: boolean
 }
 export interface AutoRun {
+  /** Resolve routine decisions and recover while this project is open. */
+  autonomous?: boolean
+  /** Startup continuation, cleared before resuming; never overrides an explicit pause. */
+  restartPending?: boolean
+  recovery?: {
+    stage: AutoStage
+    mark: string
+    attempts: number
+    action?: string
+    atMs?: number
+    pending?: boolean
+    reason: string
+  }
   runId: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
   /** Allow this run to launch work while another worktree or project tab is selected. */
@@ -194,6 +210,8 @@ export interface AutoRun {
   validation?: ActionReport[]
   reviewedHead?: string
   validationFindings?: string
+  validationMark?: string
+  validationHead?: string
 }
 
 export interface ReviewFindings {

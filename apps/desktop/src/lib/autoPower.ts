@@ -85,7 +85,9 @@ export function followAutoPower() {
           autoRuns(project).some(({ task, run }) =>
             needsAutoPower(
               run,
-              (state.project?.id === id && state.activeTask === task) || run.background === true,
+              (state.project?.id === id && state.activeTask === task) ||
+                run.background === true ||
+                run.autonomous === true,
             ),
           )
         )
