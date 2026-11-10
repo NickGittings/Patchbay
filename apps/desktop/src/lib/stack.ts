@@ -105,6 +105,22 @@ export const linkedWithin = (ids: string[], edges: { source: string; target: str
   return edges.some((e) => e.source !== e.target && members.has(e.source) && members.has(e.target))
 }
 
+/** Names compared ignoring case and spacing. */
+export const sameStackName = (a: string, b: string) => {
+  const key = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+  return key(a) === key(b)
+}
+
+/** Resolve the current definition identically when reviewing and applying a proposal. */
+export function proposedTerminal(
+  proposed: ProposedStackTerminal,
+  terminals: TerminalSpec[],
+): TerminalSpec | undefined {
+  return proposed.terminal
+    ? terminals.find((t) => t.id === proposed.terminal)
+    : terminals.find((t) => sameStackName(t.name, proposed.name ?? 'Dev'))
+}
+
 /**
  * The edit applying the agent's `proposed` terminal makes to `current` (the existing terminal it
  * names, `undefined` for a new one), or `null` to leave it out. Only task terminals join a stack;

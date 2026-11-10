@@ -1432,7 +1432,7 @@ test('a signed-out restart keeps the existing process and does not save launch d
   expect(savePlanDraft).not.toHaveBeenCalled()
 })
 
-test('stack detection passes the selected stack id, retains it on restart and clears it for new detection', async () => {
+test('explicit stack detection selects or clears the target while terminal restarts recover it', async () => {
   const codex = { id: 'codex', name: 'Codex', command: 'codex', kind: 'agent' as const }
   useStore.setState({ devices: [{ ...codex, category: 'agent', source: 'builtin' }] })
   expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL, undefined, 'stack-id')).toBe(true)
@@ -1442,6 +1442,7 @@ test('stack detection passes the selected stack id, retains it on restart and cl
     expect.any(String),
     false,
     'stack-id',
+    true,
   )
   await restartTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1449,7 +1450,8 @@ test('stack detection passes the selected stack id, retains it on restart and cl
     codex,
     expect.any(String),
     true,
-    'stack-id',
+    undefined,
+    false,
   )
   expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL)).toBe(true)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1458,5 +1460,16 @@ test('stack detection passes the selected stack id, retains it on restart and cl
     expect.any(String),
     false,
     undefined,
+    true,
+  )
+  // Starting a retained tile after reload has no in-memory detection request.
+  await startTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
+  expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
+    expect.anything(),
+    codex,
+    expect.any(String),
+    false,
+    undefined,
+    false,
   )
 })

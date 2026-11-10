@@ -12,7 +12,7 @@ import { startDetectionAgent } from './dependencies'
 import { onStackProposals, stackProposalClear, stackProposalRead } from './ipc'
 import { mapEditsBlocked } from './mapSave'
 import { selectPanel } from './rail'
-import { proposedPatch } from './stack'
+import { proposedPatch, proposedTerminal, sameStackName } from './stack'
 
 /** The stack each open project's detection agent proposed, awaiting review in the Stack panel. */
 export const useStackProposals = create<{
@@ -108,12 +108,6 @@ export async function discardStackProposal(projectId: string, id: string, wasApp
   }
 }
 
-/** Names compared ignoring case and spacing, so `Local  stack` is `local stack`. */
-const sameName = (a: string, b: string) => {
-  const key = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
-  return key(a) === key(b)
-}
-
 /** Apply reviewed configuration without running commands. Targeted proposals replace by stable id. */
 export async function applyStackProposal(
   pending: PendingStack,
@@ -133,9 +127,7 @@ export async function applyStackProposal(
   const edits = chosen.flatMap((t) => {
     const node = s.nodes.find((n) => n.id === t.component)
     if (!node) return []
-    const current = t.terminal
-      ? node.data.terminals.find((x) => x.id === t.terminal)
-      : node.data.terminals.find((x) => sameName(x.name, t.name ?? 'Dev'))
+    const current = proposedTerminal(t, node.data.terminals)
     if (t.terminal && !current) return []
     // The backend refuses these too, but a terminal may have changed since.
     const patch = proposedPatch(t, current, !!target)
@@ -183,7 +175,8 @@ export async function applyStackProposal(
       componentIds: members,
       orderedStartup: pending.orderedStartup,
     })
-  const existing = target ?? useStore.getState().groups.find((g) => sameName(g.name, pending.name))
+  const existing =
+    target ?? useStore.getState().groups.find((g) => sameStackName(g.name, pending.name))
   const added = members.filter((id) => !existing?.componentIds.includes(id))
   if (!target && existing && added.length)
     s.updateGroup(existing.id, { componentIds: [...existing.componentIds, ...added] })

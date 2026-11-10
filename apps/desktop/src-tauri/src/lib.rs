@@ -1914,7 +1914,8 @@ async fn stack_agent_start(
     terminal: TerminalSpec,
     request_id: String,
     resume: Option<bool>,
-    stack_id: Option<String>,
+    mut stack_id: Option<String>,
+    new_detection: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1922,6 +1923,17 @@ async fn stack_agent_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
+        // Start/restart from a retained terminal must keep its target after a webview reload.
+        // Explicit new detection is allowed to clear it and build an additive briefing.
+        if stack_id.is_none() && !new_detection.unwrap_or(false) {
+            let id = model::task_session_id(
+                &project_id,
+                model::MAP_SCOPE,
+                patchbay_core::stack_proposals::STACK_TERMINAL,
+                None,
+            );
+            stack_id = bridge.call(patchbay_core::session::Request::StackSelection { id })?;
+        }
         let project = access.restrict(project, &[]).map_err(err)?;
         let (job, mut spec) = patchbay_core::stack_proposals::prepare_for(
             &project,

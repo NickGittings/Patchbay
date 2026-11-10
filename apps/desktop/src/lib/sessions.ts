@@ -214,6 +214,8 @@ interface Launch {
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
   restart?: boolean
+  /** An explicit detection request; ordinary starts recover the retained target. */
+  stackDetection?: { stackId?: string }
   /** Set once this launch's session is known to have started (also after a lost reply). */
   started?: boolean
 }
@@ -376,7 +378,6 @@ export const launching = (sid: string) => starting.has(sid) || restarting.has(si
  * on its way keeps its own preset, so this one starts nothing.
  */
 const validationSelections = new Map<string, string[]>()
-const stackSelections = new Map<string, string>()
 export async function startMapAgent(
   projectId: string,
   preset: TerminalSpec,
@@ -387,11 +388,7 @@ export async function startMapAgent(
   const launch = captureLaunch(MAP_SCOPE, terminalId, null, projectId)
   if (launching(launch.sid)) return false
   if (componentIds) validationSelections.set(launch.sid, componentIds)
-  const previousStack = stackSelections.get(launch.sid)
-  if (terminalId === STACK_AGENT_TERMINAL) {
-    if (stackId) stackSelections.set(launch.sid, stackId)
-    else stackSelections.delete(launch.sid)
-  }
+  if (terminalId === STACK_AGENT_TERMINAL) launch.stackDetection = { stackId }
   const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
   try {
@@ -399,8 +396,6 @@ export async function startMapAgent(
     return !!launch.started
   } finally {
     if (!launch.started) {
-      if (previousStack === undefined) stackSelections.delete(launch.sid)
-      else stackSelections.set(launch.sid, previousStack)
       if (previous === undefined) mapPresets.delete(launch.sid)
       else mapPresets.set(launch.sid, previous)
     }
@@ -565,7 +560,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           mapPreset(sid),
           requestId,
           !!launch.restart,
-          stackSelections.get(sid),
+          launch.stackDetection?.stackId,
+          !!launch.stackDetection,
         )
       else if (componentId === MAP_SCOPE)
         await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart)

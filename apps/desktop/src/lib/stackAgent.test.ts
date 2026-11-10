@@ -236,3 +236,19 @@ test('Detect again carries the stable stack id into detection', async () => {
     expect.objectContaining({ stackId: 'target' }),
   )
 })
+
+test('a proposed new terminal that now matches a name updates that definition', async () => {
+  const pending = {
+    ...proposal(),
+    terminals: [
+      { component: 'api', name: ' DEV ', command: 'npm run dev', readyWhen: 'ready', reason: 'x' },
+    ],
+  }
+  await applyStackProposal(pending, pending.terminals, 'p')
+  expect(state.updateTerminal).toHaveBeenCalledWith('api', 'dev', {
+    action: 'development',
+    command: 'npm run dev',
+    readyWhen: 'ready',
+  })
+  expect(state.addTerminal).not.toHaveBeenCalled()
+})

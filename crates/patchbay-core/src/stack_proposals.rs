@@ -17,6 +17,8 @@ static SUBMISSIONS: Store = Store::new("stack-proposals");
 
 /// The stack detection terminal, beside dependency detection at `MAP_SCOPE`.
 pub const STACK_TERMINAL: &str = "stack";
+/// The replacement target retained privately with the detection session.
+pub const TARGET_ENV: &str = "PATCHBAY_STACK_TARGET";
 pub const MAX_TERMINALS: usize = 50;
 pub const NAME_LIMIT: usize = 60;
 pub const COMMAND_LIMIT: usize = 1000;
@@ -478,6 +480,10 @@ pub fn prepare_for(
     let mut terminal = preset.clone();
     terminal.id = STACK_TERMINAL.into();
     terminal.name = format!("Detect stack · {}", preset.name);
+    let mut env = BTreeMap::new();
+    if let Some(id) = stack_id {
+        env.insert(TARGET_ENV.into(), id.into());
+    }
     let spec = context::job_agent_spec(
         project,
         &terminal,
@@ -485,7 +491,7 @@ pub fn prepare_for(
         project.external_dirs(),
         MAP_SCOPE,
         PROMPT,
-        BTreeMap::new(),
+        env,
         policy,
     )?;
     Ok((terminal, spec))

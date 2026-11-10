@@ -4,7 +4,13 @@ import WorktreeSetupStatus from './tasks/WorktreeSetupStatus'
 import { taskPassed } from '../lib/autoSettings'
 import Menu, { MenuItem } from './Menu'
 import { useMemo, useState } from 'react'
-import { linkedWithin, proposedPatch, stackSetup, type DevelopmentSuggestion } from '../lib/stack'
+import {
+  linkedWithin,
+  proposedPatch,
+  proposedTerminal,
+  stackSetup,
+  type DevelopmentSuggestion,
+} from '../lib/stack'
 import { validatorKey } from '../lib/validators'
 import { planTerminals } from '../lib/plan'
 import { roleTerminal } from '../lib/agentRoles'
@@ -386,7 +392,7 @@ const proposedKey = (t: ProposedStackTerminal) =>
   `${t.component}\n${t.terminal ?? `new:${t.name?.trim().toLowerCase()}`}`
 
 /** The agent's proposed stack, every terminal ticked, to apply or discard. */
-function StackReview({ pending, projectId }: { pending: PendingStack; projectId: string }) {
+export function StackReview({ pending, projectId }: { pending: PendingStack; projectId: string }) {
   const nodes = useStore((s) => s.nodes)
   const busy = useStackProposals((s) => !!s.busy[projectId])
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
@@ -404,18 +410,13 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
               t.kind === 'task' &&
               t.action === 'development' &&
               !chosen.some(
-                (p) =>
-                  p.component === n.id &&
-                  (p.terminal === t.id ||
-                    (!p.terminal && p.name?.trim().toLowerCase() === t.name.trim().toLowerCase())),
+                (p) => p.component === n.id && proposedTerminal(p, n.data.terminals)?.id === t.id,
               ),
           )
           .map((t) => `${n.data.name} › ${t.name}`)
       })
     : []
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
-  const terminalOf = (component: string, id: string) =>
-    nodes.find((n) => n.id === component)?.data.terminals.find((t) => t.id === id)
   return (
     <div className="task-action-result stack-suggestions" aria-label="Proposed stack">
       <strong>Proposed stack · {pending.name}</strong>
@@ -470,7 +471,10 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
         )}
         {pending.terminals.map((t) => {
           const key = proposedKey(t)
-          const existing = t.terminal ? terminalOf(t.component, t.terminal) : undefined
+          const existing = proposedTerminal(
+            t,
+            nodes.find((n) => n.id === t.component)?.data.terminals ?? [],
+          )
           const patch = proposedPatch(t, existing, !!pending.stackId)
           const ready = patch?.readyWhen ?? existing?.readyWhen
           const changed =
@@ -496,8 +500,7 @@ function StackReview({ pending, projectId }: { pending: PendingStack; projectId:
               />
               <span className="validator-suggestion-details">
                 <span>
-                  {name(t.component)} ›{' '}
-                  {t.terminal ? (existing?.name ?? t.terminal) : `${t.name} (new)`}
+                  {name(t.component)} › {existing?.name ?? t.terminal ?? `${t.name} (new)`}
                 </span>
                 <span className="hint">
                   {unticked.has(key)

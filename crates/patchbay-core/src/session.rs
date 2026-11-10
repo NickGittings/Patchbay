@@ -28,7 +28,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 15 retains scan, coordinator and worker briefings; 16 retrieves planner scan options.
 // Protocol 17 resolves profile credentials at spawn, including resumed sessions.
 // Protocol 18 adds ValidationSelection and selected validation action requests.
-pub const PROTOCOL: u32 = 18;
+// Protocol 19 retrieves the retained stack detection target.
+pub const PROTOCOL: u32 = 19;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -406,6 +407,10 @@ pub enum Request {
     },
     /// The immutable selected component ids retained with a discovery launch.
     ValidationSelection {
+        id: String,
+    },
+    /// The stack replacement target, or `None` for additive or unrecorded detection.
+    StackSelection {
         id: String,
     },
     /// The running session launched with this agent command token, if any.
@@ -1500,6 +1505,17 @@ impl Service {
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::StackSelection { id } => {
+                let records = self.records.lock().unwrap();
+                let target = records
+                    .get(&id)
+                    .filter(|r| {
+                        r.metadata.component_id == crate::model::MAP_SCOPE
+                            && r.metadata.terminal_id == crate::stack_proposals::STACK_TERMINAL
+                    })
+                    .and_then(|r| r.spec.env.get(crate::stack_proposals::TARGET_ENV));
+                serde_json::to_value(target)?
+            }
             Request::ValidationSelection { id } => {
                 let records = self.records.lock().unwrap();
                 let selection = records
@@ -3261,6 +3277,63 @@ mod tests {
                 },
             )
             .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stack_selection_survives_session_reload_and_new_detection_clears_it() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let project: crate::Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 4, "name": "P", "root": dir,
+            "components": [], "links": [],
+            "groups": [{"id": "target", "name": "Local", "componentIds": []}]
+        }))
+        .unwrap();
+        let preset = serde_json::from_value(serde_json::json!({
+            "id": "claude", "name": "Claude", "command": "claude", "kind": "agent"
+        }))
+        .unwrap();
+        let selection = || Request::StackSelection {
+            id: "detection".into(),
+        };
+        let mut service = Service::load(&dir).unwrap();
+        assert!(service.handle("desktop", selection()).unwrap().is_null());
+        for target in [Some("target"), None] {
+            let (_, spec) = crate::stack_proposals::prepare_for(
+                &project,
+                &preset,
+                target,
+                &crate::policy::AllowAll,
+            )
+            .unwrap();
+            let briefing = crate::context::owned_briefing(&spec).unwrap();
+            let record: Record = serde_json::from_value(serde_json::json!({
+                "id": "detection", "metadata": {
+                    "projectId": "p", "projectName": "P", "projectRoot": dir,
+                    "componentId": crate::model::MAP_SCOPE,
+                    "terminalId": crate::stack_proposals::STACK_TERMINAL,
+                    "name": "Detect stack", "kind": "agent"
+                },
+                "spec": spec, "snapshot": null, "history": [],
+                "interrupted": false, "requestIds": []
+            }))
+            .unwrap();
+            service
+                .records
+                .lock()
+                .unwrap()
+                .insert("detection".into(), record);
+            service.persist().unwrap();
+            service = Service::load(&dir).unwrap();
+            assert_eq!(
+                service.handle("desktop", selection()).unwrap(),
+                serde_json::json!(target)
+            );
+            // Retained targets stay private, just like validation selections.
+            assert!(service.summaries()[0].spec.env.is_empty());
+            crate::context::remove_owned_briefing_file(&briefing);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
