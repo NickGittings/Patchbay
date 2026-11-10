@@ -303,6 +303,7 @@ struct Watched {
     status_file: Option<PathBuf>,
     /// The agent's hook journal, if it has one.
     journal: Option<PathBuf>,
+    context_reader: Arc<Mutex<crate::agent_context::CodexReader>>,
     /// The status file write last read.
     seen: Option<Stamp>,
 }
@@ -537,6 +538,9 @@ impl PtyManager {
                     sink: sink.clone(),
                     status_file: self.status_file(generation),
                     journal: self.report_dir(generation).filter(|d| d.is_dir()),
+                    context_reader: Arc::new(Mutex::new(crate::agent_context::CodexReader::new(
+                        &spec,
+                    ))),
                     seen: None,
                 },
             );
@@ -657,6 +661,9 @@ impl PtyManager {
                     &spec.id,
                     sink.as_ref(),
                 );
+                if let Some(observation) = crate::agent_context::read_claude(&dir) {
+                    backlog.tracker.on_context(observation);
+                }
                 let _ = std::fs::remove_dir_all(dir);
             }
             backlog.running = false;
@@ -738,10 +745,11 @@ impl PtyManager {
                     w.status_file.clone(),
                     w.journal.clone(),
                     w.seen,
+                    w.context_reader.clone(),
                 )
             })
             .collect();
-        for (generation, id, backlog, sink, file, journal, seen) in watched {
+        for (generation, id, backlog, sink, file, journal, seen, context_reader) in watched {
             // Read a changed status file without holding any lock.
             let report = file.as_deref().and_then(|f| read_status_file(f, seen));
             if let Some((stamp, _)) = &report
@@ -751,6 +759,19 @@ impl PtyManager {
             }
             // Drain the hook journal outside the lock too: it is directory I/O, and the
             // reader thread needs the backlog lock for every chunk of output.
+            let claude_context = journal
+                .as_deref()
+                .and_then(crate::agent_context::read_claude);
+            let conversation = backlog
+                .lock()
+                .unwrap()
+                .tracker
+                .conversation()
+                .map(str::to_owned);
+            let codex_contexts = conversation
+                .as_deref()
+                .map(|c| context_reader.lock().unwrap().read(c, now))
+                .unwrap_or_default();
             let hooks = journal
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
@@ -779,6 +800,19 @@ impl PtyManager {
                 guard.tracker.on_report(&text, stamp, now);
             }
             guard.apply_hooks(hooks, now, &id, sink.as_ref());
+            if let Some(observation) = claude_context {
+                guard.tracker.on_context(observation);
+            }
+            if let Some(conversation) = conversation {
+                for context in codex_contexts {
+                    guard.tracker.on_context(crate::agent_context::Observation {
+                        session: id.clone(),
+                        generation,
+                        conversation: conversation.clone(),
+                        context,
+                    });
+                }
+            }
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's
             // final status and exit.

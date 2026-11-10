@@ -226,6 +226,25 @@ impl Bridge {
         self.routes.lock().unwrap().insert(id.clone(), label);
         Ok(id)
     }
+    pub fn new_conversation(
+        &self,
+        spec: SessionSpec,
+        metadata: Metadata,
+        request_id: String,
+    ) -> Result<String, String> {
+        let label = crate::component_window_label(&metadata.project_id, &metadata.component_id);
+        let lookup = request_id.clone();
+        let request = Request::NewConversation {
+            request_id,
+            metadata: Box::new(metadata),
+            spec,
+        };
+        let id = self
+            .recovering(&lookup, |bridge| bridge.call_reporting(request))
+            .map_err(|(e, _)| e)?;
+        self.routes.lock().unwrap().insert(id.clone(), label);
+        Ok(id)
+    }
     /// Resume session `id`, recovering a lost reply as launches do.
     ///
     /// # Errors

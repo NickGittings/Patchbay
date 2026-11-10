@@ -738,6 +738,9 @@ pub fn capture_status_line(dir: Option<&Path>) {
     if bytes.len() as u64 > INPUT_LIMIT {
         return;
     }
+    if let Ok(input) = serde_json::from_slice(&bytes) {
+        crate::agent_context::capture_claude(&input, crate::pty::now_ms());
+    }
     let dir = dir
         .filter(|d| d.is_absolute())
         .map(Path::to_owned)

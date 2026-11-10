@@ -885,6 +885,7 @@ async fn plan_start(
     request_id: String,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -955,7 +956,9 @@ async fn plan_start(
         {
             return Err("Choose a story to plan".into());
         }
-        let kickoff = if story_section.is_some() {
+        let kickoff = if fresh_conversation.unwrap_or(false) {
+            None
+        } else if story_section.is_some() {
             Some(context::Kickoff::PlanStory)
         } else if kickoff == Some(context::Kickoff::PlanStory) {
             None
@@ -1011,7 +1014,11 @@ async fn plan_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, artifact_task, &mut spec);
         }
-        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
+        let id = if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)?
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+        };
         Ok(id)
     })
     .await
@@ -1680,6 +1687,7 @@ fn save_device(device: DeviceManifest) -> CmdResult<String> {
 async fn terminal_start(
     request_id: String,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1743,7 +1751,11 @@ async fn terminal_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
+        let id = if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)?
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+        };
         Ok(id)
     })
     .await
@@ -1756,6 +1768,7 @@ async fn task_root_start(
     request_id: String,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1807,6 +1820,11 @@ async fn task_root_start(
         let (kickoff, handoff) =
             context::root_handoff(&project, task.as_deref(), &selected, kickoff, fix.as_ref())
                 .map_err(err)?;
+        let kickoff = if fresh_conversation.unwrap_or(false) {
+            None
+        } else {
+            kickoff
+        };
         let auto_section = auto.as_ref().map(|a| a.root_section(kickoff));
         let own = auto_section.into_iter().chain(section).chain(handoff);
         let sections = briefing_sections(
@@ -1839,7 +1857,11 @@ async fn task_root_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        }
     })
     .await
 }

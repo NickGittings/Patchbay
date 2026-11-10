@@ -1,5 +1,5 @@
 import { beginAgentChat, claimAgentChat, endAgentChat } from './agentChats'
-import { launchedRun } from './simpleActions'
+import { launchedRun, logLaunch } from './simpleActions'
 import { requireProviderAuth } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import { hydrateReplies, persistChangedReplies, persistReplies } from './simpleReplies'
@@ -216,6 +216,7 @@ interface Launch {
   restart?: boolean
   /** An explicit detection request; ordinary starts recover the retained target. */
   stackDetection?: { stackId?: string }
+  freshConversation?: boolean
   /** Set once this launch's session is known to have started (also after a lost reply). */
   started?: boolean
 }
@@ -456,8 +457,11 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       : existing
   // A retry reuses its request ID so a lost reply can't launch twice; Restart follows a stop,
   // so an earlier request is spent and would be answered as a duplicate without relaunching.
-  const requestId = (!launch.restart && launchRequests.get(sid)) || crypto.randomUUID()
-  launchRequests.set(sid, requestId)
+  const intent = launch.freshConversation ? 'fresh' : 'start'
+  const previous = launchRequests.get(sid)
+  const requestId =
+    (!launch.restart && previous?.intent === intent && previous.id) || crypto.randomUUID()
+  launchRequests.set(sid, { id: requestId, intent })
   const sharedChat = componentId === MAP_SCOPE || componentId === PLAN_SCOPE
   const chatLaunch = sharedChat
     ? { projectId: launch.projectId, task: launch.chatTask, requestId }
@@ -487,7 +491,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         project.components
           .find((c) => c.id === componentId)
           ?.terminals.find((t) => t.id === terminalId)
-      if (!useStore.getState().sessions[sid]?.running) await checkLaunchAuth(launch)
+      if (launch.freshConversation || !useStore.getState().sessions[sid]?.running)
+        await checkLaunchAuth(launch)
       // A fix agent works from review findings over the whole map, never the plan; one started
       // again asks the backend to brief it from the branch its record keeps.
       const again =
@@ -495,16 +500,19 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         !launch.kickoff &&
         (fixSessions.has(sid) ||
           useStore.getState().sessionRecords.some((r) => r.id === sid && !!r.metadata.branch))
-      const recorded = launch.auto ? undefined : autoBriefOf(launch.projectId, sid)
+      const recorded =
+        launch.auto || launch.freshConversation ? undefined : autoBriefOf(launch.projectId, sid)
       const auto = launch.auto ?? recorded?.auto
-      const kickoff: Kickoff | undefined = again
-        ? { kind: 'fixFindings' }
-        : (launch.kickoff ??
-          (componentId === PLAN_SCOPE
-            ? launch.story
-              ? { kind: 'planStory' }
-              : recorded?.kickoff
-            : undefined))
+      const kickoff: Kickoff | undefined = launch.freshConversation
+        ? undefined
+        : again
+          ? { kind: 'fixFindings' }
+          : (launch.kickoff ??
+            (componentId === PLAN_SCOPE
+              ? launch.story
+                ? { kind: 'planStory' }
+                : recorded?.kickoff
+              : undefined))
       const fix = kickoff?.kind === 'fixFindings'
       if (
         componentId !== PLAN_SCOPE &&
@@ -521,6 +529,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           () => requestedEpoch !== epoch || isClosing(launch),
         )
       if (requestedEpoch !== epoch || isClosing(launch)) return await cancelled(launch)
+      if (launch.freshConversation && autoControlsAgent(launch.projectId, sid))
+        throw new Error('Stop Auto before starting a new conversation')
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
@@ -533,6 +543,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           kickoff,
           resume,
           auto,
+          ...(launch.freshConversation ? ([true] as const) : []),
         )
         if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
@@ -580,6 +591,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           launch.story,
           launch.scanRound,
           launch.task,
+          ...(launch.freshConversation ? ([true] as const) : []),
         )
       } else {
         await terminalStart(
@@ -591,6 +603,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           requestId,
           peersFor(componentId, launch.highlighted),
           resume,
+          ...(launch.freshConversation ? ([true] as const) : []),
         )
       }
       launchRequests.delete(sid)
@@ -603,9 +616,15 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       // Another window may have auto-started the same shell in the meantime. A handoff's fresh
       // root terminal never ran before, so any snapshot means the service started it and only the
       // reply was lost, even if the agent has already exited. A planner may have run before.
-      const snapshot = await terminalSnapshot(sid).catch(() => null)
+      const snapshot = launch.freshConversation
+        ? null
+        : await terminalSnapshot(sid).catch(() => null)
       const fresh = componentId === TASK_ROOT_SCOPE && !!launch.kickoff
-      const started = fresh ? !!snapshot : !!snapshot?.running
+      const started = launch.freshConversation
+        ? !!(await launchedRun(sid, requestId))
+        : fresh
+          ? !!snapshot
+          : !!snapshot?.running
       if (started) {
         launchRequests.delete(sid)
         launch.started = true
@@ -624,7 +643,22 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       const run = await launchedRun(sid, requestId)
       if (requestedEpoch === epoch) claimPendingChat(sid, requestId, run)
     }
-    if (launch.started && componentId === PLAN_SCOPE) {
+    if (launch.started && launch.freshConversation) {
+      fixSessions.delete(sid)
+      await logLaunch(
+        launch.projectId,
+        launch.chatTask,
+        {
+          kind: 'action',
+          action: 'newConversation',
+          stage: componentId === PLAN_SCOPE ? 'plan' : 'build',
+          sessionId: sid,
+        },
+        requestId,
+        { atRunStart: true },
+      )
+    }
+    if (launch.started && !launch.freshConversation && componentId === PLAN_SCOPE) {
       markPlanStarted(launch.projectId, sid, launch.highlighted)
       if (
         launch.story ||
@@ -672,6 +706,39 @@ function markPlanStarted(projectId: string, sid: string, ids: string[]) {
       },
     },
   })
+}
+
+/** Fresh conversations are unavailable while Auto retains ownership of this agent. */
+export function autoControlsAgent(projectId: string, sid: string): boolean {
+  const state = projectStateOf(projectId)
+  return (
+    !!state &&
+    autoRuns(state).some(
+      ({ run }) =>
+        unfinished(run.status) && (run.sessionId === sid || run.sessionBrief?.sessionId === sid),
+    )
+  )
+}
+
+export function newConversation(
+  componentId: string,
+  terminalId: string,
+  task: string | null,
+  projectId?: string,
+) {
+  const launch = captureLaunch(componentId, terminalId, task, projectId)
+  if (autoControlsAgent(launch.projectId, launch.sid))
+    return Promise.reject(new Error('Stop Auto before starting a new conversation'))
+  if (launching(launch.sid)) return Promise.resolve(undefined)
+  if (
+    launch.runtime ||
+    (isReservedScope(componentId) && componentId !== PLAN_SCOPE && componentId !== TASK_ROOT_SCOPE)
+  )
+    return Promise.reject(
+      new Error('New conversation requires an interactive component, planner or task agent'),
+    )
+  launch.freshConversation = true
+  return launchTerminal(launch)
 }
 
 export const stopTerminal = (sessionId: string) =>
@@ -1011,7 +1078,7 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
   )
 }
 
-const launchRequests = new Map<string, string>()
+const launchRequests = new Map<string, { id: string; intent: 'fresh' | 'start' }>()
 let reconciling: Promise<void> | undefined
 /** Wait out any pre-launch list, then read records fetched after the launch completed. */
 export async function reconcileFreshSessions(): Promise<void> {

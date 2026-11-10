@@ -138,7 +138,14 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
     let supported = EVENTS.contains(&event)
         || (provider == Adapter::Codex && event == "Interrupt")
         || (provider == Adapter::Claude
-            && matches!(event, "Notification" | "StopFailure" | "PostToolUseFailure"));
+            && matches!(
+                event,
+                "Notification"
+                    | "StopFailure"
+                    | "PostToolUseFailure"
+                    | "PreCompact"
+                    | "PostCompact"
+            ));
     if !supported {
         return None;
     }
@@ -164,7 +171,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         .filter(|id| crate::adapters::valid_id(id))
         .map(str::to_string);
     // Older providers without turn identity retain Active/Quiet fallback.
-    if !matches!(event, "SessionStart" | "SessionEnd" | "UserPromptSubmit") && turn.is_none() {
+    if !matches!(
+        event,
+        "SessionStart" | "SessionEnd" | "UserPromptSubmit" | "PreCompact" | "PostCompact"
+    ) && turn.is_none()
+    {
         return None;
     }
     let file_path = input.get("tool_input").and_then(|tool| {
@@ -565,7 +576,13 @@ fn handler(provider: Adapter, reporter: &Path) -> Result<Value> {
 fn events(provider: Adapter) -> Vec<&'static str> {
     let mut events = EVENTS.to_vec();
     match provider {
-        Adapter::Claude => events.extend(["Notification", "StopFailure", "PostToolUseFailure"]),
+        Adapter::Claude => events.extend([
+            "Notification",
+            "StopFailure",
+            "PostToolUseFailure",
+            "PreCompact",
+            "PostCompact",
+        ]),
         Adapter::Codex => events.push("Interrupt"),
     }
     events

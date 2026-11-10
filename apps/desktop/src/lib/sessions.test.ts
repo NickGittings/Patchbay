@@ -1473,3 +1473,111 @@ test('explicit stack detection selects or clears the target while terminal resta
     false,
   )
 })
+
+test('New conversation sends an explicit fresh intent without stopping or replaying kickoff in the frontend', async () => {
+  const { newConversation } = await import('./sessions')
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  const sid = sessionId(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  useStore.getState().setSession(sid, { generation: 1, running: true })
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  const request = await newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  expect(request).toEqual(expect.any(String))
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.slice(5)).toEqual([
+    undefined,
+    false,
+    undefined,
+    true,
+  ])
+  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
+    kind: 'action',
+    action: 'newConversation',
+    sessionId: sid,
+  })
+})
+
+test('New conversation rejects Auto ownership and duplicate in-flight clicks', async () => {
+  const { newConversation } = await import('./sessions')
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  const sid = sessionId(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  useStore.setState({ auto: { status: 'paused', sessionId: sid } as import('../types').AutoRun })
+  await expect(newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')).rejects.toThrow('Stop Auto')
+  expect(ipc.taskRootStart).not.toHaveBeenCalled()
+  useStore.setState({ auto: null })
+  const gate = deferred()
+  vi.mocked(ipc.taskRootStart).mockImplementationOnce(async () => {
+    await gate.promise
+    return ''
+  })
+  const first = newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  await newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  gate.resolve()
+  await first
+  expect(ipc.taskRootStart).toHaveBeenCalledTimes(1)
+})
+
+test('a refused fresh launch does not mistake the old running process for success and reuses an uncertain request', async () => {
+  const { newConversation } = await import('./sessions')
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  const sid = sessionId(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  useStore.getState().setSession(sid, { generation: 1, running: true })
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue(snapshot(true, 1))
+  vi.mocked(ipc.taskRootStart).mockRejectedValue(new Error('Reply lost'))
+  expect(await newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')).toBeUndefined()
+  const firstRequest = vi.mocked(ipc.taskRootStart).mock.lastCall?.[4]
+  expect(useStore.getState().message).toContain('Reply lost')
+  expect(useStore.getState().simple?.log ?? []).toHaveLength(0)
+  expect(await newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')).toBeUndefined()
+  expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[4]).toBe(firstRequest)
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+})
+
+test('fresh-conversation generations reset context telemetry in live state', () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  const status = snapshot(true, 1).status
+  status.context = {
+    usedTokens: 90000,
+    windowTokens: 100000,
+    usedPercent: 90,
+    observedMs: 100,
+    compaction: 'compacting',
+    lastCompactionMs: null,
+  }
+  useStore.getState().setSession(sid, { generation: 1, running: true, status })
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 2,
+    startedMs: 200,
+    notice: null,
+  })
+  expect(useStore.getState().sessions[sid].status?.context).toBeUndefined()
+})
+
+test('a lost fresh-launch reply is reconciled by request ID even when the new process already exited', async () => {
+  const { newConversation } = await import('./sessions')
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  const sid = sessionId(TASK_ROOT_SCOPE, terminalId, null, 'p')
+  useStore.getState().setSession(sid, { generation: 1, running: true })
+  vi.mocked(ipc.taskRootStart).mockImplementationOnce(async (...args) => {
+    vi.mocked(ipc.sessionsList).mockResolvedValue([
+      {
+        id: sid,
+        metadata: { projectId: 'p', componentId: TASK_ROOT_SCOPE, terminalId, kind: 'agent' },
+        spec: { cwd: '/p' },
+        requestIds: [args[4]],
+        history: [],
+        interrupted: false,
+        snapshot: snapshot(false, 2),
+      },
+    ] as unknown as Awaited<ReturnType<typeof ipc.sessionsList>>)
+    throw new Error('Reply lost')
+  })
+  expect(await newConversation(TASK_ROOT_SCOPE, terminalId, null, 'p')).toEqual(expect.any(String))
+  expect(useStore.getState().sessions[sid].generation).toBe(2)
+  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
+    action: 'newConversation',
+    generation: 2,
+  })
+  expect(useStore.getState().message ?? '').not.toContain('Reply lost')
+})

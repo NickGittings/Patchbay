@@ -95,9 +95,11 @@ pub struct AgentReport {
     pub approval_pending: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatus {
+    #[serde(default)]
+    pub context: crate::agent_context::AgentContext,
     /// Last output that wasn't an echo of input, in Unix milliseconds.
     pub last_output_ms: Option<u64>,
     /// Whether it produced output in the last moment.
@@ -425,6 +427,7 @@ pub struct Tracker {
     pending_replies: Vec<(Option<u64>, Reply)>,
     hook_conversation: Option<String>,
     hook_turn: Option<String>,
+    conversation_boundary_ms: u64,
     retired_turns: std::collections::HashSet<String>,
     retired_conversations: std::collections::HashSet<String>,
     turn_closed: bool,
@@ -453,6 +456,43 @@ impl Tracker {
     pub fn with_identity(mut self, session: &str, generation: u64) -> Self {
         self.session_identity = Some((session.into(), generation));
         self
+    }
+
+    /// Accept telemetry only for this generation's established conversation.
+    pub fn on_context(&mut self, observation: crate::agent_context::Observation) {
+        if self.session_identity.as_ref() != Some(&(observation.session, observation.generation))
+            || self
+                .hook_conversation
+                .as_ref()
+                .is_some_and(|c| c != &observation.conversation)
+            || observation
+                .context
+                .observed_ms
+                .is_none_or(|at| at < self.conversation_boundary_ms)
+            || observation.context.observed_ms < self.status.context.observed_ms
+        {
+            return;
+        }
+        self.hook_conversation
+            .get_or_insert(observation.conversation);
+        let context = &mut self.status.context;
+        if observation.context.compaction == crate::agent_context::Compaction::Unknown {
+            context.used_tokens = observation.context.used_tokens;
+            context.window_tokens = observation.context.window_tokens;
+            context.used_percent = observation.context.used_percent;
+            context.observed_ms = observation.context.observed_ms;
+        }
+        if observation.context.compaction != crate::agent_context::Compaction::Unknown {
+            context.compaction = observation.context.compaction;
+        }
+        if observation.context.last_compaction_ms.is_some() {
+            context.last_compaction_ms = observation.context.last_compaction_ms;
+        }
+    }
+
+    #[must_use]
+    pub fn conversation(&self) -> Option<&str> {
+        self.hook_conversation.as_deref()
     }
 
     /// Retained accepted activity, oldest first.
@@ -505,7 +545,8 @@ impl Tracker {
             // A fresh start in another conversation is a nested run (`claude -p`, `codex exec`
             // started from this terminal), which inherits the reporting environment.
             if self.hook_conversation.is_some()
-                && (event.event != "SessionStart" || event.source.as_deref() == Some("startup"))
+                && (event.event != "SessionStart"
+                    || matches!(event.source.as_deref(), Some("startup" | "compact")))
             {
                 return;
             }
@@ -513,9 +554,38 @@ impl Tracker {
             if let Some(previous) = self.hook_conversation.replace(event.conversation.clone()) {
                 self.retired_conversations.insert(previous);
             }
-            self.hook_turn = None;
-            self.retired_turns.clear();
+            if let Some(turn) = self.hook_turn.take() {
+                self.retired_turns.insert(turn);
+            }
+            self.status.context = Default::default();
+            self.conversation_boundary_ms = event.at_ms;
+            self.approval_pending = None;
+            // Retain retired turn identities even when a provider reuses a conversation.
+
             self.turn_closed = false;
+        }
+        if event.event == "SessionStart"
+            && event.source.as_deref() == Some("startup")
+            && self.report.is_some()
+        {
+            return;
+        }
+        if matches!(event.event.as_str(), "PreCompact" | "PostCompact") {
+            if event.at_ms < self.conversation_boundary_ms
+                || event
+                    .turn
+                    .as_ref()
+                    .is_some_and(|t| self.retired_turns.contains(t))
+            {
+                return;
+            }
+            self.status.context.compaction = if event.event == "PreCompact" {
+                crate::agent_context::Compaction::Compacting
+            } else {
+                self.status.context.last_compaction_ms = Some(event.at_ms);
+                crate::agent_context::Compaction::Idle
+            };
+            return;
         }
         // A provider that reports prompts without turn identity cannot establish
         // reliable progress. Retain Active/Quiet instead of its startup Idle state.
@@ -547,16 +617,40 @@ impl Tracker {
                 return;
             }
         }
-        let state = match event.event.as_str() {
-            "SessionStart"
-                if self
+        if event.event == "SessionStart" {
+            match event.source.as_deref() {
+                Some("compact") => {
+                    if event.at_ms < self.conversation_boundary_ms {
+                        return;
+                    }
+                    self.status.context.compaction = crate::agent_context::Compaction::Idle;
+                    self.status.context.last_compaction_ms = Some(event.at_ms);
+                    return;
+                }
+                Some("clear" | "resume") => {
+                    if let Some(turn) = self.hook_turn.take() {
+                        self.retired_turns.insert(turn);
+                    }
+                    self.turn_closed = false;
+                    self.approval_pending = None;
+                    self.report = None;
+                    self.resolved = None;
+                    self.status.context = Default::default();
+                    self.conversation_boundary_ms = event.at_ms;
+                }
+                // Preserve the conservative fallback for older reporters.
+                _ if self
                     .report
                     .as_ref()
                     .is_some_and(|r| r.state == AgentState::Working)
                     && self.hook_turn.is_some() =>
-            {
-                return;
-            } // Compaction does not end an active turn.
+                {
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let state = match event.event.as_str() {
             "SessionStart" | "Interrupt" | "StopFailure" => AgentState::Idle,
             "SessionEnd" => AgentState::Ended,
             "PreToolUse" if event.tool.as_deref() == Some("AskUserQuestion") => {
@@ -625,7 +719,13 @@ impl Tracker {
             self.pending_replies.push((previous, reply));
         }
         let previous = self.report.take();
-        let turn = event.turn.or_else(|| self.hook_turn.clone());
+        let turn = if event.event == "SessionStart"
+            && matches!(event.source.as_deref(), Some("clear" | "resume"))
+        {
+            None
+        } else {
+            event.turn.or_else(|| self.hook_turn.clone())
+        };
         let same_turn = previous.as_ref().filter(|r| {
             r.conversation_id.as_ref() == Some(&event.conversation) && r.turn_id == turn
         });
@@ -1324,6 +1424,115 @@ mod tests {
             source: None,
         }
     }
+    #[test]
+    fn compaction_preserves_work_approval_and_completion_eligibility() {
+        for provider in [
+            crate::adapters::Adapter::Claude,
+            crate::adapters::Adapter::Codex,
+        ] {
+            for approval in [false, true] {
+                let mut tracker = Tracker::new("", false).with_identity("session", 42);
+                let mut prompt = hook("UserPromptSubmit", Some("parent-turn"), 1);
+                prompt.provider = provider;
+                tracker.on_hook(prompt, 100);
+                if approval {
+                    let mut request = hook("PermissionRequest", Some("parent-turn"), 2);
+                    request.provider = provider;
+                    tracker.on_hook(request, 200);
+                }
+                let before = tracker.status(4000).agent.unwrap();
+                tracker.on_hook(hook("PreCompact", None, 3), 4100);
+                assert_eq!(
+                    tracker.status(4100).context.compaction,
+                    crate::agent_context::Compaction::Compacting
+                );
+                let mut compact = hook("SessionStart", None, 4);
+                compact.source = Some("compact".into());
+                tracker.on_hook(compact, 4200);
+                assert_eq!(tracker.status(4200).agent.unwrap(), before);
+                assert_eq!(tracker.status(4200).context.last_compaction_ms, Some(400));
+                tracker.on_hook(hook("Stop", Some("parent-turn"), 5), 4300);
+                assert_eq!(
+                    tracker.status(4300).agent.unwrap().state,
+                    AgentState::Review
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_and_resume_reset_turns_even_when_conversation_id_is_reused() {
+        for source in ["clear", "resume"] {
+            for changed_id in [false, true] {
+                let mut tracker = Tracker::new("", false).with_identity("session", 42);
+                tracker.on_hook(hook("UserPromptSubmit", Some("old-turn"), 1), 100);
+                tracker.on_hook(hook("PermissionRequest", Some("old-turn"), 2), 200);
+                let mut start = hook("SessionStart", None, 3);
+                start.source = Some(source.into());
+                if changed_id {
+                    start.conversation = "next-conversation".into();
+                }
+                tracker.on_hook(start.clone(), 300);
+                let status = tracker.status(5000);
+                let agent = status.agent.unwrap();
+                assert_eq!(agent.state, AgentState::Idle);
+                assert_eq!(agent.turn_id, None);
+                assert!(!agent.approval_pending);
+                assert_eq!(status.context, Default::default());
+                let mut delayed = hook("Stop", Some("old-turn"), 4);
+                delayed.conversation.clone_from(&start.conversation);
+                tracker.on_hook(delayed, 5100);
+                assert_eq!(tracker.status(5100).agent.unwrap().state, AgentState::Idle);
+                let mut prompt = hook("UserPromptSubmit", Some("new-turn"), 5);
+                prompt.conversation.clone_from(&start.conversation);
+                tracker.on_hook(prompt, 5200);
+                assert_eq!(
+                    tracker.status(5200).agent.unwrap().state,
+                    AgentState::Working
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn context_is_bound_to_generation_conversation_and_clear_boundary() {
+        use crate::agent_context::{AgentContext, Observation};
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        let context = Observation {
+            session: "session".into(),
+            generation: 42,
+            conversation: "12345678-conversation".into(),
+            context: AgentContext {
+                used_tokens: Some(100),
+                used_percent: Some(10.0),
+                observed_ms: Some(200),
+                ..Default::default()
+            },
+        };
+        let mut wrong = context.clone();
+        wrong.generation = 41;
+        tracker.on_context(wrong);
+        let mut wrong = context.clone();
+        wrong.conversation = "another-conversation".into();
+        tracker.on_context(wrong);
+        assert_eq!(tracker.status(200).context.used_tokens, None);
+        tracker.on_context(context.clone());
+        assert_eq!(tracker.status(200).context.used_tokens, Some(100));
+        let mut clear = hook("SessionStart", None, 3);
+        clear.source = Some("clear".into());
+        tracker.on_hook(clear, 300);
+        tracker.on_context(context.clone());
+        assert_eq!(tracker.status(300).context.used_tokens, None);
+        let mut new = context.clone();
+        new.context.observed_ms = Some(400);
+        tracker.on_context(new);
+        assert_eq!(tracker.status(400).context.used_tokens, Some(100));
+        tracker.on_context(context);
+        assert_eq!(tracker.status(400).context.observed_ms, Some(400));
+        assert_eq!(tracker.status(400).agent.unwrap().state, AgentState::Idle);
+    }
+
     #[test]
     fn native_hooks_preserve_quiet_work_and_correlate_turns_and_generations() {
         let mut tracker = Tracker::new("", false).with_identity("session", 42);

@@ -266,6 +266,7 @@ export const planStart = async (
   story?: string,
   scanRound?: string,
   task: string | null = null,
+  freshConversation = false,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -279,6 +280,7 @@ export const planStart = async (
     planningScope: planningScope(task),
     kickoff,
     resume,
+    ...(freshConversation ? { freshConversation } : {}),
     extraContext: [
       ...(await extraContext(project, componentIds)),
       ...transferredPlanContext(project.projectId ?? '', task),
@@ -325,6 +327,7 @@ export const terminalStart = async (
   requestId: string = crypto.randomUUID(),
   peers?: string[],
   resume = false,
+  freshConversation = false,
 ) => {
   const terminal = project.components
     .find((c) => c.id === componentId)
@@ -336,6 +339,7 @@ export const terminalStart = async (
     terminalId,
     requestId,
     resume,
+    ...(freshConversation ? { freshConversation } : {}),
     extraContext:
       terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
@@ -523,6 +527,7 @@ export const taskRootStart = async (
   kickoff?: Kickoff,
   resume = false,
   auto?: AutoBrief,
+  freshConversation = false,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -533,6 +538,7 @@ export const taskRootStart = async (
     requestId,
     auto,
     resume,
+    ...(freshConversation ? { freshConversation } : {}),
     kickoff: kickoff?.kind === 'fixFindings' ? { kind: kickoff.kind } : kickoff,
     reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:

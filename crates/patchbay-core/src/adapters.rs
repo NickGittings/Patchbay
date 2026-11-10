@@ -144,7 +144,7 @@ impl Adapter {
 
 /// Evaluate only the parsed assignment prefix, never the provider executable or its options.
 /// This preserves shell expansion, quoting and prefix precedence over the session environment.
-fn codex_home(
+pub(crate) fn codex_home(
     _command: &str,
     cwd: &Path,
     env: &BTreeMap<String, String>,
@@ -156,7 +156,7 @@ fn codex_home(
             .context("Cannot locate provider executable")?;
         let read_home =
             crate::context::quote_argument("printf '\\0%s\\0' \"${CODEX_HOME-${HOME}/.codex}\"");
-        let output =
+        let mut child =
             std::process::Command::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()))
                 .args([
                     "-ilc",
@@ -166,15 +166,37 @@ fn codex_home(
                 .envs(env)
                 .stdin(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .output()
-                .context("Cannot resolve the reviewer's CODEX_HOME")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "Cannot resolve the reviewer's CODEX_HOME"
-        );
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .context("Cannot resolve CODEX_HOME")?;
+        let stdout = child.stdout.take();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            if let Some(stdout) = stdout {
+                let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
+            }
+            let _ = send.send(bytes);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::ensure!(status.success(), "Cannot resolve CODEX_HOME");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("Timed out resolving CODEX_HOME");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = receive
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .context("Cannot read CODEX_HOME")?;
         // Ignore any login-shell startup output before the NUL-delimited result.
         let directory = output
-            .stdout
             .split(|b| *b == 0)
             .rev()
             .nth(1)

@@ -568,8 +568,18 @@ export interface AgentReport {
   approvalPending?: boolean
 }
 
+export interface AgentContext {
+  usedTokens: number | null
+  windowTokens: number | null
+  usedPercent: number | null
+  observedMs: number | null
+  compaction: 'unknown' | 'idle' | 'compacting'
+  lastCompactionMs: number | null
+}
+
 /** `status::SessionStatus`: what a running session is doing. */
 export interface SessionStatus {
+  context?: AgentContext
   lastOutputMs: number | null
   active: boolean
   agent: AgentReport | null
