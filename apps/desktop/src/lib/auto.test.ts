@@ -4938,6 +4938,87 @@ test('validation of the same HEAD does not cover subsequent uncommitted edits', 
   expect(inferStage(changed, settings)).toMatchObject({ stage: 'validate', status: 'running' })
 })
 
+test.each(['light', 'standard'] as const)(
+  'an interrupted automatic merge retains its reviewed commit (%s)',
+  async (effort) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    const settings = run({
+      autonomous: true,
+      effort,
+      stage: 'merge',
+      reviewedHead: 'abc',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      validation: [],
+      validationHead: 'abc',
+    })
+    const current = await autoSnapshot('p', 't', settings)
+    setRun({ ...settings, validationMark: current.workMark })
+    await withFollower(async () => {
+      await flush()
+      await flush()
+      expect(jobs.startMergeAgent).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        expect.objectContaining({ expectedSourceHead: 'abc' }),
+        expect.anything(),
+        expect.any(String),
+        expect.anything(),
+      )
+      expect(autoRun('p', 't')).toMatchObject({
+        stage: 'merge',
+        reviewedHead: 'abc',
+        recovery: { attempts: 1 },
+      })
+    })
+  },
+)
+
+test.each(['head', 'findings'] as const)(
+  'an interrupted automatic merge rechecks changed %s before retrying',
+  async (changed) => {
+    load()
+    useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    setRun({
+      autonomous: true,
+      effort: 'light',
+      stage: 'merge',
+      reviewedHead: 'abc',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+    })
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+      agent('working', Date.now())
+      return 's'
+    })
+    const hooks = await ipc.agentHooksCheck('codex')
+    vi.mocked(ipc.agentHooksCheck).mockImplementationOnce(async () => {
+      if (changed === 'head')
+        vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+          { ...tree, head: 'new-commit' },
+          { ...tree, path: '/p', branch: 'main', current: true },
+        ])
+      else vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ high: 1 }))
+      return hooks
+    })
+    await withFollower(async () => {
+      await flush()
+      await flush()
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
+    })
+  },
+)
+
 test('automatic merge rechecks review inputs after asynchronous hook preflight', async () => {
   load()
   setRun({

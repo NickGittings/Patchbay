@@ -1435,7 +1435,8 @@ async function recoverAuto(
     launchAtMs: undefined,
     observedWorking: false,
     stage: target ?? run.stage,
-    reviewedHead: undefined,
+    // Merge retries must keep the commit that authorizes their freshness checks and launch.
+    reviewedHead: (target ?? run.stage) === 'merge' ? run.reviewedHead : undefined,
     recovery: { ...recovery, pending: false },
   })
   return true
