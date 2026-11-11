@@ -178,7 +178,13 @@ export default function DiffView({
                   {h.context && <span className="diff-hunk-context">{h.context}</span>}
                 </div>
                 {lines.map((l, j) => (
-                  <div key={j} className={`diff-row ${l.kind}`} role="row" data-new-line={l.new}>
+                  <div
+                    key={j}
+                    className={`diff-row ${l.kind}`}
+                    role="row"
+                    data-new-line={l.new}
+                    data-old-line={l.old}
+                  >
                     <span className="diff-num old">{l.old ?? ''}</span>
                     <span className="diff-num new">{l.new ?? ''}</span>
                     <span className="diff-sign">

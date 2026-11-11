@@ -309,7 +309,7 @@ export function availableReviewBase(
   savedBase?: string | null,
 ) {
   if (!source) return undefined
-  if (savedBase && branches.includes(savedBase)) return savedBase
+  if (savedBase && savedBase !== source.branch && branches.includes(savedBase)) return savedBase
   return (
     defaultReviewBase(
       source,

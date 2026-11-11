@@ -127,7 +127,13 @@ export default function ReviewView() {
   const canMerge = !!source?.branch && mergeDestinations(source, worktrees).length > 0
   const findings = useReviewFindings(projectId, source?.branch)
   const base = availableReviewBase(source, tasks, worktrees, branches, findings?.findings?.base)
-  const reviewScope = JSON.stringify([projectId, target, base])
+  const reviewScope = JSON.stringify([
+    projectId,
+    target,
+    source?.head,
+    base,
+    worktrees.find((w) => w.branch === base)?.head,
+  ])
   const [findingRef, setFindingRef] = useState<FileRef | null>(null)
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
@@ -156,7 +162,8 @@ export default function ReviewView() {
 
   useEffect(() => {
     let disposed = false
-    void Promise.all([gitWorktrees(), gitBranches()])
+    void gitWorktrees(projectId)
+      .then(async (list) => [list, list.length ? await gitBranches(projectId) : []] as const)
       .then(([list, names]) => {
         if (!disposed) setBranches(names)
         if (!disposed)
@@ -253,7 +260,6 @@ export default function ReviewView() {
     if (active.length && !active.includes(file.componentId)) setFilter([])
     setCollapsed({ ...collapsed, [file.componentId]: false })
     setSelected(file)
-    setPane('fromFindings')
   }
 
   // Click shows one component; Cmd/Ctrl/Shift-click adds or removes it.

@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import DiffView from './DiffView'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 const h = vi.hoisted(() => ({
   project: 'p',
@@ -55,6 +56,19 @@ test('passes the branch base and focuses the finding line after its diff arrives
   render('main', '/task', 12)
   expect(h.request).toHaveBeenCalledWith([], 'app', 'src/file', undefined, '/task', 'main')
   expect(h.query).toHaveBeenCalledWith('[data-new-line="12"]')
+  expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+})
+test('deleted finding lines expose old line coordinates and can be focused', async () => {
+  const scrollIntoView = vi.fn()
+  h.query.mockImplementation((selector: string) =>
+    selector === '[data-old-line="12"]' ? { scrollIntoView } : null,
+  )
+  h.request.mockResolvedValue({ patch: '@@ -12 +11,0 @@\n-removed\n', binary: false })
+  render('main', '/task', 12)
+  await Promise.resolve()
+  const markup = renderToStaticMarkup(render('main', '/task', 12))
+  expect(markup).toContain('data-old-line="12"')
+  expect(h.query).toHaveBeenCalledWith('[data-old-line="12"]')
   expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
 })
 test.each(['base', 'worktree', 'project'])(

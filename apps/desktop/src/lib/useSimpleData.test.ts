@@ -135,3 +135,20 @@ test('an unavailable saved base uses an uncommitted comparison when no default e
   expect(reader.data?.plan.text).toBe('plan')
   expect(ipc.gitReview).toHaveBeenLastCalledWith(expect.anything(), undefined, undefined)
 })
+
+test('a project outside Git still loads plans and changes from its component repositories', async () => {
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([])
+  vi.mocked(ipc.gitBranches).mockRejectedValue(new Error("The project isn't in a git repo"))
+  vi.mocked(ipc.gitReview).mockResolvedValue({
+    ahead: false,
+    changes: { app: [{ path: 'app/file', kind: 'modified' }] },
+    affected: [],
+  })
+  render()
+  const reader = await settle()
+  expect(reader.error).toBe('')
+  expect(reader.base).toBeUndefined()
+  expect(reader.data?.plan.text).toBe('plan')
+  expect(reader.data?.review.changes.app).toHaveLength(1)
+  expect(ipc.gitBranches).not.toHaveBeenCalled()
+})

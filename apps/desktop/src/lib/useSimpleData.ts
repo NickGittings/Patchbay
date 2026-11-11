@@ -77,13 +77,14 @@ export function useSimpleData(visible: boolean) {
       const project = state.toProject()
       try {
         const scopedPlan = await planRead(projectId, task ?? undefined)
+        const worktreeRead = gitWorktrees(projectId)
         const [plan, acceptedPlan, proposal, worktrees, branches] = await Promise.all([
           scopedPlan,
           // The project folder's accepted plan is the project plan itself.
           scopedPlan,
           proposalRead(projectId, task ?? undefined),
-          gitWorktrees(projectId),
-          gitBranches(projectId),
+          worktreeRead,
+          worktreeRead.then((trees) => (trees.length ? gitBranches(projectId) : [])),
         ])
         // Resolve the comparison from fresh metadata on every read, so an old
         // saved base cannot prevent these artifacts from refreshing.

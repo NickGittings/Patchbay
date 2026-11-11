@@ -360,6 +360,34 @@
         document.querySelector('.simple-diff [data-new-line="1"]'),
     )
     click(button('Map', document.querySelector('.simple-diff')))
+    state().setView('review')
+    await until(
+      'Full review includes committed branch changes',
+      () =>
+        document.querySelector('.review-view .change-row[data-path="src/app.txt"]') &&
+        document.querySelector('.review-view .diff-view')?.textContent.includes('simple changed'),
+    )
+    assert(
+      document
+        .querySelector('.review-list')
+        .textContent.includes('Changes since merge base with main'),
+      'Full review did not show its comparison base',
+    )
+    click(document.querySelector('.review-findings-button'))
+    click(
+      await until('Full review finding reference', () =>
+        document.querySelector('.review-pane .finding-ref'),
+      ),
+    )
+    await until(
+      'Full review finding opens its committed diff',
+      () =>
+        document.querySelector('.review-diff-back') &&
+        document.querySelector('.review-view .diff-view')?.textContent.includes('simple changed') &&
+        document.querySelector('.review-view [data-new-line="1"]'),
+    )
+    state().setView('navigation')
+    state().setSimpleMode(true)
     await until('reviewer terminal button', () => button('View Reviewer terminal'))
     click(button('View Reviewer terminal'))
     await until('reviewer drawer shows its terminal', () =>

@@ -232,6 +232,7 @@ test('saved review bases fall back after a branch is renamed or deleted', async 
   expect(availableReviewBase(open, tasks, [open], ['feature', 'master'], 'release')).toBe('master')
   expect(availableReviewBase(open, tasks, [open], ['feature'], 'release')).toBeUndefined()
   expect(availableReviewBase(undefined, tasks, worktrees, ['main'], 'main')).toBeUndefined()
+  expect(availableReviewBase(source, [], worktrees, ['feature', 'main'], 'feature')).toBe('main')
 })
 
 test('findings become stale for new HEADs, newer edits and unfinished review attempts', async () => {
