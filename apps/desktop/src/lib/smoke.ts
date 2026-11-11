@@ -1,3 +1,4 @@
+import { useChatTeams, refreshChatTeams } from './chatTeams'
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { startTaskAgent } from './implement'
 import { providerAuthCheck, providerLoginWrite, onProviderLoginEvent } from './ipc'
@@ -146,6 +147,8 @@ const chatPanel = {
 }
 const hooks = {
   simpleUi: useSimpleUi,
+  chatTeams: useChatTeams,
+  refreshChatTeams,
   simpleKey,
   startTaskAgent,
   providerAuthCheck,

@@ -324,11 +324,31 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         launch.role != Role::Scanner
             || matches!(
                 action,
-                Action::Context {} | Action::Status {} | Action::ProviderRun { .. }
+                Action::Context {}
+                    | Action::Status {}
+                    | Action::ProviderRun { .. }
+                    | Action::ChatTeam { .. }
             ),
         "Scanners may only investigate and submit reports"
     );
     match action {
+        Action::ChatTeam { command } => {
+            let project = scoped.project()?;
+            let records: Vec<Record> = call(app, Request::List)?;
+            let team = crate::orchestration::chat::command(
+                Path::new(&project.root),
+                &project,
+                launch,
+                &records,
+                command,
+            )?;
+            let rounds: Vec<_> =
+                crate::orchestration::list(Path::new(&project.root), &launch.project_id)?
+                    .into_iter()
+                    .filter(|r| r.chat_team.as_deref() == Some(&team.id))
+                    .collect();
+            Ok(json!({"team": team, "rounds": rounds}))
+        }
         Action::ProviderRun { command } => {
             let project = scoped.project()?;
             Ok(serde_json::to_value(crate::orchestration::command(
@@ -563,7 +583,8 @@ impl TryFrom<Action> for ActionRequest {
             Action::ValidateChanged { component_ids } => {
                 Ok(Self::ValidateChanged { component_ids })
             }
-            Action::ProviderRun { .. }
+            Action::ChatTeam { .. }
+            | Action::ProviderRun { .. }
             | Action::Context {}
             | Action::Status {}
             | Action::Logs { .. }
@@ -672,6 +693,7 @@ mod tests {
     }
     fn launch() -> LaunchContext {
         LaunchContext {
+            generation: None,
             project_id: "p".into(),
             task: Some("task".into()),
             agent_session: "one".into(),

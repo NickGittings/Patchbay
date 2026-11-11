@@ -1,3 +1,4 @@
+vi.mock('./chatTeams', () => ({ autoOwnership: vi.fn(async () => {}) }))
 vi.mock('./providerAuth', () => ({
   requireProviderAuth: vi.fn(async () => {}),
   requireDeviceAuth: vi.fn(async () => {}),

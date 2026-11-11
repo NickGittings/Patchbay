@@ -62,6 +62,7 @@ export type SimpleEntry = EntryBase &
       }
   )
 export interface SimpleState {
+  coordinationHandoff?: string
   selectedAgent?: string
 
   startedMs: number
@@ -261,6 +262,8 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   const restored = boundedSimple({
     startedMs: state.startedMs,
+    coordinationHandoff:
+      typeof state.coordinationHandoff === 'string' ? state.coordinationHandoff : undefined,
     selectedAgent: typeof state.selectedAgent === 'string' ? state.selectedAgent : undefined,
     transferredFrom: typeof state.transferredFrom === 'string' ? state.transferredFrom : undefined,
     transferTarget: typeof state.transferTarget === 'string' ? state.transferTarget : undefined,

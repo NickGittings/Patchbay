@@ -102,7 +102,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
             <strong>
               {kind === 'scan' ? 'Scans' : 'Assignments'} · {run.state}
             </strong>
-            {active && (
+            {active && !run.chatTeam && (
               <button
                 disabled={busy}
                 onClick={() =>
@@ -116,7 +116,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                 {run.state === 'paused' ? 'Resume' : 'Pause'}
               </button>
             )}
-            {active && (
+            {active && !run.chatTeam && (
               <button
                 disabled={busy}
                 onClick={() =>
@@ -173,6 +173,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
               </button>
             )}
           </div>
+          {run.chatTeam && <p>Use Worker activity in Chat to pause, stop or retry this work.</p>}
           {run.error && <p role="status">{run.error}</p>}
           <table>
             <thead>
@@ -205,7 +206,8 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                     {job.state}
                     {(job.state === 'failed' ||
                       (job.state === 'launching' && run.state === 'paused')) &&
-                      run.state !== 'stopped' && (
+                      run.state !== 'stopped' &&
+                      !run.chatTeam && (
                         <button
                           disabled={busy}
                           onClick={() =>

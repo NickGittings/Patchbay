@@ -12,6 +12,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+pub mod chat;
+
 static LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +53,8 @@ pub struct ScanReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
+    #[serde(default)]
+    pub result_kind: ResultKind,
     pub id: String,
     pub preset: String,
     pub terminal: TerminalSpec,
@@ -73,10 +77,19 @@ pub struct Job {
     #[serde(default)]
     pub launched_ms: u64,
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResultKind {
+    Report,
+    #[default]
+    Code,
+}
+
 impl Job {
     fn new(terminal: TerminalSpec) -> Self {
         let preset = terminal.id.clone();
         Self {
+            result_kind: ResultKind::Code,
             id: new_id(),
             preset,
             terminal,
@@ -102,6 +115,8 @@ impl Job {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
+    #[serde(default)]
+    pub chat_team: Option<String>,
     #[serde(default)]
     pub auto: Option<context::AutoBrief>,
     pub id: String,
@@ -142,6 +157,8 @@ pub struct Draft {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssignmentDraft {
+    #[serde(default)]
+    pub result_kind: ResultKind,
     pub id: String,
     pub instructions: String,
     pub components: Vec<String>,
@@ -176,6 +193,10 @@ pub enum Control {
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
+    #[serde(default)]
+    teams: Vec<chat::Team>,
+    #[serde(default)]
+    owners: Vec<chat::Owner>,
     runs: Vec<Run>,
 }
 fn file(root: &Path) -> Result<PathBuf> {
@@ -364,12 +385,11 @@ pub fn create(project: &Project, project_id: &str, draft: Draft) -> Result<Run> 
             return Ok(existing.clone());
         }
         ensure!(
-            !store.runs.iter().any(|r| r.project_id == project_id
-                && r.kind == draft.kind
-                && r.task == draft.task
+            !store.runs.iter().any(|r| Path::new(&r.target) == root
                 && matches!(r.state, State::Running | State::Paused)),
             "An unfinished provider run already exists in this task"
         );
+        chat::ensure_available(store, project_id, &root, draft.auto.is_some())?;
         if draft.kind == Kind::Implementation {
             clean(&root)?;
             ensure!(
@@ -395,6 +415,7 @@ pub fn create(project: &Project, project_id: &str, draft: Draft) -> Result<Run> 
             }
         }
         let mut run = Run {
+            chat_team: None,
             auto: draft.auto,
             id: draft.id,
             project_id: project_id.into(),
@@ -458,9 +479,7 @@ pub fn ensure_integrated(root: &Path, project_id: &str, worktree: &Path) -> Resu
             && r.state != State::Stopped
         {
             ensure!(
-                r.sealed
-                    && !r.jobs.is_empty()
-                    && r.jobs.iter().all(|j| j.state == JobState::Integrated),
+                r.sealed && !r.jobs.is_empty() && r.jobs.iter().all(job_done),
                 "All implementation assignments must be integrated before validation or review"
             );
         }
@@ -469,6 +488,9 @@ pub fn ensure_integrated(root: &Path, project_id: &str, worktree: &Path) -> Resu
 }
 
 fn finished(run: &mut Run) {
+    if run.chat_team.is_some() {
+        return;
+    }
     if run.kind == Kind::Scan {
         if run.jobs.iter().all(|j| j.report.is_some()) {
             run.state = State::Complete;
@@ -511,6 +533,9 @@ pub fn reconcile_at(
     sampled_ms: u64,
 ) -> Result<Vec<Run>> {
     modify(root, |store| {
+        if restoring {
+            chat::restore(store, project_id);
+        }
         for r in store.runs.iter_mut().filter(|r| r.project_id == project_id) {
             if restoring && r.state == State::Running {
                 r.state = State::Paused;
@@ -519,7 +544,11 @@ pub fn reconcile_at(
             if matches!(r.state, State::Complete | State::Stopped) {
                 continue;
             }
-            for j in r.jobs.iter_mut().chain(r.coordinator.iter_mut()) {
+            for j in r
+                .jobs
+                .iter_mut()
+                .chain(r.coordinator.iter_mut().filter(|_| r.chat_team.is_none()))
+            {
                 if !matches!(j.state, JobState::Launching | JobState::Running)
                     && !(j.state == JobState::Pending && j.session_id.is_some())
                 {
@@ -602,6 +631,10 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
     modify(root, |store| {
         let r = get(store, id)?;
         ensure!(r.project_id == project_id, "Run belongs to another project");
+        ensure!(
+            r.chat_team.is_none(),
+            "Use Chat worker controls for chat-owned rounds"
+        );
         if r.state == State::Stopped && matches!(control, Control::Stop) {
             return Ok(r.clone());
         }
@@ -777,6 +810,10 @@ pub fn command(root: &Path, launch: &LaunchContext, command: Command) -> Result<
             })
             .ok_or_else(|| anyhow!("Session does not own a provider run"))?;
         authorize(r, launch)?;
+        ensure!(
+            r.chat_team.is_none(),
+            "Use chat-team commands for chat-owned rounds"
+        );
         let coordinator = launch.role == Role::Coordinator
             && r.coordinator
                 .as_ref()
@@ -889,6 +926,10 @@ pub fn command(root: &Path, launch: &LaunchContext, command: Command) -> Result<
 }
 fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
     for mut draft in drafts {
+        ensure!(
+            r.chat_team.is_some() || draft.result_kind == ResultKind::Code,
+            "Report assignments require a chat-owned round"
+        );
         valid_id(&draft.id)?;
         ensure!(
             !draft.instructions.trim().is_empty(),
@@ -914,12 +955,14 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
                 j.instructions == draft.instructions
                     && j.components == draft.components
                     && j.dependencies == draft.dependencies
-                    && j.preset == draft.preset,
+                    && j.preset == draft.preset
+                    && j.result_kind == draft.result_kind,
                 "Assignment id already has different instructions"
             );
             continue;
         }
         let mut j = Job::new(terminal);
+        j.result_kind = draft.result_kind;
         j.id = draft.id;
         j.instructions = draft.instructions;
         j.components = draft.components;
@@ -956,6 +999,12 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
     }
     Ok(())
 }
+fn job_done(j: &Job) -> bool {
+    j.state == JobState::Integrated
+        || (j.result_kind == ResultKind::Report
+            && j.state == JobState::Complete
+            && j.summary.is_some())
+}
 fn integrate(r: &mut Run, id: &str) -> Result<()> {
     let tree = target(r)?.to_path_buf();
     let index = r
@@ -964,6 +1013,10 @@ fn integrate(r: &mut Run, id: &str) -> Result<()> {
         .position(|j| j.id == id)
         .ok_or_else(|| anyhow!("Unknown assignment"))?;
     let j = &r.jobs[index];
+    ensure!(
+        j.result_kind == ResultKind::Code,
+        "Reports do not require integration"
+    );
     if j.state == JobState::Integrated {
         return Ok(());
     }
@@ -972,10 +1025,9 @@ fn integrate(r: &mut Run, id: &str) -> Result<()> {
         "Worker must submit a committed result first"
     );
     ensure!(
-        j.dependencies.iter().all(|id| r
-            .jobs
+        j.dependencies
             .iter()
-            .any(|j| &j.id == id && j.state == JobState::Integrated)),
+            .all(|id| r.jobs.iter().any(|j| &j.id == id && job_done(j))),
         "Dependencies are not integrated"
     );
     let commit = j
@@ -1042,6 +1094,7 @@ pub fn launch(
 ) -> Result<Run> {
     let mut preparing = false;
     let result = modify(root, |store| {
+        chat::reserve_check(store, project_id, id, job_id)?;
         let r = get(store, id)?;
         ensure!(
             r.project_id == project_id && r.state == State::Running,
@@ -1060,10 +1113,9 @@ pub fn launch(
             "Job already launched"
         );
         ensure!(
-            j.dependencies.iter().all(|dep| r
-                .jobs
+            j.dependencies
                 .iter()
-                .any(|j| &j.id == dep && j.state == JobState::Integrated)),
+                .all(|dep| r.jobs.iter().any(|j| &j.id == dep && job_done(j))),
             "Dependencies are not integrated"
         );
         preparing = true;
@@ -1083,11 +1135,13 @@ pub fn launch(
         };
         let mut mapped = target_project(project, r.task.as_deref(), &r.components)?;
         let task = if scope == WORKER_SCOPE {
-            clean(target(r)?)?;
-            ensure!(
-                head(target(r)?)? == r.integrated_head,
-                "Target changed outside this run"
-            );
+            if r.jobs[index.unwrap()].result_kind == ResultKind::Code {
+                clean(target(r)?)?;
+                ensure!(
+                    head(target(r)?)? == r.integrated_head,
+                    "Target changed outside this run"
+                );
+            }
             let j = &mut r.jobs[index.unwrap()];
             if j.task.is_none() {
                 // Adopt an already-created worktree after a crash between Git and saving the run.
@@ -1125,15 +1179,19 @@ pub fn launch(
         };
         let mut terminal = j.terminal.clone();
         terminal.id = j.request_id.clone();
-        let body = match scope {
-            SCAN_SCOPE => {
-                "Investigate the goal and selected component scope without changing code or Git state. Submit an explicit report using: $PATCHBAY_CLI agent scan-report --file report.json. JSON fields: references (array of file:line strings), findings, uncertainties, suggestedWork (strings). A final reply alone does not complete a scan. Write temporary report JSON outside the source tree."
-            }
-            COORDINATOR_SCOPE => {
-                "Coordinate implementation of the approved shared plan using only the selected workers. On restart inspect the existing assignments first; preserve and continue them rather than creating duplicates. Do not use provider-native subagents. Create assignments with $PATCHBAY_CLI agent assignments-create --file assignments.json (array of {id,instructions,components,dependencies,preset}). IDs must be unique ASCII letters/digits/hyphens; dependencies refer to assignment IDs. Independent jobs launch concurrently; dependencies launch only after integration. Seal the list using agent assignments-seal. Poll agent assignments to inspect progress. Workers use isolated worktrees. Integrate completed assignments SERIALly with agent assignment-integrate <id>. Resolve any conflicts in this target checkout, commit, then repeat integration. Do not finish until all assignments are integrated. Never delete worker worktrees or branches. Validation and review run only afterward."
-            }
-            _ => {
-                "Implement ONLY your assignment in this isolated task worktree. Do not use provider-native subagents. Run relevant checks, commit your changes, leave the worktree clean, then submit $PATCHBAY_CLI agent worker-result --commit <HEAD-sha> --summary <completion-summary>. Do not merge into the target, modify other worker checkouts, or delete worktrees. A final reply alone does not complete this assignment."
+        let body = if j.result_kind == ResultKind::Report && scope == WORKER_SCOPE {
+            "Investigate ONLY your assignment in this isolated committed baseline. Do not edit source or Git state. Submit an explicit report using $PATCHBAY_CLI agent team-report --summary <report>. Include the baseline revision and validation limitations. A final reply or process exit does not complete your assignment. Ask your lead questions with agent team-send --id <unique-id> --to lead --text <question>. Never use provider-native subagents."
+        } else {
+            match scope {
+                SCAN_SCOPE => {
+                    "Investigate the goal and selected component scope without changing code or Git state. Submit an explicit report using: $PATCHBAY_CLI agent scan-report --file report.json. JSON fields: references (array of file:line strings), findings, uncertainties, suggestedWork (strings). A final reply alone does not complete a scan. Write temporary report JSON outside the source tree."
+                }
+                COORDINATOR_SCOPE => {
+                    "Coordinate implementation of the approved shared plan using only the selected workers. On restart inspect the existing assignments first; preserve and continue them rather than creating duplicates. Do not use provider-native subagents. Create assignments with $PATCHBAY_CLI agent assignments-create --file assignments.json (array of {id,instructions,components,dependencies,preset}). IDs must be unique ASCII letters/digits/hyphens; dependencies refer to assignment IDs. Independent jobs launch concurrently; dependencies launch only after integration. Seal the list using agent assignments-seal. Poll agent assignments to inspect progress. Workers use isolated worktrees. Integrate completed assignments SERIALly with agent assignment-integrate <id>. Resolve any conflicts in this target checkout, commit, then repeat integration. Do not finish until all assignments are integrated. Never delete worker worktrees or branches. Validation and review run only afterward."
+                }
+                _ => {
+                    "Implement ONLY your assignment in this isolated task worktree. Do not use provider-native subagents. Run relevant checks, commit your changes, leave the worktree clean, then submit $PATCHBAY_CLI agent worker-result --commit <HEAD-sha> --summary <completion-summary>. Do not merge into the target, modify other worker checkouts, or delete worktrees. A final reply alone does not complete this assignment."
+                }
             }
         };
         let scope_ids = if scope == WORKER_SCOPE {
@@ -1178,6 +1236,9 @@ pub fn launch(
             } else {
                 "implement"
             }));
+        }
+        if r.chat_team.is_some() {
+            text.push_str("\nThis is a coordinated chat assignment. Use agent team-result --commit <HEAD-sha> --summary <summary> for code results, agent team-report --summary <report> for report assignments, agent team to inspect, and agent team-send --id <unique-id> --to lead --text <question> to contact the lead. Only your lead routes dependencies.\n");
         }
         let spec = context::job_agent_spec(
             &mapped,
@@ -1374,6 +1435,7 @@ mod tests {
     }
     fn auth(r: &Run, j: &Job, role: Role) -> LaunchContext {
         LaunchContext {
+            generation: None,
             project_id: r.project_id.clone(),
             task: j.task.clone().or_else(|| r.task.clone()),
             agent_session: j.session_id.clone().unwrap(),
@@ -1390,6 +1452,7 @@ mod tests {
     }
     fn assignment(id: &str, dependencies: Vec<String>) -> AssignmentDraft {
         AssignmentDraft {
+            result_kind: ResultKind::Code,
             id: id.into(),
             instructions: format!("Implement {id}"),
             components: vec![],

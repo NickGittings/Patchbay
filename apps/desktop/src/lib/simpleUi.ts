@@ -21,6 +21,7 @@ export interface QueuedPrompt {
   atMs: number
 }
 export interface SimpleUi {
+  coordinationReset?: boolean
   inputRequests?: import('./chat').ChatInputRequest[]
   pendingAction?: boolean
   pendingWorkflow?: boolean

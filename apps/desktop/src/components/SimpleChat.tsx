@@ -1,3 +1,5 @@
+import ChatWorkers from './ChatWorkers'
+import { useChatTeams, resetLead } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useEffect, useRef, useState } from 'react'
@@ -84,6 +86,9 @@ export default function SimpleChat({
   )
   const { data, source, scope: worktree, files: changed, error, findings } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
+  const team = useChatTeams((state) =>
+    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
+  )
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const [pendingResult, setPendingResult] = useState({ key: '', action: '' })
   const pending = pendingResult.key === key ? pendingResult.action : ''
@@ -138,7 +143,9 @@ export default function SimpleChat({
     model,
   )
   const questions = chatInputRequests(
-    model.records.filter((r) => !model.foreign.has(r.id)),
+    model.records.filter(
+      (r) => !model.foreign.has(r.id) && (!team || r.id === team.lead.sessionId),
+    ),
     s.sessions,
     ui.inputRequests,
   )
@@ -344,13 +351,6 @@ export default function SimpleChat({
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
         <button
-          aria-label="Review options"
-          disabled={!source?.branch || !!ui.pendingWorkflow || !!ui.pendingAction}
-          onClick={() => setDialog('review')}
-        >
-          Review…
-        </button>
-        <button
           disabled={
             !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])
           }
@@ -375,12 +375,25 @@ export default function SimpleChat({
         >
           Run autonomously…
         </button>
+        {team && (
+          <button
+            disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
+            title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
+            onClick={() =>
+              void run('reset', async () => {
+                await resetLead(team)
+              })
+            }
+          >
+            Clear conversation
+          </button>
+        )}
         <button
           disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
           onClick={() => setClearKey(key)}
           title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
         >
-          Clear chat
+          Clear visible history
         </button>
         <button
           className="inspector-close simple-hide-chat"
@@ -416,8 +429,8 @@ export default function SimpleChat({
         key={key}
         records={model.records}
         branch={source?.branch ?? 'Project folder'}
-        files={changed.map((f) => f.path)}
       />
+      {team && <ChatWorkers key={team.id} team={team} />}
       {s.auto && (
         <p role="status">
           Auto · {s.auto.stage} · {s.auto.status} {s.auto.reason}
@@ -576,24 +589,6 @@ export default function SimpleChat({
             Starting {pending === 'build' ? 'build' : pending}…
           </p>
         )}
-        {!launching && (state.prompt || options) && (
-          <details className="simple-step" data-step={state.step}>
-            <summary>Planning, review, and merge actions</summary>
-            {state.prompt && <p>{state.prompt.text}</p>}
-            <div className="simple-step-actions">
-              {state.prompt?.actions.map((b) => (
-                <button disabled={!!pending} key={b.action} onClick={() => act(b.action)}>
-                  {b.label}
-                </button>
-              ))}
-              {options && (
-                <button className="simple-options" onClick={() => setDialog('review')}>
-                  Options…
-                </button>
-              )}
-            </div>
-          </details>
-        )}
         {failure && <p role="alert">{failure}</p>}
         {drawerShown && drawerRecord && (
           <div
@@ -617,6 +612,43 @@ export default function SimpleChat({
           </div>
         )}
       </div>
+      {!launching && (state.prompt || options) && (
+        <section
+          className="simple-step"
+          data-step={state.step}
+          aria-label="Planning, review, and merge actions"
+        >
+          <div className="simple-step-heading">
+            <span className="simple-step-icon" aria-hidden="true">
+              ↗
+            </span>
+            <h3>Planning, review, and merge</h3>
+          </div>
+          {state.prompt && <p>{state.prompt.text}</p>}
+          <div className="simple-step-actions">
+            {state.prompt?.actions.map((b, index) => (
+              <button
+                className={index === 0 ? 'primary' : undefined}
+                disabled={!!pending}
+                key={b.action}
+                onClick={() => act(b.action)}
+              >
+                {b.label}
+              </button>
+            ))}
+            {options && (
+              <button
+                className="simple-options"
+                aria-label="Review options"
+                disabled={!!pending || !!ui.pendingWorkflow || !!ui.pendingAction}
+                onClick={() => setDialog('review')}
+              >
+                Review options…
+              </button>
+            )}
+          </div>
+        </section>
+      )}
       <SimpleComposer
         scopeKey={key}
         stage={model.stage}

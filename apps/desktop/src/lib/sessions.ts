@@ -1,3 +1,4 @@
+import { teamFor, resetLead } from './chatTeams'
 import { beginAgentChat, claimAgentChat, endAgentChat } from './agentChats'
 import { launchedRun, logLaunch } from './simpleActions'
 import { requireProviderAuth } from './providerAuth'
@@ -729,6 +730,8 @@ export function newConversation(
   const launch = captureLaunch(componentId, terminalId, task, projectId)
   if (autoControlsAgent(launch.projectId, launch.sid))
     return Promise.reject(new Error('Stop Auto before starting a new conversation'))
+  const team = teamFor(launch.projectId, launch.chatTask)
+  if (team?.lead.sessionId === launch.sid) return resetLead(team).then((team) => team.reset?.id)
   if (launching(launch.sid)) return Promise.resolve(undefined)
   if (
     launch.runtime ||

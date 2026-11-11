@@ -1,3 +1,10 @@
+import {
+  refreshChatTeams,
+  useChatTeams,
+  controlTeam,
+  teamFor,
+  requireTeamPreset,
+} from './chatTeams'
 import { requireProviderAuth, ProviderSetupRequired } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import { invoke } from '@tauri-apps/api/core'
@@ -15,6 +22,7 @@ export interface ScanReport {
   suggestedWork: string
 }
 export interface ProviderJob {
+  resultKind?: 'report' | 'code'
   id: string
   preset: string
   terminal: TerminalSpec
@@ -33,6 +41,7 @@ export interface ProviderJob {
   integratedHead: string | null
 }
 export interface ProviderRun {
+  chatTeam?: string | null
   auto?: import('../types').AutoBrief
   id: string
   projectId: string
@@ -72,9 +81,13 @@ export const startProviderJob = async (project: Project, id: string, job: string
   const target = [run?.coordinator, ...(run?.jobs ?? [])].find((j) => j?.id === job)
   if (target) {
     try {
-      await requireProviderAuth({ terminal: target.terminal, project, task: run?.task })
+      if (run?.chatTeam) await requireTeamPreset(target.terminal, project, run.task)
+      else await requireProviderAuth({ terminal: target.terminal, project, task: run?.task })
     } catch (e) {
-      if (e instanceof ProviderSetupRequired)
+      if (run?.chatTeam) {
+        const team = teamFor(project.projectId!, run.task)
+        if (team) await controlTeam(team, { kind: 'block', reason: String(e) })
+      } else if (e instanceof ProviderSetupRequired)
         await controlProviderRun(project.projectId!, id, { kind: 'pause' })
       throw e
     }
@@ -84,6 +97,12 @@ export const startProviderJob = async (project: Project, id: string, job: string
     project,
     id,
     job,
+  }).catch(async (e) => {
+    if (run?.chatTeam) {
+      const team = teamFor(project.projectId!, run.task)
+      if (team) await controlTeam(team, { kind: 'block', reason: String(e) })
+    }
+    throw e
   })
 }
 export async function createProviderRun(
@@ -124,7 +143,14 @@ export function readyJobs(run: ProviderRun) {
       !!job &&
       job.state === 'pending' &&
       job.dependencies.every((id) =>
-        run.jobs.some((dependency) => dependency.id === id && dependency.state === 'integrated'),
+        run.jobs.some(
+          (dependency) =>
+            dependency.id === id &&
+            (dependency.state === 'integrated' ||
+              (dependency.resultKind === 'report' &&
+                dependency.state === 'complete' &&
+                !!dependency.summary)),
+        ),
       ),
   )
 }
@@ -135,6 +161,7 @@ export async function driveProviderRuns(projectId: string): Promise<ProviderRun[
   driving.add(projectId)
   try {
     const runs = await providerRuns(projectId)
+    useChatTeams.setState((s) => ({ runs: { ...s.runs, [projectId]: runs } }))
     const project = projectOf(projectId)
     if (!project) return runs
     for (const run of runs) {
@@ -153,9 +180,19 @@ export async function driveProviderRuns(projectId: string): Promise<ProviderRun[
         )
           continue
       }
+      const team = run.chatTeam ? teamFor(projectId, run.task) : undefined
+      if (run.chatTeam && (!team || team.state !== 'running' || team.reset)) continue
+      const capacity = team
+        ? Math.max(
+            0,
+            team.limit - run.jobs.filter((j) => ['running', 'launching'].includes(j.state)).length,
+          )
+        : Infinity
       // Start all independent jobs even if one fails; successful findings/work survive.
       await Promise.allSettled(
-        readyJobs(run).map((job) => startProviderJob(project, run.id, job.id)),
+        readyJobs(run)
+          .slice(0, capacity)
+          .map((job) => startProviderJob(project, run.id, job.id)),
       )
     }
     if (runs.some((run) => readyJobs(run).length)) await reconcileFreshSessions().catch(() => {})
@@ -173,6 +210,7 @@ export function watchProviderRuns() {
     busy = true
     try {
       for (const id of useStore.getState().projectOrder) {
+        await refreshChatTeams(id).catch(() => {})
         await driveProviderRuns(id).catch(() => {})
       }
     } finally {

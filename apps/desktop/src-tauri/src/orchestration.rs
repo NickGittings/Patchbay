@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 use tauri::{State, WebviewWindow};
 
-static RESTORED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+pub(crate) static RESTORED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 
 #[tauri::command]
 pub async fn provider_runs(project_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Run>> {
@@ -65,6 +65,9 @@ pub async fn provider_run_control(
     let bridge = state.service.clone();
     blocking(move || {
         let previous = orchestration::read(&root, &project_id, &id).map_err(err)?;
+        if previous.chat_team.is_some() {
+            return Err("Use Chat worker controls for chat-owned rounds".into());
+        }
         if let Control::ContinueJob { job, request_id } = &control {
             let owned = previous
                 .jobs
@@ -147,6 +150,10 @@ pub async fn provider_job_start(
     blocking(move || {
         let saved = orchestration::read(&root, &project_id, &id).map_err(err)?;
         let project = access.restrict(project, &saved.components).map_err(err)?;
+        if saved.chat_team.is_some() {
+            if server.is_none() { return Err("The agent command bridge is unavailable; restart Patchbay or continue locally in the lead terminal".into()); }
+            crate::agent_commands::cli()?;
+        }
         orchestration::launch(&root, &project_id, &id, &job, &project, |mut launch| {
             if let Some(task) = launch.task.as_deref() {
                 let mut call = |r| bridge.call(r).map_err(anyhow::Error::msg);

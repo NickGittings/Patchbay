@@ -42,6 +42,8 @@ pub fn unavailable(spec: &mut crate::pty::SessionSpec, reason: &str) {
 /// What a token was launched for, looked up from the session that holds it.
 #[derive(Clone)]
 pub struct LaunchContext {
+    /// Process incarnation authenticated by the session service.
+    pub generation: Option<u64>,
     pub project_id: String,
     pub task: Option<String>,
     pub agent_session: String,
@@ -98,6 +100,9 @@ impl Role {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Action {
+    ChatTeam {
+        command: crate::orchestration::chat::Command,
+    },
     ProviderRun {
         command: crate::orchestration::Command,
     },
@@ -551,6 +556,7 @@ mod tests {
             move |token| {
                 let task = tokens.lock().unwrap().get(token).cloned()?;
                 Some(LaunchContext {
+                    generation: None,
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),
@@ -607,6 +613,7 @@ mod tests {
                 weak,
                 Arc::new(|_| {
                     Some(LaunchContext {
+                        generation: None,
                         project_id: "p".into(),
                         task: None,
                         agent_session: "one".into(),
@@ -674,6 +681,7 @@ mod tests {
             move |token| {
                 let task = tokens_again.lock().unwrap().get(token).cloned()?;
                 Some(LaunchContext {
+                    generation: None,
                     project_id: "p".into(),
                     agent_session: task.clone(),
                     task: Some(task),

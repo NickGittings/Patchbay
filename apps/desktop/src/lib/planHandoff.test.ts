@@ -454,6 +454,30 @@ test('an explicit background proposal updates only the target workspace', async 
   expect(useStore.getState().taskWorkspaces.bg.highlighted).toEqual(['web'])
 })
 
+test('a manual plan handoff cannot adopt the lead of a chat-owned round', async () => {
+  const providers = await import('./orchestration')
+  vi.mocked(providers.providerRuns).mockResolvedValue([
+    {
+      id: 'chat-round',
+      chatTeam: 'team',
+      kind: 'implementation',
+      task: null,
+      goal: '# Plan',
+      state: 'running',
+      coordinator: { id: 'coordinator', sessionId: 'chat-lead', requestId: 'request' },
+    } as unknown as import('./orchestration').ProviderRun,
+  ])
+  vi.mocked(providers.createProviderRun).mockRejectedValue(
+    new Error('This worktree is controlled by coordinated chat'),
+  )
+  await expect(
+    implementPlannerPlan('claude', undefined, 'claude', 'stay', undefined, ['claude']),
+  ).rejects.toThrow('controlled by coordinated chat')
+  expect(providers.createProviderRun).toHaveBeenCalledOnce()
+  expect(providers.startProviderJob).not.toHaveBeenCalled()
+  expect(startTerminal).not.toHaveBeenCalled()
+})
+
 test.each([false, true])(
   'Auto hands off using its reserved build identity (saved: %s)',
   async (saved) => {

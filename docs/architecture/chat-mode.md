@@ -18,6 +18,76 @@ Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `s
 
 Plan cards use the saved plan or submitted proposal timestamp. Conversation groups split around intervening plan cards, and equal-time items have deterministic ordering. Later replies never move an earlier plan. Clear hides pre-boundary cards while keeping the underlying plan and Build eligibility.
 
-**Clear chat** confirms inline for its selected worktree and rechecks pending send/workflow actions before clearing. `SimpleState.clearBoundary` retains a timestamp and per-session generation/sequence watermarks. `retainedWorkflow` contains text-free launch, prompt and workflow facts used by ownership, planning boundaries, merge routing and available actions. Restoration, bounded history, rendering, ingestion, reconciliation and draft handoff honor that boundary, so snapshots cannot replay removed text. Drafts, queued prompts, terminals, running agents and provider context, Auto, files and plans are preserved. Provider transcripts and terminal history remain accessible.
+**Clear visible history** confirms inline for its selected worktree and rechecks pending send/workflow actions before clearing. `SimpleState.clearBoundary` retains a timestamp and per-session generation/sequence watermarks. `retainedWorkflow` contains text-free launch, prompt and workflow facts used by ownership, planning boundaries, merge routing and available actions. Restoration, bounded history, rendering, ingestion, reconciliation and draft handoff honor that boundary, so snapshots cannot replay removed text. Drafts, queued prompts, terminals, running agents and provider context, Auto, files and plans are preserved. Provider transcripts and terminal history remain accessible.
 
 The composer subscribes to provider usage and the shared clock. It shows every unexpired window at or above 100% for its recipient’s provider, falling back to the selected worktree planner before launch. Each warning names the provider, window, reset time and countdown. Warnings expire at reset and do not depend on notification preferences or Auto thresholds, and do not disable Send or terminal access. Missing data stays unknown.
+
+### Persistent lead and coordinated workers
+
+Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
+coordination is initialized; existing conversations migrate paused, preserving their history and
+recipient without launching workers. The **Lead** selector queues a durable provider-conversation
+replacement. **Clear conversation** uses the same handoff while retaining workers, assignments,
+results, inbox messages and checkpoints. **Clear visible history** only advances the existing reply
+and plan-card boundaries; it leaves provider context and team state untouched.
+
+`orchestration::chat` stores teams alongside provider runs in the private task store, independently
+of `SimpleState`. A team owns a worktree, logical lead, session generation and observed provider
+conversation, checkpoint, worker presets, limit, rounds, message sequence and reset journal.
+Chat-owned implementation rounds attach that lead as their coordinator; they never launch a second
+coordinator. Workers use the existing task worktree preparation and integration journal. Assignments
+explicitly choose `resultKind: report | code`. A report completes through `team-report`; code needs
+a clean committed HEAD submitted with `team-result`, serial integration and a fresh checkpoint
+before `team-finish`. A process exit or final reply alone is never success. Report worktrees inspect
+the recorded committed baseline even when the target contains local changes. Code delegation
+refuses dirty targets without committing or stashing user changes. Dependencies wait for submitted
+reports or integrated code, and launch reservations enforce the team-wide worker limit (default two,
+excluding the lead).
+
+The authenticated `agent team*` CLI derives membership from persisted session and task identities,
+including isolated worker tasks. Session protocol 21 returns the authenticated process generation;
+reused command capabilities rotate on resume so a superseded process cannot act through a new
+incarnation in the same session slot. The current lead generation owns delegation, checkpointing,
+integration and finishing. Workers can submit only their assignment and message only their lead.
+The lead routes dependencies between workers. The desktop's typed team commands expose pause,
+resume, stop, retry, worker settings, new-lead selection, side messages and explicit delivery recovery.
+Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
+target without deleting results or worktrees.
+Full view shows chat-owned rounds as read-only activity; pause, stop and retry go through Chat's
+worker controls so round state and team ownership remain consistent. Manual plan handoffs cannot
+adopt chat-owned coordinators.
+
+`watchProviderRuns` continues to refresh and drive all open projects while Chat is unmounted or a
+different worktree is selected. Core reserves each delivery before transport and batches pending
+messages in sequence at a hook-confirmed ready prompt. It checks session generation, approval state,
+authority and the last delivered ready turn. It never forces an automated message. A lost submission
+reply stays uncertain until explicitly marked delivered or retried. Side-thread user messages are
+persisted for the worker and copied to its owning lead. Explicit results, failures and native input
+waits notify the lead; worker replies remain in isolated side threads.
+
+Provider-native compaction remains in control of context size. An observed compaction, provider
+conversation change or lead generation change schedules one recovery update at a ready prompt. It
+contains the current checkpoint and structured assignment/integration state, followed by unread
+messages; delivered messages and full transcripts are never replayed. New lead presets receive
+these instructions in their briefing too. Recovery updates exceeding the inbox message limit use
+an abbreviated checkpoint and recent round counts, with an instruction to inspect `agent team`
+before continuing; complete checkpoint text, assignments and results remain in durable storage.
+
+Conversation replacement persists its request identity and launch template before stopping a ready
+superseded lead or starting the replacement. A busy lead queues the reset; new launches and lead
+delivery wait while running workers may still submit results. Reconciliation rebinds membership to
+the replacement generation before delivery resumes. The visible transcript clears only after a
+confirmed replacement, and retains a concise handoff with an idempotent application marker. Failed
+or interrupted replacement preserves history and retries the same request identity after explicit
+Resume. Unfinished coordination restores paused after app restart, including uncertain deliveries.
+Session protocol 22 resets existing leads by session ID and generation inside the service, retaining
+their private environment, original launch options and recoverable briefing without exposing those
+settings in session summaries. Retried reset identities launch only once, and stale generations
+cannot replace a newer process. A paused team can resume a queued replacement even if its old lead
+session has been removed, provided the replacement has a saved launch template or retained session.
+
+`npm run check` covers team handoffs, history boundaries, background worktree routing and existing
+chat behavior. `node scripts/smoke-all.mjs chat-team chat-controls` exercises real session transport
+with disposable fake providers, authenticated report/code results, side-thread messaging, worker
+controls and both clear actions. Core regression tests also cover ownership, dependencies, worker
+limits, stale generations, duplicate commands, compaction and reset races.
