@@ -467,6 +467,46 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
 
 #[derive(Subcommand)]
 enum AgentCmd {
+    /// Inspect your persistent chat team, inbox and delegation rounds.
+    Team,
+    /// Save goal, constraints, decisions, remaining work and validation as JSON.
+    TeamCheckpoint {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Delegate a JSON array of report/code assignments to managed workers.
+    TeamDelegate {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Send a durable message to your lead or (for leads) an assignment.
+    TeamSend {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        text: String,
+    },
+    TeamReport {
+        #[arg(long)]
+        summary: String,
+    },
+    TeamResult {
+        #[arg(long)]
+        summary: String,
+        #[arg(long)]
+        commit: String,
+    },
+    TeamIntegrate {
+        assignment: String,
+    },
+    TeamFinish {
+        #[arg(long)]
+        validation: String,
+    },
     /// Submit an explicit investigation report (references, findings, uncertainties, suggestedWork).
     ScanReport {
         #[arg(long)]
@@ -551,7 +591,37 @@ fn read_proposal<T: serde::de::DeserializeOwned>(file: &std::path::Path) -> Resu
 fn agent(command: AgentCmd) -> Result<bool> {
     use patchbay_core::agent_bridge::{self, Action, Response};
     let response = Response::from_result((|| {
+        use patchbay_core::orchestration::chat::Command as TeamCommand;
         let action = match command {
+            AgentCmd::Team => Action::ChatTeam {
+                command: TeamCommand::Inspect,
+            },
+            AgentCmd::TeamCheckpoint { file } => Action::ChatTeam {
+                command: TeamCommand::Checkpoint {
+                    checkpoint: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::TeamDelegate { id, file } => Action::ChatTeam {
+                command: TeamCommand::Delegate {
+                    id,
+                    assignments: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::TeamSend { id, to, text } => Action::ChatTeam {
+                command: TeamCommand::Send { id, to, text },
+            },
+            AgentCmd::TeamReport { summary } => Action::ChatTeam {
+                command: TeamCommand::Report { summary },
+            },
+            AgentCmd::TeamResult { summary, commit } => Action::ChatTeam {
+                command: TeamCommand::Result { summary, commit },
+            },
+            AgentCmd::TeamIntegrate { assignment } => Action::ChatTeam {
+                command: TeamCommand::Integrate { assignment },
+            },
+            AgentCmd::TeamFinish { validation } => Action::ChatTeam {
+                command: TeamCommand::Finish { validation },
+            },
             AgentCmd::ScanReport { file } => Action::ProviderRun {
                 command: patchbay_core::orchestration::Command::SubmitScan {
                     report: read_proposal(&file)?,

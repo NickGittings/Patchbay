@@ -55,7 +55,7 @@ export async function flushQueued(key: string, force = false) {
     const workspace = project?.activeTask === task ? project : project?.taskWorkspaces?.[task ?? '']
     return chatAutoActive(workspace?.auto?.status)
   }
-  if (autoActive()) return
+  if (autoActive() || useSimpleUi.getState().worktrees[key]?.coordinationReset) return
   const session = state.sessions[queued.sessionId]
   // Reconciliation can temporarily omit a session. Keep its place until it is known again.
   // A concurrent send also owns the draft until it settles; leave the queue untouched.
@@ -88,7 +88,7 @@ export async function flushQueued(key: string, force = false) {
       mentions: [...new Set(queued.mentions.map((m) => m.id))],
       force,
       current: () => {
-        if (autoActive())
+        if (autoActive() || useSimpleUi.getState().worktrees[key]?.coordinationReset)
           throw new Error(
             'Auto took control of this workspace. Your queued message was kept as a draft.',
           )

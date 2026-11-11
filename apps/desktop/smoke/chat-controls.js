@@ -40,7 +40,7 @@
     await until('chat', () => document.querySelector('.simple-chat'))
     // Explicit identity stays stable when another agent asks a question.
     const chooser = await until('chat agent chooser', () =>
-      document.querySelector('[aria-label="Chat agent"]'),
+      document.querySelector('[aria-label="Chat lead"]'),
     )
     assert(chooser.value === '', 'new chat silently selected an agent')
     const originalRecords = state().sessionRecords
@@ -92,28 +92,20 @@
       document.querySelector('.chat-recipient')?.textContent.includes('First agent'),
     )
     assert(
-      document.querySelector('[aria-label="Chat agent"]').value === `session:${first.id}`,
+      document.querySelector('[aria-label="Chat lead"]').value === `session:${first.id}`,
       'question changed selected agent',
     )
     assert(
       document.querySelector('.chat-question summary')?.textContent.includes('Second agent'),
       'question lost originating agent',
     )
-    const selected = document.querySelector('[aria-label="Chat agent"]')
-    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(selected), 'value').set.call(
-      selected,
-      `session:${asking.id}`,
+    click(button('Clear visible history'))
+    const clear = await until('visible history confirmation', () =>
+      document.querySelector('.simple-clear-confirm'),
     )
-    selected.dispatchEvent(new Event('change', { bubbles: true }))
-    const handoff = await until('reviewable agent handoff', () =>
-      document.querySelector('[aria-label="Review agent handoff"]'),
-    )
-    click(button('Cancel', handoff))
-    await until(
-      'handoff cancelled',
-      () => !document.querySelector('[aria-label="Review agent handoff"]'),
-    )
-    assert(state().simple.selectedAgent === first.id, 'cancelled handoff changed recipient')
+    click(button('Cancel', clear))
+    await until('clear cancelled', () => !document.querySelector('.simple-clear-confirm'))
+    assert(state().simple.selectedAgent === first.id, 'visible clear changed lead')
     smoke.store.setState({ sessionRecords: originalRecords, sessions: originalSessions })
     state().patchTask(projectId, null, { simple: originalSimple })
     // Chat's resize handle must receive pointer hits even while Inspector is hidden.

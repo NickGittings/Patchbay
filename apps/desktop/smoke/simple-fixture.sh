@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 import uuid
+import tty
+tty.setcbreak(sys.stdin.fileno())
 
 journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
 body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
@@ -76,11 +78,21 @@ report('SessionStart')
 print('simple-ready', flush=True)
 if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
     work()
+buffer = ''
 for line in sys.stdin:
+    buffer += line
+    if '\x1b[200~' in buffer and '\x1b[201~' not in buffer:
+        continue
+    line = buffer
+    buffer = ''
     pathlib.Path(__file__).with_name('received.json').write_text(json.dumps(line))
     print('simple-received:' + line.strip(), flush=True)
     line = line.replace('\x1b[200~', '').replace('\x1b[201~', '')
     turn = str(uuid.uuid4())
+    if line.strip().startswith('[Patchbay message'):
+        report('UserPromptSubmit')
+        report('Stop', last_assistant_message='The lead retained coordination context.')
+        continue
     if line.strip() == 'smoke-changes':
         report('UserPromptSubmit')
         pathlib.Path('src/app.txt').write_text('uncommitted fixture change\n')

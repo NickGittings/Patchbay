@@ -19,6 +19,7 @@ use patchbay_core::tasks::{self, Task, TaskDraft, TaskPatch};
 use patchbay_core::workspace::{self, Workspace};
 use std::collections::HashMap;
 mod agent_commands;
+mod chat_teams;
 mod layout;
 mod native_menu;
 mod orchestration;
@@ -1822,6 +1823,17 @@ async fn task_root_start(
         };
         let project = access.restrict(project, &component_ids).map_err(err)?;
         let (project, roots, section) = for_task(project, task.as_deref(), &component_ids, roots)?;
+        if kickoff.is_some() {
+            let tree = patchbay_core::git::repo_root(Path::new(&project.root))
+                .unwrap_or_else(|| PathBuf::from(&project.root));
+            patchbay_core::orchestration::chat::implementation_available(
+                Path::new(&project.root),
+                &project_id,
+                &tree,
+                auto.is_some(),
+            )
+            .map_err(err)?;
+        }
         let selected = if component_ids.is_empty() {
             project.components.iter().map(|c| c.id.clone()).collect()
         } else {
@@ -2899,6 +2911,12 @@ pub fn run() {
                 git_review,
                 git_worktrees,
                 git_branches,
+                chat_teams::chat_teams,
+                chat_teams::chat_team_initialize,
+                chat_teams::chat_team_control,
+                chat_teams::chat_team_message,
+                chat_teams::chat_team_new_lead,
+                chat_teams::auto_worktree_ownership,
                 orchestration::provider_runs,
                 orchestration::provider_run_create,
                 orchestration::provider_run_control,

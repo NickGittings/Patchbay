@@ -147,6 +147,8 @@ export interface AutoRun {
     reason: string
   }
   runId: string
+  /** Stable worktree lease across controller resumes; new runs get a new identity. */
+  ownershipId?: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
   /** Allow this run to launch work while another worktree or project tab is selected. */
   background?: boolean
@@ -769,6 +771,7 @@ export interface SessionRecord {
     name: string
     kind: TerminalKind
     adapter: 'claude' | 'codex' | null
+    command?: string
     commandId?: string | null
     extensionId?: string | null
     key?: string | null
@@ -784,7 +787,13 @@ export interface SessionRecord {
   history: TerminalSnapshot[]
   interrupted: boolean
   /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
-  spec: { cwd: string; command: string; dirs?: string[]; merge_source?: string | null }
+  spec: {
+    cwd: string
+    command: string
+    resume_command?: string | null
+    dirs?: string[]
+    merge_source?: string | null
+  }
 }
 export interface WorkspaceProject {
   id: string

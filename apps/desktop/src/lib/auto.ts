@@ -1,3 +1,4 @@
+import { autoOwnership } from './chatTeams'
 import { requireDeviceAuth, ProviderSetupRequired } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import {
@@ -357,6 +358,10 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
       log: text ? [...run.log, { atMs: Date.now(), text }].slice(-100) : run.log,
     },
   })
+  if (update.status === 'done' || update.status === 'stopped')
+    void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId).catch((e) =>
+      useStore.getState().setMessage(String(e)),
+    )
   if (update.status === 'done')
     void completeAutoStories(projectId, task, run.runId).catch((e) =>
       useStore.getState().setMessage(`Could not save the story’s completion: ${String(e)}`),
@@ -743,9 +748,11 @@ export async function startAuto(projectId: string, task: string | null, settings
       if (device) await requireDeviceAuth(device, projectId, task)
     }
     await Promise.all(runAgents(settings).map(checkAutoHooks))
+    const runId = crypto.randomUUID()
     const run: AutoRun = {
       ...settings,
-      runId: crypto.randomUUID(),
+      runId,
+      ownershipId: runId,
       stage: 'plan',
       status: 'running',
       round: 0,
@@ -771,6 +778,7 @@ export async function startAuto(projectId: string, task: string | null, settings
     if ((settings.stage ?? decision.stage) === 'plan' && !run.goal.trim())
       throw new Error('Describe the task first')
     if (!driveable(projectId, task, run)) throw new Error('The task changed')
+    await autoOwnership(projectId, task, true, run.ownershipId)
     const reviewedHead = mergeableHead(snapshot, run)
     // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
     useStore.getState().patchTask(projectId, task, {
@@ -892,6 +900,7 @@ export async function resumeAuto(projectId: string, task: string | null, schedul
     throw new Error('Auto is still starting an agent; Resume once it has started')
   if (autoRun(projectId, task) !== run) return
   assertSessionAvailable(projectId, task, decision.sessionId)
+  await autoOwnership(projectId, task, true)
   // Ownership is checked again as each one stops: a tile restarted by hand meanwhile keeps running.
   const gone = await stopOwned(run, ending)
   if (autoRun(projectId, task) !== run) return
@@ -911,6 +920,7 @@ export async function resumeAuto(projectId: string, task: string | null, schedul
       branch: run.branch ?? snapshot.source.branch,
       reviewedHead: mergeableHead(snapshot, run),
       runId: crypto.randomUUID(),
+      ownershipId: run.ownershipId ?? run.runId,
       launchAtMs: kept.length || decision.sessionId === run.sessionId ? run.launchAtMs : undefined,
       turnSince: decision.turnSince,
       observedWorking: decision.observedWorking ?? false,
@@ -1721,6 +1731,7 @@ async function drive(projectId: string, task: string | null) {
     // The service may reconnect with the same agents still running. Wait without changing run
     // state, then the serviceConnected subscription drives them again after reconciliation.
     if (!useStore.getState().serviceConnected) return
+    await autoOwnership(projectId, task, true)
     if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
       if (run.status !== 'running' || !driveable(projectId, task, run)) return
       if (run.stage === 'scan' && !plannerAvailable(projectId, task)) return

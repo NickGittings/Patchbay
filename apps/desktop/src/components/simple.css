@@ -360,3 +360,36 @@
   height: 320px;
   flex: none;
 }
+
+.chat-workers {
+  margin: 0.5rem 0;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.chat-workers summary {
+  cursor: pointer;
+}
+
+.chat-worker {
+  margin-top: 0.65rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.chat-workers textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 5rem;
+}
+
+.chat-workers fieldset label {
+  display: block;
+  margin: 0.4rem 0;
+}
+
+.chat-workers input[type='number'] {
+  width: 4rem;
+}

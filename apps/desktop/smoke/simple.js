@@ -115,7 +115,7 @@
       ),
     )
     const chooser = await until('chat agent picker', () =>
-      document.querySelector('[aria-label="Chat agent"]:not(:disabled)'),
+      document.querySelector('[aria-label="Chat lead"]:not(:disabled)'),
     )
     assert(chooser.value === '', 'new chat silently selected an agent')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(chooser), 'value').set.call(
@@ -126,6 +126,14 @@
     await until(
       'planner explicitly selected',
       () => state().simple?.selectedAgent === plannerRecord.id,
+    )
+    // This scenario exercises the independent manual workflow; release coordinated ownership.
+    click(await until('team stop control', () => button('Stop workers')))
+    await until(
+      'coordination stopped for manual workflow',
+      () =>
+        smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === state().activeTask)
+          ?.state === 'stopped',
     )
     const composer = document.querySelector('[aria-label="Message agent"]')
     for (const options of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
@@ -555,7 +563,7 @@
     )
   } catch (e) {
     await smoke.report(
-      `FAIL simple: ${e.message} ${e.stack ?? ''} chat=${chatText().slice(-1800)} message=${state().message}`,
+      `FAIL simple: ${String(e)} ${e.stack ?? ''} chat=${chatText().slice(-1800)} message=${state().message}`,
     )
   }
 })()

@@ -65,7 +65,7 @@ export default function SimpleComposer({
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
   const shown = open ? terminalRecord : recipient
-  const pending = !!ui.pendingAction
+  const pending = !!ui.pendingAction || !!ui.coordinationReset
   const [errorResult, setErrorResult] = useState({ key: '', text: '' })
   const error = errorResult.key === scopeKey ? errorResult.text : ''
   const setError = (text: string) => setErrorResult({ key: scopeKey, text })
@@ -111,9 +111,7 @@ export default function SimpleComposer({
   const status =
     !recipient || autoActive
       ? {
-          label: autoActive
-            ? 'Pause Auto to resume manual coding'
-            : 'Choose a chat agent to continue',
+          label: autoActive ? 'Pause Auto to resume manual coding' : 'Choose a lead to continue',
           sendable: false,
           action: 'none' as const,
           notice: undefined,
@@ -221,7 +219,7 @@ export default function SimpleComposer({
           await refreshSession(recipientId)
         })
       } else if (!target) {
-        throw new Error('Choose a chat agent to continue.')
+        throw new Error('Choose a lead to continue.')
       }
       check()
       const sid = target!.id
@@ -295,7 +293,7 @@ export default function SimpleComposer({
     <div className="simple-composer">
       <p className="chat-recipient" role="status">
         {recipient
-          ? `Talking to ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
+          ? `Lead: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
           : status.label}
       </p>
       {exhausted.map(({ provider, key, window }) => (

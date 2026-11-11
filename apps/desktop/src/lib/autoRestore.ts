@@ -118,6 +118,7 @@ export function restoredAuto(value: unknown): AutoRun | null {
       !finished && r.status === 'paused' && r.pauseKind === 'usage' ? usageWait : undefined,
     resumeTrigger: scheduled,
     runId: r.runId,
+    ...(typeof r.ownershipId === 'string' ? { ownershipId: r.ownershipId } : {}),
     stage: r.stage,
     goal: r.goal,
     effort: r.effort,

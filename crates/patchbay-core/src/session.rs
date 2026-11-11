@@ -30,7 +30,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 18 adds ValidationSelection and selected validation action requests.
 // Protocol 19 retrieves the retained stack detection target.
 // Protocol 20 adds explicit fresh conversations and per-session context observations.
-pub const PROTOCOL: u32 = 20;
+// Protocol 21 binds agent capabilities to a process generation and rotates them on resume.
+pub const PROTOCOL: u32 = 21;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -436,6 +437,7 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
+    pub generation: u64,
     pub id: String,
     pub metadata: Metadata,
 }
@@ -1326,6 +1328,13 @@ impl Service {
         let snapshot = self.snapshot(&id);
         let mut records = self.records.lock().unwrap();
         let mut previous = records.remove(&id);
+        if let Some(token) = spec.env.get_mut(crate::agent_bridge::TOKEN_ENV)
+            && previous
+                .as_ref()
+                .is_some_and(|r| r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(token))
+        {
+            *token = crate::agent_bridge::new_id();
+        }
         // Move retained output into the new record; keep enough to undo a failed spawn.
         let mut history = previous
             .as_mut()
@@ -1626,27 +1635,25 @@ impl Service {
                 serde_json::to_value(options)?
             }
             Request::AgentSession { token } => {
-                let found = (!token.is_empty())
-                    .then(|| {
-                        let records = self.records.lock().unwrap();
-                        records
-                            .values()
-                            .find(|r| {
-                                r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token)
-                            })
-                            .map(|r| AgentSession {
-                                id: r.id.clone(),
-                                metadata: r.metadata.clone(),
-                            })
+                // Bind token and generation under the launch lock. A lookup cannot straddle
+                // replacement of a process in the same session slot.
+                let _operation = self.operation.lock().unwrap();
+                let records = self.records.lock().unwrap();
+                let found = records
+                    .values()
+                    .find(|r| {
+                        !token.is_empty()
+                            && r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token)
                     })
-                    .flatten();
-                // A token lives as long as its process; a restart replaces it.
-                let running = found.filter(|s| {
-                    self.pty
-                        .snapshot_with(&s.id, 0)
-                        .is_some_and(|snapshot| snapshot.running)
-                });
-                serde_json::to_value(running)?
+                    .and_then(|r| {
+                        let snapshot = self.pty.snapshot_with(&r.id, 0)?;
+                        snapshot.running.then(|| AgentSession {
+                            id: r.id.clone(),
+                            metadata: r.metadata.clone(),
+                            generation: snapshot.generation,
+                        })
+                    });
+                serde_json::to_value(found)?
             }
             Request::History { id, incarnation } => {
                 let snapshot = self
@@ -3609,6 +3616,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(lookup("secret").is_none());
+        let record = service.records.lock().unwrap().get(&id).unwrap().clone();
+        service
+            .start("same-token-restart".into(), record.metadata, record.spec)
+            .unwrap();
+        let token = service.records.lock().unwrap().get(&id).unwrap().spec.env
+            [crate::agent_bridge::TOKEN_ENV]
+            .clone();
+        assert_ne!(token, "secret");
+        assert!(lookup("secret").is_none());
+        assert!(lookup(&token).unwrap().generation > found.generation);
+        service.pty.kill(&id);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
