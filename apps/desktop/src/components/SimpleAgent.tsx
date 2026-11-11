@@ -47,7 +47,7 @@ export default function SimpleAgent({
               : ''}
         </strong>
         {latest && <SimpleStatus sessions={[session]} />}
-        {record?.metadata.componentId === '@map' && (
+        {record && (
           <button
             onClick={() => {
               const s = useStore.getState()

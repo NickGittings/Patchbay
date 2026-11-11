@@ -7,6 +7,8 @@ import { spawn, execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { Script } from 'node:vm'
 import { desktop, root } from './smoke-lib.mjs'
 import { copySmokeProject } from './smoke-fixtures.mjs'
 const require = createRequire(import.meta.url)
@@ -175,6 +177,12 @@ if (unknown.length) {
   process.exit(2)
 }
 const selected = names.length ? names : Object.keys(SCRIPTS).filter((n) => !SCRIPTS[n].manual)
+
+// Catch script syntax errors before launching a webview that would only report a timeout.
+for (const name of selected) {
+  const path = SCRIPTS[name].env?.PATCHBAY_SMOKE_SCRIPT
+  if (path) new Script(readFileSync(path, 'utf8'), { filename: path })
+}
 
 // One build, the same `tauri dev` makes, so switching between them doesn't recompile.
 execFileSync(process.execPath, [at('scripts/sessiond.mjs')], { cwd: desktop, stdio: 'inherit' })

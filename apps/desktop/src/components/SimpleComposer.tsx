@@ -381,9 +381,12 @@ export default function SimpleComposer({
           </button>
         )}
         <button
-          disabled={!recipient}
+          disabled={!recipient && !open}
           aria-expanded={open}
-          onClick={() => recipient && openTerminal(recipient)}
+          onClick={() => {
+            const record = open ? shown : recipient
+            if (record) openTerminal(record)
+          }}
         >
           {open ? 'Hide' : 'View'}{' '}
           {shown?.metadata.componentId === '@map'

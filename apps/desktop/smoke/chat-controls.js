@@ -62,9 +62,9 @@
       history: [],
     })
     const first = agent('chat-smoke-first', 'First agent')
-    const second = agent('chat-smoke-second', 'Second agent')
+    const asking = agent('chat-smoke-second', 'Second agent')
     smoke.store.setState({
-      sessionRecords: [...originalRecords, first, second],
+      sessionRecords: [...originalRecords, first, asking],
       sessions: {
         ...originalSessions,
         [first.id]: {
@@ -72,7 +72,7 @@
           generation: 1,
           status: { agent: { state: 'idle', authoritative: true, provider: 'codex', sinceMs: 1 } },
         },
-        [second.id]: {
+        [asking.id]: {
           running: true,
           generation: 1,
           status: {
@@ -102,7 +102,7 @@
     const selected = document.querySelector('[aria-label="Chat agent"]')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(selected), 'value').set.call(
       selected,
-      `session:${second.id}`,
+      `session:${asking.id}`,
     )
     selected.dispatchEvent(new Event('change', { bubbles: true }))
     const handoff = await until('reviewable agent handoff', () =>

@@ -22,6 +22,9 @@
     [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
   const click = (el) => {
     assert(el, 'missing click target')
+    const details = el.closest('details')
+    if (details && !details.open && el !== details.querySelector('summary'))
+      details.querySelector('summary').click()
     el.click()
   }
   const input = (el, value) => {
@@ -103,6 +106,26 @@
         .querySelector('.workspace-rail [aria-label="Navigation"]')
         .getAttribute('aria-pressed') === 'false',
       'Full Navigation is pressed in Chat',
+    )
+    // Planning is an existing workspace session; Chat must explicitly select its recipient.
+    await smoke.startTerminal('@plan', fake.id, state().activeTask, projectId)
+    const plannerRecord = await until('planner available in picker', () =>
+      state().sessionRecords.find(
+        (r) => r.metadata.componentId === '@plan' && r.metadata.terminalId === fake.id,
+      ),
+    )
+    const chooser = await until('chat agent picker', () =>
+      document.querySelector('[aria-label="Chat agent"]:not(:disabled)'),
+    )
+    assert(chooser.value === '', 'new chat silently selected an agent')
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(chooser), 'value').set.call(
+      chooser,
+      `session:${plannerRecord.id}`,
+    )
+    chooser.dispatchEvent(new Event('change', { bubbles: true }))
+    await until(
+      'planner explicitly selected',
+      () => state().simple?.selectedAgent === plannerRecord.id,
     )
     const composer = document.querySelector('[aria-label="Message agent"]')
     for (const options of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
@@ -245,12 +268,13 @@
       'conversation not carried into worktree',
     )
     await until(
-      'open drawer follows Builder',
+      'open drawer keeps the selected Planner',
       () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="build terminal"] .xterm') &&
-        button('Hide Builder terminal'),
+        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm') &&
+        button('Hide Planner terminal'),
     )
-    click(button('Hide Builder terminal'))
+    assert(state().simple.selectedAgent === planner, 'workflow changed selected agent')
+    click(button('Hide Planner terminal'))
     await until('drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     assert(document.querySelector('details.simple-section:not([open])'), 'earlier plan is expanded')
     const builder = state().simple.log.findLast((e) => e.action === 'implement').sessionId
@@ -388,11 +412,17 @@
     )
     state().setView('navigation')
     state().setSimpleMode(true)
-    await until('reviewer terminal button', () => button('View Reviewer terminal'))
-    click(button('View Reviewer terminal'))
+    const reviewer = state().simple.log.findLast((e) => e.action === 'review').sessionId
+    click(
+      await until('reviewer terminal button', () => {
+        const article = document.querySelector(`[data-session="${reviewer}"]`)
+        return article && button('View terminal', article)
+      }),
+    )
     await until('reviewer drawer shows its terminal', () =>
       document.querySelector('.simple-terminal-drawer[aria-label="review terminal"] .xterm'),
     )
+    assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
     click(button('Hide Reviewer terminal'))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     let flashed = false
@@ -459,8 +489,7 @@
         () => !document.querySelector('.simple-terminal-drawer'),
       )
     }
-    // A permission wait of a planner run this chat started switches both recipient and drawer
-    // to it; another chat's run of the shared planner never does.
+    // A permission wait belongs to its originating agent and opens only when requested.
     await smoke.startTerminal('@plan', fake.id, task, projectId)
     await until('planner restarted', () => state().sessions[planner]?.running)
     state().patchTask(projectId, task, {
@@ -481,38 +510,36 @@
       },
     })
     await smoke.terminalWrite(planner, 'smoke-input\n')
-    await until(
-      'input opens planner drawer',
-      () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"]') &&
-        chatText().includes('Allow fixture tool?'),
+    const question = await until('planner input question', () =>
+      [...document.querySelectorAll('.chat-question')].find((el) =>
+        el.textContent.includes('Allow fixture tool?'),
+      ),
     )
+    assert(state().simple.selectedAgent === planner, 'input wait changed selected agent')
+    click(question.querySelector('summary'))
+    await until('question terminal opened', () => question.querySelector('.xterm'))
     input(
       document.querySelector('[aria-label="Message agent"]'),
       'Do not answer the permission dialog',
     )
-    // The drawer already shows the asking terminal, and nothing may type into its dialog.
+    // Nothing may send a chat prompt into the permission dialog.
     await until('force unavailable during input wait', () => !button('Send anyway'))
-    assert(!button('Answer in terminal'), 'Answer in terminal shown beside an open drawer')
     assert(button('Queue') && !button('Queue').disabled, 'input wait cannot queue a follow-up')
     input(document.querySelector('[aria-label="Message agent"]'), '')
-    const drawer = document.querySelector('.simple-terminal-drawer .xterm')
+    const drawer = question.querySelector('.xterm')
     await smoke.terminalWrite(planner, 'a')
     await until(
       'first answer character changes status',
       () => state().sessions[planner]?.status?.agent?.state === 'working',
     )
     await sleep(300)
+    assert(question.querySelector('.xterm') === drawer, 'input terminal unmounted while answering')
     assert(
-      document.querySelector('.simple-terminal-drawer .xterm') === drawer,
-      'input terminal unmounted while answering',
-    )
-    assert(
-      document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"]'),
-      'drawer switched away from question',
+      document.querySelector('.chat-question') === question,
+      'input question changed while answering',
     )
     await smoke.terminalStop(planner)
-    await until('automatic drawer closes', () => !document.querySelector('.simple-terminal-drawer'))
+    await until('stopped agent question closes', () => !document.querySelector('.chat-question'))
     const saved = smoke.workspaceDocument().projects.find((p) => p.id === projectId).layout
     assert(
       saved.taskWorkspaces[task].simple.log.some((e) => e.kind === 'reply'),

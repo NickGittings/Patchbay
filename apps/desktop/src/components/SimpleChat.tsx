@@ -136,7 +136,6 @@ export default function SimpleChat({
       now,
     },
     model,
-    recipient,
   )
   const questions = chatInputRequests(
     model.records.filter((r) => !model.foreign.has(r.id)),
