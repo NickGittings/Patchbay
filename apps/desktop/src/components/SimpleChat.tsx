@@ -9,7 +9,6 @@ import {
   pendingLaunch,
   LAUNCH_RECORD_GRACE_MS,
   sections,
-  selectRecipient,
   thread,
   type SimpleAction,
   type SimpleStage,
@@ -19,8 +18,7 @@ import { clearSimpleChat, logLaunch, logSimple } from '../lib/simpleActions'
 import type { useSimpleData } from '../lib/useSimpleData'
 import Markdown from './findings/Markdown'
 import { useExpiredDeadline } from '../lib/clock'
-import { inputDrawer, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
-import { terminalStatus } from '../lib/display'
+import { simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { implementPlannerPlan } from '../lib/planHandoff'
 import { fixReviewFindings } from '../lib/reviewHandoff'
 import { chatRolePresets, roleDevice, roleDevices } from '../lib/agentRoles'
@@ -48,6 +46,18 @@ import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import SimpleAgent from './SimpleAgent'
 import TerminalPane from './TerminalPane'
+import ChatQuestion from './ChatQuestion'
+import ChatAgentPicker from './ChatAgentPicker'
+import {
+  chatRecipient,
+  chatHandoff,
+  chatBusy,
+  chatAutoActive,
+  chatInputRequests,
+} from '../lib/chat'
+import { autoDrafts, autoDraftKey, emptyAutoDraft } from '../lib/autoDrafts'
+import AutoPanel from './auto/AutoPanel'
+import { pauseAuto } from '../lib/auto'
 import './simple.css'
 
 const pendingActions = new Set<string>()
@@ -82,6 +92,7 @@ export default function SimpleChat({
   const setFailure = (text: string) => setFailureResult({ key, text })
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
+  const [autoSetupKey, setAutoSetupKey] = useState<string>()
   const [clearKey, setClearKey] = useState<string>()
   useEffect(() => setClearKey(undefined), [key])
   const threadRef = useRef<HTMLDivElement>(null)
@@ -114,13 +125,7 @@ export default function SimpleChat({
     (source && defaultReviewBase(source, s.tasks, data?.worktrees ?? [], []))
   const reviewBase = findings?.findings?.base || base
   const checkKey = JSON.stringify([key, source?.head, target?.head])
-  const recipient = selectRecipient(
-    model.records,
-    s.sessions,
-    model.stage,
-    undefined,
-    model.foreign,
-  )
+  const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const state = flow(
     {
       ...snapshot,
@@ -133,13 +138,17 @@ export default function SimpleChat({
     model,
     recipient,
   )
-  const asking =
-    recipient && terminalStatus('agent', s.sessions[recipient.id]).health === 'input'
-      ? recipient
-      : undefined
-  const inputKey = asking
-    ? `${asking.id}:${s.sessions[asking.id]?.generation}:${s.sessions[asking.id]?.status?.agent?.sinceMs}`
-    : ''
+  const questions = chatInputRequests(
+    model.records.filter((r) => !model.foreign.has(r.id)),
+    s.sessions,
+    ui.inputRequests,
+  )
+  const inputKey = JSON.stringify(questions)
+  useEffect(() => {
+    const previous = useSimpleUi.getState().worktrees[key]?.inputRequests ?? []
+    if (JSON.stringify(previous) !== inputKey)
+      useSimpleUi.getState().patch(key, { inputRequests: JSON.parse(inputKey) })
+  }, [key, inputKey])
   const drawerRecord = ui.terminalSession
     ? model.records.find((r) => r.id === ui.terminalSession?.id)
     : recipient
@@ -165,13 +174,6 @@ export default function SimpleChat({
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
-  // `thread` lists records afresh on every render; the drawer only needs which ones exist.
-  const recordKey = model.records.map((r) => r.id).join('\n')
-  useEffect(() => {
-    const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
-    const next = inputDrawer(current, asking, s.sessions, recordKey.split('\n'))
-    if (next !== current) useSimpleUi.getState().patch(key, next)
-  }, [key, asking, s.sessions, recordKey])
   // What can grow the thread, without serializing its records or reply texts on every render.
   const contentKey = JSON.stringify([
     model.items.map((i) =>
@@ -349,7 +351,31 @@ export default function SimpleChat({
         >
           Review…
         </button>
-        <button onClick={() => useStore.getState().showAutoPanel()}>Auto</button>
+        <button
+          disabled={
+            !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])
+          }
+          title="Finish or stop the current agent turn before handing off"
+          onClick={() => {
+            if (s.auto && ['running', 'waitingOnYou', 'paused'].includes(s.auto.status)) {
+              setAutoSetupKey(key)
+              return
+            }
+            const draftKey = autoDraftKey(projectId, task)
+            autoDrafts.set(draftKey, {
+              ...(autoDrafts.get(draftKey) ?? emptyAutoDraft()),
+              goal: chatHandoff(
+                s.simple,
+                source?.branch ?? 'Project folder',
+                changed.map((f) => f.path),
+              ),
+              autonomous: true,
+            })
+            setAutoSetupKey(key)
+          }}
+        >
+          Run autonomously…
+        </button>
         <button
           disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
           onClick={() => setClearKey(key)}
@@ -387,6 +413,26 @@ export default function SimpleChat({
           <button onClick={() => setClearKey(undefined)}>Cancel</button>
         </div>
       )}
+      <ChatAgentPicker
+        key={key}
+        records={model.records}
+        branch={source?.branch ?? 'Project folder'}
+        files={changed.map((f) => f.path)}
+      />
+      {s.auto && (
+        <p role="status">
+          Auto · {s.auto.stage} · {s.auto.status} {s.auto.reason}
+          {chatAutoActive(s.auto.status) && (
+            <button onClick={() => pauseAuto(projectId, task)}>Pause Auto</button>
+          )}
+        </p>
+      )}
+      {autoSetupKey === key && (
+        <section aria-label="Auto handoff">
+          <button onClick={() => setAutoSetupKey(undefined)}>Close auto setup</button>
+          <AutoPanel key={key} simple onIntegrations={openIntegrations} />
+        </section>
+      )}
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (
@@ -420,7 +466,11 @@ export default function SimpleChat({
           atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70
         }}
       >
-        {!items.length && <p className="simple-narration">Describe a feature to start planning.</p>}
+        {!items.length && (
+          <p className="simple-narration">
+            Choose an agent, then describe what you want to build or change.
+          </p>
+        )}
         {grouped.map((section, sectionIndex) => {
           const content = section.items.map((item) => {
             if (item.kind === 'agent') {
@@ -513,19 +563,23 @@ export default function SimpleChat({
             </details>
           )
         })}
-        {asking && (
-          <p className="simple-narration" role="status">
-            {s.sessions[asking.id]?.status?.agent?.message ??
-              'The agent needs your input in its terminal.'}
-          </p>
-        )}
+        {questions.map((request) => {
+          const record = model.records.find((r) => r.id === request.sessionId)!
+          return (
+            <ChatQuestion
+              key={`${request.sessionId}:${request.generation}:${request.sinceMs}`}
+              record={record}
+            />
+          )
+        })}
         {launching && (
           <p className="simple-narration" role="status">
             Starting {pending === 'build' ? 'build' : pending}…
           </p>
         )}
         {!launching && (state.prompt || options) && (
-          <div className="simple-step" data-step={state.step}>
+          <details className="simple-step" data-step={state.step}>
+            <summary>Planning, review, and merge actions</summary>
             {state.prompt && <p>{state.prompt.text}</p>}
             <div className="simple-step-actions">
               {state.prompt?.actions.map((b) => (
@@ -539,44 +593,45 @@ export default function SimpleChat({
                 </button>
               )}
             </div>
-          </div>
+          </details>
         )}
         {failure && <p role="alert">{failure}</p>}
+        {drawerShown && drawerRecord && (
+          <div
+            className="simple-terminal-drawer"
+            aria-label={`${recordStage(drawerRecord)} terminal`}
+          >
+            <p>Live activity · {drawerRecord.metadata.name}</p>
+            <TerminalPane
+              key={drawerRecord.id}
+              componentId={drawerRecord.metadata.componentId}
+              terminal={{
+                id: drawerRecord.metadata.terminalId,
+                name: drawerRecord.metadata.name,
+                kind: 'agent',
+                command: drawerRecord.spec.command,
+              }}
+              task={drawerRecord.metadata.task ?? null}
+              existingSessionId={drawerRecord.id}
+              focus={false}
+            />
+          </div>
+        )}
       </div>
-      {drawerShown && drawerRecord && (
-        <div
-          className="simple-terminal-drawer"
-          aria-label={`${recordStage(drawerRecord)} terminal`}
-        >
-          <TerminalPane
-            key={drawerRecord.id}
-            componentId={drawerRecord.metadata.componentId}
-            terminal={{
-              id: drawerRecord.metadata.terminalId,
-              name: drawerRecord.metadata.name,
-              kind: 'agent',
-              command: drawerRecord.spec.command,
-            }}
-            task={drawerRecord.metadata.task ?? null}
-            existingSessionId={drawerRecord.id}
-            focus={false}
-          />
-        </div>
-      )}
       <SimpleComposer
         scopeKey={key}
         stage={model.stage}
         records={model.records}
-        foreign={model.foreign}
         terminalRecord={drawerRecord}
         openTerminal={(record: SessionRecord) =>
           // A drawer whose session is gone shows nothing, so the toggle opens it in one click.
           useSimpleUi.getState().patch(key, {
-            terminal: drawerShown ? 'closed' : 'user',
-            terminalSession:
-              !drawerShown && record.id === asking?.id
-                ? { id: record.id, generation: s.sessions[record.id]?.generation }
-                : undefined,
+            terminal: drawerShown && drawerRecord?.id === record.id ? 'closed' : 'user',
+            terminalSession: {
+              id: record.id,
+              generation: s.sessions[record.id]?.generation,
+              pinned: true,
+            },
           })
         }
       />

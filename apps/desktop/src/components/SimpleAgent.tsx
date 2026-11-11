@@ -38,7 +38,8 @@ export default function SimpleAgent({
     <article className="simple-agent" data-session={sessionId}>
       <header>
         <strong>
-          {role}
+          {record?.metadata.name ?? role}
+          {record && ` · ${role}`}
           {provider
             ? ` · ${provider === 'claude' ? 'Claude' : 'Codex'}`
             : record && record.metadata.componentId !== '@map'

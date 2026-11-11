@@ -1,4 +1,5 @@
 import { useStore } from '../store'
+import { chatAutoActive } from './chat'
 import {
   forceable,
   followDeliveries,
@@ -46,6 +47,11 @@ export async function flushQueued(key: string, force = false) {
   const queued = useSimpleUi.getState().worktrees[key]?.queued
   if (!queued) return
   const state = useStore.getState()
+  const [projectId, task] = JSON.parse(key) as [string, string | null]
+  // Background queues retain their original workspace and wait while Auto owns it.
+  const project = state.project?.id === projectId ? state : state.projects?.[projectId]?.state
+  const workspace = project?.activeTask === task ? project : project?.taskWorkspaces?.[task ?? '']
+  if (chatAutoActive(workspace?.auto?.status)) return
   const session = state.sessions[queued.sessionId]
   // Reconciliation can temporarily omit a session. Keep its place until it is known again.
   // A concurrent send also owns the draft until it settles; leave the queue untouched.
@@ -68,7 +74,6 @@ export async function flushQueued(key: string, force = false) {
   )
     return
   useSimpleUi.getState().patch(key, { queued: undefined })
-  const [projectId, task] = JSON.parse(key) as [string, string | null]
   useSimpleUi.getState().patch(key, { pendingAction: true })
   try {
     await sendToSession({
@@ -94,7 +99,9 @@ export function followQueuedPrompts() {
   const stopSessions = useStore.subscribe((state, previous) => {
     if (
       state.sessions !== previous.sessions ||
-      state.serviceConnected !== previous.serviceConnected
+      state.serviceConnected !== previous.serviceConnected ||
+      state.auto !== previous.auto ||
+      state.projects !== previous.projects
     )
       follow()
   })

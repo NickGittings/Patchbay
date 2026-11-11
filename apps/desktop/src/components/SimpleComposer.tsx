@@ -1,4 +1,4 @@
-import { plannerDevice } from '../lib/plan'
+import { chatRecipient, chatAutoActive } from '../lib/chat'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useClockNow } from '../lib/clock'
 import {
@@ -13,9 +13,8 @@ import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
-import { PLAN_SCOPE, plannerSessionId } from '../types'
 import type { SessionRecord } from '../types'
-import { SIMPLE_ROLE_LABEL, recordStage, selectRecipient, type SimpleStage } from '../lib/simple'
+import { SIMPLE_ROLE_LABEL, recordStage, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -29,23 +28,20 @@ import {
   waitForPrompt,
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
-import { roleDevice } from '../lib/agentRoles'
 import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
-import { refreshSession, reconcileFreshSessions, startTerminal } from '../lib/sessions'
-import { openIntegrations, useAgentHooksInstalled, usePresetProviders } from '../lib/agentHooks'
+import { refreshSession, reconcileFreshSessions, stopTerminal } from '../lib/sessions'
+import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
 export default function SimpleComposer({
   scopeKey,
   stage,
   records,
-  foreign,
   terminalRecord,
   openTerminal,
 }: {
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
-  foreign: ReadonlySet<string>
   terminalRecord?: SessionRecord
   openTerminal: (r: SessionRecord) => void
 }) {
@@ -56,14 +52,15 @@ export default function SimpleComposer({
       nodes: s.nodes,
       devices: s.devices,
       agentRoles: s.agentRoles,
-      planActive: s.planActive,
+      selectedAgent: s.simple?.selectedAgent,
+      autoStatus: s.auto?.status,
       serviceConnected: s.serviceConnected,
     })),
   )
   const ui = useSimpleUi((s) => s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI)
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
-  const recipient = useStore((s) => selectRecipient(records, s.sessions, stage, undefined, foreign))
+  const recipient = useStore((s) => chatRecipient(records, s.simple?.selectedAgent))
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
@@ -82,10 +79,8 @@ export default function SimpleComposer({
     [],
   )
   const recipientRef = useRef(recipient?.id)
-  const stageRef = useRef(stage)
   useEffect(() => {
     recipientRef.current = recipient?.id
-    stageRef.current = stage
   }, [recipient?.id, stage])
   const lastSubmit = recipient ? lastSubmission(recipient.id, state?.generation) : undefined
   // Readiness changes only through status events, so no clock subscription is needed.
@@ -93,20 +88,16 @@ export default function SimpleComposer({
   const running = !!state?.running
   // The recipient's provider, else that of the planner Send would start; `null` for neither
   // Claude nor Codex, which can never report a ready prompt.
-  const planRole = roleDevice(s.devices, s.agentRoles, 'plan')
-  const plannedDevice = plannerDevice(s.devices, s.planActive ?? planRole.id, planRole)
-  const starts = !recipient && stage === 'plan' ? plannedDevice : undefined
-  const [startProvider] = usePresetProviders([starts])
   const provider = recipient
     ? (profileHookProvider(recipient.spec.command) ?? recipient.metadata.adapter ?? null)
-    : startProvider
+    : null
   const usage = useUsage((s) => s.usage)
   const usageNow = useClockNow(exhaustedWindows(usage, provider, 0).map((w) => w.window.resetsAtMs))
   const exhausted = exhaustedWindows(usage, provider, usageNow)
   const hooks = useAgentHooksInstalled(provider ? [provider] : [])
   // Installed hooks, not `authoritative`, which lapses on Esc and is unset until the first hook.
   const installed = provider ? hooks[provider] : undefined
-  const status = composerStatus({
+  const deliveryStatus = composerStatus({
     pending,
     connected: s.serviceConnected,
     provider: provider?.startsWith('claude:')
@@ -116,6 +107,18 @@ export default function SimpleComposer({
     session: state,
     ready,
   })
+  const autoActive = chatAutoActive(s.autoStatus)
+  const status =
+    !recipient || autoActive
+      ? {
+          label: autoActive
+            ? 'Pause Auto to resume manual coding'
+            : 'Choose a chat agent to continue',
+          sendable: false,
+          action: 'none' as const,
+          notice: undefined,
+        }
+      : deliveryStatus
   const drafted = !pending && !!ui.draft.trim()
   const query = ui.mentions.some((m) => caret > m.start && caret <= m.end)
     ? null
@@ -126,7 +129,8 @@ export default function SimpleComposer({
         .slice(0, 8)
     : []
   // The service applies the same provider, turn and approval checks.
-  const canForce = running && !ready && s.serviceConnected && forceable(state)
+  const canForce =
+    !chatAutoActive(s.autoStatus) && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
     if (!(force ? canForce : status.sendable) || !s.project) return
@@ -217,15 +221,7 @@ export default function SimpleComposer({
           await refreshSession(recipientId)
         })
       } else if (!target) {
-        if (stage !== 'plan')
-          throw new Error('Open a stage terminal or choose another recipient to continue.')
-        const device = plannedDevice
-        await startTerminal(PLAN_SCOPE, device.id, task, projectId)
-        await reconcileFreshSessions()
-        target = useStore
-          .getState()
-          .sessionRecords.find((r) => r.id === plannerSessionId(device.id, projectId, task))
-        if (!target) throw new Error('The planner did not start. Open its terminal to continue.')
+        throw new Error('Choose a chat agent to continue.')
       }
       check()
       const sid = target!.id
@@ -241,7 +237,11 @@ export default function SimpleComposer({
         throw new Error('The process changed. Your draft was kept.')
       const stillCurrent = () => {
         check()
-        if (stageRef.current !== stage || (recipientRef.current && recipientRef.current !== sid))
+        if (
+          useStore.getState().simple?.selectedAgent !== sid ||
+          chatAutoActive(useStore.getState().auto?.status) ||
+          (recipientRef.current && recipientRef.current !== sid)
+        )
           return undefined
         const current = useStore.getState().sessions[sid]
         return { ...captured, generation: current?.generation ?? -1 }
@@ -293,6 +293,11 @@ export default function SimpleComposer({
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
+      <p className="chat-recipient" role="status">
+        {recipient
+          ? `Talking to ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
+          : status.label}
+      </p>
       {exhausted.map(({ provider, key, window }) => (
         <p className="simple-usage-warning" role="status" key={`${provider}:${key}`}>
           {providerName(provider)} {windowName(key)} usage exhausted (
@@ -370,6 +375,11 @@ export default function SimpleComposer({
       )}
       <div className="simple-composer-controls">
         <span>{status.label}</span>
+        {recipient && running && !autoActive && (
+          <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
+            Stop agent
+          </button>
+        )}
         <button
           disabled={!recipient}
           aria-expanded={open}

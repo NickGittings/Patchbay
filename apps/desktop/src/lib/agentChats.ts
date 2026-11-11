@@ -57,3 +57,13 @@ export function claimAgentChat(
     simple: { ...simple, agentRuns: [...agentRuns, { sessionId, generation }] },
   })
 }
+
+/** Commit a choice to its originating workspace, including after an asynchronous launch. */
+export function selectChatAgent(projectId: string, task: string | null, sessionId: string) {
+  const state = projectStateOf(projectId)
+  if (!state) throw new Error('The project was closed. Open it before choosing an agent.')
+  const simple = workspaceOf(state, task).simple ?? { startedMs: Date.now(), log: [] }
+  useStore.getState().patchTask(projectId, task, {
+    simple: { ...simple, selectedAgent: sessionId },
+  })
+}

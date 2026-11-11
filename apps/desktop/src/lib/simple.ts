@@ -38,6 +38,8 @@ export const SIMPLE_ACTIONS = [
   'stopAuto',
   'mergeApproval',
   'skipStage',
+  'selectAgent',
+  'handoff',
 ] as const
 export type SimpleAction = (typeof SIMPLE_ACTIONS)[number]
 interface EntryBase {
@@ -60,6 +62,8 @@ export type SimpleEntry = EntryBase &
       }
   )
 export interface SimpleState {
+  selectedAgent?: string
+
   startedMs: number
   log: SimpleEntry[]
   /** `SIMPLE_VERSION` once saved by a build whose claims name their run; older logs migrate. */
@@ -257,6 +261,7 @@ export function restoredSimple(value: unknown): SimpleState | null {
   const replies = new Set<string>()
   const restored = boundedSimple({
     startedMs: state.startedMs,
+    selectedAgent: typeof state.selectedAgent === 'string' ? state.selectedAgent : undefined,
     transferredFrom: typeof state.transferredFrom === 'string' ? state.transferredFrom : undefined,
     transferTarget: typeof state.transferTarget === 'string' ? state.transferTarget : undefined,
     clearBoundary:
@@ -510,6 +515,8 @@ const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
     stopAuto: 'Auto stopped.',
     mergeApproval: 'Merge approved.',
     skipStage: 'Stage skipped.',
+    selectAgent: entry.text ?? 'Chat agent selected.',
+    handoff: entry.text ?? 'Agent handoff prepared.',
   })[entry.action]
 
 /** One chronological conversation. Replies use journal identity, never terminal text. */

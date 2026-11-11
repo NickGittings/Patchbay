@@ -289,3 +289,20 @@ test('the interrupted turn Stop does not release a queue after a forced send', a
   })
   await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
 })
+
+test('queued chat waits while Auto controls its workspace, then follows its original agent', async () => {
+  const { useStore: store } = await import('../store')
+  store.setState({
+    project: { id: 'p' },
+    activeTask: 't',
+    auto: { status: 'running' },
+  } as never)
+  queue()
+  update(session('idle'))
+  await flushQueued(key)
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  store.setState({ auto: { status: 'paused' } } as never)
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledWith(sid, 1, 'follow  up', false)
+  store.setState({ project: null, auto: null } as never)
+})
