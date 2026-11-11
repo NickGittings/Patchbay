@@ -631,7 +631,7 @@ impl PtyManager {
             // Read a report written just before exiting, e.g. a finished turn.
             let file = manager.status_file(generation);
             let last_report = file.as_deref().and_then(|f| read_status_file(f, None));
-            manager.watched.lock().unwrap().remove(&generation);
+            let watched = manager.watched.lock().unwrap().remove(&generation);
             remove_status_file(file.as_deref());
             // Let the reader drain; on Windows it only sees EOF once the master closes.
             let _ = done_rx.recv_timeout(Duration::from_millis(500));
@@ -650,21 +650,45 @@ impl PtyManager {
                 Err(_) => 1,
             };
             let exited_ms = now_ms();
-            let mut backlog = backlog.lock().unwrap();
+            // Serialize with any monitor tick that already captured this watcher, so
+            // its drained hooks establish identity before the final transcript read.
+            let mut context_reader = watched.as_ref().map(|w| w.context_reader.lock().unwrap());
+            let mut guard = backlog.lock().unwrap();
             if let Some((stamp, text)) = last_report {
-                backlog.tracker.on_report(&text, stamp, exited_ms);
+                guard.tracker.on_report(&text, stamp, exited_ms);
             }
             if let Some(dir) = manager.report_dir(generation) {
-                backlog.apply_hooks(
+                guard.apply_hooks(
                     crate::agent_hooks::drain(&dir),
                     exited_ms,
                     &spec.id,
                     sink.as_ref(),
                 );
                 if let Some(observation) = crate::agent_context::read_claude(&dir) {
-                    backlog.tracker.on_context(observation);
+                    guard.tracker.on_context(observation);
                 }
                 let _ = std::fs::remove_dir_all(dir);
+            }
+            let conversation = guard.tracker.conversation().map(str::to_owned);
+            // Transcript discovery and shell resolution must not block output/snapshots.
+            drop(guard);
+            let contexts = conversation
+                .as_deref()
+                .zip(context_reader.as_mut())
+                .map(|(conversation, reader)| reader.drain(conversation, exited_ms))
+                .unwrap_or_default();
+            let mut backlog = backlog.lock().unwrap();
+            if let Some(conversation) = conversation {
+                for context in contexts {
+                    backlog
+                        .tracker
+                        .on_context(crate::agent_context::Observation {
+                            session: spec.id.clone(),
+                            generation,
+                            conversation: conversation.clone(),
+                            context,
+                        });
+                }
             }
             backlog.running = false;
             backlog.cleanup_error = cleanup_error;
@@ -750,7 +774,12 @@ impl PtyManager {
             })
             .collect();
         for (generation, id, backlog, sink, file, journal, seen, context_reader) in watched {
-            // Read a changed status file without holding any lock.
+            // Exit finalization may await shell setup. Keep observations atomic with
+            // it without delaying the shared monitor's work on other sessions.
+            let Ok(mut context_reader) = context_reader.try_lock() else {
+                continue;
+            };
+            // Read a changed status file without holding the backlog lock.
             let report = file.as_deref().and_then(|f| read_status_file(f, seen));
             if let Some((stamp, _)) = &report
                 && let Some(w) = self.watched.lock().unwrap().get_mut(&generation)
@@ -770,7 +799,7 @@ impl PtyManager {
                 .map(str::to_owned);
             let codex_contexts = conversation
                 .as_deref()
-                .map(|c| context_reader.lock().unwrap().read(c, now))
+                .map(|c| context_reader.read(c, now))
                 .unwrap_or_default();
             let hooks = journal
                 .map(|dir| crate::agent_hooks::drain(&dir))
@@ -779,27 +808,15 @@ impl PtyManager {
             // A tick may have captured this session, and drained its journal, before the
             // waiter removed it. Apply what it drained as of the exit, then finalize again,
             // so a last Stop isn't lost and a pending approval can't come back.
-            if !guard.running {
-                let exited_ms = guard.exited_ms.unwrap_or(now);
-                if let Some((stamp, text)) = report {
-                    guard.tracker.on_report(&text, stamp, exited_ms);
-                }
-                guard.apply_hooks(hooks, exited_ms, &id, sink.as_ref());
-                guard.tracker.on_exit(exited_ms);
-                // Exited runs still take status (stopped, seen); it never revives one.
-                if let Some(status) = guard.tracker.changed(exited_ms) {
-                    sink.emit(TerminalEvent::Status {
-                        session_id: id,
-                        generation,
-                        status,
-                    });
-                }
-                continue;
-            }
+            let observed_ms = if guard.running {
+                now
+            } else {
+                guard.exited_ms.unwrap_or(now)
+            };
             if let Some((stamp, text)) = report {
-                guard.tracker.on_report(&text, stamp, now);
+                guard.tracker.on_report(&text, stamp, observed_ms);
             }
-            guard.apply_hooks(hooks, now, &id, sink.as_ref());
+            guard.apply_hooks(hooks, observed_ms, &id, sink.as_ref());
             if let Some(observation) = claude_context {
                 guard.tracker.on_context(observation);
             }
@@ -813,6 +830,18 @@ impl PtyManager {
                     });
                 }
             }
+            if !guard.running {
+                guard.tracker.on_exit(observed_ms);
+                // Exited runs still take status (stopped, seen); it never revives one.
+                if let Some(status) = guard.tracker.changed(observed_ms) {
+                    sink.emit(TerminalEvent::Status {
+                        session_id: id,
+                        generation,
+                        status,
+                    });
+                }
+                continue;
+            }
             let port = guard.tracker.due_probe(now);
             // Emitted under the backlog lock so it can't follow the waiter's
             // final status and exit.
@@ -824,6 +853,7 @@ impl PtyManager {
                 });
             }
             drop(guard);
+            drop(context_reader);
             if let Some(port) = port {
                 let backlog = backlog.clone();
                 std::thread::spawn(move || {
@@ -1904,6 +1934,90 @@ mod tests {
         assert_eq!(sink.wait_for_exit(), 0);
         assert!(!pty.snapshot("concurrent").unwrap().running);
     }
+    #[test]
+    fn final_context_drain_does_not_block_the_shared_monitor() {
+        let pty = Arc::new(PtyManager::new());
+        let reader = Arc::new(Mutex::new(crate::agent_context::CodexReader::default()));
+        pty.watched.lock().unwrap().insert(
+            42,
+            Watched {
+                id: "exiting".into(),
+                backlog: Arc::new(Mutex::new(Backlog::default())),
+                sink: Arc::new(Collect::default()),
+                status_file: None,
+                journal: None,
+                context_reader: reader.clone(),
+                seen: None,
+            },
+        );
+        let draining = reader.lock().unwrap();
+        let (done, finished) = mpsc::channel();
+        let monitor = std::thread::spawn(move || {
+            pty.monitor_tick();
+            done.send(()).unwrap();
+        });
+        let result = finished.recv_timeout(Duration::from_secs(1));
+        drop(draining);
+        monitor.join().unwrap();
+        result.expect("a final context drain blocked the shared monitor");
+    }
+
+    #[test]
+    fn exit_drains_codex_context_for_an_explicit_adapter_without_a_monitor_tick() {
+        let root =
+            std::env::temp_dir().join(format!("patchbay-exit-context-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let script = root.join("my-agent.sh");
+        std::fs::write(&script, r#"#!/bin/sh
+printf '{"session":"context-final","generation":%s,"provider":"codex","sequence":1,"atMs":1,"event":"SessionStart","conversation":"12345678-conversation","source":"startup"}' "$PATCHBAY_REPORT_GENERATION" > "$PATCHBAY_REPORT_DIR/00000000000000000001.json"
+cat > "$CODEX_HOME/sessions/rollout-12345678-conversation.jsonl" <<'JSON'
+{"type":"session_meta","payload":{"id":"12345678-conversation"}}
+{"timestamp":"2026-11-10T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":25000},"model_context_window":100000}}}
+{"timestamp":"2026-11-10T12:00:01Z","type":"compacted","payload":{"message":"summary"}}
+JSON
+"#).unwrap();
+        let pty = Arc::new(PtyManager::new());
+        // Deterministically exercise finalization before any periodic observation.
+        pty.monitor_started.set(()).unwrap();
+        let sink = Arc::new(Collect::default());
+        let spec = serde_json::from_value(serde_json::json!({
+            "id": "context-final",
+            "command": format!("sh {}", crate::context::quote_argument(script.to_str().unwrap())),
+            "cwd": root,
+            "env": {
+                crate::agent_hooks::PROVIDER_ENV: "codex",
+                "CODEX_HOME": root.to_str().unwrap(),
+            },
+            "ready_when": "", "service": false, "notice": null,
+        }))
+        .unwrap();
+        pty.spawn(spec, sink.clone()).unwrap();
+        assert_eq!(sink.wait_for_exit(), 0);
+        let snapshot = pty.snapshot("context-final").unwrap();
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.status.context.used_tokens, Some(25000));
+        assert_eq!(snapshot.status.context.used_percent, Some(25.0));
+        assert_eq!(
+            snapshot.status.context.compaction,
+            crate::agent_context::Compaction::Idle
+        );
+        assert_eq!(
+            snapshot.status.context.last_compaction_ms,
+            Some(1794312001000)
+        );
+        let events = sink.0.lock().unwrap();
+        let final_status = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                TerminalEvent::Status { status, .. } => Some(status),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(final_status.context, snapshot.status.context);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn final_journal_drain_emits_activity_and_serializes_it_in_the_snapshot() {
         let pty = Arc::new(PtyManager::new());

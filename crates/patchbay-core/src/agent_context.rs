@@ -157,6 +157,7 @@ pub struct CodexReader {
     resolving: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     conversation: String,
     file: Option<PathBuf>,
+    discovery: Option<TranscriptDiscovery>,
     offset: u64,
     pending: Vec<u8>,
     verified: bool,
@@ -166,9 +167,14 @@ pub struct CodexReader {
 impl CodexReader {
     pub fn new(spec: &crate::pty::SessionSpec) -> Self {
         // Shell initialization must never delay launching the agent or the monitor.
-        let resolving = (crate::adapters::Adapter::default_for(&spec.command)
-            == Some(crate::adapters::Adapter::Codex))
-        .then(|| {
+        let is_codex = spec.env.get(crate::agent_hooks::PROVIDER_ENV).map_or_else(
+            || {
+                crate::adapters::Adapter::default_for(&spec.command)
+                    == Some(crate::adapters::Adapter::Codex)
+            },
+            |provider| provider == "codex",
+        );
+        let resolving = is_codex.then(|| {
             let (send, receive) = std::sync::mpsc::channel();
             let spec = spec.clone();
             std::thread::spawn(move || {
@@ -198,6 +204,7 @@ impl CodexReader {
         if self.conversation != conversation {
             self.conversation = conversation.into();
             self.file = None;
+            self.discovery = None;
             self.offset = 0;
             self.pending.clear();
             self.verified = false;
@@ -205,9 +212,18 @@ impl CodexReader {
             self.retry_ms = 0;
         }
         if self.file.is_none() && now >= self.retry_ms {
-            self.retry_ms = now + 5000;
-            if let Some(root) = &self.root {
-                self.file = exact_file(root, conversation, 6, &mut 4096);
+            if self.discovery.is_none() {
+                self.discovery = self.root.as_deref().and_then(TranscriptDiscovery::new);
+            }
+            if let Some(discovery) = &mut self.discovery {
+                self.file = discovery.scan(conversation, 4096);
+                if self.file.is_some() || discovery.directories.is_empty() {
+                    self.discovery = None;
+                }
+            }
+            // Continue an unfinished traversal next tick. Only a complete miss is delayed.
+            if self.discovery.is_none() {
+                self.retry_ms = now.saturating_add(5000);
             }
         }
         let Some(path) = &self.file else {
@@ -276,27 +292,76 @@ impl CodexReader {
         }
         contexts
     }
+
+    /// Catch up before the watcher is removed permanently. Shell resolution may still
+    /// be in flight for short runs; wait only here, never on the shared monitor thread.
+    pub fn drain(&mut self, conversation: &str, now: u64) -> Vec<AgentContext> {
+        if let Some(receiver) = self.resolving.take() {
+            self.root = receiver
+                .recv_timeout(std::time::Duration::from_millis(2200))
+                .ok()
+                .flatten();
+        }
+        self.retry_ms = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let mut contexts = Vec::new();
+        loop {
+            let previous_offset = self.offset;
+            let same_conversation = self.conversation == conversation;
+            contexts.extend(self.read(conversation, now));
+            if (self.discovery.is_none()
+                && (self.file.is_none() || (same_conversation && self.offset == previous_offset)))
+                || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+        }
+        contexts
+    }
 }
-fn exact_file(root: &Path, id: &str, depth: usize, budget: &mut usize) -> Option<PathBuf> {
-    if depth == 0 || *budget == 0 || !crate::adapters::valid_id(id) {
-        return None;
+
+/// Keep directory iterators alive across bounded scans so large histories make progress.
+struct TranscriptDiscovery {
+    directories: Vec<(std::fs::ReadDir, usize)>,
+}
+impl TranscriptDiscovery {
+    fn new(root: &Path) -> Option<Self> {
+        Some(Self {
+            directories: vec![(std::fs::read_dir(root).ok()?, 6)],
+        })
     }
-    for entry in std::fs::read_dir(root).ok()?.flatten() {
-        *budget = budget.checked_sub(1)?;
-        let kind = entry.file_type().ok()?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if kind.is_file()
-            && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl")))
-        {
-            return Some(entry.path());
+
+    fn scan(&mut self, id: &str, budget: usize) -> Option<PathBuf> {
+        if !crate::adapters::valid_id(id) {
+            self.directories.clear();
+            return None;
         }
-        if kind.is_dir()
-            && let Some(file) = exact_file(&entry.path(), id, depth - 1, budget)
-        {
-            return Some(file);
+        for _ in 0..budget {
+            let (entries, depth) = self.directories.last_mut()?;
+            let depth = *depth;
+            let Some(entry) = entries.next() else {
+                self.directories.pop();
+                continue;
+            };
+            let Ok(entry) = entry else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if kind.is_file()
+                && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl")))
+            {
+                return Some(entry.path());
+            }
+            if kind.is_dir()
+                && depth > 1
+                && let Ok(entries) = std::fs::read_dir(entry.path())
+            {
+                self.directories.push((entries, depth - 1));
+            }
         }
+        None
     }
-    None
 }
 
 #[cfg(test)]
@@ -400,6 +465,64 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].used_percent, Some(25.0));
         assert!(reader.pending.len() < 1024 * 1024);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transcript_discovery_resumes_beyond_the_entry_budget() {
+        let root =
+            std::env::temp_dir().join(format!("patchbay-discovery-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        for index in 0..4200 {
+            std::fs::write(root.join(format!("12345678-{index}.jsonl")), "").unwrap();
+        }
+        // Pick an existing entry beyond the first scan in this directory's enumeration.
+        let path = std::fs::read_dir(&root)
+            .unwrap()
+            .last()
+            .unwrap()
+            .unwrap()
+            .path();
+        let id = path.file_stem().unwrap().to_str().unwrap();
+        let header = json!({"type":"session_meta","payload":{"id":id}});
+        std::fs::write(&path, format!("{header}\n{}\n", token_event())).unwrap();
+        let mut reader = CodexReader {
+            root: Some(root.clone()),
+            ..Default::default()
+        };
+        assert!(reader.read(id, 1).is_empty());
+        assert!(reader.discovery.is_some());
+        assert_eq!(reader.read(id, 2)[0].used_percent, Some(25.0));
+        assert!(reader.discovery.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transcript_drain_waits_for_resolution_and_reads_through_empty_chunks() {
+        let root = std::env::temp_dir().join(format!("patchbay-drain-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let id = "12345678-conversation";
+        let header = json!({"type":"session_meta","payload":{"id":id}});
+        std::fs::write(
+            root.join(format!("rollout-{id}.jsonl")),
+            format!("{header}\n{}{}\n", "{}\n".repeat(50000), token_event()),
+        )
+        .unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let resolved_root = root.clone();
+        let resolver = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            send.send(Some(resolved_root)).unwrap();
+        });
+        let mut reader = CodexReader {
+            resolving: Some(receive),
+            ..Default::default()
+        };
+        let contexts = reader.drain(id, 1);
+        resolver.join().unwrap();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].used_percent, Some(25.0));
+        assert!(reader.drain(id, 2).is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

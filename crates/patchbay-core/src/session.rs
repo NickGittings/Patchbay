@@ -2109,10 +2109,18 @@ fn validate_fresh_command(command: &str) -> Result<()> {
     );
     anyhow::ensure!(
         !interpreter
-            || !words.iter().skip(program + 1).any(|word| matches!(
-                word.to_ascii_lowercase().as_str(),
-                "-c" | "/c" | "-command" | "-encodedcommand" | "-e" | "--eval"
-            )),
+            || !words.iter().skip(program + 1).any(|word| {
+                let flag = word.to_ascii_lowercase();
+                matches!(
+                    flag.split('=').next().unwrap_or_default(),
+                    "-c" | "/c" | "-command" | "--command" | "-encodedcommand" | "-e" | "--eval"
+                ) || (matches!(
+                    executable,
+                    "sh" | "bash" | "zsh" | "dash" | "fish" | "python" | "python3"
+                ) && flag.starts_with('-')
+                    && !flag.starts_with("--")
+                    && flag[1..].contains('c'))
+            }),
         "New conversation cannot validate inline script options; configure a direct interactive agent command or script file instead"
     );
     let mut arguments = words.iter().skip(program + 1).peekable();
@@ -4555,6 +4563,7 @@ mod tests {
             "codex -p resume -c 'key=review' --sandbox workspace-write",
             "claude --model review --add-dir resume --permission-mode plan",
             "python3 provider.py --model custom",
+            "bash -l provider.sh",
         ] {
             validate_fresh_command(command).unwrap();
         }
@@ -4565,7 +4574,12 @@ mod tests {
             "claude --continue",
             "claude -rold",
             "sh -c 'claude --resume old'",
+            "bash -lc 'claude --resume 11111111'",
+            "zsh -ic 'codex resume --last'",
+            "env bash -ilc 'claude --continue'",
+            "fish --command='codex resume --last'",
             "python3 -c 'launch_resume()'",
+            "python3 -ic 'launch_resume()'",
         ] {
             assert!(validate_fresh_command(command).is_err(), "{command}");
         }
@@ -4664,6 +4678,8 @@ mod tests {
             "claude -c",
             "codex resume --last",
             "codex exec review",
+            "bash -lc 'claude --resume 11111111'",
+            "zsh -ic 'codex resume --last'",
             "/missing/provider/claude",
         ] {
             let (_, spec) = restart_fixture(&dir, command);
