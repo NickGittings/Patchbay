@@ -14,6 +14,7 @@ git add .
 git commit -qm base
 cat > "$dir/agent.py" <<'PYTHON'
 import json, os, pathlib, subprocess, sys, tempfile, time, tty, uuid
+assert pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).is_file(), 'The lead or worker lost its project briefing'
 tty.setcbreak(sys.stdin.fileno())
 journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
 conversation = str(uuid.uuid4())

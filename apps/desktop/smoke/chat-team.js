@@ -66,6 +66,20 @@
       'isolated workers',
       () => jobs().length === 2 && jobs().every((j) => j.task && j.sessionId),
     )
+    const round = smoke.chatTeams.getState().runs[projectId].find((r) => r.chatTeam === team().id)
+    for (const control of [
+      { kind: 'pause' },
+      { kind: 'stop' },
+      { kind: 'retry', job: jobs()[0].id },
+    ]) {
+      let rejected = false
+      try {
+        await smoke.controlProviderRun(projectId, round.id, control)
+      } catch (error) {
+        rejected = String(error).includes('Chat worker controls')
+      }
+      assert(rejected, `Manual provider ${control.kind} bypassed chat team ownership`)
+    }
     const originalGeneration = team().lead.generation
     ;(
       await until('clear conversation enabled', () => {
@@ -75,6 +89,15 @@
     ).click()
     await until('new lead conversation', () => team()?.lead.generation > originalGeneration)
     state().setSimpleMode(false)
+    state().setView('implementation')
+    const assignments = await until('read-only chat assignments in Full view', () =>
+      document.querySelector('[aria-label="Implementation assignments"]'),
+    )
+    assert(
+      assignments.textContent.includes('Use Worker activity in Chat') &&
+        !['Pause', 'Resume', 'Stop', 'Retry'].some((text) => button(text, assignments)),
+      'Full view exposed manual controls for chat-owned assignments',
+    )
     await until('worker results retained in background', () => jobs().every((j) => j.summary))
     state().setSimpleMode(true)
     await until('chat restored', () => document.querySelector('.chat-workers'))

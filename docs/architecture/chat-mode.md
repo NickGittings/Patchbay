@@ -53,6 +53,9 @@ The lead routes dependencies between workers. The desktop's typed team commands 
 resume, stop, retry, worker settings, new-lead selection, side messages and explicit delivery recovery.
 Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
 target without deleting results or worktrees.
+Full view shows chat-owned rounds as read-only activity; pause, stop and retry go through Chat's
+worker controls so round state and team ownership remain consistent. Manual plan handoffs cannot
+adopt chat-owned coordinators.
 
 `watchProviderRuns` continues to refresh and drive all open projects while Chat is unmounted or a
 different worktree is selected. Core reserves each delivery before transport and batches pending
@@ -66,7 +69,9 @@ Provider-native compaction remains in control of context size. An observed compa
 conversation change or lead generation change schedules one recovery update at a ready prompt. It
 contains the current checkpoint and structured assignment/integration state, followed by unread
 messages; delivered messages and full transcripts are never replayed. New lead presets receive
-these instructions in their briefing too.
+these instructions in their briefing too. Recovery updates exceeding the inbox message limit use
+an abbreviated checkpoint and recent round counts, with an instruction to inspect `agent team`
+before continuing; complete checkpoint text, assignments and results remain in durable storage.
 
 Conversation replacement persists its request identity and launch template before stopping a ready
 superseded lead or starting the replacement. A busy lead queues the reset; new launches and lead
@@ -75,6 +80,11 @@ the replacement generation before delivery resumes. The visible transcript clear
 confirmed replacement, and retains a concise handoff with an idempotent application marker. Failed
 or interrupted replacement preserves history and retries the same request identity after explicit
 Resume. Unfinished coordination restores paused after app restart, including uncertain deliveries.
+Session protocol 22 resets existing leads by session ID and generation inside the service, retaining
+their private environment, original launch options and recoverable briefing without exposing those
+settings in session summaries. Retried reset identities launch only once, and stale generations
+cannot replace a newer process. A paused team can resume a queued replacement even if its old lead
+session has been removed, provided the replacement has a saved launch template or retained session.
 
 `npm run check` covers team handoffs, history boundaries, background worktree routing and existing
 chat behavior. `node scripts/smoke-all.mjs chat-team chat-controls` exercises real session transport

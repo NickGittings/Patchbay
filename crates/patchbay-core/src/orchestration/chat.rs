@@ -2,6 +2,8 @@
 use super::*;
 use crate::session::Request;
 
+const MESSAGE_LIMIT: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lead {
@@ -411,7 +413,7 @@ fn append(
 ) -> Result<()> {
     valid_id(&id)?;
     ensure!(
-        !text.trim().is_empty() && text.len() <= 64 * 1024,
+        !text.trim().is_empty() && text.len() <= MESSAGE_LIMIT,
         "Message must contain 1–65536 bytes"
     );
     if let Some(m) = t.messages.iter().find(|m| m.id == id) {
@@ -839,11 +841,22 @@ pub fn control(
             }
             Control::Resume => {
                 ensure_available_for_team(s, &t)?;
-                let r = record(records, project, &t.lead.session_id)?;
-                ensure!(
-                    generation(r)? == t.lead.generation,
-                    "Lead generation changed; refresh team state first"
-                );
+                match record(records, project, &t.lead.session_id) {
+                    Ok(r) => ensure!(
+                        generation(r)? == t.lead.generation,
+                        "Lead generation changed; refresh team state first"
+                    ),
+                    Err(error) => {
+                        let Some(reset) = &t.reset else {
+                            return Err(error);
+                        };
+                        // A new preset carries its own launch template. Switching to
+                        // a retained session instead requires that target to exist.
+                        if reset.launch.is_none() {
+                            record(records, project, &reset.next_session)?;
+                        }
+                    }
+                }
                 ensure!(
                     t.reset
                         .as_ref()
@@ -1053,22 +1066,61 @@ pub fn side_message(
     })
 }
 const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Code delegation requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
+fn excerpt(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.into();
+    }
+    let mut end = limit - "…".len();
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "target": r.target, "integratedHead": r.integrated_head, "error": r.error,
         "assignments": r.jobs.iter().map(|j| serde_json::json!({"id":j.id,"instructions":j.instructions,"resultKind":j.result_kind,"preset":j.preset,"state":j.state,"base":j.base,"commit":j.commit,"summary":j.summary,"integratedHead":j.integrated_head,"error":j.error})).collect::<Vec<_>>()
     })).collect();
-    Ok(format!(
-        "Patchbay coordination handoff\n{INSTRUCTIONS}\nTeam: {}\nWorkers: {}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
-        t.id,
-        t.workers
+    let workers = excerpt(
+        &t.workers
             .iter()
             .map(|w| w.id.as_str())
             .collect::<Vec<_>>()
             .join(", "),
-        t.limit,
-        serde_json::to_string_pretty(&t.checkpoint)?,
-        serde_json::to_string_pretty(&rounds)?
+        2048,
+    );
+    let render = |checkpoint: &Checkpoint, rounds: &[serde_json::Value]| -> Result<String> {
+        Ok(format!(
+            "Patchbay coordination handoff\n{INSTRUCTIONS}\nTeam: {}\nWorkers: {workers}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
+            t.id,
+            t.limit,
+            serde_json::to_string_pretty(checkpoint)?,
+            serde_json::to_string_pretty(rounds)?
+        ))
+    };
+    let full = render(&t.checkpoint, &rounds)?;
+    if full.len() <= MESSAGE_LIMIT {
+        return Ok(full);
+    }
+    // A valid checkpoint or accumulated results can outgrow one inbox message.
+    // Summarize transport only; the durable records keep every byte and assignment.
+    let checkpoint = Checkpoint {
+        goal: excerpt(&t.checkpoint.goal, 1024),
+        constraints: excerpt(&t.checkpoint.constraints, 1024),
+        decisions: excerpt(&t.checkpoint.decisions, 1024),
+        remaining: excerpt(&t.checkpoint.remaining, 1024),
+        validation: excerpt(&t.checkpoint.validation, 1024),
+    };
+    let rounds: Vec<_> = s.runs.iter().rev().filter(|r| r.chat_team.as_deref() == Some(&t.id)).take(8).map(|r| serde_json::json!({
+        "id": r.id, "state": r.state, "integratedHead": r.integrated_head,
+        "assignments": r.jobs.len(), "unfinishedAssignments": r.jobs.iter().filter(|j| !job_done(j)).count(),
+        "error": r.error.as_deref().map(|e| excerpt(e, 256)),
+    })).collect();
+    let compact = render(&checkpoint, &rounds)?;
+    let notice = "This handoff is abbreviated. The complete checkpoint, assignment instructions, results and older rounds remain in durable storage. Run $PATCHBAY_CLI agent team to inspect the complete state before continuing.";
+    Ok(format!(
+        "{}\n\n{notice}",
+        excerpt(&compact, MESSAGE_LIMIT - notice.len() - 2)
     ))
 }
 pub(super) fn restore(s: &mut Store, project: &str) {
@@ -1362,36 +1414,40 @@ pub fn replace_lead(
         {
             return Ok(());
         }
-        let (mut spec, metadata) = if let Some(launch) = &reset.launch {
-            (launch.spec.clone(), launch.metadata.clone())
+        let request = if let Some(launch) = &reset.launch {
+            let mut spec = launch.spec.clone();
+            for key in crate::agent_bridge::BRIDGE_ENV {
+                spec.env.remove(key);
+            }
+            Request::NewConversation {
+                request_id: reset.id.clone(),
+                metadata: Box::new(launch.metadata.clone()),
+                spec,
+            }
         } else {
             let next = record(records, project, &reset.next_session)?;
             if next.snapshot.as_ref().is_some_and(|s| s.running) && !ready(next) {
                 return Ok(());
             }
-            crate::context::restore_briefing(&next.spec, next.briefing_backup.as_deref())?;
-            (next.spec.clone(), next.metadata.clone())
+            Request::ResetConversation {
+                id: next.id.clone(),
+                request_id: reset.id.clone(),
+                generation: generation(next)?,
+            }
         };
         // The next ready prompt receives recovery; the launch never pastes into a busy turn.
         team(s, project, id)?.reset.as_mut().unwrap().phase = ResetPhase::Launching;
         save(root, s)?;
-        for key in crate::agent_bridge::BRIDGE_ENV {
-            spec.env.remove(key);
-        }
-        let stop = if reset.next_session != t.lead.session_id {
+        let stop = if reset.next_session != t.lead.session_id
+            && record(records, project, &t.lead.session_id).is_ok()
+        {
             call(Request::Stop {
                 id: t.lead.session_id.clone(),
             })
         } else {
             Ok(serde_json::Value::Null)
         };
-        let result = stop.and_then(|_| {
-            call(Request::NewConversation {
-                request_id: reset.id.clone(),
-                metadata: Box::new(metadata),
-                spec,
-            })
-        });
+        let result = stop.and_then(|_| call(request));
         if let Err(e) = result {
             let t = team(s, project, id)?;
             let reset = t.reset.as_mut().unwrap();
@@ -2282,7 +2338,7 @@ mod tests {
             .unwrap()
             .state = AgentState::Idle;
         let mut launches = 0;
-        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&f.lead), |r| { assert!(matches!(r, Request::NewConversation { ref request_id, .. } if request_id == "reset1")); launches += 1; Ok(serde_json::Value::Null) }).unwrap();
+        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&f.lead), |r| { assert!(matches!(r, Request::ResetConversation { ref request_id, .. } if request_id == "reset1")); launches += 1; Ok(serde_json::Value::Null) }).unwrap();
         replace_lead(
             &f.dir,
             "p",
@@ -2334,6 +2390,227 @@ mod tests {
         assert!(f.state().reset.is_none());
     }
     #[test]
+    fn manual_provider_controls_cannot_mutate_chat_owned_rounds() {
+        let f = Fixture::new();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let before = serde_json::to_value(super::super::list(&f.dir, "p").unwrap()).unwrap();
+        for control in [
+            super::super::Control::Pause,
+            super::super::Control::Resume,
+            super::super::Control::Stop,
+            super::super::Control::Retry { job: "a".into() },
+            super::super::Control::ContinueJob {
+                job: "a".into(),
+                request_id: "request".into(),
+            },
+            super::super::Control::ContinueScan,
+        ] {
+            let error = super::super::control(&f.dir, "p", "round1", control).unwrap_err();
+            assert!(error.to_string().contains("Chat worker controls"));
+            assert_eq!(
+                serde_json::to_value(super::super::list(&f.dir, "p").unwrap()).unwrap(),
+                before
+            );
+            assert_eq!(f.state().state, State::Running);
+        }
+    }
+
+    #[test]
+    fn large_checkpoints_recover_without_changing_the_durable_checkpoint() {
+        for goal in ["🦀".repeat(16_000), "\0".repeat(10_800)] {
+            let f = Fixture::new();
+            let checkpoint = Checkpoint {
+                goal,
+                constraints: "Keep local edits".into(),
+                remaining: "Verify the current work".into(),
+                validation: "Still pending".into(),
+                ..Default::default()
+            };
+            f.cmd(Command::Checkpoint {
+                checkpoint: checkpoint.clone(),
+            })
+            .unwrap();
+            let mut prompts = 0;
+            deliver(
+                &f.dir,
+                "p",
+                &f.team.id,
+                std::slice::from_ref(&f.lead),
+                |request| {
+                    if let Request::Prompt { text, .. } = request {
+                        prompts += 1;
+                        assert!(text.contains("handoff is abbreviated"));
+                        assert!(text.contains("agent team"));
+                        assert!(text.contains("Still pending"));
+                    }
+                    Ok(serde_json::Value::Null)
+                },
+            )
+            .unwrap();
+            assert_eq!(prompts, 1);
+            let t = f.state();
+            assert_eq!(t.checkpoint, checkpoint);
+            assert!(!t.recovery);
+            assert_eq!(t.messages.len(), 1);
+            assert!(t.messages[0].text.len() <= MESSAGE_LIMIT);
+            assert_eq!(t.messages[0].state, DeliveryState::Delivered);
+            deliver(
+                &f.dir,
+                "p",
+                &f.team.id,
+                std::slice::from_ref(&f.lead),
+                |_| panic!("replayed recovery"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn recovery_summarizes_large_rounds_without_losing_assignments_or_messages() {
+        let mut f = Fixture::new();
+        let mut job = assignment("large", ResultKind::Report, &[]);
+        job.instructions = "Investigate the committed baseline. ".repeat(3000);
+        let instructions = job.instructions.clone();
+        f.delegate(vec![job]);
+        f.send("unread", "Retain this pending update");
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| Ok(serde_json::Value::Null),
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::read(&f.dir, "p", "round1").unwrap().jobs[0].instructions,
+            instructions
+        );
+        let t = f.state();
+        assert!(
+            t.messages
+                .iter()
+                .all(|m| m.state == DeliveryState::Delivered && m.text.len() <= MESSAGE_LIMIT)
+        );
+        assert!(t.messages.iter().any(|m| m.id == "unread"));
+        assert!(
+            t.messages
+                .iter()
+                .any(|m| m.text.contains("round1") && m.text.contains("unfinishedAssignments"))
+        );
+        f.lead
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .context
+            .last_compaction_ms = Some(100);
+        f.lead
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .since_ms = 100;
+        reconcile(&f.dir, "p", std::slice::from_ref(&f.lead), false).unwrap();
+        let mut prompts = 0;
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |request| {
+                if let Request::Prompt { text, .. } = request {
+                    prompts += 1;
+                    assert!(!text.contains("Retain this pending update"));
+                }
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert_eq!(prompts, 1);
+    }
+
+    #[test]
+    fn paused_team_can_replace_a_forgotten_lead_with_a_new_or_retained_session() {
+        for new_preset in [true, false] {
+            let f = Fixture::new();
+            f.delegate(vec![assignment("pending", ResultKind::Report, &[])]);
+            control(&f.dir, "p", &f.team.id, Control::Pause, &[]).unwrap();
+            assert!(control(&f.dir, "p", &f.team.id, Control::Resume, &[]).is_err());
+            let records = if new_preset {
+                let mut next = preset();
+                next.id = "replacement".into();
+                new_lead(
+                    &f.dir,
+                    &f.project,
+                    "p",
+                    &f.team.id,
+                    next,
+                    "replacement-request".into(),
+                )
+                .unwrap();
+                vec![]
+            } else {
+                let next = session(&f.dir, "replacement");
+                control(
+                    &f.dir,
+                    "p",
+                    &f.team.id,
+                    Control::Reset {
+                        id: "replacement-request".into(),
+                        session: next.id.clone(),
+                        clear_history: true,
+                    },
+                    std::slice::from_ref(&next),
+                )
+                .unwrap();
+                vec![next]
+            };
+            replace_lead(&f.dir, "p", &f.team.id, &records, |_| {
+                panic!("paused team launched a replacement")
+            })
+            .unwrap();
+            let resumed = control(&f.dir, "p", &f.team.id, Control::Resume, &records).unwrap();
+            assert_eq!(resumed.state, State::Running);
+            let mut launches = 0;
+            replace_lead(&f.dir, "p", &f.team.id, &records, |request| {
+                match request {
+                    Request::NewConversation { request_id, .. } if new_preset => {
+                        assert_eq!(request_id, "replacement-request")
+                    }
+                    Request::ResetConversation {
+                        id,
+                        request_id,
+                        generation,
+                    } if !new_preset => {
+                        assert_eq!(id, "replacement");
+                        assert_eq!(request_id, "replacement-request");
+                        assert_eq!(generation, 1);
+                    }
+                    _ => panic!("unexpected request"),
+                }
+                launches += 1;
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+            assert_eq!(launches, 1);
+            let mut next = session(&f.dir, &resumed.reset.unwrap().next_session);
+            next.request_ids = vec!["replacement-request".into()];
+            reconcile(&f.dir, "p", std::slice::from_ref(&next), false).unwrap();
+            let t = f.state();
+            assert_eq!(t.lead.session_id, next.id);
+            assert!(t.reset.is_none());
+            assert_eq!(t.rounds, ["round1"]);
+            assert_eq!(
+                super::super::read(&f.dir, "p", "round1").unwrap().jobs[0].state,
+                JobState::Pending
+            );
+        }
+    }
+
+    #[test]
     fn failed_reset_survives_restart_and_reuses_the_reserved_launch_identity() {
         let f = Fixture::new();
         control(
@@ -2375,7 +2652,7 @@ mod tests {
             std::slice::from_ref(&f.lead),
         )
         .unwrap();
-        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&f.lead), |r| { assert!(matches!(r, Request::NewConversation { ref request_id, .. } if request_id == "reset1")); Ok(serde_json::Value::Null) }).unwrap();
+        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&f.lead), |r| { assert!(matches!(r, Request::ResetConversation { ref request_id, .. } if request_id == "reset1")); Ok(serde_json::Value::Null) }).unwrap();
     }
     #[test]
     fn migration_is_paused_and_side_thread_messages_are_copied_only_to_owning_lead() {

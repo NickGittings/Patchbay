@@ -31,7 +31,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 19 retrieves the retained stack detection target.
 // Protocol 20 adds explicit fresh conversations and per-session context observations.
 // Protocol 21 binds agent capabilities to a process generation and rotates them on resume.
-pub const PROTOCOL: u32 = 21;
+// Protocol 22 resets conversations using the service's retained private launch settings.
+pub const PROTOCOL: u32 = 22;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -278,7 +279,12 @@ pub struct PlannerScanOptions {
 enum StartMode {
     Normal,
     Managed,
-    NewConversation,
+    NewConversation { generation: Option<u64> },
+}
+impl StartMode {
+    fn new_conversation(self) -> bool {
+        matches!(self, Self::NewConversation { .. })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -311,6 +317,12 @@ pub enum Request {
         request_id: String,
         metadata: Box<Metadata>,
         spec: SessionSpec,
+    },
+    /// Reset a retained session without sending its private launch settings to the client.
+    ResetConversation {
+        id: String,
+        request_id: String,
+        generation: u64,
     },
     /// A restart may continue only when the newly prepared settings and briefing match.
     Restart {
@@ -586,6 +598,7 @@ impl Client {
             Request::Start { .. }
             | Request::Restart { .. }
             | Request::NewConversation { .. }
+            | Request::ResetConversation { .. }
             | Request::Resume { .. }
             | Request::Stop { .. }
             | Request::StopAll
@@ -1277,13 +1290,23 @@ impl Service {
         {
             return Ok(id);
         }
+        if let StartMode::NewConversation {
+            generation: Some(generation),
+        } = mode
+        {
+            anyhow::ensure!(
+                self.snapshot_with(&id, 0)
+                    .is_some_and(|s| s.generation == generation),
+                "The session generation changed"
+            );
+        }
         anyhow::ensure!(
-            mode == StartMode::NewConversation || !self.pty.is_running(&id),
+            mode.new_conversation() || !self.pty.is_running(&id),
             TERMINAL_RUNNING
         );
         let cwd = spec.cwd.canonicalize()?;
         let busy = self.records.lock().unwrap().values().any(|r| {
-            if (mode == StartMode::NewConversation && r.id == id)
+            if (mode.new_conversation() && r.id == id)
                 || !(spec.exclusive_cwd || r.spec.exclusive_cwd)
                 || !self.pty.is_running(&r.id)
             {
@@ -1313,7 +1336,7 @@ impl Service {
         }
         // All validation and briefing preparation precedes stopping. Hold the operation
         // lock through stop/spawn so another window cannot replace the same slot between them.
-        if mode == StartMode::NewConversation
+        if mode.new_conversation()
             && let Some(snapshot) = self.pty.snapshot_with(&id, 0)
         {
             self.pty.stop_generation(&id, snapshot.generation)?;
@@ -1412,8 +1435,43 @@ impl Service {
     fn new_conversation(
         self: &Arc<Self>,
         request: String,
+        metadata: Metadata,
+        spec: SessionSpec,
+    ) -> Result<String> {
+        self.fresh_conversation(request, metadata, spec, None)
+    }
+    fn reset_conversation(
+        self: &Arc<Self>,
+        id: &str,
+        request: String,
+        generation: u64,
+    ) -> Result<String> {
+        let (metadata, mut spec, backup) = {
+            let records = self.records.lock().unwrap();
+            let r = records.get(id).context("Unknown session")?;
+            if r.request_ids.contains(&request) {
+                return Ok(id.into());
+            }
+            let mut spec = r.spec.clone();
+            // A resumed process's command includes its conversation ID. Restore the
+            // original launch before choosing its fresh, non-kickoff resume template.
+            if !r.launch_command.is_empty() {
+                spec.command.clone_from(&r.launch_command);
+            }
+            (r.metadata.clone(), spec, r.briefing_backup.clone())
+        };
+        crate::context::restore_briefing(&spec, backup.as_deref())?;
+        // fresh_conversation owns its input briefing, so give it an independent
+        // copy; a rejected reset must never delete the current session's file.
+        crate::context::retain_owned_briefing(&mut spec)?;
+        self.fresh_conversation(request, metadata, spec, Some(generation))
+    }
+    fn fresh_conversation(
+        self: &Arc<Self>,
+        request: String,
         mut metadata: Metadata,
         mut spec: SessionSpec,
+        generation: Option<u64>,
     ) -> Result<String> {
         let _pending = briefing::PendingBriefing::new(&spec);
         anyhow::ensure!(
@@ -1445,7 +1503,7 @@ impl Service {
             metadata,
             spec,
             None,
-            StartMode::NewConversation,
+            StartMode::NewConversation { generation },
             context,
         );
         if let Some(file) = candidate {
@@ -1675,6 +1733,11 @@ impl Service {
                 metadata,
                 spec,
             } => serde_json::to_value(self.new_conversation(request_id, *metadata, spec)?)?,
+            Request::ResetConversation {
+                id,
+                request_id,
+                generation,
+            } => serde_json::to_value(self.reset_conversation(&id, request_id, generation)?)?,
             Request::Restart {
                 request_id,
                 metadata,
@@ -4677,6 +4740,107 @@ mod tests {
             "saved provider history"
         );
         service.pty.stop_generation(&id, first).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_conversation_reset_restores_private_context_and_rejects_stale_generations() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let executable = dir.join("claude");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'args:%s\\nmarker:%s\\n' \"$*\" \"$PATCHBAY_RESET_MARKER\"\ncat \"$PATCHBAY_CONTEXT_FILE\"\n"
+                .replace("PATCHBAY_CONTEXT_FILE", crate::context::CONTEXT_ENV),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = std::env::temp_dir()
+            .join("patchbay")
+            .join(format!("review-{}.md", uuid::Uuid::new_v4()));
+        let briefing = "Retain the original project briefing.";
+        atomic_write(&file, briefing.as_bytes()).unwrap();
+        let base = format!(
+            "{} --model fixture --append-system-prompt-file {}",
+            crate::context::quote_argument(executable.to_str().unwrap()),
+            crate::context::quote_argument(file.to_str().unwrap())
+        );
+        let (metadata, mut spec) = restart_fixture(&dir, &format!("{base} 'OLD KICKOFF'"));
+        spec.resume_command = Some(base);
+        spec.owns_briefing = true;
+        spec.dirs = vec![dir.clone()];
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            file.display().to_string(),
+        );
+        spec.env
+            .insert("PATCHBAY_RESET_MARKER".into(), "private-settings".into());
+        spec.env
+            .insert(crate::agent_bridge::TOKEN_ENV.into(), "old-token".into());
+        let service = Service::load(&dir).unwrap();
+        let id = service.start("first".into(), metadata, spec).unwrap();
+        let generation = wait_for_exit(&service, &id).generation;
+        let summary = service.summaries().remove(0);
+        assert!(summary.spec.env.is_empty());
+        assert!(summary.spec.resume_command.is_none());
+        let retained = {
+            let mut records = service.records.lock().unwrap();
+            let r = records.get_mut(&id).unwrap();
+            // The persisted command of a resumed process differs from its launch template.
+            r.spec.command = format!("{} --resume previous-conversation", executable.display());
+            crate::context::owned_briefing(&r.spec).unwrap()
+        };
+        service.persist().unwrap();
+        service.pty.reset();
+        drop(service);
+        std::fs::remove_file(retained).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let reset = || Request::ResetConversation {
+            id: id.clone(),
+            request_id: "reset".into(),
+            generation,
+        };
+        assert_eq!(service.handle("test", reset()).unwrap(), id);
+        let snapshot = wait_for_exit(&service, &id);
+        assert!(snapshot.generation > generation);
+        let output = String::from_utf8_lossy(&snapshot.data);
+        assert!(output.contains("--model fixture"), "{output}");
+        assert!(output.contains("marker:private-settings"), "{output}");
+        assert!(output.contains(briefing), "{output}");
+        assert!(!output.contains("OLD KICKOFF"), "{output}");
+        assert!(!output.contains("--resume"), "{output}");
+        let record = service.list().remove(0);
+        assert_eq!(record.spec.dirs, vec![dir.clone()]);
+        assert_ne!(record.spec.env[crate::agent_bridge::TOKEN_ENV], "old-token");
+        // A lost reply retries the same identity, even with the original generation.
+        service.handle("test", reset()).unwrap();
+        assert_eq!(
+            service.snapshot(&id).unwrap().generation,
+            snapshot.generation
+        );
+        assert!(
+            service
+                .handle(
+                    "test",
+                    Request::ResetConversation {
+                        id: id.clone(),
+                        request_id: "stale".into(),
+                        generation,
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(
+            service.snapshot(&id).unwrap().generation,
+            snapshot.generation
+        );
+        assert_eq!(
+            std::fs::read_to_string(crate::context::owned_briefing(&record.spec).unwrap()).unwrap(),
+            briefing
+        );
+        service.handle("test", Request::Forget { id }).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

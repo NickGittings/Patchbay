@@ -631,6 +631,10 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
     modify(root, |store| {
         let r = get(store, id)?;
         ensure!(r.project_id == project_id, "Run belongs to another project");
+        ensure!(
+            r.chat_team.is_none(),
+            "Use Chat worker controls for chat-owned rounds"
+        );
         if r.state == State::Stopped && matches!(control, Control::Stop) {
             return Ok(r.clone());
         }

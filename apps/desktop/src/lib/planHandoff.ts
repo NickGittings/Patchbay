@@ -101,6 +101,7 @@ async function handoffPlannerPlan(
     const existing = (await providerRuns(projectId)).find(
       (r) =>
         r.kind === 'implementation' &&
+        !r.chatTeam &&
         r.task === task &&
         r.goal === goal &&
         (target?.providerRunId ? r.id === target.providerRunId : !auto) &&
