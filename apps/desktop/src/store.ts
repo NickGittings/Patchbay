@@ -375,6 +375,9 @@ interface State {
    */
   revealed: { componentId: string; sid: string } | null
   setRevealed: (revealed: { componentId: string; sid: string } | null) => void
+  /** A fresh request to show a terminal in Navigation, including its already-active tab. */
+  dockReveal: { sid: string } | null
+  revealDock: (sid: string) => void
   /**
    * One-shot request to show a hidden Chat, for the worktree it names only, consumed (cleared) by
    * Navigation once the chat opens. UI only.
@@ -833,6 +836,8 @@ const createState: StateCreator<State> = (set, get) => ({
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
   setRevealed: (revealed) => set({ revealed }),
+  dockReveal: null,
+  revealDock: (sid) => set({ dockReveal: { sid } }),
   stories: [],
   tasks: [],
   activeTask: null,

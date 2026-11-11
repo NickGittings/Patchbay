@@ -209,6 +209,12 @@ function NavigationView() {
       ? null
       : s.activeSession,
   )
+  const revealed = useStore((s) => s.dockReveal)
+  const terminalReveal = revealed?.sid === activeSession ? revealed : null
+  const dockReveal = useMemo(
+    () => ({ activeSession, revealed: terminalReveal }),
+    [activeSession, terminalReveal],
+  )
   // Dragged shut: close it, so the canvas's Inspector button comes back.
   const inspectorPanel = useCollapsed(
     INSPECTOR_PANEL,
@@ -223,7 +229,7 @@ function NavigationView() {
     },
   )
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
-  const dockPanel = useCollapsed('App-pane-4', dock, activeSession)
+  const dockPanel = useCollapsed('App-pane-4', dock, dockReveal)
   return (
     <SimpleChanges simple={reading} reader={reader}>
       <PersistedGroup

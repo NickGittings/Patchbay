@@ -16,6 +16,7 @@ const revealState = vi.hoisted(() => ({
   setPanelLayout: vi.fn(),
   revealChat: vi.fn(),
   setRevealed: vi.fn(),
+  revealDock: vi.fn(),
   setActiveSession: vi.fn(),
   setView: vi.fn(),
   setActiveTask: vi.fn(),

@@ -10,7 +10,8 @@ import TerminalControl from './TerminalControl'
 
 /** `collapsed`: the dock's panel is dragged shut, so no terminal is fitted to it. */
 export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
-  const extensionViews = useExtensionViews('dock')
+  const revealed = useStore((s) => s.dockReveal)
+  const extensionViews = useExtensionViews('dock', revealed)
   const tabs = useDockTabs()
   const sessions = useStore((s) => s.sessions)
   useClockTick()

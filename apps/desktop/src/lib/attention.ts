@@ -385,6 +385,7 @@ export function revealTerminal(
   if (item.componentId === MAP_SCOPE) {
     s.select(null)
     s.setActiveSession(item.sid)
+    s.revealDock(item.sid)
     s.setView('navigation')
     return
   }
@@ -420,6 +421,7 @@ export function revealTerminal(
   s.select(item.componentId)
   s.setActiveSession(item.sid)
   if (extension) {
+    s.revealDock(item.sid)
     s.setView('navigation')
     return
   }

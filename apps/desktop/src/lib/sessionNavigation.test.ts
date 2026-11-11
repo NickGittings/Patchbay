@@ -232,6 +232,36 @@ test.each([MAP_SCOPE, 'web'])('%s runtime reconnect selects its Navigation tab',
   expect(dockTabs(s).map((t) => t.sid)).toContain(r.id)
 })
 
+test.each([MAP_SCOPE, 'extension', 'command'])(
+  '%s reconnect emits a fresh reveal when the Navigation terminal is already active',
+  async (source) => {
+    const componentId = source === MAP_SCOPE ? MAP_SCOPE : 'web'
+    const r = record(componentId, 'runtime')
+    useStore.getState().addRuntimeTerminal(r.id, {
+      projectId: 'p',
+      componentId,
+      terminal: { ...terminal, id: 'runtime' },
+      ...(source === 'extension' ? { extensionId: 'test' } : {}),
+      ...(source === 'command' ? { commandId: 'test' } : {}),
+    })
+    useStore.getState().setActiveSession(r.id)
+    const before = useStore.getState().dockReveal
+    const implementationReveal = useStore.getState().revealed
+    expect(await reconnectSession(r)).toBe('revealed')
+    const first = useStore.getState().dockReveal
+    expect(first).toEqual({ sid: r.id })
+    expect(first).not.toBe(before)
+    expect(await reconnectSession(r)).toBe('revealed')
+    const s = useStore.getState()
+    expect(s.dockReveal).toEqual(first)
+    expect(s.dockReveal).not.toBe(first)
+    expect(s.revealed).toBe(implementationReveal)
+    expect(s.activeSession).toBe(r.id)
+    expect(s.view).toBe('navigation')
+    expect(s.sessions[r.id]).toEqual({ running: true, generation: 7 })
+  },
+)
+
 test('a retained terminal still has an Implementation destination without its map preset', async () => {
   const r = record('removed-component', 'retained', 'one')
   useStore.getState().addRuntimeTerminal(r.id, {

@@ -371,6 +371,124 @@
       smoke.terminalText(idsOne[0]).text.includes('live-output'),
     )
     await reconnectAt(() => row(first, 'Live B'), idsOne[1], one.id)
+    // Keep a real running process but give it the runtime destination used by extension commands.
+    // Navigation stays mounted throughout, preserving both a dragged-shut dock and its view tab.
+    const dockSid = idsOne[1]
+    const registry = state().extensions
+    const runtimes = state().runtimeTerminals
+    const dockViewId = 'smoke.session-dock'
+    const componentId = state().sessionRecords.find((r) => r.id === dockSid).metadata.componentId
+    const presets = state().nodes.find((n) => n.id === componentId).data.terminals
+    const terminal = presets.find((t) => t.id === 'session-1')
+    try {
+      // Removing its preset makes this a retained runtime, so reconciliation keeps its metadata.
+      state().updateComponent(componentId, { terminals: presets.filter((t) => t !== terminal) })
+      state().addRuntimeTerminal(dockSid, {
+        projectId: one.id,
+        componentId,
+        terminal,
+        commandId: 'smoke.reconnect',
+      })
+      state().setExtensions({
+        ...registry,
+        extensions: [
+          ...registry.extensions,
+          {
+            id: 'smoke.dock',
+            dir: '',
+            enabled: true,
+            errors: [],
+            manifest: {
+              name: 'dock',
+              publisher: 'smoke',
+              version: '1.0.0',
+              engines: { patchbay: '*' },
+              activationEvents: [],
+              permissions: [],
+              contributes: {
+                devices: [],
+                detectors: [],
+                commands: [],
+                menus: {},
+                context: [],
+                views: [{ id: dockViewId, title: 'Smoke dock view', location: 'dock' }],
+              },
+            },
+          },
+        ],
+      })
+      state().setView('navigation')
+      document.querySelector('[aria-label="Close Sessions panel"]').click()
+      const dock = () => document.querySelector('.terminal-dock')
+      const dockPanel = () => dock()?.closest('[data-panel]')
+      const selectView = async () => {
+        const tab = await until('dock extension tab', () =>
+          dock()?.querySelector(`[data-extension-view-tab="${dockViewId}"]`),
+        )
+        tab.click()
+        await until('dock extension selected', () =>
+          dock()?.querySelector(`[data-extension-view="${dockViewId}"]`),
+        )
+      }
+      const reconnectDock = async () => {
+        const generation = (await smoke.terminalSnapshot(dockSid)).generation
+        await click(() => document, 'Sessions')
+        await click(() => row(first, 'Live B'), 'Reconnect')
+        await until(
+          'reconnect displays the already-active dock terminal',
+          () =>
+            !panel() &&
+            state().view === 'navigation' &&
+            state().activeSession === dockSid &&
+            dockPanel()?.getBoundingClientRect().height > 0 &&
+            dock()?.querySelector('.xterm-host') &&
+            !dock()?.querySelector('[data-extension-view]'),
+        ).catch((error) => {
+          throw new Error(
+            `${error.message}: ${JSON.stringify({
+              panel: !!panel(),
+              view: state().view,
+              activeSession: state().activeSession,
+              expected: dockSid,
+              revealed: state().dockReveal,
+              height: dockPanel()?.getBoundingClientRect().height,
+              terminal: !!dock()?.querySelector('.xterm-host'),
+              extension: dock()?.querySelector('[data-extension-view]')?.outerHTML,
+              dock: dock()?.textContent,
+              message: state().message,
+            })}`,
+          )
+        })
+        const snapshot = await smoke.terminalSnapshot(dockSid)
+        assert(
+          snapshot.running && snapshot.generation === generation,
+          'Dock reconnect restarted work',
+        )
+      }
+      await selectView()
+      await reconnectDock()
+      // A new user selection must still work after a reveal and survive background updates.
+      await selectView()
+      await smoke.reconcileSessions()
+      await sleep(300)
+      assert(
+        dock().querySelector('[data-extension-view]'),
+        'Old reveal overrode a new view selection',
+      )
+      state().setPanelLayout('App-2', { 'App-pane-3': 100, 'App-pane-4': 0 })
+      await until(
+        'dock collapsed with the same active session',
+        () =>
+          dockPanel()?.getBoundingClientRect().height === 0 && state().activeSession === dockSid,
+      )
+      await reconnectDock()
+    } finally {
+      state().setExtensions(registry)
+      state().updateComponent(componentId, { terminals: presets })
+      smoke.store.setState({ runtimeTerminals: runtimes })
+    }
+    await click(() => document, 'Sessions')
+    await until('sessions reopened after dock regressions', panel)
     await until(
       'reopened choices',
       () =>
