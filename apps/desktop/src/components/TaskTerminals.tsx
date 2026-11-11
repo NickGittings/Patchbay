@@ -35,6 +35,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
           <span className="spacer" />
           <StatusLabel status={status} />
           <TerminalControl
+            kind={terminal.kind}
             componentId={componentId}
             terminalId={terminal.id}
             sid={sid}

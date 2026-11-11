@@ -1951,6 +1951,7 @@ mod tests {
         git::run(git::git(&f.dir).args(["branch", &f.request.base, "main"])).unwrap();
         let base = git::run(git::git(&f.dir).args(["rev-parse", "main"])).unwrap();
         let auto = context::AutoBrief {
+            autonomous: false,
             goal: "Fix lost writes".into(),
             fix_floor: Some(Severity::High),
             effort_note: "Targeted".into(),

@@ -105,19 +105,41 @@ export const linkedWithin = (ids: string[], edges: { source: string; target: str
   return edges.some((e) => e.source !== e.target && members.has(e.source) && members.has(e.target))
 }
 
+/** Names compared ignoring case and spacing. */
+export const sameStackName = (a: string, b: string) => {
+  const key = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+  return key(a) === key(b)
+}
+
+/** Resolve the current definition identically when reviewing and applying a proposal. */
+export function proposedTerminal(
+  proposed: ProposedStackTerminal,
+  terminals: TerminalSpec[],
+): TerminalSpec | undefined {
+  return proposed.terminal
+    ? terminals.find((t) => t.id === proposed.terminal)
+    : terminals.find((t) => sameStackName(t.name, proposed.name ?? 'Dev'))
+}
+
 /**
  * The edit applying the agent's `proposed` terminal makes to `current` (the existing terminal it
- * names, `undefined` for a new one), or `null` to leave it out: only task terminals join a stack
- * (as the backend checks), a Validation terminal stays one, and an agent that can't tell the ready
- * text leaves the user's own alone.
+ * names, `undefined` for a new one), or `null` to leave it out. Only task terminals join a stack;
+ * Validation terminals keep their role. Replacements clear empty readiness; older proposals that
+ * omit a command and give no ready text preserve the user's own readiness.
  */
 export function proposedPatch(
   proposed: ProposedStackTerminal,
   current: TerminalSpec | undefined,
+  replacing = false,
 ): Partial<TerminalSpec> | null {
   if (current && (current.kind !== 'task' || current.action === 'validation')) return null
   const readyWhen = proposed.readyWhen.trim()
-  if (current) return { action: 'development', ...(readyWhen ? { readyWhen } : {}) }
+  if (current)
+    return {
+      action: 'development',
+      ...(proposed.command != null ? { command: proposed.command.trim() } : {}),
+      ...(replacing || proposed.command != null || readyWhen ? { readyWhen } : {}),
+    }
   return {
     name: proposed.name ?? 'Dev',
     command: proposed.command ?? '',

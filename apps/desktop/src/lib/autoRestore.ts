@@ -22,6 +22,7 @@ function restoredBrief(value: AutoRun['sessionBrief']): AutoRun['sessionBrief'] 
   return {
     sessionId: value.sessionId,
     auto: {
+      ...(auto.autonomous === true ? { autonomous: true } : {}),
       goal: auto.goal,
       fixFloor: auto.fixFloor,
       effortNote: auto.effortNote,
@@ -89,6 +90,29 @@ export function restoredAuto(value: unknown): AutoRun | null {
       ? r.pauseKind
       : pauseKind
   return {
+    autonomous: r.autonomous === true,
+    restartPending:
+      r.autonomous === true &&
+      (r.status === 'running' ||
+        (r.status === 'paused' && r.pauseKind === 'restored' && r.restartPending === true)),
+    recovery:
+      r.recovery &&
+      STAGES.includes(r.recovery.stage) &&
+      typeof r.recovery.mark === 'string' &&
+      Number.isInteger(r.recovery.attempts) &&
+      r.recovery.attempts >= 0 &&
+      r.recovery.attempts <= 3 &&
+      typeof r.recovery.reason === 'string'
+        ? {
+            stage: r.recovery.stage,
+            mark: r.recovery.mark,
+            attempts: r.recovery.attempts,
+            action: typeof r.recovery.action === 'string' ? r.recovery.action : undefined,
+            atMs: finite(r.recovery.atMs),
+            pending: r.recovery.pending === true,
+            reason: r.recovery.reason,
+          }
+        : undefined,
     resumeOnUsageReset: r.resumeOnUsageReset === true,
     usageWait:
       !finished && r.status === 'paused' && r.pauseKind === 'usage' ? usageWait : undefined,
@@ -152,6 +176,8 @@ export function restoredAuto(value: unknown): AutoRun | null {
     planMark: typeof r.planMark === 'string' ? r.planMark : undefined,
     plannerTurn: typeof r.plannerTurn === 'boolean' ? r.plannerTurn : undefined,
     waitingFor: r.waitingFor === 'fixBudget' ? 'fixBudget' : undefined,
+    validationMark: typeof r.validationMark === 'string' ? r.validationMark : undefined,
+    validationHead: typeof r.validationHead === 'string' ? r.validationHead : undefined,
     reviewedHead: typeof r.reviewedHead === 'string' ? r.reviewedHead : undefined,
     validation: Array.isArray(r.validation)
       ? r.validation.filter(

@@ -64,6 +64,8 @@ export const sessionView = (scope: string): View | null =>
 
 /** A whole-branch merge between existing worktrees of the project repository. */
 export interface MergeRequest {
+  /** Automatic merge is pinned to the commit that passed review. */
+  expectedSourceHead?: string
   source: string
   sourceBranch: string
   destination: string
@@ -88,12 +90,13 @@ export interface Verdict {
 }
 export type MergeOutcome = 'merged' | 'alreadyIntegrated' | 'inProgress' | 'dirty' | 'notMerged'
 export interface AutoBrief {
+  autonomous?: boolean
   goal: string
   fixFloor: Severity | null
   effortNote: string
   commit: boolean
 }
-/** The jobs an agent preset can be assigned to (per project, workspace layout only). */
+/** The jobs an agent preset can be assigned to globally in workspace settings. */
 export type AgentRole = 'scan' | 'plan' | 'implement' | 'worker' | 'review' | 'fix' | 'merge'
 export const AGENT_ROLES: AgentRole[] = [
   'plan',
@@ -130,6 +133,19 @@ export interface AutoLaunch {
   observedWorking?: boolean
 }
 export interface AutoRun {
+  /** Resolve routine decisions and recover while this project is open. */
+  autonomous?: boolean
+  /** Startup continuation, cleared before resuming; never overrides an explicit pause. */
+  restartPending?: boolean
+  recovery?: {
+    stage: AutoStage
+    mark: string
+    attempts: number
+    action?: string
+    atMs?: number
+    pending?: boolean
+    reason: string
+  }
   runId: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
   /** Allow this run to launch work while another worktree or project tab is selected. */
@@ -194,6 +210,8 @@ export interface AutoRun {
   validation?: ActionReport[]
   reviewedHead?: string
   validationFindings?: string
+  validationMark?: string
+  validationHead?: string
 }
 
 export interface ReviewFindings {
@@ -337,8 +355,8 @@ export interface PendingLinks {
 }
 
 /**
- * Mirrors `stack_proposals::ProposedTerminal`: an existing terminal by `terminal`, or a new one
- * with `name` and `command`.
+ * Mirrors `stack_proposals::ProposedTerminal`: an existing terminal by `terminal` with an
+ * optional replacement `command`, or a new one with `name` and `command`.
  */
 export interface ProposedStackTerminal {
   component: string
@@ -354,6 +372,7 @@ export interface PendingStack {
   id: string
   sessionId: string
   submittedMs: number
+  stackId?: string | null
   name: string
   orderedStartup: boolean
   terminals: ProposedStackTerminal[]
@@ -549,8 +568,18 @@ export interface AgentReport {
   approvalPending?: boolean
 }
 
+export interface AgentContext {
+  usedTokens: number | null
+  windowTokens: number | null
+  usedPercent: number | null
+  observedMs: number | null
+  compaction: 'unknown' | 'idle' | 'compacting'
+  lastCompactionMs: number | null
+}
+
 /** `status::SessionStatus`: what a running session is doing. */
 export interface SessionStatus {
+  context?: AgentContext
   lastOutputMs: number | null
   active: boolean
   agent: AgentReport | null

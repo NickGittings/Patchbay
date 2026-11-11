@@ -4,14 +4,14 @@ import {
   restoredNotifications,
   sameNotifications,
 } from './notificationSettings'
-import { restoredAgentRoles } from './agentRoles'
+import { restoredAgentDefaults } from './agentRoles'
 import { mergeRestoredHookSources } from './agentHooks'
 import { restoredSimple } from './simple'
 import { restoredAuto } from './autoRestore'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { emptyTaskWorkspace, projectFrom, useStore, type ProjectState } from '../store'
-import { isSubagentCount, type OpenedProject, type Project, type WorkspaceDocument } from '../types'
+import type { OpenedProject, Project, WorkspaceDocument } from '../types'
 import { quitPatchbay, workspaceLoad, workspaceSave } from './ipc'
 import { openComponentWindow } from './windows'
 import { reconcileSessions } from './sessions'
@@ -45,7 +45,13 @@ export function workspaceDocument(): WorkspaceDocument {
     version: 1,
     activeProject: s.activeProjectId,
     windows: {},
-    settings: { ...s.workspaceSettings, notifications: s.notifications, usage: s.usageSettings },
+    settings: {
+      ...s.workspaceSettings,
+      agentRoles: s.agentRoles,
+      implementSubagents: s.implementSubagents,
+      notifications: s.notifications,
+      usage: s.usageSettings,
+    },
     projects: s.projectOrder.map((id) => {
       const p = projects[id]
       const state = p.state
@@ -70,8 +76,6 @@ export function workspaceDocument(): WorkspaceDocument {
               planStory: state.planStory,
               planStoryTerminal: state.planStoryTerminal,
               planStartedWith: state.planStartedWith,
-              agentRoles: state.agentRoles,
-              implementSubagents: state.implementSubagents,
               validatorDeclined: state.validatorDeclined,
               stackDeclined: state.stackDeclined,
               dependencyPromptDismissed: state.dependencyPromptDismissed,
@@ -85,7 +89,11 @@ export function workspaceDocument(): WorkspaceDocument {
               auto: state.auto,
               graphActionReport: state.graphActionReport,
             }
-          : (p.unavailableLayout ?? {}),
+          : Object.fromEntries(
+              Object.entries(p.unavailableLayout ?? {}).filter(
+                ([key]) => key !== 'agentRoles' && key !== 'implementSubagents',
+              ),
+            ),
       }
     }),
   }
@@ -160,11 +168,6 @@ export function restoredLayout(
     out.panels = layout.panels as ProjectState['panels']
   if (layout.planStartedWith && typeof layout.planStartedWith === 'object')
     out.planStartedWith = layout.planStartedWith as Record<string, string>
-  if (!nested) {
-    out.agentRoles = restoredAgentRoles(layout.agentRoles)
-    const subagents = layout.implementSubagents
-    out.implementSubagents = isSubagentCount(subagents) ? subagents : 0
-  }
   if (!nested)
     out.validatorDeclined = Array.isArray(layout.validatorDeclined)
       ? [...new Set(layout.validatorDeclined.filter((k): k is string => typeof k === 'string'))]
@@ -252,6 +255,10 @@ export function initializeWorkspace() {
     const initialNotifications = useStore.getState().notifications
     const initialKeepAwake = useStore.getState().workspaceSettings.autoKeepAwake
     const initialHookSources = useStore.getState().workspaceSettings.hookSources
+    const initialAgentRoles = useStore.getState().agentRoles
+    const initialSubagents = useStore.getState().implementSubagents
+    let savedAgentRoles: unknown
+    let savedSubagents: unknown
     let restoredSettings: unknown
     let savedHookSources: unknown
     let savedKeepAwake: unknown
@@ -283,6 +290,9 @@ export function initializeWorkspace() {
       restoredSettings = document.settings?.notifications
       savedHookSources = document.settings?.hookSources
       savedKeepAwake = document.settings?.autoKeepAwake
+      savedAgentRoles = document.settings?.agentRoles
+      savedSubagents = document.settings?.implementSubagents
+      const agentDefaults = restoredAgentDefaults(document)
       useStore.setState((s) => {
         const { hookSources: _saved, ...settings } = document.settings ?? {}
         const hookSources = mergeRestoredHookSources(
@@ -291,6 +301,11 @@ export function initializeWorkspace() {
           initialHookSources,
         )
         return {
+          agentRoles: s.agentRoles !== initialAgentRoles ? s.agentRoles : agentDefaults.agentRoles,
+          implementSubagents:
+            s.implementSubagents !== initialSubagents
+              ? s.implementSubagents
+              : agentDefaults.implementSubagents,
           usageSettings: mergeRestoredUsage(savedUsage, s.usageSettings, initialUsage),
           workspaceSettings: {
             ...settings,
@@ -422,7 +437,9 @@ export function initializeWorkspace() {
       (useStore.getState().workspaceSettings.autoKeepAwake === true) !==
         (savedKeepAwake === true) ||
       JSON.stringify(useStore.getState().workspaceSettings.hookSources) !==
-        JSON.stringify(savedHookSources)
+        JSON.stringify(savedHookSources) ||
+      JSON.stringify(useStore.getState().agentRoles) !== JSON.stringify(savedAgentRoles) ||
+      useStore.getState().implementSubagents !== savedSubagents
     ) {
       clearTimeout(timer)
       timer = setTimeout(() => void flushWorkspace(), 500)

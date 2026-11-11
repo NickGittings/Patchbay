@@ -162,8 +162,8 @@ export default function UsagePanel() {
                       : 'Capture Claude usage'}
                 </button>
                 <p className="usage-note">
-                  Capture wraps any existing status line and restores it on removal. Claude usage
-                  refreshes only while an interactive session runs.
+                  Capture reports Claude context usage and account limits while an interactive
+                  session runs. It wraps any existing status line and restores it on removal.
                 </p>
                 {capture.chained && (
                   <p className="usage-note">

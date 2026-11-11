@@ -65,6 +65,35 @@ pub async fn provider_run_control(
     let bridge = state.service.clone();
     blocking(move || {
         let previous = orchestration::read(&root, &project_id, &id).map_err(err)?;
+        if let Control::ContinueJob { job, request_id } = &control {
+            let owned = previous
+                .jobs
+                .iter()
+                .chain(previous.coordinator.iter())
+                .find(|j| &j.id == job && &j.request_id == request_id)
+                .ok_or("Provider job ownership changed")?;
+            let records = bridge.list()?;
+            let ready = records.iter().any(|r| {
+                r.request_ids.last() == Some(request_id)
+                    && owned.session_id.as_deref() == Some(&r.id)
+                    && r.snapshot.as_ref().is_some_and(|s| {
+                        s.running
+                            && !s.status.stopped
+                            && s.status.agent.as_ref().is_some_and(|a| {
+                                a.authoritative
+                                    && !a.approval_pending
+                                    && matches!(
+                                        a.state,
+                                        patchbay_core::status::AgentState::Idle
+                                            | patchbay_core::status::AgentState::Review
+                                    )
+                            })
+                    })
+            });
+            if !ready {
+                return Err("Provider job is not at an owned conversational prompt".into());
+            }
+        }
         let stopping = matches!(control, Control::Stop | Control::ContinueScan);
         let retry = match &control {
             Control::Retry { job } => Some(job.as_str()),

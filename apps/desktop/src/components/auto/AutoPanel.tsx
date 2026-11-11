@@ -164,6 +164,19 @@ export default function AutoPanel({
                 {run.gateError ? `Couldn't check merge status: ${run.gateError}` : run.reason}
               </p>
             )}
+          {run.autonomous && (
+            <p className="muted">
+              Autonomous execution ·{' '}
+              {run.merge.mode === 'auto'
+                ? 'Automatic merge after review'
+                : 'Merge approval required'}
+            </p>
+          )}
+          {run.recovery && (
+            <p role="status">
+              Recovery {run.recovery.attempts}/3 without progress: {run.recovery.reason}
+            </p>
+          )}
           {run.branch && ['review', 'fix', 'mergeGate', 'merge', 'done'].includes(run.stage) && (
             <AutoFindings
               projectId={projectId}

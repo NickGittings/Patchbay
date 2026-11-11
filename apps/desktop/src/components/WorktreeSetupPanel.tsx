@@ -14,16 +14,15 @@ export default function WorktreeSetupPanel() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   return (
-    <section className="panel-section" aria-label="Worktree preparation">
-      <strong>Worktree preparation</strong>
-      <p>
-        Run once at each new worktree’s root, before implementation. Saving applies to new tasks;
-        existing tasks keep their captured setup. Scripts can use PATCHBAY_PROJECT_ROOT and
-        PATCHBAY_WORKTREE_ROOT.
+    <section className="worktree-setup-editor" aria-label="Worktree preparation">
+      <p className="hint">
+        Runs at the worktree root before implementation. Changes apply to new tasks.
       </p>
       <label className="settings-field">
         Command
-        <input
+        <textarea
+          rows={3}
+          placeholder="No preparation configured"
           value={command}
           onChange={(e) => {
             setDraft(e.target.value)
@@ -31,52 +30,54 @@ export default function WorktreeSetupPanel() {
           }}
         />
       </label>
-      <p>
-        Saving records this command in patchbay.json. Enable this exact command locally to allow
-        automatic execution. A changed command needs new enablement.
+      <p className="hint">Scripts can use PATCHBAY_PROJECT_ROOT and PATCHBAY_WORKTREE_ROOT.</p>
+      <p className="hint">
+        Save to patchbay.json, then enable locally to run automatically. Each changed command needs
+        enablement.
       </p>
-      <pre>{command || 'No setup configured'}</pre>
+      <div className="row">
+        <button
+          disabled={busy || blocked}
+          onClick={() => {
+            if (!project) return
+            setError('')
+            setMessage('')
+            setBusy(true)
+            useStore.setState({
+              project: { ...project, worktreeSetup: command.trim() ? { command } : undefined },
+              dirty: true,
+            })
+            void saveMapNow(project.id)
+              .then((saved) => {
+                if (saved) {
+                  setDraft(null)
+                  setMessage('Preparation saved for new tasks.')
+                } else setError('The project could not be saved. Check its map saving status.')
+              })
+              .catch((e) => setError(String(e)))
+              .finally(() => setBusy(false))
+          }}
+        >
+          Save
+        </button>
+        <button
+          disabled={busy || blocked || !command.trim() || !project}
+          onClick={() => {
+            if (!project) return
+            setError('')
+            setMessage('')
+            setBusy(true)
+            void enableWorktreeSetup(project.id, command)
+              .then(() => setMessage('Enabled locally for this exact command.'))
+              .catch((e) => setError(String(e)))
+              .finally(() => setBusy(false))
+          }}
+        >
+          Enable exact command locally
+        </button>
+      </div>
       {error && <SettingsFeedback error>{error}</SettingsFeedback>}
       {message && <SettingsFeedback>{message}</SettingsFeedback>}
-      <button
-        disabled={busy || blocked}
-        onClick={() => {
-          if (!project) return
-          setError('')
-          setMessage('')
-          setBusy(true)
-          useStore.setState({
-            project: { ...project, worktreeSetup: command.trim() ? { command } : undefined },
-            dirty: true,
-          })
-          void saveMapNow(project.id)
-            .then((saved) => {
-              if (saved) {
-                setDraft(null)
-                setMessage('Preparation saved for new tasks.')
-              } else setError('The project could not be saved. Check its map saving status.')
-            })
-            .catch((e) => setError(String(e)))
-            .finally(() => setBusy(false))
-        }}
-      >
-        Save
-      </button>
-      <button
-        disabled={busy || blocked || !command.trim() || !project}
-        onClick={() => {
-          if (!project) return
-          setError('')
-          setMessage('')
-          setBusy(true)
-          void enableWorktreeSetup(project.id, command)
-            .then(() => setMessage('Enabled locally for this exact command.'))
-            .catch((e) => setError(String(e)))
-            .finally(() => setBusy(false))
-        }}
-      >
-        Enable exact command locally
-      </button>
     </section>
   )
 }

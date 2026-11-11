@@ -750,20 +750,26 @@ input[type='radio'] {
   color: var(--text);
   border-color: var(--border-strong);
 }
-.component-node.activity-pulse {
-  animation: activity-pulse 1.4s ease-in-out infinite;
+.component-node.activity-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 1px solid var(--running);
+  border-radius: inherit;
+  box-shadow: 0 0 12px 2px color-mix(in srgb, var(--running) 35%, transparent);
+  pointer-events: none;
+  opacity: 0.2;
+  animation: activity-glow 1.8s ease-in-out infinite;
 }
-@keyframes activity-pulse {
+@keyframes activity-glow {
   50% {
-    outline: 3px solid var(--running);
-    outline-offset: 5px;
+    opacity: 0.55;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .component-node.activity-pulse {
+  .component-node.activity-pulse::after {
     animation: none;
-    outline: 2px solid var(--running);
-    outline-offset: 4px;
+    opacity: 0.3;
   }
 }
 .component-node.affected {
@@ -1995,7 +2001,38 @@ button.review-name:hover:not(:disabled) {
   color: var(--muted);
 }
 .component-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   padding: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.component-groups .row,
+.worktree-setup-editor .row {
+  flex-wrap: wrap;
+}
+.component-groups button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.stack-card .panel-section-head > strong {
+  flex: 1;
+  min-width: 0;
+}
+.stack-card .chip {
+  white-space: normal;
+}
+.stack-action-result {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.stack-action-result > p {
+  margin: 0;
+}
+.stack-action-result details {
+  margin-top: 8px;
 }
 .component-groups form input {
   min-width: 0;
@@ -2007,6 +2044,21 @@ button.review-name:hover:not(:disabled) {
 .component-group {
   border-top: 1px solid var(--border);
   padding: 8px 0;
+}
+.component-group fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.stack-terminal-editor {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.stack-terminal-editor input:not([type='checkbox']) {
+  min-width: 0;
+  width: 100%;
 }
 .component-group summary,
 .action-results summary {
@@ -3265,17 +3317,40 @@ kbd {
   margin: 0 0 10px;
 }
 .stack-agent {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  gap: 12px;
 }
-.stack-agent button {
-  flex: 1;
+.stack-agent label,
+.worktree-setup-editor .settings-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
   min-width: 0;
 }
 .stack-agent select {
   min-width: 0;
-  max-width: 40%;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.worktree-setup-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.worktree-setup-editor p {
+  margin: 0;
+}
+.worktree-setup-editor textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+.component-groups .rail-details-body {
+  gap: 16px;
 }
 .auto-values {
   display: grid;
@@ -3604,6 +3679,9 @@ kbd {
 .rail-details + .rail-details {
   margin-top: 16px;
 }
+.component-groups > :is(.rail-section, .rail-details) {
+  margin-top: 0;
+}
 .rail-section-header,
 .rail-toolbar {
   display: flex;
@@ -3656,7 +3734,6 @@ kbd {
 .utility-panel:not([data-panel='sessions']) :is(.row, .panel-actions) {
   flex-wrap: wrap;
 }
-.utility-panel .stack-card,
 .utility-panel .worktree-row {
   background: transparent;
   border: 0;

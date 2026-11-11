@@ -21,15 +21,6 @@ export function togglePanel(panel: UtilityPanel) {
 export function closePanel(panel: UtilityPanel) {
   if (useStore.getState().utilityPanel === panel) selectPanel(null)
 }
-// Agent roles belong to one project; another store's listener, so nothing re-enters `useStore`.
-useStore.subscribe((s, previous) => {
-  if (
-    previous.project &&
-    previous.project.id !== s.project?.id &&
-    useRail.getState().settings === 'roles'
-  )
-    useRail.setState({ settings: null })
-})
 /** Rail clicks and numbered shortcuts open the selected Full view. */
 export function selectRailShortcut(view: View) {
   selectRailView(view)

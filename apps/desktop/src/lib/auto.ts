@@ -5,6 +5,7 @@ import {
   controlProviderRun,
   driveProviderRuns,
   providerRuns,
+  type ProviderRun,
 } from './orchestration'
 import { profileHookProvider, commandProfile } from './agentProfiles'
 import { refreshUsage, usageBlock, usageWarnings } from './usage'
@@ -43,6 +44,7 @@ import {
   proposalRead,
   reviewRead,
   terminalSnapshot,
+  terminalPrompt,
   terminalStop,
   graphValidationCancel,
 } from './ipc'
@@ -108,6 +110,8 @@ export interface AutoSnapshot {
   base: string
   changedComponents: string[]
   hasChanges: boolean
+  /** HEAD plus changed paths and modification stamps, including uncommitted work. */
+  workMark?: string
   findings: ReviewFindings | null
   freshness: 'none' | 'current' | 'stale'
   outcome: MergeOutcome
@@ -140,7 +144,7 @@ export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): D
     if (run.round >= effortSettings(run).maxRounds)
       return {
         stage: 'fix',
-        status: 'waitingOnYou',
+        status: run.autonomous ? 'failed' : 'waitingOnYou',
         waitingFor: 'fixBudget',
         reason: `Fix budget exhausted (${run.round} rounds). ${count} blocking finding(s) remain.${run.validationFindings ? ' Validation still needs attention.' : ''}`,
       }
@@ -197,7 +201,12 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false):
       return { stage: 'implement', status: 'running', reason: 'Saved plan is ready' }
     return { stage: 'plan', status: 'running', reason: 'Earlier work is merged; plan the new goal' }
   }
-  if (snapshot.freshness === 'current') return reviewDecision(run, snapshot.findings)
+  if (snapshot.freshness === 'current') {
+    const decision = reviewDecision(run, snapshot.findings)
+    if (decision.stage === 'mergeGate' && needsValidation(snapshot, run))
+      return { stage: 'validate', status: 'running', reason: 'Validate the current changes' }
+    return decision
+  }
   if (snapshot.hasChanges)
     return {
       stage: effortSettings(run).validate || run.validationFindings ? 'validate' : 'review',
@@ -267,8 +276,19 @@ export function nextStep(
  * The HEAD Auto may merge without asking: only one whose current findings cover the whole worktree
  * and leave nothing to fix at this run's severity floor, with validation passing.
  */
+function needsValidation(snapshot: AutoSnapshot, run: AutoRun) {
+  return (
+    run.merge.mode === 'auto' &&
+    effortSettings(run).validate &&
+    (run.validationHead !== snapshot.source.head ||
+      !run.validation ||
+      run.validation.some((report) => report.results.some((result) => !taskPassed(result))) ||
+      (!!snapshot.workMark && run.validationMark !== snapshot.workMark))
+  )
+}
 export function mergeableHead(snapshot: AutoSnapshot, run: AutoRun) {
-  return snapshot.freshness === 'current' &&
+  return !needsValidation(snapshot, run) &&
+    snapshot.freshness === 'current' &&
     !snapshot.findings?.uncovered &&
     reviewDecision(run, snapshot.findings).stage === 'mergeGate'
     ? snapshot.source.head
@@ -317,6 +337,8 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   const run = autoRun(projectId, task)
   if (!run) return
   update = pauseDefaults(update)
+  if (update.stage && update.stage !== run.stage) update.recovery = undefined
+  if (update.status && update.status !== 'running') update.restartPending = false
   const next = { ...run, ...update }
   if (
     next.stage !== 'scan' &&
@@ -344,7 +366,9 @@ export function driveable(projectId: string, task: string | null, run = autoRun(
   const s = useStore.getState()
   return (
     (s.project?.id === projectId && s.activeTask === task) ||
-    (run?.background === true && s.projectOrder.includes(projectId) && !!projectStateOf(projectId))
+    ((run?.background === true || run?.autonomous === true) &&
+      s.projectOrder.includes(projectId) &&
+      !!projectStateOf(projectId))
   )
 }
 function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
@@ -354,6 +378,9 @@ function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run:
       'Choose a different destination branch with an existing worktree',
     )
   return {
+    ...(run.merge.mode === 'auto' && run.reviewedHead
+      ? { expectedSourceHead: run.reviewedHead }
+      : {}),
     source: snapshot.source.path,
     sourceBranch: snapshot.source.branch!,
     destination: destination.path,
@@ -548,6 +575,14 @@ export async function autoSnapshot(
     changedComponents: Object.keys(review.changes).filter(
       (id) => review.changes[id].length > 0 && project.components.some((c) => c.id === id),
     ),
+    workMark: fingerprint(
+      JSON.stringify([
+        source.head,
+        Object.entries(review.changes)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, files]) => [id, [...files].sort((a, b) => a.path.localeCompare(b.path))]),
+      ]),
+    ),
     hasChanges: !!review.ahead || Object.values(review.changes).some((files) => files.length > 0),
     findings,
     freshness: findings && findings.base !== base ? 'stale' : reviewState(findings, source),
@@ -586,6 +621,7 @@ export type AutoSettings = Pick<
   | 'reviewers'
   | 'scanners'
   | 'workers'
+  | 'autonomous'
   | 'background'
   | 'resumeOnUsageReset'
 > & {
@@ -763,7 +799,17 @@ export function pauseAuto(
   pauseKind: NonNullable<AutoRun['pauseKind']> = 'user',
 ) {
   const run = autoRun(projectId, task)
-  patch(projectId, task, { status: 'paused', reason, pauseKind }, reason)
+  patch(
+    projectId,
+    task,
+    {
+      status: 'paused',
+      reason,
+      pauseKind,
+      recovery: run?.recovery ? { ...run.recovery, pending: false } : undefined,
+    },
+    reason,
+  )
   for (const id of [run?.scanRound, run?.implementationRun ?? run?.implementationLaunch].filter(
     (id): id is string => !!id,
   ))
@@ -1115,7 +1161,12 @@ export function stopAuto(projectId: string, task: string | null) {
   patch(
     projectId,
     task,
-    { runId: crypto.randomUUID(), status: 'stopped', reason: 'Stopped by you' },
+    {
+      runId: crypto.randomUUID(),
+      status: 'stopped',
+      reason: 'Stopped by you',
+      recovery: run?.recovery ? { ...run.recovery, pending: false } : undefined,
+    },
     'Auto stopped',
   )
   if (run) {
@@ -1204,6 +1255,7 @@ export function mergeNow(projectId: string, task: string | null) {
 }
 function briefing(run: AutoRun): AutoBrief {
   return {
+    autonomous: run.autonomous === true,
     goal: run.goal,
     fixFloor: run.stage === 'fix' ? effortSettings(run).severityFloor : null,
     effortNote:
@@ -1214,6 +1266,360 @@ function briefing(run: AutoRun): AutoBrief {
     commit: run.stage === 'implement' || run.stage === 'fix' || run.stage === 'merge',
   }
 }
+/** Only required artifacts count as progress; a new process or review round does not. */
+function recoveryMark(run: AutoRun, snapshot: AutoSnapshot) {
+  switch (run.stage) {
+    case 'plan':
+      return snapshot.planMark
+    case 'review':
+      return fingerprint(
+        JSON.stringify([
+          snapshot.findings?.text ?? '',
+          snapshot.findings?.verdict ?? null,
+          snapshot.findings?.reviewedHead ?? null,
+        ]),
+      )
+    case 'validate':
+      return fingerprint(JSON.stringify(run.validation?.map((r) => r.results) ?? []))
+    default:
+      return snapshot.source.head
+  }
+}
+
+/** Serialized by the normal controller, including after restart. No raw terminal writes. */
+async function recoverAuto(
+  projectId: string,
+  task: string | null,
+  reason: string,
+  target?: AutoStage,
+) {
+  const run = autoRun(projectId, task)
+  if (!run?.autonomous || run.status !== 'running') return false
+  const live = () =>
+    autoRun(projectId, task) === run &&
+    useStore.getState().serviceConnected &&
+    driveable(projectId, task)
+  await reconcileFreshSessions()
+  if (!live()) return true
+  const snapshot = await autoSnapshot(projectId, task, run)
+  if (!live()) return true
+  const tracked = observe(run)
+  for (const session of tracked) {
+    assertSessionAvailable(projectId, task, session.sessionId)
+    if (
+      !session.owned ||
+      session.relaunched ||
+      (session.snapshot?.running && !ownsSession(run, session.sessionId))
+    ) {
+      pauseAuto(projectId, task, 'Recovery blocked: the session belongs to other work', 'needsUser')
+      return true
+    }
+    if (session.agent?.state === 'needsInput' || session.agent?.approvalPending) {
+      pauseAuto(
+        projectId,
+        task,
+        `Recovery blocked: permission or user input required${session.agent.message ? ': ' + session.agent.message : ''}`,
+        'needsUser',
+      )
+      return true
+    }
+  }
+  const competing = snapshot.agents.some((a) => !tracked.some((r) => r.sessionId === a.sessionId))
+  if (competing) {
+    pauseAuto(
+      projectId,
+      task,
+      'Recovery blocked: another agent is active in this worktree',
+      'needsUser',
+    )
+    return true
+  }
+  const mark = recoveryMark(run, snapshot)
+  const previous = run.recovery?.stage === run.stage ? run.recovery : undefined
+  const attempts = previous?.mark === mark ? previous.attempts : 0
+  // A persisted relaunch reservation can finish stopping without consuming another attempt.
+  const pending = previous?.pending === true
+  const prompt =
+    !target &&
+    tracked.length === 1 &&
+    tracked[0].snapshot?.running &&
+    tracked[0].agent?.authoritative &&
+    !tracked[0].snapshot?.status?.stopped &&
+    ['review', 'idle'].includes(tracked[0].agent.state) &&
+    tracked[0].snapshot.generation !== undefined
+      ? tracked[0]
+      : undefined
+  const action = prompt
+    ? JSON.stringify([
+        'prompt',
+        prompt.sessionId,
+        prompt.snapshot!.generation,
+        prompt.agent!.sinceMs,
+      ])
+    : JSON.stringify(['relaunch', run.stage, run.sessionId, run.sessionStartedMs, run.launchAtMs])
+  const duplicate = previous?.action === action
+  // Acknowledgements may be lost. Never submit the same conversational prompt twice.
+  if (duplicate && !pending && Date.now() - (previous.atMs ?? 0) < 30000) return true
+  if (!pending && attempts >= 3) {
+    patch(
+      projectId,
+      task,
+      {
+        status: 'failed',
+        reason: `Recovery budget exhausted after 3 attempts without progress: ${reason}`,
+      },
+      `Recovery budget exhausted: ${reason}`,
+    )
+    await stopTracked(run)
+    return true
+  }
+  const continuation = !!prompt && !duplicate && !pending
+  const recovery = {
+    stage: run.stage,
+    mark,
+    attempts: pending ? attempts : attempts + 1,
+    action,
+    atMs: Date.now(),
+    pending: !continuation,
+    reason,
+  }
+  patch(
+    projectId,
+    task,
+    { recovery, reason: `Recovering: ${reason}` },
+    `Recovery ${recovery.attempts}/3: ${reason}; ${continuation ? 'resolve the question and complete the stage' : 'reconcile and relaunch the stage'}`,
+  )
+  const reserved = autoRun(projectId, task)
+  const active = () =>
+    autoRun(projectId, task) === reserved &&
+    useStore.getState().serviceConnected &&
+    driveable(projectId, task)
+  if (!active()) return true
+  if (continuation) {
+    // terminal_prompt checks process generation, window authority and a hook-confirmed
+    // conversational prompt again in the service. It refuses permission dialogs.
+    try {
+      await terminalPrompt(
+        prompt.sessionId,
+        prompt.snapshot!.generation!,
+        `Continue autonomous execution of this goal: ${run.goal}\n` +
+          `Resolve your question using the goal and available context, make a reasonable decision, and continue. ` +
+          `Complete the ${run.stage} stage and save its required artifacts. ${reason}. ` +
+          `Preserve command permissions and report authentication or permission blockers explicitly.`,
+      )
+    } catch (e) {
+      if (active())
+        pauseAuto(
+          projectId,
+          task,
+          `Recovery continuation was not confirmed: ${String(e)}`,
+          'needsUser',
+        )
+    }
+    return true
+  }
+  const gone = await stopTracked(run)
+  if (!active()) return true
+  if (tracked.some((r) => !gone.includes(r.sessionId))) {
+    pauseAuto(
+      projectId,
+      task,
+      'Recovery could not stop its owned session; inspect it before resuming',
+    )
+    return true
+  }
+  patch(projectId, task, {
+    ...track([]),
+    reviewRound: undefined,
+    sessionBrief: undefined,
+    launchAtMs: undefined,
+    observedWorking: false,
+    stage: target ?? run.stage,
+    // Merge retries must keep the commit that authorizes their freshness checks and launch.
+    reviewedHead: (target ?? run.stage) === 'merge' ? run.reviewedHead : undefined,
+    recovery: { ...recovery, pending: false },
+  })
+  return true
+}
+
+/** Provider retries keep their submitted reports and isolated worker checkouts. */
+async function recoverProviderRun(projectId: string, task: string | null, provider: ProviderRun) {
+  const run = autoRun(projectId, task)
+  if (
+    !run?.autonomous ||
+    run.status !== 'running' ||
+    provider.state === 'stopped' ||
+    provider.state === 'complete'
+  )
+    return false
+  const currentJobs = [provider.coordinator, ...provider.jobs].filter((j) => !!j)
+  // Native input reports are permission/modal waits, including while other jobs work.
+  for (const job of currentJobs) {
+    if (!job.sessionId) continue
+    const record = useStore.getState().sessionRecords.find((r) => r.id === job.sessionId)
+    const session = useStore.getState().sessions[job.sessionId] ?? record?.snapshot
+    if (session?.status?.agent?.state === 'needsInput' || session?.status?.agent?.approvalPending) {
+      pauseAuto(
+        projectId,
+        task,
+        `Provider job ${job.id} requires permission or user input`,
+        'needsUser',
+      )
+      return true
+    }
+  }
+  if (provider.state !== 'paused') {
+    if (run.recovery?.pending)
+      patch(projectId, task, { recovery: { ...run.recovery, pending: false } })
+    return false
+  }
+  const live = () =>
+    autoRun(projectId, task) === run &&
+    useStore.getState().serviceConnected &&
+    driveable(projectId, task)
+  await reconcileFreshSessions()
+  const fresh = (await providerRuns(projectId)).find((r) => r.id === provider.id)
+  if (!live()) return true
+  if (!fresh || fresh.state !== 'paused') return false
+  // Also checks the Auto run's branch before changing any provider job.
+  await autoSnapshot(projectId, task, run)
+  if (!live()) return true
+  const jobs = [fresh.coordinator, ...fresh.jobs].filter((j) => !!j)
+  const retrying = jobs.filter((j) => j.state === 'failed' || (j.state === 'launching' && j.error))
+  if (!retrying.length) return false // An explicit provider pause or an authentication blocker.
+  for (const job of jobs) {
+    if (!job.sessionId) continue
+    const record = useStore.getState().sessionRecords.find((r) => r.id === job.sessionId)
+    const session = useStore.getState().sessions[job.sessionId] ?? record?.snapshot
+    if ((record && record.requestIds?.at(-1) !== job.requestId) || (session?.running && !record)) {
+      pauseAuto(
+        projectId,
+        task,
+        `Recovery blocked: provider job ${job.id} belongs to other work`,
+        'needsUser',
+      )
+      return true
+    }
+    if (session?.status?.agent?.state === 'needsInput' || session?.status?.agent?.approvalPending) {
+      pauseAuto(
+        projectId,
+        task,
+        `Provider job ${job.id} requires permission or user input`,
+        'needsUser',
+      )
+      return true
+    }
+  }
+  const mark = fingerprint(
+    JSON.stringify([
+      fresh.sealed,
+      jobs.map((j) => [j.id, j.instructions, j.report, j.commit, j.summary, j.integratedHead]),
+    ]),
+  )
+  const previous = run.recovery?.stage === run.stage ? run.recovery : undefined
+  const attempts = previous?.mark === mark ? previous.attempts : 0
+  const reason = fresh.error ?? 'Provider agents finished without required submissions'
+  const prompts = new Map(
+    retrying.flatMap((job) => {
+      const record = useStore.getState().sessionRecords.find((r) => r.id === job.sessionId)
+      const session =
+        (job.sessionId && useStore.getState().sessions[job.sessionId]) || record?.snapshot
+      return job.sessionId &&
+        session?.running &&
+        !session.status?.stopped &&
+        session.generation !== undefined &&
+        session.status?.agent?.authoritative &&
+        ['idle', 'review'].includes(session.status.agent.state)
+        ? [
+            [
+              job.id,
+              {
+                id: job.sessionId,
+                generation: session.generation,
+                since: session.status.agent.sinceMs,
+              },
+            ] as const,
+          ]
+        : []
+    }),
+  )
+  const action = JSON.stringify(retrying.map((j) => [j.id, j.requestId, prompts.get(j.id)]))
+  const duplicate = previous?.action === action
+  if (duplicate && !previous?.pending && Date.now() - (previous.atMs ?? 0) < 30000) return true
+  if (!previous?.pending && attempts >= 3) {
+    patch(
+      projectId,
+      task,
+      {
+        status: 'failed',
+        reason: `Recovery budget exhausted after 3 attempts without progress: ${reason}`,
+      },
+      `Recovery budget exhausted: ${reason}`,
+    )
+    await controlProviderRun(projectId, fresh.id, { kind: 'pause' })
+    return true
+  }
+  const recovery = {
+    stage: run.stage,
+    mark,
+    attempts: previous?.pending ? attempts : attempts + 1,
+    action,
+    atMs: Date.now(),
+    pending: true,
+    reason,
+  }
+  patch(
+    projectId,
+    task,
+    { recovery, reason: `Recovering: ${reason}` },
+    `Recovery ${recovery.attempts}/3: continue or retry provider jobs ${retrying.map((j) => j.id).join(', ')}; preserve completed artifacts`,
+  )
+  const reserved = autoRun(projectId, task)
+  for (const job of retrying) {
+    if (autoRun(projectId, task) !== reserved || !useStore.getState().serviceConnected) return true
+    const prompt = !duplicate && prompts.get(job.id)
+    try {
+      await controlProviderRun(
+        projectId,
+        fresh.id,
+        prompt
+          ? { kind: 'continueJob', job: job.id, requestId: job.requestId }
+          : { kind: 'retry', job: job.id },
+      )
+      if (prompt && autoRun(projectId, task) === reserved)
+        await terminalPrompt(
+          prompt.id,
+          prompt.generation,
+          `Continue autonomous execution of ${run.goal}. Resolve your question from the goal and available context. ` +
+            `Finish provider job ${job.id} and submit its required artifacts using the Patchbay agent commands. ` +
+            `Preserve command permissions and report permission or authentication blockers explicitly.`,
+        )
+    } catch (e) {
+      if (autoRun(projectId, task) === reserved)
+        pauseAuto(projectId, task, `Provider recovery needs attention: ${String(e)}`, 'needsUser')
+      else {
+        const status = autoRun(projectId, task)?.status
+        if (status === 'paused' || status === 'stopped')
+          await controlProviderRun(projectId, fresh.id, {
+            kind: status === 'paused' ? 'pause' : 'stop',
+          })
+      }
+      return true
+    }
+    if (autoRun(projectId, task) !== reserved) {
+      const status = autoRun(projectId, task)?.status
+      if (status === 'paused' || status === 'stopped')
+        await controlProviderRun(projectId, fresh.id, {
+          kind: status === 'paused' ? 'pause' : 'stop',
+        })
+      return true
+    }
+  }
+  if (autoRun(projectId, task) === reserved)
+    patch(projectId, task, { recovery: { ...recovery, pending: false } })
+  return true
+}
+
 // Reserve a shared planner before awaiting its launch; records arrive only afterwards.
 const launchingSessions = new Map<string, string>()
 function sessionAvailable(
@@ -1344,6 +1750,7 @@ async function drive(projectId: string, task: string | null) {
           presets,
           undefined,
           scanRound,
+          ...(run.autonomous ? [briefing(run)] : []),
         )
         if (!live()) {
           const owner = autoRun(projectId, task)
@@ -1357,6 +1764,7 @@ async function drive(projectId: string, task: string | null) {
       const providerRun = (await driveProviderRuns(projectId)).find((r) => r.id === id)
       if (!live()) return
       if (!providerRun) throw new Error('The provider run is missing')
+      if (run.autonomous && (await recoverProviderRun(projectId, task, providerRun))) return
       if (providerRun.state === 'paused' || providerRun.state === 'stopped') {
         pause(providerRun.error ?? 'Provider run is paused; inspect its results')
         return
@@ -1418,6 +1826,10 @@ async function drive(projectId: string, task: string | null) {
       return
     }
     if (run.sessionId) {
+      if (run.autonomous && observe(run).some((r) => !r.owned || r.relaunched)) {
+        pause('Autonomous execution blocked: the session belongs to other work')
+        return
+      }
       const state = useStore.getState()
       const session =
         state.sessions[run.sessionId] ??
@@ -1455,12 +1867,19 @@ async function drive(projectId: string, task: string | null) {
       // Outside review, a failed agent pauses at once; a failed reviewer may have written first.
       if (failed.length && run.stage !== 'review') {
         if (await mergedByHand()) return
+        if (await recoverAuto(projectId, task, failureReason(run, failed[0], waitingOn))) return
         pause(failureReason(run, failed[0], waitingOn))
         return
       }
       const input = failed.length
         ? undefined
         : reviewers.find((r) => r.agent?.authoritative && r.agent.state === 'needsInput')
+      if (input && run.autonomous) {
+        pause(
+          `Permission or user input required${input.agent?.message ? ': ' + input.agent.message : ''}`,
+        )
+        return
+      }
       if (input) {
         const reason = `${input.name} needs input${input.agent?.message ? ': ' + input.agent.message : ''}`
         if (
@@ -1535,6 +1954,8 @@ async function drive(projectId: string, task: string | null) {
             ? roundStatus(run, reviewers, snapshot.findings, waitingOn)
             : undefined
         if (round?.status === 'broken' || round?.status === 'superseded') {
+          if (round.status === 'broken' && (await recoverAuto(projectId, task, round.reason!)))
+            return
           pause(round.reason!)
           return
         }
@@ -1562,6 +1983,10 @@ async function drive(projectId: string, task: string | null) {
           (a) => ['working', 'needsInput'].includes(a.state) && a.stage === run.stage,
         )
         const following = otherAgents.some((a) => ['working', 'needsInput'].includes(a.state))
+        if (run.autonomous && following) {
+          pause('Autonomous execution blocked: another agent is active in this worktree')
+          return
+        }
         if (other) {
           controller.completionPoll = undefined
           const reason = 'Waiting for another agent in this worktree to finish'
@@ -1575,8 +2000,13 @@ async function drive(projectId: string, task: string | null) {
           (!snapshot.findings?.reviewedHead ||
             (run.launchAtMs !== undefined && snapshot.findings.startedMs < run.launchAtMs))
         ) {
-          if (Date.now() - completedAt > 30000)
+          if (Date.now() - completedAt > 30000) {
+            if (
+              await recoverAuto(projectId, task, "Couldn't read the review verdict — open findings")
+            )
+              return
             pause("Couldn't read the review verdict — open findings")
+          }
           return
         }
         // A plan saved before this planner launched is no answer to its goal.
@@ -1586,16 +2016,31 @@ async function drive(projectId: string, task: string | null) {
           ((!snapshot.plan.trim() && !snapshot.proposal) ||
             (run.planMark !== undefined && snapshot.planMark === run.planMark))
         ) {
+          if (await recoverAuto(projectId, task, 'Planner finished without saving a new plan'))
+            return
           pause('Planner finished without saving a new plan')
+          return
+        }
+        if (!following && run.stage === 'implement' && !snapshot.hasChanges && run.autonomous) {
+          await recoverAuto(projectId, task, 'Implementation finished without changes')
           return
         }
         const decision = following
           ? inferStage({ ...snapshot, agents: otherAgents }, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
         if (!following && run.stage === 'review' && snapshot.freshness !== 'current') {
+          if (await recoverAuto(projectId, task, 'The branch changed during review', 'review'))
+            return
           pause('The branch changed during review; close the reviewers and Resume to review again')
           return
         }
+        if (
+          !following &&
+          decision.stage === run.stage &&
+          ['paused', 'waitingOnYou'].includes(decision.status) &&
+          (await recoverAuto(projectId, task, decision.reason))
+        )
+          return
         assertSessionAvailable(projectId, task, decision.sessionId)
         const low = snapshot.findings?.verdict
           ? Object.values(snapshot.findings.verdict.counts).reduce((a, b) => a + b, 0) -
@@ -1700,6 +2145,15 @@ async function drive(projectId: string, task: string | null) {
       run.reviewedHead &&
       (run.reviewedHead !== snapshot.source.head || snapshot.freshness !== 'current')
     ) {
+      if (
+        await recoverAuto(
+          projectId,
+          task,
+          'The branch changed since review',
+          effortSettings(run).validate ? 'validate' : 'review',
+        )
+      )
+        return
       pause('The branch changed since review; Resume to review again')
       return
     }
@@ -1708,7 +2162,40 @@ async function drive(projectId: string, task: string | null) {
       run.reviewedHead &&
       mergeableHead(snapshot, run) !== run.reviewedHead
     ) {
+      if (
+        await recoverAuto(
+          projectId,
+          task,
+          'The review no longer permits automatic merging',
+          needsValidation(snapshot, run) ? 'validate' : 'review',
+        )
+      )
+        return
       pause('The review no longer permits automatic merging; Resume to review again')
+      return
+    }
+    if (run.stage === 'merge') mergeRequest(snapshot, run)
+    if (
+      (run.stage === 'mergeGate' || run.stage === 'merge') &&
+      run.merge.mode === 'auto' &&
+      needsValidation(snapshot, run)
+    ) {
+      patch(
+        projectId,
+        task,
+        { stage: 'validate', reviewedHead: undefined },
+        'Validate before automatic merge',
+      )
+      return
+    }
+    if (run.stage === 'fix' && run.round >= effortSettings(run).maxRounds) {
+      const reason = `Fix budget exhausted (${run.round} rounds); review or validation still needs attention`
+      patch(
+        projectId,
+        task,
+        { status: run.autonomous ? 'failed' : 'waitingOnYou', waitingFor: 'fixBudget', reason },
+        reason,
+      )
       return
     }
     if (run.stage === 'mergeGate') {
@@ -1750,11 +2237,26 @@ async function drive(projectId: string, task: string | null) {
       patch(
         projectId,
         task,
-        { ...nextStep(run), validation: reports, validationFindings: failures || undefined },
+        {
+          ...nextStep(run),
+          validation: reports,
+          validationHead: snapshot.source.head,
+          validationMark: snapshot.workMark,
+          validationFindings: failures || undefined,
+        },
         failures
           ? 'Validation needs attention; passing results to review and fix'
           : 'Validation passed',
       )
+      return
+    }
+    if (
+      run.stage === 'implement' &&
+      !snapshot.plan.trim() &&
+      !snapshot.proposal &&
+      run.autonomous
+    ) {
+      await recoverAuto(projectId, task, 'The required plan is missing', 'plan')
       return
     }
     if (!agentStage(run.stage)) throw new Error(`Unsupported Auto stage ${run.stage}`)
@@ -1827,6 +2329,23 @@ async function drive(projectId: string, task: string | null) {
       pause('Close the current agent before starting another in this slot')
       return
     }
+    if (run.stage === 'merge' && run.merge.mode === 'auto' && run.reviewedHead) {
+      const currentSnapshot = await autoSnapshot(projectId, task, run)
+      if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
+      if (mergeableHead(currentSnapshot, run) !== run.reviewedHead) {
+        if (
+          await recoverAuto(
+            projectId,
+            task,
+            'Merge inputs changed after review',
+            needsValidation(currentSnapshot, run) ? 'validate' : 'review',
+          )
+        )
+          return
+        pause('Merge inputs changed after review; Resume to review again')
+        return
+      }
+    }
     const since = Date.now()
     let sid: string
     let lanes: string[] = []
@@ -1847,7 +2366,8 @@ async function drive(projectId: string, task: string | null) {
     )
     if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
     controller.phase = 'launching'
-    const presentation = run.background || projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow'
+    const presentation =
+      run.autonomous || run.background || projectStateOf(projectId)?.simpleMode ? 'stay' : 'follow'
     switch (run.stage) {
       case 'plan':
         sid = plannerSessionId(deviceId, projectId, task)
@@ -1967,6 +2487,7 @@ async function drive(projectId: string, task: string | null) {
       // never is. The round and lanes tell Auto's reviewers' findings from anyone else's.
       ...track(generations.map((g, i) => ({ ...g, ...review[i], owned: true }))),
       reviewRound,
+      recovery: latest.recovery ? { ...latest.recovery, pending: false } : undefined,
       sessionBrief: {
         sessionId: sid,
         auto: brief,
@@ -2000,6 +2521,17 @@ async function drive(projectId: string, task: string | null) {
         if (latest.stage === 'plan' && !initial.plannerTurn && !initial.sessionId)
           patch(projectId, task, { plannerTurn: false, planMark: undefined })
         pause('Close the current agent in this slot, then Resume')
+      } else if (String(e).includes('The source changed since review')) {
+        if (
+          await recoverAuto(
+            projectId,
+            task,
+            'The source changed since review',
+            effortSettings(latest).validate ? 'validate' : 'review',
+          )
+        )
+          return
+        pause('The source changed since review; Resume to review again')
       } else if (launching)
         patch(projectId, task, { status: 'failed', reason: String(e) }, String(e))
       else pause(String(e), 'interrupted')
@@ -2069,6 +2601,9 @@ async function driveScheduledResume(projectId: string, task: string | null) {
       )
       if (useStore.getState().usageSettings.gateAuto && blocked.length) {
         patch(projectId, task, {
+          usageWait: run.usageWait
+            ? { ...run.usageWait, atMs: Math.max(...blocked.map((w) => w.window.resetsAtMs)) }
+            : undefined,
           resumeTrigger: {
             kind: 'usage',
             atMs: Math.max(...blocked.map((w) => w.window.resetsAtMs)),
@@ -2093,6 +2628,61 @@ async function driveScheduledResume(projectId: string, task: string | null) {
       )
   }
 }
+async function resumeAfterRestart(projectId: string, task: string | null) {
+  const run = autoRun(projectId, task)
+  if (
+    !run?.autonomous ||
+    !run.restartPending ||
+    run.resumeTrigger ||
+    run.status !== 'paused' ||
+    run.pauseKind !== 'restored' ||
+    !useStore.getState().serviceConnected ||
+    !driveable(projectId, task)
+  )
+    return
+  let expected = run
+  try {
+    await reconcileFreshSessions()
+    if (autoRun(projectId, task) !== run || !useStore.getState().serviceConnected) return
+    // Do not adopt a session relaunched by hand during the outage.
+    if (observe(run).some((r) => !r.owned || r.relaunched)) {
+      pauseAuto(
+        projectId,
+        task,
+        'Restart blocked: the tracked session belongs to other work',
+        'needsUser',
+      )
+      return
+    }
+    patch(
+      projectId,
+      task,
+      { restartPending: false },
+      'Continuing autonomous execution after restart',
+    )
+    expected = autoRun(projectId, task)!
+    await resumeAuto(projectId, task, true)
+    if (autoRun(projectId, task) === expected && !useStore.getState().serviceConnected)
+      patch(projectId, task, { restartPending: true })
+  } catch (e) {
+    if (autoRun(projectId, task) === expected) {
+      if (!useStore.getState().serviceConnected) {
+        patch(projectId, task, { restartPending: true })
+        return
+      }
+      if (
+        String(e).includes('Retry failed assignments') &&
+        (run.stage === 'scan' || run.implementationRun)
+      )
+        patch(projectId, task, {
+          status: 'running',
+          reason: 'Reconciling interrupted provider jobs',
+        })
+      else pauseAuto(projectId, task, `Restart needs attention: ${String(e)}`, 'needsUser')
+    }
+  }
+}
+
 /** The main window owns a single driver; the timer also polls findings every five seconds. */
 export function followAuto() {
   let queued = false
@@ -2110,7 +2700,9 @@ export function followAuto() {
     void (
       autoRun(projectId, task)?.resumeTrigger
         ? driveScheduledResume(projectId, task)
-        : drive(projectId, task)
+        : autoRun(projectId, task)?.restartPending
+          ? resumeAfterRestart(projectId, task)
+          : drive(projectId, task)
     ).finally(() => release(controller))
   }
   const tick = () => {
@@ -2127,6 +2719,7 @@ export function followAuto() {
           if (
             run &&
             (run.resumeTrigger ||
+              run.restartPending ||
               run.status === 'running' ||
               (run.status === 'waitingOnYou' &&
                 (run.waitingFor === 'agentInput' || run.stage === 'mergeGate')))

@@ -126,6 +126,7 @@ const SCRIPTS = {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   status: { run: ['scripts/status.mjs'] },
+  'conversation-context': { run: ['scripts/conversation-context.mjs'] },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
   navigation: { run: ['scripts/navigation-smoke.mjs'] },
   maintenance: smoke(

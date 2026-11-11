@@ -14,11 +14,13 @@ import { sessionFromSnapshot } from './sessionState'
 export function simpleReviewRequest(
   source: Pick<Worktree, 'path' | 'branch'> | undefined,
   base: string | null | undefined,
-): ReviewRequest {
+  branches: string[],
+): ReviewRequest | undefined {
   if (!source) throw new Error('Wait for the worktree to load before starting a review.')
   if (!source.branch)
     throw new Error('Check out a branch before starting a review. HEAD is detached.')
   if (!base) throw new Error('Choose a review base in Options before starting a review.')
+  if (base === source.branch || !branches.includes(base)) return undefined
   return { worktree: source.path, branch: source.branch, base }
 }
 

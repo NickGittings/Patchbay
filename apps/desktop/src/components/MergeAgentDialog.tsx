@@ -18,7 +18,9 @@ export default function MergeAgentDialog({
   close,
   launched,
   onRequest,
+  compact = false,
 }: {
+  compact?: boolean
   /** The started merge agent's request, session and when its launch began. */
   onRequest?: (request: import('../types').MergeRequest, sid: string, requestId: string) => void
   source: Worktree
@@ -42,7 +44,8 @@ export default function MergeAgentDialog({
   return (
     <AgentJobDialog
       role="merge"
-      title="Start merge agent"
+      title={compact ? 'Merge' : 'Start merge agent'}
+      compact={compact}
       source={source}
       sourceField={({ busy, clearError }) => (
         <label>
@@ -105,19 +108,21 @@ export default function MergeAgentDialog({
     >
       {({ busy, clearError }) => (
         <>
-          <p className="hint" aria-label="Source review status">
-            {!source
-              ? 'Choose a source worktree.'
-              : loaded?.error
-                ? loaded.error
-                : !loaded
-                  ? 'Loading review status…'
-                  : status === 'none'
-                    ? 'No review findings for this branch.'
-                    : status === 'current'
-                      ? 'Review findings are current.'
-                      : 'Review findings exist; changed since review.'}
-          </p>
+          {(!compact || (source && (!loaded || loaded.error || status !== 'current'))) && (
+            <p className="hint" aria-label="Source review status">
+              {!source
+                ? 'Choose a source worktree.'
+                : loaded?.error
+                  ? loaded.error
+                  : !loaded
+                    ? 'Loading review status…'
+                    : status === 'none'
+                      ? 'No review findings for this branch.'
+                      : status === 'current'
+                        ? 'Review findings are current.'
+                        : 'Review findings exist; changed since review.'}
+            </p>
+          )}
           <label>
             Destination worktree
             <select

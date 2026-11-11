@@ -6,6 +6,8 @@ vi.mock('./ipc', () => ({ quitPatchbay: vi.fn(), workspaceLoad: vi.fn(), workspa
 vi.mock('./windows', () => ({ openComponentWindow: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileSessions: vi.fn() }))
 const { workspaceDocument, restoredLayout } = await import('./workspace')
+const { restoredAgentDefaults } = await import('./agentRoles')
+const defaultAgentSettings = { agentRoles: {}, implementSubagents: 0 }
 beforeEach(() => {
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject({
@@ -119,7 +121,11 @@ test('notification settings stay global, persist without projects and never dirt
   }
   expect(useStore.getState().dirty).toBe(false)
   useStore.getState().setNotifications(settings)
-  expect(workspaceDocument().settings).toEqual({ notifications: settings, usage: DEFAULT_USAGE })
+  expect(workspaceDocument().settings).toEqual({
+    ...defaultAgentSettings,
+    notifications: settings,
+    usage: DEFAULT_USAGE,
+  })
   expect(useStore.getState().dirty).toBe(false)
   expect(workspaceDocument().projects[0].layout).not.toHaveProperty('notifications')
   useStore.getState().loadProject({
@@ -133,7 +139,11 @@ test('notification settings stay global, persist without projects and never dirt
   expect(useStore.getState().notifications).toEqual(settings)
   useStore.getState().closeProject('second')
   useStore.getState().closeProject('p')
-  expect(workspaceDocument().settings).toEqual({ notifications: settings, usage: DEFAULT_USAGE })
+  expect(workspaceDocument().settings).toEqual({
+    ...defaultAgentSettings,
+    notifications: settings,
+    usage: DEFAULT_USAGE,
+  })
 })
 
 test('saving notifications retains opaque workspace settings', () => {
@@ -147,6 +157,7 @@ test('saving notifications retains opaque workspace settings', () => {
   useStore.getState().setNotifications(notifications)
   expect(workspaceDocument().settings).toEqual({
     ...workspaceSettings,
+    ...defaultAgentSettings,
     notifications,
     usage: DEFAULT_USAGE,
   })
@@ -184,7 +195,10 @@ test('a layout saved with the retired plannedFromProject flag restores without i
 test('Implement subagents restore Off or supported integer counts', () => {
   expect(SUBAGENT_COUNTS).toEqual([0, 2, 3, 4, 5, 6, 7, 8])
   for (const implementSubagents of SUBAGENT_COUNTS)
-    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(implementSubagents)
+    expect(
+      restoredAgentDefaults({ settings: { implementSubagents }, projects: [], activeProject: null })
+        .implementSubagents,
+    ).toBe(implementSubagents)
   for (const implementSubagents of [
     undefined,
     null,
@@ -198,7 +212,10 @@ test('Implement subagents restore Off or supported integer counts', () => {
     Infinity,
     {},
   ])
-    expect(restoredLayout({ implementSubagents }).implementSubagents).toBe(0)
+    expect(
+      restoredAgentDefaults({ settings: { implementSubagents }, projects: [], activeProject: null })
+        .implementSubagents,
+    ).toBe(0)
   const restored = restoredLayout({
     implementSubagents: 3,
     taskWorkspaces: { other: { implementSubagents: 7 } },
@@ -207,13 +224,19 @@ test('Implement subagents restore Off or supported integer counts', () => {
   expect(restored.taskWorkspaces?.['']).not.toHaveProperty('implementSubagents')
 })
 
-test('Implement subagents persist per project without dirtying the map', () => {
+test('agent roles and subagents persist globally across projects without dirtying maps', () => {
   const firstProject = useStore.getState().toProject()
   useStore.getState().setImplementSubagents(3)
+  useStore.getState().setAgentRoles({ plan: ['codex'], review: ['codex', 'claude'] })
   expect(useStore.getState().dirty).toBe(false)
   expect(useStore.getState().toProject()).toEqual(firstProject)
   const layout = workspaceDocument().projects[0].layout
-  expect(restoredLayout(layout).implementSubagents).toBe(3)
+  expect(layout).not.toHaveProperty('implementSubagents')
+  expect(layout).not.toHaveProperty('agentRoles')
+  expect(workspaceDocument().settings).toMatchObject({
+    implementSubagents: 3,
+    agentRoles: { plan: ['codex'], review: ['codex', 'claude'] },
+  })
   useStore.getState().loadProject({
     projectId: 'second',
     root: '/second',
@@ -222,11 +245,20 @@ test('Implement subagents persist per project without dirtying the map', () => {
     links: [],
     components: [],
   })
-  expect(useStore.getState().implementSubagents).toBe(0)
+  expect(useStore.getState().implementSubagents).toBe(3)
+  expect(useStore.getState().agentRoles.review).toEqual(['codex', 'claude'])
+  useStore.getState().setAgentRoles({ review: ['claude'] })
   useStore.getState().setImplementSubagents(5)
   useStore.getState().activateProject('p')
-  expect(useStore.getState().implementSubagents).toBe(3)
-  expect(workspaceDocument().projects[1].layout.implementSubagents).toBe(5)
+  expect(useStore.getState().implementSubagents).toBe(5)
+  expect(useStore.getState().agentRoles).toEqual({ review: ['claude'] })
+  expect(workspaceDocument().projects[1].layout).not.toHaveProperty('implementSubagents')
+  useStore.getState().closeProject('second')
+  useStore.getState().closeProject('p')
+  expect(workspaceDocument().settings).toMatchObject({
+    implementSubagents: 5,
+    agentRoles: { review: ['claude'] },
+  })
 })
 
 test('declining dependency detection persists per project without dirtying the map', () => {

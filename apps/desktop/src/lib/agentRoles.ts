@@ -1,9 +1,11 @@
 import {
   AGENT_ROLES,
+  isSubagentCount,
   type AgentRole,
   type AgentRoles,
   type DeviceManifest,
   type TerminalSpec,
+  type WorkspaceDocument,
 } from '../types'
 import { agentDevices, planTerminals } from './plan'
 
@@ -82,7 +84,7 @@ function restoredRoles<T>(
   return out
 }
 
-/** A saved layout's assignments, dropping anything malformed. */
+/** Saved assignments, dropping anything malformed. */
 export function restoredAgentRoles(value: unknown): AgentRoles {
   return restoredRoles(value, (ids, role) => {
     const valid = restoredPresetIds(ids)
@@ -92,6 +94,32 @@ export function restoredAgentRoles(value: unknown): AgentRoles {
         : valid.slice(0, 1)
       : undefined
   })
+}
+
+/** Global settings win, including explicit empty defaults. Migrate legacy project roles once,
+ * preferring the active project and filling unassigned roles from the remaining projects. */
+export function restoredAgentDefaults(
+  document: Pick<WorkspaceDocument, 'settings' | 'projects' | 'activeProject'>,
+) {
+  const settings = document.settings ?? {}
+  const projects = [
+    ...document.projects.filter((p) => p.id === document.activeProject),
+    ...document.projects.filter((p) => p.id !== document.activeProject),
+  ]
+  const legacyRoles: AgentRoles = {}
+  for (const project of projects) {
+    const roles = restoredAgentRoles(project.layout.agentRoles)
+    for (const role of AGENT_ROLES) legacyRoles[role] ??= roles[role]
+  }
+  const subagents = Object.hasOwn(settings, 'implementSubagents')
+    ? settings.implementSubagents
+    : projects.map((p) => p.layout.implementSubagents).find(isSubagentCount)
+  return {
+    agentRoles: Object.hasOwn(settings, 'agentRoles')
+      ? restoredAgentRoles(settings.agentRoles)
+      : restoredAgentRoles(legacyRoles),
+    implementSubagents: isSubagentCount(subagents) ? subagents : 0,
+  }
 }
 
 /** Per-stage Auto presets; older runs have no per-stage assignments. */

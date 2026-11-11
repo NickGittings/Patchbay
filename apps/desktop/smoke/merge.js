@@ -172,6 +172,10 @@
     // Several presets offer reviewer checkboxes; review with this one alone.
     const reviewerBoxes = () => [...reviewForm.querySelectorAll('.agent-job-agents input')]
     assert(reviewerBoxes().length > 1, 'missing reviewer checkboxes')
+    state().setAgentRoles({ review: ['review-smoke'] })
+    await until('review dialog follows role defaults', () =>
+      reviewerBoxes().every((box) => box.checked === (box.value === 'review-smoke')),
+    )
     for (const value of reviewerBoxes().map((box) => box.value)) {
       const box = reviewerBoxes().find((b) => b.value === value)
       if (box.checked !== (value === 'review-smoke')) box.click()
@@ -179,6 +183,25 @@
         reviewerBoxes().some((b) => b.value === value && b.checked === (value === 'review-smoke')),
       )
     }
+    // Branches created elsewhere appear while the dialog stays open.
+    await smoke.startTerminal('@task', 'shell', null)
+    const branchShell = smoke.sessionId('@task', 'shell', null)
+    await smoke.terminalWrite(branchShell, 'git branch review-base-refresh main\r')
+    await until('new local review base appears', () =>
+      [...reviewForm.querySelector('[aria-label="Base branch"]').options].some(
+        (option) => option.value === 'review-base-refresh',
+      ),
+    )
+    choose(reviewForm.querySelector('[aria-label="Base branch"]'), 'review-base-refresh')
+    await until(
+      'new branch selected',
+      () => reviewForm.querySelector('[aria-label="Base branch"]').value === 'review-base-refresh',
+    )
+    await smoke.terminalWrite(branchShell, 'git branch -D review-base-refresh\r')
+    await until(
+      'removed review base returns to main',
+      () => reviewForm.querySelector('[aria-label="Base branch"]').value === 'main',
+    )
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     reviewForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     const reviewSid = await until('review session panel', () => {

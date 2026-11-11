@@ -1,14 +1,15 @@
 ### Scheduler
 
-The scheduler supports **Keep going in background**, opt-in **Resume when usage resets**, and
-one-time **Resume at** schedules for paused Auto runs. Recurring schedules, delayed initial starts,
+The scheduler supports **Keep going in background**, opt-in **Resume when usage resets**,
+one-time **Resume at** schedules for paused Auto runs, and restart continuation for active
+**Autonomous execution** runs. Recurring schedules, delayed initial starts,
 standalone agent scheduling, queueing and power/window controls are not implemented.
 `AutoRun.background` is per-run workspace UI state, restored by `restoredAuto`, never map data or
-`dirty`. `driveable` allows an active worktree or a background run whose project remains open in
+`dirty`. `driveable` allows an active worktree, or a background or autonomous run whose project remains open in
 `projectOrder`. The main window's existing `followAuto` drives every open project. It still needs
 the app running; this adds no headless service or macOS LaunchAgent, nor a keep-awake guarantee.
 
-Auto passes project/worktree targets to planner and review handoffs. Background runs and Simple
+Auto passes project/worktree targets to planner and review handoffs. Background and autonomous runs and Simple
 mode use `presentation: 'stay'`; foreground Full mode follows the new agent into Build.
 `addRootTerminal(device, target)` adds a terminal to that workspace without selecting it. Auto's
 project-wide planner uses the requested worktree's highlights. A project has one Auto planner turn,
@@ -22,19 +23,26 @@ acquired a planner holds no turn.
 `pausedMs` records when the pause began. Pause defaults to `user`; transient validation and Git
 failures use `interrupted`. Launch errors become `failed`, including an unconfirmed launch during
 a disconnect, so reconnect never retries a possibly running agent. Invalid configuration, branch
-changes, competing agents, broken/superseded review rounds and unreadable artifacts pause as
-`needsUser`. Only `needsUser` pauses appear in Attention; other pause kinds stay quiet. Service
+changes and competing agents pause as `needsUser`. Default execution also pauses on
+broken/superseded review rounds and unreadable artifacts; autonomous execution uses bounded
+recovery for owned interruptions and missing artifacts (see [Auto](views-and-auto.md)). Only `needsUser` pauses appear in Attention; other pause kinds stay quiet. Service
 disconnection defers new launches until reconciliation reconnects. Completed stage transitions and
 validation results still save during a disconnect, so driving continues from the completed work. Resume clears pause metadata; restore preserves an existing
 pause timestamp.
 Restore preserves `user`/`needsUser` pauses (legacy unclassified pauses count as user), turns active
 runs and resumable pauses into `restored`, and keeps input/approval waits as `needsUser`. The scheduler resumes only explicit `usage` and `scheduled` pauses with a persisted trigger;
-ordinary restored, inactive and interrupted runs still require manual Resume.
+ordinary restored, inactive and interrupted runs still require manual Resume unless an active
+autonomous run requested startup continuation. `restoredAuto` records `restartPending` only for
+previously Running autonomous runs (or their unconsumed restoration request). The same controller
+reconciles session ownership, branch, authentication and hooks before Resume; a replacement session
+blocks instead of being adopted. Future time schedules take precedence; overdue triggers execute
+once through the scheduled path. Explicit pauses, blocked pauses, failed runs and manual merge
+waits never acquire startup continuation. Cancelling a schedule leaves its autonomous run paused.
 
 The Git watcher remains attached to each project's selected worktree (`task_activate` →
 `ProjectAccess.task_root`). Auto reads worktrees, branch status and findings directly every five
-seconds, independent of the UI's Git badges. No Rust↔TS command/type mirrors change in this phase;
-`background`, `pauseKind` and `pausedMs` are frontend workspace fields. `smoke:auto` exercises the
+seconds, independent of the UI's Git badges. `background`, `autonomous`, recovery bookkeeping, `pauseKind` and `pausedMs` are frontend workspace
+fields; the optional autonomous flag also travels in the Rust↔TS Auto briefing. `smoke:auto` exercises the
 full background plan/build/validate/review/merge path while another worktree remains selected.
 
 ### Scheduled resume
@@ -42,7 +50,7 @@ full background plan/build/validate/review/merge path while another worktree rem
 `AutoRun.resumeOnUsageReset` defaults to false. The existing launch usage gate records a `usage`
 pause and structured `usageWait` (required providers and latest blocking reset). Opted-in runs
 also record `resumeTrigger: { kind: 'usage', atMs }`. Before resuming, usage is refreshed; all
-blocking provider windows must clear. Extended reset deadlines update the pending trigger.
+blocking provider windows must clear. Extended reset deadlines update both the pending trigger and saved usage wait.
 Missing or expired windows retain the existing allow-through behavior. This covers the existing
 gate only: it does not add gates to scan/worker launches or detect mid-turn rate-limit failures.
 

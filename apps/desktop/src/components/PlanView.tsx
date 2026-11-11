@@ -532,6 +532,7 @@ export default function PlanView() {
               <span className="tab-actions">
                 <StatusLabel status={terminalStatus(active.kind, session)} />
                 <TerminalControl
+                  kind={active.kind}
                   componentId={PLAN_SCOPE}
                   terminalId={active.id}
                   sid={sid}

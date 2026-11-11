@@ -195,9 +195,6 @@ export interface ProjectState {
   planStory: string | null
   planStoryTerminal: string | null
   planStartedWith: Record<string, string>
-  agentRoles: AgentRoles
-  /** Parallel subagents requested by Implement; 0 disables it (workspace layout only). */
-  implementSubagents: number
   /** Validator suggestions the user declined (`validatorKey`; workspace layout only). */
   validatorDeclined: string[]
   /** Stack suggestions the user declined (`validatorKey`; workspace layout only). */
@@ -351,9 +348,9 @@ interface State {
   planStory: string | null
   planStoryTerminal: string | null
   planStartedWith: Record<string, string>
-  /** The agent preset assigned to each role in this project (workspace layout only). */
+  /** Global agent presets per role, persisted in workspace settings. */
   agentRoles: AgentRoles
-  /** Parallel subagents requested by Implement; 0 disables it (workspace layout only). */
+  /** Global Implement subagent count; 0 disables it. */
   implementSubagents: number
   setAgentRoles: (roles: AgentRoles) => void
   setImplementSubagents: (subagents: number) => void
@@ -1296,8 +1293,6 @@ function emptyProjectState(): ProjectState {
     planStory: null,
     planStoryTerminal: null,
     planStartedWith: {},
-    agentRoles: {},
-    implementSubagents: 0,
     validatorDeclined: [],
     stackDeclined: [],
     dependencyPromptDismissed: false,
@@ -1336,8 +1331,6 @@ function projectState(s: State): ProjectState {
     planStory,
     planStoryTerminal,
     planStartedWith,
-    agentRoles,
-    implementSubagents,
     validatorDeclined,
     stackDeclined,
     dependencyPromptDismissed,
@@ -1379,8 +1372,6 @@ function projectState(s: State): ProjectState {
     planStory,
     planStoryTerminal,
     planStartedWith,
-    agentRoles,
-    implementSubagents,
     validatorDeclined,
     stackDeclined,
     dependencyPromptDismissed,

@@ -56,6 +56,7 @@ export default function TerminalGrid({
               <span className="spacer" />
               <StatusLabel status={status} />
               <TerminalControl
+                kind={terminal.kind}
                 componentId={componentId}
                 terminalId={terminal.id}
                 sid={sid}

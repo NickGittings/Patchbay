@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeRequest {
+    /// Refuse automatic merge preparation if the reviewed commit moved during frontend checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_head: Option<String>,
     pub source: String,
     pub source_branch: String,
     pub destination: String,
@@ -269,6 +272,13 @@ pub fn prepare(
     );
     let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
     clean(&mut source, &request.source_branch, "source", &common)?;
+    ensure!(
+        request
+            .expected_source_head
+            .as_ref()
+            .is_none_or(|head| *head == source.head),
+        "The source changed since review; review again before merging"
+    );
     let destination_dirs = clean(
         &mut destination,
         &request.destination_branch,
@@ -387,6 +397,7 @@ mod tests {
                 groups: vec![],
             };
             let request = MergeRequest {
+                expected_source_head: None,
                 source: source.to_string_lossy().into(),
                 source_branch: "feature".into(),
                 destination: project.root.clone(),
@@ -543,9 +554,29 @@ mod tests {
     }
 
     #[test]
+    fn automatic_merge_preparation_requires_the_reviewed_source_head() {
+        let mut f = Fixture::new();
+        let source = Path::new(&f.request.source);
+        let head = git::run(git::git(source).args(["rev-parse", "HEAD"])).unwrap();
+        f.request.expected_source_head = Some(head);
+        let job = f.prepare().unwrap();
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+        git::run(git::git(source).args(["commit", "--allow-empty", "-qm", "Changed after review"]))
+            .unwrap();
+        assert!(
+            f.prepare()
+                .err()
+                .expect("source must still match review")
+                .to_string()
+                .contains("The source changed since review")
+        );
+    }
+
+    #[test]
     fn auto_context_is_opt_in_for_jobs() {
         let f = Fixture::new();
         let auto = context::AutoBrief {
+            autonomous: false,
             goal: "Goal".into(),
             fix_floor: None,
             effort_note: "Thorough".into(),

@@ -342,7 +342,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
       {settings === 'profiles' && (
         <AgentProfilesPanel onClose={() => useRail.setState({ settings: null })} />
       )}
-      {settings === 'roles' && project && (
+      {settings === 'roles' && (
         <AgentRolesPanel onClose={() => useRail.setState({ settings: null })} />
       )}
       {settings === 'notifications' && (

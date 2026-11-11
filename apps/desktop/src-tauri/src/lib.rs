@@ -885,6 +885,7 @@ async fn plan_start(
     request_id: String,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -955,7 +956,9 @@ async fn plan_start(
         {
             return Err("Choose a story to plan".into());
         }
-        let kickoff = if story_section.is_some() {
+        let kickoff = if fresh_conversation.unwrap_or(false) {
+            None
+        } else if story_section.is_some() {
             Some(context::Kickoff::PlanStory)
         } else if kickoff == Some(context::Kickoff::PlanStory) {
             None
@@ -1011,7 +1014,11 @@ async fn plan_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, artifact_task, &mut spec);
         }
-        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
+        let id = if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)?
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+        };
         Ok(id)
     })
     .await
@@ -1690,6 +1697,7 @@ fn save_device(device: DeviceManifest) -> CmdResult<String> {
 async fn terminal_start(
     request_id: String,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1753,7 +1761,11 @@ async fn terminal_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        let id = bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?;
+        let id = if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)?
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+        };
         Ok(id)
     })
     .await
@@ -1766,6 +1778,7 @@ async fn task_root_start(
     request_id: String,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
+    fresh_conversation: Option<bool>,
     project_id: String,
     state: State<'_, AppState>,
     project: Project,
@@ -1817,6 +1830,11 @@ async fn task_root_start(
         let (kickoff, handoff) =
             context::root_handoff(&project, task.as_deref(), &selected, kickoff, fix.as_ref())
                 .map_err(err)?;
+        let kickoff = if fresh_conversation.unwrap_or(false) {
+            None
+        } else {
+            kickoff
+        };
         let auto_section = auto.as_ref().map(|a| a.root_section(kickoff));
         let own = auto_section.into_iter().chain(section).chain(handoff);
         let sections = briefing_sections(
@@ -1849,7 +1867,11 @@ async fn task_root_start(
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        if fresh_conversation.unwrap_or(false) {
+            bridge.new_conversation(spec, metadata, request_id)
+        } else {
+            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        }
     })
     .await
 }
@@ -1914,6 +1936,7 @@ async fn map_agent_start(
 
 /// Launch the agent that proposes the project's local stack, at the project root,
 /// beside dependency detection. `terminal` is the chosen agent preset.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn stack_agent_start(
     window: WebviewWindow,
@@ -1923,6 +1946,8 @@ async fn stack_agent_start(
     terminal: TerminalSpec,
     request_id: String,
     resume: Option<bool>,
+    mut stack_id: Option<String>,
+    new_detection: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1930,9 +1955,25 @@ async fn stack_agent_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
+        // Start/restart from a retained terminal must keep its target after a webview reload.
+        // Explicit new detection is allowed to clear it and build an additive briefing.
+        if stack_id.is_none() && !new_detection.unwrap_or(false) {
+            let id = model::task_session_id(
+                &project_id,
+                model::MAP_SCOPE,
+                patchbay_core::stack_proposals::STACK_TERMINAL,
+                None,
+            );
+            stack_id = bridge.call(patchbay_core::session::Request::StackSelection { id })?;
+        }
         let project = access.restrict(project, &[]).map_err(err)?;
-        let (job, mut spec) =
-            patchbay_core::stack_proposals::prepare(&project, &terminal, &AllowAll).map_err(err)?;
+        let (job, mut spec) = patchbay_core::stack_proposals::prepare_for(
+            &project,
+            &terminal,
+            stack_id.as_deref(),
+            &AllowAll,
+        )
+        .map_err(err)?;
         let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);

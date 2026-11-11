@@ -34,6 +34,7 @@ vi.mock('./ipc', () => ({
   reviewRead: vi.fn(),
   terminalStop: vi.fn(),
   terminalSnapshot: vi.fn(),
+  terminalPrompt: vi.fn(),
   graphValidationCancel: vi.fn(),
 }))
 vi.mock('./sessions', () => ({
@@ -4431,89 +4432,100 @@ test('cancellation during scheduled authentication prevents a resume', async () 
   })
 })
 
-test('usage resumes only after every required provider window clears, rechecking extended resets', async () => {
-  vi.useFakeTimers()
-  vi.setSystemTime(1000)
-  load()
-  const codex = useStore.getState().devices[0]
-  useStore.setState({
-    devices: [codex, { ...codex, id: 'claude', command: 'claude', adapter: 'claude' }],
-  })
-  vi.mocked(ipc.agentProvider).mockImplementation(async (d) =>
-    d.adapter === 'claude' ? 'claude' : 'codex',
-  )
-  const data = {
-    claude: {
-      provider: 'claude' as const,
-      fiveHour: null,
-      weekly: { usedPercent: 96, resetsAtMs: 6000, windowMinutes: 10080 },
-      observedMs: 1000,
-    },
-    codex: {
-      provider: 'codex' as const,
-      weekly: null,
-      fiveHour: { usedPercent: 96, resetsAtMs: 3000, windowMinutes: 300 },
-      observedMs: 1000,
-    },
-    claudeCapture: { installed: true, chained: null, source: '/settings.json' },
-    claudeError: null,
-    codexError: null,
-  }
-  vi.mocked(ipc.usageRead).mockResolvedValue(data)
-  vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
-    useStore.setState({ sessions: { s: reviewSession('working'), lane: reviewSession('working') } })
-    return request.lane === 'claude' ? 'lane' : 's'
-  })
-  await withFollower(async () => {
-    await startAuto('p', 't', {
-      ...run(),
-      effort: 'light',
-      resumeOnUsageReset: true,
-      reviewers: ['codex', 'claude'],
+test.each([false, true])(
+  'usage reset scheduling refreshes and retains extended deadlines (autonomous=%s)',
+  async (autonomous) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    const codex = useStore.getState().devices[0]
+    useStore.setState({
+      devices: [codex, { ...codex, id: 'claude', command: 'claude', adapter: 'claude' }],
     })
-    await flush()
-    expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 6000 })
-    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
-    data.claude.weekly.resetsAtMs = 11000
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 11000 })
-    expect(jobs.startReviewAgents).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(5000)
-    await flush()
-    expect(jobs.startReviewAgents).toHaveBeenCalledTimes(1)
-    expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
-    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
-  })
-})
+    vi.mocked(ipc.agentProvider).mockImplementation(async (d) =>
+      d.adapter === 'claude' ? 'claude' : 'codex',
+    )
+    const data = {
+      claude: {
+        provider: 'claude' as const,
+        fiveHour: null,
+        weekly: { usedPercent: 96, resetsAtMs: 6000, windowMinutes: 10080 },
+        observedMs: 1000,
+      },
+      codex: {
+        provider: 'codex' as const,
+        weekly: null,
+        fiveHour: { usedPercent: 96, resetsAtMs: 3000, windowMinutes: 300 },
+        observedMs: 1000,
+      },
+      claudeCapture: { installed: true, chained: null, source: '/settings.json' },
+      claudeError: null,
+      codexError: null,
+    }
+    vi.mocked(ipc.usageRead).mockResolvedValue(data)
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async (_p, request) => {
+      useStore.setState({
+        sessions: { s: reviewSession('working'), lane: reviewSession('working') },
+      })
+      return request.lane === 'claude' ? 'lane' : 's'
+    })
+    await withFollower(async () => {
+      await startAuto('p', 't', {
+        ...run(),
+        effort: 'light',
+        resumeOnUsageReset: true,
+        autonomous,
+        reviewers: ['codex', 'claude'],
+      })
+      await flush()
+      expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 6000 })
+      expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+      data.claude.weekly.resetsAtMs = 11000
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 11000 })
+      expect(autoRun('p', 't')?.usageWait?.atMs).toBe(11000)
+      expect(jobs.startReviewAgents).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(jobs.startReviewAgents).toHaveBeenCalledTimes(1)
+      expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
+      expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+    })
+  },
+)
 
-test('cancelling while usage refresh is pending leaves Auto paused', async () => {
-  vi.useFakeTimers()
-  vi.setSystemTime(1000)
-  load()
-  setRun({
-    status: 'paused',
-    pauseKind: 'usage',
-    resumeOnUsageReset: true,
-    usageWait: { providers: ['codex'], atMs: 500 },
-    resumeTrigger: { kind: 'usage', atMs: 500 },
-  })
-  const empty = await ipc.usageRead()
-  let resolve!: (data: typeof empty) => void
-  vi.mocked(ipc.usageRead).mockImplementationOnce(
-    () =>
-      new Promise((r) => {
-        resolve = r
-      }),
-  )
-  await withFollower(async () => {
-    await flush()
-    cancelAutoResume('p', 't')
-    resolve(empty)
-    await flush()
-    expect(autoRun('p', 't')?.status).toBe('paused')
-    expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
-  })
-})
+test.each([false, true])(
+  'cancelling a pending usage refresh leaves Auto paused (autonomous=%s)',
+  async (autonomous) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    setRun({
+      status: 'paused',
+      pauseKind: 'usage',
+      autonomous,
+      resumeOnUsageReset: true,
+      usageWait: { providers: ['codex'], atMs: 500 },
+      resumeTrigger: { kind: 'usage', atMs: 500 },
+    })
+    const empty = await ipc.usageRead()
+    let resolve!: (data: typeof empty) => void
+    vi.mocked(ipc.usageRead).mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r
+        }),
+    )
+    await withFollower(async () => {
+      await flush()
+      cancelAutoResume('p', 't')
+      resolve(empty)
+      await flush()
+      expect(autoRun('p', 't')?.status).toBe('paused')
+      expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+    })
+  },
+)
 
 test.each([false, true])(
   'overdue schedules respect background permission (%s)',
@@ -4540,3 +4552,781 @@ test.each([false, true])(
     })
   },
 )
+
+function autonomousPlanner(patch: Partial<AutoRun> = {}) {
+  load()
+  vi.mocked(ipc.gitReview).mockResolvedValue({ ahead: false, changes: {}, affected: [] })
+  agent('review', 1200)
+  useStore.setState({
+    sessions: { s: { ...useStore.getState().sessions.s, generation: 7 } },
+  })
+  setRun({
+    autonomous: true,
+    stage: 'plan',
+    effort: 'light',
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1000,
+    launchAtMs: 1000,
+    ...patch,
+  })
+  vi.mocked(ipc.terminalPrompt).mockResolvedValue(undefined)
+}
+
+test.each([false, true])(
+  'autonomous recovery saves a plan and respects automatic merge=%s',
+  async (automatic) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    autonomousPlanner({ merge: { mode: automatic ? 'auto' : 'ask', destinationBranch: 'main' } })
+    const { implementPlannerPlan } = await import('./planHandoff')
+    vi.mocked(implementPlannerPlan).mockImplementation(async () => {
+      agent('working', 2200)
+      return { sessionId: 's', requestId: 'implement-request' }
+    })
+    await withFollower(async () => {
+      await flush()
+      expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+      expect(ipc.terminalPrompt).toHaveBeenCalledWith(
+        's',
+        7,
+        expect.stringContaining('Resolve your question'),
+      )
+      expect(autoRun('p', 't')?.recovery?.attempts).toBe(1)
+      vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Saved plan', cut: false })
+      agent('working', 2100)
+      await flush()
+      agent('review', 2150)
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(implementPlannerPlan).toHaveBeenCalledOnce()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'implement', autonomous: true })
+      expect(autoRun('p', 't')?.recovery).toBeUndefined()
+    })
+  },
+)
+
+test('recovery prompts are deduplicated across polling and restart bookkeeping', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  autonomousPlanner()
+  await withFollower(async () => {
+    await flush()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+    const { restoredAuto } = await import('./autoRestore')
+    const restored = restoredAuto(autoRun('p', 't'))!
+    expect(restored.recovery).toEqual(autoRun('p', 't')?.recovery)
+    // The same confirmed prompt is never submitted again even after a new follower starts.
+    useStore
+      .getState()
+      .patchTask('p', 't', { auto: { ...restored, status: 'running', restartPending: false } })
+    await flush()
+    expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+  })
+})
+
+test('three interrupted agents with unchanged artifacts exhaust recovery; relaunching is not progress', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  autonomousPlanner()
+  useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+  vi.mocked(awaitSessions.startTerminal).mockImplementation(async () => {
+    const sid = (await import('../types')).plannerSessionId('codex', 'p', 't')
+    useStore.setState({ sessions: { [sid]: { running: false, startedMs: Date.now() } } })
+    return 'request'
+  })
+  await withFollower(async () => {
+    await flush()
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+    }
+    expect(awaitSessions.startTerminal).toHaveBeenCalledTimes(3)
+    expect(autoRun('p', 't')).toMatchObject({ status: 'failed', recovery: { attempts: 3 } })
+    expect(autoRun('p', 't')?.reason).toContain('Recovery budget exhausted')
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  })
+})
+
+test.each(['needsInput', 'approval', 'foreign', 'relaunched', 'branch'] as const)(
+  'autonomous recovery leaves %s blocked without sending a continuation',
+  async (blocker) => {
+    autonomousPlanner()
+    if (blocker === 'needsInput') agent('needsInput', 1300)
+    if (blocker === 'approval') {
+      const s = useStore.getState().sessions.s
+      useStore.setState({
+        sessions: {
+          s: {
+            ...s,
+            status: { ...s.status!, agent: { ...s.status!.agent!, approvalPending: true } },
+          },
+        },
+      })
+    }
+    if (blocker === 'foreign') setRun({ ...autoRun('p', 't'), sessionOwned: false })
+    if (blocker === 'relaunched')
+      useStore.setState({ sessions: { s: { running: true, startedMs: 5000 } } })
+    if (blocker === 'branch') {
+      setRun({ ...autoRun('p', 't'), branch: 'feature' })
+      vi.mocked(ipc.gitWorktrees).mockResolvedValue([{ ...tree, branch: 'different' }])
+    }
+    await withFollower(async () => {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
+      expect(ipc.terminalPrompt).not.toHaveBeenCalled()
+      expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    })
+  },
+)
+
+test.each(['pause', 'stop'] as const)(
+  '%s during recovery reconciliation cancels pending actions',
+  async (action) => {
+    autonomousPlanner()
+    let finish!: () => void
+    vi.mocked(awaitSessions.reconcileFreshSessions).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+    )
+    await withFollower(async () => {
+      await flush()
+      if (action === 'pause') pauseAuto('p', 't')
+      else stopAuto('p', 't')
+      finish()
+      await flush()
+      expect(autoRun('p', 't')?.status).toBe(action === 'pause' ? 'paused' : 'stopped')
+      expect(ipc.terminalPrompt).not.toHaveBeenCalled()
+      expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    })
+  },
+)
+
+test('a refused continuation becomes an explicit pause and is never blindly retried', async () => {
+  autonomousPlanner()
+  vi.mocked(ipc.terminalPrompt).mockRejectedValue(new Error('Terminal is not at a ready prompt'))
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
+    expect(autoRun('p', 't')?.reason).toContain('not confirmed')
+    expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+  })
+})
+
+test.each([false, true])(
+  'autonomous fix budget exhaustion ends the run with merge=%s',
+  async (automatic) => {
+    load()
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ high: 1 }))
+    const settings = run({
+      autonomous: true,
+      effort: 'light',
+      round: 1,
+      merge: { mode: automatic ? 'auto' : 'ask', destinationBranch: 'main' },
+    })
+    expect(reviewDecision(settings, findings({ high: 1 }))).toMatchObject({
+      status: 'failed',
+      waitingFor: 'fixBudget',
+    })
+    setRun({ ...settings, stage: 'fix' })
+    await withFollower(async () => {
+      await flush()
+      expect(autoRun('p', 't')?.status).toBe('failed')
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      const { fixReviewFindings } = await import('./reviewHandoff')
+      expect(fixReviewFindings).not.toHaveBeenCalled()
+    })
+  },
+)
+
+test('failed or outdated validation cannot authorize an automatic merge', () => {
+  const current = snapshot({ freshness: 'current', findings: findings() })
+  const settings = run({ autonomous: true, merge: { mode: 'auto', destinationBranch: 'main' } })
+  expect(mergeableHead(current, settings)).toBeUndefined()
+  expect(inferStage(current, settings).stage).toBe('validate')
+  expect(
+    mergeableHead(current, { ...settings, validation: [], validationHead: 'old' }),
+  ).toBeUndefined()
+  expect(
+    mergeableHead(current, {
+      ...settings,
+      validation: [],
+      validationHead: 'abc',
+      validationFindings: 'Failed tests',
+    }),
+  ).toBeUndefined()
+  expect(mergeableHead(current, { ...settings, validation: [], validationHead: 'abc' })).toBe('abc')
+})
+
+test('autonomous work continues in an inactive worktree while its project is open', async () => {
+  load()
+  setRun({ autonomous: true, stage: 'plan' })
+  mockScopePlannerLaunch()
+  useStore.getState().setActiveTask(null, true)
+  await withFollower(async () => {
+    await flush()
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')?.status).toBe('running')
+    expect(useStore.getState().activeTask).toBeNull()
+  })
+})
+
+test('startup reconciles and resumes an active autonomous run once', async () => {
+  autonomousPlanner({ status: 'paused', pauseKind: 'restored', restartPending: true })
+  agent('working', 1500)
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 's',
+        metadata: { projectId: 'p', componentId: '@plan', task: 't', kind: 'agent' },
+        spec: { cwd: tree.path },
+        snapshot: null,
+      } as SessionRecord,
+    ],
+  })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', restartPending: false })
+    expect(awaitSessions.reconcileFreshSessions).toHaveBeenCalledOnce()
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+  })
+})
+
+test.each(['user', 'needsUser', 'usage', 'scheduled'] as const)(
+  'autonomous startup preserves a %s pause',
+  async (pauseKind) => {
+    load()
+    setRun({ autonomous: true, status: 'paused', pauseKind, stage: 'plan' })
+    await withFollower(async () => {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind })
+      expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+    })
+  },
+)
+
+test.each(['future', 'overdue', 'cancelled'] as const)(
+  'autonomous startup respects a %s schedule',
+  async (schedule) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    load()
+    setRun({
+      autonomous: true,
+      status: 'paused',
+      stage: 'plan',
+      pauseKind: 'scheduled',
+      resumeTrigger: { kind: 'time', atMs: schedule === 'overdue' ? 500 : 5000 },
+    })
+    mockScopePlannerLaunch()
+    vi.mocked(ipc.gitReview).mockResolvedValue({ ahead: false, changes: {}, affected: [] })
+    if (schedule === 'cancelled') cancelAutoResume('p', 't')
+    await withFollower(async () => {
+      await flush()
+      if (schedule !== 'overdue') expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+      if (schedule === 'future') await vi.advanceTimersByTimeAsync(5000)
+      if (schedule === 'cancelled') await vi.advanceTimersByTimeAsync(10000)
+      await flush()
+      if (schedule === 'cancelled') expect(autoRun('p', 't')?.status).toBe('paused')
+      else {
+        expect(autoRun('p', 't')?.status).toBe('running')
+        expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+      }
+    })
+  },
+)
+
+test.each(['missing', 'invalid'] as const)(
+  'autonomous review recovers a %s artifact and advances only after a clean review',
+  async (artifact) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(50000)
+    load()
+    useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+    setRun({
+      autonomous: true,
+      effort: 'light',
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      sessionLane: null,
+      turnSince: 1000,
+      launchAtMs: 1000,
+      reviewRound: 'round',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+    })
+    if (artifact === 'invalid')
+      vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), verdict: null })
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+      agent('working', 51000)
+      return 's'
+    })
+    await withFollower(async () => {
+      await flush()
+      expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+      expect(autoRun('p', 't')).toMatchObject({
+        status: 'running',
+        stage: 'review',
+        recovery: { attempts: 1 },
+      })
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), startedMs: 50001 })
+      agent('review', 52000)
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(jobs.startMergeAgent).toHaveBeenCalledOnce()
+    })
+  },
+)
+
+test('Pause while recovery is stopping an owned agent prevents relaunch', async () => {
+  autonomousPlanner()
+  useStore.setState({
+    sessions: { s: { ...useStore.getState().sessions.s, generation: undefined } },
+  })
+  let finish!: () => void
+  vi.mocked(ipc.terminalStop).mockReturnValue(
+    new Promise<void>((resolve) => {
+      finish = resolve
+    }),
+  )
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+    pauseAuto('p', 't')
+    finish()
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'user',
+      recovery: { attempts: 1, pending: false },
+    })
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+  })
+})
+
+test('startup reconciliation refuses a session relaunched by other work', async () => {
+  autonomousPlanner({ status: 'paused', pauseKind: 'restored', restartPending: true })
+  useStore.setState({ sessions: { s: { running: true, startedMs: 9000 } } })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'needsUser',
+      restartPending: false,
+    })
+    expect(ipc.terminalStop).not.toHaveBeenCalled()
+    expect(ipc.terminalPrompt).not.toHaveBeenCalled()
+    expect(awaitSessions.startTerminal).not.toHaveBeenCalled()
+  })
+})
+
+test('validation of the same HEAD does not cover subsequent uncommitted edits', () => {
+  const settings = run({
+    merge: { mode: 'auto', destinationBranch: 'main' },
+    validation: [],
+    validationHead: 'abc',
+    validationMark: 'before-edit',
+  })
+  const changed = snapshot({ freshness: 'current', findings: findings(), workMark: 'after-edit' })
+  expect(mergeableHead(changed, settings)).toBeUndefined()
+  expect(inferStage(changed, settings)).toMatchObject({ stage: 'validate', status: 'running' })
+})
+
+test.each(['light', 'standard'] as const)(
+  'an interrupted automatic merge retains its reviewed commit (%s)',
+  async (effort) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    const settings = run({
+      autonomous: true,
+      effort,
+      stage: 'merge',
+      reviewedHead: 'abc',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+      validation: [],
+      validationHead: 'abc',
+    })
+    const current = await autoSnapshot('p', 't', settings)
+    setRun({ ...settings, validationMark: current.workMark })
+    await withFollower(async () => {
+      await flush()
+      await flush()
+      expect(jobs.startMergeAgent).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        expect.objectContaining({ expectedSourceHead: 'abc' }),
+        expect.anything(),
+        expect.any(String),
+        expect.anything(),
+      )
+      expect(autoRun('p', 't')).toMatchObject({
+        stage: 'merge',
+        reviewedHead: 'abc',
+        recovery: { attempts: 1 },
+      })
+    })
+  },
+)
+
+test.each(['head', 'findings'] as const)(
+  'an interrupted automatic merge rechecks changed %s before retrying',
+  async (changed) => {
+    load()
+    useStore.setState({ sessions: { s: { running: false, startedMs: 1000 } } })
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    setRun({
+      autonomous: true,
+      effort: 'light',
+      stage: 'merge',
+      reviewedHead: 'abc',
+      merge: { mode: 'auto', destinationBranch: 'main' },
+      sessionId: 's',
+      sessionOwned: true,
+      sessionStartedMs: 1000,
+    })
+    vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+      agent('working', Date.now())
+      return 's'
+    })
+    const hooks = await ipc.agentHooksCheck('codex')
+    vi.mocked(ipc.agentHooksCheck).mockImplementationOnce(async () => {
+      if (changed === 'head')
+        vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+          { ...tree, head: 'new-commit' },
+          { ...tree, path: '/p', branch: 'main', current: true },
+        ])
+      else vi.mocked(ipc.reviewRead).mockResolvedValue(findings({ high: 1 }))
+      return hooks
+    })
+    await withFollower(async () => {
+      await flush()
+      await flush()
+      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+      expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
+    })
+  },
+)
+
+test('automatic merge rechecks review inputs after asynchronous hook preflight', async () => {
+  load()
+  setRun({
+    autonomous: true,
+    effort: 'light',
+    stage: 'merge',
+    reviewedHead: 'abc',
+    merge: { mode: 'auto', destinationBranch: 'main' },
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  let release!: (result: Awaited<ReturnType<typeof ipc.agentHooksCheck>>) => void
+  vi.mocked(ipc.agentHooksCheck).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve
+      }),
+  )
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    agent('working', Date.now())
+    return 's'
+  })
+  await withFollower(async () => {
+    await flush()
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+      { ...tree, head: 'new-commit' },
+      { ...tree, path: '/p', branch: 'main', current: true },
+    ])
+    release({ installed: true, disabled: false, reporterAvailable: true } as Awaited<
+      ReturnType<typeof ipc.agentHooksCheck>
+    >)
+    await flush()
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
+  })
+})
+
+test('a source change caught by merge preparation returns autonomous execution to review', async () => {
+  load()
+  setRun({
+    autonomous: true,
+    effort: 'light',
+    stage: 'merge',
+    reviewedHead: 'abc',
+    merge: { mode: 'auto', destinationBranch: 'main' },
+  })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(jobs.startMergeAgent).mockRejectedValue(
+    new Error('The source changed since review; review again before merging'),
+  )
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    agent('working', Date.now())
+    return 's'
+  })
+  await withFollower(async () => {
+    await flush()
+    await flush()
+    expect(jobs.startMergeAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ expectedSourceHead: 'abc' }),
+      expect.anything(),
+      expect.any(String),
+      expect.anything(),
+    )
+    expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'review',
+      status: 'running',
+      reviewedHead: undefined,
+    })
+  })
+})
+
+test('Pause while startup reconciliation fails preserves the explicit pause', async () => {
+  autonomousPlanner({ status: 'paused', pauseKind: 'restored', restartPending: true })
+  let reject!: (e: Error) => void
+  vi.mocked(awaitSessions.reconcileFreshSessions).mockReturnValueOnce(
+    new Promise((_, fail) => {
+      reject = fail
+    }),
+  )
+  await withFollower(async () => {
+    await flush()
+    pauseAuto('p', 't')
+    reject(new Error('Session connection lost'))
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'user',
+      reason: 'Paused by you',
+      restartPending: false,
+    })
+  })
+})
+
+async function autonomousScan() {
+  load()
+  const providers = await import('./orchestration')
+  const current = {
+    id: 'scan',
+    kind: 'scan',
+    state: 'paused',
+    sealed: false,
+    jobs: [
+      {
+        id: 'job',
+        requestId: 'request',
+        sessionId: null,
+        state: 'failed',
+        report: null,
+        instructions: 'Inspect',
+        error: 'Missing submission',
+      },
+    ],
+    error: 'Missing submission',
+    coordinator: null,
+  } as unknown as import('./orchestration').ProviderRun
+  vi.mocked(providers.providerRuns).mockImplementation(async () => [current])
+  vi.mocked(providers.driveProviderRuns).mockImplementation(async () => [current])
+  vi.mocked(providers.controlProviderRun).mockImplementation(async (_p, _id, control) => {
+    if (control.kind === 'retry' || control.kind === 'continueJob') {
+      current.state = 'running'
+      current.jobs[0].state = 'running'
+      if (control.kind === 'retry') current.jobs[0].requestId += '-retry'
+    }
+    if (control.kind === 'pause') current.state = 'paused'
+    if (control.kind === 'stop') current.state = 'stopped'
+    return current
+  })
+  setRun({
+    autonomous: true,
+    stage: 'scan',
+    scanRound: 'scan',
+    scanners: ['codex'],
+    effort: 'light',
+  })
+  return { providers, current }
+}
+
+test('autonomous scanner recovery preserves reports and continues to planning', async () => {
+  vi.useFakeTimers()
+  const { providers, current } = await autonomousScan()
+  mockScopePlannerLaunch()
+  await withFollower(async () => {
+    await flush()
+    expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'scan', {
+      kind: 'retry',
+      job: 'job',
+    })
+    expect(autoRun('p', 't')).toMatchObject({
+      stage: 'scan',
+      recovery: { attempts: 1, pending: false },
+    })
+    current.state = 'complete'
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', 't')?.stage).toBe('plan')
+    expect(awaitSessions.startTerminal).toHaveBeenCalledOnce()
+  })
+})
+
+test('scanner relaunches without changed reports exhaust the same persisted stage budget', async () => {
+  vi.useFakeTimers()
+  const { providers, current } = await autonomousScan()
+  await withFollower(async () => {
+    await flush()
+    for (let i = 0; i < 3; i++) {
+      current.state = 'paused'
+      current.jobs[0].state = 'failed'
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+    }
+    expect(
+      vi.mocked(providers.controlProviderRun).mock.calls.filter((call) => call[2].kind === 'retry'),
+    ).toHaveLength(3)
+    expect(autoRun('p', 't')).toMatchObject({ status: 'failed', recovery: { attempts: 3 } })
+  })
+})
+
+test.each(['prompt', 'permission', 'foreign'] as const)(
+  'provider recovery respects an owned %s',
+  async (condition) => {
+    const { providers, current } = await autonomousScan()
+    current.jobs[0].sessionId = 's'
+    agent(condition === 'permission' ? 'needsInput' : 'review', 1200)
+    useStore.setState({
+      sessions: { s: { ...useStore.getState().sessions.s, generation: 7 } },
+      sessionRecords: [
+        {
+          id: 's',
+          requestIds: [condition === 'foreign' ? 'someone-else' : 'request'],
+          metadata: { projectId: 'p', componentId: '@scan', kind: 'agent', task: 't' },
+          spec: { cwd: tree.path },
+          snapshot: null,
+        } as SessionRecord,
+      ],
+    })
+    vi.mocked(ipc.terminalPrompt).mockResolvedValue(undefined)
+    await withFollower(async () => {
+      await flush()
+      if (condition === 'prompt') {
+        expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'scan', {
+          kind: 'continueJob',
+          job: 'job',
+          requestId: 'request',
+        })
+        expect(ipc.terminalPrompt).toHaveBeenCalledWith(
+          's',
+          7,
+          expect.stringContaining('submit its required artifacts'),
+        )
+        expect(autoRun('p', 't')?.status).toBe('running')
+      } else {
+        expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
+        expect(ipc.terminalPrompt).not.toHaveBeenCalled()
+        expect(
+          vi
+            .mocked(providers.controlProviderRun)
+            .mock.calls.some((call) => ['retry', 'continueJob'].includes(call[2].kind)),
+        ).toBe(false)
+      }
+    })
+  },
+)
+
+test.each(['pause', 'stop'] as const)(
+  '%s during provider recovery wins over a late retry result',
+  async (action) => {
+    const { providers, current } = await autonomousScan()
+    let release!: () => void
+    vi.mocked(providers.controlProviderRun).mockImplementation(async (_p, _id, control) => {
+      if (control.kind === 'retry')
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+      current.state =
+        control.kind === 'pause' ? 'paused' : control.kind === 'stop' ? 'stopped' : 'running'
+      return current
+    })
+    await withFollower(async () => {
+      await flush()
+      if (action === 'pause') pauseAuto('p', 't')
+      else stopAuto('p', 't')
+      release()
+      await flush()
+      expect(current.state).toBe(action === 'pause' ? 'paused' : 'stopped')
+      expect(autoRun('p', 't')).toMatchObject({
+        status: action === 'pause' ? 'paused' : 'stopped',
+        recovery: { pending: false },
+      })
+    })
+  },
+)
+
+test('a disconnect during startup preflight retains autonomous restart continuation', async () => {
+  autonomousPlanner({ status: 'paused', pauseKind: 'restored', restartPending: true })
+  agent('working', 1500)
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 's',
+        metadata: { projectId: 'p', componentId: '@plan', task: 't', kind: 'agent' },
+        spec: { cwd: tree.path },
+        snapshot: null,
+      } as SessionRecord,
+    ],
+  })
+  const auth = await import('./providerAuth')
+  vi.mocked(auth.requireDeviceAuth).mockImplementationOnce(async () => {
+    useStore.setState({ serviceConnected: false })
+    throw new Error('Session service disconnected')
+  })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'restored',
+      restartPending: true,
+    })
+    useStore.setState({ serviceConnected: true })
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ status: 'running', restartPending: false })
+  })
+})
+
+test('startup reconciles failed provider assignments through the bounded recovery path', async () => {
+  const { providers, current } = await autonomousScan()
+  setRun({ ...autoRun('p', 't'), status: 'paused', pauseKind: 'restored', restartPending: true })
+  vi.mocked(providers.controlProviderRun).mockImplementation(async (_p, _id, control) => {
+    if (control.kind === 'resume')
+      throw new Error('Retry failed assignments or continue with available scan findings')
+    if (control.kind === 'retry') {
+      current.state = 'running'
+      current.jobs[0].state = 'running'
+    }
+    return current
+  })
+  await withFollower(async () => {
+    await flush()
+    await flush()
+    expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'scan', {
+      kind: 'retry',
+      job: 'job',
+    })
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'running',
+      restartPending: false,
+      recovery: { attempts: 1 },
+    })
+  })
+})

@@ -102,6 +102,8 @@ impl Job {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
+    #[serde(default)]
+    pub auto: Option<context::AutoBrief>,
     pub id: String,
     pub project_id: String,
     pub task: Option<String>,
@@ -125,6 +127,8 @@ pub struct Run {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Draft {
+    #[serde(default)]
+    pub auto: Option<context::AutoBrief>,
     /// Client-generated identity makes creation safe after a lost reply.
     pub id: String,
     pub kind: Kind,
@@ -160,7 +164,14 @@ pub enum Control {
     Pause,
     Resume,
     Stop,
-    Retry { job: String },
+    Retry {
+        job: String,
+    },
+    ContinueJob {
+        job: String,
+        #[serde(rename = "requestId")]
+        request_id: String,
+    },
     ContinueScan,
 }
 #[derive(Default, Serialize, Deserialize)]
@@ -384,6 +395,7 @@ pub fn create(project: &Project, project_id: &str, draft: Draft) -> Result<Run> 
             }
         }
         let mut run = Run {
+            auto: draft.auto,
             id: draft.id,
             project_id: project_id.into(),
             task: draft.task,
@@ -632,6 +644,34 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
                 );
                 r.accepted_partial = true;
                 r.state = State::Complete;
+                r.error = None;
+            }
+            Control::ContinueJob { job, request_id } => {
+                target(r)?;
+                let j = r
+                    .jobs
+                    .iter_mut()
+                    .chain(r.coordinator.iter_mut())
+                    .find(|j| j.id == job)
+                    .ok_or_else(|| anyhow!("Unknown job"))?;
+                ensure!(
+                    j.state == JobState::Failed
+                        && j.session_id.is_some()
+                        && j.request_id == request_id,
+                    "Only the current failed job can continue its conversation"
+                );
+                j.state = JobState::Running;
+                j.error = None;
+                r.state = if r
+                    .jobs
+                    .iter()
+                    .chain(r.coordinator.iter())
+                    .any(|j| j.state == JobState::Failed)
+                {
+                    State::Paused
+                } else {
+                    State::Running
+                };
                 r.error = None;
             }
             Control::Retry { job } => {
@@ -1114,7 +1154,7 @@ pub fn launch(
             )?,
             serde_json::to_string_pretty(&mapped.links)?
         );
-        let text = format!(
+        let mut text = format!(
             "{}\n\n## Provider run\nRun: {}\nGoal: {}\nComponents: {}\n{}\n\nAssignment: {}\nInstructions: {}\nSelected worker presets: {}\nShared plan:\n{}",
             map_context,
             r.id,
@@ -1132,6 +1172,13 @@ pub fn launch(
                 .map(|p| p.text)
                 .unwrap_or_default()
         );
+        if let Some(auto) = &r.auto {
+            text.push_str(&auto.markdown(if scope == SCAN_SCOPE {
+                "scan"
+            } else {
+                "implement"
+            }));
+        }
         let spec = context::job_agent_spec(
             &mapped,
             &terminal,
@@ -1257,6 +1304,7 @@ mod tests {
                 &self.project,
                 "p",
                 Draft {
+                    auto: None,
                     id: new_id(),
                     kind,
                     goal: "goal".into(),
@@ -1348,6 +1396,79 @@ mod tests {
             dependencies,
             preset: if id == "a" { "claude" } else { "codex" }.into(),
         }
+    }
+
+    #[test]
+    fn continuing_a_provider_conversation_preserves_its_launch_and_artifacts() {
+        let f = Fixture::new();
+        let r = f.create(Kind::Scan);
+        let r = f.launch(&r, &r.jobs[0].id);
+        let job = r.jobs[0].clone();
+        modify(&f.root, |store| {
+            let r = get(store, &r.id)?;
+            r.state = State::Paused;
+            r.jobs[0].state = JobState::Failed;
+            r.jobs[0].error = Some("Missing submission".into());
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            control(
+                &f.root,
+                "p",
+                &r.id,
+                Control::ContinueJob {
+                    job: job.id.clone(),
+                    request_id: "another-launch".into(),
+                }
+            )
+            .is_err()
+        );
+        let continued = control(
+            &f.root,
+            "p",
+            &r.id,
+            Control::ContinueJob {
+                job: job.id.clone(),
+                request_id: job.request_id.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(continued.state, State::Running);
+        assert_eq!(continued.jobs[0].state, JobState::Running);
+        assert_eq!(continued.jobs[0].session_id, job.session_id);
+        assert_eq!(continued.jobs[0].request_id, job.request_id);
+        assert!(continued.jobs[0].error.is_none());
+    }
+
+    #[test]
+    fn autonomous_provider_briefings_survive_persistence_without_changing_command_scope() {
+        let f = Fixture::new();
+        let r = f.create(Kind::Scan);
+        modify(&f.root, |store| {
+            get(store, &r.id)?.auto = Some(context::AutoBrief {
+                autonomous: true,
+                goal: "goal".into(),
+                fix_floor: None,
+                effort_note: "Save required reports".into(),
+                commit: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let saved = read(&f.root, "p", &r.id).unwrap();
+        assert!(saved.auto.as_ref().unwrap().autonomous);
+        launch(&f.root, "p", &r.id, &r.jobs[0].id, &f.project, |l| {
+            let file = context::owned_briefing(&l.spec).unwrap();
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert!(text.contains("Autonomous execution: make reasonable task decisions"));
+            assert!(text.contains("Preserve command permissions"));
+            assert!(text.contains("without changing code or Git state"));
+            assert_eq!(l.scope, SCAN_SCOPE);
+            context::remove_owned_briefing_file(&file);
+            Ok("scan-session".into())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1535,6 +1656,7 @@ mod tests {
             &f.project,
             "p",
             Draft {
+                auto: None,
                 id: new_id(),
                 kind: Kind::Implementation,
                 goal: "goal".into(),
@@ -1580,6 +1702,7 @@ mod tests {
         let f = Fixture::new();
         std::fs::write(f.root.join("dirty"), "dirty").unwrap();
         let draft = Draft {
+            auto: None,
             id: new_id(),
             kind: Kind::Implementation,
             goal: "goal".into(),

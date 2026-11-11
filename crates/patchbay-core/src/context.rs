@@ -36,6 +36,8 @@ fn append_sections(out: &mut String, sections: &[ContextSection]) {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoBrief {
+    #[serde(default)]
+    pub autonomous: bool,
     pub goal: String,
     pub fix_floor: Option<crate::reviews::Severity>,
     pub effort_note: String,
@@ -59,7 +61,16 @@ impl AutoBrief {
         if self.commit {
             body.push_str("Commit your work with a descriptive message when done.\n");
         }
-        body.push_str("Don't ask for confirmation unless blocked.\n");
+        if self.autonomous {
+            body.push_str(
+                "Autonomous execution: make reasonable task decisions from the goal and available context. \
+                 Resolve routine problems, save all required stage artifacts, and continue without routine confirmation. \
+                 A conversational question is a decision for you to resolve. \
+                 Preserve command permissions; report permission or authentication blockers explicitly.\n",
+            );
+        } else {
+            body.push_str("Don't ask for confirmation unless blocked.\n");
+        }
         ContextSection {
             title: "Auto mode".into(),
             body,
@@ -2668,6 +2679,7 @@ mod tests {
     #[test]
     fn auto_brief_contains_goal_scope_effort_and_optional_commit() {
         let auto = super::AutoBrief {
+            autonomous: false,
             goal: "Make widgets work".into(),
             fix_floor: Some(crate::reviews::Severity::High),
             effort_note: "Targeted changes".into(),
@@ -2705,6 +2717,24 @@ mod tests {
         );
         assert_eq!(stage(auto.root_section(None)), "Stage: implement");
         assert_eq!(stage(auto.plan_section()), "Stage: plan");
+    }
+
+    #[test]
+    fn autonomous_brief_defaults_off_and_preserves_permission_boundaries() {
+        let legacy = serde_json::json!({
+            "goal": "Finish the task", "fixFloor": null, "effortNote": "Targeted", "commit": true
+        });
+        let mut brief: super::AutoBrief = serde_json::from_value(legacy).unwrap();
+        assert!(!brief.autonomous);
+        assert!(!brief.markdown("plan").contains("Autonomous execution"));
+        brief.autonomous = true;
+        for stage in ["plan", "implement", "review", "fix", "merge"] {
+            let text = brief.markdown(stage);
+            assert!(text.contains("make reasonable task decisions"));
+            assert!(text.contains("save all required stage artifacts"));
+            assert!(text.contains("Preserve command permissions"));
+            assert!(text.contains("authentication blockers"));
+        }
     }
 
     use super::*;
@@ -3343,6 +3373,7 @@ mod tests {
                 let mut terminal = planner();
                 terminal.command = command.into();
                 let sections = [AutoBrief {
+                    autonomous: false,
                     goal: "Plan a change".into(),
                     fix_floor: None,
                     effort_note: "Add tests".into(),

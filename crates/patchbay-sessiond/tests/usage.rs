@@ -25,6 +25,8 @@ impl Fixture {
             .env("PATCHBAY_STATE_DIR", &self.0)
             .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .env("SHELL", "/bin/sh")
+            .env(patchbay_core::agent_hooks::SESSION_ENV, "patchbay-session")
+            .env(patchbay_core::agent_hooks::GENERATION_ENV, "42")
             .env(
                 patchbay_core::agent_hooks::JOURNAL_ENV,
                 self.0.join("journal"),
@@ -169,4 +171,27 @@ fn the_installed_usage_folder_wins_over_the_environment() {
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "chained");
+}
+
+#[test]
+fn context_capture_without_account_limits_preserves_chained_output() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.0.join("journal")).unwrap();
+    #[cfg(unix)]
+    fixture.chain("cat");
+    let payload = json!({"session_id":"12345678-conversation","context_window":{
+        "used_percentage":42,"context_window_size":200000,"current_usage":null
+    }})
+    .to_string();
+    let output = fixture.run(&payload);
+    assert!(output.status.success());
+    #[cfg(unix)]
+    assert_eq!(output.stdout, payload.as_bytes());
+    let observation =
+        patchbay_core::agent_context::read_claude(&fixture.0.join("journal")).unwrap();
+    assert_eq!(observation.session, "patchbay-session");
+    assert_eq!(observation.generation, 42);
+    assert_eq!(observation.context.used_percent, Some(42.0));
+    assert_eq!(observation.context.used_tokens, None);
+    assert!(!fixture.0.join("usage/claude.json").exists());
 }

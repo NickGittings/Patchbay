@@ -539,6 +539,7 @@ export default function SessionsPanel({
               )}
               {history === null && (
                 <TerminalControl
+                  kind={selected.metadata.kind}
                   componentId={selected.metadata.componentId}
                   terminalId={selected.metadata.terminalId}
                   sid={selected.id}

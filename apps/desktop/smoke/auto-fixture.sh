@@ -48,6 +48,13 @@ time.sleep(0.35)  # native providers report idle before their kickoff begins
 report('UserPromptSubmit')
 time.sleep(0.6)
 if 'Stage: plan' in body:
+    assert 'Autonomous execution: make reasonable task decisions' in body
+    recovery = pathlib.Path(__file__).parent / 'plan-recovery-attempted'
+    if not recovery.exists():
+        recovery.write_text('Planner interrupted without saving the required plan\n')
+        report('Stop')
+        print('auto-plan-needs-recovery', flush=True)
+        sys.exit(0)
     pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Fixture description plan\n\nAdd description.txt and commit the implementation.\n')
 elif 'Stage: implement' in body:
     pathlib.Path('description.txt').write_text('Implemented from a description\n')

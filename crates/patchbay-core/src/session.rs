@@ -28,7 +28,9 @@ pub use briefing::with_pending_briefing;
 // Protocol 15 retains scan, coordinator and worker briefings; 16 retrieves planner scan options.
 // Protocol 17 resolves profile credentials at spawn, including resumed sessions.
 // Protocol 18 adds ValidationSelection and selected validation action requests.
-pub const PROTOCOL: u32 = 18;
+// Protocol 19 retrieves the retained stack detection target.
+// Protocol 20 adds explicit fresh conversations and per-session context observations.
+pub const PROTOCOL: u32 = 20;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -271,6 +273,13 @@ pub struct PlannerScanOptions {
     pub scan_round: Option<String>,
     pub brief: Option<crate::context::AutoBrief>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartMode {
+    Normal,
+    Managed,
+    NewConversation,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
@@ -292,6 +301,12 @@ pub enum Request {
         token: String,
     },
     Start {
+        request_id: String,
+        metadata: Box<Metadata>,
+        spec: SessionSpec,
+    },
+    /// Explicitly end this run and launch an interactive conversation without resuming.
+    NewConversation {
         request_id: String,
         metadata: Box<Metadata>,
         spec: SessionSpec,
@@ -406,6 +421,10 @@ pub enum Request {
     },
     /// The immutable selected component ids retained with a discovery launch.
     ValidationSelection {
+        id: String,
+    },
+    /// The stack replacement target, or `None` for additive or unrecorded detection.
+    StackSelection {
         id: String,
     },
     /// The running session launched with this agent command token, if any.
@@ -564,6 +583,7 @@ impl Client {
             Request::ActionRun { .. } => None,
             Request::Start { .. }
             | Request::Restart { .. }
+            | Request::NewConversation { .. }
             | Request::Resume { .. }
             | Request::Stop { .. }
             | Request::StopAll
@@ -1120,7 +1140,14 @@ impl Service {
         // its pending file without invalidating a launch that the service accepted.
         crate::context::retain_owned_briefing(&mut spec)?;
         let candidate = crate::context::owned_briefing(&spec);
-        let result = self.start_with_command(request, metadata, spec, None, false, restart_context);
+        let result = self.start_with_command(
+            request,
+            metadata,
+            spec,
+            None,
+            StartMode::Normal,
+            restart_context,
+        );
         // A rejected or idempotent launch must not leave its pending briefing behind.
         if let Some(file) = candidate {
             self.remove_unused_briefing(&file);
@@ -1209,7 +1236,7 @@ impl Service {
         mut metadata: Metadata,
         mut spec: SessionSpec,
         original_command: Option<String>,
-        managed: bool,
+        mode: StartMode,
         restart_context: Option<String>,
     ) -> Result<String> {
         anyhow::ensure!(!request.is_empty(), "Launch request ID required");
@@ -1248,10 +1275,16 @@ impl Service {
         {
             return Ok(id);
         }
-        anyhow::ensure!(!self.pty.is_running(&id), TERMINAL_RUNNING);
+        anyhow::ensure!(
+            mode == StartMode::NewConversation || !self.pty.is_running(&id),
+            TERMINAL_RUNNING
+        );
         let cwd = spec.cwd.canonicalize()?;
         let busy = self.records.lock().unwrap().values().any(|r| {
-            if !(spec.exclusive_cwd || r.spec.exclusive_cwd) || !self.pty.is_running(&r.id) {
+            if (mode == StartMode::NewConversation && r.id == id)
+                || !(spec.exclusive_cwd || r.spec.exclusive_cwd)
+                || !self.pty.is_running(&r.id)
+            {
                 return false;
             }
             let other = r
@@ -1275,6 +1308,13 @@ impl Service {
                 !running,
                 "Conversation is already running; reconnect instead"
             );
+        }
+        // All validation and briefing preparation precedes stopping. Hold the operation
+        // lock through stop/spawn so another window cannot replace the same slot between them.
+        if mode == StartMode::NewConversation
+            && let Some(snapshot) = self.pty.snapshot_with(&id, 0)
+        {
+            self.pty.stop_generation(&id, snapshot.generation)?;
         }
         // Every launch path (desktop, CLI, extensions and graph actions) records the task name.
         // A resumed or older request can keep its retained title if the task is no longer stored.
@@ -1330,7 +1370,7 @@ impl Service {
             },
         );
         drop(records);
-        let spawned = if managed {
+        let spawned = if mode == StartMode::Managed {
             self.pty.spawn_managed(spec, self.clone())
         } else {
             self.pty.spawn(spec, self.clone())
@@ -1360,6 +1400,51 @@ impl Service {
         self.dirty.store(true, Ordering::Release);
         Ok(id)
     }
+    fn new_conversation(
+        self: &Arc<Self>,
+        request: String,
+        mut metadata: Metadata,
+        mut spec: SessionSpec,
+    ) -> Result<String> {
+        let _pending = briefing::PendingBriefing::new(&spec);
+        anyhow::ensure!(
+            metadata.kind == TerminalKind::Agent
+                && (!metadata.component_id.starts_with('@')
+                    || matches!(
+                        metadata.component_id.as_str(),
+                        crate::model::PLAN_SCOPE | crate::model::TASK_ROOT_SCOPE
+                    ))
+                && metadata.extension_id.is_none()
+                && !spec.rerun_on_resume,
+            "New conversation is available only for interactive component, planner and task agents"
+        );
+        validate_fresh_command(&spec.command)?;
+        spec.command = spec
+            .resume_command
+            .clone()
+            .unwrap_or_else(|| spec.command.clone());
+        validate_fresh_command(&spec.command)?;
+        crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
+        let _ = crate::profiles::launch_token(&spec.command)?;
+        metadata.conversation_id = None;
+        metadata.conversation_pinned = false;
+        crate::context::retain_owned_briefing(&mut spec)?;
+        let candidate = crate::context::owned_briefing(&spec);
+        let context = restart_context(&metadata, &spec).ok().flatten();
+        let result = self.start_with_command(
+            request,
+            metadata,
+            spec,
+            None,
+            StartMode::NewConversation,
+            context,
+        );
+        if let Some(file) = candidate {
+            self.remove_unused_briefing(&file);
+        }
+        result
+    }
+
     fn restart(
         self: &Arc<Self>,
         request_id: String,
@@ -1425,7 +1510,7 @@ impl Service {
                         resume_metadata,
                         resumed,
                         Some(original_command),
-                        false,
+                        StartMode::Normal,
                         context,
                     );
                     if let Some(file) = candidate {
@@ -1493,13 +1578,24 @@ impl Service {
             metadata,
             spec,
             Some(original),
-            false,
+            StartMode::Normal,
             restart_context,
         )
     }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::StackSelection { id } => {
+                let records = self.records.lock().unwrap();
+                let target = records
+                    .get(&id)
+                    .filter(|r| {
+                        r.metadata.component_id == crate::model::MAP_SCOPE
+                            && r.metadata.terminal_id == crate::stack_proposals::STACK_TERMINAL
+                    })
+                    .and_then(|r| r.spec.env.get(crate::stack_proposals::TARGET_ENV));
+                serde_json::to_value(target)?
+            }
             Request::ValidationSelection { id } => {
                 let records = self.records.lock().unwrap();
                 let selection = records
@@ -1567,6 +1663,11 @@ impl Service {
                 metadata,
                 spec,
             } => serde_json::to_value(self.start(request_id, *metadata, spec)?)?,
+            Request::NewConversation {
+                request_id,
+                metadata,
+                spec,
+            } => serde_json::to_value(self.new_conversation(request_id, *metadata, spec)?)?,
             Request::Restart {
                 request_id,
                 metadata,
@@ -1964,7 +2065,7 @@ impl Terminals for ServiceTerminals<'_> {
             metadata,
             spec,
             None,
-            true,
+            StartMode::Managed,
             None,
         )?;
         anyhow::ensure!(started == id, "Graph action session id mismatch for {id}");
@@ -1973,6 +2074,123 @@ impl Terminals for ServiceTerminals<'_> {
     fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
         self.service.pty.stop_generation(id, generation)
     }
+}
+
+fn validate_fresh_command(command: &str) -> Result<()> {
+    let adapter = Adapter::default_for(command);
+    let words = crate::context::launch_words(command).context(
+        "Cannot validate this command; use a direct provider command for New conversation",
+    )?;
+    let (program, _) =
+        crate::context::launch_program(command).context("Cannot locate provider executable")?;
+    // Inline interpreter code is opaque: it can hide a resume invocation inside one
+    // quoted argument. A script file or direct interactive executable remains supported.
+    let executable = words[program]
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default();
+    let interpreter = matches!(
+        executable,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "fish"
+            | "cmd"
+            | "cmd.exe"
+            | "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+            | "python"
+            | "python3"
+            | "node"
+            | "ruby"
+            | "perl"
+    );
+    anyhow::ensure!(
+        !interpreter
+            || !words.iter().skip(program + 1).any(|word| {
+                let flag = word.to_ascii_lowercase();
+                matches!(
+                    flag.split('=').next().unwrap_or_default(),
+                    "-c" | "/c" | "-command" | "--command" | "-encodedcommand" | "-e" | "--eval"
+                ) || (matches!(
+                    executable,
+                    "sh" | "bash" | "zsh" | "dash" | "fish" | "python" | "python3"
+                ) && flag.starts_with('-')
+                    && !flag.starts_with("--")
+                    && flag[1..].contains('c'))
+            }),
+        "New conversation cannot validate inline script options; configure a direct interactive agent command or script file instead"
+    );
+    let mut arguments = words.iter().skip(program + 1).peekable();
+    while let Some(word) = arguments.next() {
+        let flag = word.split('=').next().unwrap_or(word);
+        anyhow::ensure!(
+            !matches!(
+                flag,
+                "resume"
+                    | "--resume"
+                    | "--continue"
+                    | "--last"
+                    | "--session-id"
+                    | "exec"
+                    | "review"
+            ) && !flag.starts_with("--resume-")
+                && !(adapter == Some(Adapter::Claude)
+                    && (matches!(flag, "--print")
+                        || ["-r", "-c", "-p"]
+                            .iter()
+                            .any(|short| flag.starts_with(short) && !flag.starts_with("--")))),
+            "Remove resume/continue or non-interactive options from this terminal's command before starting a New conversation"
+        );
+        // A profile, model, directory or briefing can itself be named "resume". Only
+        // provider options/subcommands select recovery; their values do not.
+        let takes_value = matches!(
+            flag,
+            "--model"
+                | "--add-dir"
+                | "--append-system-prompt-file"
+                | "--append-system-prompt"
+                | "--system-prompt-file"
+                | "--system-prompt"
+                | "--permission-mode"
+                | "--allowedTools"
+                | "--allowed-tools"
+                | "--disallowedTools"
+                | "--disallowed-tools"
+                | "--tools"
+                | "--mcp-config"
+                | "--settings"
+                | "--setting-sources"
+                | "--agent"
+                | "--agents"
+                | "--effort"
+                | "--fallback-model"
+                | "--max-budget-usd"
+                | "--betas"
+                | "--plugin-dir"
+                | "--config"
+                | "--profile"
+                | "--sandbox"
+                | "--ask-for-approval"
+                | "--cd"
+                | "--image"
+                | "--enable"
+                | "--disable"
+                | "--local-provider"
+        ) || (adapter == Some(Adapter::Codex)
+            && matches!(flag, "-c" | "-p" | "-s" | "-a" | "-C" | "-i" | "-m"));
+        if takes_value
+            && !word.contains('=')
+            && arguments
+                .peek()
+                .is_some_and(|value| !value.starts_with('-'))
+        {
+            arguments.next();
+        }
+    }
+    Ok(())
 }
 
 /// Prefer the final native conversation, then the provider's exit hint, so new evidence
@@ -3264,6 +3482,63 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn stack_selection_survives_session_reload_and_new_detection_clears_it() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let project: crate::Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 4, "name": "P", "root": dir,
+            "components": [], "links": [],
+            "groups": [{"id": "target", "name": "Local", "componentIds": []}]
+        }))
+        .unwrap();
+        let preset = serde_json::from_value(serde_json::json!({
+            "id": "claude", "name": "Claude", "command": "claude", "kind": "agent"
+        }))
+        .unwrap();
+        let selection = || Request::StackSelection {
+            id: "detection".into(),
+        };
+        let mut service = Service::load(&dir).unwrap();
+        assert!(service.handle("desktop", selection()).unwrap().is_null());
+        for target in [Some("target"), None] {
+            let (_, spec) = crate::stack_proposals::prepare_for(
+                &project,
+                &preset,
+                target,
+                &crate::policy::AllowAll,
+            )
+            .unwrap();
+            let briefing = crate::context::owned_briefing(&spec).unwrap();
+            let record: Record = serde_json::from_value(serde_json::json!({
+                "id": "detection", "metadata": {
+                    "projectId": "p", "projectName": "P", "projectRoot": dir,
+                    "componentId": crate::model::MAP_SCOPE,
+                    "terminalId": crate::stack_proposals::STACK_TERMINAL,
+                    "name": "Detect stack", "kind": "agent"
+                },
+                "spec": spec, "snapshot": null, "history": [],
+                "interrupted": false, "requestIds": []
+            }))
+            .unwrap();
+            service
+                .records
+                .lock()
+                .unwrap()
+                .insert("detection".into(), record);
+            service.persist().unwrap();
+            service = Service::load(&dir).unwrap();
+            assert_eq!(
+                service.handle("desktop", selection()).unwrap(),
+                serde_json::json!(target)
+            );
+            // Retained targets stay private, just like validation selections.
+            assert!(service.summaries()[0].spec.env.is_empty());
+            crate::context::remove_owned_briefing_file(&briefing);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn agent_tokens_resolve_only_to_their_running_session() {
@@ -4280,6 +4555,146 @@ mod tests {
         }))
         .unwrap();
         (metadata, spec)
+    }
+
+    #[test]
+    fn fresh_command_validation_distinguishes_recovery_options_from_option_values() {
+        for command in [
+            "codex -p resume -c 'key=review' --sandbox workspace-write",
+            "claude --model review --add-dir resume --permission-mode plan",
+            "python3 provider.py --model custom",
+            "bash -l provider.sh",
+        ] {
+            validate_fresh_command(command).unwrap();
+        }
+        for command in [
+            "claude --model opus --resume old",
+            "claude --model --resume old",
+            "codex -p resume resume old",
+            "claude --continue",
+            "claude -rold",
+            "sh -c 'claude --resume old'",
+            "bash -lc 'claude --resume 11111111'",
+            "zsh -ic 'codex resume --last'",
+            "env bash -ilc 'claude --continue'",
+            "fish --command='codex resume --last'",
+            "python3 -c 'launch_resume()'",
+            "python3 -ic 'launch_resume()'",
+        ] {
+            assert!(validate_fresh_command(command).is_err(), "{command}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_conversation_waits_for_input_preserves_history_and_deduplicates_requests() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let executable = dir.join("claude");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\ncat \"$PATCHBAY_CONTEXT_FILE\"\ncat\n"
+                .replace("PATCHBAY_CONTEXT_FILE", crate::context::CONTEXT_ENV),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let transcript = dir.join("provider-transcript.jsonl");
+        std::fs::write(&transcript, "saved provider history").unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (mut metadata, old_spec) = restart_fixture(&dir, "printf previous-run; cat");
+        metadata.conversation_pinned = true;
+        let id = service
+            .start("old".into(), metadata.clone(), old_spec)
+            .unwrap();
+        let old_generation = service.snapshot(&id).unwrap().generation;
+        let file = std::env::temp_dir()
+            .join("patchbay")
+            .join(format!("review-{}.md", uuid::Uuid::new_v4()));
+        atomic_write(&file, b"CURRENT PATCHBAY BRIEFING").unwrap();
+        let base = format!(
+            "{} --model fixture --append-system-prompt-file {}",
+            crate::context::quote_argument(executable.to_str().unwrap()),
+            crate::context::quote_argument(file.to_str().unwrap())
+        );
+        let (_, mut spec) = restart_fixture(&dir, &format!("{base} 'DO NOT REPEAT KICKOFF'"));
+        spec.resume_command = Some(base);
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            file.display().to_string(),
+        );
+        spec.owns_briefing = true;
+        let generation = |service: &Service| service.snapshot(&id).unwrap().generation;
+        service
+            .new_conversation("fresh".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        assert!(generation(&service) > old_generation);
+        assert!(service.pty.is_running(&id));
+        let records = service.records.lock().unwrap();
+        let record = &records[&id];
+        assert_eq!(record.history.len(), 1);
+        assert_eq!(record.history[0].generation, old_generation);
+        assert!(!record.history[0].running);
+        assert_eq!(record.metadata.conversation_id, None);
+        assert!(!record.metadata.conversation_pinned);
+        assert!(!record.spec.command.contains("KICKOFF"));
+        assert!(!record.spec.command.contains("--resume"));
+        assert!(record.spec.command.contains("--model fixture"));
+        assert_eq!(
+            std::fs::read_to_string(&record.spec.env[crate::context::CONTEXT_ENV]).unwrap(),
+            "CURRENT PATCHBAY BRIEFING"
+        );
+        assert_eq!(record.spec.cwd, dir);
+        drop(records);
+        let first = generation(&service);
+        // A client that lost its reply prepares a new input file but reuses its request id.
+        atomic_write(&file, b"CURRENT PATCHBAY BRIEFING").unwrap();
+        service
+            .new_conversation("fresh".into(), metadata, spec)
+            .unwrap();
+        assert_eq!(generation(&service), first);
+        assert_eq!(service.records.lock().unwrap()[&id].history.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(transcript).unwrap(),
+            "saved provider history"
+        );
+        service.pty.stop_generation(&id, first).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_launch_rejects_resume_commands_and_invalid_preparation_before_stopping() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let (metadata, spec) = restart_fixture(&dir, "cat");
+        let id = service.start("old".into(), metadata.clone(), spec).unwrap();
+        for command in [
+            "claude --resume 12345678",
+            "claude --continue",
+            "claude -r",
+            "claude -r12345678",
+            "claude -c",
+            "codex resume --last",
+            "codex exec review",
+            "bash -lc 'claude --resume 11111111'",
+            "zsh -ic 'codex resume --last'",
+            "/missing/provider/claude",
+        ] {
+            let (_, spec) = restart_fixture(&dir, command);
+            assert!(
+                service
+                    .new_conversation(uuid::Uuid::new_v4().to_string(), metadata.clone(), spec)
+                    .is_err()
+            );
+            assert!(
+                service.pty.is_running(&id),
+                "{command} stopped existing work"
+            );
+        }
+        service.pty.stop(&id);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

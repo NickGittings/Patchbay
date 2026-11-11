@@ -57,6 +57,7 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
           <span className="tab-actions">
             <StatusLabel status={terminalStatus(active.terminal.kind, session)} />
             <TerminalControl
+              kind={active.terminal.kind}
               componentId={active.componentId}
               terminalId={active.terminal.id}
               sid={active.sid}

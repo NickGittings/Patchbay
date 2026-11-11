@@ -266,7 +266,8 @@ export async function startDetectionAgent(
     label,
     tab,
     componentIds,
-  }: { terminalId: string; label: string; tab: string; componentIds?: string[] },
+    stackId,
+  }: { terminalId: string; label: string; tab: string; componentIds?: string[]; stackId?: string },
 ) {
   const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
@@ -302,9 +303,11 @@ export async function startDetectionAgent(
   const ours = useStore.getState().runtimeTerminals[sid]
   let started = false
   try {
-    started = componentIds
-      ? await startMapAgent(projectId, preset, terminalId, componentIds)
-      : await startMapAgent(projectId, preset, terminalId)
+    started = stackId
+      ? await startMapAgent(projectId, preset, terminalId, undefined, stackId)
+      : componentIds
+        ? await startMapAgent(projectId, preset, terminalId, componentIds)
+        : await startMapAgent(projectId, preset, terminalId)
   } finally {
     if (!started && useStore.getState().runtimeTerminals[sid] === ours)
       useStore.setState((st) => {
