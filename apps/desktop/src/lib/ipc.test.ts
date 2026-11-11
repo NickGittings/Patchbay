@@ -117,3 +117,25 @@ test('planner preview sends the same story id as the launch briefing', async () 
     extraContext: [],
   })
 })
+
+test('branch listing and file diff send the same base through IPC', async () => {
+  const { gitReview, gitDiff } = await import('./ipc')
+  const project = { projectId: 'p' } as Project
+  await gitReview(project, '/task', 'main')
+  expect(invoke).toHaveBeenLastCalledWith('git_review', {
+    project,
+    projectId: 'p',
+    worktree: '/task',
+    base: 'main',
+  })
+  await gitDiff([], 'app', 'src/file', undefined, '/task', 'main')
+  expect(invoke).toHaveBeenLastCalledWith('git_diff', {
+    projectId: useStore.getState().project?.id,
+    components: [],
+    componentId: 'app',
+    path: 'src/file',
+    oldPath: undefined,
+    worktree: '/task',
+    base: 'main',
+  })
+})

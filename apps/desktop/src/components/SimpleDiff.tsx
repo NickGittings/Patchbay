@@ -43,6 +43,9 @@ export default function SimpleDiff({
       </header>
       <div className="simple-diff-body" ref={body}>
         <aside>
+          <div className="hint">
+            {reader.base ? `Changes since merge base with ${reader.base}` : 'Uncommitted changes'}
+          </div>
           {groups.map((g) => (
             <section key={g.id}>
               <h3>{g.name}</h3>
@@ -66,6 +69,7 @@ export default function SimpleDiff({
           <CommitDetails onSelect={setHistory} selection={history} worktree={reader.source?.path} />
         ) : file && selection ? (
           <DiffView
+            base={reader.base}
             componentId={selection.componentId}
             file={file}
             revision={reader.data?.review}
@@ -75,11 +79,15 @@ export default function SimpleDiff({
           />
         ) : (
           <div className="diff-view hint">
-            {!order.length
-              ? 'No uncommitted changes'
+            {reader.error
+              ? `Could not load changes: ${reader.error}`
               : selection
-                ? `No diff for ${selection.path} in this worktree.`
-                : 'Select a changed file.'}
+                ? `Diff unavailable: ${selection.path} is no longer changed in this comparison.`
+                : !order.length
+                  ? reader.base
+                    ? `No changes since merge base with ${reader.base}.`
+                    : 'No uncommitted changes.'
+                  : 'Select a changed file.'}
           </div>
         )}
       </div>

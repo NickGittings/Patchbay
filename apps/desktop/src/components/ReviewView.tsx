@@ -1,3 +1,4 @@
+import { availableReviewBase } from '../lib/reviewAgents'
 import CommitHistory from './changes/CommitHistory'
 import CommitDetails from './changes/CommitDetails'
 import type { HistorySelection } from '../lib/history'
@@ -8,7 +9,7 @@ import PersistedGroup from './PersistedGroup'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR, plural } from '../lib/display'
-import { gitReview, gitWorktrees, reviewPrune } from '../lib/ipc'
+import { gitReview, gitBranches, gitWorktrees, reviewPrune } from '../lib/ipc'
 import { ago, changedFileRef, latestChange, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
@@ -69,6 +70,7 @@ export default function ReviewView() {
   useEffect(() => {
     if (findingsFocus) useStore.setState({ reviewFindingsFocus: false })
   }, [findingsFocus])
+  const [branches, setBranches] = useState<string[]>([])
   const [worktrees, setWorktrees] = useState<Worktree[]>([])
   const tasks = useStore((s) => s.tasks)
   const activeTask = useStore((s) => s.activeTask)
@@ -123,11 +125,13 @@ export default function ReviewView() {
   const mergeDialog = mergeDialogScope === dialogScope
   if (mergeDialogScope && !mergeDialog) setMergeDialogScope(null)
   const canMerge = !!source?.branch && mergeDestinations(source, worktrees).length > 0
-  const reviewScope = JSON.stringify([projectId, target])
+  const findings = useReviewFindings(projectId, source?.branch)
+  const base = availableReviewBase(source, tasks, worktrees, branches, findings?.findings?.base)
+  const reviewScope = JSON.stringify([projectId, target, base])
+  const [findingRef, setFindingRef] = useState<FileRef | null>(null)
 
   const review = loaded?.scope === reviewScope ? loaded.review : null
   const error = failed?.scope === reviewScope ? failed.message : ''
-  const findings = useReviewFindings(projectId, source?.branch)
   const reviewLanes = useRunningReviewLanes(source?.branch)
   const status = reviewState(findings?.findings, source)
   // The newest review session of the source branch, for the fix handoff beside its findings.
@@ -152,8 +156,9 @@ export default function ReviewView() {
 
   useEffect(() => {
     let disposed = false
-    void gitWorktrees()
-      .then((list) => {
+    void Promise.all([gitWorktrees(), gitBranches()])
+      .then(([list, names]) => {
+        if (!disposed) setBranches(names)
         if (!disposed)
           setWorktrees((previous) =>
             JSON.stringify(previous) === JSON.stringify(list) ? previous : list,
@@ -178,7 +183,7 @@ export default function ReviewView() {
 
   useEffect(() => {
     let disposed = false
-    void gitReview(useStore.getState().toProject(), target)
+    void gitReview(useStore.getState().toProject(), target, base)
       .then((r) => {
         if (!disposed) {
           setLoaded({ scope: reviewScope, review: r })
@@ -186,12 +191,15 @@ export default function ReviewView() {
         }
       })
       .catch((e) => {
-        if (!disposed) setFailed({ scope: reviewScope, message: String(e) })
+        if (!disposed) {
+          setLoaded(undefined)
+          setFailed({ scope: reviewScope, message: String(e) })
+        }
       })
     return () => {
       disposed = true
     }
-  }, [revision, pathsKey, linksKey, refresh, reviewScope, target])
+  }, [revision, pathsKey, linksKey, refresh, reviewScope, target, base])
 
   const groups = changeGroups(nodes, review)
   const active = filter.filter((id) => groups.some((g) => g.id === id))
@@ -221,6 +229,7 @@ export default function ReviewView() {
     const next = stepChange(order, current, delta)
     if (!next) return
     setSelected(next)
+    setFindingRef(null)
     if (pane === 'findings') setPane('diff')
   }
   // Findings text keeps its arrow keys for scrolling: only the list and a diff step files.
@@ -238,6 +247,8 @@ export default function ReviewView() {
   }
   const openRef = (ref: FileRef) => {
     const file = changedFile(ref.path)
+    setFindingRef(ref)
+    setPane('fromFindings')
     if (!file) return
     if (active.length && !active.includes(file.componentId)) setFilter([])
     setCollapsed({ ...collapsed, [file.componentId]: false })
@@ -380,12 +391,15 @@ export default function ReviewView() {
                     <code>{other.path}</code>.
                   </div>
                 )}
+                <div className="hint">
+                  {base ? `Changes since merge base with ${base}` : 'Uncommitted changes'}
+                </div>
                 {error && <div className="hint file-tree-error">{error}</div>}
                 {!review && !error && <div className="hint">Loading…</div>}
                 {review && !groups.length && (
                   <div className="review-empty">
                     <div className="review-empty-mark">✓</div>
-                    No uncommitted changes.
+                    {base ? `No changes since merge base with ${base}.` : 'No uncommitted changes.'}
                   </div>
                 )}
                 {shown.map((g) => {
@@ -496,7 +510,7 @@ export default function ReviewView() {
                     status={status}
                     branch={source?.branch}
                     onOpenFile={openRef}
-                    canOpen={(path) => !!changedFile(path)}
+                    canOpen={() => true}
                     actions={
                       reviewRecord && (
                         <FixFindingsButton
@@ -506,21 +520,32 @@ export default function ReviewView() {
                       )
                     }
                   />
-                ) : current && pane === 'fromFindings' ? (
+                ) : pane === 'fromFindings' ? (
                   <div className="review-diff-pane">
                     <div className="review-diff-back">
                       <button onClick={() => setPane('findings')}>← Findings</button>
                     </div>
-                    <DiffView
-                      componentId={current.componentId}
-                      file={currentFile}
-                      revision={review}
-                      worktree={target}
-                      nav={nav}
-                    />
+                    {findingRef && !changedFile(findingRef.path) ? (
+                      <div className="hint">
+                        Diff unavailable: {findingRef.path} is no longer changed in this comparison.
+                      </div>
+                    ) : (
+                      current && (
+                        <DiffView
+                          base={base}
+                          lineFocus={findingRef?.line}
+                          componentId={current.componentId}
+                          file={currentFile}
+                          revision={review}
+                          worktree={target}
+                          nav={nav}
+                        />
+                      )
+                    )}
                   </div>
                 ) : current ? (
                   <DiffView
+                    base={base}
                     componentId={current.componentId}
                     file={currentFile}
                     revision={review}
@@ -534,7 +559,9 @@ export default function ReviewView() {
                         ? `Could not load changes: ${error}`
                         : !review
                           ? 'Loading changes…'
-                          : 'No uncommitted changes.'}
+                          : base
+                            ? `No changes since merge base with ${base}.`
+                            : 'No uncommitted changes.'}
                     </div>
                   </div>
                 )}

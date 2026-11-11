@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore, type FlowNode } from '../store'
-import { gitReview, gitWorktrees, mergeOutcome, planRead, proposalRead, onProposal } from './ipc'
+import {
+  gitReview,
+  gitBranches,
+  gitWorktrees,
+  mergeOutcome,
+  planRead,
+  proposalRead,
+  onProposal,
+} from './ipc'
+import { availableReviewBase } from './reviewAgents'
 import { activeWorktree } from './tasks'
 import { relatedSession, workflowLog } from './simple'
 import { changeGroups } from './changeGroups'
@@ -17,12 +26,14 @@ import type {
 
 interface Artifacts {
   key: string
+  selectionKey: string
   /** Retain the last file-list coordinates while the disk reader is paused. */
   nodes: FlowNode[]
   plan: PlanText
   acceptedPlan: PlanText
   proposal: PlannerProposal | null
   review: Review
+  base?: string
   worktrees: Worktree[]
   outcome?: MergeOutcome
   /** Why the merge status couldn't be read; the other artifacts still show. */
@@ -36,8 +47,13 @@ export function useSimpleData(visible: boolean) {
   const task = useStore((s) => s.activeTask)
   const worktree = useStore(activeWorktree)
   const revision = useStore((s) => s.gitChanges)
-  const key = JSON.stringify([projectId, task, worktree])
+  const selectionKey = JSON.stringify([projectId, task, worktree])
   const [data, setData] = useState<Artifacts>()
+  const sourceData = data?.selectionKey === selectionKey ? data : undefined
+  const source = sourceData?.worktrees.find((w) => (worktree ? w.path === worktree : w.current))
+  const findings = useReviewFindings(projectId, source?.branch, visible, revision)
+  const savedBase = findings?.findings?.base
+  const key = JSON.stringify([selectionKey, savedBase])
   const [error, setError] = useState<{ key: string; text: string }>()
   useEffect(() => {
     if (!visible || !projectId) return
@@ -61,14 +77,19 @@ export function useSimpleData(visible: boolean) {
       const project = state.toProject()
       try {
         const scopedPlan = await planRead(projectId, task ?? undefined)
-        const [plan, acceptedPlan, proposal, review, worktrees] = await Promise.all([
+        const [plan, acceptedPlan, proposal, worktrees, branches] = await Promise.all([
           scopedPlan,
           // The project folder's accepted plan is the project plan itself.
           scopedPlan,
           proposalRead(projectId, task ?? undefined),
-          gitReview(project, worktree),
           gitWorktrees(projectId),
+          gitBranches(projectId),
         ])
+        // Resolve the comparison from fresh metadata on every read, so an old
+        // saved base cannot prevent these artifacts from refreshing.
+        const source = worktrees.find((w) => (worktree ? w.path === worktree : w.current))
+        const base = availableReviewBase(source, state.tasks, worktrees, branches, savedBase)
+        const review = await gitReview(project, worktree, base)
         const merge = latestMerge(state)
         let request: MergeRequest | undefined = merge?.kind === 'action' ? merge.request : undefined
         // Recovered merge records explicitly retain source and destination paths.
@@ -102,12 +123,14 @@ export function useSimpleData(visible: boolean) {
         if (!disposed) {
           setData({
             key,
+            selectionKey,
             nodes: state.nodes,
             plan,
             acceptedPlan: acceptedPlan ?? plan,
             proposal,
             review,
             worktrees,
+            base,
             outcome,
             outcomeError,
           })
@@ -147,7 +170,7 @@ export function useSimpleData(visible: boolean) {
         .join('|')
     let previousStages = stages(useStore.getState())
     const unsubscribe = useStore.subscribe((state, previous) => {
-      let changed = state.gitChanges !== previous.gitChanges
+      let changed = state.gitChanges !== previous.gitChanges || state.tasks !== previous.tasks
       if (state.simple?.log !== previous.simple?.log)
         changed ||= latestMerge(state) !== latestMerge(previous)
       if (
@@ -177,9 +200,8 @@ export function useSimpleData(visible: boolean) {
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
     }
-  }, [visible, projectId, task, worktree, key])
-  const current = data?.key === key ? data : undefined
-  const source = current?.worktrees.find((w) => w.path === (worktree ?? root))
+  }, [visible, projectId, task, worktree, key, savedBase, selectionKey])
+  const current = data?.key === key && error?.key !== key ? data : undefined
   const scope = useMemo(
     () => ({
       projectId: projectId ?? '',
@@ -193,9 +215,9 @@ export function useSimpleData(visible: boolean) {
   const listedNodes = nodes ?? current?.nodes
   const groups = useMemo(() => changeGroups(listedNodes ?? [], review), [listedNodes, review])
   const files = useMemo(() => changeRefs(groups), [groups])
-  const findings = useReviewFindings(projectId, source?.branch ?? undefined, visible, revision)
   return {
     data: current,
+    base: current?.base,
     source,
     scope,
     groups,

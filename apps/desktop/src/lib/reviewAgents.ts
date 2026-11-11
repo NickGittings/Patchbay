@@ -300,6 +300,26 @@ export function defaultReviewBase(
   return candidates.find((b): b is string => !!b && b !== source.branch) ?? ''
 }
 
+/** Historical findings and task bases may name branches that were renamed or deleted. */
+export function availableReviewBase(
+  source: Worktree | undefined,
+  tasks: Task[],
+  worktrees: Worktree[],
+  branches: string[],
+  savedBase?: string | null,
+) {
+  if (!source) return undefined
+  if (savedBase && branches.includes(savedBase)) return savedBase
+  return (
+    defaultReviewBase(
+      source,
+      tasks.filter((t) => t.base && branches.includes(t.base)),
+      worktrees.filter((w) => w.branch && branches.includes(w.branch)),
+      branches,
+    ) || undefined
+  )
+}
+
 /** What `defaultReviewBase` decides from, so a change to any of it can be noticed. */
 export const reviewBaseInputs = (
   source: Worktree,

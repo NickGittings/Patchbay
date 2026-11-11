@@ -1,3 +1,4 @@
+import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -207,10 +208,7 @@ export default function SimpleChat({
       .filter((r) => r.metadata.componentId === PLAN_SCOPE && !model.foreign.has(r.id))
       .at(-1)?.metadata.terminalId ?? roleDevice(s.devices, s.agentRoles, 'plan')?.id
   const openFile = (path: string, line?: number) => {
-    const files = changed
-    const exact = files.find((f) => f.path === path)
-    const suffix = files.filter((f) => f.path.endsWith(`/${path}`) || path.endsWith(`/${f.path}`))
-    const match = exact ?? (suffix.length === 1 ? suffix[0] : undefined)
+    const match = changedFileRef(changed, path, source?.path)
     useSimpleUi.getState().patch(key, {
       changes: true,
       diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },

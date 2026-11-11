@@ -681,47 +681,63 @@ pub fn review(
         ])
         .args(&pathspecs))?
     .is_empty();
-    let names = run(git(&repo)
-        .args([
-            "diff",
-            "--name-status",
-            "-M",
-            "-z",
-            &merge_base,
-            "HEAD",
-            "--",
-        ])
-        .args(&pathspecs))?;
-    // `git diff` names files from the repo's top folder, which sits above a
-    // project opened in a subfolder; files are reported relative to the project.
-    let members = group.map(|g| g.members.as_slice()).unwrap_or_default();
-    let mut touched = HashSet::new();
-    for (kind, old, name) in committed_changes(&names) {
-        let Some(id) = owner_of(name, members) else {
-            continue;
-        };
-        let path = relative_path(&root, &repo.join(name));
-        let files = review.changes.entry(id.into()).or_default();
-        // An uncommitted change of the same file describes it as it is now.
-        if !files.iter().any(|f| f.path == path) {
-            files.push(ChangedFile {
-                path,
-                kind,
-                old_path: old.map(|o| relative_path(&root, &repo.join(o))),
-                modified_ms: None,
-                added: None,
-                removed: None,
-            });
-            touched.insert(id.to_owned());
+    if let Some(group) = group {
+        let entries = comparison_entries(&repo, &pathspecs, &merge_base)?;
+        let counts = line_counts_at(&repo, &pathspecs, &merge_base);
+        for (id, _) in &group.members {
+            review.changes.insert(id.clone(), Vec::new());
         }
-    }
-    for id in touched {
-        if let Some(files) = review.changes.get_mut(&id) {
+        for entry in entries {
+            if let Some(id) = owner_of(&entry.path, &group.members) {
+                review
+                    .changes
+                    .entry(id.into())
+                    .or_default()
+                    .push(entry.into_changed(&root, &repo, &counts));
+            }
+        }
+        for files in review.changes.values_mut() {
             files.sort_by(|a, b| a.path.cmp(&b.path));
         }
     }
     review.affected = affected_components(project, &review.changes);
     Ok(review)
+}
+
+/// One net tracked comparison, with untracked and unresolved paths from status.
+fn comparison_entries(repo: &Path, pathspecs: &[String], base: &str) -> Result<Vec<Entry>> {
+    let names = run(git(repo)
+        .args([
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-status",
+            "-M",
+            "-z",
+            base,
+            "--",
+        ])
+        .args(pathspecs))?;
+    let mut entries: Vec<Entry> = committed_changes(&names)
+        .into_iter()
+        .map(|(kind, old, path)| Entry {
+            path: path.into(),
+            kind,
+            old_path: old.map(String::from),
+        })
+        .collect();
+    let status: Vec<Entry> = changed_entries(repo, pathspecs)
+        .context("git status failed")?
+        .into_iter()
+        .filter(|e| matches!(e.kind, ChangeKind::Untracked | ChangeKind::Conflicted))
+        .collect();
+    let overrides: HashSet<&str> = status.iter().map(|e| e.path.as_str()).collect();
+    // A recreated untracked path must display its current content, even when
+    // the comparison reports its committed deletion. Conflicts remain visible
+    // until the index is resolved, including when their content matches base.
+    entries.retain(|e| !overrides.contains(e.path.as_str()));
+    entries.extend(status);
+    Ok(entries)
 }
 
 /// The files of `git diff --name-status -z`: each one's kind, the path it was
@@ -775,6 +791,20 @@ pub fn diff(
     worktree: Option<&str>,
     target: DiffTarget<'_>,
 ) -> Result<FileDiff> {
+    diff_with_base(root, components, worktree, target, None)
+}
+
+/// Diff a listed file against the review merge base, or HEAD when omitted.
+///
+/// # Errors
+/// Fails for invalid bases, inaccessible paths, foreign worktrees, or Git errors.
+pub fn diff_with_base(
+    root: &Path,
+    components: Vec<(String, PathBuf)>,
+    worktree: Option<&str>,
+    target: DiffTarget<'_>,
+    base: Option<&str>,
+) -> Result<FileDiff> {
     let (root, components) = in_worktree(root, components, worktree)?;
     let DiffTarget {
         component_id,
@@ -785,7 +815,16 @@ pub fn diff(
         .into_iter()
         .find(|g| g.members.iter().any(|(id, _)| id == component_id))
         .ok_or_else(|| anyhow!("This component isn't in a git repo"))?;
-    let not_listed = || anyhow!("{path} has no uncommitted changes");
+    let comparison = if repo_root(&root).as_ref() == Some(&group.root) {
+        base.map(|base| {
+            crate::tasks::check_branch(&root, base)?;
+            run(git(&group.root).args(["merge-base", base, "HEAD"]))
+        })
+        .transpose()?
+    } else {
+        None
+    };
+    let not_listed = || anyhow!("{path} has no changes in this comparison");
     // Ask git about just this file (and its rename source), not the whole repo.
     let in_repo = |p: &str| {
         let abs = normalize(&root.join(p));
@@ -794,8 +833,12 @@ pub fn diff(
     };
     let mut pathspecs = vec![in_repo(path).ok_or_else(not_listed)?];
     pathspecs.extend(old_path.and_then(in_repo));
-    let entry = changed_entries(&group.root, &pathspecs)
-        .ok_or_else(|| anyhow!("git status failed"))?
+    let entries = if let Some(base) = &comparison {
+        comparison_entries(&group.root, &group.pathspecs(), base)?
+    } else {
+        changed_entries(&group.root, &pathspecs).context("git status failed")?
+    };
+    let entry = entries
         .into_iter()
         .filter(|e| owner_of(&e.path, &group.members) == Some(component_id))
         .find(|e| relative_path(&root, &group.root.join(&e.path)) == path)
@@ -808,7 +851,11 @@ pub fn diff(
         args.extend(["--no-index", "--", "/dev/null"].map(String::from));
         args.push(entry.path);
     } else {
-        args.extend(["-M".to_string(), base_tree(repo)?, "--".to_string()]);
+        args.extend([
+            "-M".to_string(),
+            comparison.unwrap_or(base_tree(repo)?),
+            "--".to_string(),
+        ]);
         args.push(entry.path);
         args.extend(entry.old_path);
     }
@@ -824,6 +871,10 @@ fn line_counts(repo: &Path, pathspecs: &[String]) -> HashMap<String, (u32, u32)>
     let Ok(base) = base_tree(repo) else {
         return HashMap::new();
     };
+    line_counts_at(repo, pathspecs, &base)
+}
+
+fn line_counts_at(repo: &Path, pathspecs: &[String], base: &str) -> HashMap<String, (u32, u32)> {
     let output = git(repo)
         .args([
             "diff",
@@ -832,7 +883,7 @@ fn line_counts(repo: &Path, pathspecs: &[String]) -> HashMap<String, (u32, u32)>
             "-M",
             "--no-ext-diff",
             "--no-textconv",
-            &base,
+            base,
             "--",
         ])
         .args(pathspecs)
@@ -2248,6 +2299,232 @@ mod tests {
                 ("lib/new.rs", ChangeKind::Renamed, Some("lib/old.rs")),
                 ("lib/same.rs", ChangeKind::Modified, None),
             ]
+        );
+        let c = components(&f.0, &[("lib", "lib")]);
+        for file in &r.changes["lib"] {
+            let target = DiffTarget {
+                component_id: "lib",
+                path: &file.path,
+                old_path: file.old_path.as_deref(),
+            };
+            let patch = diff_with_base(&f.0, c.clone(), None, target, Some("base"))
+                .unwrap()
+                .patch;
+            assert!(file.added.is_some() && file.removed.is_some());
+            if file.kind == ChangeKind::Deleted {
+                assert!(patch.contains("-gone"));
+            }
+            if file.kind == ChangeKind::Renamed {
+                assert!(patch.contains("rename from lib/old.rs"));
+            }
+        }
+    }
+
+    #[test]
+    fn branch_comparison_lists_recreated_untracked_paths_once_with_current_content() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("lib/file", "original\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        assert!(run_git(&f.0, &["rm", "-q", "lib/file"]));
+        assert!(run_git(&f.0, &["commit", "-qm", "delete file"]));
+        f.write("lib/file", "recreated\ncontent\n");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": f.0.display().to_string(),
+            "components": [{"id": "lib", "name": "lib", "path": "lib"}],
+        }))
+        .unwrap();
+        let c = components(&f.0, &[("lib", "lib")]);
+        let r = review(&project, c.clone(), None, Some("base")).unwrap();
+        let files = &r.changes["lib"];
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "lib/file");
+        assert_eq!(files[0].kind, ChangeKind::Untracked);
+        assert_eq!((files[0].added, files[0].removed), (Some(2), Some(0)));
+        let target = DiffTarget {
+            component_id: "lib",
+            path: &files[0].path,
+            old_path: files[0].old_path.as_deref(),
+        };
+        let patch = diff_with_base(&f.0, c, None, target, Some("base"))
+            .unwrap()
+            .patch;
+        assert!(patch.contains("+recreated\n+content\n"));
+        assert!(!patch.contains("-original"));
+    }
+
+    #[test]
+    fn branch_comparison_keeps_conflicts_until_the_index_is_resolved() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("lib/file", "base\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        assert!(run_git(&f.0, &["branch", "incoming"]));
+        assert!(run_git(&f.0, &["checkout", "-qb", "work"]));
+        f.write("lib/file", "ours\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "ours"]));
+        assert!(run_git(&f.0, &["checkout", "-q", "incoming"]));
+        f.write("lib/file", "theirs\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "theirs"]));
+        assert!(run_git(&f.0, &["checkout", "-q", "work"]));
+        assert!(!run_git(&f.0, &["merge", "incoming"]));
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": f.0.display().to_string(),
+            "components": [{"id": "lib", "name": "lib", "path": "lib"}],
+        }))
+        .unwrap();
+        let c = components(&f.0, &[("lib", "lib")]);
+        let target = DiffTarget {
+            component_id: "lib",
+            path: "lib/file",
+            old_path: None,
+        };
+        for content in [None, Some("base\n")] {
+            if let Some(content) = content {
+                f.write("lib/file", content);
+            }
+            let r = review(&project, c.clone(), None, Some("base")).unwrap();
+            assert_eq!(r.changes["lib"].len(), 1);
+            assert_eq!(r.changes["lib"][0].kind, ChangeKind::Conflicted);
+            let patch = diff_with_base(&f.0, c.clone(), None, target, Some("base"))
+                .unwrap()
+                .patch;
+            if content.is_some() {
+                assert!(patch.is_empty());
+            } else {
+                assert!(patch.contains("+<<<<<<< HEAD"));
+            }
+        }
+        assert!(run_git(&f.0, &["add", "lib/file"]));
+        let r = review(&project, c, None, Some("base")).unwrap();
+        assert!(r.changes["lib"].is_empty());
+    }
+
+    #[test]
+    fn branch_comparison_tracks_net_worktree_content_and_checks_access() {
+        let f = Fixture::new();
+        assert!(f.repo("."));
+        f.write("lib/file", "base\n");
+        f.write("lib/reverted", "base\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        assert!(run_git(&f.0, &["branch", "base"]));
+        f.write("lib/file", "committed\n");
+        f.write("lib/reverted", "committed\n");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "branch"]));
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": f.0.display().to_string(),
+            "components": [{"id": "lib", "name": "lib", "path": "lib"}],
+        }))
+        .unwrap();
+        let c = components(&f.0, &[("lib", "lib")]);
+        let target = DiffTarget {
+            component_id: "lib",
+            path: "lib/file",
+            old_path: None,
+        };
+        let clean = review(&project, c.clone(), None, Some("base")).unwrap();
+        assert_eq!(clean.changes["lib"].len(), 2);
+        assert_eq!(clean.changes["lib"][0].added, Some(1));
+        assert!(
+            diff_with_base(&f.0, c.clone(), None, target, Some("base"))
+                .unwrap()
+                .patch
+                .contains("+committed")
+        );
+        assert!(diff(&f.0, c.clone(), None, target).is_err());
+        f.write("lib/file", "staged\n");
+        assert!(run_git(&f.0, &["add", "lib/file"]));
+        f.write("lib/file", "current\nextra\n");
+        f.write("lib/reverted", "base\n");
+        f.write("lib/untracked", "new\n");
+        let mixed = review(&project, c.clone(), None, Some("base")).unwrap();
+        assert_eq!(mixed.changes["lib"].len(), 2);
+        assert_eq!(mixed.changes["lib"][0].added, Some(2));
+        assert_eq!(mixed.changes["lib"][0].removed, Some(1));
+        assert_eq!(mixed.changes["lib"][1].kind, ChangeKind::Untracked);
+        let patch = diff_with_base(&f.0, c.clone(), None, target, Some("base"))
+            .unwrap()
+            .patch;
+        assert!(patch.contains("-base") && patch.contains("+current"));
+        assert!(!patch.contains("staged") && !patch.contains("committed"));
+        assert!(review(&project, c.clone(), None, Some("missing")).is_err());
+        assert!(diff_with_base(&f.0, c.clone(), None, target, Some("missing")).is_err());
+        let denied = DiffTarget {
+            component_id: "other",
+            ..target
+        };
+        assert!(diff_with_base(&f.0, c, None, denied, Some("base")).is_err());
+    }
+
+    #[test]
+    fn branch_base_only_applies_to_project_repo_and_follows_linked_worktrees() {
+        let f = Fixture::new();
+        assert!(f.repo("project"));
+        assert!(f.repo("external"));
+        let root = f.0.join("project");
+        let external = f.0.join("external");
+        assert!(run_git(&root, &["branch", "base"]));
+        f.write("project/README", "branch change\n");
+        assert!(run_git(&root, &["add", "."]));
+        assert!(run_git(&root, &["commit", "-qm", "change"]));
+        f.write("external/README", "external committed\n");
+        assert!(run_git(&external, &["add", "."]));
+        assert!(run_git(&external, &["commit", "-qm", "external change"]));
+        f.write("external/local", "uncommitted\n");
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": root.display().to_string(),
+            "components": [{"id": "external", "name": "external", "path": "../external"}],
+        }))
+        .unwrap();
+        let c = components(&root, &[("external", "../external")]);
+        let r = review(&project, c.clone(), None, Some("base")).unwrap();
+        assert_eq!(r.changes["external"].len(), 1);
+        assert_eq!(r.changes["external"][0].path, "../external/local");
+        let target = DiffTarget {
+            component_id: "external",
+            path: "../external/local",
+            old_path: None,
+        };
+        assert!(
+            diff_with_base(&root, c.clone(), None, target, Some("base"))
+                .unwrap()
+                .patch
+                .contains("+uncommitted")
+        );
+        let linked = f.0.join("linked");
+        assert!(run_git(
+            &root,
+            &["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]
+        ));
+        let path = linked.to_str().unwrap();
+        let r = review(&project, c.clone(), Some(path), Some("base")).unwrap();
+        assert_eq!(r.changes[PROJECT_SCOPE][0].path, "README");
+        let target = DiffTarget {
+            component_id: PROJECT_SCOPE,
+            path: "README",
+            old_path: None,
+        };
+        assert!(
+            diff_with_base(&root, c.clone(), Some(path), target, Some("base"))
+                .unwrap()
+                .patch
+                .contains("+branch change")
+        );
+        let denied = DiffTarget {
+            path: "../external/README",
+            ..target
+        };
+        assert!(diff_with_base(&root, c.clone(), None, denied, Some("base")).is_err());
+        assert!(
+            diff_with_base(&root, c, Some(f.0.to_str().unwrap()), target, Some("base")).is_err()
         );
     }
 

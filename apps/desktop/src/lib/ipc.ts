@@ -169,7 +169,8 @@ export const gitDiff = (
   path: string,
   oldPath?: string,
   worktree?: string,
-) => invoke<FileDiff>('git_diff', { components, componentId, path, oldPath, worktree })
+  base?: string,
+) => invoke<FileDiff>('git_diff', { components, componentId, path, oldPath, worktree, base })
 /** `worktree` is a path `gitWorktrees` returned; omitted for the open one. */
 export const gitReview = (project: Project, worktree?: string, base?: string) =>
   invoke<Review>('git_review', { project, projectId: project.projectId, worktree, base })

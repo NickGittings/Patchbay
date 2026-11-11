@@ -319,7 +319,7 @@
     await until('Stories leaves Changes', () => !document.querySelector('.simple-diff'))
     click(button('Map'))
     await smoke.terminalWrite(builder, 'smoke-clean\n')
-    await until('changes cleared', () => button('Changes 0'))
+    await until('only committed change remains', () => button('Changes 1'))
     click(button('Review'))
     await until('review findings', () => chatText().includes('1 issues found.') && button('Fix'))
     inChat()
@@ -329,6 +329,12 @@
       ),
     )
     await until('finding opens Changes', () => document.querySelector('.simple-diff'))
+    await until(
+      'committed finding diff and line focus',
+      () =>
+        document.querySelector('.simple-diff .diff-view')?.textContent.includes('simple changed') &&
+        document.querySelector('.simple-diff [data-new-line="1"]'),
+    )
     click(button('Map', document.querySelector('.simple-diff')))
     await until('reviewer terminal button', () => button('View Reviewer terminal'))
     click(button('View Reviewer terminal'))

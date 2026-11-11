@@ -1,3 +1,4 @@
+import { useStore } from '../../store'
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { stepKey } from '../../lib/changeNav'
 import { hunkRange, parsePatch } from '../../lib/diff'
@@ -79,11 +80,12 @@ function FileHeader({
 }
 
 /**
- * The diff of one changed file against `HEAD`, with old and new line numbers. `revision` changes
+ * The diff of one changed file against the comparison base, with old and new line numbers. `revision` changes
  * on every Git refresh, so an edit that leaves the file list unchanged still reloads the diff.
  */
 export default function DiffView({
   history,
+  base,
   componentId,
   file,
   revision,
@@ -91,6 +93,7 @@ export default function DiffView({
   lineFocus,
   nav,
 }: {
+  base?: string
   history?: HistorySelection
   lineFocus?: number
   /** Previous/next buttons in the header, and ←/→ while the diff has focus. */
@@ -107,14 +110,15 @@ export default function DiffView({
   const [diff, setDiff] = useState<{ key: string; diff: FileDiff } | null>(null)
   // Keyed like the diff, so one file's error never shows under another's header.
   const [failure, setFailure] = useState<{ key: string; error: string } | null>(null)
-  const key = `${history?.repo ?? ''}\0${history?.commit.hash ?? ''}\0${worktree ?? ''}\0${path ?? ''}`
+  const projectId = useStore((s) => s.project?.id)
+  const key = `${projectId}\0${componentId}\0${base ?? ''}\0${history?.repo ?? ''}\0${history?.commit.hash ?? ''}\0${worktree ?? ''}\0${path ?? ''}`
   useEffect(() => {
     if (!path) return
     let disposed = false
     void (
       history
         ? historyRequest<FileDiff>(worktree, history.repo, undefined, history.commit.hash, path)
-        : gitDiff(componentPaths(), componentId, path, oldPath, worktree)
+        : gitDiff(componentPaths(), componentId, path, oldPath, worktree, base)
     )
       .then((d) => {
         if (!disposed) {
@@ -128,7 +132,7 @@ export default function DiffView({
     return () => {
       disposed = true
     }
-  }, [componentId, path, oldPath, worktree, key, revision, history])
+  }, [componentId, path, oldPath, worktree, base, key, revision, history])
 
   const loaded = diff?.key === key ? diff.diff : null
   const error = failure?.key === key ? failure.error : ''
@@ -138,10 +142,13 @@ export default function DiffView({
   )
 
   useEffect(() => {
-    if (lineFocus !== undefined && loaded)
-      focusHost.current
-        ?.querySelector(`[data-new-line="${lineFocus}"]`)
-        ?.scrollIntoView({ block: 'center' })
+    if (lineFocus !== undefined && loaded) {
+      const host = focusHost.current
+      const line =
+        host?.querySelector(`[data-new-line="${lineFocus}"]`) ??
+        host?.querySelector(`[data-old-line="${lineFocus}"]`)
+      line?.scrollIntoView({ block: 'center' })
+    }
   }, [lineFocus, loaded])
   if (!file) return <div className="diff-view hint">Select a file to see its changes.</div>
   const body = () => {

@@ -1370,6 +1370,8 @@ async fn git_branches(project_id: String, state: State<'_, AppState>) -> CmdResu
 /// The diff of one of a component's changed files, `path` (and a rename's
 /// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
 /// listed) or the open one.
+// Tauri commands take their IPC arguments individually.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn git_diff(
     project_id: String,
@@ -1379,6 +1381,7 @@ async fn git_diff(
     path: String,
     old_path: Option<String>,
     worktree: Option<String>,
+    base: Option<String>,
 ) -> CmdResult<git::FileDiff> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1390,7 +1393,14 @@ async fn git_diff(
             old_path: old_path.as_deref(),
         };
         let components = readable_components(&access, components);
-        git::diff(&root, components, worktree.as_deref(), target).map_err(err)
+        git::diff_with_base(
+            &root,
+            components,
+            worktree.as_deref(),
+            target,
+            base.as_deref(),
+        )
+        .map_err(err)
     })
     .await
 }

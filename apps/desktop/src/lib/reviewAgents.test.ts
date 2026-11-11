@@ -216,6 +216,24 @@ test('a branch is never its own review base', async () => {
   ).toEqual(['main', 'release'])
 })
 
+test('saved review bases fall back after a branch is renamed or deleted', async () => {
+  const { availableReviewBase } = await import('./reviewAgents')
+  const worktrees = [source, tree('/main', 'main', true)]
+  const tasks = [{ worktree: source.path, base: 'old-release' } as Task]
+  expect(
+    availableReviewBase(source, tasks, worktrees, ['feature', 'main', 'release'], 'release'),
+  ).toBe('release')
+  expect(
+    availableReviewBase(source, tasks, worktrees, ['feature', 'main', 'release'], 'old-release'),
+  ).toBe('main')
+  // The task's old base must not become the fallback for deleted findings either.
+  expect(availableReviewBase(source, tasks, worktrees, ['feature', 'main'], 'release')).toBe('main')
+  const open = { ...source, current: true }
+  expect(availableReviewBase(open, tasks, [open], ['feature', 'master'], 'release')).toBe('master')
+  expect(availableReviewBase(open, tasks, [open], ['feature'], 'release')).toBeUndefined()
+  expect(availableReviewBase(undefined, tasks, worktrees, ['main'], 'main')).toBeUndefined()
+})
+
 test('findings become stale for new HEADs, newer edits and unfinished review attempts', async () => {
   const { reviewState } = await import('./reviewAgents')
   const findings: ReviewFindings = {
