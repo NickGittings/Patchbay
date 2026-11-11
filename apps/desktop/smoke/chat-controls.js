@@ -38,6 +38,84 @@
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
     await until('chat', () => document.querySelector('.simple-chat'))
+    // Explicit identity stays stable when another agent asks a question.
+    const chooser = await until('chat agent chooser', () =>
+      document.querySelector('[aria-label="Chat agent"]'),
+    )
+    assert(chooser.value === '', 'new chat silently selected an agent')
+    const originalRecords = state().sessionRecords
+    const originalSessions = state().sessions
+    const originalSimple = state().simple
+    const agent = (id, name) => ({
+      id,
+      metadata: {
+        projectId,
+        kind: 'agent',
+        componentId: '@task',
+        task: null,
+        name,
+        terminalId: id,
+        adapter: 'codex',
+      },
+      spec: { cwd: state().project.root, command: 'codex' },
+      snapshot: null,
+      history: [],
+    })
+    const first = agent('chat-smoke-first', 'First agent')
+    const asking = agent('chat-smoke-second', 'Second agent')
+    smoke.store.setState({
+      sessionRecords: [...originalRecords, first, asking],
+      sessions: {
+        ...originalSessions,
+        [first.id]: {
+          running: true,
+          generation: 1,
+          status: { agent: { state: 'idle', authoritative: true, provider: 'codex', sinceMs: 1 } },
+        },
+        [asking.id]: {
+          running: true,
+          generation: 1,
+          status: {
+            agent: {
+              state: 'needsInput',
+              authoritative: true,
+              provider: 'codex',
+              sinceMs: 2,
+              message: 'Which behavior?',
+            },
+          },
+        },
+      },
+    })
+    state().patchTask(projectId, null, { simple: { ...state().simple, selectedAgent: first.id } })
+    await until('selected identity', () =>
+      document.querySelector('.chat-recipient')?.textContent.includes('First agent'),
+    )
+    assert(
+      document.querySelector('[aria-label="Chat agent"]').value === `session:${first.id}`,
+      'question changed selected agent',
+    )
+    assert(
+      document.querySelector('.chat-question summary')?.textContent.includes('Second agent'),
+      'question lost originating agent',
+    )
+    const selected = document.querySelector('[aria-label="Chat agent"]')
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(selected), 'value').set.call(
+      selected,
+      `session:${asking.id}`,
+    )
+    selected.dispatchEvent(new Event('change', { bubbles: true }))
+    const handoff = await until('reviewable agent handoff', () =>
+      document.querySelector('[aria-label="Review agent handoff"]'),
+    )
+    click(button('Cancel', handoff))
+    await until(
+      'handoff cancelled',
+      () => !document.querySelector('[aria-label="Review agent handoff"]'),
+    )
+    assert(state().simple.selectedAgent === first.id, 'cancelled handoff changed recipient')
+    smoke.store.setState({ sessionRecords: originalRecords, sessions: originalSessions })
+    state().patchTask(projectId, null, { simple: originalSimple })
     // Chat's resize handle must receive pointer hits even while Inspector is hidden.
     const { width: chatWidth, drag: dragChat } = smoke.chatPanel
     await dragChat(-160)

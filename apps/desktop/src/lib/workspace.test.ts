@@ -286,6 +286,7 @@ test('Simple defaults off, preserves the Full view and restores the complete wor
   expect(useStore.getState().view).toBe('review')
   const simple = {
     startedMs: 1,
+    selectedAgent: 'selected-chat-agent',
     log: [
       {
         id: 'one',

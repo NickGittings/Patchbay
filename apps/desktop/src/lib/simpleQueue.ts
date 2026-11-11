@@ -1,4 +1,5 @@
 import { useStore } from '../store'
+import { chatAutoActive } from './chat'
 import {
   forceable,
   followDeliveries,
@@ -46,6 +47,15 @@ export async function flushQueued(key: string, force = false) {
   const queued = useSimpleUi.getState().worktrees[key]?.queued
   if (!queued) return
   const state = useStore.getState()
+  const [projectId, task] = JSON.parse(key) as [string, string | null]
+  // Background queues retain their original workspace and wait while Auto owns it.
+  const autoActive = () => {
+    const latest = useStore.getState()
+    const project = latest.project?.id === projectId ? latest : latest.projects?.[projectId]?.state
+    const workspace = project?.activeTask === task ? project : project?.taskWorkspaces?.[task ?? '']
+    return chatAutoActive(workspace?.auto?.status)
+  }
+  if (autoActive()) return
   const session = state.sessions[queued.sessionId]
   // Reconciliation can temporarily omit a session. Keep its place until it is known again.
   // A concurrent send also owns the draft until it settles; leave the queue untouched.
@@ -68,7 +78,6 @@ export async function flushQueued(key: string, force = false) {
   )
     return
   useSimpleUi.getState().patch(key, { queued: undefined })
-  const [projectId, task] = JSON.parse(key) as [string, string | null]
   useSimpleUi.getState().patch(key, { pendingAction: true })
   try {
     await sendToSession({
@@ -78,6 +87,18 @@ export async function flushQueued(key: string, force = false) {
       ...queued,
       mentions: [...new Set(queued.mentions.map((m) => m.id))],
       force,
+      current: () => {
+        if (autoActive())
+          throw new Error(
+            'Auto took control of this workspace. Your queued message was kept as a draft.',
+          )
+        return {
+          projectId,
+          task,
+          recipient: queued.sessionId,
+          generation: useStore.getState().sessions[queued.sessionId]?.generation ?? -1,
+        }
+      },
     })
   } catch (error) {
     restore(key, queued, String(error))
@@ -94,7 +115,10 @@ export function followQueuedPrompts() {
   const stopSessions = useStore.subscribe((state, previous) => {
     if (
       state.sessions !== previous.sessions ||
-      state.serviceConnected !== previous.serviceConnected
+      state.serviceConnected !== previous.serviceConnected ||
+      state.auto !== previous.auto ||
+      state.taskWorkspaces !== previous.taskWorkspaces ||
+      state.projects !== previous.projects
     )
       follow()
   })

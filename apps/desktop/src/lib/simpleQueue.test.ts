@@ -22,7 +22,7 @@ vi.mock('./simpleActions', () => ({ logSimple: vi.fn() }))
 vi.mock('./simpleReplies', () => ({ persistReplies: vi.fn() }))
 
 import { useStore } from '../store'
-import { terminalPrompt } from './ipc'
+import { terminalAttach, terminalDetach, terminalPrompt } from './ipc'
 import { cancelQueued, enqueuePrompt, flushQueued, followQueuedPrompts } from './simpleQueue'
 import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
 import { sendToSession, transmittedText } from './simpleComposer'
@@ -61,10 +61,11 @@ const queue = () =>
   })
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(terminalAttach).mockResolvedValue(undefined)
   vi.mocked(terminalPrompt).mockResolvedValue(undefined)
   sid = `queue-${++serial}`
   useSimpleUi.setState({ worktrees: {} })
-  useStore.setState({ sessions: {}, serviceConnected: true })
+  useStore.setState(useStore.getInitialState(), true)
   update(session())
 })
 afterEach(() => {
@@ -289,3 +290,89 @@ test('the interrupted turn Stop does not release a queue after a forced send', a
   })
   await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
 })
+
+test('queued chat waits while Auto controls its workspace, then follows its original agent', async () => {
+  const { useStore: store } = await import('../store')
+  store.setState({
+    project: { id: 'p' },
+    activeTask: 't',
+    auto: { status: 'running' },
+  } as never)
+  queue()
+  update(session('idle'))
+  await flushQueued(key)
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  store.setState({ auto: { status: 'paused' } } as never)
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledWith(sid, 1, 'follow  up', false)
+  store.setState({ project: null, auto: null } as never)
+})
+
+test('pausing Auto in a background task releases its queued prompt without a session update', async () => {
+  const setAuto = (status: string) =>
+    useStore.setState({
+      project: { id: 'p' },
+      activeTask: 'other',
+      taskWorkspaces: { t: { auto: { status } } },
+    } as never)
+  setAuto('running')
+  update(session('idle'))
+  stop = followQueuedPrompts()
+  queue()
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  setAuto('paused')
+  await vi.waitFor(() =>
+    expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up', false),
+  )
+})
+
+test.each([
+  ['active', false],
+  ['active', true],
+  ['background task', false],
+  ['background task', true],
+  ['background project', false],
+  ['background project', true],
+] as const)(
+  'Auto starting during attachment blocks %s queue delivery (force=%s)',
+  async (scope, force) => {
+    const workspace = { activeTask: 't', auto: { status: 'paused' } }
+    const setWorkspace = (status: string) => {
+      const next = { ...workspace, auto: { status } }
+      useStore.setState(
+        (scope === 'active'
+          ? { project: { id: 'p' }, ...next }
+          : scope === 'background task'
+            ? { project: { id: 'p' }, activeTask: 'other', taskWorkspaces: { t: next } }
+            : { project: { id: 'other' }, projects: { p: { state: next } } }) as never,
+      )
+    }
+    setWorkspace('paused')
+    update(session(force ? 'working' : 'idle'))
+    queue()
+    let attached!: () => void
+    vi.mocked(terminalAttach).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          attached = resolve
+        }),
+    )
+    const delivery = flushQueued(key, force)
+    expect(terminalAttach).toHaveBeenCalledExactlyOnceWith(sid, true)
+    setWorkspace('running')
+    attached()
+    await delivery
+    expect(terminalPrompt).not.toHaveBeenCalled()
+    expect(terminalDetach).toHaveBeenCalledExactlyOnceWith(sid)
+    expect(logSimple).not.toHaveBeenCalled()
+    expect(useSimpleUi.getState().worktrees[key]).toMatchObject({
+      queued: undefined,
+      pendingAction: false,
+      draft: 'follow @app up',
+      mentions: [{ id: 'app', token: '@app', start: 7, end: 11 }],
+    })
+    expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
+      'Error: Auto took control of this workspace. Your queued message was kept as a draft.',
+    )
+  },
+)
