@@ -29,6 +29,7 @@ import {
 } from '../lib/sessionList'
 import { sessionView, type SessionRecord, type Task } from '../types'
 import { revealTerminal } from '../lib/attention'
+import { reconnectSession } from '../lib/sessionNavigation'
 import { closePanel } from '../lib/rail'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
@@ -73,7 +74,7 @@ interface SessionListProps {
   connected: boolean
   busy: boolean
   perform: (action: () => Promise<unknown>) => Promise<void>
-  onSelect: (record: SessionRecord) => void
+  onSelect: (record: SessionRecord, reconnect: boolean) => Promise<void>
   onReveal: (record: SessionRecord) => void
   onConversation: (conversation: { id: string; value: string }) => void
 }
@@ -256,12 +257,7 @@ function SessionList({
                           <small>{time !== undefined && <Ago ms={time} />}</small>
                           <button
                             disabled={unavailable || starting}
-                            onClick={() =>
-                              void perform(async () => {
-                                await hydrateSession(r.id)
-                                onSelect(r)
-                              })
-                            }
+                            onClick={() => void perform(() => onSelect(r, live))}
                           >
                             {live ? 'Reconnect' : 'View output'}
                           </button>
@@ -354,6 +350,7 @@ export default function SessionsPanel({
       [projectId]: { ...(current[projectId] ?? DEFAULT_SESSION_LIST_OPTIONS), ...patch },
     }))
   const [selected, setSelected] = useState<SessionRecord>()
+  const [locationUnavailable, setLocationUnavailable] = useState(false)
   const selectedSession = useStore((s) => (selected ? s.sessions[selected.id] : undefined))
   const selectedProjectOpen = useStore(
     (s) => !!selected && projectStateOf(selected.metadata.projectId, s) !== undefined,
@@ -450,9 +447,19 @@ export default function SessionsPanel({
           connected={connected}
           busy={busy}
           perform={perform}
-          onSelect={(record) => {
+          onSelect={async (record, reconnect) => {
+            let unavailable = false
+            if (reconnect) {
+              const result = await reconnectSession(record)
+              if (result === 'revealed') {
+                close()
+                return
+              }
+              unavailable = result === 'unavailable'
+            } else await hydrateSession(record.id)
             historyRequest.current++
             setSelected(record)
+            setLocationUnavailable(unavailable)
             setHistory(null)
             setRequested(null)
           }}
@@ -492,6 +499,9 @@ export default function SessionsPanel({
         )}
         {selected && (
           <section className="session-preview" ref={preview}>
+            {locationUnavailable && (
+              <p className="hint">Original workspace location unavailable; connected here.</p>
+            )}
             <div className="row">
               <SessionTitle metadata={selected.metadata} />
               {!!selected.history.length && (

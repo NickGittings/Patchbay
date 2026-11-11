@@ -558,6 +558,49 @@ test('hydrating a finished run resets the modes it left on, a running one keeps 
   expect(useStore.getState().sessions[running].running).toBe(true)
 })
 
+test.each(['not-started', 'running'])(
+  'reconnect refreshes a cached %s snapshot and never launches work',
+  async (cached) => {
+    const { reconnectSession } = await import('./sessionNavigation')
+    const sid = sessionId('web', 'dev', null, 'p')
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(
+      cached === 'running' ? snapshot(true) : null,
+    )
+    await hydrateSession(sid)
+    const latest = snapshot(cached === 'not-started')
+    vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(latest)
+    useStore.setState({ utilityPanel: 'sessions' })
+    const record = {
+      id: sid,
+      metadata: {
+        projectId: 'p',
+        projectRoot: '/p',
+        projectName: 'P',
+        componentId: 'web',
+        terminalId: 'dev',
+        name: 'Dev',
+        kind: 'task',
+        adapter: null,
+        conversationId: null,
+      },
+      snapshot: snapshot(true),
+      history: [],
+      interrupted: false,
+      spec: { cwd: '/p', command: 'cat' },
+    } satisfies import('../types').SessionRecord
+    expect(await reconnectSession(record)).toBe(cached === 'not-started' ? 'revealed' : 'ended')
+    expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+    expect(useStore.getState().sessions[sid]).toMatchObject({
+      running: latest.running,
+      generation: 3,
+    })
+    expect(ipc.terminalStart).not.toHaveBeenCalled()
+    expect(ipc.sessionResume).not.toHaveBeenCalled()
+    expect(ipc.planStart).not.toHaveBeenCalled()
+    expect(ipc.taskRootStart).not.toHaveBeenCalled()
+  },
+)
+
 test('hydrating an older finished snapshot preserves the live run and its terminal modes', async () => {
   const sid = sessionId('web', 'dev', null, 'p')
   handleTerminalEvent({

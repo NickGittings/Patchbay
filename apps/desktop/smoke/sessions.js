@@ -89,6 +89,47 @@
   const assert = (condition, message) => {
     if (!condition) throw new Error(message)
   }
+  const reconnectAt = async (scope, sid, projectId, task = null) => {
+    const generation = (await smoke.terminalSnapshot(sid)).generation
+    await click(scope, 'Reconnect')
+    await until(
+      'reconnect reveals exact terminal and closes rail',
+      () =>
+        !panel() &&
+        state().project?.id === projectId &&
+        state().activeTask === task &&
+        state().activeSession === sid &&
+        state().view === 'implementation' &&
+        document.querySelector(`.terminal-tile.focused[data-session="${sid}"] .xterm-host`),
+    ).catch((error) => {
+      throw new Error(
+        `${error.message}: ${JSON.stringify({
+          expected: { sid, projectId, task },
+          actual: {
+            panel: !!panel(),
+            projectId: state().project?.id,
+            task: state().activeTask,
+            sid: state().activeSession,
+            view: state().view,
+            message: state().message,
+            preview: document.querySelector('.session-preview > .hint')?.textContent,
+            tiles: [...document.querySelectorAll('.terminal-tile')].map((tile) => ({
+              sid: tile.dataset.session,
+              focused: tile.classList.contains('focused'),
+              mounted: !!tile.querySelector('.xterm-host'),
+            })),
+          },
+        })}`,
+      )
+    })
+    const snapshot = await smoke.terminalSnapshot(sid)
+    assert(
+      snapshot.running && snapshot.generation === generation,
+      'Reconnect changed the process run',
+    )
+    await click(() => document, 'Sessions')
+    await until('sessions reopened after reconnect', panel)
+  }
   const addSessions = async (opened) => {
     smoke.acceptOpened(opened)
     const component = state().nodes[0]
@@ -324,15 +365,130 @@
         names(first).join('|') === 'Live A|Live B' && names(second).join('|') === 'Live A|Live B',
     )
     assert(headingOrder() === initialOrder, 'Filtering reordered project groups')
-    await click(() => row(first, 'Live A'), 'Reconnect')
-    await until('running preview', () => document.querySelector('.session-preview'))
-    await until('preview output', () => smoke.terminalText(idsOne[0]).text.includes('live-output'))
-    await choose(first, 0, 'closed')
-    assert(document.querySelector('.session-preview'), 'Filtering hid an open preview')
-    await choose(first, 0, 'running')
-    document.querySelector('[aria-label="Close Sessions panel"]').click()
-    await until('closed panel', () => !panel())
+    // The first reconnect switches projects; the next stays in the active project.
+    await reconnectAt(() => row(first, 'Live A'), idsOne[0], one.id)
+    await until('workspace terminal output', () =>
+      smoke.terminalText(idsOne[0]).text.includes('live-output'),
+    )
+    await reconnectAt(() => row(first, 'Live B'), idsOne[1], one.id)
+    // Keep a real running process but give it the runtime destination used by extension commands.
+    // Navigation stays mounted throughout, preserving both a dragged-shut dock and its view tab.
+    const dockSid = idsOne[1]
+    const registry = state().extensions
+    const runtimes = state().runtimeTerminals
+    const dockViewId = 'smoke.session-dock'
+    const componentId = state().sessionRecords.find((r) => r.id === dockSid).metadata.componentId
+    const presets = state().nodes.find((n) => n.id === componentId).data.terminals
+    const terminal = presets.find((t) => t.id === 'session-1')
+    try {
+      // Removing its preset makes this a retained runtime, so reconciliation keeps its metadata.
+      state().updateComponent(componentId, { terminals: presets.filter((t) => t !== terminal) })
+      state().addRuntimeTerminal(dockSid, {
+        projectId: one.id,
+        componentId,
+        terminal,
+        commandId: 'smoke.reconnect',
+      })
+      state().setExtensions({
+        ...registry,
+        extensions: [
+          ...registry.extensions,
+          {
+            id: 'smoke.dock',
+            dir: '',
+            enabled: true,
+            errors: [],
+            manifest: {
+              name: 'dock',
+              publisher: 'smoke',
+              version: '1.0.0',
+              engines: { patchbay: '*' },
+              activationEvents: [],
+              permissions: [],
+              contributes: {
+                devices: [],
+                detectors: [],
+                commands: [],
+                menus: {},
+                context: [],
+                views: [{ id: dockViewId, title: 'Smoke dock view', location: 'dock' }],
+              },
+            },
+          },
+        ],
+      })
+      state().setView('navigation')
+      document.querySelector('[aria-label="Close Sessions panel"]').click()
+      const dock = () => document.querySelector('.terminal-dock')
+      const dockPanel = () => dock()?.closest('[data-panel]')
+      const selectView = async () => {
+        const tab = await until('dock extension tab', () =>
+          dock()?.querySelector(`[data-extension-view-tab="${dockViewId}"]`),
+        )
+        tab.click()
+        await until('dock extension selected', () =>
+          dock()?.querySelector(`[data-extension-view="${dockViewId}"]`),
+        )
+      }
+      const reconnectDock = async () => {
+        const generation = (await smoke.terminalSnapshot(dockSid)).generation
+        await click(() => document, 'Sessions')
+        await click(() => row(first, 'Live B'), 'Reconnect')
+        await until(
+          'reconnect displays the already-active dock terminal',
+          () =>
+            !panel() &&
+            state().view === 'navigation' &&
+            state().activeSession === dockSid &&
+            dockPanel()?.getBoundingClientRect().height > 0 &&
+            dock()?.querySelector('.xterm-host') &&
+            !dock()?.querySelector('[data-extension-view]'),
+        ).catch((error) => {
+          throw new Error(
+            `${error.message}: ${JSON.stringify({
+              panel: !!panel(),
+              view: state().view,
+              activeSession: state().activeSession,
+              expected: dockSid,
+              revealed: state().dockReveal,
+              height: dockPanel()?.getBoundingClientRect().height,
+              terminal: !!dock()?.querySelector('.xterm-host'),
+              extension: dock()?.querySelector('[data-extension-view]')?.outerHTML,
+              dock: dock()?.textContent,
+              message: state().message,
+            })}`,
+          )
+        })
+        const snapshot = await smoke.terminalSnapshot(dockSid)
+        assert(
+          snapshot.running && snapshot.generation === generation,
+          'Dock reconnect restarted work',
+        )
+      }
+      await selectView()
+      await reconnectDock()
+      // A new user selection must still work after a reveal and survive background updates.
+      await selectView()
+      await smoke.reconcileSessions()
+      await sleep(300)
+      assert(
+        dock().querySelector('[data-extension-view]'),
+        'Old reveal overrode a new view selection',
+      )
+      state().setPanelLayout('App-2', { 'App-pane-3': 100, 'App-pane-4': 0 })
+      await until(
+        'dock collapsed with the same active session',
+        () =>
+          dockPanel()?.getBoundingClientRect().height === 0 && state().activeSession === dockSid,
+      )
+      await reconnectDock()
+    } finally {
+      state().setExtensions(registry)
+      state().updateComponent(componentId, { terminals: presets })
+      smoke.store.setState({ runtimeTerminals: runtimes })
+    }
     await click(() => document, 'Sessions')
+    await until('sessions reopened after dock regressions', panel)
     await until(
       'reopened choices',
       () =>
@@ -365,6 +521,9 @@
     await until('closed preview output', () =>
       smoke.terminalText(idsOne[2]).text.includes('finished-output'),
     )
+    await choose(first, 0, 'running')
+    assert(document.querySelector('.session-preview'), 'Filtering hid an open output preview')
+    await choose(first, 0, 'closed')
     await click(() => row(first, 'Live A'), 'Start new')
     await until(
       'restarted session disappears from closed filter',
@@ -559,6 +718,24 @@
       'inactive project worktree labels',
       () => state().project?.id === two.id && worktree('Alpha work') && worktree('Zebra work'),
     )
+    const retainedRun = document.querySelector('.session-preview select[aria-label="Run"]')
+    retainedRun.value = '0'
+    retainedRun.dispatchEvent(new Event('change', { bubbles: true }))
+    await until('history selected before reconnect', () =>
+      document.querySelector('.session-preview pre')?.textContent.includes('live-output'),
+    )
+    await reconnectAt(
+      () => worktree('Zebra work')?.querySelector('.session-row'),
+      smoke.sessionId('@task', 'shell', zebra.id, one.id),
+      one.id,
+      zebra.id,
+    )
+    assert(
+      document.querySelector('.session-preview select[aria-label="Run"]')?.value === '0' &&
+        document.querySelector('.session-preview pre')?.textContent.includes('live-output'),
+      'Reconnect reset the retained output history selection',
+    )
+    state().activateProject(two.id)
     // A read-only panel must preserve inactive task layouts and Git badges, even disconnected.
     document.querySelector('[aria-label="Close Sessions panel"]').click()
     await until('panel closed before restart check', () => !panel())
@@ -627,7 +804,34 @@
       worktree('Alpha work').querySelector('.session-worktree-heading h4').title === alphaPath,
       'Closing a project changed its worktree path',
     )
+    const alphaSid = smoke.sessionId('@task', 'shell', alpha.id, one.id)
+    const fallbackGeneration = (await smoke.terminalSnapshot(alphaSid)).generation
+    await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Reconnect')
+    await until(
+      'closed project reconnect falls back to interactive preview',
+      () =>
+        panel() &&
+        document
+          .querySelector('.session-preview')
+          ?.textContent.includes('Original workspace location unavailable; connected here.') &&
+        document.querySelector('.session-preview .xterm-host'),
+    )
+    assert(!state().projects[one.id], 'Fallback reopened the closed project')
+    assert(state().project.id === two.id, 'Fallback changed the active project')
+    const fallbackSnapshot = await smoke.terminalSnapshot(alphaSid)
+    assert(
+      fallbackSnapshot.running && fallbackSnapshot.generation === fallbackGeneration,
+      'Fallback changed the process run',
+    )
+    assert(
+      [...document.querySelectorAll('.session-preview button')].some(
+        (b) => b.textContent.trim() === '■ Stop',
+      ),
+      'Fallback preview lacks live terminal controls',
+    )
     smoke.acceptOpened(await smoke.openProject())
+    // Load the reopened tab before immediately switching away; React may batch both switches.
+    await smoke.refreshTasks(one.id)
     state().activateProject(two.id)
     await openMenu(() => row(first, endedNames[0]))
     await until('reopened project enables Start new', () => {
@@ -640,10 +844,13 @@
       'empty main worktree hidden',
       () => !worktree('Main worktree') && worktrees().length === 2,
     )
-    await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Reconnect')
-    await until('worktree shell preview', () =>
-      document.querySelector('.session-preview .hint')?.textContent.includes(alpha.worktree),
+    await reconnectAt(
+      () => worktree('Alpha work')?.querySelector('.session-row'),
+      alphaSid,
+      one.id,
+      alpha.id,
     )
+    state().activateProject(two.id)
     await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Stop')
     await until('only selected worktree stopped', async () => {
       await smoke.reconcileSessions()
@@ -653,8 +860,13 @@
         state().sessionRecords.find((r) => r.metadata.task === zebra.id)?.snapshot?.running
       )
     })
-    // The preview still belongs to Alpha in the inactive project, even after its row disappears.
-    const alphaSid = smoke.sessionId('@task', 'shell', alpha.id, one.id)
+    await choose(first, 0, 'closed')
+    await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'View output')
+    await until('ended worktree output preview', () =>
+      document.querySelector('.session-preview .hint')?.textContent.includes(alpha.worktree),
+    )
+    await choose(first, 0, 'running')
+    // The output preview belongs to Alpha in the inactive project, even while its row is hidden.
     const zebraSid = smoke.sessionId('@task', 'shell', zebra.id, one.id)
     const zebraGeneration = state().sessions[zebraSid].generation
     assert(state().project.id === two.id, 'preview test needs another active project')
@@ -681,7 +893,7 @@
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('worktree cleanup completed', () => !globalStop()?.disabled)
     result =
-      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, shared filtering and sorting, activity tooltips, reopening, empty groups, retained preview, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
+      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, shared filtering and sorting, activity tooltips, reopening, empty groups, output previews, workspace reconnect with unchanged generation, closed-project fallback, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
   } catch (error) {
     failure = error.message ?? String(error)
   } finally {
