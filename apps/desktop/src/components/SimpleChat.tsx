@@ -351,13 +351,6 @@ export default function SimpleChat({
         <strong>Worktree chat</strong>
         <span>{source?.branch ?? 'Project folder'}</span>
         <button
-          aria-label="Review options"
-          disabled={!source?.branch || !!ui.pendingWorkflow || !!ui.pendingAction}
-          onClick={() => setDialog('review')}
-        >
-          Review…
-        </button>
-        <button
           disabled={
             !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])
           }
@@ -596,24 +589,6 @@ export default function SimpleChat({
             Starting {pending === 'build' ? 'build' : pending}…
           </p>
         )}
-        {!launching && (state.prompt || options) && (
-          <details className="simple-step" data-step={state.step}>
-            <summary>Planning, review, and merge actions</summary>
-            {state.prompt && <p>{state.prompt.text}</p>}
-            <div className="simple-step-actions">
-              {state.prompt?.actions.map((b) => (
-                <button disabled={!!pending} key={b.action} onClick={() => act(b.action)}>
-                  {b.label}
-                </button>
-              ))}
-              {options && (
-                <button className="simple-options" onClick={() => setDialog('review')}>
-                  Options…
-                </button>
-              )}
-            </div>
-          </details>
-        )}
         {failure && <p role="alert">{failure}</p>}
         {drawerShown && drawerRecord && (
           <div
@@ -637,6 +612,43 @@ export default function SimpleChat({
           </div>
         )}
       </div>
+      {!launching && (state.prompt || options) && (
+        <section
+          className="simple-step"
+          data-step={state.step}
+          aria-label="Planning, review, and merge actions"
+        >
+          <div className="simple-step-heading">
+            <span className="simple-step-icon" aria-hidden="true">
+              ↗
+            </span>
+            <h3>Planning, review, and merge</h3>
+          </div>
+          {state.prompt && <p>{state.prompt.text}</p>}
+          <div className="simple-step-actions">
+            {state.prompt?.actions.map((b, index) => (
+              <button
+                className={index === 0 ? 'primary' : undefined}
+                disabled={!!pending}
+                key={b.action}
+                onClick={() => act(b.action)}
+              >
+                {b.label}
+              </button>
+            ))}
+            {options && (
+              <button
+                className="simple-options"
+                aria-label="Review options"
+                disabled={!!pending || !!ui.pendingWorkflow || !!ui.pendingAction}
+                onClick={() => setDialog('review')}
+              >
+                Review options…
+              </button>
+            )}
+          </div>
+        </section>
+      )}
       <SimpleComposer
         scopeKey={key}
         stage={model.stage}

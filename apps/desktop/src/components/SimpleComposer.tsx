@@ -291,11 +291,11 @@ export default function SimpleComposer({
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
-      <p className="chat-recipient" role="status">
-        {recipient
-          ? `Lead: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
-          : status.label}
-      </p>
+      {recipient && (
+        <p className="chat-recipient" role="status">
+          {`Lead: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`}
+        </p>
+      )}
       {exhausted.map(({ provider, key, window }) => (
         <p className="simple-usage-warning" role="status" key={`${provider}:${key}`}>
           {providerName(provider)} {windowName(key)} usage exhausted (

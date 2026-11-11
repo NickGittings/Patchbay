@@ -33,6 +33,7 @@
     el.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const chatText = () => document.querySelector('.simple-thread')?.textContent ?? ''
+  const workflowText = () => document.querySelector('.simple-step')?.textContent ?? ''
   const inChat = () => assert(state().simpleMode && state().view === 'navigation', 'flow left Chat')
   try {
     await smoke.resizeWindow(1440, 900)
@@ -60,30 +61,10 @@
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
     await until('root chat before worktree creation', () => document.querySelector('.simple-chat'))
-    click(
-      await until('review options before planning', () =>
-        document.querySelector('.simple-chat [aria-label="Review options"]:not(:disabled)'),
-      ),
+    assert(
+      !document.querySelector('.simple-chat > header [aria-label="Review options"]'),
+      'redundant Review button remains in the header',
     )
-    const reviewOptions = await until('review base picker before planning', () =>
-      document.querySelector('form[aria-label="Review"]'),
-    )
-    assert(reviewOptions.querySelector('[aria-label="Base branch"]'), 'missing review base picker')
-    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'default agent is hidden')
-    assert(!reviewOptions.querySelector('[aria-label="Agent"]'), 'agent picker should start closed')
-    assert(!reviewOptions.querySelector('code'), 'compact review shows the source path')
-    click(button('Change', reviewOptions))
-    await until('review agent picker expanded', () =>
-      reviewOptions.querySelector('[aria-label="Agent"]'),
-    )
-    click(button('Done', reviewOptions))
-    await until(
-      'review agent picker collapsed',
-      () => !reviewOptions.querySelector('[aria-label="Agent"]'),
-    )
-    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'agent summary disappeared')
-    click(button('Cancel', reviewOptions))
-    await until('review options closed', () => !document.querySelector('[role="dialog"]'))
     await until('root chat layout saved', () => smoke.chatPanel.width() > 0)
     const initialRootChatWidth = smoke.chatPanel.width()
     const initialRootLayout = { ...state().panels['App-simple'] }
@@ -234,6 +215,21 @@
     )
     await until('planner reply', () => chatText().includes('I planned the fixture feature'))
     await until('saved plan', () => chatText().includes('Simple fixture plan') && button('Build'))
+    const actionCard = document.querySelector('.simple-step')
+    const chatThread = document.querySelector('.simple-thread')
+    const chatComposer = document.querySelector('.simple-composer')
+    assert(actionCard.tagName === 'SECTION', 'workflow actions still use a dropdown')
+    assert(!chatThread.contains(actionCard), 'workflow actions remain inside the conversation')
+    assert(
+      actionCard.nextElementSibling === chatComposer,
+      'workflow actions are not anchored above the composer',
+    )
+    const cardBounds = actionCard.getBoundingClientRect()
+    assert(
+      cardBounds.bottom <= chatComposer.getBoundingClientRect().top && cardBounds.height > 0,
+      'workflow action card overlaps the composer',
+    )
+    assert(button('Build', actionCard).getBoundingClientRect().height > 0, 'Build is hidden')
     inChat()
     const planner = state().simple.log.find((e) => e.kind === 'prompt').sessionId
     assert(
@@ -259,7 +255,31 @@
     )
     await smoke.report('INFO simple: planner input and repeated reveals passed')
     click(button('Build'))
-    await until('worktree build done', () => chatText().includes('Building done.'))
+    await until('worktree build done', () => workflowText().includes('Building done.'))
+    click(
+      await until('review options above composer', () =>
+        document.querySelector('.simple-step [aria-label="Review options"]:not(:disabled)'),
+      ),
+    )
+    const reviewOptions = await until('review base picker', () =>
+      document.querySelector('form[aria-label="Review"]'),
+    )
+    assert(reviewOptions.querySelector('[aria-label="Base branch"]'), 'missing review base picker')
+    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'default agent is hidden')
+    assert(!reviewOptions.querySelector('[aria-label="Agent"]'), 'agent picker should start closed')
+    assert(!reviewOptions.querySelector('code'), 'compact review shows the source path')
+    click(button('Change', reviewOptions))
+    await until('review agent picker expanded', () =>
+      reviewOptions.querySelector('[aria-label="Agent"]'),
+    )
+    click(button('Done', reviewOptions))
+    await until(
+      'review agent picker collapsed',
+      () => !reviewOptions.querySelector('[aria-label="Agent"]'),
+    )
+    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'agent summary disappeared')
+    click(button('Cancel', reviewOptions))
+    await until('review options closed', () => !document.querySelector('[role="dialog"]'))
     inChat()
     const task = state().activeTask
     assert(task, 'Build did not create a worktree')
@@ -377,7 +397,10 @@
     await smoke.terminalWrite(builder, 'smoke-clean\n')
     await until('only committed change remains', () => button('Changes 1'))
     click(button('Review'))
-    await until('review findings', () => chatText().includes('1 issues found.') && button('Fix'))
+    await until(
+      'review findings',
+      () => workflowText().includes('1 issues found.') && button('Fix'),
+    )
     inChat()
     click(
       await until('finding file reference', () =>
@@ -435,26 +458,30 @@
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     let flashed = false
     const monitor = new MutationObserver(() => {
-      if (!chatText().includes('Fixes done.')) return
+      if (!workflowText().includes('Fixes done.')) return
       const action = state().simple?.log.findLast((e) => e.action === 'fix')
       if (!action || !state().sessionRecords.some((r) => r.id === action.sessionId)) flashed = true
     })
-    monitor.observe(document.querySelector('.simple-thread'), {
+    monitor.observe(document.querySelector('.simple-chat'), {
       childList: true,
       subtree: true,
       characterData: true,
     })
     await smoke.report('INFO simple: changes and review passed')
     click(button('Fix'))
-    await until('fix done', () => chatText().includes('Fixes done.'))
+    await until('fix done', () => workflowText().includes('Fixes done.'))
     monitor.disconnect()
     assert(!flashed, 'Fixes done flashed before the fix session existed')
     click(button('Review again'))
-    await until('clean follow-up review', () => chatText().includes('No issues. Merge into main?'))
+    await until('clean follow-up review', () =>
+      workflowText().includes('No issues. Merge into main?'),
+    )
     click(button('Merge'))
-    await until('no conflict prompt', () => chatText().includes('No conflicts with main. Merge?'))
+    await until('no conflict prompt', () =>
+      workflowText().includes('No conflicts with main. Merge?'),
+    )
     click(button('Merge'))
-    await until('merged', () => chatText().includes('Merged into main.'))
+    await until('merged', () => workflowText().includes('Merged into main.'))
     inChat()
     // Release the merge agent's exclusive destination before starting another planner there.
     const merger = state().simple.log.findLast((e) => e.action === 'merge').sessionId

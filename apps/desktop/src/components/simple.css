@@ -95,11 +95,62 @@
   max-height: 480px;
 }
 .simple-step {
-  margin: 16px 0;
-  padding: 12px 0;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 12px 12px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: linear-gradient(var(--accent-soft), transparent 72px), var(--panel);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+}
+.simple-step::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 28px;
+  width: 8px;
+  height: 8px;
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--panel);
+  transform: rotate(45deg);
+}
+.simple-step-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.simple-step-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 16px;
+}
+.simple-step-heading h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
 }
 .simple-step > p {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.simple-step .simple-step-actions button {
+  padding: 6px 12px;
+  white-space: normal;
+  text-align: left;
+}
+.simple-step .simple-options {
+  margin-left: auto;
+  color: var(--muted);
 }
 .simple-step-actions {
   display: flex;
@@ -123,6 +174,7 @@
   border-top: 1px solid var(--border);
 }
 .simple-composer {
+  flex-shrink: 0;
   border-top: 1px solid var(--border);
   padding: 12px;
 }
