@@ -290,6 +290,53 @@ export function componentAttention(
   )
 }
 
+/** The Chat destination used by reveal and by session destination validation. */
+export function terminalChatDestination(record: SessionRecord, s = useStore.getState()) {
+  if (!s.simpleMode || !s.project || sessionTask(record.id) === PROJECT_DRAFT) return null
+  const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
+  const plannerTask = ownsPlanner(s.simple, record.id, generation)
+    ? s.activeTask
+    : Object.entries(s.taskWorkspaces).find(
+        ([task, workspace]) =>
+          (task || null) !== s.activeTask && ownsPlanner(workspace.simple, record.id, generation),
+      )?.[0]
+  const mergeTask = ownsMerge(s.simple, record, generation)
+    ? s.activeTask
+    : Object.entries(s.taskWorkspaces).find(
+        ([task, workspace]) =>
+          (task || null) !== s.activeTask && ownsMerge(workspace.simple, record, generation),
+      )?.[0]
+  const task =
+    record.metadata.componentId === MAP_SCOPE
+      ? agentChatTask(record, generation)
+      : record.metadata.componentId === PLAN_SCOPE
+        ? record.metadata.task
+          ? plannerChatTask(record.metadata.task)
+          : plannerTask === undefined
+            ? s.activeTask
+            : plannerTask || null
+        : record.metadata.componentId === MERGE_SCOPE
+          ? mergeTask === undefined
+            ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
+            : mergeTask || null
+          : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
+            s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
+            null)
+  const worktree = s.tasks.find((t) => t.id === task)
+  const path = worktree?.worktree ?? s.project.root
+  if (
+    relatedSession(
+      record,
+      { projectId: s.project.id, task, path, branch: worktree?.branch },
+      generation,
+      task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple,
+    )
+  ) {
+    return { task, plannerTask, generation }
+  }
+  return null
+}
+
 /**
  * Show a terminal: its tab in the planner, its tile in Implementation, or (for terminals an
  * extension started, which aren't tiled) its tab in the Navigation dock. Switches to the
@@ -299,70 +346,30 @@ export function revealTerminal(
   item: Pick<AttentionItem, 'sid' | 'componentId'> & Partial<Pick<AttentionItem, 'auto' | 'task'>>,
 ) {
   const s = useStore.getState()
-  if (s.simpleMode && s.project && sessionTask(item.sid) !== PROJECT_DRAFT) {
-    const record = s.sessionRecords.find((r) => r.id === item.sid)
-    if (record) {
-      const generation = (s.sessions[record.id] ?? record.snapshot)?.generation
-      const plannerTask = ownsPlanner(s.simple, record.id, generation)
-        ? s.activeTask
-        : Object.entries(s.taskWorkspaces).find(
-            ([task, workspace]) =>
-              (task || null) !== s.activeTask &&
-              ownsPlanner(workspace.simple, record.id, generation),
-          )?.[0]
-      const mergeTask = ownsMerge(s.simple, record, generation)
-        ? s.activeTask
-        : Object.entries(s.taskWorkspaces).find(
-            ([task, workspace]) =>
-              (task || null) !== s.activeTask && ownsMerge(workspace.simple, record, generation),
-          )?.[0]
-      const task =
-        record.metadata.componentId === MAP_SCOPE
-          ? agentChatTask(record, generation)
-          : record.metadata.componentId === PLAN_SCOPE
-            ? record.metadata.task
-              ? plannerChatTask(record.metadata.task)
-              : plannerTask === undefined
-                ? s.activeTask
-                : plannerTask || null
-            : record.metadata.componentId === MERGE_SCOPE
-              ? mergeTask === undefined
-                ? (s.tasks.find((t) => t.worktree === record.spec.merge_source)?.id ?? null)
-                : mergeTask || null
-              : (s.tasks.find((t) => t.id === record.metadata.task)?.id ??
-                s.tasks.find((t) => t.worktree === record.spec.cwd)?.id ??
-                null)
-      const worktree = s.tasks.find((t) => t.id === task)
-      const path = worktree?.worktree ?? s.project.root
-      if (
-        relatedSession(
-          record,
-          { projectId: s.project.id, task, path, branch: worktree?.branch },
-          generation,
-          task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple,
-        )
-      ) {
-        if (task !== s.activeTask) s.setActiveTask(task, true)
-        s.revealChat({ projectId: s.project.id, task })
-        s.setActiveSession(item.sid)
-        // A planner launched outside Chat has no conversation block; its terminal is still
-        // accessible in the chat drawer without changing the conversation's ownership.
-        if (
-          record.metadata.componentId === PLAN_SCOPE &&
-          (plannerTask === undefined ||
-            !(task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple)?.log.some(
-              (e) => e.sessionId === record.id && e.generation === generation,
-            ))
-        ) {
-          useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
-            terminal: 'user',
-            terminalSession: { id: record.id, generation, pinned: true },
-          })
-          useStore.getState().setRevealed(null)
-        } else useStore.getState().setRevealed({ componentId: item.componentId, sid: item.sid })
-        return
-      }
-    }
+  const record = s.sessionRecords.find((r) => r.id === item.sid)
+  const chat = record && terminalChatDestination(record, s)
+  if (record && chat && s.project) {
+    const { task, plannerTask, generation } = chat
+    if (task !== s.activeTask) s.setActiveTask(task, true)
+    s.revealChat({ projectId: s.project.id, task })
+    s.setActiveSession(record.id)
+    // A planner launched outside Chat has no conversation block; its terminal is still
+    // accessible in the chat drawer without changing the conversation's ownership.
+    if (
+      record.metadata.componentId === PLAN_SCOPE &&
+      (plannerTask === undefined ||
+        !(task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple)?.log.some(
+          (e) => e.sessionId === record.id && e.generation === generation,
+        ))
+    ) {
+      useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
+        terminal: 'user',
+        terminalSession: { id: record.id, generation, pinned: true },
+      })
+      useStore.getState().setRevealed(null)
+    } else
+      useStore.getState().setRevealed({ componentId: record.metadata.componentId, sid: record.id })
+    return
   }
   if (item.auto) {
     s.setActiveTask(item.task ?? null, true)
@@ -395,7 +402,10 @@ export function revealTerminal(
       s.setSimpleMode(false)
       usePlanningSelection.getState().selectDraft(true)
       if (s.project) s.patchTask(s.project.id, PROJECT_DRAFT, { planActive: terminalId })
-    } else s.setPlanActive(terminalId)
+    } else {
+      usePlanningSelection.getState().selectDraft(false)
+      s.setPlanActive(terminalId)
+    }
     s.setView('plan')
     return
   }
