@@ -107,6 +107,27 @@
     assert(state().simple.selectedAgent === first.id, 'visible clear changed lead')
     smoke.store.setState({ sessionRecords: originalRecords, sessions: originalSessions })
     state().patchTask(projectId, null, { simple: originalSimple })
+    // A confirmation belongs to one visit to a worktree, even after switching away and back.
+    click(button('Clear chat'))
+    await until('confirmation before task switch', () =>
+      document.querySelector('.simple-clear-confirm'),
+    )
+    await smoke.createTask({
+      title: 'Clear confirmation',
+      branch: 'clear-confirmation',
+      components: ['app'],
+    })
+    await until(
+      'other task chat',
+      () => state().activeTask && document.querySelector('.simple-chat'),
+    )
+    assert(!document.querySelector('.simple-clear-confirm'), 'task inherited clear confirmation')
+    state().setActiveTask(null)
+    await until(
+      'original task chat',
+      () => !state().activeTask && document.querySelector('.simple-chat'),
+    )
+    assert(!document.querySelector('.simple-clear-confirm'), 'returning task reopened confirmation')
     // Chat's resize handle must receive pointer hits even while Inspector is hidden.
     const { width: chatWidth, drag: dragChat } = smoke.chatPanel
     await dragChat(-160)
@@ -173,11 +194,24 @@
       assert(Math.abs(chatWidth() - rootChatWidth) < 0.1, `${view} lost chat width`)
     }
     // Project tabs restore hidden Chat from every Full view without replaying entry requests.
+    click(button('Clear chat'))
+    await until('confirmation before project switch', () =>
+      document.querySelector('.simple-clear-confirm'),
+    )
     const second = await smoke.openSecondProject()
     smoke.acceptOpened(second)
     state().setSimpleMode(true)
     await sleep(100)
     await until('second project Chat', () => document.querySelector('.simple-chat'))
+    assert(!document.querySelector('.simple-clear-confirm'), 'project inherited clear confirmation')
+    state().activateProject(projectId)
+    await until('original project Chat', () => document.querySelector('.simple-chat'))
+    assert(
+      !document.querySelector('.simple-clear-confirm'),
+      'returning project reopened confirmation',
+    )
+    state().activateProject(second.id)
+    await until('second project Chat again', () => document.querySelector('.simple-chat'))
     click(document.querySelector('[aria-label="Hide chat"]'))
     await until('second project Chat hidden', () => !document.querySelector('.simple-chat'))
     const hiddenLayout = { ...state().panels['App-simple'] }

@@ -1,3 +1,4 @@
+import { checkHooks, hooksUsable } from './agentHooks'
 import { requireProviderAuth } from './providerAuth'
 import { agentProvider } from './ipc'
 import { profileHookProvider } from './agentProfiles'
@@ -148,7 +149,6 @@ export async function requireTeamPreset(
   task: string | null,
 ) {
   await requireProviderAuth({ terminal, project, task })
-  const { checkHooks, hooksUsable } = await import('./agentHooks')
   const provider =
     profileHookProvider(terminal.command) ?? terminal.adapter ?? (await agentProvider(terminal))
   if (!provider || !hooksUsable(await checkHooks(provider)))

@@ -48,6 +48,7 @@ import {
   terminalReset,
   terminalWrite,
   terminalAttach,
+  terminalPrompt,
 } from './ipc'
 import {
   resetSessions,
@@ -291,6 +292,7 @@ const hooks = {
     await terminalWrite(sid, data)
   },
   terminalText,
+  terminalPrompt,
   openComponentWindow,
   createTask,
   refreshTasks,
@@ -302,7 +304,7 @@ const hooks = {
    */
   reportAndWait: async (message: string, timeout = 60000) => {
     const { listen } = await import('@tauri-apps/api/event')
-    let answer = (_: string) => {}
+    let answer: (value: string) => void = () => {}
     const answered = new Promise<string>((resolve) => (answer = resolve))
     const unlisten = await listen<string>('patchbay://smoke-ack', ({ payload }) => {
       if (payload.startsWith(`${message}: `)) answer(payload.slice(message.length + 2))

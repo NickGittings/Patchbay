@@ -1,3 +1,4 @@
+vi.mock('../lib/chatTeams', () => ({ refreshChatTeams: vi.fn() }))
 import { expect, test, vi } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'

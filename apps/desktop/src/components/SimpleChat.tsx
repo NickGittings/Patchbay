@@ -97,7 +97,7 @@ export default function SimpleChat({
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
   const [clearKey, setClearKey] = useState<string>()
-  useEffect(() => setClearKey(undefined), [key])
+  if (clearKey !== undefined && clearKey !== key) setClearKey(undefined)
   const threadRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',

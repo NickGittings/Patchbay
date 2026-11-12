@@ -1,3 +1,4 @@
+vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type AutoRun, type Story, type Task } from '../types'
