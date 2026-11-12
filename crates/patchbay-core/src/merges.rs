@@ -100,6 +100,49 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
     )
 }
 
+/// Validate cleanup immediately before stopping source sessions or removing files.
+pub fn check_cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
+    let trees = git::worktrees(Path::new(&project.root));
+    let source = checked_tree(&trees, &request.source, "source")?;
+    ensure!(
+        !source.main && !source.current,
+        "Cannot delete the primary or open project worktree"
+    );
+    ensure!(
+        matches!(
+            outcome(project, request)?,
+            MergeOutcome::Merged | MergeOutcome::AlreadyIntegrated
+        ),
+        "The source branch is not clean and fully integrated"
+    );
+    ensure!(
+        !trees
+            .iter()
+            .any(|t| t.path != source.path && t.branch.as_deref() == Some(&request.source_branch)),
+        "The source branch is checked out elsewhere"
+    );
+    Ok(())
+}
+
+/// Remove a validated worktree, then its merged local branch. Never forces deletion.
+pub fn cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
+    check_cleanup(project, request)?;
+    git::run(git::git(Path::new(&request.destination)).args([
+        "worktree",
+        "remove",
+        "--",
+        &request.source,
+    ]))?;
+    git::run(git::git(Path::new(&request.destination)).args([
+        "branch",
+        "-d",
+        "--",
+        &request.source_branch,
+    ]))
+    .context("Worktree removed, but local branch could not be deleted")?;
+    Ok(())
+}
+
 /// Report conflicting paths without checking out or reading any of those paths.
 ///
 /// # Errors
@@ -362,6 +405,54 @@ mod tests {
         project: Project,
         request: MergeRequest,
     }
+    #[test]
+    fn cleanup_removes_integrated_worktree_and_branch() {
+        let f = Fixture::new();
+        cleanup(&f.project, &f.request).unwrap();
+        assert!(!Path::new(&f.request.source).exists());
+        assert!(
+            !git::git(Path::new(&f.project.root))
+                .args(["show-ref", "--verify", "refs/heads/feature"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
+    fn cleanup_preserves_dirty_and_unmerged_work() {
+        let f = Fixture::new();
+        let source = Path::new(&f.request.source);
+        fs::write(source.join("new.txt"), "new work").unwrap();
+        assert!(cleanup(&f.project, &f.request).is_err());
+        git::run(git::git(source).args(["add", "."])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "new work"])).unwrap();
+        assert!(cleanup(&f.project, &f.request).is_err());
+        assert!(source.exists());
+    }
+
+    #[test]
+    fn cleanup_refuses_an_active_git_operation() {
+        let f = Fixture::new();
+        let source = Path::new(&f.request.source);
+        let dir = git::run(git::git(source).args(["rev-parse", "--absolute-git-dir"])).unwrap();
+        fs::write(Path::new(dir.trim()).join("MERGE_HEAD"), "pending").unwrap();
+        assert!(cleanup(&f.project, &f.request).is_err());
+        assert!(source.exists());
+    }
+
+    #[test]
+    fn cleanup_refuses_primary_and_changed_branches() {
+        let f = Fixture::new();
+        let mut request = f.request.clone();
+        std::mem::swap(&mut request.source, &mut request.destination);
+        std::mem::swap(&mut request.source_branch, &mut request.destination_branch);
+        assert!(check_cleanup(&f.project, &request).is_err());
+        request = f.request.clone();
+        request.source_branch = "renamed".into();
+        assert!(check_cleanup(&f.project, &request).is_err());
+    }
+
     impl Fixture {
         fn new() -> Self {
             let dir = std::env::temp_dir().join(format!("patchbay-merge-{}", uuid::Uuid::new_v4()));

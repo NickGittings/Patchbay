@@ -123,7 +123,10 @@ export function restoredAuto(value: unknown): AutoRun | null {
     goal: r.goal,
     effort: r.effort,
     overrides: r.overrides,
-    merge: r.merge,
+    merge: {
+      ...r.merge,
+      cleanup: r.merge.cleanup === 'ask' || r.merge.cleanup === 'delete' ? r.merge.cleanup : 'keep',
+    },
     device: r.device,
     agents: restoredAgents(r.agents),
     scanners: Array.isArray(r.scanners) ? restoredPresetIds(r.scanners) : undefined,

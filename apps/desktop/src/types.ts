@@ -163,7 +163,7 @@ export interface AutoRun {
   goal: string
   effort: 'light' | 'standard' | 'thorough'
   overrides?: Partial<EffortSettings>
-  merge: { mode: 'ask' | 'auto'; destinationBranch: string }
+  merge: { mode: 'ask' | 'auto'; destinationBranch: string; cleanup?: MergeCleanup }
   /** The preset for any stage `agents` leaves unset (and every stage of older runs). */
   device: string
   /** The preset each agent stage launches. */
@@ -1125,3 +1125,5 @@ export interface StoryDraft {
 export type StoryPatch = Partial<
   Pick<Story, 'title' | 'description' | 'acceptance' | 'components' | 'status' | 'order'>
 > & { parent?: string; task?: string; autoRunId?: string; reopen?: boolean }
+
+export type MergeCleanup = 'ask' | 'keep' | 'delete'

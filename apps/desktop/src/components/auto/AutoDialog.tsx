@@ -64,6 +64,8 @@ export default function AutoDialog({
   simple?: boolean
 }) {
   const projectId = useStore((s) => s.project?.id)
+  const cleanup = useStore((s) => s.workspaceSettings.mergeCleanup)
+  const cleanupChoice = cleanup === 'ask' || cleanup === 'delete' ? cleanup : 'keep'
   const task = useStore((s) => s.activeTask)
   const closeMenu = useContext(CloseMenu)
   const devices = useStore((s) => s.devices)
@@ -273,7 +275,7 @@ export default function AutoDialog({
         reviewers,
         scanners,
         workers,
-        merge: { mode, destinationBranch: destination },
+        merge: { mode, destinationBranch: destination, cleanup: cleanupChoice },
       },
       true,
     )
@@ -400,6 +402,22 @@ export default function AutoDialog({
         Merge automatically after review
       </label>
       <label>
+        After merge
+        <select
+          value={cleanupChoice}
+          onChange={(e) =>
+            useStore.setState((s) => ({
+              workspaceSettings: { ...s.workspaceSettings, mergeCleanup: e.target.value },
+            }))
+          }
+        >
+          <option value="ask">Ask</option>
+          <option value="keep">Keep worktree and branch</option>
+          <option value="delete">Delete worktree and branch</option>
+        </select>
+        <small>Remembered for new Auto runs in all projects.</small>
+      </label>
+      <label>
         Destination branch
         <select value={destination} onChange={(e) => edit({ destination: e.target.value })}>
           <option value="">Choose a destination worktree</option>
@@ -503,7 +521,7 @@ export default function AutoDialog({
             resumeOnUsageReset: draft.resumeOnUsageReset === true,
             effort: simple ? 'light' : effort,
             overrides: simple ? {} : overrides,
-            merge: { mode, destinationBranch: destination },
+            merge: { mode, destinationBranch: destination, cleanup: cleanupChoice },
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,

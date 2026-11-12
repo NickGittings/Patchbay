@@ -4970,6 +4970,7 @@ test.each(['light', 'standard'] as const)(
         expect.anything(),
         expect.any(String),
         expect.anything(),
+        'keep',
       )
       expect(autoRun('p', 't')).toMatchObject({
         stage: 'merge',
@@ -5083,6 +5084,7 @@ test('a source change caught by merge preparation returns autonomous execution t
       expect.anything(),
       expect.any(String),
       expect.anything(),
+      'keep',
     )
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({
