@@ -253,6 +253,7 @@ export function initializeWorkspace() {
     const initialUsage = useStore.getState().usageSettings
     let savedUsage: unknown
     const initialNotifications = useStore.getState().notifications
+    const initialChatAgent = useStore.getState().workspaceSettings.chatAgent
     const initialKeepAwake = useStore.getState().workspaceSettings.autoKeepAwake
     const initialHookSources = useStore.getState().workspaceSettings.hookSources
     const initialAgentRoles = useStore.getState().agentRoles
@@ -261,6 +262,7 @@ export function initializeWorkspace() {
     let savedSubagents: unknown
     let restoredSettings: unknown
     let savedHookSources: unknown
+    let savedChatAgent: unknown
     let savedKeepAwake: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
@@ -290,6 +292,7 @@ export function initializeWorkspace() {
       restoredSettings = document.settings?.notifications
       savedHookSources = document.settings?.hookSources
       savedKeepAwake = document.settings?.autoKeepAwake
+      savedChatAgent = document.settings?.chatAgent
       savedAgentRoles = document.settings?.agentRoles
       savedSubagents = document.settings?.implementSubagents
       const agentDefaults = restoredAgentDefaults(document)
@@ -309,6 +312,9 @@ export function initializeWorkspace() {
           usageSettings: mergeRestoredUsage(savedUsage, s.usageSettings, initialUsage),
           workspaceSettings: {
             ...settings,
+            ...(s.workspaceSettings.chatAgent !== initialChatAgent
+              ? { chatAgent: s.workspaceSettings.chatAgent }
+              : {}),
             ...(hookSources ? { hookSources } : {}),
             ...(s.workspaceSettings.autoKeepAwake !== initialKeepAwake
               ? { autoKeepAwake: s.workspaceSettings.autoKeepAwake }
@@ -438,6 +444,7 @@ export function initializeWorkspace() {
         (savedKeepAwake === true) ||
       JSON.stringify(useStore.getState().workspaceSettings.hookSources) !==
         JSON.stringify(savedHookSources) ||
+      useStore.getState().workspaceSettings.chatAgent !== savedChatAgent ||
       JSON.stringify(useStore.getState().agentRoles) !== JSON.stringify(savedAgentRoles) ||
       useStore.getState().implementSubagents !== savedSubagents
     ) {

@@ -208,6 +208,10 @@ export default function SimpleChat({
       useStore.getState().setRevealed(null)
     }
   }, [s.revealed, key, contentKey])
+  useEffect(() => {
+    if (ui.dismissedStep && ui.dismissedStep !== state.step)
+      useSimpleUi.getState().patch(key, { dismissedStep: undefined })
+  }, [key, state.step, ui.dismissedStep])
   if (!s.project) return null
   // Review's own dialog, beside the step's actions once there is work to review.
   const options = ['built', 'reviewed', 'fixed'].includes(state.step)
@@ -344,11 +348,25 @@ export default function SimpleChat({
       ? model.items.filter((i) => i.kind !== 'result' || i.result !== launch.stage)
       : model.items
   const grouped = sections(items, model.records)
+  const stepHeading = state.prompt?.actions.some((a) => a.action === 'resumeAuto')
+    ? 'Continue Auto mode'
+    : state.prompt?.actions.some((a) => a.action === 'mergeApproval')
+      ? 'Merge'
+      : state.prompt?.actions.some((a) => ['merge', 'checkMerge'].includes(a.action))
+        ? state.prompt.actions.some((a) => ['review', 'fix'].includes(a.action))
+          ? 'Review and merge'
+          : 'Merge'
+        : state.step === 'planReady'
+          ? 'Planning'
+          : state.step === 'merged'
+            ? 'Merge complete'
+            : 'Review'
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   return (
     <div className="simple-chat">
       <header>
         <strong>Chat</strong>
+        <ChatAgentPicker key={key} records={model.records} />
         <button
           disabled={
             !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])
@@ -372,7 +390,7 @@ export default function SimpleChat({
             setAutoSetupKey(key)
           }}
         >
-          Run autonomously…
+          Auto mode
         </button>
         {team && (
           <button
@@ -392,7 +410,7 @@ export default function SimpleChat({
           onClick={() => setClearKey(key)}
           title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
         >
-          Clear visible history
+          Clear chat
         </button>
         <button
           className="inspector-close simple-hide-chat"
@@ -424,11 +442,6 @@ export default function SimpleChat({
           <button onClick={() => setClearKey(undefined)}>Cancel</button>
         </div>
       )}
-      <ChatAgentPicker
-        key={key}
-        records={model.records}
-        branch={source?.branch ?? 'Project folder'}
-      />
       {team && <ChatWorkers key={team.id} team={team} />}
       {s.auto && (
         <p role="status">
@@ -479,7 +492,8 @@ export default function SimpleChat({
       >
         {!items.length && (
           <p className="simple-narration">
-            Choose an agent, then describe what you want to build or change.
+            Describe what you want to build or change. Your chat agent starts with your first
+            message.
           </p>
         )}
         {grouped.map((section, sectionIndex) => {
@@ -611,17 +625,25 @@ export default function SimpleChat({
           </div>
         )}
       </div>
-      {!launching && (state.prompt || options) && (
+      {!launching && ui.dismissedStep !== state.step && (state.prompt || options) && (
         <section
           className="simple-step"
           data-step={state.step}
-          aria-label="Planning, review, and merge actions"
+          aria-label={`${stepHeading} actions`}
         >
           <div className="simple-step-heading">
             <span className="simple-step-icon" aria-hidden="true">
               ↗
             </span>
-            <h3>Planning, review, and merge</h3>
+            <h3>{stepHeading}</h3>
+            <button
+              className="simple-dismiss"
+              aria-label="Dismiss suggestion"
+              title="Dismiss suggestion"
+              onClick={() => useSimpleUi.getState().patch(key, { dismissedStep: state.step })}
+            >
+              ×
+            </button>
           </div>
           {state.prompt && <p>{state.prompt.text}</p>}
           <div className="simple-step-actions">

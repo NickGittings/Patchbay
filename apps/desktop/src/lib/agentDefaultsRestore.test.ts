@@ -30,6 +30,7 @@ test.each([false, true])(
     const document: WorkspaceDocument = {
       version: 1,
       activeProject: 'safari',
+      settings: { chatAgent: 'codex' },
       windows: {},
       projects: ['krilo', 'safari'].map((id) => ({
         id,
@@ -49,6 +50,7 @@ test.each([false, true])(
     const loading = initializeWorkspace()
     await vi.waitFor(() => expect(ipc.workspaceLoad).toHaveBeenCalled())
     if (edit) {
+      useStore.setState({ workspaceSettings: { chatAgent: 'claude' } })
       useStore.getState().setAgentRoles({ review: ['claude'] })
       useStore.getState().setImplementSubagents(5)
     }
@@ -71,7 +73,11 @@ test.each([false, true])(
     expect(useStore.getState().agentRoles).toEqual(roles)
     await vi.advanceTimersByTimeAsync(500)
     const saved = vi.mocked(ipc.workspaceSave).mock.calls.at(-1)![0]
-    expect(saved.settings).toMatchObject({ agentRoles: roles, implementSubagents: edit ? 5 : 3 })
+    expect(saved.settings).toMatchObject({
+      agentRoles: roles,
+      implementSubagents: edit ? 5 : 3,
+      chatAgent: edit ? 'claude' : 'codex',
+    })
     expect(saved.projects.every((p) => !('agentRoles' in p.layout))).toBe(true)
   },
 )

@@ -150,7 +150,6 @@
 }
 .simple-step .simple-options {
   margin-left: auto;
-  color: var(--muted);
 }
 .simple-step-actions {
   display: flex;
@@ -378,8 +377,8 @@
 }
 
 .chat-agent-picker {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  position: relative;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -444,4 +443,19 @@
 
 .chat-workers input[type='number'] {
   width: 4rem;
+}
+
+.simple-dismiss {
+  margin-left: auto;
+}
+.chat-agent-switch {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  width: min(300px, 70vw);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
 }

@@ -95,20 +95,13 @@
         (r) => r.metadata.componentId === '@plan' && r.metadata.terminalId === fake.id,
       ),
     )
-    const chooser = await until('chat agent picker', () =>
-      document.querySelector('[aria-label="Chat lead"]:not(:disabled)'),
-    )
-    assert(chooser.value === '', 'new chat silently selected an agent')
-    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(chooser), 'value').set.call(
-      chooser,
-      `session:${plannerRecord.id}`,
-    )
-    chooser.dispatchEvent(new Event('change', { bubbles: true }))
-    await until(
-      'planner explicitly selected',
-      () => state().simple?.selectedAgent === plannerRecord.id,
-    )
-    // This scenario exercises the independent manual workflow; release coordinated ownership.
+    // Seed this manual-workflow fixture explicitly; the UI only offers preset switching.
+    state().patchTask(projectId, state().activeTask, {
+      simple: { ...state().simple, selectedAgent: plannerRecord.id },
+    })
+    await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
+    // Adopt the legacy manual session, then release coordination for this workflow fixture.
+    await smoke.refreshChatTeams(projectId)
     click(await until('team stop control', () => button('Stop workers')))
     await until(
       'coordination stopped for manual workflow',

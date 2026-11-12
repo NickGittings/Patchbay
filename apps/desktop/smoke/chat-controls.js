@@ -39,10 +39,9 @@
     state().setSimpleMode(true)
     await until('chat', () => document.querySelector('.simple-chat'))
     // Explicit identity stays stable when another agent asks a question.
-    const chooser = await until('chat agent chooser', () =>
-      document.querySelector('[aria-label="Chat lead"]'),
-    )
-    assert(chooser.value === '', 'new chat silently selected an agent')
+    await until('chat agent indicator', () => document.querySelector('.chat-agent-picker'))
+    assert(!state().simple?.selectedAgent, 'opening chat started an agent')
+    assert(!document.querySelector('[aria-label="Chat lead"]'), 'legacy lead picker remains')
     const originalRecords = state().sessionRecords
     const originalSessions = state().sessions
     const originalSimple = state().simple
@@ -92,14 +91,14 @@
       document.querySelector('.chat-recipient')?.textContent.includes('First agent'),
     )
     assert(
-      document.querySelector('[aria-label="Chat lead"]').value === `session:${first.id}`,
+      document.querySelector('.chat-agent-picker').textContent.includes('First agent'),
       'question changed selected agent',
     )
     assert(
       document.querySelector('.chat-question summary')?.textContent.includes('Second agent'),
       'question lost originating agent',
     )
-    click(button('Clear visible history'))
+    click(button('Clear chat'))
     const clear = await until('visible history confirmation', () =>
       document.querySelector('.simple-clear-confirm'),
     )

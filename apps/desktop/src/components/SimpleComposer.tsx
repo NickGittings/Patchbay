@@ -9,6 +9,8 @@ import {
   useUsage,
   windowName,
 } from '../lib/usage'
+import { chatPreset, startChatAgent } from '../lib/chatAgent'
+import { useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -52,6 +54,7 @@ export default function SimpleComposer({
       nodes: s.nodes,
       devices: s.devices,
       agentRoles: s.agentRoles,
+      chatAgent: s.workspaceSettings.chatAgent,
       selectedAgent: s.simple?.selectedAgent,
       autoStatus: s.auto?.status,
       serviceConnected: s.serviceConnected,
@@ -70,6 +73,7 @@ export default function SimpleComposer({
   const error = errorResult.key === scopeKey ? errorResult.text : ''
   const setError = (text: string) => setErrorResult({ key: scopeKey, text })
   const [caret, setCaret] = useState(0)
+  const submitting = useRef(false)
   const input = useRef<HTMLTextAreaElement>(null)
   const lifecycle = useRef(0)
   useEffect(
@@ -111,8 +115,13 @@ export default function SimpleComposer({
   const status =
     !recipient || autoActive
       ? {
-          label: autoActive ? 'Pause Auto to resume manual coding' : 'Choose a lead to continue',
-          sendable: false,
+          label: autoActive
+            ? 'Pause Auto to resume manual coding'
+            : s.project && chatPreset(s.project.id, s.activeTask)
+              ? 'Ready to start chat'
+              : 'Choose an available Chat agent in Settings',
+          sendable:
+            !autoActive && !pending && !!s.project && !!chatPreset(s.project.id, s.activeTask),
           action: 'none' as const,
           notice: undefined,
         }
@@ -131,7 +140,7 @@ export default function SimpleComposer({
     !chatAutoActive(s.autoStatus) && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
-    if (!(force ? canForce : status.sendable) || !s.project) return
+    if (submitting.current || !(force ? canForce : status.sendable) || !s.project) return
     const projectId = s.project.id,
       task = s.activeTask,
       draft = ui.draft,
@@ -175,6 +184,7 @@ export default function SimpleComposer({
       if (force || ready) await flushQueued(scopeKey, force)
       return
     }
+    submitting.current = true
     patch({ pendingAction: true })
     setError('')
     let cancelled = false
@@ -219,7 +229,8 @@ export default function SimpleComposer({
           await refreshSession(recipientId)
         })
       } else if (!target) {
-        throw new Error('Choose a lead to continue.')
+        check()
+        target = await startChatAgent(projectId, task)
       }
       check()
       const sid = target!.id
@@ -268,6 +279,7 @@ export default function SimpleComposer({
     } catch (e) {
       setError(String(e))
     } finally {
+      submitting.current = false
       unsubscribe()
       patch({ pendingAction: false })
     }
@@ -293,7 +305,7 @@ export default function SimpleComposer({
     <div className="simple-composer">
       {recipient && (
         <p className="chat-recipient" role="status">
-          {`Lead: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`}
+          {`Agent: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`}
         </p>
       )}
       {exhausted.map(({ provider, key, window }) => (
@@ -394,6 +406,13 @@ export default function SimpleComposer({
               : 'agent'}{' '}
           terminal
         </button>
+        <button
+          aria-label="Chat agent settings"
+          title="Chat agent settings"
+          onClick={() => useRail.setState({ settings: 'roles' })}
+        >
+          ⚙
+        </button>
         {asking
           ? recipient &&
             !(open && shown?.id === recipient.id) && (
@@ -418,7 +437,7 @@ export default function SimpleComposer({
           disabled={!status.sendable || !ui.draft.trim()}
           onClick={() => void send()}
         >
-          {status.action === 'queue' ? 'Queue' : !recipient ? 'Start' : 'Send'}
+          {status.action === 'queue' ? 'Queue' : 'Send'}
         </button>
       </div>
       {drafted && provider && (status.notice === 'missing' || status.notice === 'failed') && (

@@ -3,6 +3,7 @@ import SettingsDialog, { SettingsSection } from './SettingsDialog'
 import { Fragment, useId } from 'react'
 import ReviewerPicker from './ReviewerPicker'
 import { ROLE_LABELS } from '../lib/agentRoles'
+import { defaultChatPreset } from '../lib/chatAgent'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
 import { AGENT_ROLES, SUBAGENT_COUNTS, type AgentRole } from '../types'
@@ -26,6 +27,8 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
   const subagents = useStore((s) => s.implementSubagents)
   const setSubagents = useStore((s) => s.setImplementSubagents)
   const agents = agentDevices(devices)
+  const chatAgent = useStore((s) => s.workspaceSettings.chatAgent)
+  const chatDefault = defaultChatPreset(devices, roles, chatAgent)
   const reviewers = (
     <div key="review" className="settings-field">
       <span title="Select several agents to review independently in parallel.">Review</span>
@@ -54,6 +57,30 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           Manage agent profiles…
         </button>
       </div>
+      <SettingsSection title="Chat agent">
+        <label className="settings-field">
+          Chat agent
+          <select
+            autoFocus
+            aria-label="Chat agent"
+            value={chatDefault?.id ?? String(chatAgent ?? '')}
+            onChange={(e) =>
+              useStore.setState((s) => ({
+                workspaceSettings: { ...s.workspaceSettings, chatAgent: e.target.value },
+              }))
+            }
+          >
+            {!chatDefault && (
+              <option value={String(chatAgent ?? '')}>Unavailable agent — choose another</option>
+            )}
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </SettingsSection>
       <SettingsSection title="Role defaults">
         {AGENT_ROLES.map((role) => {
           if (role === 'review') return reviewers

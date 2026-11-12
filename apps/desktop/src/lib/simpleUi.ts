@@ -21,6 +21,8 @@ export interface QueuedPrompt {
   atMs: number
 }
 export interface SimpleUi {
+  chatPreset?: string
+  dismissedStep?: string
   coordinationReset?: boolean
   inputRequests?: import('./chat').ChatInputRequest[]
   pendingAction?: boolean

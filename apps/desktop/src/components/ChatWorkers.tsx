@@ -86,9 +86,9 @@ export default function ChatWorkers({ team }: { team: ChatTeam }) {
       {team.reset && (
         <p role="status">
           {team.reset.phase === 'queued'
-            ? 'New lead conversation queued for the next confirmed ready prompt. A concise work handoff is retained.'
+            ? 'New agent conversation queued for the next confirmed ready prompt. A concise work handoff is retained.'
             : team.reset.phase === 'launching'
-              ? 'Starting the new lead conversation…'
+              ? 'Starting the new agent conversation…'
               : team.reset.error}
         </p>
       )}
@@ -142,7 +142,7 @@ export default function ChatWorkers({ team }: { team: ChatTeam }) {
       )}
       {!jobs.length && (
         <p>
-          The lead can delegate investigation, review and implementation. Workers use isolated
+          Your agent can delegate investigation, review and implementation. Workers use isolated
           worktrees.
         </p>
       )}
@@ -220,7 +220,7 @@ export default function ChatWorkers({ team }: { team: ChatTeam }) {
                     })
                   }
                 >
-                  Send to worker and copy lead
+                  Send to worker and copy agent
                 </button>
               </section>
             )}

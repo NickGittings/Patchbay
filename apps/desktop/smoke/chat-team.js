@@ -42,21 +42,16 @@
     await smoke.agentHooksConfigure('codex', true)
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)
-    input(
-      await until('lead picker', () => document.querySelector('[aria-label="Chat lead"]')),
-      'preset:team-agent',
-      'change',
-    )
+    smoke.store.setState({
+      workspaceSettings: { ...state().workspaceSettings, chatAgent: 'team-agent' },
+    })
     const team = () => smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === null)
-    await until('persistent lead', () => team()?.lead.sessionId)
-    // A draft makes the Send control available; readiness is confirmed by the session hook.
-    const lead = team().lead.sessionId
-    await until('ready lead', () =>
-      ['idle', 'review'].includes(state().sessions[lead]?.status?.agent?.state),
-    )
+    await until('composer', () => document.querySelector('[aria-label="Message agent"]'))
     input(document.querySelector('[aria-label="Message agent"]'), 'delegate-fixture')
     await until('send enabled', () => button('Send') && !button('Send').disabled)
     button('Send').click()
+    await until('persistent agent', () => team()?.lead.sessionId)
+    const lead = team().lead.sessionId
     const jobs = () =>
       smoke.chatTeams
         .getState()
@@ -114,7 +109,7 @@
     button('Open side thread', worker).click()
     await until('side thread', () => worker.querySelector('textarea'))
     input(worker.querySelector('textarea'), 'Keep the baseline in your report')
-    button('Send to worker and copy lead', worker).click()
+    button('Send to worker and copy agent', worker).click()
     await until(
       'copied side message',
       () => team().messages.filter((m) => m.sender === 'user').length === 2,
@@ -132,7 +127,7 @@
         .messages.filter((m) => m.sender === 'user')
         .every((m) => m.state === 'delivered'),
     )
-    button('Clear visible history').click()
+    button('Clear chat').click()
     button(
       'Clear',
       await until('clear confirmation', () => document.querySelector('.simple-clear-confirm')),
