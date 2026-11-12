@@ -22,6 +22,9 @@
   }
   try {
     await until('restore', () => !s().restoring && s().serviceConnected)
+    await until('open project breadcrumb', () =>
+      document.querySelector('.workspace-context button')?.textContent.includes('Open project'),
+    )
     await projectMenu()
     if (/mac/i.test(navigator.userAgent)) {
       const menu = await until('native menu without a project', async () => {
@@ -68,6 +71,34 @@
     await until('missing project closed', () => !s().projects[missing.id])
     const one = await smoke.openProject()
     smoke.acceptOpened(one)
+    const context = await until('workspace breadcrumb', () => {
+      const nav = document.querySelector('nav.workspace-context')
+      return nav?.textContent.includes(one.project.name) && nav
+    })
+    if (
+      document.querySelector(
+        '.workspace-rail [aria-label="Project"], .workspace-rail [aria-label="Worktree"]',
+      )
+    )
+      throw new Error('Project and Worktree still have duplicate rail entry points')
+    for (const label of ['Project', 'Worktree']) {
+      smoke.selectPanel(null)
+      await until('panel closed', () => !document.querySelector('.utility-panel'))
+      const trigger = context.querySelector(`[aria-label="${label}"]`)
+      if (!trigger.getClientRects().length) throw new Error(`${label} footer control is hidden`)
+      trigger.click()
+      const panel = await until(`${label} breadcrumb opens panel`, () =>
+        document.querySelector(`[aria-label="${label} panel"]`),
+      )
+      if (trigger.getAttribute('aria-expanded') !== 'true')
+        throw new Error(`${label} breadcrumb does not reflect the open panel`)
+      panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await until(
+        `${label} focus restored`,
+        () => !document.querySelector('.utility-panel') && document.activeElement === trigger,
+      )
+    }
+    smoke.selectPanel('project')
     if (/mac/i.test(navigator.userAgent)) {
       await until(
         'native Save enabled with project',
@@ -157,13 +188,29 @@
       )
       if (
         labels.join(',') !==
-        'Project,Worktree,Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Stack,Sessions,Usage'
+        'Navigation,Plan,Build,Review,Chat mode,Auto mode,Activity,Stack,Sessions,Usage'
       )
         throw new Error('Rail order changed')
       for (const width of [1440, 1200, 900]) {
         await smoke.resizeWindow(width, width === 900 ? 600 : originalSize.height)
         await until(`viewport ${width}`, () => Math.abs(innerWidth - width) <= 1)
         await sleep(100)
+        const breadcrumb = document.querySelector('.workspace-context')
+        const footer = document.querySelector('.workspace-footer').getBoundingClientRect()
+        const projectButton = breadcrumb.querySelector('[aria-label="Project"]')
+        const worktreeButton = breadcrumb.querySelector('[aria-label="Worktree"]')
+        const searchBox = document.querySelector('.top-bar input').getBoundingClientRect()
+        if (
+          projectButton.getBoundingClientRect().width < 32 ||
+          worktreeButton.getBoundingClientRect().width < 32 ||
+          breadcrumb.getBoundingClientRect().bottom > footer.bottom ||
+          breadcrumb.getBoundingClientRect().top < footer.top ||
+          breadcrumb.getBoundingClientRect().right > innerWidth ||
+          Math.abs(footer.bottom - innerHeight) > 1 ||
+          searchBox.width < 160 ||
+          Math.abs(searchBox.left + searchBox.width / 2 - innerWidth / 2) > 1
+        )
+          throw new Error(`Footer controls clip or search is off center at ${width}px`)
         for (const button of rail.querySelectorAll(':scope > button')) {
           const box = button.getBoundingClientRect()
           if (box.width < 30 || box.height < 30 || box.bottom > innerHeight || !button.title)
@@ -274,9 +321,9 @@
           .querySelector('.workspace-main [role="alert"]')
           ?.textContent.includes('Map save failed'),
       )
-      const projectButton = document.querySelector('.workspace-rail [aria-label="Project"]')
+      const projectButton = document.querySelector('.workspace-context [aria-label="Project"]')
       if (!projectButton.title.includes('Map save failed'))
-        throw new Error('Project rail lost the save failure indicator')
+        throw new Error('Project breadcrumb lost the save failure indicator')
       smoke.store.setState({ projects: { ...s().projects, [one.id]: savedEntry } })
       const search = document.querySelector('.top-bar input')
       if (

@@ -54,6 +54,16 @@ function initialWidth() {
     return 360
   }
 }
+function focusPanelTrigger(panel: UtilityPanel) {
+  const host =
+    panel === 'project' || panel === 'worktree' ? '.workspace-context' : '.workspace-rail'
+  const trigger = document.querySelector<HTMLButtonElement>(
+    `${host} [aria-label="${utilities[panel].label}"]`,
+  )
+  if (trigger?.getClientRects().length) trigger.focus()
+  else
+    document.querySelector<HTMLButtonElement>('.workspace-context [aria-label="Worktree"]')?.focus()
+}
 export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] }) {
   useClockTick()
   const usage = useUsage((s) => s.usage)
@@ -97,9 +107,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
     ) {
       e.preventDefault()
       selectPanel(null)
-      document
-        .querySelector<HTMLButtonElement>(`[aria-label="${panel ? utilities[panel].label : ''}"]`)
-        ?.focus()
+      if (panel) focusPanelTrigger(panel)
     }
   }
   useEffect(() => {
@@ -174,9 +182,6 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   return (
     <>
       <nav className="workspace-rail" aria-label="Workspace navigation">
-        {utility('project')}
-        {utility('worktree')}
-        <hr />
         {railViews.map((v, i) => (
           <button
             key={v.id}
@@ -230,9 +235,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
                 aria-label={`Close ${utilities[panel].label} panel`}
                 onClick={() => {
                   selectPanel(null)
-                  document
-                    .querySelector<HTMLButtonElement>(`[aria-label="${utilities[panel].label}"]`)
-                    ?.focus()
+                  focusPanelTrigger(panel)
                 }}
               >
                 ×

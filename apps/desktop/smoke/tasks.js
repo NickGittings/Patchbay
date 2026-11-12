@@ -161,7 +161,7 @@
     click(viewButton('Plan'))
     await until('worktree in the Plan picker', () =>
       document
-        .querySelector('.workspace-rail [aria-label="Worktree"]')
+        .querySelector('.workspace-context [aria-label="Worktree"]')
         ?.title.includes('Smoke task'),
     )
 

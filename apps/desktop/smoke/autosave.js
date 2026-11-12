@@ -34,7 +34,7 @@
     smoke.selectPanel('project')
     await until('unsaved status', () => status()?.textContent.includes('Map not saved'))
     assert(
-      document.querySelector('.workspace-rail [aria-label="Project"] sup'),
+      document.querySelector('.workspace-context [aria-label="Project"] sup'),
       'Unsaved map warning badge missing',
     )
     const component = s().nodes[0].id

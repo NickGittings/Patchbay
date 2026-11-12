@@ -348,8 +348,7 @@ export default function SimpleChat({
   return (
     <div className="simple-chat">
       <header>
-        <strong>Worktree chat</strong>
-        <span>{source?.branch ?? 'Project folder'}</span>
+        <strong>Chat</strong>
         <button
           disabled={
             !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])

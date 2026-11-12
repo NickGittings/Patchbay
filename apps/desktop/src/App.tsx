@@ -54,6 +54,7 @@ import TerminalDock from './components/TerminalDock'
 import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
+import WorkspaceContext from './components/WorkspaceContext'
 import { useWorkspaceActions } from './lib/workspaceActions'
 import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
@@ -421,6 +422,9 @@ function AppWorkspace() {
           ) : null}
         </main>
       </div>
+      <footer className="workspace-footer">
+        <WorkspaceContext actions={actions} />
+      </footer>
     </div>
   )
 }

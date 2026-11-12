@@ -280,6 +280,20 @@ input[type='radio'] {
   cursor: pointer;
 }
 
+/* Floating surfaces share the merge dialog's treatment; layout stays with each surface. */
+.menu-list,
+.toast,
+.command-palette,
+.extensions-panel,
+.node-extension-menu,
+.map-maintenance-dialog,
+.search-results {
+  background: var(--panel);
+  border: 0;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
 /* Toolbar dropdowns: generic menus and the list of terminals that need the user */
 .menu {
   position: relative;
@@ -304,10 +318,6 @@ input[type='radio'] {
   max-height: 60vh;
   overflow: auto;
   padding: 4px;
-  background: var(--panel);
-  border: 0;
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
 }
 .menu-list[hidden] {
   display: none;
@@ -473,11 +483,6 @@ input[type='radio'] {
   padding: 10px 10px 10px 14px;
   font-size: 12px;
   line-height: 1.5;
-  background: var(--panel);
-  border: 0;
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
 }
 .toast-text {
   min-width: 0;
@@ -502,14 +507,9 @@ input[type='radio'] {
 .notification-row button {
   flex: none;
 }
-.top-bar .toast .toast-close {
+.toast .toast-close {
   flex: none;
   height: auto;
-  padding: 0 6px;
-  line-height: 1.4;
-  color: var(--muted);
-  background: none;
-  border: none;
 }
 
 .panel {
@@ -563,7 +563,8 @@ input[type='radio'] {
   align-items: center;
   justify-content: space-between;
 }
-.inspector-close {
+.inspector-close,
+.toast .toast-close {
   padding: 0 6px;
   border-color: transparent;
   background: transparent;
@@ -571,7 +572,8 @@ input[type='radio'] {
   font-size: 16px;
   line-height: 1;
 }
-.inspector-close:hover:not(:disabled) {
+.inspector-close:hover:not(:disabled),
+.toast .toast-close:hover:not(:disabled) {
   color: inherit;
   border-color: transparent;
 }
@@ -1747,11 +1749,7 @@ button.review-name:hover:not(:disabled) {
   width: min(680px, 90vw);
   max-height: 75vh;
   overflow: auto;
-  background: var(--panel);
-  border: 0;
-  border-radius: 12px;
   padding: 16px;
-  box-shadow: var(--shadow);
 }
 .command-palette input {
   width: 100%;
@@ -1816,9 +1814,6 @@ button.review-name:hover:not(:disabled) {
 .node-extension-menu {
   position: fixed;
   padding: 6px;
-  background: var(--panel);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2425,10 +2420,6 @@ button.review-name:hover:not(:disabled) {
   max-height: 85vh;
   overflow: auto;
   padding: 24px;
-  background: var(--panel);
-  border: 0;
-  border-radius: 12px;
-  box-shadow: var(--shadow);
 }
 .map-maintenance-dialog h2 {
   margin-top: 0;
@@ -2767,6 +2758,7 @@ kbd {
   max-height: min(240px, 40vh);
   margin-top: 4px;
   border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
   box-shadow: none;
 }
 .reviewer-options > label,
@@ -2882,6 +2874,55 @@ kbd {
   justify-self: center;
   min-width: 0;
 }
+.workspace-footer {
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  height: 36px;
+  padding: 3px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.workspace-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.workspace-context button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+.workspace-context button:hover:not(:disabled),
+.workspace-context button[aria-expanded='true'] {
+  background: var(--border);
+}
+.workspace-context-project,
+.workspace-context-worktree {
+  flex: 0 1 auto;
+}
+.workspace-context-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-context-caret,
+.workspace-context-separator {
+  flex: none;
+  color: var(--muted);
+}
+.workspace-context sup {
+  color: var(--accent);
+}
 .toolbar-menus,
 .window-controls {
   display: flex;
@@ -2931,10 +2972,6 @@ kbd {
   right: 0;
   max-height: min(65vh, 600px);
   overflow: auto;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 10px 36px #0006;
   z-index: 100;
   padding: 8px;
 }
