@@ -101,7 +101,9 @@ export default function ReviewAgentPanel({
             onClick={() => {
               setStopping(true)
               void terminalStop(selected.id)
-                .catch((e) => useStore.getState().setMessage(String(e)))
+                .catch((e) =>
+                  useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+                )
                 .finally(() => setStopping(false))
             }}
           >

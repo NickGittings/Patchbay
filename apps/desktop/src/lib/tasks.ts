@@ -66,7 +66,7 @@ export async function refreshTasks(projectId = useStore.getState().project?.id) 
     } catch (e) {
       const s = useStore.getState()
       if (seq === requested.get(projectId) && s.project?.id === projectId && s.tasks.length)
-        s.setMessage(String(e))
+        s.setMessage(String(e), undefined, undefined, 'error')
     }
   })()
   pending.set(projectId, request)
@@ -144,7 +144,7 @@ export function followActiveTask() {
             state.tasks.map((t) => (t.id === task ? updated : t)),
           )
       })
-      .catch((e) => useStore.getState().setMessage(String(e)))
+      .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
       .finally(() => {
         if (scopeWrites.get(key) === write) scopeWrites.delete(key)
       })
@@ -159,7 +159,9 @@ export function followActiveTask() {
       while (current() !== undefined && sent.get(projectId) !== current()) {
         const task = current() ?? null
         sent.set(projectId, task)
-        await taskActivate(task, projectId).catch((e) => useStore.getState().setMessage(String(e)))
+        await taskActivate(task, projectId).catch((e) =>
+          useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+        )
       }
     })().finally(() => activating.delete(projectId))
     activating.set(projectId, running)
@@ -266,6 +268,9 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
         deleteWorktree
           ? 'Worktree removed, but its sessions could not be cleared from Sessions.'
           : 'Worktree forgotten, but its sessions could not be cleared from Sessions.',
+        undefined,
+        undefined,
+        'warning',
       )
 }
 

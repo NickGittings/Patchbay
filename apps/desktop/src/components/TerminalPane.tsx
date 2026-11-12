@@ -102,7 +102,7 @@ export default function TerminalPane({
         })
         .catch((e) => {
           if (!disposed && useStore.getState().serviceConnected)
-            useStore.getState().setMessage(String(e))
+            useStore.getState().setMessage(String(e), undefined, undefined, 'error')
         })
     const reconnected = () => {
       if (hydrated) refit()

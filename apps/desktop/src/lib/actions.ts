@@ -1,3 +1,4 @@
+import type { NoticeKind } from './notificationHistory'
 import { taskActionState } from './taskActions'
 import { useStore } from '../store'
 import type { ActionReport, ActionRequest, Project } from '../types'
@@ -39,12 +40,12 @@ export async function runGraphAction(request: ActionRequest) {
   const projectId = s.project.id
   const project = s.toProject()
   const task = s.activeTask ?? undefined
-  const say = (message: string) => {
+  const say = (message: string, kind: NoticeKind = 'info') => {
     if (
       useStore.getState().project?.id === projectId &&
       useStore.getState().activeTask === (task ?? null)
     )
-      useStore.getState().setMessage(message)
+      useStore.getState().setMessage(message, false, undefined, kind)
   }
   say(request.kind === 'startGroup' ? 'Starting stack…' : 'Validating affected components…')
   try {
@@ -54,9 +55,10 @@ export async function runGraphAction(request: ActionRequest) {
     const stopped = count('stopped') + count('cancelled')
     say(
       `${report.results.length} task(s), ${failed} failed${stopped ? `, ${stopped} stopped or not run` : ''}, ${report.plan.skipped.length} component(s) without configured tasks`,
+      failed ? 'error' : 'success',
     )
   } catch (e) {
-    say(String(e))
+    say(String(e), 'error')
   }
 }
 
@@ -68,15 +70,16 @@ export async function stopGroup(groupId: string, everywhere = false) {
   const { project, activeTask, tasks } = useStore.getState()
   if (!project) return false
   const targets = everywhere ? [null, ...tasks.map((t) => t.id)] : [activeTask]
-  const say = (message: string) => {
-    if (useStore.getState().project?.id === project.id) useStore.getState().setMessage(message)
+  const say = (message: string, kind: NoticeKind = 'info') => {
+    if (useStore.getState().project?.id === project.id)
+      useStore.getState().setMessage(message, false, undefined, kind)
   }
   try {
     for (const task of targets) await graphGroupStop(groupId, task ?? undefined, project.id)
-    say('Stack stopped')
+    say('Stack stopped', 'success')
     return true
   } catch (e) {
-    say(String(e))
+    say(String(e), 'error')
     return false
   }
 }
@@ -86,6 +89,6 @@ export async function stopValidation() {
   try {
     await graphValidationCancel(useStore.getState().project?.id)
   } catch (e) {
-    useStore.getState().setMessage(String(e))
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   }
 }

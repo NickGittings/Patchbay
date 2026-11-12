@@ -111,6 +111,9 @@ test.each(['generation', 'stopped'] as const)(
       reason === 'generation'
         ? 'The agent restarted; your queued message was kept as a draft'
         : 'The agent exited; your queued message was kept as a draft',
+      undefined,
+      undefined,
+      'error',
     )
     expect(terminalPrompt).not.toHaveBeenCalled()
   },
@@ -122,7 +125,12 @@ test('a failed or uncertain write returns the draft and is never retried', async
   queue()
   update(session('idle'))
   await vi.waitFor(() =>
-    expect(useStore.getState().setMessage).toHaveBeenCalledWith('Error: uncertain write'),
+    expect(useStore.getState().setMessage).toHaveBeenCalledWith(
+      'Error: uncertain write',
+      undefined,
+      undefined,
+      'error',
+    ),
   )
   expect(useSimpleUi.getState().worktrees[key].draft).toBe('follow @app up')
   expect(useSimpleUi.getState().worktrees[key].mentions).toEqual([
@@ -186,6 +194,9 @@ test('a refused queued delivery reports the draft retention message once', async
   await flushQueued(key)
   expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
     'Error: The agent is not at a ready prompt. Your draft was kept.',
+    undefined,
+    undefined,
+    'error',
   )
 })
 
@@ -373,6 +384,9 @@ test.each([
     })
     expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
       'Error: Auto took control of this workspace. Your queued message was kept as a draft.',
+      undefined,
+      undefined,
+      'error',
     )
   },
 )

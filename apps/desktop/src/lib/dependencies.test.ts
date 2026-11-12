@@ -158,6 +158,7 @@ test('accepting new links rearranges the map and offers Undo', async () => {
     'Added 1 dependency and rearranged the map',
     true,
     expect.objectContaining({ label: 'Undo layout' }),
+    'success',
   )
 })
 
@@ -170,6 +171,7 @@ test('adding selected links before launching an agent also offers layout Undo', 
     'Added 1 dependency and rearranged the map',
     true,
     expect.objectContaining({ label: 'Undo layout' }),
+    'success',
   )
 })
 
@@ -180,7 +182,7 @@ test('nothing added leaves the layout alone', async () => {
   })
   await acceptDependencies('a', [{ source: 'app', target: 'api', detector: 'builtin' }])
   expect(arranged.arrangeMap).not.toHaveBeenCalled()
-  expect(store.setMessage).toHaveBeenCalledWith('Nothing new to add', true, undefined)
+  expect(store.setMessage).toHaveBeenCalledWith('Nothing new to add', true, undefined, 'info')
 })
 
 test("a project's dialog never blocks another project's", async () => {

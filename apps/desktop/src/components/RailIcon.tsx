@@ -1,4 +1,13 @@
 const paths: Record<string, string> = {
+  branch:
+    'M6 7v10 M9 19a3 3 0 1 1-6 0 3 3 0 0 1 6 0 M9 4a3 3 0 1 1-6 0 3 3 0 0 1 6 0 M6 13h7a5 5 0 0 0 5-5 M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',
+  error: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 7v6 M12 17h.01',
+  success: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 m-5 9 3 3 7-7',
+  needsInput: 'M4 4h16v12H9l-5 4Z M12 7v4 M12 14h.01',
+  finished: 'm4 12 5 5L20 6',
+  warning: 'm12 3 10 18H2Z M12 9v5 M12 17h.01',
+  info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 11v6 M12 7h.01',
   project: 'M3 7V5h6l2 2h10v13H3Z',
   worktree: 'M6 6v12m0-6h7a5 5 0 0 0 5-5V6 M4 3h4v4H4Z M4 17h4v4H4Z M16 3h4v4h-4Z',
   navigation: 'M4 4h6v6H4Z M14 14h6v6h-6Z M7 10v7h7 M10 7h7v7',

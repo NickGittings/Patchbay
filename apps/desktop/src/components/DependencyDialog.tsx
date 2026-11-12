@@ -114,7 +114,7 @@ function AgentLauncher({
           if (!preset) return
           before?.()
           startDependencyAgent(projectId, preset).catch((e) =>
-            useStore.getState().setMessage(String(e)),
+            useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
           )
         }}
       >

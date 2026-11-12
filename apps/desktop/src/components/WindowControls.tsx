@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useStore } from '../store'
 
-const report = (error: unknown) => useStore.getState().setMessage(String(error))
+const report = (error: unknown) =>
+  useStore.getState().setMessage(String(error), undefined, undefined, 'error')
 
 /** Mounted only in the Windows/Linux main-window toolbar. */
 export default function WindowControls() {

@@ -1,3 +1,4 @@
+import type { NoticeKind } from './notificationHistory'
 import { create } from 'zustand'
 import { appendToMap, projectOf, projectStateOf, useStore, type MessageAction } from '../store'
 import {
@@ -156,13 +157,20 @@ export function addDependencies(projectId: string, found: FoundLink[]) {
       : 'Nothing new to add',
     true,
     arrangement ? undoArrange(projectId, arrangement) : undefined,
+    added ? 'success' : 'info',
   )
   return { added, arrangement }
 }
 
-function message(projectId: string, text: string, transient = false, action?: MessageAction) {
+function message(
+  projectId: string,
+  text: string,
+  transient = false,
+  action?: MessageAction,
+  kind: NoticeKind = 'info',
+) {
   if (useStore.getState().project?.id === projectId)
-    useStore.getState().setMessage(text, transient, action)
+    useStore.getState().setMessage(text, transient, action, kind)
 }
 
 /** Agent submissions the user closed undecided, per project; the menu shows them again. */
@@ -204,7 +212,7 @@ export async function scanDependencies(projectId: string) {
         : { mode: 'offer', projectId, scanned: true },
     )
   } catch (e) {
-    message(projectId, String(e))
+    message(projectId, String(e), false, undefined, 'error')
   } finally {
     setBusy(projectId, false)
   }
@@ -364,7 +372,7 @@ export async function discardDependencies(projectId: string) {
       // Still on disk: the menu can show it again.
       cleared.delete(projectId)
       deferred.set(projectId, id)
-      message(projectId, String(e))
+      message(projectId, String(e), false, undefined, 'error')
     } finally {
       setBusy(projectId, false)
     }
@@ -397,7 +405,7 @@ async function afterCreated(projectId: string) {
     found = await scan(projectId)
   } catch (e) {
     // Offer detection anyway, without claiming the manifests named nothing.
-    message(projectId, `Couldn’t scan for dependencies: ${String(e)}`)
+    message(projectId, `Couldn’t scan for dependencies: ${String(e)}`, false, undefined, 'error')
   } finally {
     setBusy(projectId, false)
   }

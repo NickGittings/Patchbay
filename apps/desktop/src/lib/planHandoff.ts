@@ -153,7 +153,12 @@ async function handoffPlannerPlan(
     } catch (e) {
       useStore
         .getState()
-        .setMessage(`Implementation started, but its story could not be linked: ${String(e)}`)
+        .setMessage(
+          `Implementation started, but its story could not be linked: ${String(e)}`,
+          undefined,
+          undefined,
+          'error',
+        )
     }
   }
   // The agent is running now, so a later switch away only skips the view change; its caller

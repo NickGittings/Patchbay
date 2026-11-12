@@ -179,7 +179,7 @@ export default function UnifiedSearch({
     input.current?.blur()
     void Promise.resolve()
       .then(item.run)
-      .catch((e) => useStore.getState().setMessage(String(e)))
+      .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
   }
   return (
     <div className="unified-search" ref={root}>

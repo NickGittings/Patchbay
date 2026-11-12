@@ -13,7 +13,7 @@ import { appendDraft, EMPTY_SIMPLE_UI, useSimpleUi, type QueuedPrompt } from './
 function restore(key: string, queued: QueuedPrompt, error?: string) {
   const ui = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
   useSimpleUi.getState().patch(key, appendDraft(ui, queued))
-  if (error) useStore.getState().setMessage(error)
+  if (error) useStore.getState().setMessage(error, undefined, undefined, 'error')
 }
 
 /** Append a draft after any earlier message before either normal or forced delivery. */

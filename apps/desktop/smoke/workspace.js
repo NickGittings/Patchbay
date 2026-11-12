@@ -79,7 +79,7 @@
     )
     missingTrigger.click()
     const missingPanel = await until('reopen unavailable project panel', () =>
-      document.querySelector('[aria-label="Project panel"]'),
+      document.querySelector('#workspace-project-popover'),
     )
     missingPanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await until(
@@ -104,6 +104,60 @@
       const nav = document.querySelector('nav.workspace-context')
       return nav?.textContent.includes(one.project.name) && nav
     })
+    // Footer branch context and the session notification inbox.
+    const branch = await until('visible footer branch', () =>
+      document.querySelector('.workspace-context-branch'),
+    )
+    if (!branch.textContent.trim() || !branch.title.startsWith('Branch: '))
+      throw new Error('Footer branch lacks its name or tooltip')
+    const bell = document.querySelector('.notification-bell')
+    if (!bell || !bell.closest('.workspace-footer')) throw new Error('Missing footer bell')
+    s().setMessage('Notification smoke failure', false, undefined, 'error')
+    await until('typed error toast', () => document.querySelector('.toast [data-kind="error"]'))
+    const dismiss = document.querySelector('.toast [aria-label="Dismiss"]')
+    const toastBounds = dismiss.closest('.toast').getBoundingClientRect()
+    const dismissBounds = dismiss.getBoundingClientRect()
+    if (
+      Math.abs(toastBounds.right - dismissBounds.right - 6) > 1 ||
+      Math.abs(dismissBounds.top - toastBounds.top - 6) > 1
+    )
+      throw new Error('Notification dismiss button is not in the top-right corner')
+    dismiss.click()
+    await until(
+      'toast dismissed, history retained',
+      () =>
+        !document
+          .querySelector('.toast-region')
+          ?.textContent.includes('Notification smoke failure') &&
+        s().notificationHistory.some((entry) => entry.message === 'Notification smoke failure'),
+    )
+    bell.click()
+    const inbox = await until('notification inbox', () =>
+      document.querySelector('#notification-inbox'),
+    )
+    await until('read history', () => s().notificationHistory.every((entry) => entry.read))
+    if (
+      !inbox.textContent.includes('Notification smoke failure') ||
+      !inbox.textContent.includes('Action failed')
+    )
+      throw new Error('Inbox lost dismissed error or heading')
+    s().setMessage('Notification smoke confirmation', true, undefined, 'success')
+    await until('arrival while inbox open', () => inbox.querySelector('[data-kind="success"]'))
+    inbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until(
+      'inbox Escape returns focus',
+      () => !document.querySelector('#notification-inbox') && document.activeElement === bell,
+    )
+    bell.click()
+    await until('reopened inbox', () => document.querySelector('#notification-inbox'))
+    Array.from(document.querySelectorAll('#notification-inbox button'))
+      .find((button) => button.textContent === 'Clear history')
+      .click()
+    await until('empty inbox', () =>
+      document.querySelector('#notification-inbox').textContent.includes('No notifications yet.'),
+    )
+    document.querySelector('[aria-label="Close notifications"]').click()
+    s().setMessage('')
     if (
       document.querySelector(
         '.workspace-rail [aria-label="Project"], .workspace-rail [aria-label="Worktree"]',
@@ -115,10 +169,23 @@
       await until('panel closed', () => !document.querySelector('.utility-panel'))
       const trigger = context.querySelector(`[aria-label="${label}"]`)
       if (!trigger.getClientRects().length) throw new Error(`${label} footer control is hidden`)
+      const before = document.querySelector('.workspace-main').getBoundingClientRect()
       trigger.click()
       const panel = await until(`${label} breadcrumb opens panel`, () =>
-        document.querySelector(`[aria-label="${label} panel"]`),
+        document.querySelector(`#workspace-${label.toLowerCase()}-popover`),
       )
+      const after = document.querySelector('.workspace-main').getBoundingClientRect()
+      const bounds = panel.getBoundingClientRect()
+      if (
+        document.querySelector('.utility-panel, .utility-resize') ||
+        before.width !== after.width ||
+        before.left !== after.left ||
+        bounds.bottom > document.querySelector('.workspace-footer').getBoundingClientRect().top ||
+        bounds.left < 0 ||
+        bounds.right > innerWidth ||
+        bounds.top < 0
+      )
+        throw new Error(`${label} popover shifts the workspace or clips`)
       if (trigger.getAttribute('aria-expanded') !== 'true')
         throw new Error(`${label} breadcrumb does not reflect the open panel`)
       panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -245,8 +312,8 @@
           if (box.width < 30 || box.height < 30 || box.bottom > innerHeight || !button.title)
             throw new Error('Rail clips a hit target or lacks a tooltip')
         }
-        smoke.selectPanel('project')
-        const panel = await until('docked project panel', () =>
+        smoke.selectPanel('usage')
+        const panel = await until('docked usage panel', () =>
           document.querySelector('.utility-panel'),
         )
         const workspace = document.querySelector('.workspace-main')
@@ -263,11 +330,11 @@
       for (const id of ['project', 'worktree', 'auto', 'activity', 'stack', 'usage']) {
         smoke.selectPanel(id)
         const panel = await until(`${id} panel`, () =>
-          document.querySelector(`.utility-panel[data-panel="${id}"]`),
+          document.querySelector(`:is(.utility-panel, .workspace-popover)[data-panel="${id}"]`),
         )
         panel.style.width = '240px'
         await sleep(100)
-        const scroll = panel.querySelector('.utility-scroll')
+        const scroll = panel.querySelector('.utility-scroll, .workspace-popover-content')
         if (scroll.scrollWidth > scroll.clientWidth + 1)
           throw new Error(`${id} panel overflows at minimum width`)
         if (id === 'project') {
@@ -312,19 +379,21 @@
       }
       smoke.selectPanel('project')
       await until('Project panel restored', () =>
-        document.querySelector('[aria-label="Project panel"]'),
+        document.querySelector('#workspace-project-popover'),
       )
-      document.querySelector('.workspace-rail [aria-label="Plan"]').click()
+      const planButton = document.querySelector('.workspace-rail [aria-label="Plan"]')
+      planButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      planButton.click()
       await until(
-        'Plan with dock still open',
-        () => s().view === 'plan' && document.querySelector('[aria-label="Project panel"]'),
+        'outside click closes project popover',
+        () => s().view === 'plan' && !document.querySelector('#workspace-project-popover'),
       )
       document.querySelector('.workspace-rail [aria-label="Sessions"]').click()
       await until(
         'exclusive Sessions panel',
         () =>
           document.querySelector('[aria-label="Sessions panel"]') &&
-          !document.querySelector('[aria-label="Project panel"]'),
+          !document.querySelector('#workspace-project-popover'),
       )
       const sessions = await until('portalled Sessions content', () =>
         document.querySelector('[aria-label="Workspace sessions"]'),

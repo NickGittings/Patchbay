@@ -294,7 +294,9 @@ export default function TaskActivityPanel() {
             key={url}
             className="chip"
             onClick={() =>
-              void openUrl(url).catch((e) => useStore.getState().setMessage(String(e)))
+              void openUrl(url).catch((e) =>
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+              )
             }
           >
             Open {url}

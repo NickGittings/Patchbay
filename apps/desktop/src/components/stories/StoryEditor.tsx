@@ -98,7 +98,8 @@ export default function StoryEditor({
       if (action === 'worktree') newWorktreeForStory(projectId, saved)
     } catch (e) {
       setError(String(e))
-      if (action === 'plan') useStore.getState().setMessage(String(e))
+      if (action === 'plan')
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     } finally {
       setBusy(false)
     }

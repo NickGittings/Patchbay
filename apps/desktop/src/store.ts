@@ -1,3 +1,9 @@
+import {
+  appendNotices,
+  toastNotices,
+  type Notice,
+  type NoticeKind,
+} from './lib/notificationHistory'
 import { PROJECT_DRAFT } from './types'
 import {
   addEdge,
@@ -236,6 +242,9 @@ export interface ProjectEntry {
 }
 interface State {
   workspaceSettings: Record<string, unknown>
+  notificationHistory: Notice[]
+  messageKind: NoticeKind
+  messageHeading?: string
   notificationToast: NotificationToast | null
   notificationToastId: number
   setNotificationToast: (toast: State['notificationToast']) => void
@@ -414,6 +423,7 @@ interface State {
   /** Hide the message on its own after a few seconds (confirmations, not errors or hints). */
   messageTransient: boolean
   /** A button the message offers, such as Undo; dropped by the next message. */
+  messageActionId?: number
   messageAction: MessageAction | null
 
   loadProject: (p: Project) => void
@@ -436,7 +446,13 @@ interface State {
   setGitChanges: (c: Record<string, number>) => void
   setGitStatus: (s: GitStatus) => void
   setDevices: (d: DeviceManifest[]) => void
-  setMessage: (m: string, transient?: boolean, action?: MessageAction) => void
+  setMessage: (
+    m: string,
+    transient?: boolean,
+    action?: MessageAction,
+    kind?: NoticeKind,
+    heading?: string,
+  ) => void
   markSaved: () => void
 }
 
@@ -741,12 +757,20 @@ const createState: StateCreator<State> = (set, get) => ({
   extensionBadges: {},
   extensionViews: {},
   workspaceSettings: {},
+  notificationHistory: [],
+  messageKind: 'info',
   notificationToast: null,
   notificationToastId: 0,
   setNotificationToast: (notificationToast) =>
     set((s) => ({
       notificationToast: mergeNotificationToast(s.notificationToast, notificationToast),
       notificationToastId: s.notificationToastId + 1,
+      notificationHistory: notificationToast
+        ? appendNotices(
+            s.notificationHistory,
+            toastNotices(notificationToast, s.notificationToastId + 1, Date.now()),
+          )
+        : s.notificationHistory,
     })),
   dismissNotificationSession: (sid) =>
     set((s) => ({ notificationToast: removeNotificationSession(s.notificationToast, sid) })),
@@ -1141,7 +1165,7 @@ const createState: StateCreator<State> = (set, get) => ({
   setGitChanges: (gitChanges) => set({ gitChanges }),
   setGitStatus: ({ changes, repos }) => set({ gitChanges: changes, repos }),
   setDevices: (devices) => set({ devices }),
-  setMessage: (message, transient = false, action) =>
+  setMessage: (message, transient = false, action, kind = 'info', heading) =>
     set((s) => {
       const projectId = action?.projectId ?? s.project?.id
       const kept =
@@ -1150,6 +1174,23 @@ const createState: StateCreator<State> = (set, get) => ({
           : null
       return {
         message,
+        messageActionId: action ? s.messageId + 1 : kept ? s.messageActionId : undefined,
+        messageKind: kind,
+        messageHeading: heading,
+        notificationHistory: message
+          ? appendNotices(s.notificationHistory, [
+              {
+                id: `message-${s.messageId + 1}`,
+                kind,
+                heading,
+                message,
+                at: Date.now(),
+                read: false,
+                messageId: s.messageId + 1,
+                project: s.project ? { id: s.project.id, name: s.project.name } : undefined,
+              },
+            ])
+          : s.notificationHistory,
         messageTransient: transient,
         messageAction: action
           ? {

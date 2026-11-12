@@ -1,3 +1,4 @@
+import type { NoticeKind } from './notificationHistory'
 import { create } from 'zustand'
 import { projectOf, useStore } from '../store'
 import type { MapEdit, MapIssue, Project, ReconciliationPreview } from '../types'
@@ -28,9 +29,14 @@ export const useMaintenance = create<MaintenanceState>(() => ({
   busy: false,
 }))
 const signature = (project: Project) => JSON.stringify(project)
-function messageFor(projectId: string | undefined, text: string, transient = false) {
+function messageFor(
+  projectId: string | undefined,
+  text: string,
+  transient = false,
+  kind: NoticeKind = 'info',
+) {
   if (projectId && useStore.getState().project?.id === projectId)
-    useStore.getState().setMessage(text, transient)
+    useStore.getState().setMessage(text, transient, undefined, kind)
 }
 const issueRequests = new Map<string, number>()
 export async function refreshMapIssues(projectId = useStore.getState().project?.id) {
@@ -63,7 +69,7 @@ export async function reviewRescan() {
       review: { projectId: project.projectId!, draft: signature(project), preview },
     }))
   } catch (e) {
-    messageFor(project.projectId, String(e))
+    messageFor(project.projectId, String(e), false, 'error')
   } finally {
     useMaintenance.setState({ busy: false })
   }
@@ -117,10 +123,10 @@ async function acceptEdit(before: Project, edit: MapEdit) {
         : {}),
     })
     await (removed.length ? cleanupComponentScopes(draft, removed) : Promise.resolve())
-      .catch((e) => messageFor(id, `Couldn't update task scopes: ${String(e)}`))
+      .catch((e) => messageFor(id, `Couldn't update task scopes: ${String(e)}`, false, 'error'))
       .then(() => syncProjectRoots(id))
       .then(() => refreshMapIssues(id))
-      .catch((e) => messageFor(id, String(e)))
+      .catch((e) => messageFor(id, String(e), false, 'error'))
   } finally {
     if (edit.lease) await releaseMapEdit(id, edit.lease)
   }
@@ -140,9 +146,10 @@ export async function applyMapReview(selected: string[]) {
       review.projectId,
       'Applied selected map changes. Existing map configurations save automatically.',
       true,
+      'success',
     )
   } catch (e) {
-    messageFor(review.projectId, String(e))
+    messageFor(review.projectId, String(e), false, 'error')
   } finally {
     useMaintenance.setState({ busy: false })
   }
@@ -159,7 +166,7 @@ export async function repairComponentPath(
     await acceptEdit(before, edit)
     return true
   } catch (e) {
-    messageFor(before.projectId, String(e))
+    messageFor(before.projectId, String(e), false, 'error')
     return false
   }
 }
@@ -174,7 +181,7 @@ export async function removeComponents(
     await acceptEdit(before, edit)
     return true
   } catch (e) {
-    messageFor(before.projectId, String(e))
+    messageFor(before.projectId, String(e), false, 'error')
     return false
   }
 }
@@ -185,7 +192,10 @@ export function startMaintenanceChecks() {
   const schedule = () => {
     clearTimeout(timer)
     const id = useStore.getState().project?.id
-    timer = setTimeout(() => void refreshMapIssues(id).catch((e) => messageFor(id, String(e))), 200)
+    timer = setTimeout(
+      () => void refreshMapIssues(id).catch((e) => messageFor(id, String(e), false, 'error')),
+      200,
+    )
   }
   const stop = useStore.subscribe((s, prev) => {
     if (

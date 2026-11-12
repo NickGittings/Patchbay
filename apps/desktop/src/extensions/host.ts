@@ -59,7 +59,8 @@ let notifyTimer: ReturnType<typeof setTimeout> | undefined
 let lastProjectKey = ''
 let lastSelection = ''
 let installed = false
-const error = (e: unknown) => useStore.getState().setMessage(String(e))
+const error = (e: unknown) =>
+  useStore.getState().setMessage(String(e), undefined, undefined, 'error')
 class Timeout extends Error {}
 const active = () =>
   useStore.getState().extensions.extensions.filter((e) => e.enabled && !e.errors.length)

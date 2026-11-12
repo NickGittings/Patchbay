@@ -7,7 +7,9 @@ export function ExtensionView({ id }: { id: string }) {
   const task = useStore((s) => s.activeTask)
   const html = useStore((s) => s.extensionViews[id])
   useEffect(() => {
-    void activateView(id).catch((e) => useStore.getState().setMessage(String(e)))
+    void activateView(id).catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
     return () => bindViewFrame(id, null)
   }, [id, registry, project, task])
   if (!html)

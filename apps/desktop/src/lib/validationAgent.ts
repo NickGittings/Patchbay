@@ -106,10 +106,15 @@ export async function discardValidationProposal(projectId: string, id: string, w
       if (wasApplied)
         useStore
           .getState()
-          .setMessage(`Applied the validation, but couldn’t forget the proposal: ${e}`)
+          .setMessage(
+            `Applied the validation, but couldn’t forget the proposal: ${e}`,
+            undefined,
+            undefined,
+            'error',
+          )
       else {
         cleared.delete(projectId)
-        useStore.getState().setMessage(String(e))
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       }
     })
     await refreshValidationProposal(projectId)
@@ -191,7 +196,8 @@ export async function applyValidationProposal(
     })
     count++
   }
-  if (skipped.length) s.setMessage(`Left unapplied: ${skipped.join('; ')}`)
+  if (skipped.length)
+    s.setMessage(`Left unapplied: ${skipped.join('; ')}`, undefined, undefined, 'warning')
   if (!count) return
   // Capture the updated map and active worktree before any asynchronous clearing or project switch.
   const project = useStore.getState().toProject()
@@ -203,6 +209,9 @@ export async function applyValidationProposal(
           .getState()
           .setMessage(
             'Checks were applied locally. Resolve the map save error or conflict before running or dismissing this proposal.',
+            undefined,
+            undefined,
+            'warning',
           )
       return
     }
@@ -214,7 +223,8 @@ export async function applyValidationProposal(
           componentIds: pending.componentIds,
         })
       } catch (e) {
-        if (useStore.getState().project?.id === projectId) useStore.getState().setMessage(String(e))
+        if (useStore.getState().project?.id === projectId)
+          useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       }
     }
   } finally {

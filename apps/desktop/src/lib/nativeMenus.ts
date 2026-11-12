@@ -31,7 +31,7 @@ export function useNativeMenus(actions: WorkspaceAction[]) {
   useEffect(() => {
     if (!isMac) return
     void updateNativeMenu(JSON.parse(entries)).catch((e) =>
-      useStore.getState().setMessage(String(e)),
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
   }, [entries])
   useEffect(() => {
@@ -62,7 +62,9 @@ export function useNativeMenus(actions: WorkspaceAction[]) {
       )
         latest.current.extensions.run(payload.slice(10))
     })
-    void unlisten.catch((e) => useStore.getState().setMessage(String(e)))
+    void unlisten.catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
     return () => {
       void unlisten.then((stop) => stop()).catch(() => {})
     }

@@ -55,7 +55,9 @@ export default function RecoveryBanners() {
                     }
                   }
                 })
-                .catch((e) => useStore.getState().setMessage(String(e)))
+                .catch((e) =>
+                  useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+                )
             }
           >
             Locate folder

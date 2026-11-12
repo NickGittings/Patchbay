@@ -28,7 +28,9 @@ export default function StatusLabel({
           title={`Open ${status.url}`}
           onClick={(e) => {
             e.stopPropagation()
-            openUrl(status.url!).catch((err) => useStore.getState().setMessage(String(err)))
+            openUrl(status.url!).catch((err) =>
+              useStore.getState().setMessage(String(err), undefined, undefined, 'error'),
+            )
           }}
         >
           {status.url.replace(/^https?:\/\//, '')}

@@ -51,7 +51,12 @@ export function undoArrange(projectId: string, { before, after }: Arrangement): 
     run: () => {
       const s = useStore.getState()
       if (mapEditsBlocked(s.projects[projectId])) {
-        s.setMessage('Resolve the map conflict or project recovery before undoing the layout')
+        s.setMessage(
+          'Resolve the map conflict or project recovery before undoing the layout',
+          undefined,
+          undefined,
+          'warning',
+        )
         return
       }
       const positions: Record<string, Position> = {}
@@ -79,6 +84,8 @@ export function undoArrange(projectId: string, { before, after }: Arrangement): 
             ? 'No layout positions to restore; kept later edits'
             : 'No layout positions to restore',
         true,
+        undefined,
+        'success',
       )
     },
   }
@@ -90,9 +97,20 @@ export function arrangeNow(projectId: string) {
   if (s.project?.id !== projectId) return
   const outcome = arrangeOutcome(projectId)
   if (outcome === 'blocked')
-    s.setMessage('Resolve the map conflict or project recovery before arranging the map')
+    s.setMessage(
+      'Resolve the map conflict or project recovery before arranging the map',
+      undefined,
+      undefined,
+      'warning',
+    )
   else if (outcome === 'small')
     s.setMessage('Add at least two components before arranging the map', true)
   else if (outcome === 'unchanged') s.setMessage('The map is already arranged', true)
-  else s.setMessage('Arranged the map by dependencies', true, undoArrange(projectId, outcome))
+  else
+    s.setMessage(
+      'Arranged the map by dependencies',
+      true,
+      undoArrange(projectId, outcome),
+      'success',
+    )
 }

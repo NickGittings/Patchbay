@@ -149,7 +149,7 @@ export default function UsagePanel() {
                       }))
                       await refreshUsage({ fresh: true })
                     } catch (e) {
-                      useStore.getState().setMessage(String(e))
+                      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
                     } finally {
                       setBusy(false)
                     }

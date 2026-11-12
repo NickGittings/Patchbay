@@ -28,7 +28,7 @@ export default function FixFindingsButton({
       onClick={() => {
         setStarting(true)
         void fixReviewFindings(record)
-          .catch((e) => useStore.getState().setMessage(String(e)))
+          .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
           .finally(() => setStarting(false))
       }}
     >

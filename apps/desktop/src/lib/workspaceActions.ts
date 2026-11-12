@@ -168,5 +168,5 @@ export function runWorkspaceAction(action: WorkspaceAction | undefined) {
   if (action?.enabled)
     void Promise.resolve()
       .then(action.run)
-      .catch((e) => useStore.getState().setMessage(String(e)))
+      .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
 }

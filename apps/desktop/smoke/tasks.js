@@ -34,7 +34,7 @@
   const openPicker = async () => {
     smoke.selectPanel('worktree')
     return until(`worktree overview in ${state().view}`, () =>
-      document.querySelector('[aria-label="Worktree panel"] .utility-scroll'),
+      document.querySelector('#workspace-worktree-popover .workspace-popover-content'),
     )
   }
   const viewButton = (name) =>
@@ -219,7 +219,7 @@
     const taskRow = await until('Navigation task row', () =>
       navOverview.querySelector('.worktree-row.active'),
     )
-    // Even the selected card's background invokes selection; the dock stays open.
+    // Even the selected card's background invokes selection and dismisses the popover.
     const setActiveTask = state().setActiveTask
     let selectedAgain = false
     smoke.store.setState({
@@ -236,14 +236,14 @@
       smoke.store.setState({ setActiveTask })
     }
     assert(
-      state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
-      'clicking the active worktree card switched or closed the picker',
+      state().activeTask === task.id && !document.querySelector('#workspace-worktree-popover'),
+      'clicking the active worktree card switched worktrees or kept the picker open',
     )
     // Clicking the card outside its controls switches.
-    click(navOverview.querySelector('.worktree-row:not(.active)'))
+    click((await openPicker()).querySelector('.worktree-row:not(.active)'))
     await until(
       'main worktree active',
-      () => state().activeTask === null && document.querySelector('[aria-label="Worktree panel"]'),
+      () => state().activeTask === null && !document.querySelector('#workspace-worktree-popover'),
     )
     click(viewButton('Plan'))
     const overview = await openPicker()
@@ -300,7 +300,7 @@
     assert(state().activeTask === null, 'Text selection switched worktrees')
     selection.removeAllRanges()
     // The compact layout must also fit a narrow dock with long names and branches.
-    const panel = document.querySelector('[aria-label="Worktree panel"]')
+    const panel = document.querySelector('#workspace-worktree-popover')
     const originalWidth = panel.style.width
     const title = otherRow.querySelector('strong')
     const branch = otherRow.querySelector('.worktree-row-switch code')
@@ -311,7 +311,7 @@
       title.textContent = 'A very long worktree name '.repeat(12)
       branch.textContent = 'feature/a-very-long-branch-name/'.repeat(12)
       await sleep(50)
-      const scroll = panel.querySelector('.utility-scroll')
+      const scroll = panel.querySelector('.workspace-popover-content')
       assert(scroll.scrollWidth <= scroll.clientWidth + 1, 'Compact worktree card overflows')
       assert(title.scrollWidth > title.clientWidth, 'Long worktree name is not truncated')
       assert(
@@ -355,7 +355,7 @@
     await until(
       'worktree selected',
       () =>
-        state().activeTask === task.id && document.querySelector('[aria-label="Worktree panel"]'),
+        state().activeTask === task.id && !document.querySelector('#workspace-worktree-popover'),
     )
     assert(
       state().sessions[mainSid]?.running && state().sessions[taskSid]?.running,
@@ -377,7 +377,7 @@
       signal(activeRow, 'Running').getAttribute('aria-label') === 'Running: 2',
       'worktree running count missing',
     )
-    const bounds = document.querySelector('[aria-label="Worktree panel"]').getBoundingClientRect()
+    const bounds = document.querySelector('#workspace-worktree-popover').getBoundingClientRect()
     assert(
       bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight,
       'picker outside viewport',
@@ -671,9 +671,10 @@
     click(issueEntry)
     await until('issue opens its worktree terminal', () => state().activeTask === task.id)
     state().setActiveTask(secondTask.id)
-    click(signal(backgroundRow, 'Tests'))
+    const reopenedRow = (await openPicker()).querySelector(`[aria-label="${task.title}"]`)
+    click(signal(reopenedRow, 'Tests'))
     const testEntry = await until('recorded test terminal', () =>
-      backgroundRow.querySelector('[aria-label="Tests"] button.chip'),
+      reopenedRow.querySelector('[aria-label="Tests"] button.chip'),
     )
     click(testEntry)
     await until(

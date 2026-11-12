@@ -14,7 +14,7 @@ export function useTaskActivities() {
         if (live) for (const activity of list) applyTaskActivity(activity)
       })
       .catch((e) => {
-        if (live) useStore.getState().setMessage(String(e))
+        if (live) useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       })
     return () => {
       live = false

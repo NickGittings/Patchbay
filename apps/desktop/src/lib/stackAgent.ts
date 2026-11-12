@@ -96,10 +96,17 @@ export async function discardStackProposal(projectId: string, id: string, wasApp
   try {
     await stackProposalClear(projectId, id).catch((e: unknown) => {
       if (wasApplied)
-        useStore.getState().setMessage(`Applied the stack, but couldn’t forget the proposal: ${e}`)
+        useStore
+          .getState()
+          .setMessage(
+            `Applied the stack, but couldn’t forget the proposal: ${e}`,
+            undefined,
+            undefined,
+            'error',
+          )
       else {
         cleared.delete(projectId)
-        useStore.getState().setMessage(String(e))
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       }
     })
     await refreshStackProposal(projectId)
@@ -117,12 +124,27 @@ export async function applyStackProposal(
 ) {
   const s = useStore.getState()
   if (s.project?.id !== projectId)
-    return s.setMessage('Switch back to this project to apply its proposed stack.')
+    return s.setMessage(
+      'Switch back to this project to apply its proposed stack.',
+      undefined,
+      undefined,
+      'warning',
+    )
   if (!canEdit(projectId))
-    return s.setMessage('Resolve the map conflict or project recovery before applying the stack.')
+    return s.setMessage(
+      'Resolve the map conflict or project recovery before applying the stack.',
+      undefined,
+      undefined,
+      'warning',
+    )
   const target = pending.stackId ? s.groups.find((g) => g.id === pending.stackId) : undefined
   if (pending.stackId && !target)
-    return s.setMessage('The stack to replace was removed. Discard this proposal and detect again.')
+    return s.setMessage(
+      'The stack to replace was removed. Discard this proposal and detect again.',
+      undefined,
+      undefined,
+      'warning',
+    )
   // Each chosen terminal as it is on the map now, which may have changed since the agent looked.
   const edits = chosen.flatMap((t) => {
     const node = s.nodes.find((n) => n.id === t.component)
@@ -136,12 +158,18 @@ export async function applyStackProposal(
   if (target && edits.length !== chosen.length)
     return s.setMessage(
       'Some proposed terminals were removed or changed roles. Detect again before replacing this stack.',
+      undefined,
+      undefined,
+      'warning',
     )
   // Nothing to apply: keep the proposal, so it can still be read or discarded.
   const setup = includeSetup ? pending.worktreeSetup : undefined
   if (!edits.length && !setup && !target)
     return s.setMessage(
       'None of the chosen terminals can be applied: they were removed, renamed, or are no longer task terminals (or are Validation ones).',
+      undefined,
+      undefined,
+      'warning',
     )
   if (setup)
     useStore.setState({
@@ -192,6 +220,9 @@ export async function applyStackProposal(
     })
     s.setMessage(
       `Applied the stack without ${named.join(', ')}: removed, renamed, or no longer a task terminal (or a Validation one).`,
+      undefined,
+      undefined,
+      'warning',
     )
   }
   await discardStackProposal(projectId, pending.id, true)

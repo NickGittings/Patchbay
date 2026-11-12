@@ -360,11 +360,18 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   })
   if (update.status === 'done' || update.status === 'stopped')
     void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId).catch((e) =>
-      useStore.getState().setMessage(String(e)),
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
   if (update.status === 'done')
     void completeAutoStories(projectId, task, run.runId).catch((e) =>
-      useStore.getState().setMessage(`Could not save the story’s completion: ${String(e)}`),
+      useStore
+        .getState()
+        .setMessage(
+          `Could not save the story’s completion: ${String(e)}`,
+          undefined,
+          undefined,
+          'error',
+        ),
     )
 }
 export function driveable(projectId: string, task: string | null, run = autoRun(projectId, task)) {
@@ -1154,7 +1161,7 @@ async function stopOwned(run: AutoRun, sessionIds: string[]) {
           gone.push(id)
         }
       } catch (e) {
-        useStore.getState().setMessage(String(e))
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       }
     }),
   )
@@ -1185,11 +1192,13 @@ export function stopAuto(projectId: string, task: string | null) {
       (id): id is string => !!id,
     ))
       void controlProviderRun(projectId, id, { kind: 'stop' }).catch((e) =>
-        useStore.getState().setMessage(String(e)),
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
       )
   }
   if (peekController(projectId, task)?.validating)
-    void graphValidationCancel(projectId).catch((e) => useStore.getState().setMessage(String(e)))
+    void graphValidationCancel(projectId).catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
 }
 export async function skipStage(projectId: string, task: string | null) {
   cancelAutoResume(projectId, task)

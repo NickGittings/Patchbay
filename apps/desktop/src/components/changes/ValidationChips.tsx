@@ -54,7 +54,7 @@ export default function ValidationChips({
               aria-label={`Run ${v.terminal.name}`}
               onClick={() =>
                 void startTerminal(componentId, v.terminal.id, task).catch((e) =>
-                  useStore.getState().setMessage(String(e)),
+                  useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
                 )
               }
             >

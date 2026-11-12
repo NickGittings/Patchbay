@@ -306,7 +306,7 @@ export function startTerminal(
     launch.auto = options.auto
   } catch (e) {
     if (options.kickoff || options.auto || options.story) return Promise.reject(e)
-    useStore.getState().setMessage(String(e))
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     return Promise.resolve(undefined)
   }
   return launchTerminal(launch)
@@ -637,7 +637,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           throw e
         }
         // Otherwise skip errors made stale by a reset.
-        if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+        if (requestedEpoch === epoch)
+          useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       }
     }
     if (launch.started && sharedChat) {
@@ -745,7 +746,9 @@ export function newConversation(
 }
 
 export const stopTerminal = (sessionId: string) =>
-  void terminalStop(sessionId).catch((e) => useStore.getState().setMessage(String(e)))
+  void terminalStop(sessionId).catch((e) =>
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+  )
 
 /**
  * Take a terminal out of the active task. A root or retained terminal is also stopped and its
@@ -772,7 +775,7 @@ export async function removeTaskTerminal(componentId: string, terminalId: string
     await stopAndWait(sid, 'Terminal is still stopping; remove it again.')
     if (sessionMetadata.has(sid)) await sessionForget(sid)
   } catch (e) {
-    useStore.getState().setMessage(String(e))
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   }
 }
 
@@ -819,11 +822,14 @@ export async function closeTerminal(componentId: string, terminalId: string) {
     useStore.getState().removeTerminal(componentId, terminalId, projectId)
     return true
   } catch (e) {
-    if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+    if (requestedEpoch === epoch)
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     return false
   } finally {
     if (lease)
-      await releaseMapEdit(projectId, lease).catch((e) => useStore.getState().setMessage(String(e)))
+      await releaseMapEdit(projectId, lease).catch((e) =>
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+      )
     if (requestedEpoch === epoch) closing.delete(key)
   }
 }
@@ -839,7 +845,7 @@ export function restartTerminal(
   try {
     launch = captureLaunch(componentId, terminalId, task)
   } catch (e) {
-    useStore.getState().setMessage(String(e))
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     return Promise.resolve()
   }
   if (isClosing(launch)) return Promise.resolve()
@@ -861,7 +867,8 @@ export function restartTerminal(
       launch.restart = true
       if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
     } catch (e) {
-      if (requestedEpoch === epoch) useStore.getState().setMessage(String(e))
+      if (requestedEpoch === epoch)
+        useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     }
   })().finally(() => {
     if (restarting.get(launch.sid) === request) restarting.delete(launch.sid)

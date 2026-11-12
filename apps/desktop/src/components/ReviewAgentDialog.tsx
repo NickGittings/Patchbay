@@ -96,7 +96,14 @@ export default function ReviewAgentDialog({
           devices,
         )
         if (errors.length)
-          useStore.getState().setMessage(`Some reviewers didn't start:\n${errors.join('\n')}`)
+          useStore
+            .getState()
+            .setMessage(
+              `Some reviewers didn't start:\n${errors.join('\n')}`,
+              undefined,
+              undefined,
+              'error',
+            )
         onStarted?.(started)
         return started[0].sessionId
       }}

@@ -55,6 +55,7 @@ import { closeInspector, hasDockTabs, showsInspector } from './lib/panels'
 import { useExtensionViews } from './extensions/useExtensionViews'
 import Toolbar from './components/Toolbar'
 import WorkspaceContext from './components/WorkspaceContext'
+import NotificationCenter from './components/NotificationCenter'
 import { useWorkspaceActions } from './lib/workspaceActions'
 import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
@@ -75,7 +76,9 @@ function useGitRefresh() {
     const unlisten = listen<string | null>(GIT_DIRTY_EVENT, (event) => {
       if (!stopped) void requestGitRefresh(event.payload ?? undefined)
     })
-    void unlisten.catch((e) => useStore.getState().setMessage(String(e)))
+    void unlisten.catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
     return () => {
       stopped = true
       invalidateGitRefresh()
@@ -301,8 +304,12 @@ function AppWorkspace() {
     void initializeWorkspace()
     const stopHost = startExtensionHost()
     const stopMaintenance = startMaintenanceChecks()
-    void refreshExtensions().catch((e) => useStore.getState().setMessage(String(e)))
-    void listenForTerminals().catch((e) => useStore.getState().setMessage(String(e)))
+    void refreshExtensions().catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
+    void listenForTerminals().catch((e) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+    )
     const stopWindows = syncComponentWindows()
     const stopTasks = followActiveTask()
     const stopAuto = followAuto()
@@ -346,7 +353,7 @@ function AppWorkspace() {
         void syncAgentProject(project).catch((e) => {
           if (signatures.get(id) === signature) signatures.delete(id)
           if (useStore.getState().project?.id === project.projectId)
-            useStore.getState().setMessage(String(e))
+            useStore.getState().setMessage(String(e), undefined, undefined, 'error')
         })
       }
       pending.clear()
@@ -402,7 +409,7 @@ function AppWorkspace() {
       <ExtensionsPanel />
       <NewTaskDialog />
       <div className="workspace-body">
-        <WorkspaceRail actions={actions} />
+        <WorkspaceRail />
         <main className="workspace-main">
           <RecoveryBanners />
           {!restoring && <WorktreeSetupStatus key={setupScope} notice />}
@@ -424,6 +431,7 @@ function AppWorkspace() {
       </div>
       <footer className="workspace-footer">
         <WorkspaceContext actions={actions} />
+        <NotificationCenter />
       </footer>
     </div>
   )

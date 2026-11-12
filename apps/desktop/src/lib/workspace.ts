@@ -111,7 +111,7 @@ export function flushWorkspace(strict = false) {
     .catch(() => {})
     .then(() => workspaceSave(document))
     .catch((e) => {
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       if (strict) throw e
     })
   return writing
@@ -281,7 +281,7 @@ export function initializeWorkspace() {
     } catch (e) {
       // Keep an invalid document on disk for explicit recovery instead of autosaving over it.
       recoveryBlocked = true
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     }
     try {
       if (!loaded) return
@@ -374,11 +374,11 @@ export function initializeWorkspace() {
         const component = entry?.state?.nodes.find((n) => n.id === saved.componentId)
         if (component)
           await openComponentWindow(component.id, component.data.name, saved.projectId).catch((e) =>
-            useStore.getState().setMessage(String(e)),
+            useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
           )
       }
     } catch (e) {
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     } finally {
       useStore.setState({ restoring: false })
       if (!recoveryBlocked) initializeMapAutosave()

@@ -1,3 +1,5 @@
+import NoticeContent from './NoticeContent'
+import { linkKind } from '../lib/notificationHistory'
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { revealNotification } from '../lib/notifications'
@@ -7,12 +9,14 @@ import { focusTerminal } from '../lib/terminals'
 const HIDE_AFTER_MS = 6000
 
 /**
- * The latest app message, shown in full below the toolbar. Errors and hints stay until dismissed
+ * The latest app message, shown in full above the footer. Errors and hints stay until dismissed
  * or replaced; transient confirmations hide on their own unless hovered. The live region stays
  * mounted so screen readers announce each new message.
  */
 export default function Toast() {
   const message = useStore((s) => s.message)
+  const kind = useStore((s) => s.messageKind)
+  const heading = useStore((s) => s.messageHeading)
   const id = useStore((s) => s.messageId)
   const transient = useStore((s) => s.messageTransient)
   const action = useStore((s) => s.messageAction)
@@ -63,7 +67,11 @@ export default function Toast() {
       {notification && (
         <div className="toast" ref={notificationElement}>
           <div className="toast-text">
-            {notice && <span className="notification-message">{notice}</span>}
+            {notice && (
+              <NoticeContent kind={notification.kind ?? 'info'} heading={notification.heading}>
+                <span className="notification-message">{notice}</span>
+              </NoticeContent>
+            )}
             {notification.sessions.map((link) => {
               const message = notificationLinkLabel(
                 { ...link, label: link.message ?? notification.message },
@@ -71,9 +79,11 @@ export default function Toast() {
               )
               return (
                 <div className="notification-row" key={link.sid}>
-                  <span className="notification-message" title={message}>
-                    {message}
-                  </span>
+                  <NoticeContent kind={linkKind(link)}>
+                    <span className="notification-message" title={message}>
+                      {message}
+                    </span>
+                  </NoticeContent>
                   <button
                     title={message}
                     aria-label={`View ${notificationLinkLabel(link, activeProjectId)}`}
@@ -102,7 +112,9 @@ export default function Toast() {
       )}
       {message && (!action?.projectId || action.projectId === activeProjectId) && (
         <div className="toast" ref={toast}>
-          <span className="toast-text">{message}</span>
+          <NoticeContent kind={kind} heading={heading}>
+            <span className="toast-text">{message}</span>
+          </NoticeContent>
           {action && <button onClick={action.run}>{action.label}</button>}
           <button
             className="toast-close"

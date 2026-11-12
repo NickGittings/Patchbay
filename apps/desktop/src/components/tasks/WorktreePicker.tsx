@@ -132,7 +132,7 @@ function saveNotes(pending: RefObject<{ id: string; notes: string; projectId?: s
   pending.current = null
   void taskUpdate(edit.id, { notes: edit.notes }, edit.projectId)
     .then(() => refreshTasks(edit.projectId))
-    .catch((e) => useStore.getState().setMessage(String(e)))
+    .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
 }
 
 const ROW_CONTROLS =
@@ -346,7 +346,9 @@ function WorktreeRow({
             e.preventDefault()
             void taskUpdate(task.id, { title }, projectId)
               .then(() => refreshTasks(projectId))
-              .catch((e) => useStore.getState().setMessage(String(e)))
+              .catch((e) =>
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+              )
             setRename(false)
           }}
         >
@@ -364,7 +366,9 @@ function WorktreeRow({
             className="danger"
             disabled={task.current}
             onClick={() =>
-              void removeTask(task.id, true).catch((e) => useStore.getState().setMessage(String(e)))
+              void removeTask(task.id, true).catch((e) =>
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+              )
             }
           >
             Remove worktree
@@ -372,7 +376,7 @@ function WorktreeRow({
           <button
             onClick={() =>
               void removeTask(task.id, false).catch((e) =>
-                useStore.getState().setMessage(String(e)),
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
               )
             }
           >

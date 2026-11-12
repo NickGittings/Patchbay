@@ -20,7 +20,7 @@ export function useExtensionCommands(
   })
   const run = (id: string) =>
     void executeExtensionCommand(id, [], context.component?.id).catch((e) =>
-      useStore.getState().setMessage(String(e)),
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
   return { entries, run }
 }

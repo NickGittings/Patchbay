@@ -222,7 +222,8 @@ export async function refreshStories(projectId: string) {
     }
   } catch (e) {
     // Projects outside Git have no per-user board store.
-    if (projectStateOf(projectId)?.stories.length) useStore.getState().setMessage(String(e))
+    if (projectStateOf(projectId)?.stories.length)
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   }
 }
 
@@ -292,7 +293,12 @@ export async function linkStory(projectId: string, story: string, task: string) 
   } catch (e) {
     useStore
       .getState()
-      .setMessage(`Worktree created, but its story could not be linked: ${String(e)}`)
+      .setMessage(
+        `Worktree created, but its story could not be linked: ${String(e)}`,
+        undefined,
+        undefined,
+        'error',
+      )
   }
 }
 
@@ -311,7 +317,12 @@ export function autoStory(projectId: string, story: Story) {
   const s = useStore.getState()
   if (s.project?.id !== projectId || !projectOf(projectId)) return
   if (s.auto && !finished(s.auto.status)) {
-    s.setMessage('This worktree already has an Auto run. Stop it or choose another worktree first.')
+    s.setMessage(
+      'This worktree already has an Auto run. Stop it or choose another worktree first.',
+      undefined,
+      undefined,
+      'warning',
+    )
     s.showAutoPanel()
     return
   }
@@ -333,7 +344,14 @@ export async function linkAutoStory(projectId: string, task: string | null, stor
     await updateStory(projectId, story, { task, autoRunId: run?.runId ?? '' })
     if (run?.status === 'done') await completeAutoStories(projectId, task, run.runId)
   } catch (e) {
-    useStore.getState().setMessage(`Auto started, but its story could not be linked: ${String(e)}`)
+    useStore
+      .getState()
+      .setMessage(
+        `Auto started, but its story could not be linked: ${String(e)}`,
+        undefined,
+        undefined,
+        'error',
+      )
   }
 }
 

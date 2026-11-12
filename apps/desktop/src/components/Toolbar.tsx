@@ -1,7 +1,6 @@
 import { isMac, titleBarMouseDown } from '../lib/platform'
 import { useEffect } from 'react'
 import UnifiedSearch from './UnifiedSearch'
-import Toast from './Toast'
 import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
 import Menu, { MenuItem } from './Menu'
 import WindowControls from './WindowControls'
@@ -54,7 +53,6 @@ export default function Toolbar({ actions }: { actions: WorkspaceAction[] }) {
       )}
       <UnifiedSearch actions={actions} />
       {!isMac && <WindowControls />}
-      <Toast />
     </div>
   )
 }

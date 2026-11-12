@@ -28,7 +28,7 @@ export default function AddTerminalSelect({
       current.addTerminal(componentId, device)
       setPicked('')
     } catch (e) {
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     } finally {
       setBusy(false)
     }

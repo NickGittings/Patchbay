@@ -57,7 +57,7 @@ export default function TerminalControl({
     try {
       await newConversation(componentId, terminalId, task, projectId)
     } catch (e) {
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     } finally {
       pending.current = false
       setFreshPending(false)

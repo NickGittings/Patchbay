@@ -36,7 +36,7 @@ export function useOpenProject() {
       if (detected) useStore.setState({ dirty: true })
       fitSoon(fitView)
     } catch (e) {
-      s.setMessage(String(e))
+      s.setMessage(String(e), undefined, undefined, 'error')
     }
   }, [fitView])
 }
@@ -75,7 +75,9 @@ export function applyAdded(
     return { components, links }
   })
   if (!applied) return 0
-  useStore.getState().setMessage(`Added ${applied.components.length} component(s)`, true)
+  useStore
+    .getState()
+    .setMessage(`Added ${applied.components.length} component(s)`, true, undefined, 'success')
   return applied.components.length
 }
 
@@ -97,7 +99,7 @@ export function useAddFolder() {
         fitSoon(fitView)
       await syncCurrentRoots()
     } catch (e) {
-      s.setMessage(String(e))
+      s.setMessage(String(e), undefined, undefined, 'error')
     }
   }, [fitView])
 }
@@ -131,12 +133,14 @@ export async function closeProjectTab(id: string) {
     useStore.getState().closeProject(id)
     forgetMainWorktree(id)
   } catch (e) {
-    useStore.getState().setMessage(`Project close failed: ${e}`)
+    useStore.getState().setMessage(`Project close failed: ${e}`, undefined, undefined, 'error')
   } finally {
     try {
       await flushWorkspace()
     } catch (e) {
-      useStore.getState().setMessage(`Workspace could not be saved: ${e}`)
+      useStore
+        .getState()
+        .setMessage(`Workspace could not be saved: ${e}`, undefined, undefined, 'error')
     }
   }
 }

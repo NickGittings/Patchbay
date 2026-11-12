@@ -76,7 +76,7 @@ export default function ComponentWindow({ id }: { id: string }) {
           projectId: new URLSearchParams(location.search).get('project'),
         })
       }
-    })().catch((e) => useStore.getState().setMessage(String(e)))
+    })().catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
     return () => {
       disposed = true
       for (const unlisten of cleanup) unlisten()
@@ -104,7 +104,7 @@ export default function ComponentWindow({ id }: { id: string }) {
     if (project && name) {
       void getCurrentWebviewWindow()
         .setTitle(`${project.name} · ${name}`)
-        .catch((e) => useStore.getState().setMessage(String(e)))
+        .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
     }
   }, [project, name])
 
@@ -144,7 +144,9 @@ export default function ComponentWindow({ id }: { id: string }) {
         <button onClick={() => void openInEditor({ path: data.path })}>Open in editor</button>
         <button
           onClick={() =>
-            void revealPath(data.path).catch((e) => useStore.getState().setMessage(String(e)))
+            void revealPath(data.path).catch((e) =>
+              useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+            )
           }
         >
           {revealLabel}

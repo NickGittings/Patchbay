@@ -18,25 +18,18 @@ import {
   type UtilityPanel,
 } from '../lib/rail'
 import { mod } from '../lib/platform'
-import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
-import ProjectSwitcher from './ProjectSwitcher'
-import WorktreePicker from './tasks/WorktreePicker'
 import SessionsPanel from './SessionsPanel'
 import StackPanel from './StackPanel'
 import TaskActivityPanel from './tasks/TaskActivityPanel'
 import { useTaskActivities } from '../lib/useTaskActivities'
 import AutoPanel from './auto/AutoPanel'
-import MapSaveStatus from './MapSaveStatus'
 import AttentionMenu from './status/AttentionMenu'
-import ExtensionMenu from '../extensions/ExtensionMenu'
 import AgentIntegrationsPanel from './AgentIntegrationsPanel'
 import { integrationsProvider, integrationsSetting } from '../lib/agentHooks'
 import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import PanelContent from './PanelContent'
-import PanelSection from './PanelSection'
-import Menu, { MenuItem } from './Menu'
 
 const utilities: Record<UtilityPanel, { label: string }> = {
   project: { label: 'Project' },
@@ -64,7 +57,7 @@ function focusPanelTrigger(panel: UtilityPanel) {
   else
     document.querySelector<HTMLButtonElement>('.workspace-context [aria-label="Worktree"]')?.focus()
 }
-export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] }) {
+export default function WorkspaceRail() {
   useClockTick()
   const usage = useUsage((s) => s.usage)
   const usageSettings = useStore((s) => s.usageSettings)
@@ -77,7 +70,6 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
   const project = useStore((s) => s.project)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
   const simple = useStore((s) => s.simpleMode)
-  const view = useStore((s) => s.view)
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const activeTask = useStore((s) => s.activeTask)
   const auto = useStore((s) => s.auto)
@@ -214,7 +206,7 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
         {utility('usage')}
         <span className="spacer" />
       </nav>
-      {panel && (
+      {panel && panel !== 'project' && panel !== 'worktree' && (
         <>
           <aside
             className="utility-panel"
@@ -246,45 +238,6 @@ export default function WorkspaceRail({ actions }: { actions: WorkspaceAction[] 
               ref={panel === 'sessions' ? setSessionsHost : undefined}
             >
               <PanelContent>
-                {panel === 'project' && (
-                  <>
-                    <PanelSection title="Open projects">
-                      <ProjectSwitcher />
-                    </PanelSection>
-                    <MapSaveStatus />
-                    <div className="rail-toolbar">
-                      {actions
-                        .filter((a) => a.id === 'open')
-                        .map((a) => (
-                          <button
-                            key={a.id}
-                            className="primary"
-                            disabled={!a.enabled}
-                            onClick={() => runWorkspaceAction(a)}
-                          >
-                            {a.title}
-                          </button>
-                        ))}
-                      <Menu label="⋯" triggerLabel="Project actions" caret={false} portal>
-                        {actions
-                          .filter((a) => a.group === 'project' && !['save', 'open'].includes(a.id))
-                          .map((a) => (
-                            <MenuItem
-                              key={a.id}
-                              disabled={!a.enabled}
-                              onClick={() => runWorkspaceAction(a)}
-                            >
-                              {a.title}
-                            </MenuItem>
-                          ))}
-                      </Menu>
-                      <ExtensionMenu slot="toolbar" />
-                    </div>
-                  </>
-                )}
-                {panel === 'worktree' && project && (
-                  <WorktreePicker key={project.id} copyPlan={!simple && view === 'plan'} />
-                )}
                 {panel === 'auto' && project && (
                   <AutoPanel
                     key={JSON.stringify([project.id, activeTask])}

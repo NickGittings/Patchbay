@@ -108,7 +108,7 @@ export function openComponentWindow(
     // Built by the backend so macOS can turn Writing Tools off first (`writing_tools.rs`).
     await invoke('window_open', { projectId, componentId, title: `${project.name} · ${name}` })
   })()
-    .catch((e) => useStore.getState().setMessage(String(e)))
+    .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
     .finally(() => opening.delete(label))
   opening.set(label, request)
   return request
@@ -141,7 +141,8 @@ export function syncComponentWindows(): () => void {
   // lists and diffs reload on it, since editing an already-changed file leaves the counts as
   // they were. A ready pop-out starts over.
   const sent = new Map<string, { model: string; git: unknown; tasks: string }>()
-  const report = (e: unknown) => useStore.getState().setMessage(String(e))
+  const report = (e: unknown) =>
+    useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   const payload = (projectId: string) => {
     const entry = useStore.getState().captureProjects()[projectId]
     const state = entry?.state

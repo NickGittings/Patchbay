@@ -1,11 +1,18 @@
+import { useContext } from 'react'
+import { CloseMenu } from './menuContext'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
 import { closeProjectTab } from '../lib/project'
 import { runningInProject } from '../lib/sessionList'
 import RunningTag from './RunningTag'
 
-/** Open projects in the Project utility panel. */
+/** Open projects in the footer popover. */
 export default function ProjectSwitcher() {
+  const close = useContext(CloseMenu)
+  const activate = (id: string) => {
+    close()
+    useStore.getState().activateProject(id)
+  }
   const order = useStore((s) => s.projectOrder)
   const projects = useStore((s) => s.projects)
   const activeId = useStore((s) => s.activeProjectId)
@@ -29,14 +36,14 @@ export default function ProjectSwitcher() {
             onClick={(e) => {
               if ((e.target as Element).closest('button, a, input, textarea, select')) return
               if (window.getSelection()?.toString()) return
-              useStore.getState().activateProject(id)
+              activate(id)
             }}
           >
             <button
               className="grow"
               aria-pressed={activeId === id}
               title={entry.root}
-              onClick={() => useStore.getState().activateProject(id)}
+              onClick={() => activate(id)}
             >
               <span className="project-name">{entry.name}</span>
               {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}

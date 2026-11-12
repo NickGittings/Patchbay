@@ -61,7 +61,7 @@ function ComponentFolder({
               if (picked) await repairComponentPath(componentId, picked, projectId)
             } catch (e) {
               if (useStore.getState().project?.id === projectId)
-                useStore.getState().setMessage(String(e))
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error')
             }
           }}
         >
@@ -121,7 +121,9 @@ function ComponentInspector({ node }: { node: FlowNode }) {
         <button onClick={() => void openInEditor({ path: data.path })}>Open in editor</button>
         <button
           onClick={() =>
-            void revealPath(data.path).catch((e) => useStore.getState().setMessage(String(e)))
+            void revealPath(data.path).catch((e) =>
+              useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+            )
           }
         >
           {revealLabel}

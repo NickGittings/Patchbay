@@ -382,7 +382,7 @@ export default function SessionsPanel({
       await action()
       await reconcileSessions()
     } catch (e) {
-      useStore.getState().setMessage(String(e))
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     } finally {
       setBusy(false)
     }
@@ -534,7 +534,7 @@ export default function SessionsPanel({
                       (error: unknown) => {
                         // Show the run still on screen, so choosing the failed one again retries.
                         if (request === historyRequest.current) setRequested(shown)
-                        useStore.getState().setMessage(String(error))
+                        useStore.getState().setMessage(String(error), undefined, undefined, 'error')
                       },
                     )
                   }}

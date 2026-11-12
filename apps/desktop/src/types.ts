@@ -809,6 +809,8 @@ export interface WorkspaceProject {
  * no longer current (seen, resolved, stopped, resumed) or its project closed.
  */
 export interface NotificationToast {
+  kind?: import('./lib/notificationHistory').NoticeKind
+  heading?: string
   /** A standalone hint shown above any unread session links. */
   notice?: string
   message: string

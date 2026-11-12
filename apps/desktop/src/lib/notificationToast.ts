@@ -8,7 +8,12 @@ export function mergeNotificationToast(
   if (!current?.sessions.length) {
     // A notice without links (a usage warning, a native hint) stays above the links that follow.
     if (!current || !incoming.sessions.length || incoming.notice) return incoming
-    return { ...incoming, notice: current.notice ?? current.message }
+    return {
+      ...incoming,
+      kind: current.kind,
+      heading: current.heading,
+      notice: current.notice ?? current.message,
+    }
   }
   // A notice without links stays above the unread agent links until explicitly dismissed.
   if (!incoming.sessions.length) {
@@ -16,6 +21,8 @@ export function mergeNotificationToast(
       ? current.sessions.map((entry) => entry.message).join('\n')
       : current.message
     return {
+      ...(incoming.kind ? { kind: incoming.kind } : {}),
+      ...(incoming.heading ? { heading: incoming.heading } : {}),
       notice: incoming.notice ?? incoming.message,
       message: links,
       sessions: current.sessions,
@@ -33,6 +40,10 @@ export function mergeNotificationToast(
   const notice = incoming.notice ?? current.notice
   return {
     ...(notice ? { notice } : {}),
+    ...((incoming.kind ?? current.kind) ? { kind: incoming.kind ?? current.kind } : {}),
+    ...((incoming.heading ?? current.heading)
+      ? { heading: incoming.heading ?? current.heading }
+      : {}),
     message: entries.map((entry) => entry.message).join('\n'),
     sessions: entries,
   }
@@ -51,7 +62,12 @@ export function removeNotificationSession(
         sessions,
       }
     : current.notice
-      ? { message: current.notice, sessions: [] }
+      ? {
+          message: current.notice,
+          sessions: [],
+          ...(current.kind ? { kind: current.kind } : {}),
+          ...(current.heading ? { heading: current.heading } : {}),
+        }
       : null
 }
 

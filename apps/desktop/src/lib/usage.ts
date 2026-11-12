@@ -202,7 +202,7 @@ export function followUsage() {
     if (!s.notifications.enabled || !s.notifications.usageLimits || !messages.length) return
     const body = messages.join('\n')
     // Keep a toast even when native delivery succeeds, so it is available on return.
-    s.setNotificationToast({ message: body, sessions: [] })
+    s.setNotificationToast({ message: body, sessions: [], kind: 'warning', heading: 'Usage limit' })
     if (!document.hasFocus())
       void sendUsageNotification(body, () => {
         const s = useStore.getState()
