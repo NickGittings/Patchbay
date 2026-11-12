@@ -197,7 +197,8 @@ export const startMergeAgent = (
   requestId: string,
   auto?: import('../types').AutoBrief,
   cleanup: import('../types').MergeCleanup = auto ? 'keep' : 'ask',
-) => launchMerge(project, request, device, requestId, auto, cleanup)
+  autoOwnershipId?: string,
+) => launchMerge(project, request, device, requestId, auto, cleanup, autoOwnershipId)
 
 async function launchMerge(
   project: Project,
@@ -206,11 +207,12 @@ async function launchMerge(
   requestId: string,
   auto: import('../types').AutoBrief | undefined,
   cleanup: import('../types').MergeCleanup,
+  autoOwnershipId?: string,
 ) {
   await listenForTerminals()
   const sid = await launchJob(mergeAgentStart, project, request, device, requestId, auto)
   // Retain cleanup even if refreshing the successfully launched session fails.
-  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto)
+  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto, autoOwnershipId)
   await reconcileFreshSessions()
   return sid
 }

@@ -15,6 +15,8 @@ export interface CleanupJob {
   sessionId: string
   choice: MergeCleanup
   auto: boolean
+  /** The run's stable ownership identity, preserved across controller resumes. */
+  autoOwnershipId?: string
   handled?: boolean
 }
 
@@ -29,6 +31,7 @@ export function trackMergeCleanup(
   id: string,
   choice: MergeCleanup,
   auto: boolean,
+  autoOwnershipId?: string,
 ) {
   if (!project.projectId) return
   useStore.setState((s) => ({
@@ -51,6 +54,7 @@ export function trackMergeCleanup(
           sessionId,
           choice,
           auto,
+          autoOwnershipId,
         },
       ],
     },
@@ -78,7 +82,13 @@ export async function readyCleanup(job: CleanupJob) {
     return false
   if (job.auto) {
     const state = s.captureProjects()[job.projectId]?.state
-    const run = state && autoRuns(state).find(({ run }) => run.sessionId === job.sessionId)?.run
+    const run =
+      state &&
+      autoRuns(state).find(({ run }) =>
+        job.autoOwnershipId
+          ? (run.ownershipId ?? run.runId) === job.autoOwnershipId
+          : run.sessionId === job.sessionId,
+      )?.run
     if (!run || run.status !== 'done') return false
   }
   const result = await mergeOutcome(project, job.request)

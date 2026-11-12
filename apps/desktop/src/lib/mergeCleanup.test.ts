@@ -25,6 +25,7 @@ const request = {
   destinationBranch: 'main',
 }
 beforeEach(() => {
+  useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject(project)
   useStore.setState({ workspaceSettings: {}, sessions: {}, sessionRecords: [] })
   vi.mocked(mergeOutcome).mockReset().mockResolvedValue('merged')
@@ -52,14 +53,44 @@ test('waits for a finished session and confirmed Git integration', async () => {
   expect(await readyCleanup(job)).toBe(false)
 })
 
-test('Auto cleanup waits until the run is done', async () => {
-  trackMergeCleanup(project, request, 'session', 'merge', 'delete', true)
+test.each(['ask', 'delete'] as const)(
+  'Auto %s cleanup survives normal completion and controller resumes',
+  async (choice) => {
+    trackMergeCleanup(project, request, 'session', 'merge', choice, true, 'owner')
+    useStore.setState({
+      sessions: { session: { running: false } } as never,
+      auto: {
+        runId: 'first',
+        ownershipId: 'owner',
+        sessionId: 'session',
+        status: 'running',
+      } as never,
+    })
+    expect(await readyCleanup(cleanupJobs()[0])).toBe(false)
+    useStore.setState({
+      auto: { runId: 'resumed', ownershipId: 'owner', status: 'done' } as never,
+    })
+    expect(await readyCleanup(cleanupJobs()[0])).toBe(true)
+  },
+)
+
+test('a different Auto run cannot authorize cleanup through a reused merge session', async () => {
+  trackMergeCleanup(project, request, 'session', 'merge', 'delete', true, 'original')
   useStore.setState({
     sessions: { session: { running: false } } as never,
-    auto: { sessionId: 'session', status: 'running' } as never,
+    auto: { runId: 'new', sessionId: 'session', status: 'done' } as never,
   })
   expect(await readyCleanup(cleanupJobs()[0])).toBe(false)
-  useStore.setState({ auto: { sessionId: 'session', status: 'done' } as never })
+  expect(mergeOutcome).not.toHaveBeenCalled()
+})
+
+test('completed Auto cleanup follows its run in an inactive task workspace', async () => {
+  trackMergeCleanup(project, request, 'session', 'merge', 'ask', true, 'run')
+  useStore.setState({
+    sessions: { session: { running: false } } as never,
+    auto: null,
+    taskWorkspaces: { task: { auto: { runId: 'run', status: 'done' } } } as never,
+  })
   expect(await readyCleanup(cleanupJobs()[0])).toBe(true)
 })
 

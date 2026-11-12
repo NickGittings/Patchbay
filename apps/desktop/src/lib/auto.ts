@@ -2479,6 +2479,7 @@ async function drive(projectId: string, task: string | null) {
           crypto.randomUUID(),
           brief,
           run.merge.cleanup ?? 'keep',
+          run.ownershipId ?? run.runId,
         )
         break
       default:
