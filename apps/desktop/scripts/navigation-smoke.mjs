@@ -54,6 +54,14 @@ git([
   '-qm',
   'fixture',
 ])
+mkdirSync(join(project, 'folder'))
+writeFileSync(join(project, 'folder', 'child.txt'), 'child\n')
+writeFileSync(
+  join(project, 'large-diff.txt'),
+  Array.from({ length: 12500 }, (_, i) =>
+    i === 2 ? `${'\t'.repeat(64)}indented line` : `line ${i + 1}`,
+  ).join('\n') + '\n',
+)
 process.env.PATCHBAY_SMOKE_ROOT = project
 process.env.PATCHBAY_SMOKE_SCRIPT = resolve(import.meta.dirname, '../smoke/navigation.js')
 await import('./smoke.mjs')

@@ -158,7 +158,8 @@ export const gitChanges = (
   components: { id: string; path: string }[],
   componentId: string,
   task?: string,
-) => invoke<ChangedFile[]>('git_changes', { components, componentId, task })
+  projectId = useStore.getState().project?.id,
+) => invoke<ChangedFile[]>('git_changes', { components, componentId, task, projectId })
 /**
  * `path` must be one of the component's changes, relative to the project root; `oldPath` is the
  * one it lists for a rename, so the diff shows the rename.

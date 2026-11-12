@@ -1,7 +1,9 @@
+import WindowedDiff from './WindowedDiff'
+import { openInEditor } from '../../lib/navigation'
 import { useStore } from '../../store'
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { stepKey } from '../../lib/changeNav'
-import { hunkRange, parsePatch } from '../../lib/diff'
+import { diffGutterSize, hunkRange, parsePatch } from '../../lib/diff'
 import { componentPaths } from '../../lib/git'
 import { historyRequest, type HistorySelection } from '../../lib/history'
 import { gitDiff } from '../../lib/ipc'
@@ -157,15 +159,52 @@ export default function DiffView({
     if (!loaded) return <div className="hint">Loading diff…</div>
     if (loaded.binary) return <div className="hint">Binary file changed.</div>
     if (!parsed?.hunks.length) return <div className="hint">No textual changes.</div>
+    const controls = (
+      <div className="diff-actions">
+        <button
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(loaded.patch)
+              useStore.getState().setMessage('Patch copied')
+            } catch (e) {
+              useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+            }
+          }}
+        >
+          {loaded.truncated ? 'Copy available patch' : 'Copy patch'}
+        </button>
+        {!history && file.kind !== 'deleted' && projectId && (
+          <button
+            onClick={() =>
+              void openInEditor(
+                { path: file.path },
+                { projectId, task: useStore.getState().activeTask, worktree },
+              )
+            }
+          >
+            Open in editor
+          </button>
+        )}
+        {loaded.truncated && (
+          <span role="status">
+            Patch exceeds the size limit; only the received portion is shown and copied.
+          </span>
+        )}
+      </div>
+    )
+    if (parsed.hunks.reduce((count, h) => count + h.lines.length, 0) > MAX_LINES)
+      return (
+        <>
+          {controls}
+          <WindowedDiff key={key} parsed={parsed} lineFocus={lineFocus} />
+        </>
+      )
     let budget = MAX_LINES
-    let maxNo = 0
-    for (const h of parsed.hunks) {
-      maxNo = Math.max(maxNo, h.oldStart + h.oldLines, h.newStart + h.newLines)
-    }
-    const gutter = { '--gutter': `${String(maxNo).length + 2}ch` } as CSSProperties
+    const gutter = { '--gutter': `${diffGutterSize(parsed)}ch` } as CSSProperties
     const cut = loaded.truncated || parsed.hunks.reduce((n, h) => n + h.lines.length, 0) > MAX_LINES
     return (
       <>
+        {controls}
         <div className="diff" style={gutter} role="table">
           {parsed.hunks.map((h, i) => {
             if (budget <= 0) return null
@@ -197,7 +236,7 @@ export default function DiffView({
             )
           })}
         </div>
-        {cut && <div className="hint">Diff truncated — open the file to see everything.</div>}
+        {cut && <div className="hint">Only the available patch is shown.</div>}
       </>
     )
   }
