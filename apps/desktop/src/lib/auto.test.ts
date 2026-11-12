@@ -367,7 +367,7 @@ async function withFollower(check: () => Promise<void>) {
   }
 }
 const flush = async () => {
-  for (let i = 0; i < 50; i++) await Promise.resolve()
+  for (let i = 0; i < 150; i++) await Promise.resolve()
 }
 function agent(
   state: 'review' | 'working' | 'needsInput' | 'idle',
@@ -5329,5 +5329,200 @@ test('startup reconciles failed provider assignments through the bounded recover
       restartPending: false,
       recovery: { attempts: 1 },
     })
+  })
+})
+
+test('concurrent Auto snapshots share pending reads but never completed results', async () => {
+  load()
+  await Promise.all([autoSnapshot('p', 't', run()), autoSnapshot('p', 't', run())])
+  for (const read of [
+    ipc.gitWorktrees,
+    ipc.gitBranches,
+    ipc.planRead,
+    ipc.proposalRead,
+    ipc.gitReview,
+    ipc.reviewRead,
+  ])
+    expect(read).toHaveBeenCalledOnce()
+  await autoSnapshot('p', 't', run())
+  expect(ipc.gitWorktrees).toHaveBeenCalledTimes(2)
+  expect(ipc.reviewRead).toHaveBeenCalledTimes(2)
+})
+
+test('snapshot read failures are evicted and different arguments stay independent', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockRejectedValueOnce(new Error('temporary read failure'))
+  const failed = await Promise.allSettled([
+    autoSnapshot('p', 't', run()),
+    autoSnapshot('p', 't', run()),
+  ])
+  expect(failed.map((result) => result.status)).toEqual(['rejected', 'rejected'])
+  expect(ipc.gitWorktrees).toHaveBeenCalledOnce()
+  await Promise.all([
+    autoSnapshot('p', 't', run()),
+    autoSnapshot('p', null, run({ merge: { mode: 'ask', destinationBranch: 'feature' } })),
+  ])
+  expect(ipc.gitWorktrees).toHaveBeenCalledTimes(2)
+  expect(ipc.planRead).toHaveBeenCalledWith('p', undefined)
+  expect(ipc.planRead).toHaveBeenCalledWith('p', 't')
+})
+
+test('a fresh pre-merge snapshot bypasses a pending shared read', async () => {
+  load()
+  let release!: (trees: Worktree[]) => void
+  vi.mocked(ipc.gitWorktrees).mockReturnValueOnce(
+    new Promise((resolve) => {
+      release = resolve
+    }),
+  )
+  const pending = autoSnapshot('p', 't', run())
+  await autoSnapshot('p', 't', run(), false, true)
+  expect(ipc.gitWorktrees).toHaveBeenCalledTimes(2)
+  release([tree])
+  await pending
+})
+
+test('session wakeups target their run and polling still checks all active runs', async () => {
+  vi.useFakeTimers()
+  load()
+  setRun({ sessionId: 's', observedWorking: true, turnSince: 1000 })
+  agent('working', 2000)
+  const { autoOwnership } = await import('./chatTeams')
+  await withFollower(async () => {
+    await flush()
+    vi.mocked(autoOwnership).mockClear()
+    useStore.setState({
+      sessions: { ...useStore.getState().sessions, unrelated: { running: true, startedMs: 1 } },
+    })
+    await flush()
+    expect(autoOwnership).not.toHaveBeenCalled()
+    agent('working', 2001)
+    await flush()
+    expect(autoOwnership).toHaveBeenCalled()
+    vi.mocked(autoOwnership).mockClear()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoOwnership).toHaveBeenCalled()
+  })
+})
+
+test('unchanged reconciled metadata leaves working runs asleep while lane changes wake them', async () => {
+  load()
+  setRun({ sessionId: 's', observedWorking: true, turnSince: 1000 })
+  agent('working', 2000)
+  useStore.setState({ sessionRecords: [{ ...plannerRecord(), id: 's' }] })
+  const { autoOwnership } = await import('./chatTeams')
+  await withFollower(async () => {
+    await flush()
+    vi.mocked(autoOwnership).mockClear()
+    const records = useStore.getState().sessionRecords
+    useStore.setState({ sessionRecords: structuredClone(records) })
+    await flush()
+    expect(autoOwnership).not.toHaveBeenCalled()
+    useStore.setState({
+      sessionRecords: records.map((record) => ({
+        ...record,
+        metadata: { ...record.metadata, lane: 'claude' },
+      })),
+    })
+    await flush()
+    expect(autoOwnership).toHaveBeenCalledOnce()
+  })
+})
+
+test('provider recovery reconciliation waits for polling during its cooldown', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  const { providers, current } = await autonomousScan()
+  useStore.setState({ sessionRecords: [plannerRecord()] })
+  vi.mocked(providers.controlProviderRun).mockResolvedValue(current)
+  vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+    // Bound the faulty loop so this regression fails without hanging the test runner.
+    if (vi.mocked(awaitSessions.reconcileFreshSessions).mock.calls.length <= 20)
+      useStore.setState({ sessionRecords: structuredClone(useStore.getState().sessionRecords) })
+  })
+  await withFollower(async () => {
+    await flush()
+    await flush()
+    expect(vi.mocked(awaitSessions.reconcileFreshSessions).mock.calls.length).toBeLessThanOrEqual(2)
+    expect(autoRun('p', 't')?.recovery?.attempts).toBe(1)
+    vi.mocked(awaitSessions.reconcileFreshSessions).mockClear()
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(awaitSessions.reconcileFreshSessions).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(awaitSessions.reconcileFreshSessions).toHaveBeenCalledOnce()
+    expect(providers.controlProviderRun).toHaveBeenCalledOnce()
+  })
+})
+
+test.each([false, true])(
+  'recovery snapshot reuse respects reconciliation changes (%s)',
+  async (changed) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    autonomousPlanner()
+    vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
+      if (changed) useStore.setState({ sessions: { ...useStore.getState().sessions } })
+    })
+    await withFollower(async () => {
+      await flush()
+      expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+      expect(ipc.gitWorktrees).toHaveBeenCalledTimes(changed ? 2 : 1)
+      expect(autoRun('p', 't')?.recovery?.attempts).toBe(1)
+    })
+  },
+)
+
+test('a new process generation reassesses completion immediately without waiting for the poll', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  setRun({
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1000,
+    launchAtMs: 1000,
+  })
+  agent('review', 1500)
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.reviewRead).toHaveBeenCalledOnce()
+    // No new verdict yet: repeated observations of this exact completion are throttled.
+    const session = useStore.getState().sessions.s
+    useStore.setState({ sessions: { s: { ...session, generation: 2 } } })
+    await flush()
+    expect(ipc.reviewRead).toHaveBeenCalledTimes(2)
+    expect(autoRun('p', 't')?.stage).toBe('review')
+    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  })
+})
+
+test('a tracked session change does not drive another active worktree', async () => {
+  load()
+  setRun({ sessionId: 's', observedWorking: true, turnSince: 1000 })
+  agent('working', 2000)
+  useStore.getState().patchTask('p', null, {
+    auto: run({
+      runId: 'main-run',
+      sessionId: 'other',
+      background: true,
+      observedWorking: true,
+      turnSince: 1000,
+    }),
+  })
+  useStore.setState({
+    sessions: { ...useStore.getState().sessions, other: useStore.getState().sessions.s },
+  })
+  const { autoOwnership } = await import('./chatTeams')
+  await withFollower(async () => {
+    await flush()
+    vi.mocked(autoOwnership).mockClear()
+    const sessions = useStore.getState().sessions
+    useStore.setState({ sessions: { ...sessions, s: { ...sessions.s, generation: 2 } } })
+    await flush()
+    expect(autoOwnership).toHaveBeenCalledOnce()
+    expect(autoOwnership).toHaveBeenCalledWith('p', 't', true)
+    expect(autoRun('p', null)?.status).toBe('running')
   })
 })

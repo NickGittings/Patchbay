@@ -462,6 +462,32 @@ async function sourceWorktree(
     )
   return { source: { ...source, branch: source.branch }, tasks }
 }
+// A new control operation must not wait on a stopped or superseded drive's reads.
+let snapshotReadEpoch = 0
+
+// Share only pending reads. Completed data must never become a freshness cache.
+function shareAutoRead<Args extends unknown[], Result>(read: (...args: Args) => Promise<Result>) {
+  const pending = new Map<string, Promise<Result>>()
+  return (...args: Args): Promise<Result> => {
+    const key = JSON.stringify([snapshotReadEpoch, args])
+    let request = pending.get(key)
+    if (!request) {
+      request = read(...args).finally(() => pending.delete(key))
+      pending.set(key, request)
+    }
+    return request
+  }
+}
+const snapshotReads = { gitWorktrees, gitBranches, planRead, proposalRead, gitReview, reviewRead }
+const sharedSnapshotReads = {
+  gitWorktrees: shareAutoRead(gitWorktrees),
+  gitBranches: shareAutoRead(gitBranches),
+  planRead: shareAutoRead(planRead),
+  proposalRead: shareAutoRead(proposalRead),
+  gitReview: shareAutoRead(gitReview),
+  reviewRead: shareAutoRead(reviewRead),
+}
+
 /**
  * Pinned read calls; no active-tab state is consulted after capturing the project. The merge
  * outcome scans both worktrees, so it is read only while merging or when `inferring` the stage of
@@ -472,7 +498,11 @@ export async function autoSnapshot(
   task: string | null,
   run: AutoRun,
   inferring = false,
+  fresh = false,
 ): Promise<AutoSnapshot> {
+  const { gitWorktrees, gitBranches, planRead, proposalRead, gitReview, reviewRead } = fresh
+    ? snapshotReads
+    : sharedSnapshotReads
   const state = projectStateOf(projectId)
   const project = projectOf(projectId)
   if (!state?.project || !project) throw new Error('Open the project first')
@@ -738,6 +768,7 @@ function release(controller: AutoController) {
     controllers.delete(key)
 }
 export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
+  snapshotReadEpoch++
   const controller = controllerFor(projectId, task)
   if (controller.starting) throw new Error('Auto is already starting in this worktree')
   // A launch may still attach its agent to a run; any other drive belongs to a finished run.
@@ -831,6 +862,7 @@ export function pauseAuto(
     void controlProviderRun(projectId, id, { kind: 'pause' }).catch(() => {})
 }
 export async function resumeAuto(projectId: string, task: string | null, scheduled = false) {
+  snapshotReadEpoch++
   if (!scheduled) cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
   if (!run) return
@@ -1174,6 +1206,7 @@ const stopTracked = (run: AutoRun) =>
     launches(run).map((l) => l.sessionId),
   )
 export function stopAuto(projectId: string, task: string | null) {
+  snapshotReadEpoch++
   const run = autoRun(projectId, task)
   patch(
     projectId,
@@ -1311,6 +1344,7 @@ async function recoverAuto(
   task: string | null,
   reason: string,
   target?: AutoStage,
+  candidate?: { run: AutoRun; snapshot: AutoSnapshot },
 ) {
   const run = autoRun(projectId, task)
   if (!run?.autonomous || run.status !== 'running') return false
@@ -1318,9 +1352,14 @@ async function recoverAuto(
     autoRun(projectId, task) === run &&
     useStore.getState().serviceConnected &&
     driveable(projectId, task)
+  const before = useStore.getState()
   await reconcileFreshSessions()
   if (!live()) return true
-  const snapshot = await autoSnapshot(projectId, task, run)
+  const after = useStore.getState()
+  const snapshot =
+    candidate?.run === run && before === after
+      ? candidate.snapshot
+      : await autoSnapshot(projectId, task, run)
   if (!live()) return true
   const tracked = observe(run)
   for (const session of tracked) {
@@ -1961,7 +2000,19 @@ async function drive(projectId: string, task: string | null) {
           run.runId,
           run.sessionId,
           completedAt,
-          failed.map((r) => r.sessionId),
+          reviewers.map((r) => [
+            r.sessionId,
+            r.startedMs,
+            r.snapshot?.generation,
+            r.snapshot?.running,
+            r.snapshot?.status?.stopped,
+            r.agent?.state,
+            r.agent?.sinceMs,
+            r.agent?.authoritative,
+            r.done,
+            r.failed,
+            r.relaunched,
+          ]),
         ])
         const previous = controller.completionPoll
         if (previous?.turn === turn && Date.now() - previous.atMs < 5000) return
@@ -1974,7 +2025,10 @@ async function drive(projectId: string, task: string | null) {
             ? roundStatus(run, reviewers, snapshot.findings, waitingOn)
             : undefined
         if (round?.status === 'broken' || round?.status === 'superseded') {
-          if (round.status === 'broken' && (await recoverAuto(projectId, task, round.reason!)))
+          if (
+            round.status === 'broken' &&
+            (await recoverAuto(projectId, task, round.reason!, undefined, { run, snapshot }))
+          )
             return
           pause(round.reason!)
           return
@@ -2022,7 +2076,13 @@ async function drive(projectId: string, task: string | null) {
         ) {
           if (Date.now() - completedAt > 30000) {
             if (
-              await recoverAuto(projectId, task, "Couldn't read the review verdict — open findings")
+              await recoverAuto(
+                projectId,
+                task,
+                "Couldn't read the review verdict — open findings",
+                undefined,
+                { run, snapshot },
+              )
             )
               return
             pause("Couldn't read the review verdict — open findings")
@@ -2036,20 +2096,36 @@ async function drive(projectId: string, task: string | null) {
           ((!snapshot.plan.trim() && !snapshot.proposal) ||
             (run.planMark !== undefined && snapshot.planMark === run.planMark))
         ) {
-          if (await recoverAuto(projectId, task, 'Planner finished without saving a new plan'))
+          if (
+            await recoverAuto(
+              projectId,
+              task,
+              'Planner finished without saving a new plan',
+              undefined,
+              { run, snapshot },
+            )
+          )
             return
           pause('Planner finished without saving a new plan')
           return
         }
         if (!following && run.stage === 'implement' && !snapshot.hasChanges && run.autonomous) {
-          await recoverAuto(projectId, task, 'Implementation finished without changes')
+          await recoverAuto(projectId, task, 'Implementation finished without changes', undefined, {
+            run,
+            snapshot,
+          })
           return
         }
         const decision = following
           ? inferStage({ ...snapshot, agents: otherAgents }, run)
           : nextStep(run, snapshot.findings, snapshot.outcome)
         if (!following && run.stage === 'review' && snapshot.freshness !== 'current') {
-          if (await recoverAuto(projectId, task, 'The branch changed during review', 'review'))
+          if (
+            await recoverAuto(projectId, task, 'The branch changed during review', 'review', {
+              run,
+              snapshot,
+            })
+          )
             return
           pause('The branch changed during review; close the reviewers and Resume to review again')
           return
@@ -2058,7 +2134,7 @@ async function drive(projectId: string, task: string | null) {
           !following &&
           decision.stage === run.stage &&
           ['paused', 'waitingOnYou'].includes(decision.status) &&
-          (await recoverAuto(projectId, task, decision.reason))
+          (await recoverAuto(projectId, task, decision.reason, undefined, { run, snapshot }))
         )
           return
         assertSessionAvailable(projectId, task, decision.sessionId)
@@ -2350,7 +2426,7 @@ async function drive(projectId: string, task: string | null) {
       return
     }
     if (run.stage === 'merge' && run.merge.mode === 'auto' && run.reviewedHead) {
-      const currentSnapshot = await autoSnapshot(projectId, task, run)
+      const currentSnapshot = await autoSnapshot(projectId, task, run, false, true)
       if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
       if (mergeableHead(currentSnapshot, run) !== run.reviewedHead) {
         if (
@@ -2707,6 +2783,8 @@ async function resumeAfterRestart(projectId: string, task: string | null) {
 export function followAuto() {
   let queued = false
   let disposed = false
+  let pollAll = false
+  const dirty = new Set<string>()
   const schedule = (projectId: string, task: string | null) => {
     if (disposed) return
     const controller = controllerFor(projectId, task)
@@ -2725,18 +2803,26 @@ export function followAuto() {
           : drive(projectId, task)
     ).finally(() => release(controller))
   }
-  const tick = () => {
-    if (queued || disposed) return
+  const tick = (keys?: string[]) => {
+    if (disposed) return
+    if (keys) keys.forEach((key) => dirty.add(key))
+    else pollAll = true
+    if (queued) return
     queued = true
     queueMicrotask(() => {
       queued = false
       if (disposed || useStore.getState().restoring) return
+      const all = pollAll
+      const changed = new Set(dirty)
+      pollAll = false
+      dirty.clear()
       const state = useStore.getState()
       for (const id of state.projectOrder) {
         const p = projectStateOf(id)
         if (!p) continue
         for (const { task, run } of autoRuns(p)) {
           if (
+            (all || changed.has(JSON.stringify([id, task]))) &&
             run &&
             (run.resumeTrigger ||
               run.restartPending ||
@@ -2752,39 +2838,64 @@ export function followAuto() {
   // Output buffers change on every terminal line; only run and session lifecycle changes
   // need an immediate drive. The timer still polls Git and saved plans.
   const lifecycle = (
-    session: Pick<SessionState, 'running' | 'startedMs' | 'status'> | null | undefined,
+    session:
+      Pick<SessionState, 'running' | 'startedMs' | 'status' | 'generation'> | null | undefined,
   ) => [
     session?.running,
     session?.startedMs,
+    session?.generation,
     session?.status?.active,
     session?.status?.stopped,
     session?.status?.agent?.state,
     session?.status?.agent?.sinceMs,
     session?.status?.agent?.authoritative,
+    session?.status?.agent?.approvalPending,
     session?.status?.agent?.message,
   ]
-  const watch = (state: ReturnType<typeof useStore.getState>) => [
-    state.restoring,
-    state.serviceConnected,
-    state.project?.id,
-    ...state.projectOrder.flatMap((id) => {
+  const watch = (state: ReturnType<typeof useStore.getState>) => {
+    const watched = new Map<string, unknown[]>()
+    for (const id of state.projectOrder) {
       const p = projectStateOf(id, state)
-      return p ? [id, p.activeTask, ...autoRuns(p).flatMap(({ task, run }) => [task, run])] : [id]
-    }),
-    ...Object.entries(state.sessions).flatMap(([id, session]) => [id, ...lifecycle(session)]),
-    ...state.sessionRecords.flatMap((record) => [
-      record.id,
-      record.metadata.projectId,
-      record.metadata.task,
-      record.metadata.componentId,
-      record.metadata.kind,
-      record.metadata.extensionId,
-      record.metadata.commandId,
-      record.spec.cwd,
-      record.spec.merge_source,
-      ...lifecycle(record.snapshot ?? undefined),
-    ]),
-  ]
+      if (!p) continue
+      for (const { task, run } of autoRuns(p)) {
+        if (!run) continue
+        const tracked = new Set(launches(run).map((launch) => launch.sessionId))
+        const records = state.sessionRecords.filter(
+          (record) =>
+            tracked.has(record.id) ||
+            (record.metadata.projectId === id &&
+              ((record.metadata.task ?? null) === task ||
+                record.metadata.componentId === PLAN_SCOPE ||
+                (!record.metadata.task &&
+                  [REVIEW_SCOPE, MERGE_SCOPE].includes(record.metadata.componentId)))),
+        )
+        const relevant = new Set([...tracked, ...records.map((record) => record.id)])
+        watched.set(JSON.stringify([id, task]), [
+          state.restoring,
+          state.serviceConnected,
+          state.project?.id,
+          p.activeTask,
+          run,
+          ...records.flatMap((record) => [
+            record.id,
+            record.metadata.projectId,
+            record.metadata.task,
+            record.metadata.componentId,
+            record.metadata.kind,
+            record.metadata.extensionId,
+            record.metadata.commandId,
+            record.metadata.lane,
+            record.metadata.name,
+            record.spec.cwd,
+            record.spec.merge_source,
+            ...lifecycle(record.snapshot),
+          ]),
+          ...[...relevant].flatMap((sid) => [sid, ...lifecycle(state.sessions[sid])]),
+        ])
+      }
+    }
+    return watched
+  }
   // Most store updates (including output counters) leave these references untouched.
   // Select them first, before building lifecycle arrays across every session and record.
   const inputs = (state: ReturnType<typeof useStore.getState>) => [
@@ -2803,12 +2914,15 @@ export function followAuto() {
   const unsubscribe = useStore.subscribe((state, previous) => {
     if (shallow(inputs(state), inputs(previous))) return
     const next = watch(state)
-    const changed = !shallow(next, watched)
+    const changed = [...next]
+      .filter(([key, value]) => !shallow(value, watched.get(key)))
+      .map(([key]) => key)
     watched = next
-    if (changed) tick()
+    if (changed.length) tick(changed)
   })
-  globalThis.window?.addEventListener('focus', tick)
-  const interval = setInterval(tick, 5000)
+  const poll = () => tick()
+  globalThis.window?.addEventListener('focus', poll)
+  const interval = setInterval(poll, 5000)
   tick()
   return () => {
     disposed = true
@@ -2819,6 +2933,6 @@ export function followAuto() {
     }
     unsubscribe()
     clearInterval(interval)
-    globalThis.window?.removeEventListener('focus', tick)
+    globalThis.window?.removeEventListener('focus', poll)
   }
 }
