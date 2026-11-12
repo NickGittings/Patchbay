@@ -17,6 +17,14 @@
   try {
     await until('restore', () => !state().restoring)
     await until('service', () => state().serviceConnected)
+    if (window.__patchbayRecoveryPhase !== 5) {
+      let maximizedSince = 0
+      await until('main stays maximized after restoring saved geometry', async () => {
+        if (!(await smoke.isWindowMaximized())) maximizedSince = 0
+        else maximizedSince ||= Date.now()
+        return maximizedSince && Date.now() - maximizedSince >= 500
+      })
+    }
     if (window.__patchbayRecoveryPhase === 5) {
       await until('invalid workspace error', () => state().message.includes('Invalid workspace'))
       if (state().projectOrder.length) throw new Error('Malformed workspace mounted projects')

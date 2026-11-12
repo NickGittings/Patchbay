@@ -233,6 +233,10 @@ const hooks = {
     const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window')
     await getCurrentWindow().setSize(new LogicalSize(width, height))
   },
+  isWindowMaximized: async () => {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    return getCurrentWindow().isMaximized()
+  },
   focusWindow: async () => {
     const { getCurrentWindow } = await import('@tauri-apps/api/window')
     await getCurrentWindow().setFocus()

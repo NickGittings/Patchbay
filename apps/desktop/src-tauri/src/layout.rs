@@ -147,6 +147,23 @@ pub fn restore_main(app: &AppHandle) -> CmdResult<()> {
             .map_err(err)?;
     }
     // Every launch fills the usable screen, regardless of the last saved state.
+    #[cfg(target_os = "macos")]
+    {
+        let restored = window.clone();
+        // First pass through Tauri's event queue so Tao has submitted all native changes.
+        // Then join their serial main dispatch queue: maximizing earlier can see the old
+        // isZoomed state and return before the queued unmaximize/size/position take effect.
+        window
+            .run_on_main_thread(move || {
+                dispatch2::DispatchQueue::main().exec_async(move || {
+                    if let Err(e) = restored.maximize() {
+                        eprintln!("Main window could not be maximized after restoration: {e}");
+                    }
+                });
+            })
+            .map_err(err)?;
+    }
+    #[cfg(not(target_os = "macos"))]
     window.maximize().map_err(err)?;
     #[cfg(target_os = "windows")]
     crate::window_controls::verify(&window).map_err(err)?;

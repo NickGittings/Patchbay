@@ -35,6 +35,7 @@ zbus = { version = "5.3", features = ["p2p"] }
 windows = { version = "0.62.2", features = ["Win32_System_Power"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
 objc2-io-kit = { version = "0.3.2", features = ["ps"] }
 objc2 = "0.6"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }

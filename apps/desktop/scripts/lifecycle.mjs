@@ -5,6 +5,15 @@ import { join } from 'node:path'
 import { deferSignals, desktop, launchApp, prebuilt, stopService } from './smoke-lib.mjs'
 const fixture = mkdtempSync(join(tmpdir(), 'patchbay-desktop-lifecycle-'))
 const localState = join(fixture, 'state')
+// Exercise launch maximization even when the previous session saved normal bounds.
+mkdirSync(join(localState, 'workspaces'), { recursive: true })
+writeFileSync(
+  join(localState, 'workspaces/default.json'),
+  JSON.stringify({
+    version: 1,
+    windows: { main: { x: 80, y: 80, width: 1000, height: 700, maximized: false } },
+  }),
+)
 const counter =
   process.platform === 'win32'
     ? 'powershell -NoProfile -Command "Write-Output process:$PID; $i=0; while ($true) { Write-Output number:$i; $i++; Start-Sleep -Milliseconds 100 }"'
