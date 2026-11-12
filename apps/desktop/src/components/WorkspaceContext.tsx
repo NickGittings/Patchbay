@@ -7,6 +7,7 @@ import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceAction
 /** Persistent context and entry points for the project and worktree panels. */
 export default function WorkspaceContext({ actions }: { actions: WorkspaceAction[] }) {
   const project = useStore((s) => s.project)
+  const hasProjects = useStore((s) => s.projectOrder.length > 0)
   const task = useStore((s) => s.tasks.find((t) => t.id === s.activeTask))
   const panel = useStore((s) => s.utilityPanel)
   const entry = useStore((s) => s.projects[s.activeProjectId ?? ''])
@@ -17,13 +18,27 @@ export default function WorkspaceContext({ actions }: { actions: WorkspaceAction
     const open = actions.find((a) => a.id === 'open')
     return (
       <div className="workspace-context">
-        <button
-          aria-label="Project"
-          disabled={!open?.enabled}
-          onClick={() => open && runWorkspaceAction(open)}
-        >
-          Open project…
-        </button>
+        {hasProjects ? (
+          <button
+            className="workspace-context-project"
+            aria-label="Project"
+            aria-expanded={panel === 'project'}
+            onClick={() => togglePanel('project')}
+          >
+            Projects
+            <span className="workspace-context-caret" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+        ) : (
+          <button
+            aria-label="Project"
+            disabled={!open?.enabled}
+            onClick={() => open && runWorkspaceAction(open)}
+          >
+            Open project…
+          </button>
+        )}
       </div>
     )
   }

@@ -48,6 +48,16 @@
       unavailable: 'Folder is unavailable',
     }
     smoke.store.setState({ projects: { [missing.id]: missing }, projectOrder: [missing.id] })
+    smoke.selectPanel(null)
+    const missingTrigger = await until('saved project panel trigger', () => {
+      const trigger = document.querySelector('.workspace-context [aria-label="Project"]')
+      return trigger?.getAttribute('aria-expanded') === 'false' && trigger
+    })
+    if (missingTrigger.disabled || !missingTrigger.getClientRects().length)
+      throw new Error('Saved project panel trigger is unavailable')
+    if (document.querySelector('.workspace-context [aria-label="Worktree"]'))
+      throw new Error('Unavailable project offers a worktree control')
+    missingTrigger.click()
     const missingTab = await until('sole unavailable project', () => switcher())
     if (
       !missingTab.textContent.includes('Missing project') ||
@@ -67,8 +77,27 @@
           .querySelector('.workspace-main .recovery-banner')
           ?.textContent.includes(missing.root),
     )
-    ;(await projectMenu()).querySelector('[aria-label="Close Missing project"]').click()
+    missingTrigger.click()
+    const missingPanel = await until('reopen unavailable project panel', () =>
+      document.querySelector('[aria-label="Project panel"]'),
+    )
+    missingPanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until(
+      'unavailable project trigger focus restored',
+      () => !document.querySelector('.utility-panel') && document.activeElement === missingTrigger,
+    )
+    missingTrigger.click()
+    ;(
+      await until('unavailable project list reopened', () =>
+        document.querySelector('.project-list'),
+      )
+    )
+      .querySelector('[aria-label="Close Missing project"]')
+      .click()
     await until('missing project closed', () => !s().projects[missing.id])
+    await until('empty workspace offers open project', () =>
+      document.querySelector('.workspace-context button')?.textContent.includes('Open project'),
+    )
     const one = await smoke.openProject()
     smoke.acceptOpened(one)
     const context = await until('workspace breadcrumb', () => {
