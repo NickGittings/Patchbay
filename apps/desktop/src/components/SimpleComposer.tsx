@@ -10,6 +10,7 @@ import {
   windowName,
 } from '../lib/usage'
 import { chatPreset, startChatAgent } from '../lib/chatAgent'
+import { useChatTeams } from '../lib/chatTeams'
 import { useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
@@ -64,6 +65,9 @@ export default function SimpleComposer({
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
   const recipient = useStore((s) => chatRecipient(records, s.simple?.selectedAgent))
+  const team = useChatTeams((state) =>
+    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
+  )
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
@@ -117,11 +121,17 @@ export default function SimpleComposer({
       ? {
           label: autoActive
             ? 'Pause Auto to resume manual coding'
-            : s.project && chatPreset(s.project.id, s.activeTask)
-              ? 'Ready to start chat'
-              : 'Choose an available Chat agent in Settings',
+            : team
+              ? 'Switch agent to replace the missing lead'
+              : s.project && chatPreset(s.project.id, s.activeTask)
+                ? 'Ready to start chat'
+                : 'Choose an available Chat agent in Settings',
           sendable:
-            !autoActive && !pending && !!s.project && !!chatPreset(s.project.id, s.activeTask),
+            !autoActive &&
+            !pending &&
+            !team &&
+            !!s.project &&
+            !!chatPreset(s.project.id, s.activeTask),
           action: 'none' as const,
           notice: undefined,
         }
@@ -303,9 +313,11 @@ export default function SimpleComposer({
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
-      {recipient && (
+      {(recipient || team) && (
         <p className="chat-recipient" role="status">
-          {`Agent: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`}
+          {recipient
+            ? `Agent: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
+            : status.label}
         </p>
       )}
       {exhausted.map(({ provider, key, window }) => (

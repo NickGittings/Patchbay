@@ -34,6 +34,8 @@ export function startChatAgent(projectId: string, task: string | null) {
   return launch
 }
 async function launchChatAgent(projectId: string, task: string | null) {
+  if (teamFor(projectId, task))
+    throw new Error('Switch agent to replace the missing lead. Your draft was kept.')
   const s = useStore.getState()
   const preset = chatPreset(projectId, task)
   if (!preset) throw new Error('Choose an available Chat agent in Settings → Agent roles.')
@@ -51,7 +53,17 @@ async function launchChatAgent(projectId: string, task: string | null) {
     throw new Error('The agent did not start. Your draft was kept; check its terminal and retry.')
   // Keep a successfully launched session available even if coordination is unavailable.
   selectChatAgent(projectId, task, sid)
-  await initializeTeam(projectId, task, record)
+  try {
+    await initializeTeam(projectId, task, record)
+  } catch (error) {
+    logSimple(projectId, task, {
+      kind: 'action',
+      action: 'selectAgent',
+      stage: 'build',
+      sessionId: sid,
+      text: `Coordination unavailable: ${String(error)}. Continuing locally with this agent.`,
+    })
+  }
   logSimple(projectId, task, {
     kind: 'action',
     action: 'selectAgent',
@@ -67,5 +79,12 @@ export async function switchChatAgent(projectId: string, task: string | null, pr
   if (!preset) throw new Error('This agent preset is no longer available.')
   const team = teamFor(projectId, task)
   if (!team) throw new Error('Agent coordination is unavailable. Retry after reconnecting.')
-  await newLead(team, { ...preset, id: `chat-${crypto.randomUUID()}` })
+  const terminal = { ...preset, id: `chat-${crypto.randomUUID()}` }
+  const project = projectStateOf(projectId)
+  if (!project) throw new Error('The project is no longer available. Your draft was kept.')
+  const workspace = workspaceOf(project, task)
+  useStore.getState().patchTask(projectId, task, {
+    rootTerminals: [...workspace.rootTerminals, terminal],
+  })
+  await newLead(team, terminal)
 }

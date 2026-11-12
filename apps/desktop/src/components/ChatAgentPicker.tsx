@@ -46,7 +46,7 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
               const id = e.target.value
               if (!id || disabled || !projectId) return
               setError('')
-              if (!recipient) {
+              if (!recipient && !team) {
                 useSimpleUi.getState().patch(key, { chatPreset: id })
                 setOpen(false)
                 return

@@ -148,8 +148,63 @@
       jobs().every((j) => j.task && j.summary),
       'Stop discarded worktrees or completed results',
     )
+    // A forgotten lead still belongs to its durable team and must be replaced through it.
+    const missingLead = team().lead.sessionId
+    await smoke.terminalStop(missingLead)
+    await until('lead stopped', async () => !(await smoke.terminalSnapshot(missingLead))?.running)
+    await smoke.sessionForget(missingLead)
+    await smoke.reconcileSessions()
+    await until(
+      'lead record forgotten',
+      () => !state().sessionRecords.some((r) => r.id === missingLead),
+    )
+    input(
+      document.querySelector('[aria-label="Message agent"]'),
+      'Keep this draft during replacement',
+    )
+    await until('missing lead recovery guidance', () =>
+      document.querySelector('.chat-recipient')?.textContent.includes('Switch agent'),
+    )
+    assert(button('Send').disabled, 'missing lead could launch an unrelated session')
+    await until('switch agent enabled', () => {
+      const b = button('Switch agent…')
+      return b && !b.disabled && b
+    })
+    button('Switch agent…').click()
+    const picker = await until('switch agent picker', () =>
+      document.querySelector('[aria-label="Switch chat agent"]'),
+    )
+    input(picker, 'team-agent', 'change')
+    await until('replacement lead', () => team().lead.sessionId !== missingLead && !team().reset)
+    const replacement = await until('replacement record', () =>
+      state().sessionRecords.find((r) => r.id === team().lead.sessionId),
+    )
+    assert(
+      state().rootTerminals.some((t) => t.id === replacement.metadata.terminalId),
+      'replacement terminal was not registered in its workspace',
+    )
+    await smoke.refreshChatTeams(projectId)
+    assert(state().simple.selectedAgent === replacement.id, 'refresh reselected the forgotten lead')
+    assert(
+      document.querySelector('[aria-label="Message agent"]').value ===
+        'Keep this draft during replacement',
+      'replacement discarded the draft',
+    )
+    const generation = state().sessions[replacement.id].generation
+    await smoke.terminalStop(replacement.id)
+    await until(
+      'replacement stopped',
+      async () => !(await smoke.terminalSnapshot(replacement.id))?.running,
+    )
+    await smoke.reconcileSessions()
+    await smoke.startTerminal('@task', replacement.metadata.terminalId, null, projectId)
+    await until('replacement restarted', async () => {
+      await smoke.reconcileSessions()
+      const session = state().sessions[replacement.id]
+      return session?.running && session.generation > generation
+    })
     await smoke.report(
-      'PASS coordinated chat: persistent lead, isolated report/code workers, fresh conversation, side threads, pause/resume, both clear actions and retained results',
+      'PASS coordinated chat: persistent lead, isolated report/code workers, fresh conversation, side threads, pause/resume, both clear actions, retained results, forgotten lead recovery and replacement restart',
     )
   } catch (e) {
     await smoke.report(
