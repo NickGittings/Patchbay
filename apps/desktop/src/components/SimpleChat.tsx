@@ -99,7 +99,7 @@ export default function SimpleChat({
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
   const [autoSetupKey, setAutoSetupKey] = useState<string>()
   const [clearKey, setClearKey] = useState<string>()
-  useEffect(() => setClearKey(undefined), [key])
+  if (clearKey !== undefined && clearKey !== key) setClearKey(undefined)
   const threadRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',

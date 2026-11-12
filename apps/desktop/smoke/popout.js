@@ -71,7 +71,7 @@
     await until('replayed backlog', () => textOf(sid).includes('backlog-42'))
     await smoke.terminalWrite(sid, 'echo live-$((1+1))\r')
     await until('live output', () => textOf(sid).includes('live-2'))
-    const { terminalPrompt } = await import('/src/lib/ipc.ts')
+    const { terminalPrompt } = smoke
     const generation = smoke.store.getState().sessions[sid].generation
     visibility = 'hidden'
     document.dispatchEvent(new Event('visibilitychange'))

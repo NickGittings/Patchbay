@@ -1,3 +1,4 @@
+import { flushWorkspace } from './workspace'
 import { clearedSimple } from './simple'
 import { savePlanDraft } from './planDrafts'
 import { planTerminals } from './plan'
@@ -345,7 +346,7 @@ export async function transferProjectDraft(projectId: string, task: string) {
     planActive: source.planActive,
     highlighted: source.highlighted,
   })
-  await (await import('./workspace')).flushWorkspace(true)
+  await flushWorkspace(true)
   await planTransfer(projectId, task, true)
   const cleared = clearedSimple(conversation, useStore.getState().sessions, Date.now())
   useStore.getState().patchTask(projectId, PROJECT_DRAFT, {
@@ -359,7 +360,7 @@ export async function transferProjectDraft(projectId: string, task: string) {
     planActive: null,
     highlighted: [],
   })
-  await (await import('./workspace')).flushWorkspace(true)
+  await flushWorkspace(true)
 }
 
 /**

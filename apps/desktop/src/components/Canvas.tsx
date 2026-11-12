@@ -13,7 +13,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { onArranged } from '../lib/arrange'
 import type { Position } from '../lib/layout'
@@ -45,8 +45,7 @@ function useArranging(projectId: string | undefined) {
     t: number
     fit: boolean
   } | null>(null)
-  const current = useRef(tween)
-  current.current = tween
+  const previousPositions = useEffectEvent(() => tween?.from)
   useEffect(() => {
     let frame = 0
     const off = onArranged((id, moved) => {
@@ -62,7 +61,7 @@ function useArranging(projectId: string | undefined) {
       // Another arrangement may interrupt this one: nodes still on their way keep going, and
       // every node starts where it is drawn now.
       const from: Record<string, Position> = {}
-      for (const [id, position] of Object.entries({ ...current.current?.from, ...moved }))
+      for (const [id, position] of Object.entries({ ...previousPositions(), ...moved }))
         from[id] = getNode(id)?.position ?? position
       const start = performance.now()
       const step = (now: number) => {

@@ -1,3 +1,4 @@
+vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import * as ipc from './ipc'

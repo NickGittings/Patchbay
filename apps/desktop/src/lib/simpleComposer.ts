@@ -1,3 +1,4 @@
+import { hasVisibleTerminal } from './terminals'
 import type { SessionState } from '../types'
 import { useStore } from '../store'
 import { terminalAttach, terminalDetach, terminalPrompt, sessionResume } from './ipc'
@@ -330,7 +331,6 @@ export async function sendToSession({
         }
       },
       release: async () => {
-        const { hasVisibleTerminal } = await import('./terminals')
         if (!hasVisibleTerminal(sid)) await terminalDetach(sid)
       },
     },
