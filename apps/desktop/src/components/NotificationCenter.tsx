@@ -176,6 +176,7 @@ export default function NotificationCenter() {
                     onClick={() => {
                       const state = useStore.getState()
                       if (live && link) state.dismissNotificationSession(link.sid)
+                      state.dismissNotificationNotice(entry.id)
                       if (entry.messageId === state.messageId) state.setMessage('')
                       useStore.setState((s) => ({
                         notificationHistory: s.notificationHistory.filter(

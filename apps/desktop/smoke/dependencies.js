@@ -29,8 +29,8 @@
   const create = async () => {
     smoke.selectPanel('project')
     const item = await until('Create map configuration', () =>
-      Array.from(document.querySelectorAll('.utility-panel button')).find((b) =>
-        b.textContent.trim().startsWith('Create map configuration'),
+      Array.from(document.querySelectorAll('.workspace-popover[data-panel="project"] button')).find(
+        (b) => b.textContent.trim().startsWith('Create map configuration'),
       ),
     )
     item.click()

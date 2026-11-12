@@ -813,6 +813,8 @@ export interface NotificationToast {
   heading?: string
   /** A standalone hint shown above any unread session links. */
   notice?: string
+  /** History entry for the standalone hint, preserved as session links change. */
+  noticeId?: string
   message: string
   sessions: NotificationLink[]
 }

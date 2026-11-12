@@ -13,6 +13,7 @@ export function mergeNotificationToast(
       kind: current.kind,
       heading: current.heading,
       notice: current.notice ?? current.message,
+      ...(current.noticeId ? { noticeId: current.noticeId } : {}),
     }
   }
   // A notice without links stays above the unread agent links until explicitly dismissed.
@@ -24,6 +25,7 @@ export function mergeNotificationToast(
       ...(incoming.kind ? { kind: incoming.kind } : {}),
       ...(incoming.heading ? { heading: incoming.heading } : {}),
       notice: incoming.notice ?? incoming.message,
+      ...(incoming.noticeId ? { noticeId: incoming.noticeId } : {}),
       message: links,
       sessions: current.sessions,
     }
@@ -38,8 +40,10 @@ export function mergeNotificationToast(
     sessions.set(entry.sid, { ...entry, message: entry.message ?? incoming.message })
   const entries = [...sessions.values()]
   const notice = incoming.notice ?? current.notice
+  const noticeId = incoming.notice ? incoming.noticeId : current.noticeId
   return {
     ...(notice ? { notice } : {}),
+    ...(noticeId ? { noticeId } : {}),
     ...((incoming.kind ?? current.kind) ? { kind: incoming.kind ?? current.kind } : {}),
     ...((incoming.heading ?? current.heading)
       ? { heading: incoming.heading ?? current.heading }
@@ -65,10 +69,19 @@ export function removeNotificationSession(
       ? {
           message: current.notice,
           sessions: [],
+          ...(current.noticeId ? { noticeId: current.noticeId } : {}),
           ...(current.kind ? { kind: current.kind } : {}),
           ...(current.heading ? { heading: current.heading } : {}),
         }
       : null
+}
+
+export function removeNotificationNotice(
+  current: NotificationToast | null,
+  id: string,
+): NotificationToast | null {
+  if (current?.noticeId !== id) return current
+  return current.sessions.length ? { message: current.message, sessions: current.sessions } : null
 }
 
 /** The link's label or message: name the project only when it isn't the active one. */

@@ -143,11 +143,36 @@
       throw new Error('Inbox lost dismissed error or heading')
     s().setMessage('Notification smoke confirmation', true, undefined, 'success')
     await until('arrival while inbox open', () => inbox.querySelector('[data-kind="success"]'))
+    s().setNotificationToast({
+      message: 'Notification smoke warning',
+      sessions: [],
+      kind: 'warning',
+      heading: 'Usage limit',
+    })
+    s().setNotificationToast({
+      message: 'Unrelated agent alert',
+      sessions: [{ sid: 'smoke-notification', label: 'Smoke agent' }],
+    })
+    const warning = await until('standalone notice in inbox', () =>
+      inbox.querySelector('[aria-label="Dismiss Usage limit"]'),
+    )
+    warning.click()
+    await until(
+      'matching standalone notice dismissed',
+      () =>
+        !s().notificationHistory.some((entry) => entry.message === 'Notification smoke warning') &&
+        !s().notificationToast?.notice,
+    )
+    if (s().notificationToast?.sessions[0]?.sid !== 'smoke-notification')
+      throw new Error('Dismissing a standalone notice removed an unrelated agent link')
     inbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await until(
       'inbox Escape returns focus',
       () => !document.querySelector('#notification-inbox') && document.activeElement === bell,
     )
+    if (document.querySelector('.toast-region').textContent.includes('Notification smoke warning'))
+      throw new Error('Dismissed standalone notice reappeared after closing the inbox')
+    s().setNotificationToast(null)
     bell.click()
     await until('reopened inbox', () => document.querySelector('#notification-inbox'))
     Array.from(document.querySelectorAll('#notification-inbox button'))

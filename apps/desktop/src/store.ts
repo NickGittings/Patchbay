@@ -17,7 +17,11 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { create, type StateCreator } from 'zustand'
-import { mergeNotificationToast, removeNotificationSession } from './lib/notificationToast'
+import {
+  mergeNotificationToast,
+  removeNotificationNotice,
+  removeNotificationSession,
+} from './lib/notificationToast'
 import { liveDeclined } from './lib/validators'
 import { forgetAutoDrafts } from './lib/autoDrafts'
 import { unseenFinished } from './lib/taskActions'
@@ -249,6 +253,7 @@ interface State {
   notificationToastId: number
   setNotificationToast: (toast: State['notificationToast']) => void
   dismissNotificationSession: (sid: string) => void
+  dismissNotificationNotice: (id: string) => void
   usageSettings: UsageSettings
   setUsageSettings: (settings: UsageSettings) => void
   notifications: NotificationSettings
@@ -763,7 +768,12 @@ const createState: StateCreator<State> = (set, get) => ({
   notificationToastId: 0,
   setNotificationToast: (notificationToast) =>
     set((s) => ({
-      notificationToast: mergeNotificationToast(s.notificationToast, notificationToast),
+      notificationToast: mergeNotificationToast(
+        s.notificationToast,
+        notificationToast && (!notificationToast.sessions.length || notificationToast.notice)
+          ? { ...notificationToast, noticeId: `notice-${s.notificationToastId + 1}` }
+          : notificationToast,
+      ),
       notificationToastId: s.notificationToastId + 1,
       notificationHistory: notificationToast
         ? appendNotices(
@@ -774,6 +784,8 @@ const createState: StateCreator<State> = (set, get) => ({
     })),
   dismissNotificationSession: (sid) =>
     set((s) => ({ notificationToast: removeNotificationSession(s.notificationToast, sid) })),
+  dismissNotificationNotice: (id) =>
+    set((s) => ({ notificationToast: removeNotificationNotice(s.notificationToast, id) })),
   usageSettings: { ...DEFAULT_USAGE },
   setUsageSettings: (usageSettings) => set({ usageSettings }),
   notifications: { ...DEFAULT_NOTIFICATIONS },

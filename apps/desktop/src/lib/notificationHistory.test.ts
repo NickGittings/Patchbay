@@ -77,3 +77,65 @@ test('typed standalone notices retain presentation through merge and resolution'
   expect(remaining.heading).toBe('Usage limit')
   expect(remaining.message).toBe('Limit reached')
 })
+
+const warning: NotificationToast = {
+  message: 'Limit reached',
+  sessions: [],
+  kind: 'warning',
+  heading: 'Usage limit',
+}
+
+test('dismissing a standalone history notice clears its live toast', () => {
+  const state = () => useStore.getState()
+  state().setNotificationToast(warning)
+  state().dismissNotificationNotice(state().notificationHistory[0].id)
+  expect(state().notificationToast).toBeNull()
+  expect(state().notificationHistory).toHaveLength(1)
+})
+
+test.each(['before', 'after', 'together'])(
+  'dismissing a notice delivered %s agent links preserves those links',
+  (order) => {
+    const state = () => useStore.getState()
+    if (order === 'together')
+      state().setNotificationToast({
+        ...batch,
+        kind: warning.kind,
+        heading: warning.heading,
+        notice: warning.message,
+      })
+    else {
+      state().setNotificationToast(order === 'before' ? warning : batch)
+      state().setNotificationToast(order === 'before' ? batch : warning)
+    }
+    const entry = state().notificationHistory.find((entry) => entry.heading === warning.heading)!
+    const links = state().notificationToast!.sessions
+    const message = state().notificationToast!.message
+    state().dismissNotificationNotice(entry.id)
+    expect(state().notificationToast).toEqual({ message, sessions: links })
+    expect(state().notificationToast!.sessions).toBe(links)
+  },
+)
+
+test('dismissing an older identical notice preserves the current notice', () => {
+  const state = () => useStore.getState()
+  state().setNotificationToast(warning)
+  const oldId = state().notificationHistory[0].id
+  state().setNotificationToast(warning)
+  const current = state().notificationToast
+  state().dismissNotificationNotice(oldId)
+  expect(state().notificationToast).toBe(current)
+  state().dismissNotificationNotice(state().notificationHistory[0].id)
+  expect(state().notificationToast).toBeNull()
+})
+
+test('a notice retains its dismissal identity after all agent links resolve', () => {
+  const state = () => useStore.getState()
+  state().setNotificationToast(warning)
+  const id = state().notificationHistory[0].id
+  state().setNotificationToast(batch)
+  for (const link of batch.sessions) state().dismissNotificationSession(link.sid)
+  expect(state().notificationToast?.message).toBe(warning.message)
+  state().dismissNotificationNotice(id)
+  expect(state().notificationToast).toBeNull()
+})

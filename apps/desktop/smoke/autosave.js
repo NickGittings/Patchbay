@@ -20,7 +20,7 @@
   const choose = async (text) => {
     smoke.selectPanel('project')
     const button = await until(text, () =>
-      [...document.querySelectorAll('.utility-panel button')].find((b) =>
+      [...document.querySelectorAll('.workspace-popover[data-panel="project"] button')].find((b) =>
         b.textContent.trim().startsWith(text),
       ),
     )
