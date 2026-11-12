@@ -131,6 +131,8 @@ pub fn restore_main(app: &AppHandle) -> CmdResult<()> {
         .cloned();
     if let Some(g) = geometry {
         let g = clamp(&window, &g, true)?;
+        // Restore the normal bounds before maximizing on the saved display.
+        window.unmaximize().map_err(err)?;
         window
             .set_size(tauri::LogicalSize::new(
                 g["width"].as_f64().unwrap(),
@@ -143,10 +145,9 @@ pub fn restore_main(app: &AppHandle) -> CmdResult<()> {
                 g["y"].as_f64().unwrap(),
             ))
             .map_err(err)?;
-        if g["maximized"].as_bool() == Some(true) {
-            window.maximize().map_err(err)?;
-        }
     }
+    // Every launch fills the usable screen, regardless of the last saved state.
+    window.maximize().map_err(err)?;
     #[cfg(target_os = "windows")]
     crate::window_controls::verify(&window).map_err(err)?;
     Ok(())
