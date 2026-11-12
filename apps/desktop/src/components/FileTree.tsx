@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { listDir, onFileAccessChanged, revealPath } from '../lib/ipc'
 import { rolesOf, useMapActivity } from '../lib/mapActivity'
 import { navigationError, openInEditor, revealLabel } from '../lib/navigation'
@@ -86,6 +94,12 @@ function Directory({ path, depth, refresh }: { path: string; depth: number; refr
 
 function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; refresh: number }) {
   const [expanded, setExpanded] = useState(false)
+  const projectId = useStore((s) => s.project?.id)
+  const task = useStore((s) => s.activeTask)
+  const worktree = useStore(activeWorktree)
+  const open = () => {
+    if (projectId) void openInEditor({ path: entry.path }, { projectId, task, worktree })
+  }
   const marks = useContext(MarksContext)
   const { file, changed, touched } = marksFor(marks, entry)
   return (
@@ -96,14 +110,26 @@ function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; 
             changed ? `changed ${file?.kind ?? ''}` : ''
           }`}
           style={{ paddingLeft: 10 + depth * 16 }}
+          role="treeitem"
+          aria-level={depth + 1}
+          tabIndex={-1}
           title={entry.path}
           aria-expanded={entry.isDir ? expanded : undefined}
-          onClick={() => {
-            if (entry.isDir) setExpanded(!expanded)
+          onClick={(e) => {
+            if (entry.isDir) {
+              e.currentTarget.focus()
+              setExpanded(!expanded)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (!entry.isDir && (e.key === 'Enter' || e.key === ' ')) {
+              e.preventDefault()
+              open()
+            }
           }}
           // Folders toggle on click; only files open on a double-click.
           onDoubleClick={() => {
-            if (!entry.isDir) void openInEditor({ path: entry.path })
+            if (!entry.isDir) open()
           }}
         >
           <span className="file-tree-chevron">{entry.isDir ? (expanded ? '▾' : '▸') : '·'}</span>
@@ -129,7 +155,7 @@ function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; 
           className="file-tree-action"
           title="Open in editor"
           aria-label={`Open ${entry.name} in editor`}
-          onClick={() => void openInEditor({ path: entry.path })}
+          onClick={open}
         >
           ↗
         </button>
@@ -137,7 +163,9 @@ function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; 
           className="file-tree-action"
           title={revealLabel}
           aria-label={`${revealLabel}: ${entry.name}`}
-          onClick={() => void revealPath(entry.path).catch(navigationError)}
+          onClick={() =>
+            void revealPath(entry.path, worktree, projectId, task).catch(navigationError)
+          }
         >
           ⌖
         </button>
@@ -217,6 +245,18 @@ function Tree({
 }) {
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
+  const tree = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const root = tree.current!
+    const ensureTabStop = () => {
+      if (!root.querySelector('[role="treeitem"][tabindex="0"]'))
+        root.querySelector<HTMLElement>('[role="treeitem"]')?.setAttribute('tabindex', '0')
+    }
+    ensureTabStop()
+    const observer = new MutationObserver(ensureTabStop)
+    observer.observe(root, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [projectId, task, path])
   return (
     <>
       <div className="file-tree-header">
@@ -225,10 +265,50 @@ function Tree({
           ↻ Refresh
         </button>
       </div>
-      <div className="file-tree-content">
+      <div
+        className="file-tree-content"
+        role="tree"
+        aria-label="Files"
+        ref={tree}
+        onFocusCapture={(e) => {
+          if (e.target.getAttribute('role') !== 'treeitem') return
+          for (const item of e.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]'))
+            item.tabIndex = item === e.target ? 0 : -1
+        }}
+        onKeyDown={(e) => {
+          if (!(e.target instanceof HTMLElement) || e.target.getAttribute('role') !== 'treeitem')
+            return
+          const items = Array.from(
+            e.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]'),
+          )
+          const index = items.indexOf(e.target)
+          const level = Number(e.target.getAttribute('aria-level'))
+          let next = index
+          if (e.key === 'ArrowDown') next = Math.min(items.length - 1, index + 1)
+          else if (e.key === 'ArrowUp') next = Math.max(0, index - 1)
+          else if (e.key === 'Home') next = 0
+          else if (e.key === 'End') next = items.length - 1
+          else if (e.key === 'ArrowRight') {
+            if (e.target.getAttribute('aria-expanded') === 'false') e.target.click()
+            else if (Number(items[index + 1]?.getAttribute('aria-level')) > level) next++
+          } else if (e.key === 'ArrowLeft') {
+            if (e.target.getAttribute('aria-expanded') === 'true') e.target.click()
+            else {
+              for (let i = index - 1; i >= 0; i--) {
+                if (Number(items[i].getAttribute('aria-level')) < level) {
+                  next = i
+                  break
+                }
+              }
+            }
+          } else return
+          e.preventDefault()
+          e.stopPropagation()
+          items[next]?.focus()
+        }}
+      >
         <Directory
           key={JSON.stringify([projectId, task, path])}
-
           path={path}
           depth={0}
           refresh={refresh}

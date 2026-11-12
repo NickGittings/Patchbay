@@ -80,7 +80,7 @@ struct ProjectAccess {
     /// Recent `navigation_roots` worktree mappings, which otherwise run `git worktree list`.
     worktree_roots: Mutex<Option<Cached<WorktreeKey, Vec<PathBuf>>>>,
     /// The last file search's candidates, reused while the user types.
-    search_paths: Mutex<Option<Cached<SearchKey, Arc<Vec<PathBuf>>>>>,
+    search_paths: Mutex<Option<Cached<SearchKey, Arc<navigation::SearchIndex>>>>,
 }
 /// Project root, worktree and the scanned folders mapped into it.
 type WorktreeKey = (PathBuf, String, Vec<PathBuf>);
@@ -2662,10 +2662,13 @@ async fn file_search(
             &scoped.search_paths,
             (roots.clone(), scan),
             SEARCH_PATHS_TTL,
-            |(roots, scan)| navigation::candidates(roots, scan).map(Arc::new),
+            |(roots, scan)| {
+                let paths = navigation::candidates(roots, scan)?;
+                navigation::SearchIndex::new(roots, &paths).map(Arc::new)
+            },
         )
         .map_err(err)?;
-        navigation::rank_candidates(&roots, &paths, &query).map_err(err)
+        paths.search(&roots, &query).map_err(err)
     })
     .await
 }

@@ -22,6 +22,15 @@ export interface ParsedDiff {
   removed: number
 }
 
+/** Line-number columns include two characters of padding in both diff renderers. */
+export function diffGutterSize(parsed: ParsedDiff): number {
+  let maxNo = 0
+  for (const h of parsed.hunks) {
+    maxNo = Math.max(maxNo, h.oldStart + h.oldLines, h.newStart + h.newLines)
+  }
+  return String(maxNo).length + 2
+}
+
 const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/
 
 /**

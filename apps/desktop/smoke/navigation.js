@@ -225,6 +225,84 @@
     document
       .querySelector('input[aria-label="Search files and commands"]')
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    const inspectorTab = (name) =>
+      [...document.querySelectorAll('.inspector .tabs button')].find(
+        (button) => button.textContent.trim() === name,
+      )
+    inspectorTab('Files').click()
+    const tree = await until('file tree', () => document.querySelector('[role="tree"]'))
+    const item = (name) =>
+      [...tree.querySelectorAll('[role="treeitem"]')].find((row) => row.title === name)
+    const key = (row, name) =>
+      row.dispatchEvent(
+        new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }),
+      )
+    const folder = await until('folder tree item', () => item('folder'))
+    folder.focus()
+    key(folder, 'ArrowRight')
+    const child = await until('expanded child', () => item('folder/child.txt'))
+    key(folder, 'ArrowRight')
+    assert(document.activeElement === child, 'Right did not enter folder')
+    key(child, 'ArrowLeft')
+    assert(document.activeElement === folder, 'Left did not focus parent')
+    key(folder, 'ArrowLeft')
+    await until('collapsed folder', () => !item('folder/child.txt'))
+    key(folder, 'Home')
+    assert(
+      document.activeElement === tree.querySelector('[role="treeitem"]'),
+      'Home did not focus first item',
+    )
+    key(document.activeElement, 'End')
+    assert(
+      document.activeElement === [...tree.querySelectorAll('[role="treeitem"]')].at(-1),
+      'End did not focus last item',
+    )
+    const fileRow = item(path)
+    fileRow.focus()
+    key(fileRow, 'Enter')
+    assert(
+      [...tree.querySelectorAll('[role="treeitem"][tabindex="0"]')].length === 1,
+      'Tree has multiple tab stops',
+    )
+    const large = item('large-diff.txt')
+    const diffButton = await until('large diff action', () =>
+      large?.closest('.file-tree-row').querySelector('[title="Show diff"]'),
+    )
+    diffButton.click()
+    const windowed = await until('windowed diff', () => document.querySelector('.windowed-diff'))
+    assert(Number(windowed.getAttribute('aria-rowcount')) > 12500, 'Large diff rows missing')
+    assert(
+      windowed.querySelectorAll('[role="row"]').length < 200,
+      'Large diff mounted too many rows',
+    )
+    const scroll = windowed.closest('.diff-view')
+    await until('tab-indented diff line', () => windowed.querySelector('[data-new-line="3"]'))
+    const width = scroll.scrollWidth
+    scroll.scrollLeft = width
+    const left = scroll.scrollLeft
+    assert(left > 1000, 'Tab-indented line did not create a wide diff')
+    scroll.scrollTop = scroll.scrollHeight
+    scroll.dispatchEvent(new Event('scroll'))
+    const last = await until('last diff line', () =>
+      windowed.querySelector('[data-new-line="12500"]'),
+    ).catch((error) => {
+      throw new Error(
+        `${error}: ${JSON.stringify({ top: scroll.scrollTop, height: scroll.clientHeight, total: scroll.scrollHeight, rows: windowed.getAttribute('aria-rowcount'), last: windowed.querySelector('[data-new-line]:last-of-type')?.getAttribute('data-new-line'), tail: windowed.textContent.slice(-100) })}`,
+      )
+    })
+    assert(scroll.scrollWidth === width, 'Horizontal extent changed after tabbed row unmounted')
+    assert(scroll.scrollLeft === left, 'Horizontal position clamped after tabbed row unmounted')
+    const number = last.querySelector('.diff-num.new')
+    const range = document.createRange()
+    range.selectNodeContents(number)
+    const digits = range.getBoundingClientRect()
+    const cell = number.getBoundingClientRect()
+    assert(digits.left >= cell.left && digits.right <= cell.right, 'Line number overflows gutter')
+    assert(
+      windowed.querySelectorAll('[role="row"]').length < 200,
+      'Scrolled diff mounted too many rows',
+    )
+    inspectorTab('Component').click()
     await smoke.editorSavePreferences({
       editor: 'custom',
       executable: '/missing/patchbay-editor',
@@ -243,7 +321,7 @@
     await smoke.editorSavePreferences(previous)
     smoke.resetSessions(await smoke.terminalReset())
     await smoke.report(
-      'PASS navigation: safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search and editor setup',
+      'PASS navigation: safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
     )
   } catch (e) {
     if (previous) await smoke.editorSavePreferences(previous).catch(() => {})

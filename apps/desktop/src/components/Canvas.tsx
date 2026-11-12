@@ -1,3 +1,4 @@
+import { useReducedMotion } from '../lib/useReducedMotion'
 import { planningHighlights, togglePlanningHighlight, usePlanningTask } from '../lib/planningScope'
 import { StoryViewTabs } from './stories/StoryBoard'
 import {
@@ -37,6 +38,7 @@ const ease = (t: number) => 1 - (1 - t) ** 3
  * where they were, so edges follow them. Null otherwise. The store already holds the end state.
  */
 function useArranging(projectId: string | undefined) {
+  const reduced = useReducedMotion()
   const { fitView, getNode } = useReactFlow()
   const [tween, setTween] = useState<{
     from: Record<string, Position>
@@ -50,6 +52,13 @@ function useArranging(projectId: string | undefined) {
     const off = onArranged((id, moved) => {
       if (id !== projectId) return
       cancelAnimationFrame(frame)
+      if (reduced) {
+        setTween(null)
+        frame = requestAnimationFrame(() => {
+          void fitView({ padding: 0.25, maxZoom: 1, duration: 0 })
+        })
+        return
+      }
       // Another arrangement may interrupt this one: nodes still on their way keep going, and
       // every node starts where it is drawn now.
       const from: Record<string, Position> = {}
@@ -68,7 +77,12 @@ function useArranging(projectId: string | undefined) {
       off()
       cancelAnimationFrame(frame)
     }
-  }, [getNode, projectId])
+  }, [fitView, getNode, projectId, reduced])
+  useEffect(() => {
+    if (!reduced) return
+    const frame = requestAnimationFrame(() => setTween(null))
+    return () => cancelAnimationFrame(frame)
+  }, [reduced])
   useEffect(() => {
     if (!tween || tween.t !== 1) return
     // Let React Flow receive the final positions before it queues a fit. Both this render and
@@ -99,6 +113,7 @@ function useArranging(projectId: string | undefined) {
 
 /** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
 function useFocusRequests() {
+  const reduced = useReducedMotion()
   const { getNode, setCenter } = useReactFlow()
   const flow = useStoreApi()
   useEffect(() => {
@@ -118,7 +133,7 @@ function useFocusRequests() {
         const h = node.measured?.height ?? 120
         void setCenter(node.position.x + w / 2, node.position.y + h / 2, {
           zoom: 1,
-          duration: 300,
+          duration: reduced ? 0 : 300,
         })
       })
     }
@@ -128,7 +143,7 @@ function useFocusRequests() {
       window.removeEventListener(FOCUS_COMPONENT_EVENT, take)
       cancelAnimationFrame(frame)
     }
-  }, [flow, getNode, setCenter])
+  }, [flow, getNode, setCenter, reduced])
 }
 
 function tweened(nodes: FlowNode[], tween: ReturnType<typeof useArranging>['tween']) {

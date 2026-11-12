@@ -2,7 +2,8 @@
 use crate::{files, model, workspace};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -523,32 +524,150 @@ pub fn rank_candidates(
     paths: &[PathBuf],
     query: &str,
 ) -> Result<Vec<FileSearchResult>> {
-    let root = roots.first().context("No project is open")?;
-    let query = query.trim().replace('\\', "/").to_lowercase();
-    // Rank the cheap relative names first; only the best candidates touch the filesystem.
-    let mut ranked: Vec<_> = paths
-        .iter()
-        .filter_map(|full| {
-            let path = model::relative_path(root, full);
-            let score = rank(&path.to_lowercase(), &query)?;
-            Some((score, path, full))
-        })
-        .collect();
-    ranked.sort_by(|(a, x, _), (b, y, _)| a.cmp(b).then_with(|| x.cmp(y)));
-    Ok(ranked
-        .into_iter()
-        .filter(|(_, _, full)| files::resolve(roots, full).is_ok_and(|r| r.is_file()))
-        .take(100)
-        .map(|(_, path, _)| {
-            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-            FileSearchResult { path, name }
-        })
-        .collect())
+    SearchIndex::new(roots, paths)?.search(roots, query)
+}
+
+type RankedCandidates<'a> = BinaryHeap<Reverse<((usize, usize), &'a str, usize)>>;
+
+/// Cached display and normalized names for repeated queries over the same candidates.
+pub struct SearchIndex {
+    root: PathBuf,
+    entries: Vec<(PathBuf, String, String)>,
+}
+impl SearchIndex {
+    /// Prepare names relative to the first approved root.
+    /// # Errors
+    /// Fails if no project is open.
+    pub fn new(roots: &[PathBuf], paths: &[PathBuf]) -> Result<Self> {
+        let root = roots.first().context("No project is open")?.clone();
+        let entries = paths
+            .iter()
+            .map(|full| {
+                let path = model::relative_path(&root, full);
+                let normalized = path.to_lowercase();
+                (full.clone(), path, normalized)
+            })
+            .collect();
+        Ok(Self { root, entries })
+    }
+
+    fn ranked(&self, query: &str) -> RankedCandidates<'_> {
+        let query = query.trim().replace('\\', "/").to_lowercase();
+        BinaryHeap::from(
+            self.entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (_, path, normalized))| {
+                    Some(Reverse((rank(normalized, &query)?, path.as_str(), i)))
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Return up to 100 ranked files, rechecking access even for cached candidates.
+    /// # Errors
+    /// Fails if the display root changed or no project is open.
+    pub fn search(&self, roots: &[PathBuf], query: &str) -> Result<Vec<FileSearchResult>> {
+        ensure!(roots.first() == Some(&self.root), "Search roots changed");
+        let mut ranked = self.ranked(query);
+        let mut results = Vec::new();
+        while let Some(Reverse((_, path, index))) = ranked.pop() {
+            if !files::resolve(roots, &self.entries[index].0).is_ok_and(|r| r.is_file()) {
+                continue;
+            }
+            results.push(FileSearchResult {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                path: path.to_string(),
+            });
+            if results.len() == 100 {
+                break;
+            }
+        }
+        Ok(results)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn reference_rank(roots: &[PathBuf], paths: &[PathBuf], query: &str) -> Vec<String> {
+        let query = query.trim().replace('\\', "/").to_lowercase();
+        let mut ranked: Vec<_> = paths
+            .iter()
+            .filter_map(|full| {
+                let path = model::relative_path(&roots[0], full);
+                Some((rank(&path.to_lowercase(), &query)?, path, full))
+            })
+            .collect();
+        ranked.sort_by(|(a, x, _), (b, y, _)| a.cmp(b).then_with(|| x.cmp(y)));
+        ranked
+            .into_iter()
+            .filter(|(_, _, full)| files::resolve(roots, full).is_ok_and(|r| r.is_file()))
+            .take(100)
+            .map(|(_, path, _)| path)
+            .collect()
+    }
+
+    #[test]
+    fn indexed_search_preserves_order_and_skips_missing_top_candidates() {
+        let fixture = Fixture::new();
+        let roots = vec![fixture.0.clone()];
+        let mut paths = Vec::new();
+        for i in 0..240 {
+            let path = fixture.0.join(format!("File{i:04}.rs"));
+            if i >= 120 {
+                std::fs::write(&path, "").unwrap();
+            }
+            paths.push(path);
+        }
+        let index = SearchIndex::new(&roots, &paths).unwrap();
+        for query in ["", "file", "FILE0120.rs", "f2r", "not-found"] {
+            let expected = reference_rank(&roots, &paths, query);
+            let actual: Vec<_> = index
+                .search(&roots, query)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.path)
+                .collect();
+            assert_eq!(actual, expected, "query {query}");
+        }
+        assert!(index.search(&[fixture.0.join("other")], "").is_err());
+    }
+
+    #[test]
+    #[ignore = "manual search timing comparison"]
+    fn benchmark_indexed_search() {
+        use std::time::Instant;
+        let fixture = Fixture::new();
+        let roots = vec![fixture.0.clone()];
+        for i in 0..100 {
+            std::fs::write(fixture.0.join(format!("file{i:06}.rs")), "").unwrap();
+        }
+        for count in [10_000, 200_000] {
+            let paths: Vec<_> = (0..count)
+                .map(|i| fixture.0.join(format!("file{i:06}.rs")))
+                .collect();
+            let start = Instant::now();
+            let index = SearchIndex::new(&roots, &paths).unwrap();
+            eprintln!("{count} index build: {:?}", start.elapsed());
+            for query in ["", "file", "file000001.rs", "f000001r"] {
+                let start = Instant::now();
+                let expected = reference_rank(&roots, &paths, query);
+                let old = start.elapsed();
+                let start = Instant::now();
+                let actual: Vec<_> = index
+                    .search(&roots, query)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect();
+                let new = start.elapsed();
+                assert_eq!(actual, expected);
+                eprintln!("{count} {query:?}: original={old:?} indexed={new:?}");
+            }
+        }
+    }
+
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
