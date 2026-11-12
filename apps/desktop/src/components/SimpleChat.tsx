@@ -58,7 +58,6 @@ import {
   chatInputRequests,
 } from '../lib/chat'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from '../lib/autoDrafts'
-import AutoPanel from './auto/AutoPanel'
 import { pauseAuto } from '../lib/auto'
 import './simple.css'
 
@@ -97,7 +96,6 @@ export default function SimpleChat({
   const setFailure = (text: string) => setFailureResult({ key, text })
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
-  const [autoSetupKey, setAutoSetupKey] = useState<string>()
   const [clearKey, setClearKey] = useState<string>()
   useEffect(() => setClearKey(undefined), [key])
   const threadRef = useRef<HTMLDivElement>(null)
@@ -374,7 +372,7 @@ export default function SimpleChat({
           title="Finish or stop the current agent turn before handing off"
           onClick={() => {
             if (s.auto && ['running', 'waitingOnYou', 'paused'].includes(s.auto.status)) {
-              setAutoSetupKey(key)
+              useStore.getState().showAutoPanel()
               return
             }
             const draftKey = autoDraftKey(projectId, task)
@@ -387,7 +385,8 @@ export default function SimpleChat({
               ),
               autonomous: true,
             })
-            setAutoSetupKey(key)
+            useStore.setState((s) => ({ autoDraftVersion: s.autoDraftVersion + 1 }))
+            useStore.getState().showAutoPanel()
           }}
         >
           Auto mode
@@ -450,12 +449,6 @@ export default function SimpleChat({
             <button onClick={() => pauseAuto(projectId, task)}>Pause Auto</button>
           )}
         </p>
-      )}
-      {autoSetupKey === key && (
-        <section aria-label="Auto handoff">
-          <button onClick={() => setAutoSetupKey(undefined)}>Close auto setup</button>
-          <AutoPanel key={key} simple onIntegrations={openIntegrations} />
-        </section>
       )}
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
