@@ -1,3 +1,4 @@
+import MergeCleanupDialog from './components/MergeCleanupDialog'
 import { followAutoPower } from './lib/autoPower'
 import WorktreeSetupStatus from './components/tasks/WorktreeSetupStatus'
 import { watchProviderRuns } from './lib/orchestration'
@@ -441,6 +442,7 @@ export default function App() {
   return (
     <ReactFlowProvider>
       <AppWorkspace />
+      <MergeCleanupDialog />
     </ReactFlowProvider>
   )
 }

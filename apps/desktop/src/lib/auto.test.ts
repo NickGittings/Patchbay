@@ -4951,6 +4951,7 @@ test.each(['light', 'standard'] as const)(
       autonomous: true,
       effort,
       stage: 'merge',
+      ownershipId: 'owner',
       reviewedHead: 'abc',
       merge: { mode: 'auto', destinationBranch: 'main' },
       sessionId: 's',
@@ -4970,6 +4971,8 @@ test.each(['light', 'standard'] as const)(
         expect.anything(),
         expect.any(String),
         expect.anything(),
+        'keep',
+        'owner',
       )
       expect(autoRun('p', 't')).toMatchObject({
         stage: 'merge',
@@ -5083,6 +5086,8 @@ test('a source change caught by merge preparation returns autonomous execution t
       expect.anything(),
       expect.any(String),
       expect.anything(),
+      'keep',
+      'run',
     )
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({

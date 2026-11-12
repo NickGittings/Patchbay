@@ -264,3 +264,15 @@ test('an autonomous run with a future schedule waits for that schedule after res
     pauseKind: 'scheduled',
   })
 })
+
+test('cleanup choices survive restoration and older runs default to Keep', () => {
+  expect(restoredAuto(saved)?.merge.cleanup).toBe('keep')
+  for (const cleanup of ['ask', 'keep', 'delete']) {
+    expect(restoredAuto({ ...saved, merge: { ...saved.merge, cleanup } })?.merge.cleanup).toBe(
+      cleanup,
+    )
+  }
+  expect(
+    restoredAuto({ ...saved, merge: { ...saved.merge, cleanup: 'invalid' } })?.merge.cleanup,
+  ).toBe('keep')
+})

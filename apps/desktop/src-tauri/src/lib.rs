@@ -2082,6 +2082,75 @@ async fn merge_outcome(
     .await
 }
 
+/// Cleanup is restricted to the main window and registered repository.
+#[tauri::command]
+async fn merge_cleanup(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::merges::MergeRequest,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let (root, scoped) = task_repo(&state, &project_id)?;
+    let access = scoped.access.snapshot();
+    for scoped in state.projects.read().unwrap().values() {
+        if scoped.access.snapshot().root().is_some_and(|p| {
+            p.canonicalize().ok() == Path::new(&request.source).canonicalize().ok()
+        }) {
+            return Err("The source worktree is open as a project".into());
+        }
+    }
+    let bridge = state.service.clone();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        project.root = root.to_string_lossy().into_owned();
+        patchbay_core::merges::check_cleanup(&project, &request).map_err(err)?;
+        stories::complete_merge(&root, Path::new(&request.source)).map_err(err)?;
+        let task = tasks::list(&root)
+            .map_err(err)?
+            .into_iter()
+            .find(|t| t.worktree == request.source);
+        if let Some(task) = &task {
+            tasks::TaskSessions::end_task(&*bridge, &task.id, false).map_err(err)?;
+        }
+        // Sessions can belong to a different project or have no task metadata.
+        let records: Vec<patchbay_core::session::Record> =
+            bridge.call(patchbay_core::session::Request::List)?;
+        let source = Path::new(&request.source).canonicalize().map_err(err)?;
+        let owned: Vec<_> = records
+            .into_iter()
+            .filter(|r| {
+                r.spec
+                    .cwd
+                    .canonicalize()
+                    .is_ok_and(|p| p.starts_with(&source))
+            })
+            .collect();
+        for record in &owned {
+            bridge.call::<serde_json::Value>(patchbay_core::session::Request::Stop {
+                id: record.id.clone(),
+            })?;
+        }
+        let cleanup = patchbay_core::merges::cleanup(&project, &request).map_err(err);
+        // Even if branch deletion failed, retire sessions and task metadata once
+        // the worktree is gone. Preserve the partial-failure message for the user.
+        if Path::new(&request.source).exists() {
+            return cleanup;
+        }
+        for record in owned {
+            let _ = bridge.call::<serde_json::Value>(patchbay_core::session::Request::Forget {
+                id: record.id,
+            });
+        }
+        if let Some(task) = task {
+            tasks::remove_with_sessions(&root, &task.id, true, &*bridge).map_err(err)?;
+        }
+        cleanup
+    })
+    .await
+}
+
 /// Launch a review agent in a registered worktree.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -2933,6 +3002,7 @@ pub fn run() {
                 map_agent_start,
                 stack_agent_start,
                 merge_outcome,
+                merge_cleanup,
                 merge_conflicts,
                 review_agent_start,
                 review_read,

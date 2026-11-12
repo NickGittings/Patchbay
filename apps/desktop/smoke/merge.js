@@ -506,6 +506,22 @@
       ),
     )
     await until('merge stopped', () => state().sessions[sid]?.running === false)
+    const cleanupPrompt = await until('post-merge cleanup popup', () =>
+      visible('[role="dialog"][aria-label="Merge complete"]'),
+    )
+    assert(cleanupPrompt.textContent.includes('feature'), 'cleanup popup omitted the source branch')
+    assert(
+      cleanupPrompt.textContent.includes('integration'),
+      'cleanup popup omitted the destination',
+    )
+    click([...cleanupPrompt.querySelectorAll('button')].find((b) => b.textContent === 'Keep'))
+    await until('cleanup dismissed', () => !visible('[role="dialog"][aria-label="Merge complete"]'))
+    await sleep(2200)
+    assert(!visible('[role="dialog"][aria-label="Merge complete"]'), 'cleanup popup repeated')
+    assert(
+      state().tasks.some((t) => t.id === task.id),
+      'Keep removed the source task',
+    )
     state().setView('navigation')
     await until('Navigation mounted after stopping merge', () => visible('.canvas'))
     assert(
@@ -621,6 +637,14 @@
       ),
     )
     await until('second merge stopped', () => state().sessions[sid]?.running === false)
+    const secondCleanup = await until('incoming merge cleanup popup', () =>
+      visible('[role="dialog"][aria-label="Merge complete"]'),
+    )
+    click([...secondCleanup.querySelectorAll('button')].find((b) => b.textContent === 'Keep'))
+    await until(
+      'incoming cleanup dismissed',
+      () => !visible('[role="dialog"][aria-label="Merge complete"]'),
+    )
     click(
       await until('review panel Hide button', () =>
         [...document.querySelectorAll('.review-merge-terminal button')].find(
